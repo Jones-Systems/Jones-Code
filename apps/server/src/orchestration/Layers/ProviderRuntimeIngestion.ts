@@ -2390,6 +2390,12 @@ const make = Effect.gen(function* () {
               createdAt: now,
             });
           }
+        }
+      }
+
+      if (isTerminalTurn || event.type === "session.exited") {
+        const turnId = toTurnId(event.turnId);
+        if (turnId) {
           const assistantMessageIds = yield* getAssistantMessageIdsForTurn(thread.id, turnId);
           yield* Effect.forEach(
             assistantMessageIds,
@@ -2414,13 +2420,15 @@ const make = Effect.gen(function* () {
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId, "reasoning");
 
-          yield* finalizeBufferedProposedPlan({
-            event,
-            threadId: thread.id,
-            planId: proposedPlanIdForTurn(thread.id, turnId),
-            turnId,
-            updatedAt: now,
-          });
+          if (isTerminalTurn) {
+            yield* finalizeBufferedProposedPlan({
+              event,
+              threadId: thread.id,
+              planId: proposedPlanIdForTurn(thread.id, turnId),
+              turnId,
+              updatedAt: now,
+            });
+          }
         }
       }
 
