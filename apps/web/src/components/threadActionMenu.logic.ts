@@ -14,6 +14,7 @@ export type ThreadActionMenuId =
   | "unpin"
   | "settle"
   | "unsettle"
+  | "kill-thread"
   | "auto-settle"
   | "auto-settle:enabled"
   | "auto-settle:disabled"
@@ -50,6 +51,7 @@ export interface ThreadActionMenuState {
   readonly isRegeneratingTitle: boolean;
   /** Archive rejects a thread with an active turn, so disable it here rather than let the action fail. */
   readonly isRunning: boolean;
+  readonly canStopSession: boolean;
   readonly supports: {
     readonly settlement: boolean;
     /** Server understands thread.auto-settle.set. */
@@ -96,6 +98,12 @@ export function buildThreadActionMenuItems(
             : { id: "settle" as const, label: "Settle thread", icon: "circle-check" },
         ]
       : []),
+    {
+      id: "kill-thread",
+      label: "Kill Thread",
+      icon: "square",
+      disabled: !state.canStopSession,
+    },
     ...(state.supports.snooze
       ? [
           state.isSnoozed

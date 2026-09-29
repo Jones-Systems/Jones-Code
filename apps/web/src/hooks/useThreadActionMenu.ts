@@ -96,6 +96,9 @@ export function useThreadActionMenu(input: {
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
+    reportFailure: false,
+  });
   const handleNewThread = useNewThreadHandler();
   const markThreadUnread = useUiStateStore((s) => s.markThreadUnread);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
@@ -153,6 +156,7 @@ export function useThreadActionMenu(input: {
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
           isRunning: thread.session?.status === "running" && thread.session.activeTurnId != null,
+          canStopSession: thread.session != null && thread.session.status !== "stopped",
           supports,
           snoozePresets,
         });
@@ -215,6 +219,14 @@ export function useThreadActionMenu(input: {
           }
           case "settle":
             await reportFailure("Failed to settle thread", () => settleThread(threadRef));
+            return;
+          case "kill-thread":
+            await reportFailure("Failed to kill thread", () =>
+              stopThreadSession({
+                environmentId: threadRef.environmentId,
+                input: { threadId: threadRef.threadId },
+              }),
+            );
             return;
           case "unsettle":
             await reportFailure("Failed to un-settle thread", () => unsettleThread(threadRef));
@@ -345,6 +357,7 @@ export function useThreadActionMenu(input: {
       router,
       setThreadAutoSettle,
       settleThread,
+      stopThreadSession,
       snoozeThread,
       threadRef,
       timestampFormat,

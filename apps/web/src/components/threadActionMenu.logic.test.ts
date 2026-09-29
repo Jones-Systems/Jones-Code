@@ -12,6 +12,7 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
+  canStopSession: true,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -47,7 +48,15 @@ describe("buildThreadActionMenuItems", () => {
           titleRegeneration: false,
         },
       }),
-    ).toEqual(["rename", "mark-unread", "copy", "project-settings", "archive", "delete"]);
+    ).toEqual([
+      "kill-thread",
+      "rename",
+      "mark-unread",
+      "copy",
+      "project-settings",
+      "archive",
+      "delete",
+    ]);
   });
 
   it("groups project settings with utility actions before archive", () => {
@@ -95,6 +104,21 @@ describe("buildThreadActionMenuItems", () => {
       expect.arrayContaining(["unpin", "unsettle", "unsnooze"]),
     );
     expect(ids(baseState)).toEqual(expect.arrayContaining(["pin", "settle", "snooze"]));
+  });
+
+  it("places Kill Thread below Settle and disables it after the session stops", () => {
+    const items = buildThreadActionMenuItems(baseState);
+    const settleIndex = items.findIndex((item) => item.id === "settle");
+    expect(items[settleIndex + 1]).toMatchObject({
+      id: "kill-thread",
+      label: "Kill Thread",
+      disabled: false,
+    });
+    expect(
+      buildThreadActionMenuItems({ ...baseState, canStopSession: false }).find(
+        (item) => item.id === "kill-thread",
+      ),
+    ).toMatchObject({ disabled: true });
   });
 
   it("offers auto-settle as a submenu with the current option checked", () => {
