@@ -78,7 +78,7 @@ export function buildUnavailableModelOptionDescriptors(
   );
 }
 
-type TraitsPersistence =
+export type TraitsPersistence =
   | {
       threadRef?: ScopedThreadRef;
       draftId?: DraftId;
@@ -279,7 +279,7 @@ export interface TraitsMenuContentProps {
   isComposerOwned?: boolean;
 }
 
-export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
+export function useTraitsSelection({
   provider,
   instanceId,
   models,
@@ -310,16 +310,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     },
     [instanceId, model, persistence, provider, setProviderModelOptions],
   );
-  const {
-    descriptors,
-    selectDescriptors,
-    booleanDescriptors,
-    primarySelectDescriptor,
-    ultrathinkPromptControlled,
-    ultrathinkInBodyText,
-    hasAnyControls,
-    modelIsUnavailable,
-  } = getTraitsSectionVisibility({
+  const selected = getTraitsSectionVisibility({
     provider,
     models,
     model,
@@ -328,6 +319,8 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     allowPromptInjectedEffort,
     planModeEnabled,
   });
+  const { descriptors, primarySelectDescriptor, ultrathinkPromptControlled, ultrathinkInBodyText } =
+    selected;
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
     updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
   };
@@ -352,6 +345,25 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     }
     updateDescriptors(replaceDescriptorCurrentValue(descriptors, descriptor.id, value));
   };
+
+  return { ...selected, updateDescriptors, handleSelectChange };
+}
+
+export const TraitsMenuContent = memo(function TraitsMenuContentImpl(
+  props: TraitsMenuContentProps & TraitsPersistence,
+) {
+  const {
+    descriptors,
+    selectDescriptors,
+    booleanDescriptors,
+    primarySelectDescriptor,
+    ultrathinkPromptControlled,
+    ultrathinkInBodyText,
+    hasAnyControls,
+    modelIsUnavailable,
+    updateDescriptors,
+    handleSelectChange,
+  } = useTraitsSelection(props);
 
   if (!hasAnyControls) {
     return null;

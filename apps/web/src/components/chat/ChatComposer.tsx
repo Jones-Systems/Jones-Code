@@ -1,3 +1,4 @@
+import { ReasoningEffortShortcuts } from "./ReasoningEffortShortcuts";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
 import { usePrimaryEnvironmentId } from "../../state/environments";
@@ -6965,6 +6966,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 >
                   {composerControlsInStrip ? null : composerControls}
                 </div>
+
+                {!isComposerResting && providerTraitsPicker ? (
+                  <ReasoningEffortShortcuts
+                    {...providerTraitsPickerInput}
+                    modelOptions={selectedModelOptionsForDispatch}
+                  />
+                ) : null}
 
                 {/* Right side: send / stop button */}
                 <div
