@@ -9,6 +9,7 @@
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
+import type { ThreadId } from "@t3tools/contracts";
 
 /**
  * ThreadDeletionReactorShape - Service API for thread deletion cleanup.
@@ -24,11 +25,13 @@ export interface ThreadDeletionReactorShape {
 
   /**
    * Resolves once every thread.deleted at or before the supplied event
-   * sequence has been handed to the worker and the worker is empty and idle.
-   * A successful thread.create sequence is the fence callers use before the
-   * new incarnation can own runtime resources.
+   * sequence has completed its initial cleanup attempt and any retained
+   * cleanup for the supplied thread id has finished. Without a thread id,
+   * waits only for the initial cleanup queue (used by the global storage sweep).
+   * Other owners retry independently. A successful thread.create sequence is
+   * the owner-specific fence before the new incarnation can own runtime resources.
    */
-  readonly drainThrough: (sequence: number) => Effect.Effect<void>;
+  readonly drainThrough: (sequence: number, threadId?: ThreadId) => Effect.Effect<void>;
 }
 
 /**

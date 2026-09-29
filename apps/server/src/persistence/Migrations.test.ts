@@ -31,7 +31,7 @@ const injectMigrations = (includeFutureUpstream = false) =>
     .spyOn(Migrator, "fromRecord")
     .mockImplementation((entries) =>
       fromRecord(
-        Object.keys(entries).length === 0
+        Object.hasOwn(entries, "1_WorktreeOwnershipLeases")
           ? { "1_ForkProbe": forkProbe }
           : includeFutureUpstream
             ? { ...entries, "55_FutureUpstreamProbe": futureUpstreamProbe }
@@ -98,7 +98,7 @@ it.effect("applies future upstream migration 55 after fork migration 1", () =>
   }).pipe(Effect.provide(memory)),
 );
 
-it.effect("accepts an empty fork loader and preserves the upstream migration limit", () =>
+it.effect("runs fork migration 1 after completing historical upstream replay", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
 
@@ -108,7 +108,13 @@ it.effect("accepts an empty fork loader and preserves the upstream migration lim
     );
     assert.deepEqual(yield* runMigrations(), [[54, "ProjectionThreadsAutoSettleDisabledAt"]]);
     assert.deepEqual(yield* runMigrations(), []);
-    assert.deepEqual(yield* sql`SELECT * FROM jones_sql_migrations`, []);
+    assert.deepEqual(yield* sql`SELECT migration_id, name FROM jones_sql_migrations`, [
+      { migration_id: 1, name: "WorktreeOwnershipLeases" },
+    ]);
+    assert.deepEqual(
+      yield* sql`SELECT name FROM sqlite_master WHERE name = 'worktree_ownership_leases'`,
+      [{ name: "worktree_ownership_leases" }],
+    );
   }).pipe(Effect.provide(memory)),
 );
 

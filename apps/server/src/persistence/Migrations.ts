@@ -66,6 +66,7 @@ import Migration0051 from "./Migrations/051_ProjectionThreadMessageContext.ts";
 import Migration0052 from "./Migrations/052_ProjectionThreadTitleState.ts";
 import Migration0053 from "./Migrations/053_PullRequestFilesViewed.ts";
 import Migration0054 from "./Migrations/054_ProjectionThreadsAutoSettleDisabledAt.ts";
+import JonesMigration0001 from "./Migrations/001_JonesWorktreeOwnershipLeases.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -146,7 +147,10 @@ const makeMigrationLoader = (throughId?: number) =>
   );
 
 // Fork IDs start at 1 and must stay out of the upstream migration record.
-const makeForkMigrationLoader = () => Migrator.fromRecord({});
+const makeForkMigrationLoader = () =>
+  Migrator.fromRecord({
+    "1_WorktreeOwnershipLeases": JonesMigration0001,
+  });
 
 /**
  * Migrator run function - no schema dumping needed

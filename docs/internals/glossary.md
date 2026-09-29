@@ -12,6 +12,7 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | Project        | An environment-local workspace record rooted at a directory.                                      |
 | Workspace root | The project's base filesystem directory on the environment.                                       |
 | Worktree       | A separate Git checkout a thread can use instead of the project's main checkout.                  |
+| Checkout lease | One thread incarnation's exclusive claim on a physical checkout before T3 starts native work.     |
 | Thread         | The durable conversation and work history for a project. It survives provider process exits.      |
 | Turn           | One user-to-agent work cycle. Provider work can finish before checkpoint and diff work settles.   |
 | Activity       | A non-message timeline item, such as a tool action, approval, or failure.                         |

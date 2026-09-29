@@ -5,7 +5,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
-import { OrchestrationCommand } from "@t3tools/contracts";
+import { CommandId, OrchestrationCommand } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -14,9 +14,11 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -37,6 +39,7 @@ import {
   OrchestrationCommandIdConflictError,
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
+  WorktreeOwnershipConflictError,
   type OrchestrationDispatchError,
   type OrchestrationProjectorDecodeError,
 } from "../Errors.ts";
@@ -49,6 +52,12 @@ import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
+import {
+  makeWorktreeOwnershipLeaseStore,
+  WORKTREE_OWNERSHIP_LEASE_DURATION_MS,
+  WORKTREE_OWNERSHIP_LEASE_RENEW_INTERVAL_MS,
+  type WorktreeOwnershipLease,
+} from "../WorktreeOwnershipLease.ts";
 const isOrchestrationCommandPreviouslyRejectedError = Schema.is(
   OrchestrationCommandPreviouslyRejectedError,
 );
@@ -89,12 +98,152 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const crypto = yield* Crypto.Crypto;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const worktreeOwnershipLeases = yield* makeWorktreeOwnershipLeaseStore();
+  const locallyOwnedWorktrees = new Map<string, WorktreeOwnershipLease>();
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
 
   const commandQueue = yield* Queue.unbounded<CommandEnvelope>();
   const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
+
+  const ownershipTargetForThread = (threadId: ThreadId) => {
+    const thread = commandReadModel.threads.find((candidate) => candidate.id === threadId);
+    if (thread === undefined) return null;
+    const project = commandReadModel.projects.find(
+      (candidate) => candidate.id === thread.projectId,
+    );
+    if (project === undefined) return null;
+    return {
+      resourcePath: path.resolve(thread.worktreePath ?? project.workspaceRoot),
+      ownerThreadId: thread.id,
+      branch: thread.branch,
+    } as const;
+  };
+
+  const acquireOwnershipRecord = Effect.fn("acquireOwnershipRecord")(function* (
+    target: NonNullable<ReturnType<typeof ownershipTargetForThread>>,
+  ) {
+    const nowMs = yield* Clock.currentTimeMillis;
+    const ownerIncarnation = yield* worktreeOwnershipLeases
+      .getThreadIncarnation(target.ownerThreadId)
+      .pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () =>
+              new OrchestrationCommandInvariantError({
+                commandType: "worktree.ownership.acquire",
+                detail: `thread '${target.ownerThreadId}' has no authoritative creation event`,
+              }),
+            onSome: Effect.succeed,
+          }),
+        ),
+      );
+    const resourcePath = yield* fileSystem
+      .realPath(target.resourcePath)
+      .pipe(Effect.orElseSucceed(() => target.resourcePath));
+    const leaseId = yield* crypto.randomUUIDv4.pipe(
+      Effect.mapError(
+        (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: "worktree.ownership.acquire",
+            detail: "failed to generate a lease identifier",
+            cause,
+          }),
+      ),
+    );
+    const acquired = yield* worktreeOwnershipLeases.acquire({
+      ...target,
+      ownerIncarnation,
+      resourcePath,
+      leaseId,
+      nowMs,
+      expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS,
+    });
+    if (Option.isSome(acquired)) return acquired.value;
+
+    const conflictingLease = (yield* worktreeOwnershipLeases.listAll()).find(
+      (lease) => lease.resourcePath === resourcePath,
+    );
+    if (conflictingLease === undefined) {
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: "worktree.ownership.acquire",
+        detail: `failed to acquire ownership for '${resourcePath}'`,
+      });
+    }
+    return yield* new WorktreeOwnershipConflictError({
+      resourcePath: conflictingLease.resourcePath,
+      ownerThreadId: conflictingLease.ownerThreadId,
+      requestingThreadId: target.ownerThreadId,
+      ownerBranch: conflictingLease.branch,
+      expiresAtMs: conflictingLease.expiresAtMs,
+    });
+  });
+
+  const renewLocallyOwnedWorktrees = Effect.gen(function* () {
+    const nowMs = yield* Clock.currentTimeMillis;
+    for (const [resourcePath, lease] of locallyOwnedWorktrees) {
+      const renewed = yield* worktreeOwnershipLeases
+        .renew({
+          resourcePath,
+          leaseId: lease.leaseId,
+          ownerThreadId: lease.ownerThreadId,
+          ownerIncarnation: lease.ownerIncarnation,
+          nowMs,
+          expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS,
+        })
+        .pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("failed to renew worktree ownership lease", {
+              resourcePath,
+              ownerThreadId: lease.ownerThreadId,
+              cause,
+            }).pipe(Effect.as(true)),
+          ),
+        );
+      if (!renewed) {
+        locallyOwnedWorktrees.delete(resourcePath);
+        yield* Effect.logWarning("worktree ownership lease was lost", {
+          resourcePath,
+          ownerThreadId: lease.ownerThreadId,
+        });
+        yield* Effect.gen(function* () {
+          const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
+          const createdAt = yield* nowIso;
+          yield* Queue.offer(commandQueue, {
+            command: {
+              type: "thread.session.stop",
+              commandId: CommandId.make(`server:worktree-lease-lost:${yield* crypto.randomUUIDv4}`),
+              threadId: lease.ownerThreadId,
+              createdAt,
+            },
+            origin: undefined,
+            result,
+            startedAtMs: nowMs,
+          });
+          yield* Deferred.await(result);
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("failed to stop session after worktree ownership loss", {
+              resourcePath,
+              ownerThreadId: lease.ownerThreadId,
+              cause,
+            }),
+          ),
+        );
+      }
+    }
+  });
+
+  yield* Effect.forkScoped(
+    Effect.forever(
+      Effect.sleep(Duration.millis(WORKTREE_OWNERSHIP_LEASE_RENEW_INTERVAL_MS)).pipe(
+        Effect.andThen(renewLocallyOwnedWorktrees),
+      ),
+    ),
+  );
 
   const projectEventsOntoReadModel = (
     baseReadModel: OrchestrationReadModel,
@@ -242,6 +391,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           envelope.command.type === "thread.user-input.dismiss"
             ? yield* projectionSnapshotQuery.getUserInputActivity(envelope.command)
             : Option.none();
+        const ownershipTarget = (() => {
+          if (
+            envelope.command.type !== "thread.turn.start" &&
+            envelope.command.type !== "thread.checkpoint.revert"
+          ) {
+            return null;
+          }
+          return ownershipTargetForThread(envelope.command.threadId);
+        })();
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
@@ -276,6 +434,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               const committedEvents: OrchestrationEvent[] = [];
               const attachmentCleanups: Effect.Effect<void>[] = [];
               let nextCommandReadModel = commandReadModel;
+              let acquiredLease: WorktreeOwnershipLease | null = null;
+
+              if (ownershipTarget !== null) {
+                acquiredLease = yield* acquireOwnershipRecord(ownershipTarget);
+              }
 
               for (const nextEvent of eventBases) {
                 const savedEvent = yield* eventStore.append(nextEvent);
@@ -308,6 +471,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 attachmentCleanups,
                 lastSequence: lastSavedEvent.sequence,
                 nextCommandReadModel,
+                acquiredLease,
               } as const;
             }),
           )
@@ -320,6 +484,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           );
 
         commandReadModel = committedCommand.nextCommandReadModel;
+        if (committedCommand.acquiredLease !== null) {
+          locallyOwnedWorktrees.set(
+            committedCommand.acquiredLease.resourcePath,
+            committedCommand.acquiredLease,
+          );
+        }
         for (const cleanup of committedCommand.attachmentCleanups) {
           yield* cleanup;
         }
@@ -447,11 +617,75 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       return yield* Deferred.await(result);
     });
 
+  const acquireWorktreeOwnership: OrchestrationEngineShape["acquireWorktreeOwnership"] = (
+    threadId,
+    requestedPath,
+  ) =>
+    Effect.gen(function* () {
+      const target = ownershipTargetForThread(threadId);
+      if (target === null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: "worktree.ownership.acquire",
+          detail: `thread '${threadId}' has no projected checkout`,
+        });
+      }
+      const resourcePath = yield* fileSystem
+        .realPath(target.resourcePath)
+        .pipe(Effect.orElseSucceed(() => target.resourcePath));
+      if (requestedPath !== undefined) {
+        const resolvedRequestedPath = path.resolve(requestedPath);
+        const canonicalRequestedPath = yield* fileSystem
+          .realPath(resolvedRequestedPath)
+          .pipe(Effect.orElseSucceed(() => resolvedRequestedPath));
+        const relativeRequestedPath = path.relative(resourcePath, canonicalRequestedPath);
+        if (
+          relativeRequestedPath === ".." ||
+          relativeRequestedPath.startsWith(`..${path.sep}`) ||
+          path.isAbsolute(relativeRequestedPath)
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: "worktree.ownership.acquire",
+            detail: `requested mutation path '${canonicalRequestedPath}' is outside thread '${threadId}' checkout '${resourcePath}'`,
+          });
+        }
+      }
+      const lease = yield* sql.withTransaction(acquireOwnershipRecord({ ...target, resourcePath }));
+      locallyOwnedWorktrees.set(lease.resourcePath, lease);
+      return lease;
+    }).pipe(
+      Effect.catchTag("SqlError", (sqlError) =>
+        Effect.fail(
+          toPersistenceSqlError("OrchestrationEngine.acquireWorktreeOwnership:transaction")(
+            sqlError,
+          ),
+        ),
+      ),
+    );
+
+  const releaseWorktreeOwnership: OrchestrationEngineShape["releaseWorktreeOwnership"] = (lease) =>
+    Effect.gen(function* () {
+      yield* sql.withTransaction(worktreeOwnershipLeases.release(lease));
+      if (locallyOwnedWorktrees.get(lease.resourcePath)?.leaseId === lease.leaseId) {
+        locallyOwnedWorktrees.delete(lease.resourcePath);
+      }
+    }).pipe(
+      Effect.catchTag("SqlError", (sqlError) =>
+        Effect.fail(
+          toPersistenceSqlError("OrchestrationEngine.releaseWorktreeOwnership:transaction")(
+            sqlError,
+          ),
+        ),
+      ),
+    );
+
   return {
     readEvents,
     readThreadEvents,
     getThreadReplayStats,
     dispatch,
+    acquireWorktreeOwnership,
+    releaseWorktreeOwnership,
+    getThreadOwnershipIncarnation: worktreeOwnershipLeases.getThreadIncarnation,
     subscribeDomainEvents: PubSub.subscribe(eventPubSub).pipe(Effect.map(Stream.fromSubscription)),
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (wsServer, ProviderRuntimeIngestion, CheckpointReactor, etc.)
@@ -464,6 +698,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     // consistent, committed value — reassignment of `commandReadModel` is
     // atomic on the single-threaded event loop.
     latestSequence: Effect.sync(() => commandReadModel.snapshotSequence),
+    listWorktreeOwnershipLeases: worktreeOwnershipLeases.listAll(),
   } satisfies OrchestrationEngineShape;
 });
 

@@ -572,7 +572,6 @@ describe("OrchestrationEngine", () => {
     "rejects persisted changes and live background work without blocking unrelated threads",
     () =>
       Effect.gen(function* () {
-        yield* TestClock.setTime(Date.parse(now()));
         const engine = yield* OrchestrationEngineService;
         const snapshots = yield* ProjectionSnapshotQuery;
         const backgroundLiveness = yield* ThreadBackgroundLiveness.ThreadBackgroundLivenessService;
@@ -698,7 +697,9 @@ describe("OrchestrationEngine", () => {
           expect(thread?.settledAt).toBe(lastActivityAt);
           expect(thread?.updatedAt).toBe(now());
         }
-      }).pipe(Effect.provide(makeOrchestrationLayer())),
+      }).pipe(Effect.provide(makeOrchestrationLayer()), (test) =>
+        TestClock.setTime(Date.parse(now())).pipe(Effect.andThen(test)),
+      ),
   );
 
   it("persists deterministic read models for repeated snapshot reads", async () => {

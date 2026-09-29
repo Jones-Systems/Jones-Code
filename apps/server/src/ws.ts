@@ -69,6 +69,7 @@ import {
   RpcClientId,
   EnvironmentAuthorizationError,
   ThreadId,
+  TerminalOwnershipError,
   type TerminalAttachStreamEvent,
   type TerminalError,
   type TerminalEvent,
@@ -1438,7 +1439,7 @@ const makeWsRpcLayer = (
               // Drain through that event before setup or turn start can own
               // terminals and provider sessions under the reused thread id.
               createdThread = true;
-              yield* threadDeletionReactor.drainThrough(created.sequence);
+              yield* threadDeletionReactor.drainThrough(created.sequence, command.threadId);
               // Persist the send now rather than with the turn: the thread is
               // real from here on, so any client (or a reload) sees the message
               // while the worktree is still being prepared. The turn start
@@ -1594,6 +1595,9 @@ const makeWsRpcLayer = (
               yield* refreshGitStatus(targetWorktreePath);
             }
 
+            if (bootstrap?.runSetupScript && targetWorktreePath) {
+              yield* orchestrationEngine.acquireWorktreeOwnership(command.threadId);
+            }
             const pendingSetupScript = yield* runSetupProgram();
 
             yield* track(worktreeSetupTracker.stageStatus(threadId, "agent", "running"));
@@ -1785,7 +1789,7 @@ const makeWsRpcLayer = (
                   // clients may start resources for the new incarnation. Use
                   // its event sequence as the exact deletion-cleanup fence.
                   normalizedCommand.type === "thread.create"
-                    ? threadDeletionReactor.drainThrough(sequence)
+                    ? threadDeletionReactor.drainThrough(sequence, normalizedCommand.threadId)
                     : Effect.void,
                 ),
                 Effect.mapError((cause) =>
@@ -1798,6 +1802,32 @@ const makeWsRpcLayer = (
           .pipe(
             Effect.mapError((cause) =>
               toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+            ),
+          );
+      };
+
+      const acquireTerminalOwnership = (input: {
+        readonly threadId: string;
+        readonly cwd?: string | undefined;
+        readonly worktreePath?: string | null | undefined;
+      }) => {
+        const requestedPath = input.cwd;
+        if (requestedPath === undefined) {
+          return Effect.fail(
+            new TerminalOwnershipError({
+              threadId: input.threadId,
+              cause: "terminal restart requires a checkout path",
+            }),
+          );
+        }
+        return orchestrationEngine
+          .acquireWorktreeOwnership(ThreadId.make(input.threadId), requestedPath)
+          .pipe(
+            Effect.asVoid,
+            Effect.mapError((cause) =>
+              cause._tag === "WorktreeOwnershipConflictError"
+                ? cause
+                : new TerminalOwnershipError({ threadId: input.threadId, cause }),
             ),
           );
       };
@@ -3416,15 +3446,23 @@ const makeWsRpcLayer = (
             { "rpc.aggregate": "review" },
           ),
         [WS_METHODS.terminalOpen]: (input) =>
-          observeRpcEffect(WS_METHODS.terminalOpen, terminalManager.open(input), {
-            "rpc.aggregate": "terminal",
-          }),
+          observeRpcEffect(
+            WS_METHODS.terminalOpen,
+            acquireTerminalOwnership(input).pipe(Effect.andThen(terminalManager.open(input))),
+            {
+              "rpc.aggregate": "terminal",
+            },
+          ),
         [WS_METHODS.terminalAttach]: (input) =>
           observeRpcStream(
             WS_METHODS.terminalAttach,
             Stream.callback<TerminalAttachStreamEvent, TerminalError>((queue) =>
               Effect.acquireRelease(
-                terminalManager.attachStream(input, (event) => Queue.offer(queue, event)),
+                (input.cwd !== undefined ? acquireTerminalOwnership(input) : Effect.void).pipe(
+                  Effect.andThen(
+                    terminalManager.attachStream(input, (event) => Queue.offer(queue, event)),
+                  ),
+                ),
                 (unsubscribe) => Effect.sync(unsubscribe),
               ),
             ),
@@ -3443,9 +3481,13 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "terminal",
           }),
         [WS_METHODS.terminalRestart]: (input) =>
-          observeRpcEffect(WS_METHODS.terminalRestart, terminalManager.restart(input), {
-            "rpc.aggregate": "terminal",
-          }),
+          observeRpcEffect(
+            WS_METHODS.terminalRestart,
+            acquireTerminalOwnership(input).pipe(Effect.andThen(terminalManager.restart(input))),
+            {
+              "rpc.aggregate": "terminal",
+            },
+          ),
         [WS_METHODS.terminalClose]: (input) =>
           observeRpcEffect(WS_METHODS.terminalClose, terminalManager.close(input), {
             "rpc.aggregate": "terminal",

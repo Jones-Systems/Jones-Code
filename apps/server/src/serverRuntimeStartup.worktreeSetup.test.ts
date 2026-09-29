@@ -95,6 +95,10 @@ const run = (activities: ReadonlyArray<ReturnType<typeof recordedSetup>>) =>
             dispatched.push(command);
             return { sequence: dispatched.length };
           }),
+        acquireWorktreeOwnership: () => Effect.die("unused ownership acquisition"),
+        releaseWorktreeOwnership: () => Effect.die("unused ownership release"),
+        getThreadOwnershipIncarnation: () => Effect.die("unused ownership incarnation"),
+        listWorktreeOwnershipLeases: Effect.die("unused ownership list"),
         streamDomainEvents: Stream.empty,
         subscribeDomainEvents: Effect.succeed(Stream.empty),
         latestSequence: Effect.succeed(0),
