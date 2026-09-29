@@ -109,3 +109,39 @@ current client support.
 
 Model classification has its own [manifest constraints](./model-manifest.md). Assistant-reference
 handling is documented under [citations](./assistant-citations.md).
+
+## Session and turn lifecycle invariants
+
+Session availability and turn outcome are separate facts. Provider adapters emit both, and
+ingestion preserves that distinction in the `thread.session-set` event:
+
+New events always carry `turnSettlement`: an attributed outcome object or explicit `null`. Its
+absence is reserved for replaying events written before this invariant existed.
+
+- `session.started`, `thread.started`, and `session.state.changed` update session availability.
+  A `ready`, `stopped`, or `error` session status does not by itself complete a turn.
+- `turn.completed` is trusted only when it names the active turn, or names a turn while no active
+  turn is tracked. Its exact outcome becomes the event's `turnSettlement` (`completed`,
+  `interrupted`, or `error`). `turn.aborted` settles the active named turn as interrupted; stale aborts without an active turn remain ignored.
+- While a session is `starting`, assistant or checkpoint evidence for a new turn may recover a lost
+  `turn.started` notification and replace an older latest turn. A terminal event accepted through
+  that path carries the same durable recovery marker in `turnSettlement`, so projector order cannot
+  change the result. Outside that bounded recovery state, late evidence for an older turn cannot
+  displace the current latest turn.
+- `session.exited` stops the session. When it names the active turn, that turn is interrupted. An
+  exit with no turn ID remains unattributed and cannot change turn outcome; an exit naming a
+  different turn is stale and cannot stop or settle the active turn.
+- Starting a new active turn interrupts any older still-running turn on the thread. Supersession is
+  not successful completion.
+- A finalized assistant message proves only that the text is durable. Providers can finalize
+  commentary messages before continuing the turn.
+- A checkpoint proves only that a workspace snapshot was attempted or captured. Provider diff
+  notifications can create checkpoints before turn completion, and a `ready`, `missing`, or
+  `error` checkpoint status is not a turn outcome, including when a revert makes that checkpoint's
+  turn current again. A late checkpoint for an older turn cannot replace a newer latest turn. When
+  a revert restores an older checkpoint, terminal evidence recorded after that restored point is
+  rewound and the restored turn remains running until new attributed settlement arrives.
+
+The persistent projection, replay projector, and live client reducer all apply these rules. UI
+completion signals therefore come from the attributed turn settlement, never from session status,
+message finalization, or checkpoint timing.

@@ -88,18 +88,7 @@ function retainThreadActivities(activities: OrchestrationThread["activities"]) {
   );
 }
 
-function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "error") {
-  if (status === "error") return "error" as const;
-  // Match SQL and client projections: a missing git ref is not an interruption.
-  return "completed" as const;
-}
-
-/**
- * Turn state to settle a still-running latest turn with when its session
- * leaves the "running" status, or null while the session is (re)starting or
- * running and the turn must stay unsettled.
- */
-function settledTurnStateForSessionStatus(
+function legacyTurnStateForSessionStatus(
   status: OrchestrationSession["status"],
 ): "completed" | "interrupted" | "error" | null {
   switch (status) {
@@ -827,11 +816,51 @@ export function projectEvent(
             )
           : [...thread.messages, message];
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
+        const bindsAssistantTurn = payload.role === "assistant" && payload.turnId !== null;
+        const bindsLatestTurn =
+          bindsAssistantTurn &&
+          (thread.latestTurn === null ||
+            thread.latestTurn.turnId === payload.turnId ||
+            thread.session?.status === "starting");
+        const latestTurn = bindsLatestTurn
+          ? {
+              turnId: payload.turnId,
+              state:
+                thread.latestTurn?.turnId === payload.turnId
+                  ? thread.latestTurn.state
+                  : ("running" as const),
+              requestedAt:
+                thread.latestTurn?.turnId === payload.turnId
+                  ? thread.latestTurn.requestedAt
+                  : payload.createdAt,
+              startedAt:
+                thread.latestTurn?.turnId === payload.turnId
+                  ? (thread.latestTurn.startedAt ?? payload.createdAt)
+                  : payload.createdAt,
+              completedAt:
+                thread.latestTurn?.turnId === payload.turnId ? thread.latestTurn.completedAt : null,
+              assistantMessageId: payload.messageId,
+              ...(thread.latestTurn?.turnId === payload.turnId &&
+              thread.latestTurn.sourceProposedPlan !== undefined
+                ? { sourceProposedPlan: thread.latestTurn.sourceProposedPlan }
+                : {}),
+            }
+          : thread.latestTurn;
+        const checkpoints = bindsAssistantTurn
+          ? thread.checkpoints.map((checkpoint) =>
+              checkpoint.turnId === payload.turnId &&
+              checkpoint.assistantMessageId !== payload.messageId
+                ? { ...checkpoint, assistantMessageId: payload.messageId }
+                : checkpoint,
+            )
+          : thread.checkpoints;
 
         return {
           ...nextBase,
           threads: patchThreadAt(nextBase.threads, threadIndex, {
             messages: cappedMessages,
+            checkpoints,
+            latestTurn,
             updatedAt: event.occurredAt,
           }),
         };
@@ -857,9 +886,9 @@ export function projectEvent(
           "session",
         );
 
-        // Leaving the "running" session status is the turn-end signal: settle
-        // a still-running latest turn so its duration reflects the whole turn.
-        const settledTurnState = settledTurnStateForSessionStatus(session.status);
+        const turnSettlement = payload.turnSettlement;
+        const legacyTurnState =
+          turnSettlement === undefined ? legacyTurnStateForSessionStatus(session.status) : null;
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
@@ -883,18 +912,37 @@ export function projectEvent(
                         ? thread.latestTurn.assistantMessageId
                         : null,
                   }
-                : thread.latestTurn !== null &&
-                    thread.latestTurn.state === "running" &&
-                    settledTurnState !== null
+                : turnSettlement !== undefined &&
+                    turnSettlement !== null &&
+                    (thread.latestTurn === null ||
+                      thread.latestTurn.turnId === turnSettlement.turnId ||
+                      turnSettlement.recoversMissingStart === true)
                   ? {
-                      ...thread.latestTurn,
-                      state: settledTurnState,
-                      // A running turn's completedAt can only hold a mid-turn
-                      // placeholder checkpoint timestamp — the session leaving
-                      // "running" is the authoritative turn end.
-                      completedAt: session.updatedAt,
+                      turnId: turnSettlement.turnId,
+                      state: turnSettlement.state,
+                      requestedAt:
+                        thread.latestTurn?.turnId === turnSettlement.turnId
+                          ? thread.latestTurn.requestedAt
+                          : turnSettlement.completedAt,
+                      startedAt:
+                        thread.latestTurn?.turnId === turnSettlement.turnId
+                          ? (thread.latestTurn.startedAt ?? turnSettlement.completedAt)
+                          : turnSettlement.completedAt,
+                      completedAt: turnSettlement.completedAt,
+                      assistantMessageId:
+                        thread.latestTurn?.turnId === turnSettlement.turnId
+                          ? thread.latestTurn.assistantMessageId
+                          : null,
                     }
-                  : thread.latestTurn,
+                  : thread.latestTurn !== null &&
+                      thread.latestTurn.state === "running" &&
+                      legacyTurnState !== null
+                    ? {
+                        ...thread.latestTurn,
+                        state: legacyTurnState,
+                        completedAt: session.updatedAt,
+                      }
+                    : thread.latestTurn,
             updatedAt: event.occurredAt,
           }),
         };
@@ -977,35 +1025,48 @@ export function projectEvent(
           .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount)
           .slice(-MAX_THREAD_CHECKPOINTS);
 
-        // Mid-turn diff updates produce placeholder checkpoints; record the
-        // checkpoint, but don't settle a turn its session is still running.
-        const turnStillRunning =
-          thread.session?.status === "running" && thread.session.activeTurnId === payload.turnId;
-
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             checkpoints,
-            latestTurn: turnStillRunning
-              ? thread.latestTurn
-              : {
-                  turnId: payload.turnId,
-                  state:
-                    thread.latestTurn?.turnId === payload.turnId &&
-                    thread.latestTurn.state === "interrupted"
-                      ? "interrupted"
-                      : checkpointStatusToLatestTurnState(payload.status),
-                  requestedAt:
-                    thread.latestTurn?.turnId === payload.turnId
-                      ? thread.latestTurn.requestedAt
-                      : payload.completedAt,
-                  startedAt:
-                    thread.latestTurn?.turnId === payload.turnId
-                      ? (thread.latestTurn.startedAt ?? payload.completedAt)
-                      : payload.completedAt,
-                  completedAt: payload.completedAt,
-                  assistantMessageId: payload.assistantMessageId,
-                },
+            latestTurn:
+              thread.latestTurn === null
+                ? {
+                    turnId: payload.turnId,
+                    state: "running",
+                    requestedAt: payload.completedAt,
+                    startedAt: payload.completedAt,
+                    completedAt: null,
+                    assistantMessageId: payload.assistantMessageId,
+                  }
+                : thread.latestTurn.turnId === payload.turnId ||
+                    thread.session?.status === "starting"
+                  ? {
+                      ...(thread.latestTurn.turnId === payload.turnId ? thread.latestTurn : {}),
+                      turnId: payload.turnId,
+                      state:
+                        thread.latestTurn.turnId === payload.turnId
+                          ? thread.latestTurn.state
+                          : ("running" as const),
+                      requestedAt:
+                        thread.latestTurn.turnId === payload.turnId
+                          ? thread.latestTurn.requestedAt
+                          : payload.completedAt,
+                      startedAt:
+                        thread.latestTurn.turnId === payload.turnId
+                          ? thread.latestTurn.startedAt
+                          : payload.completedAt,
+                      completedAt:
+                        thread.latestTurn.turnId === payload.turnId
+                          ? thread.latestTurn.completedAt
+                          : null,
+                      assistantMessageId:
+                        payload.assistantMessageId ??
+                        (thread.latestTurn.turnId === payload.turnId
+                          ? thread.latestTurn.assistantMessageId
+                          : null),
+                    }
+                  : thread.latestTurn,
             updatedAt: event.occurredAt,
           }),
         };
@@ -1039,14 +1100,16 @@ export function projectEvent(
           const latestTurn =
             latestCheckpoint === null
               ? null
-              : {
-                  turnId: latestCheckpoint.turnId,
-                  state: checkpointStatusToLatestTurnState(latestCheckpoint.status),
-                  requestedAt: latestCheckpoint.completedAt,
-                  startedAt: latestCheckpoint.completedAt,
-                  completedAt: latestCheckpoint.completedAt,
-                  assistantMessageId: latestCheckpoint.assistantMessageId,
-                };
+              : thread.latestTurn?.turnId === latestCheckpoint.turnId
+                ? thread.latestTurn
+                : {
+                    turnId: latestCheckpoint.turnId,
+                    state: "running" as const,
+                    requestedAt: latestCheckpoint.completedAt,
+                    startedAt: latestCheckpoint.completedAt,
+                    completedAt: null,
+                    assistantMessageId: latestCheckpoint.assistantMessageId,
+                  };
 
           return {
             ...nextBase,

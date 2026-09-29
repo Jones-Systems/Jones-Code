@@ -1828,7 +1828,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             'running',
             '2026-04-02T00:00:30.000Z',
             '2026-04-02T00:00:30.000Z',
-            NULL,
+            '2026-04-02T00:00:35.000Z',
             NULL,
             NULL,
             NULL,
@@ -1842,6 +1842,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.equal(threadShell.value.latestTurn?.turnId, asTurnId("turn-running"));
         assert.equal(threadShell.value.latestTurn?.state, "running");
         assert.equal(threadShell.value.latestTurn?.startedAt, "2026-04-02T00:00:30.000Z");
+        assert.equal(threadShell.value.latestTurn?.completedAt, null);
       }
 
       const threadDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-1"));
@@ -1850,6 +1851,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.equal(threadDetail.value.latestTurn?.turnId, asTurnId("turn-running"));
         assert.equal(threadDetail.value.latestTurn?.state, "running");
         assert.equal(threadDetail.value.latestTurn?.startedAt, "2026-04-02T00:00:30.000Z");
+        assert.equal(threadDetail.value.latestTurn?.completedAt, null);
       }
     }),
   );
@@ -1956,7 +1958,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             'running',
             '2026-04-03T00:00:30.000Z',
             '2026-04-03T00:00:30.000Z',
-            NULL,
+            '2026-04-03T00:00:35.000Z',
             NULL,
             NULL,
             NULL,
@@ -1995,14 +1997,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const commandReadModel = yield* snapshotQuery.getCommandReadModel();
       assert.equal(commandReadModel.threads[0]?.latestTurn?.turnId, asTurnId("turn-running"));
       assert.equal(commandReadModel.threads[0]?.latestTurn?.state, "running");
+      assert.equal(commandReadModel.threads[0]?.latestTurn?.completedAt, null);
 
       const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
       assert.equal(shellSnapshot.threads[0]?.latestTurn?.turnId, asTurnId("turn-running"));
       assert.equal(shellSnapshot.threads[0]?.latestTurn?.state, "running");
+      assert.equal(shellSnapshot.threads[0]?.latestTurn?.completedAt, null);
 
       const fullSnapshot = yield* snapshotQuery.getSnapshot();
       assert.equal(fullSnapshot.threads[0]?.latestTurn?.turnId, asTurnId("turn-running"));
       assert.equal(fullSnapshot.threads[0]?.latestTurn?.state, "running");
+      assert.equal(fullSnapshot.threads[0]?.latestTurn?.completedAt, null);
     }),
   );
 
