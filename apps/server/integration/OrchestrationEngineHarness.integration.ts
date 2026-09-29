@@ -259,13 +259,15 @@ export const makeOrchestrationIntegrationHarness = (
     const rootDir = yield* fileSystem.makeTempDirectoryScoped({
       prefix: "t3-orchestration-integration-",
     });
+    const repositoryDir = path.join(rootDir, "repository");
     const workspaceDir = path.join(rootDir, "workspace");
     const { stateDir, dbPath } = yield* deriveServerPaths(rootDir, undefined).pipe(
       Effect.provideService(Path.Path, path),
     );
-    yield* fileSystem.makeDirectory(workspaceDir, { recursive: true });
+    yield* fileSystem.makeDirectory(repositoryDir, { recursive: true });
     yield* fileSystem.makeDirectory(stateDir, { recursive: true });
-    yield* initializeGitWorkspace(workspaceDir);
+    yield* initializeGitWorkspace(repositoryDir);
+    runGit(repositoryDir, ["worktree", "add", "-b", "checkpoint-tests", workspaceDir]);
 
     const persistenceLayer = makeSqlitePersistenceLive(dbPath);
     const orchestrationLayer = OrchestrationEngineLive.pipe(
