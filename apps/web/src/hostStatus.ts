@@ -36,6 +36,7 @@ export function hostStatusMetrics(host: HostStatus | undefined) {
     return {
       load: "—",
       ram: "—",
+      health: "unavailable",
       loadHealth: "unavailable",
       ramHealth: "unavailable",
       detail: reason,
@@ -43,12 +44,21 @@ export function hostStatusMetrics(host: HostStatus | undefined) {
   }
   const loadPerCore = host.load1 / host.logicalCpuCount;
   const availableFraction = host.availableMemoryBytes / host.totalMemoryBytes;
+  const loadHealth = loadPerCore >= 1 ? "critical" : loadPerCore >= 0.8 ? "warning" : "healthy";
+  const ramHealth =
+    availableFraction < 0.05 ? "critical" : availableFraction < 0.1 ? "warning" : "healthy";
+  const health =
+    loadHealth === "critical" || ramHealth === "critical"
+      ? "critical"
+      : loadHealth === "warning" || ramHealth === "warning"
+        ? "warning"
+        : "healthy";
   return {
+    health,
     load: host.load1.toFixed(1).replace(/\.0$/, ""),
     ram: (host.availableMemoryBytes / 1024 ** 3).toFixed(1).replace(/\.0$/, ""),
-    loadHealth: loadPerCore >= 1 ? "critical" : loadPerCore >= 0.8 ? "warning" : "healthy",
-    ramHealth:
-      availableFraction < 0.05 ? "critical" : availableFraction < 0.1 ? "warning" : "healthy",
+    loadHealth,
+    ramHealth,
     detail: `1-minute load ${host.load1}; ${host.logicalCpuCount} logical CPUs. Available RAM ${(host.availableMemoryBytes / 1024 ** 3).toFixed(1)} GiB (${(availableFraction * 100).toFixed(1)}%).`,
   } as const;
 }

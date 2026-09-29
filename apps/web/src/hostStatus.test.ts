@@ -29,6 +29,32 @@ afterEach(() => {
 });
 
 describe("host status metrics", () => {
+  it.each([
+    [1, 25, "healthy"],
+    [3.2, 25, "warning"],
+    [4, 25, "critical"],
+    [1, 7, "warning"],
+    [1, 4, "critical"],
+    [3.2, 4, "critical"],
+    [4, 7, "critical"],
+    [3.2, 7, "warning"],
+    [4, 4, "critical"],
+  ] as const)("combines load %s and RAM %s percent into %s", (load1, percent, health) => {
+    expect(
+      hostStatusMetrics({
+        ...available,
+        load1,
+        availableMemoryBytes: percent,
+        totalMemoryBytes: 100,
+      }),
+    ).toHaveProperty("health", health);
+  });
+  it("keeps combined health unavailable for missing or stale hosts", () => {
+    expect(hostStatusMetrics(undefined)).toHaveProperty("health", "unavailable");
+    expect(
+      hostStatusMetrics({ id: "home", status: "unavailable", reason: "stale" }),
+    ).toHaveProperty("health", "unavailable");
+  });
   it("omits trailing zeros for whole metrics and keeps one decimal for fractional values", () => {
     expect(
       hostStatusMetrics({

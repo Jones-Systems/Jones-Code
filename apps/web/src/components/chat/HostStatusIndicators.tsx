@@ -30,51 +30,23 @@ export const HostStatusIndicators = memo(function HostStatusIndicators() {
         const metrics = hostStatusMetrics(host);
         const detail = snapshot === null ? "Host status unavailable or loading" : metrics.detail;
         const name = HOST_STATUS_NAMES[id];
+        const label = `${name}: ${detail}`;
         return (
-          <div
-            key={id}
-            role="group"
-            aria-label={`${name} host status`}
-            className="flex shrink-0 gap-0.5"
-          >
-            {[
-              {
-                id: "name",
-                value: name,
-                label: `${name}: ${detail}`,
-                health:
-                  host?.status === "available" ? ("healthy" as const) : ("unavailable" as const),
-              },
-              {
-                id: "load",
-                value: metrics.load,
-                label: `${name} load: ${detail}`,
-                health: metrics.loadHealth,
-              },
-              {
-                id: "ram",
-                value: metrics.ram,
-                label: `${name} available RAM in GiB: ${detail}`,
-                health: metrics.ramHealth,
-              },
-            ].map(({ id: metricId, value, label, health }) => (
-              <Tooltip key={metricId}>
-                <TooltipTrigger
-                  render={
-                    <span
-                      role="img"
-                      tabIndex={0}
-                      aria-label={label}
-                      className={`flex size-8 shrink-0 items-center justify-center rounded-full border text-3xs font-medium tabular-nums focus-visible:outline-2 focus-visible:outline-ring ${healthClasses[health]}`}
-                    />
-                  }
-                >
-                  {value}
-                </TooltipTrigger>
-                <TooltipPopup>{label}</TooltipPopup>
-              </Tooltip>
-            ))}
-          </div>
+          <Tooltip key={id}>
+            <TooltipTrigger
+              render={
+                <span
+                  role="img"
+                  tabIndex={0}
+                  aria-label={label}
+                  className={`inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-xs font-medium tabular-nums focus-visible:outline-2 focus-visible:outline-ring ${healthClasses[metrics.health]}`}
+                />
+              }
+            >
+              {`${name} · ${metrics.load} · ${metrics.ram} GiB`}
+            </TooltipTrigger>
+            <TooltipPopup>{label}</TooltipPopup>
+          </Tooltip>
         );
       })}
     </div>
