@@ -272,6 +272,42 @@ validationLayer("CodexAdapterLive validation", (it) => {
       NodeAssert.equal(validationRuntimeFactory.factory.mock.calls.length, 0);
     }),
   );
+  it.effect("rejects a required resume without a valid Codex conversation cursor", () =>
+    Effect.gen(function* () {
+      validationRuntimeFactory.factory.mockClear();
+      const adapter = yield* CodexAdapter;
+
+      for (const [index, resumeCursor] of [
+        undefined,
+        { sessionId: "wrong-shape" },
+        { threadId: "" },
+      ].entries()) {
+        const result = yield* adapter
+          .startSession({
+            provider: ProviderDriverKind.make("codex"),
+            threadId: asThreadId(`thread-required-resume-${index}`),
+            runtimeMode: "full-access",
+            requireResume: true,
+            ...(resumeCursor === undefined ? {} : { resumeCursor }),
+          })
+          .pipe(Effect.result);
+
+        NodeAssert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") {
+          NodeAssert.deepStrictEqual(
+            result.failure,
+            new ProviderAdapterValidationError({
+              provider: ProviderDriverKind.make("codex"),
+              operation: "startSession",
+              issue:
+                "Cannot switch Codex accounts without a valid saved conversation. Check that both accounts share the Codex sessions directory.",
+            }),
+          );
+        }
+      }
+      NodeAssert.equal(validationRuntimeFactory.factory.mock.calls.length, 0);
+    }),
+  );
   it.effect("maps codex model options before starting a session", () =>
     Effect.gen(function* () {
       validationRuntimeFactory.factory.mockClear();

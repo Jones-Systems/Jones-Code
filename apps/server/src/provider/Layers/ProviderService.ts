@@ -1443,11 +1443,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           );
         }
         const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
-        if (
+        const switchesCodexInstance =
+          persistedBinding?.provider === "codex" &&
+          resolvedProvider === "codex" &&
+          persistedBinding.providerInstanceId !== resolvedInstanceId;
+        const resumesAcrossInstances =
           persistedBinding?.provider === resolvedProvider &&
           persistedBinding.providerInstanceId !== resolvedInstanceId &&
-          (input.resumeCursor != null || persistedBinding.resumeCursor != null)
-        ) {
+          (switchesCodexInstance ||
+            input.resumeCursor != null ||
+            persistedBinding.resumeCursor != null);
+        if (resumesAcrossInstances) {
           const previousInstanceId = yield* requireBindingInstanceId(
             "ProviderService.startSession",
             persistedBinding,
@@ -1465,12 +1471,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         const effectiveResumeCursor =
           input.resumeCursor ??
-          (persistedBinding?.providerInstanceId === resolvedInstanceId
+          (persistedBinding?.providerInstanceId === resolvedInstanceId || resumesAcrossInstances
             ? persistedBinding.resumeCursor
             : undefined);
         const effectiveCwd =
           input.cwd ??
-          (persistedBinding?.providerInstanceId === resolvedInstanceId
+          (persistedBinding?.providerInstanceId === resolvedInstanceId || resumesAcrossInstances
             ? readPersistedCwd(persistedBinding.runtimePayload)
             : undefined);
         yield* Effect.annotateCurrentSpan({
@@ -1479,7 +1485,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             input.resumeCursor !== undefined
               ? "request"
               : effectiveResumeCursor !== undefined &&
-                  persistedBinding?.providerInstanceId === resolvedInstanceId
+                  (persistedBinding?.providerInstanceId === resolvedInstanceId ||
+                    resumesAcrossInstances)
                 ? "persisted"
                 : "none",
           "provider.resume_cursor.present": effectiveResumeCursor !== undefined,
@@ -1487,7 +1494,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             input.cwd !== undefined
               ? "request"
               : effectiveCwd !== undefined &&
-                  persistedBinding?.providerInstanceId === resolvedInstanceId
+                  (persistedBinding?.providerInstanceId === resolvedInstanceId ||
+                    resumesAcrossInstances)
                 ? "persisted"
                 : "none",
           "provider.cwd.effective": effectiveCwd ?? "",
@@ -1515,6 +1523,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             providerInstanceId: resolvedInstanceId,
             ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
             ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
+            requireResume: switchesCodexInstance,
           })
           .pipe(Effect.onError(() => clearMcpSession(threadId)));
 
