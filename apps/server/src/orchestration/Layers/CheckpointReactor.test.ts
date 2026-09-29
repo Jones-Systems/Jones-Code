@@ -223,14 +223,19 @@ function runGit(cwd: string, args: ReadonlyArray<string>) {
   });
 }
 
-function createGitRepository() {
-  const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-checkpoint-handler-"));
-  runGit(cwd, ["init", "--initial-branch=main"]);
-  runGit(cwd, ["config", "user.email", "test@example.com"]);
-  runGit(cwd, ["config", "user.name", "Test User"]);
-  NodeFS.writeFileSync(NodePath.join(cwd, "README.md"), "v1\n", "utf8");
-  runGit(cwd, ["add", "."]);
-  runGit(cwd, ["commit", "-m", "Initial"]);
+function createGitRepository(tempDirs: string[]) {
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-checkpoint-handler-"));
+  tempDirs.push(root);
+  const repository = NodePath.join(root, "repository");
+  const cwd = NodePath.join(root, "worktree");
+  NodeFS.mkdirSync(repository);
+  runGit(repository, ["init", "--initial-branch=main"]);
+  runGit(repository, ["config", "user.email", "test@example.com"]);
+  runGit(repository, ["config", "user.name", "Test User"]);
+  NodeFS.writeFileSync(NodePath.join(repository, "README.md"), "v1\n", "utf8");
+  runGit(repository, ["add", "."]);
+  runGit(repository, ["commit", "-m", "Initial"]);
+  runGit(repository, ["worktree", "add", "-b", "checkpoint-tests", cwd]);
   return cwd;
 }
 
@@ -311,11 +316,13 @@ describe("CheckpointReactor", () => {
     readonly pullRequestRefreshCalls?: Array<string>;
     readonly pullRequestRefresh?: Effect.Effect<void>;
   }) {
-    const cwd = createGitRepository();
+    const cwd = createGitRepository(tempDirs);
     if (options?.initializeGit === false) {
-      NodeFS.rmSync(NodePath.join(cwd, ".git"), { recursive: true });
+      NodeFS.renameSync(
+        NodePath.join(cwd, ".git"),
+        NodePath.join(NodePath.dirname(cwd), "worktree-git"),
+      );
     }
-    tempDirs.push(cwd);
     const provider = createProviderServiceHarness(
       cwd,
       options?.hasSession ?? true,
@@ -678,8 +685,7 @@ describe("CheckpointReactor", () => {
             seedFilesystemCheckpoints: false,
             secondThreadSharingWorktree: true,
             secondThreadWorktreePath: () => {
-              secondCwd = createGitRepository();
-              tempDirs.push(secondCwd);
+              secondCwd = createGitRepository(tempDirs);
               return secondCwd;
             },
             workspaceRefresh: (cwd) =>
@@ -859,8 +865,7 @@ describe("CheckpointReactor", () => {
 
   effectIt.effect("captures and reverts checkpoints from a nested Git workspace", () =>
     Effect.gen(function* () {
-      const repositoryRoot = createGitRepository();
-      tempDirs.push(repositoryRoot);
+      const repositoryRoot = createGitRepository(tempDirs);
       const workspaceRoot = NodePath.join(repositoryRoot, "apps", "server");
       NodeFS.mkdirSync(workspaceRoot, { recursive: true });
       const filePath = NodePath.join(workspaceRoot, "index.ts");
@@ -1537,108 +1542,116 @@ describe("CheckpointReactor", () => {
     { timing: "between turns", commit: true },
     { timing: "during a turn", commit: false },
     { timing: "during a turn", commit: true },
-  ])("resumes checkpointing after git init $timing (commit: $commit)", ({ timing, commit }) =>
-    Effect.gen(function* () {
-      const harness = yield* Effect.promise(() =>
-        createHarness({ initializeGit: false, seedFilesystemCheckpoints: false }),
-      );
-      const threadId = ThreadId.make("thread-1");
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const emit = (type: "turn.started" | "turn.completed", turn: number) =>
-        harness.provider.emit({
-          type,
-          eventId: EventId.make(`${type}-${turn}`),
-          provider: ProviderDriverKind.make("codex"),
-          createdAt,
-          threadId,
-          turnId: asTurnId(`turn-${turn}`),
-          ...(type === "turn.completed" ? { payload: { state: "completed" } } : {}),
-        });
-      emit("turn.started", 1);
-      yield* Effect.promise(harness.drain);
-      NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "before git\n");
-      emit("turn.completed", 1);
-      yield* Effect.promise(harness.drain);
-      expect((yield* Effect.promise(harness.readModel)).threads[0]?.checkpoints).toEqual([]);
-
-      if (timing === "during a turn") {
-        emit("turn.started", 2);
+  ])(
+    "resumes checkpointing when a linked worktree appears $timing (commit: $commit)",
+    ({ timing, commit }) =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({ initializeGit: false, seedFilesystemCheckpoints: false }),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const emit = (type: "turn.started" | "turn.completed", turn: number) =>
+          harness.provider.emit({
+            type,
+            eventId: EventId.make(`${type}-${turn}`),
+            provider: ProviderDriverKind.make("codex"),
+            createdAt,
+            threadId,
+            turnId: asTurnId(`turn-${turn}`),
+            ...(type === "turn.completed" ? { payload: { state: "completed" } } : {}),
+          });
+        emit("turn.started", 1);
         yield* Effect.promise(harness.drain);
-      }
-      runGit(harness.cwd, ["init", "--initial-branch=main"]);
-      if (commit) {
-        runGit(harness.cwd, ["add", "."]);
-        runGit(harness.cwd, [
-          "-c",
-          "user.name=Test",
-          "-c",
-          "user.email=test@example.com",
-          "commit",
-          "-m",
-          "Initial",
-        ]);
-      }
-      if (timing === "between turns") {
-        // Exercise the domain entry point as well as the provider turn-start event.
-        yield* harness.engine.dispatch({
-          type: "thread.turn.start",
-          commandId: CommandId.make("cmd-after-git-init"),
-          threadId,
-          message: {
-            messageId: MessageId.make("message-after-git-init"),
-            role: "user",
-            text: "continue",
-            attachments: [],
-          },
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "approval-required",
-          createdAt,
-        });
+        NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "before git\n");
+        emit("turn.completed", 1);
+        yield* Effect.promise(harness.drain);
+        expect((yield* Effect.promise(harness.readModel)).threads[0]?.checkpoints).toEqual([]);
+
+        if (timing === "during a turn") {
+          emit("turn.started", 2);
+          yield* Effect.promise(harness.drain);
+        }
+        NodeFS.renameSync(
+          NodePath.join(NodePath.dirname(harness.cwd), "worktree-git"),
+          NodePath.join(harness.cwd, ".git"),
+        );
+        runGit(harness.cwd, ["symbolic-ref", "HEAD", "refs/heads/new-worktree"]);
+        runGit(harness.cwd, ["read-tree", "--empty"]);
+        if (commit) {
+          runGit(harness.cwd, ["add", "."]);
+          runGit(harness.cwd, [
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "Initial",
+          ]);
+        }
+        if (timing === "between turns") {
+          // Exercise the domain entry point as well as the provider turn-start event.
+          yield* harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-after-git-init"),
+            threadId,
+            message: {
+              messageId: MessageId.make("message-after-git-init"),
+              role: "user",
+              text: "continue",
+              attachments: [],
+            },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            createdAt,
+          });
+          expect(yield* harness.nextReceipt).toMatchObject({
+            type: "checkpoint.baseline.captured",
+            checkpointTurnCount: 0,
+          });
+          emit("turn.started", 2);
+          yield* Effect.promise(harness.drain);
+        }
+        NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "after git\n");
+        emit("turn.completed", 2);
         expect(yield* harness.nextReceipt).toMatchObject({
-          type: "checkpoint.baseline.captured",
-          checkpointTurnCount: 0,
+          type: "checkpoint.diff.finalized",
+          checkpointTurnCount: 1,
         });
-        emit("turn.started", 2);
+        expect(yield* harness.nextReceipt).toMatchObject({ type: "turn.processing.quiesced" });
         yield* Effect.promise(harness.drain);
-      }
-      NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "after git\n");
-      emit("turn.completed", 2);
-      expect(yield* harness.nextReceipt).toMatchObject({
-        type: "checkpoint.diff.finalized",
-        checkpointTurnCount: 1,
-      });
-      expect(yield* harness.nextReceipt).toMatchObject({ type: "turn.processing.quiesced" });
-      yield* Effect.promise(harness.drain);
-      const firstCheckpoint = (yield* Effect.promise(harness.readModel)).threads[0]?.checkpoints[0];
-      expect(firstCheckpoint?.files).toEqual(
-        timing === "between turns"
-          ? [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }]
-          : [],
-      );
-      expect(
-        gitShowFileAtRef(harness.cwd, checkpointRefForThreadTurn(threadId, 1), "README.md"),
-      ).toBe("after git\n");
-      expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0))).toBe(
-        timing === "between turns",
-      );
+        const firstCheckpoint = (yield* Effect.promise(harness.readModel)).threads[0]
+          ?.checkpoints[0];
+        expect(firstCheckpoint?.files).toEqual(
+          timing === "between turns"
+            ? [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }]
+            : [],
+        );
+        expect(
+          gitShowFileAtRef(harness.cwd, checkpointRefForThreadTurn(threadId, 1), "README.md"),
+        ).toBe("after git\n");
+        expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0))).toBe(
+          timing === "between turns",
+        );
 
-      emit("turn.started", 3);
-      yield* Effect.promise(harness.drain);
-      NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "next turn\n");
-      emit("turn.completed", 3);
-      expect(yield* harness.nextReceipt).toMatchObject({
-        type: "checkpoint.diff.finalized",
-        checkpointTurnCount: 2,
-      });
-      yield* Effect.promise(harness.drain);
-      const thread = (yield* Effect.promise(harness.readModel)).threads[0];
-      expect(thread?.checkpoints[1]?.files).toEqual([
-        { path: "README.md", kind: "modified", additions: 1, deletions: 1 },
-      ]);
-      expect(
-        thread?.activities.some((activity) => activity.kind === "checkpoint.capture.failed"),
-      ).toBe(false);
-    }),
+        emit("turn.started", 3);
+        yield* Effect.promise(harness.drain);
+        NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "next turn\n");
+        emit("turn.completed", 3);
+        expect(yield* harness.nextReceipt).toMatchObject({
+          type: "checkpoint.diff.finalized",
+          checkpointTurnCount: 2,
+        });
+        yield* Effect.promise(harness.drain);
+        const thread = (yield* Effect.promise(harness.readModel)).threads[0];
+        expect(thread?.checkpoints[1]?.files).toEqual([
+          { path: "README.md", kind: "modified", additions: 1, deletions: 1 },
+        ]);
+        expect(
+          thread?.activities.some((activity) => activity.kind === "checkpoint.capture.failed"),
+        ).toBe(false);
+      }),
   );
 
   it("captures pre-turn baseline from project workspace root when thread worktree is unset", async () => {
