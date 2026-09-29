@@ -18,12 +18,17 @@ import type {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
 import type { OrchestrationDispatchError } from "../Errors.ts";
-import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
+import type {
+  OrchestrationEventStoreError,
+  PersistenceSqlError,
+} from "../../persistence/Errors.ts";
 import type { OrchestrationAggregateReplayStats } from "../../persistence/Services/OrchestrationEventStore.ts";
+import type { WorktreeOwnershipLease } from "../WorktreeOwnershipLease.ts";
 
 export interface OrchestrationThreadReplayRange {
   readonly threadId: ThreadId;
@@ -75,6 +80,22 @@ export interface OrchestrationEngineShape {
     options?: { readonly origin?: OrchestrationClientOrigin },
   ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
 
+  /** Acquire or recover this thread's exclusive mutation lease. */
+  readonly acquireWorktreeOwnership: (
+    threadId: ThreadId,
+    requestedPath?: string,
+  ) => Effect.Effect<WorktreeOwnershipLease, OrchestrationDispatchError, never>;
+
+  /** Release one exact lease generation after all native mutators stop. */
+  readonly releaseWorktreeOwnership: (
+    lease: WorktreeOwnershipLease,
+  ) => Effect.Effect<void, PersistenceSqlError, never>;
+
+  /** Read the latest server-generated creation event ID for a thread. */
+  readonly getThreadOwnershipIncarnation: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<string>, PersistenceSqlError, never>;
+
   /**
    * Stream persisted domain events in dispatch order.
    *
@@ -98,6 +119,13 @@ export interface OrchestrationEngineShape {
    * choosing between an incremental replay and a fresh projected snapshot.
    */
   readonly latestSequence: Effect.Effect<number, never, never>;
+
+  /** Read the currently active mutating owners without acquiring a lease. */
+  readonly listWorktreeOwnershipLeases: Effect.Effect<
+    ReadonlyArray<WorktreeOwnershipLease>,
+    PersistenceSqlError,
+    never
+  >;
 }
 
 /**

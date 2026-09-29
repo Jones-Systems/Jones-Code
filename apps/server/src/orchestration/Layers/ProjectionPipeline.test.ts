@@ -4869,4 +4869,168 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       );
     }),
   );
+
+  it.effect(
+    "rejects a second mutating thread for the same checkout without recording its turn",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const sql = yield* SqlClient.SqlClient;
+        const projectId = ProjectId.make("project-worktree-owner");
+        const ownerThreadId = ThreadId.make("thread-worktree-owner");
+        const contenderThreadId = ThreadId.make("thread-worktree-contender");
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const modelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        };
+
+        yield* engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-worktree-project"),
+          projectId,
+          title: "Shared checkout",
+          workspaceRoot: "/tmp/t3-worktree-ownership-shared",
+          createdAt,
+        });
+        for (const threadId of [ownerThreadId, contenderThreadId]) {
+          yield* engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`cmd-create-${threadId}`),
+            threadId,
+            projectId,
+            title: `Thread ${threadId}`,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: "feature/shared",
+            worktreePath: null,
+            createdAt,
+          });
+        }
+
+        const outsideCheckout = yield* engine
+          .acquireWorktreeOwnership(ownerThreadId, "/outside/project")
+          .pipe(Effect.flip);
+        assert.equal(outsideCheckout._tag, "OrchestrationCommandInvariantError");
+
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-owner-turn"),
+          threadId: ownerThreadId,
+          message: {
+            messageId: MessageId.make("message-owner-turn"),
+            role: "user",
+            text: "own the checkout",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt,
+        });
+
+        const conflict = yield* engine
+          .dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-contender-turn-blocked"),
+            threadId: contenderThreadId,
+            message: {
+              messageId: MessageId.make("message-contender-blocked"),
+              role: "user",
+              text: "must not start",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt,
+          })
+          .pipe(Effect.flip);
+        assert.equal(conflict._tag, "WorktreeOwnershipConflictError");
+
+        const blockedMessages = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM projection_thread_messages
+        WHERE message_id = 'message-contender-blocked'
+      `;
+        assert.deepEqual(blockedMessages, [{ count: 0 }]);
+        const leasesAfterConflict = yield* engine.listWorktreeOwnershipLeases;
+        assert.isTrue(leasesAfterConflict.some((lease) => lease.ownerThreadId === ownerThreadId));
+        assert.isFalse(
+          leasesAfterConflict.some((lease) => lease.ownerThreadId === contenderThreadId),
+        );
+
+        const checkpointConflict = yield* engine
+          .dispatch({
+            type: "thread.checkpoint.revert",
+            commandId: CommandId.make("cmd-contender-checkpoint-blocked"),
+            threadId: contenderThreadId,
+            turnCount: 0,
+            createdAt,
+          })
+          .pipe(Effect.flip);
+        assert.equal(checkpointConflict._tag, "WorktreeOwnershipConflictError");
+
+        yield* engine.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("cmd-delete-owner-with-retained-lease"),
+          threadId: ownerThreadId,
+        });
+        const recreatedAt = createdAt;
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-recreate-owner-id"),
+          threadId: ownerThreadId,
+          projectId,
+          title: "Recreated owner id",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "feature/shared",
+          worktreePath: null,
+          createdAt: recreatedAt,
+        });
+        const recreatedConflict = yield* engine
+          .dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-recreated-owner-turn-blocked"),
+            threadId: ownerThreadId,
+            message: {
+              messageId: MessageId.make("message-recreated-owner-blocked"),
+              role: "user",
+              text: "must not inherit retained ownership",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: recreatedAt,
+          })
+          .pipe(Effect.flip);
+        assert.equal(recreatedConflict._tag, "WorktreeOwnershipConflictError");
+
+        const ownerLease = leasesAfterConflict.find(
+          (lease) => lease.ownerThreadId === ownerThreadId,
+        );
+        assert.isDefined(ownerLease);
+        yield* engine.releaseWorktreeOwnership(ownerLease);
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-contender-turn-after-release"),
+          threadId: contenderThreadId,
+          message: {
+            messageId: MessageId.make("message-contender-after-release"),
+            role: "user",
+            text: "now acquire",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt,
+        });
+        const leasesAfterRelease = yield* engine.listWorktreeOwnershipLeases;
+        assert.isFalse(leasesAfterRelease.some((lease) => lease.ownerThreadId === ownerThreadId));
+        assert.isTrue(
+          leasesAfterRelease.some((lease) => lease.ownerThreadId === contenderThreadId),
+        );
+      }),
+  );
 });

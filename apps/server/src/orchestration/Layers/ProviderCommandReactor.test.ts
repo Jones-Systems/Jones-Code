@@ -459,6 +459,10 @@ describe("ProviderCommandReactor", () => {
           },
           subscribeDomainEvents: engine.subscribeDomainEvents,
           latestSequence: engine.latestSequence,
+          acquireWorktreeOwnership: engine.acquireWorktreeOwnership,
+          releaseWorktreeOwnership: engine.releaseWorktreeOwnership,
+          listWorktreeOwnershipLeases: engine.listWorktreeOwnershipLeases,
+          getThreadOwnershipIncarnation: engine.getThreadOwnershipIncarnation,
         } satisfies OrchestrationEngineService["Service"];
       }),
     ).pipe(Layer.provide(orchestrationLayer));
@@ -939,7 +943,7 @@ describe("ProviderCommandReactor", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: "/tmp/provider-project-renamed",
         createdAt: now,
       });
       yield* harness.engine.dispatch({
@@ -962,7 +966,7 @@ describe("ProviderCommandReactor", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: "/tmp/provider-project-seeded",
         createdAt: now,
       });
       yield* harness.engine.dispatch({

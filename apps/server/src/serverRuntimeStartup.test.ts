@@ -212,6 +212,10 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         streamDomainEvents: Stream.empty,
         subscribeDomainEvents: Effect.succeed(Stream.empty),
         latestSequence: Effect.succeed(0),
+        acquireWorktreeOwnership: () => Effect.die("unused"),
+        releaseWorktreeOwnership: () => Effect.die("unused"),
+        listWorktreeOwnershipLeases: Effect.succeed([]),
+        getThreadOwnershipIncarnation: () => Effect.succeed(Option.none()),
       } satisfies OrchestrationEngine.OrchestrationEngineService["Service"]),
       Effect.provide(NodeServices.layer),
     );
@@ -343,6 +347,10 @@ it.effect.each([
         streamDomainEvents: Stream.empty,
         subscribeDomainEvents: Effect.succeed(Stream.empty),
         latestSequence: Effect.succeed(0),
+        acquireWorktreeOwnership: () => Effect.die("unused"),
+        releaseWorktreeOwnership: () => Effect.die("unused"),
+        listWorktreeOwnershipLeases: Effect.succeed([]),
+        getThreadOwnershipIncarnation: () => Effect.succeed(Option.none()),
       } satisfies OrchestrationEngine.OrchestrationEngineService["Service"]),
       Effect.provide(NodeServices.layer),
     );
@@ -414,6 +422,10 @@ it.effect(
             Ref.update(dispatchCalls, (calls) => [...calls, command.type]).pipe(
               Effect.as({ sequence: 1 }),
             ),
+          acquireWorktreeOwnership: () => Effect.die("unused ownership acquisition"),
+          releaseWorktreeOwnership: () => Effect.die("unused ownership release"),
+          getThreadOwnershipIncarnation: () => Effect.die("unused ownership incarnation"),
+          listWorktreeOwnershipLeases: Effect.die("unused ownership list"),
           streamDomainEvents: Stream.empty,
           subscribeDomainEvents: Effect.succeed(Stream.empty),
           latestSequence: Effect.succeed(0),
@@ -483,6 +495,10 @@ it.effect("resolveAutoBootstrapWelcomeTargets preserves typed UUID generation fa
         streamDomainEvents: Stream.empty,
         subscribeDomainEvents: Effect.succeed(Stream.empty),
         latestSequence: Effect.succeed(0),
+        acquireWorktreeOwnership: () => Effect.die("unused"),
+        releaseWorktreeOwnership: () => Effect.die("unused"),
+        listWorktreeOwnershipLeases: Effect.succeed([]),
+        getThreadOwnershipIncarnation: () => Effect.succeed(Option.none()),
       } satisfies OrchestrationEngine.OrchestrationEngineService["Service"]),
       Effect.provideService(Crypto.Crypto, {
         ...crypto,
