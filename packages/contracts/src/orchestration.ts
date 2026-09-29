@@ -697,6 +697,14 @@ export const ThreadTitleState = Schema.Struct({
 });
 export type ThreadTitleState = typeof ThreadTitleState.Type;
 
+export const OrchestrationTurnSettlement = Schema.Struct({
+  turnId: TurnId,
+  state: Schema.Literals(["completed", "interrupted", "error"]),
+  completedAt: IsoDateTime,
+  recoversMissingStart: Schema.optional(Schema.Boolean),
+});
+export type OrchestrationTurnSettlement = typeof OrchestrationTurnSettlement.Type;
+
 export const ThreadTitleRegeneration = Schema.Struct({
   requestId: CommandId,
   startedAt: IsoDateTime,
@@ -1496,6 +1504,7 @@ const ThreadSessionSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  turnSettlement: Schema.optional(Schema.NullOr(OrchestrationTurnSettlement)),
   createdAt: IsoDateTime,
 });
 
@@ -1977,6 +1986,7 @@ export const ThreadSessionStopRequestedPayload = Schema.Struct({
 export const ThreadSessionSetPayload = Schema.Struct({
   threadId: ThreadId,
   session: OrchestrationSession,
+  turnSettlement: Schema.optional(Schema.NullOr(OrchestrationTurnSettlement)),
 });
 
 export const ThreadProposedPlanUpsertedPayload = Schema.Struct({

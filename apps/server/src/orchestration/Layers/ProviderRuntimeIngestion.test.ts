@@ -238,6 +238,16 @@ async function waitForThread(
   return poll();
 }
 
+async function readSettledThread(
+  readModel: () => Promise<ProviderRuntimeTestReadModel>,
+  predicate: (thread: ProviderRuntimeTestThread) => boolean,
+) {
+  const thread = (await readModel()).threads.find((entry) => entry.id === asThreadId("thread-1"));
+  expect(thread).toBeDefined();
+  expect(predicate(thread!)).toBe(true);
+  return thread!;
+}
+
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
     OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
@@ -480,6 +490,8 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+    expect(thread.latestTurn?.state).toBe("error");
+    expect(thread.latestTurn?.completedAt).toBe(now);
   });
 
   it.each([
@@ -886,6 +898,8 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.status).toBe("ready");
     expect(thread.session?.activeTurnId).toBeNull();
     expect(thread.session?.lastError).toBeNull();
+    expect(thread.latestTurn?.state).toBe("running");
+    expect(thread.latestTurn?.completedAt).toBeNull();
   });
 
   effectIt.effect(
@@ -1229,6 +1243,45 @@ describe("ProviderRuntimeIngestion", () => {
       harness.readModel,
       (thread) => thread.session?.status === "ready" && thread.session?.activeTurnId === null,
     );
+  });
+
+  it("ignores a targeted session exit for a superseded turn", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-current-turn-started-before-stale-exit"),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-current-after-steer"),
+      },
+    ]);
+    await readSettledThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-current-after-steer",
+    );
+
+    await harness.emitAndDrain([
+      {
+        type: "session.exited",
+        eventId: asEventId("evt-stale-targeted-session-exit"),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-superseded-before-steer"),
+        payload: { exitKind: "error", reason: "old transport closed" },
+      },
+    ]);
+
+    await harness.drain();
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnId).toBe("turn-current-after-steer");
+    expect(thread?.latestTurn?.state).toBe("running");
   });
 
   it("rejects an untargeted turn.completed when no turn is active", async () => {
@@ -3892,6 +3945,221 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.text).toBe("Answer preserved across provider exit.");
     expect(message?.turnId).toBe("turn-opencode-exit");
     expect(message?.streaming).toBe(false);
+    expect(thread.latestTurn?.state).toBe("interrupted");
+
+    // The diff worker ignores settled turns, preserving the interruption
+    // after the buffered message is durable.
+    await harness.emitAndDrain([
+      {
+        type: "turn.diff.updated",
+        eventId: asEventId("evt-opencode-exit-late-diff"),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-opencode-exit"),
+        itemId: asItemId("item-opencode-exit"),
+        payload: { unifiedDiff: "diff --git a/file.txt b/file.txt\n+late\n" },
+      },
+    ]);
+
+    const afterLateDiff = await readSettledThread(
+      harness.readModel,
+      (entry) => entry.latestTurn?.state === "interrupted",
+    );
+    expect(afterLateDiff.checkpoints).toHaveLength(0);
+    expect(afterLateDiff.latestTurn?.state).toBe("interrupted");
+    expect(afterLateDiff.latestTurn?.completedAt).toBe(now);
+  });
+
+  it("does not attribute a turnless session exit to the active turn", async () => {
+    const harness = await createHarness();
+    const startedAt = "2026-01-01T00:00:00.000Z";
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-unattributed-exit-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: startedAt,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-unattributed-exit"),
+      },
+    ]);
+    await readSettledThread(
+      harness.readModel,
+      (entry) => entry.session?.activeTurnId === "turn-unattributed-exit",
+    );
+
+    await harness.emitAndDrain([
+      {
+        type: "content.delta",
+        eventId: asEventId("evt-unattributed-exit-assistant-delta"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: startedAt,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-unattributed-exit"),
+        itemId: asItemId("item-unattributed-exit"),
+        payload: { streamKind: "assistant_text", delta: "Durable but not terminal." },
+      },
+    ]);
+
+    await harness.emitAndDrain([
+      {
+        type: "session.exited",
+        eventId: asEventId("evt-unattributed-session-exited"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId: asThreadId("thread-1"),
+        payload: { exitKind: "error", reason: "transport closed" },
+      },
+    ]);
+
+    const thread = await readSettledThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.status === "stopped" &&
+        entry.session.activeTurnId === null &&
+        entry.messages.some(
+          (message) => message.id === "assistant:item-unattributed-exit" && !message.streaming,
+        ),
+    );
+    expect(thread.latestTurn?.turnId).toBe("turn-unattributed-exit");
+    expect(thread.latestTurn?.state).toBe("running");
+    expect(thread.latestTurn?.completedAt).toBeNull();
+    expect(
+      thread.messages.find((message) => message.id === "assistant:item-unattributed-exit")?.text,
+    ).toBe("Durable but not terminal.");
+  });
+
+  it("flushes buffered text when readiness clears attribution before a turnless exit", async () => {
+    const harness = await createHarness();
+    const startedAt = "2026-01-01T00:00:00.000Z";
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-ready-exit-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: startedAt,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-ready-then-exit"),
+      },
+    ]);
+    await readSettledThread(
+      harness.readModel,
+      (entry) => entry.session?.activeTurnId === "turn-ready-then-exit",
+    );
+
+    await harness.emitAndDrain([
+      {
+        type: "content.delta",
+        eventId: asEventId("evt-ready-exit-assistant-delta"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: startedAt,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-ready-then-exit"),
+        itemId: asItemId("item-ready-then-exit"),
+        payload: { streamKind: "assistant_text", delta: "Ready did not complete this turn." },
+      },
+    ]);
+
+    await harness.emitAndDrain([
+      {
+        type: "session.state.changed",
+        eventId: asEventId("evt-ready-before-exit"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId: asThreadId("thread-1"),
+        payload: { state: "ready" },
+      },
+    ]);
+    await readSettledThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.status === "ready" &&
+        entry.messages.some(
+          (message) => message.id === "assistant:item-ready-then-exit" && !message.streaming,
+        ),
+    );
+
+    await harness.emitAndDrain([
+      {
+        type: "session.exited",
+        eventId: asEventId("evt-ready-turnless-exit"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:02.000Z",
+        threadId: asThreadId("thread-1"),
+        payload: { exitKind: "normal" },
+      },
+    ]);
+
+    const thread = await readSettledThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "stopped",
+    );
+    expect(thread.latestTurn?.turnId).toBe("turn-ready-then-exit");
+    expect(thread.latestTurn?.state).toBe("running");
+    expect(thread.latestTurn?.completedAt).toBeNull();
+    expect(
+      thread.messages.find((message) => message.id === "assistant:item-ready-then-exit")?.text,
+    ).toBe("Ready did not complete this turn.");
+  });
+
+  it("durably flushes buffered text before an attributed turn abort settles", async () => {
+    const harness = await createHarness();
+    const startedAt = "2026-01-01T00:00:00.000Z";
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-aborted-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: startedAt,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-aborted-with-buffer"),
+      },
+    ]);
+    await readSettledThread(
+      harness.readModel,
+      (entry) => entry.session?.activeTurnId === "turn-aborted-with-buffer",
+    );
+    await harness.emitAndDrain([
+      {
+        type: "content.delta",
+        eventId: asEventId("evt-aborted-turn-delta"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: startedAt,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-aborted-with-buffer"),
+        itemId: asItemId("item-aborted-with-buffer"),
+        payload: { streamKind: "assistant_text", delta: "Partial answer before abort." },
+      },
+    ]);
+    await harness.emitAndDrain([
+      {
+        type: "turn.aborted",
+        eventId: asEventId("evt-turn-aborted-with-buffer"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-aborted-with-buffer"),
+        payload: { reason: "provider aborted the turn" },
+      },
+    ]);
+
+    const thread = await readSettledThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.status === "interrupted" &&
+        entry.messages.some(
+          (message) => message.id === "assistant:item-aborted-with-buffer" && !message.streaming,
+        ),
+    );
+    expect(thread.latestTurn?.state).toBe("interrupted");
+    expect(thread.latestTurn?.completedAt).toBe("2026-01-01T00:00:01.000Z");
+    expect(
+      thread.messages.find((message) => message.id === "assistant:item-aborted-with-buffer")?.text,
+    ).toBe("Partial answer before abort.");
   });
 
   it("maps canonical request events into approval activities with requestKind", async () => {

@@ -509,8 +509,50 @@ describe("streaming row projection", () => {
       expect(renewed.rows[0]).toMatchObject({
         message: { attachments: [{ previewUrl: imageUrl }] },
       });
-      const completed = send("Complete", 11, false);
+      const finalized = send("Complete", 11, false);
+      expect(finalized.rows).toEqual(deriveMessagesTimelineRows(finalized.input));
+      expect(
+        finalized.rows.find((row) => row.kind === "message" && row.message.id === liveMessage.id),
+      ).toMatchObject({ message: { text: "Complete" }, assistantCopyStreaming: true });
+      const savedFinalized = structuredClone(finalized.rows);
+      const result = applyThreadDetailEvent(thread, {
+        eventId: EventId.make("settlement-12"),
+        sequence: 12,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        occurredAt: initial.time(20),
+        aggregateKind: "thread",
+        aggregateId: thread.id,
+        type: "thread.session-set",
+        payload: {
+          threadId: thread.id,
+          session: {
+            threadId: thread.id,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: initial.time(20),
+          },
+          turnSettlement: {
+            turnId: initial.turnId,
+            state: "completed",
+            completedAt: initial.time(20),
+          },
+        },
+      });
+      if (result.kind !== "updated") throw new Error("Settlement event did not update the thread");
+      thread = result.thread;
+      registry.set(
+        state,
+        AsyncResult.success({ ...EMPTY_ENVIRONMENT_THREAD_STATE, data: Option.some(thread) }),
+      );
+      const completed = project();
       expect(completed.rows).toEqual(deriveMessagesTimelineRows(completed.input));
+      expect(finalized.rows).toEqual(savedFinalized);
       expect(
         completed.rows.find((row) => row.kind === "message" && row.message.id === liveMessage.id),
       ).toMatchObject({ message: { text: "Complete" }, assistantCopyStreaming: false });
