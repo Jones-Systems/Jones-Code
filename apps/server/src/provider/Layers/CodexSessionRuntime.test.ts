@@ -1068,4 +1068,39 @@ describe("openCodexThread", () => {
       NodeAssert.equal(error.errorMessage, "timed out waiting for server");
     }),
   );
+
+  it.effect("does not start a fresh conversation when cross-account resume is required", () =>
+    Effect.gen(function* () {
+      let freshStarts = 0;
+      const error = yield* openCodexThread({
+        client: {
+          request: () =>
+            Effect.sync(() => {
+              freshStarts += 1;
+              return makeThreadOpenResponse("fresh-thread");
+            }),
+          raw: {
+            request: () =>
+              Effect.fail(
+                new CodexErrors.CodexAppServerRequestError({
+                  code: -32603,
+                  errorMessage: "thread not found",
+                }),
+              ),
+          },
+        },
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: "saved-thread",
+        requireResume: true,
+      }).pipe(Effect.flip);
+
+      NodeAssert.ok(isCodexAppServerRequestError(error));
+      NodeAssert.equal(error.errorMessage, "thread not found");
+      NodeAssert.equal(freshStarts, 0);
+    }),
+  );
 });
