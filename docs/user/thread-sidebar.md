@@ -94,6 +94,10 @@ sending an answer or restarting the agent. Settling also closes the thread's
 terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
+Choose **Kill Thread** from the same menu to stop the thread's current agent
+session without settling or moving the thread. Its conversation stays available;
+sending another message starts a session again. This action leaves terminals open.
+
 By default, environments settle inactive threads after three days and settle
 threads whose pull request merged. A closed pull request can also settle an idle
 thread. Work in progress, pending questions or approvals, and live background work
