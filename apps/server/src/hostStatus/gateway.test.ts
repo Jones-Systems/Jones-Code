@@ -3,7 +3,9 @@ import { hostStatusConfigFromEnv, readHostStatus } from "./gateway.ts";
 
 const guid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const now = 1_800_000_000_000;
-const nodes = { nodes: [{ machine_guid: guid, state: "reachable", hw: { cpus: "8" } }] };
+const nodes = {
+  nodes: [{ machine_guid: guid, state: "reachable", hw: { cpus: "8", memory: "8589934592" } }],
+};
 const data = (dimension: string, value: unknown, units: string, timestamp = now / 1000) => ({
   api: 3,
   db: { last_entry: timestamp },
@@ -51,6 +53,7 @@ describe("Netdata host status", () => {
       load1: 12,
       logicalCpuCount: 8,
       availableMemoryBytes: 4096.5 * 1024 * 1024,
+      totalMemoryBytes: 8589934592,
       sampledAt: "2027-01-15T07:59:58.000Z",
     });
     const calls = fetcher.mock.calls;
@@ -105,6 +108,55 @@ describe("Netdata host status", () => {
       (await readHostStatus(config, fixtureFetch(undefined, data("avail", 1, "MB")), () => now))
         .hosts[0],
     ).toMatchObject({ reason: "invalid_response" });
+  });
+
+  it.each([undefined, "unknown", "0", "-1", "1.5", "8 GiB", "9007199254740992", 8589934592])(
+    "rejects invalid total RAM metadata %s",
+    async (memory) => {
+      const info = { nodes: [{ ...nodes.nodes[0], hw: { cpus: "8", memory } }] };
+      expect(
+        (await readHostStatus(config, fixtureFetch(undefined, undefined, info), () => now))
+          .hosts[0],
+      ).toMatchObject({ reason: "invalid_response" });
+    },
+  );
+
+  it("rejects available RAM above total and accepts their equality", async () => {
+    expect(
+      (await readHostStatus(config, fixtureFetch(undefined, data("avail", 8193, "MiB")), () => now))
+        .hosts[0],
+    ).toMatchObject({ reason: "invalid_response" });
+    expect(
+      (await readHostStatus(config, fixtureFetch(undefined, data("avail", 8192, "MiB")), () => now))
+        .hosts[0],
+    ).toMatchObject({
+      status: "available",
+      availableMemoryBytes: 8589934592,
+      totalMemoryBytes: 8589934592,
+    });
+  });
+
+  it("takes total RAM from the selected node on a multi-node parent", async () => {
+    const info = {
+      nodes: [
+        {
+          ...nodes.nodes[0],
+          machine_guid: "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee",
+          hw: { cpus: "2", memory: "1024" },
+        },
+        ...nodes.nodes,
+      ],
+    };
+    const result = await readHostStatus(
+      { vps: { ...config.vps, node: guid } },
+      fixtureFetch(undefined, undefined, info),
+      () => now,
+    );
+    expect(result.hosts[0]).toMatchObject({
+      status: "available",
+      logicalCpuCount: 8,
+      totalMemoryBytes: 8589934592,
+    });
   });
 
   it("isolates upstream failure without returning raw errors", async () => {

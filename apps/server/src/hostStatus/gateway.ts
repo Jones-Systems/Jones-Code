@@ -53,7 +53,12 @@ function nodeInfo(payload: unknown, selectedNode?: string) {
   if (typeof cpus !== "string" || !/^[1-9][0-9]*$/.test(cpus)) throw new InvalidResponse();
   const logicalCpuCount = Number(cpus);
   if (!Number.isSafeInteger(logicalCpuCount)) throw new InvalidResponse();
-  return { guid: node.machine_guid, logicalCpuCount };
+  // Netdata hw.memory is NETDATA_SYSTEM_TOTAL_RAM, expressed in bytes.
+  const memory = record(node.hw).memory;
+  if (typeof memory !== "string" || !/^[1-9][0-9]*$/.test(memory)) throw new InvalidResponse();
+  const totalMemoryBytes = Number(memory);
+  if (!Number.isSafeInteger(totalMemoryBytes)) throw new InvalidResponse();
+  return { guid: node.machine_guid, logicalCpuCount, totalMemoryBytes };
 }
 
 function metric(payload: unknown, dimension: string, units: string, now: number) {
@@ -167,13 +172,15 @@ async function readHost(
     const load = metric(loadPayload, "load1", "load", at);
     const memory = metric(memoryPayload, "avail", "MiB", at);
     const availableMemoryBytes = Math.round(memory.value * 1024 * 1024);
-    if (!Number.isSafeInteger(availableMemoryBytes)) throw new InvalidResponse();
+    if (!Number.isSafeInteger(availableMemoryBytes) || availableMemoryBytes > node.totalMemoryBytes)
+      throw new InvalidResponse();
     return {
       id,
       status: "available",
       load1: load.value,
       logicalCpuCount: node.logicalCpuCount,
       availableMemoryBytes,
+      totalMemoryBytes: node.totalMemoryBytes,
       sampledAt: DateTime.formatIso(
         DateTime.makeUnsafe(Math.min(load.sampledAt, memory.sampledAt)),
       ),

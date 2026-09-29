@@ -693,3 +693,42 @@ Before you take one:
   swapping, it can make the problem worse or crash the server.
 - The file contains everything in server memory, including tokens, secrets, and thread content. Do
   not share it publicly. Delete it when you are done, because storage cleanup does not remove it.
+
+## Netdata host status
+
+To expose host load and RAM through the authenticated `/api/host-status` endpoint,
+configure Netdata API v3 connections in the T3 Code **server process environment**.
+The fixed host IDs are `vps`, `test`, `mini`, and `home`; use their uppercase names
+in the variables below. Configure only the hosts you want to monitor.
+
+| Variable                    | Value                                                                                                                                                |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `T3CODE_NETDATA_<ID>_URL`   | Base URL of a Netdata agent or parent reachable from the T3 Code server.                                                                             |
+| `T3CODE_NETDATA_<ID>_TOKEN` | Optional bearer token required by that upstream. Supply it through the server's protected environment configuration.                                 |
+| `T3CODE_NETDATA_<ID>_NODE`  | Optional exact Netdata machine GUID selecting a node when the upstream serves multiple nodes. Without it, the upstream must return exactly one node. |
+
+For example, if a Netdata agent already listens on port 19999 on the same machine
+as T3 Code, the server environment can contain:
+
+```sh
+T3CODE_NETDATA_VPS_URL=http://127.0.0.1:19999
+```
+
+Use the corresponding `TEST`, `MINI`, and `HOME` variables for other hosts. These
+are server settings; do not put upstream URLs or tokens into browser build
+variables. Supply them through your process launcher or service manager before
+starting the server. A running service must be restarted to receive changed
+launch settings; coordinate that restart with active agent work.
+
+A missing URL returns `not_configured` for that host. An unreachable upstream,
+invalid or unsupported metrics, or samples older than 30 seconds return an
+unavailable state without hiding the other hosts. Redirects are not followed;
+configure the final base URL. Access requires an authenticated T3 Code session
+with `orchestration:read` scope.
+
+Available hosts report one-minute load, logical CPU count, available RAM, and
+total RAM. Load includes Linux tasks waiting for I/O and may exceed CPU count;
+it is not CPU utilization. RAM values are bytes. Netdata must expose
+`system.load/load1`, `mem.available/avail` in MiB, and the selected node's total
+RAM metadata. Missing total RAM or available RAM above total RAM is treated as
+invalid data.

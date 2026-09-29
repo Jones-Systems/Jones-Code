@@ -12,6 +12,7 @@ export const HostStatus = Schema.Union([
     load1: Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
     logicalCpuCount: PositiveInt,
     availableMemoryBytes: NonNegativeInt,
+    totalMemoryBytes: PositiveInt,
     sampledAt: IsoDateTime,
   }),
   Schema.Struct({
