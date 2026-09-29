@@ -1742,6 +1742,7 @@ describe("ProviderCommandReactor", () => {
             commandId: CommandId.make(commandId),
             threadId,
             createdAt,
+            turnSettlement: { turnId, state: "completed", completedAt: createdAt },
             session: {
               threadId,
               status: "ready",

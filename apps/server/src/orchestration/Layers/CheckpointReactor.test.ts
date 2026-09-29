@@ -993,6 +993,11 @@ describe("CheckpointReactor", () => {
           type: "thread.session.set",
           commandId: CommandId.make("cmd-mid-turn-settled"),
           threadId,
+          turnSettlement: {
+            turnId,
+            state: terminalEventType === "turn.aborted" ? "interrupted" : "completed",
+            completedAt: createdAt,
+          },
           session: {
             threadId,
             status: terminalEventType === "turn.aborted" ? "interrupted" : "ready",
