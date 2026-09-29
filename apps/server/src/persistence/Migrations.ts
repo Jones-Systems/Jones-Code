@@ -1,5 +1,5 @@
 /**
- * Migration runner with an inline loader.
+ * Migration runner with inline upstream and fork loaders.
  *
  * Uses Migrator.make with fromRecord to define migrations inline.
  * All migrations are statically imported - no dynamic file system loading.
@@ -145,6 +145,9 @@ const makeMigrationLoader = (throughId?: number) =>
     ),
   );
 
+// Fork IDs start at 1 and must stay out of the upstream migration record.
+const makeForkMigrationLoader = () => Migrator.fromRecord({});
+
 /**
  * Migrator run function - no schema dumping needed
  * Uses the base Migrator.make without platform dependencies
@@ -152,18 +155,20 @@ const makeMigrationLoader = (throughId?: number) =>
 const run = Migrator.make({});
 
 export interface RunMigrationsOptions {
+  /** Replay only upstream migrations through this ID, without running fork migrations. */
   readonly toMigrationInclusive?: number | undefined;
 }
 
 /**
  * Run all pending migrations.
  *
- * Creates the migrations tracking table (effect_sql_migrations) if it doesn't exist,
- * then runs any migrations with ID greater than the latest recorded migration.
+ * Runs upstream migrations in effect_sql_migrations, then fork migrations in
+ * jones_sql_migrations. Each track has its own latest recorded migration ID.
+ * An explicit upstream limit leaves the fork track untouched for historical replay.
  *
- * Returns array of [id, name] tuples for migrations that were run.
+ * Returns [id, name] tuples for upstream migrations that were run.
  *
- * @returns Effect containing array of executed migrations
+ * @returns Effect containing array of executed upstream migrations
  */
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
@@ -171,7 +176,21 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   const executedMigrations = yield* run({ loader: makeMigrationLoader(toMigrationInclusive) });
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   yield* migrations.length === 0
-    ? Effect.logDebug("Database schema is current")
+    ? Effect.logDebug("Upstream database schema is current")
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
+
+  if (toMigrationInclusive === undefined) {
+    const forkMigrations = yield* run({
+      loader: makeForkMigrationLoader(),
+      table: "jones_sql_migrations",
+    });
+    if (forkMigrations.length > 0) {
+      yield* Effect.log("Fork migrations ran successfully").pipe(
+        Effect.annotateLogs({
+          migrations: forkMigrations.map(([id, name]) => `${id}_${name}`),
+        }),
+      );
+    }
+  }
   return executedMigrations;
 });
