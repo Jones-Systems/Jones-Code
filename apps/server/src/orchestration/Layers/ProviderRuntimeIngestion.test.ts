@@ -3838,6 +3838,62 @@ describe("ProviderRuntimeIngestion", () => {
     expect(completionEvents).toHaveLength(1);
   });
 
+  it("persists buffered assistant text when an active OpenCode session exits", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-opencode-exit-turn-started"),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-opencode-exit"),
+        payload: {},
+      },
+    ]);
+
+    await harness.emitAndDrain([
+      {
+        type: "content.delta",
+        eventId: asEventId("evt-opencode-exit-assistant-delta"),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-opencode-exit"),
+        itemId: asItemId("item-opencode-exit"),
+        payload: {
+          streamKind: "assistant_text",
+          delta: "Answer preserved across provider exit.",
+        },
+      },
+      {
+        type: "session.exited",
+        eventId: asEventId("evt-opencode-session-exited"),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-opencode-exit"),
+        payload: {
+          reason: "OpenCode event stream exited unexpectedly.",
+          recoverable: false,
+          exitKind: "error",
+        },
+      },
+    ]);
+
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === "thread-1")!;
+    expect(thread.session?.status).toBe("stopped");
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-opencode-exit",
+    );
+    expect(message?.text).toBe("Answer preserved across provider exit.");
+    expect(message?.turnId).toBe("turn-opencode-exit");
+    expect(message?.streaming).toBe(false);
+  });
+
   it("maps canonical request events into approval activities with requestKind", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
