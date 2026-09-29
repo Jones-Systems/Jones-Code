@@ -12,28 +12,30 @@ This repository starts public so its pull request checks can use GitHub-hosted A
 
 Only `ci.yml` is active. It uses GitHub-hosted Ubuntu and macOS runners. Other upstream workflows are absent from `.github/workflows/` so a sync cannot quietly activate a release, deployment, privileged PR event, or Blacksmith job. A removed workflow remains available from the pinned upstream commit. Classify any new upstream workflow before merging the sync PR; default to deferred until its trigger, runner, permissions, and secrets are reviewed.
 
-| Upstream workflow | Main trigger | Jones-Code disposition | Reason |
-| --- | --- | --- | --- |
-| `ci.yml` | PR, push to `main` | Active | Checks, tests, and builds on GitHub-hosted runners. |
-| `cursor-hygiene-webhook.yml` | Push, PR, issue, discussion | Not applicable | Upstream webhook and secrets. |
-| `deploy-relay.yml` | Push, manual | Deferred | Deploys a service using upstream credentials. |
-| `desktop-macos-preview-publish.yml` | Workflow completion, privileged PR event | Deferred | Publishes preview artifacts with secrets. |
-| `desktop-macos-preview.yml` | PR | Deferred | Preview build requires a separate hosted-runner design. |
-| `issue-labels.yml` | Push, manual, issue | Not applicable | Upstream issue taxonomy. |
-| `mobile-eas-preview.yml` | PR | Deferred | EAS preview publishing and credentials. |
-| `mobile-eas-production.yml` | Manual, push | Deferred | Production mobile release and credentials. |
-| `mobile-fingerprint-check.yml` | PR | Deferred | Native fingerprint coverage needs a hosted-runner conversion. |
-| `mobile-showcase-screenshots.yml` | Manual | Not applicable | Upstream marketing assets. |
-| `pr-size.yml` | Privileged PR event | Not applicable | Upstream labeling policy. |
-| `pr-vouch.yml` | Privileged PR event, comment, push | Not applicable | Upstream contributor policy and secrets. |
-| `publish-aur.yml` | Reusable call, manual | Deferred | Package publication. |
-| `release-desktop.yml` | Reusable call | Deferred | Desktop release build and signing secrets. |
-| `release.yml` | Push, schedule, manual | Deferred | Scheduled and tag-driven release pipeline. |
-| `thread-transfer-report.yml` | Workflow completion | Not applicable | Upstream report publishing. |
-| `web-preview.yml` | PR | Deferred | Web preview deployment and credentials. |
-| `windows-tests.yml` | Manual | Deferred | Blacksmith Windows runner; Windows coverage is pending. |
+| Upstream workflow                   | Main trigger                             | Jones-Code disposition | Reason                                                        |
+| ----------------------------------- | ---------------------------------------- | ---------------------- | ------------------------------------------------------------- |
+| `ci.yml`                            | PR, push to `main`                       | Active                 | Checks, tests, and builds on GitHub-hosted runners.           |
+| `cursor-hygiene-webhook.yml`        | Push, PR, issue, discussion              | Not applicable         | Upstream webhook and secrets.                                 |
+| `deploy-relay.yml`                  | Push, manual                             | Deferred               | Deploys a service using upstream credentials.                 |
+| `desktop-macos-preview-publish.yml` | Workflow completion, privileged PR event | Deferred               | Publishes preview artifacts with secrets.                     |
+| `desktop-macos-preview.yml`         | PR                                       | Deferred               | Preview build requires a separate hosted-runner design.       |
+| `issue-labels.yml`                  | Push, manual, issue                      | Not applicable         | Upstream issue taxonomy.                                      |
+| `mobile-eas-preview.yml`            | PR                                       | Deferred               | EAS preview publishing and credentials.                       |
+| `mobile-eas-production.yml`         | Manual, push                             | Deferred               | Production mobile release and credentials.                    |
+| `mobile-fingerprint-check.yml`      | PR                                       | Deferred               | Native fingerprint coverage needs a hosted-runner conversion. |
+| `mobile-showcase-screenshots.yml`   | Manual                                   | Not applicable         | Upstream marketing assets.                                    |
+| `pr-size.yml`                       | Privileged PR event                      | Not applicable         | Upstream labeling policy.                                     |
+| `pr-vouch.yml`                      | Privileged PR event, comment, push       | Not applicable         | Upstream contributor policy and secrets.                      |
+| `publish-aur.yml`                   | Reusable call, manual                    | Deferred               | Package publication.                                          |
+| `release-desktop.yml`               | Reusable call                            | Deferred               | Desktop release build and signing secrets.                    |
+| `release.yml`                       | Push, schedule, manual                   | Deferred               | Scheduled and tag-driven release pipeline.                    |
+| `thread-transfer-report.yml`        | Workflow completion                      | Not applicable         | Upstream report publishing.                                   |
+| `web-preview.yml`                   | PR                                       | Deferred               | Web preview deployment and credentials.                       |
+| `windows-tests.yml`                 | Manual                                   | Deferred               | Blacksmith Windows runner; Windows coverage is pending.       |
 
 The removed `setup-apt-mirrors` action configured a Blacksmith-specific apt mirror. CI now uses the hosted Ubuntu image's apt sources. The active checks do not create desktop or CLI release artifacts, deploy the relay, run Windows tests, or run the mobile fingerprint check. Those are explicit coverage and delivery gaps. Restore a deferred workflow only in a separate reviewed PR, replace its runner and credentials with Jones-Code-owned capabilities, and verify its first run. Do not re-enable upstream schedules or privileged events as a side effect of merging upstream.
+
+CI retains the release smoke checks for package versions, lockfile regeneration, and updater manifests. Only the relay state-output test is omitted while `release.yml` is absent, because it reads a shell step from that workflow; restoring the workflow automatically restores that check. The CLI archive verifier remains in source as an explicit Knip entry for the deferred release pipeline. Keep these boundaries when syncing release tooling from upstream.
 
 ## Upstream sync procedure
 
