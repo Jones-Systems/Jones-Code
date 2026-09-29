@@ -70,3 +70,25 @@ upstream preview. Download a new successful workflow artifact for subsequent tri
 Publishing this workflow does not authorize a VPS service restart, installation,
 replacement of an active binary, or use of the real T3 home. Those steps need a
 separate decision covering the target, state backup, rollback, and verification.
+
+## Mac desktop artifact
+
+The companion **Mac Desktop Artifact** workflow proposed in
+[PR #5](https://github.com/Jones-Systems/Jones-Code/pull/5) builds an Apple Silicon
+DMG on `macos-15`. Use it when that workflow is available on the selected ref; its
+publication as a PR does not mean it has merged. It follows the same seven-day
+Actions download process, with artifact name
+`desktop-mac-arm64-RUN_ID-RUN_ATTEMPT`. Confirm the source revision in its run
+summary. After downloading into an empty directory on a Mac, verify:
+
+```bash
+shasum -a 256 -c T3-Code-VERSION-arm64.dmg.sha256
+hdiutil verify T3-Code-VERSION-arm64.dmg
+```
+
+The DMG has no Developer ID signing or notarization. Container and checksum
+validation do not establish Gatekeeper acceptance or successful application
+launch. Its preview version has no automatic desktop update feed. Installation,
+Gatekeeper changes, application launch against a real T3 home, and replacing an
+existing Mac installation require a separate approved trial plan. Download and
+verification alone do not perform those steps.
