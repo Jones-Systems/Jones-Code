@@ -35,6 +35,8 @@ Only `ci.yml` is active. It uses GitHub-hosted Ubuntu and macOS runners. Other u
 
 The removed `setup-apt-mirrors` action configured a Blacksmith-specific apt mirror. CI now uses the hosted Ubuntu image's apt sources. The active checks do not create desktop or CLI release artifacts, deploy the relay, run Windows tests, or run the mobile fingerprint check. Those are explicit coverage and delivery gaps. Restore a deferred workflow only in a separate reviewed PR, replace its runner and credentials with Jones-Code-owned capabilities, and verify its first run. Do not re-enable upstream schedules or privileged events as a side effect of merging upstream.
 
+CI retains the release smoke checks for package versions, lockfile regeneration, and updater manifests. Only the relay state-output test is omitted while `release.yml` is absent, because it reads a shell step from that workflow; restoring the workflow automatically restores that check. The CLI archive verifier remains in source as an explicit Knip entry for the deferred release pipeline. Keep these boundaries when syncing release tooling from upstream.
+
 ## Upstream sync procedure
 
 1. Fetch `upstream` and record its exact `main` commit. Compare it with the last upstream commit incorporated into Jones-Code. Inspect upstream release notes and changes to contracts, migrations, provider runtimes, CI, and new or modified `.github/workflows/` files.
