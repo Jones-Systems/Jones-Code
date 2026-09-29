@@ -29,15 +29,29 @@ afterEach(() => {
 });
 
 describe("host status metrics", () => {
+  it("omits trailing zeros for whole metrics and keeps one decimal for fractional values", () => {
+    expect(
+      hostStatusMetrics({
+        ...available,
+        load1: 17,
+        logicalCpuCount: 16,
+        availableMemoryBytes: 44 * gib,
+        totalMemoryBytes: 64 * gib,
+      }),
+    ).toMatchObject({ load: "17", ram: "44" });
+    expect(
+      hostStatusMetrics({ ...available, load1: 17.26, availableMemoryBytes: 4.26 * gib }),
+    ).toMatchObject({ load: "17.3", ram: "4.3" });
+  });
   it("keeps raw load above CPU count and classifies per-core thresholds", () => {
-    expect(hostStatusMetrics({ ...available, load1: 7 }).load).toBe("7.0");
+    expect(hostStatusMetrics({ ...available, load1: 7 }).load).toBe("7");
     expect(hostStatusMetrics({ ...available, load1: 3.19 }).loadHealth).toBe("healthy");
     expect(hostStatusMetrics({ ...available, load1: 3.2 }).loadHealth).toBe("warning");
     expect(hostStatusMetrics(available).loadHealth).toBe("critical");
     expect(hostStatusMetrics(available).detail).toContain("4 logical CPUs");
   });
   it("uses GiB and the strict available-RAM percentage boundaries", () => {
-    expect(hostStatusMetrics(available).ram).toBe("4.0");
+    expect(hostStatusMetrics(available).ram).toBe("4");
     for (const [fraction, health] of [
       [0.1, "healthy"],
       [0.099, "warning"],
