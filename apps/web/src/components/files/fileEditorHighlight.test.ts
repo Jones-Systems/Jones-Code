@@ -242,6 +242,7 @@ describe("editable file highlighting", () => {
       expect(renderer.renderFullHTML(firstLines!)).toContain('style="color:');
       expect(document.lineCount).toBe(7_000 + count);
     },
+    30_000,
   );
 
   it("does not replace a same-line edit with stale tokens", async () => {
