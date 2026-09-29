@@ -1179,6 +1179,97 @@ declaredCompaction.layer("ProviderService declared compaction", (it) => {
   );
 });
 
+const compatibleSourceId = ProviderInstanceId.make("codex_source");
+const compatibleTargetId = ProviderInstanceId.make("codex_target");
+const compatibleSource = makeFakeCodexAdapter();
+const compatibleTarget = makeFakeCodexAdapter();
+const compatibleAdapters = new Map([
+  [compatibleSourceId, compatibleSource.adapter],
+  [compatibleTargetId, compatibleTarget.adapter],
+]);
+const compatibleRegistry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = {
+  getByInstance: (instanceId) => {
+    const adapter = compatibleAdapters.get(instanceId);
+    return adapter
+      ? Effect.succeed(adapter)
+      : Effect.fail(new ProviderUnsupportedError({ provider: CODEX_DRIVER }));
+  },
+  getInstanceInfo: (instanceId) =>
+    compatibleAdapters.has(instanceId)
+      ? Effect.succeed({
+          instanceId,
+          driverKind: CODEX_DRIVER,
+          displayName: undefined,
+          enabled: true,
+          continuationIdentity: {
+            driverKind: CODEX_DRIVER,
+            continuationKey: "codex:home:/shared/sessions",
+          },
+        })
+      : Effect.fail(new ProviderUnsupportedError({ provider: CODEX_DRIVER })),
+  listInstances: () => Effect.succeed([compatibleSourceId, compatibleTargetId]),
+  subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) => PubSub.subscribe(pubsub)),
+};
+const compatibleInstanceRouting = makeProviderServiceLayer({ registry: compatibleRegistry });
+compatibleInstanceRouting.layer("ProviderServiceLive compatible instance continuity", (it) => {
+  it.effect("carries a stopped thread's cursor and cwd to a compatible Codex account", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-compatible-codex-resume");
+      const cwd = fixtureCwd("compatible-codex-resume");
+      const resumeCursor = { threadId: "saved-codex-conversation" };
+      yield* directory.upsert({
+        threadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: compatibleSourceId,
+        status: "stopped",
+        resumeCursor,
+        runtimePayload: { cwd },
+        runtimeMode: "full-access",
+      });
+
+      yield* provider.startSession(threadId, {
+        threadId,
+        providerInstanceId: compatibleTargetId,
+        runtimeMode: "full-access",
+      });
+
+      const startInput = compatibleTarget.startSession.mock.calls[0]?.[0];
+      assert.equal(startInput?.providerInstanceId, compatibleTargetId);
+      assert.deepEqual(startInput?.resumeCursor, resumeCursor);
+      assert.equal(startInput?.cwd, cwd);
+      assert.equal(startInput?.requireResume, true);
+      const binding = yield* directory.getBinding(threadId);
+      assert.equal(Option.getOrUndefined(binding)?.providerInstanceId, compatibleTargetId);
+    }),
+  );
+
+  it.effect("requires resume when a stopped Codex binding has no saved cursor", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-compatible-codex-missing-cursor");
+      yield* directory.upsert({
+        threadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: compatibleSourceId,
+        status: "stopped",
+        runtimeMode: "full-access",
+      });
+      compatibleTarget.startSession.mockClear();
+
+      yield* provider.startSession(threadId, {
+        threadId,
+        providerInstanceId: compatibleTargetId,
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(compatibleTarget.startSession.mock.calls[0]?.[0]?.requireResume, true);
+    }),
+  );
+});
+
 const antigravityDriver = ProviderDriverKind.make("antigravity");
 const replacementAntigravity = makeFakeCodexAdapter(antigravityDriver);
 const originalAntigravityInstanceId = ProviderInstanceId.make("antigravity-personal");

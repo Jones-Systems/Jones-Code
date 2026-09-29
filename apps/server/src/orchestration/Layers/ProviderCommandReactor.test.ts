@@ -3199,6 +3199,76 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
   });
 
+  effectIt.effect(
+    "starts a stopped thread on the compatible account selected for its next turn",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() => createHarness());
+        const now = "2026-01-01T00:00:00.000Z";
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-stopped-compatible-first"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("message-stopped-compatible-first"),
+            role: "user",
+            text: "first",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        });
+        yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-stopped-compatible-session"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "stopped",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        });
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-stopped-compatible-second"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("message-stopped-compatible-second"),
+            role: "user",
+            text: "continue on work account",
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex_work"),
+            model: "gpt-5-codex",
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        });
+
+        yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 2));
+        expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+          providerInstanceId: ProviderInstanceId.make("codex_work"),
+        });
+        const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (entry) => entry.id === ThreadId.make("thread-1"),
+        );
+        expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
+      }),
+  );
+
   it("restarts the provider session when the thread workspace changes", async () => {
     const harness = await createHarness({
       threadModelSelection: {
