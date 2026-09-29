@@ -355,7 +355,7 @@ function mapLatestTurn(
             : "running",
     requestedAt: row.requestedAt,
     startedAt: row.startedAt,
-    completedAt: row.completedAt,
+    completedAt: row.state === "running" ? null : row.completedAt,
     assistantMessageId: row.assistantMessageId,
     ...(row.sourceProposedPlanThreadId !== null && row.sourceProposedPlanId !== null
       ? {
@@ -2314,7 +2314,7 @@ pending_approval_requests AS (
                           : "running",
                   requestedAt: row.requestedAt,
                   startedAt: row.startedAt,
-                  completedAt: row.completedAt,
+                  completedAt: row.state === "running" ? null : row.completedAt,
                   assistantMessageId: row.assistantMessageId,
                   ...(row.sourceProposedPlanThreadId !== null && row.sourceProposedPlanId !== null
                     ? {

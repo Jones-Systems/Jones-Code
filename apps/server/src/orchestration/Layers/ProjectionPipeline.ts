@@ -79,12 +79,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
 type ProjectorName =
   (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
 
-/**
- * Turn state to settle still-running turns with when their session leaves the
- * "running" status, or null while the session is (re)starting or running and
- * turns must stay unsettled.
- */
-function settledTurnStateForSessionStatus(
+function legacyTurnStateForSessionStatus(
   status: OrchestrationSessionStatus,
 ): "completed" | "interrupted" | "error" | null {
   switch (status) {
@@ -1010,9 +1005,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
-        // A message cannot change any summary field except latestUserMessageAt,
-        // which is a monotonic maximum that folds in directly. The full refresh
-        // would re-read every message body in the thread per user message.
+        // Fold message timestamps and assistant turn attribution directly into the
+        // summary. A full refresh would re-read every message body.
         case "thread.message-sent": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -1020,10 +1014,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          const existingSession = yield* projectionThreadSessionRepository.getByThreadId({
+            threadId: event.payload.threadId,
+          });
           const previousLatest = existingRow.value.latestUserMessageAt;
+          const bindsLatestTurn =
+            event.payload.role === "assistant" &&
+            event.payload.turnId !== null &&
+            (existingRow.value.latestTurnId === null ||
+              existingRow.value.latestTurnId === event.payload.turnId ||
+              (Option.isSome(existingSession) && existingSession.value.status === "starting"));
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             updatedAt: event.occurredAt,
+            latestTurnId: bindsLatestTurn ? event.payload.turnId : existingRow.value.latestTurnId,
             latestUserMessageAt:
               event.payload.role === "user" &&
               !isImportedAgentSessionMessageId(event.payload.messageId) &&
@@ -1061,10 +1065,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          const settlementTurnId = event.payload.turnSettlement?.turnId ?? null;
+          const latestTurnId =
+            event.payload.session.activeTurnId ??
+            (settlementTurnId !== null &&
+            (existingRow.value.latestTurnId === null ||
+              existingRow.value.latestTurnId === settlementTurnId ||
+              event.payload.turnSettlement?.recoversMissingStart === true)
+              ? settlementTurnId
+              : existingRow.value.latestTurnId);
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             // activeTurnId describes current work; a terminal session must not erase history.
-            latestTurnId: event.payload.session.activeTurnId ?? existingRow.value.latestTurnId,
+            latestTurnId,
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
@@ -1078,9 +1091,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          const existingSession = yield* projectionThreadSessionRepository.getByThreadId({
+            threadId: event.payload.threadId,
+          });
+          // A late checkpoint for an older turn must not replace the active
+          // latest turn. Checkpoints carry workspace evidence, not lifecycle
+          // ordering evidence.
+          const latestTurnId =
+            existingRow.value.latestTurnId === null ||
+            existingRow.value.latestTurnId === event.payload.turnId ||
+            (Option.isSome(existingSession) && existingSession.value.status === "starting")
+              ? event.payload.turnId
+              : existingRow.value.latestTurnId;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            latestTurnId: event.payload.turnId,
+            latestTurnId,
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
@@ -1099,6 +1124,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
           });
           let latestTurnId: ProjectionTurn["turnId"] = null;
+          let latestTurn: ProjectionTurn | null = null;
           let latestCheckpointTurnCount = -1;
           for (let index = 0; index < retainedTurns.length; index += 1) {
             const turn = retainedTurns[index];
@@ -1113,7 +1139,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             if (turn.checkpointTurnCount > latestCheckpointTurnCount) {
               latestCheckpointTurnCount = turn.checkpointTurnCount;
               latestTurnId = turn.turnId;
+              latestTurn = turn;
             }
+          }
+
+          // Reverting to an older checkpoint rewinds past any later terminal
+          // evidence for that turn. Replay/live projections do not retain
+          // historical outcomes, so all surfaces conservatively expose the
+          // restored turn as running until new attributed settlement arrives.
+          if (
+            latestTurn !== null &&
+            latestTurn.turnId !== null &&
+            existingRow.value.latestTurnId !== latestTurn.turnId
+          ) {
+            yield* projectionTurnRepository.upsertByTurnId({
+              ...latestTurn,
+              turnId: latestTurn.turnId,
+              state: "running",
+            });
           }
 
           yield* projectionThreadRepository.upsert({
@@ -1456,38 +1499,70 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 threadId: event.payload.threadId,
               });
             }
-            // Leaving the "running" session status is the turn-end signal:
-            // settle still-running turns so their duration reflects the whole
-            // turn rather than the last assistant message.
-            const settledTurnState = settledTurnStateForSessionStatus(event.payload.session.status);
-            if (settledTurnState === null) {
+            const turnSettlement = event.payload.turnSettlement;
+            if (turnSettlement === null) {
               return;
             }
-            const existingTurns = yield* projectionTurnRepository.listByThreadId({
+            if (turnSettlement === undefined) {
+              const legacyState = legacyTurnStateForSessionStatus(event.payload.session.status);
+              if (legacyState === null) {
+                return;
+              }
+              const existingTurns = yield* projectionTurnRepository.listByThreadId({
+                threadId: event.payload.threadId,
+              });
+              yield* Effect.forEach(
+                existingTurns.filter((turn) => turn.turnId !== null && turn.state === "running"),
+                (turn) =>
+                  turn.turnId === null
+                    ? Effect.void
+                    : projectionTurnRepository.upsertByTurnId({
+                        ...turn,
+                        turnId: turn.turnId,
+                        state: legacyState,
+                        completedAt: event.payload.session.updatedAt,
+                      }),
+                { concurrency: 1 },
+              );
+              return;
+            }
+            const existingTurn = yield* projectionTurnRepository.getByTurnId({
               threadId: event.payload.threadId,
+              turnId: turnSettlement.turnId,
             });
-            yield* Effect.forEach(
-              existingTurns.filter((turn) => turn.turnId !== null && turn.state === "running"),
-              (turn) =>
-                turn.turnId === null
-                  ? Effect.void
-                  : projectionTurnRepository.upsertByTurnId({
-                      ...turn,
-                      turnId: turn.turnId,
-                      state: settledTurnState,
-                      // A running turn's completedAt can only hold a mid-turn
-                      // placeholder checkpoint timestamp — the session leaving
-                      // "running" is the authoritative turn end.
-                      completedAt: event.payload.session.updatedAt,
-                    }),
-              { concurrency: 1 },
+            yield* projectionTurnRepository.upsertByTurnId(
+              Option.isSome(existingTurn)
+                ? {
+                    ...existingTurn.value,
+                    turnId: turnSettlement.turnId,
+                    state: turnSettlement.state,
+                    requestedAt: existingTurn.value.requestedAt ?? turnSettlement.completedAt,
+                    startedAt: existingTurn.value.startedAt ?? turnSettlement.completedAt,
+                    completedAt: turnSettlement.completedAt,
+                  }
+                : {
+                    turnId: turnSettlement.turnId,
+                    threadId: event.payload.threadId,
+                    pendingMessageId: null,
+                    sourceProposedPlanThreadId: null,
+                    sourceProposedPlanId: null,
+                    assistantMessageId: null,
+                    state: turnSettlement.state,
+                    requestedAt: turnSettlement.completedAt,
+                    startedAt: turnSettlement.completedAt,
+                    completedAt: turnSettlement.completedAt,
+                    checkpointTurnCount: null,
+                    checkpointRef: null,
+                    checkpointStatus: null,
+                    checkpointFiles: [],
+                  },
             );
             return;
           }
 
           // A new active turn supersedes any still-running turn on the same
-          // thread — steering can open a new turn without the provider ever
-          // completing the previous one.
+          // thread. Supersession proves the older turn stopped running, not
+          // that it completed successfully.
           const otherRunningTurns = yield* projectionTurnRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
@@ -1501,7 +1576,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 : projectionTurnRepository.upsertByTurnId({
                     ...turn,
                     turnId: turn.turnId,
-                    state: "completed",
+                    state: "interrupted",
                     completedAt: event.payload.session.updatedAt,
                   }),
             { concurrency: 1 },
@@ -1585,19 +1660,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (event.payload.turnId === null || event.payload.role !== "assistant") {
             return;
           }
-          // A completed assistant message only settles the turn once the
-          // session is no longer running it — providers may emit several
-          // assistant messages per turn (commentary between tool calls), and
-          // the turn must stay unsettled until the provider reports turn end
-          // (projected as thread.session-set leaving the "running" status).
-          const session = yield* projectionThreadSessionRepository.getByThreadId({
-            threadId: event.payload.threadId,
-          });
-          const turnStillRunning =
-            Option.isSome(session) &&
-            session.value.status === "running" &&
-            session.value.activeTurnId === event.payload.turnId;
-          const settlesTurn = !event.payload.streaming && !turnStillRunning;
+          // Assistant finalization binds durable output to the turn. It is not
+          // terminal evidence because a provider can finalize multiple
+          // commentary messages before the turn itself ends.
           const existingTurn = yield* projectionTurnRepository.getByTurnId({
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
@@ -1606,16 +1671,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
               assistantMessageId: event.payload.messageId,
-              state: settlesTurn
-                ? existingTurn.value.state === "interrupted"
-                  ? "interrupted"
-                  : existingTurn.value.state === "error"
-                    ? "error"
-                    : "completed"
-                : existingTurn.value.state,
-              completedAt: settlesTurn
-                ? (existingTurn.value.completedAt ?? event.payload.updatedAt)
-                : existingTurn.value.completedAt,
               startedAt: existingTurn.value.startedAt ?? event.payload.createdAt,
               requestedAt: existingTurn.value.requestedAt ?? event.payload.createdAt,
             });
@@ -1628,10 +1683,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             sourceProposedPlanThreadId: null,
             sourceProposedPlanId: null,
             assistantMessageId: event.payload.messageId,
-            state: settlesTurn ? "completed" : "running",
+            state: "running",
             requestedAt: event.payload.createdAt,
             startedAt: event.payload.createdAt,
-            completedAt: settlesTurn ? event.payload.updatedAt : null,
+            completedAt: null,
             checkpointTurnCount: null,
             checkpointRef: null,
             checkpointStatus: null,
@@ -1641,52 +1696,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.turn-interrupt-requested": {
-          if (event.payload.turnId === undefined) {
-            return;
-          }
-          const existingTurn = yield* projectionTurnRepository.getByTurnId({
-            threadId: event.payload.threadId,
-            turnId: event.payload.turnId,
-          });
-          if (Option.isSome(existingTurn)) {
-            yield* projectionTurnRepository.upsertByTurnId({
-              ...existingTurn.value,
-              state: "interrupted",
-              completedAt: existingTurn.value.completedAt ?? event.payload.createdAt,
-              startedAt: existingTurn.value.startedAt ?? event.payload.createdAt,
-              requestedAt: existingTurn.value.requestedAt ?? event.payload.createdAt,
-            });
-            return;
-          }
-          yield* projectionTurnRepository.upsertByTurnId({
-            turnId: event.payload.turnId,
-            threadId: event.payload.threadId,
-            pendingMessageId: null,
-            sourceProposedPlanThreadId: null,
-            sourceProposedPlanId: null,
-            assistantMessageId: null,
-            state: "interrupted",
-            requestedAt: event.payload.createdAt,
-            startedAt: event.payload.createdAt,
-            completedAt: event.payload.createdAt,
-            checkpointTurnCount: null,
-            checkpointRef: null,
-            checkpointStatus: null,
-            checkpointFiles: [],
-          });
+          // This records intent only. The provider may reject or race the
+          // request; attributed runtime settlement updates the turn later.
           return;
         }
 
         case "thread.turn-diff-completed": {
-          // Mid-turn diff updates produce placeholder checkpoints; record the
-          // checkpoint, but don't settle a turn its session is still running.
-          const session = yield* projectionThreadSessionRepository.getByThreadId({
-            threadId: event.payload.threadId,
-          });
-          const turnStillRunning =
-            Option.isSome(session) &&
-            session.value.status === "running" &&
-            session.value.activeTurnId === event.payload.turnId;
+          // Checkpoint status describes capture quality, not turn outcome.
+          // Provider diff notifications can produce ready checkpoints while a
+          // turn is still running or after an unrelated session-status edge.
           const existingTurn = yield* projectionTurnRepository.getByTurnId({
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
@@ -1703,7 +1721,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           ) {
             return;
           }
-          const nextState = event.payload.status === "error" ? "error" : "completed";
           yield* projectionTurnRepository.clearCheckpointTurnConflict({
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
@@ -1713,18 +1730,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isSome(existingTurn)) {
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
-              assistantMessageId: event.payload.assistantMessageId,
-              state:
-                turnStillRunning || existingTurn.value.state === "interrupted"
-                  ? existingTurn.value.state
-                  : nextState,
+              assistantMessageId:
+                event.payload.assistantMessageId ?? existingTurn.value.assistantMessageId,
               checkpointTurnCount: event.payload.checkpointTurnCount,
               checkpointRef: event.payload.checkpointRef,
               checkpointStatus: event.payload.status,
               checkpointFiles: event.payload.files,
               startedAt: existingTurn.value.startedAt ?? event.payload.completedAt,
               requestedAt: existingTurn.value.requestedAt ?? event.payload.completedAt,
-              completedAt: event.payload.completedAt,
+              completedAt: existingTurn.value.completedAt ?? event.payload.completedAt,
             });
             return;
           }
@@ -1735,7 +1749,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             sourceProposedPlanThreadId: null,
             sourceProposedPlanId: null,
             assistantMessageId: event.payload.assistantMessageId,
-            state: turnStillRunning ? "running" : nextState,
+            state: "running",
             requestedAt: event.payload.completedAt,
             startedAt: event.payload.completedAt,
             completedAt: event.payload.completedAt,
