@@ -303,6 +303,7 @@ import {
   markPromotedDraftThreadByRef,
   restoreFailedBackgroundDraftThread,
   useComposerDraftStore,
+  useEffectiveComposerModelState,
   DraftId,
 } from "../composerDraftStore";
 import {
@@ -374,6 +375,7 @@ import { MessagesTimeline } from "./chat/MessagesTimeline";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd, worktreeSetupAgentStarted } from "./chat/MessagesTimeline.logic";
 import { resolveComposerTimelineInset, resolveScrollToEndClearance } from "./composerFooterLayout";
+import { FavoriteModelShortcuts } from "./chat/FavoriteModelShortcuts";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { expandedImageKey, type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
@@ -2845,7 +2847,7 @@ export default function ChatView(props: ChatViewProps) {
       ),
     [providerStatuses, settings],
   );
-  const { selectedProviderEntry, requestedDriverKind } = useMemo(
+  const { selectedProviderEntry, requestedDriverKind, lockedContinuationGroupKey } = useMemo(
     () =>
       resolveComposerProviderSelection({
         entries: providerInstanceEntries,
@@ -2870,6 +2872,15 @@ export default function ChatView(props: ChatViewProps) {
   );
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
+  const { selectedModel: shortcutSelectedModel } = useEffectiveComposerModelState({
+    threadRef: composerDraftTarget,
+    providers: providerStatuses,
+    selectedProvider,
+    selectedInstanceId: selectedProviderEntry?.instanceId,
+    threadModelSelection: activeThread?.modelSelection,
+    projectModelSelection: activeProjectDefaultModelSelection,
+    settings,
+  });
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
   const { enabled: interactionModeEnabled, interactionMode } = resolveComposerInteractionMode({
     planModeEnabled: settings.planModeEnabled,
@@ -9786,6 +9797,21 @@ export default function ChatView(props: ChatViewProps) {
             onDragLeave={workspaceFileDropHandlers.onDragLeave}
             onDrop={workspaceFileDropHandlers.onDrop}
           >
+            <FavoriteModelShortcuts
+              instanceEntries={providerInstanceEntries}
+              settings={settings}
+              activeInstanceId={activeProviderInstanceId}
+              model={shortcutSelectedModel}
+              selectedModels={multipleModelSelections}
+              lockedProvider={lockedProvider}
+              lockedContinuationGroupKey={lockedContinuationGroupKey ?? null}
+              disabled={serverConfig === null || isSendBusy || activeEnvironmentUnavailable}
+              getModelDisabledReason={getModelDisabledReason}
+              onSelect={(instanceId, model) => {
+                setMultipleModelSelections(null);
+                onProviderModelSelect(instanceId, model);
+              }}
+            />
             {isWorkspaceFileDragActive ? (
               <div
                 className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary/60 bg-primary/[0.035]"
