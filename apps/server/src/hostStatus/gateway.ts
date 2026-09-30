@@ -69,7 +69,7 @@ function nodeInfo(payload: unknown, selectedNode?: string) {
   return { guid, logicalCpuCount, totalMemoryBytes };
 }
 
-function metric(payload: unknown, dimension: string, units: string, now: number) {
+function metric(payload: unknown, units: string, now: number) {
   const root = record(payload);
   const view = record(root.view);
   const result = record(root.result);
@@ -77,21 +77,54 @@ function metric(payload: unknown, dimension: string, units: string, now: number)
     root.api !== 3 ||
     view.units !== units ||
     !Array.isArray(result.labels) ||
-    result.labels.length !== 2 ||
+    result.labels.length < 2 ||
+    result.labels.length > 11 ||
     result.labels[0] !== "time" ||
-    result.labels[1] !== dimension ||
     !Array.isArray(result.data) ||
     result.data.length !== 1
   )
     throw new InvalidResponse();
   const row: unknown = result.data[0];
-  if (!Array.isArray(row) || row.length !== 2) throw new InvalidResponse();
+  if (!Array.isArray(row) || row.length !== result.labels.length) throw new InvalidResponse();
   const sampledAt = finiteNonnegative(row[0]) * 1000;
   const lastEntry = finiteNonnegative(record(root.db).last_entry) * 1000;
-  if (!Number.isSafeInteger(sampledAt) || sampledAt > now + 5_000 || lastEntry > now + 5_000)
+  if (
+    !Number.isSafeInteger(sampledAt) ||
+    !Number.isSafeInteger(lastEntry) ||
+    sampledAt > now + 5_000 ||
+    lastEntry > now + 5_000
+  )
     throw new InvalidResponse();
   if (now - sampledAt > MAX_AGE_MS || now - lastEntry > MAX_AGE_MS) throw new StaleResponse();
-  return { value: finiteNonnegative(row[1]), sampledAt: Math.min(sampledAt, lastEntry) };
+  const values = new Map<string, number>();
+  for (let index = 1; index < result.labels.length; index++) {
+    const label: unknown = result.labels[index];
+    if (typeof label !== "string" || values.has(label)) throw new InvalidResponse();
+    values.set(label, finiteNonnegative(row[index]));
+  }
+  return { values, sampledAt: Math.min(sampledAt, lastEntry) };
+}
+
+function cpuUsage(values: ReadonlyMap<string, number>) {
+  const mac = ["user", "nice", "system"];
+  const linux = [...mac, "irq", "softirq", "guest", "guest_nice", "iowait", "steal"];
+  // Netdata hides idle by default. Require a complete collector shape, allowing explicit idle.
+  const dimensions = [...values.keys()].filter((dimension) => dimension !== "idle");
+  if (
+    ![mac, linux].some(
+      (expected) =>
+        dimensions.length === expected.length &&
+        expected.every((dimension) => values.has(dimension)),
+    )
+  )
+    throw new InvalidResponse();
+  if ([...values.values()].some((value) => value > 100)) throw new InvalidResponse();
+  // Linux Netdata already subtracts guest from user/nice; add guest exactly once.
+  const busy = dimensions
+    .filter((dimension) => dimension !== "iowait" && dimension !== "steal")
+    .reduce((total, dimension) => total + values.get(dimension)!, 0);
+  if (busy > 100) throw new InvalidResponse();
+  return busy;
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -172,26 +205,27 @@ async function readHost(
         options: "jsonwrap",
         group_by: "dimension",
       });
-    const [loadPayload, memoryPayload] = await Promise.all([
-      getMetric("system.load", "load1"),
-      getMetric("mem.available", "avail"),
+    const [cpuPayload, memoryPayload] = await Promise.all([
+      getMetric("system.cpu", "*"),
+      getMetric("system.ram", "free"),
     ]);
     const at = now();
-    const load = metric(loadPayload, "load1", "load", at);
-    const memory = metric(memoryPayload, "avail", "MiB", at);
-    const availableMemoryBytes = Math.round(memory.value * 1024 * 1024);
-    if (!Number.isSafeInteger(availableMemoryBytes) || availableMemoryBytes > node.totalMemoryBytes)
+    const cpu = metric(cpuPayload, "percentage", at);
+    const cpuUsagePercent = cpuUsage(cpu.values);
+    const memory = metric(memoryPayload, "MiB", at);
+    const freeMiB = memory.values.get("free");
+    if (memory.values.size !== 1 || freeMiB === undefined) throw new InvalidResponse();
+    const freeMemoryBytes = Math.round(freeMiB * 1024 * 1024);
+    if (!Number.isSafeInteger(freeMemoryBytes) || freeMemoryBytes > node.totalMemoryBytes)
       throw new InvalidResponse();
     return {
       id,
       status: "available",
-      load1: load.value,
+      cpuUsagePercent,
       logicalCpuCount: node.logicalCpuCount,
-      availableMemoryBytes,
+      occupiedMemoryBytes: node.totalMemoryBytes - freeMemoryBytes,
       totalMemoryBytes: node.totalMemoryBytes,
-      sampledAt: DateTime.formatIso(
-        DateTime.makeUnsafe(Math.min(load.sampledAt, memory.sampledAt)),
-      ),
+      sampledAt: DateTime.formatIso(DateTime.makeUnsafe(Math.min(cpu.sampledAt, memory.sampledAt))),
     };
   } catch (error) {
     return {

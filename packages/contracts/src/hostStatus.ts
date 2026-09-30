@@ -8,10 +8,14 @@ export const HostStatus = Schema.Union([
   Schema.Struct({
     id: HostStatusId,
     status: Schema.Literal("available"),
-    // Linux load includes tasks waiting for I/O and can exceed the logical CPU count.
-    load1: Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
+    cpuUsagePercent: Schema.Number.check(
+      Schema.isFinite(),
+      Schema.isGreaterThanOrEqualTo(0),
+      Schema.isLessThanOrEqualTo(100),
+    ),
     logicalCpuCount: PositiveInt,
-    availableMemoryBytes: NonNegativeInt,
+    // Occupied is total minus free, including reclaimable memory.
+    occupiedMemoryBytes: NonNegativeInt,
     totalMemoryBytes: PositiveInt,
     sampledAt: IsoDateTime,
   }),

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import * as Schema from "effect/Schema";
+import { HostStatus } from "@t3tools/contracts";
 import { hostStatusConfigFromEnv, readHostStatus } from "./gateway.ts";
 
 const guid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -13,9 +15,32 @@ const data = (dimension: string, value: unknown, units: string, timestamp = now 
   view: { units },
   result: { labels: ["time", dimension], data: [[timestamp, value]] },
 });
+const cpu = (overrides: Record<string, unknown> = {}, timestamp = now / 1000) => {
+  const values = {
+    user: 5,
+    nice: 1,
+    system: 3,
+    irq: 1,
+    softirq: 2,
+    guest: 3,
+    guest_nice: 1,
+    iowait: 10,
+    steal: 4,
+    ...overrides,
+  };
+  return {
+    api: 3,
+    db: { last_entry: timestamp },
+    view: { units: "percentage" },
+    result: {
+      labels: ["time", ...Object.keys(values)],
+      data: [[timestamp, ...Object.values(values)]],
+    },
+  };
+};
 const fixtureFetch = (
-  load: unknown = data("load1", 12, "load"),
-  memory: unknown = data("avail", 4096.5, "MiB"),
+  cpuPayload: unknown = cpu(),
+  memory: unknown = data("free", 4096.5, "MiB"),
   info: unknown = nodes,
 ) =>
   vi.fn<typeof fetch>(async (input) => {
@@ -23,8 +48,8 @@ const fixtureFetch = (
     return Response.json(
       url.pathname.endsWith("nodes")
         ? info
-        : url.searchParams.get("contexts") === "system.load"
-          ? load
+        : url.searchParams.get("contexts") === "system.cpu"
+          ? cpuPayload
           : memory,
     );
   });
@@ -33,6 +58,27 @@ const config = { vps: { url: "https://netdata.example", token: "test-only-secret
 afterEach(() => vi.useRealTimers());
 
 describe("Netdata host status", () => {
+  it("enforces CPU percentage bounds and the occupied RAM wire contract", () => {
+    const decode = Schema.decodeUnknownSync(HostStatus);
+    const host = {
+      id: "vps",
+      status: "available",
+      cpuUsagePercent: 40,
+      occupiedMemoryBytes: 1024,
+      totalMemoryBytes: 2048,
+      logicalCpuCount: 8,
+      sampledAt: "2027-01-15T08:00:00.000Z",
+    };
+    for (const cpuUsagePercent of [0, 100])
+      expect(decode({ ...host, cpuUsagePercent })).toMatchObject({ cpuUsagePercent });
+    for (const cpuUsagePercent of [-1, 101, NaN, Infinity, null, "40"])
+      expect(() => decode({ ...host, cpuUsagePercent })).toThrow();
+    for (const occupiedMemoryBytes of [-1, 1.5, null])
+      expect(() => decode({ ...host, occupiedMemoryBytes })).toThrow();
+    const { cpuUsagePercent: _cpu, occupiedMemoryBytes: _ram, ...legacy } = host;
+    expect(() => decode({ ...legacy, load1: 1, availableMemoryBytes: 1024 })).toThrow();
+  });
+
   it("always returns fixed ordered unavailable hosts when unconfigured without fetching", async () => {
     const fetcher = fixtureFetch();
     expect(await readHostStatus({}, fetcher)).toEqual({
@@ -64,15 +110,15 @@ describe("Netdata host status", () => {
     }
   });
 
-  it("preserves load above CPU count, normalizes MiB, and reports source time", async () => {
-    const fetcher = fixtureFetch(data("load1", 12, "load", now / 1000 - 2));
+  it("sums busy CPU once, excludes idle/wait/steal, converts free RAM, and reports source time", async () => {
+    const fetcher = fixtureFetch(cpu({}, now / 1000 - 2));
     const result = await readHostStatus(config, fetcher, () => now);
     expect(result.hosts[0]).toEqual({
       id: "vps",
       status: "available",
-      load1: 12,
+      cpuUsagePercent: 16,
       logicalCpuCount: 8,
-      availableMemoryBytes: 4096.5 * 1024 * 1024,
+      occupiedMemoryBytes: 8589934592 - 4096.5 * 1024 * 1024,
       totalMemoryBytes: 8589934592,
       sampledAt: "2027-01-15T07:59:58.000Z",
     });
@@ -90,12 +136,14 @@ describe("Netdata host status", () => {
   });
 
   it.each([
-    ["wrong units", data("load1", 1, "%")],
-    ["negative", data("load1", -1, "load")],
-    ["null", data("load1", null, "load")],
-    ["string", data("load1", "1", "load")],
-    ["wrong dimension", data("load5", 1, "load")],
-    ["future", data("load1", 1, "load", now / 1000 + 6)],
+    ["wrong units", { ...cpu(), view: { units: "load" } }],
+    ["negative", cpu({ user: -1 })],
+    ["null", cpu({ user: null })],
+    ["string", cpu({ user: "1" })],
+    ["over 100", cpu({ user: 101 })],
+    ["busy sum over 100", cpu({ user: 99 })],
+    ["wrong dimension", data("load5", 1, "%")],
+    ["future", cpu({}, now / 1000 + 6)],
     ["bad schema", { api: 3 }],
   ])("rejects %s", async (_label, payload) => {
     expect((await readHostStatus(config, fixtureFetch(payload), () => now)).hosts[0]).toEqual({
@@ -106,7 +154,7 @@ describe("Netdata host status", () => {
   });
 
   it("rejects stale source data even with a current query bucket", async () => {
-    const payload = data("load1", 1, "load");
+    const payload = cpu();
     payload.db.last_entry -= 31;
     expect((await readHostStatus(config, fixtureFetch(payload), () => now)).hosts[0]).toMatchObject(
       { reason: "stale" },
@@ -125,7 +173,7 @@ describe("Netdata host status", () => {
       ).toMatchObject({ reason: "invalid_response" });
     }
     expect(
-      (await readHostStatus(config, fixtureFetch(undefined, data("avail", 1, "MB")), () => now))
+      (await readHostStatus(config, fixtureFetch(undefined, data("free", 1, "MB")), () => now))
         .hosts[0],
     ).toMatchObject({ reason: "invalid_response" });
   });
@@ -141,17 +189,17 @@ describe("Netdata host status", () => {
     },
   );
 
-  it("rejects available RAM above total and accepts their equality", async () => {
+  it("rejects free RAM above total and accepts their equality", async () => {
     expect(
-      (await readHostStatus(config, fixtureFetch(undefined, data("avail", 8193, "MiB")), () => now))
+      (await readHostStatus(config, fixtureFetch(undefined, data("free", 8193, "MiB")), () => now))
         .hosts[0],
     ).toMatchObject({ reason: "invalid_response" });
     expect(
-      (await readHostStatus(config, fixtureFetch(undefined, data("avail", 8192, "MiB")), () => now))
+      (await readHostStatus(config, fixtureFetch(undefined, data("free", 8192, "MiB")), () => now))
         .hosts[0],
     ).toMatchObject({
       status: "available",
-      availableMemoryBytes: 8589934592,
+      occupiedMemoryBytes: 0,
       totalMemoryBytes: 8589934592,
     });
   });
@@ -197,22 +245,27 @@ describe("Netdata host status", () => {
       const url = new URL(String(input));
       if (url.pathname.endsWith("nodes")) return Response.json(info);
       const selected = url.searchParams.get("nodes");
-      const isLoad = url.searchParams.get("contexts") === "system.load";
+      const isCpu = url.searchParams.get("contexts") === "system.cpu";
       return Response.json(
-        isLoad
-          ? data("load1", selected === guid ? 12 : 3, "load")
-          : data("avail", selected === guid ? 4096 : 1024, "MiB"),
+        isCpu
+          ? cpu(selected === guid ? {} : { user: 0, nice: 0, system: 0, irq: 0 })
+          : data("free", selected === guid ? 4096 : 1024, "MiB"),
       );
     });
     const result = await readHostStatus(shared, fetcher, () => now);
     expect(result.hosts).toEqual([
-      expect.objectContaining({ id: "vps", status: "available", load1: 12, logicalCpuCount: 8 }),
+      expect.objectContaining({
+        id: "vps",
+        status: "available",
+        cpuUsagePercent: 16,
+        logicalCpuCount: 8,
+      }),
       expect.objectContaining({
         id: "test",
         status: "available",
-        load1: 3,
+        cpuUsagePercent: 6,
         logicalCpuCount: 2,
-        availableMemoryBytes: 1073741824,
+        occupiedMemoryBytes: 3221225472,
         totalMemoryBytes: 4294967296,
       }),
       { id: "mini", status: "unavailable", reason: "not_configured" },
@@ -226,8 +279,8 @@ describe("Netdata host status", () => {
       const scoped = queries.filter((url) => url.searchParams.get("nodes") === selected);
       expect(scoped).toHaveLength(2);
       expect(scoped.map((url) => url.searchParams.get("contexts")).sort()).toEqual([
-        "mem.available",
-        "system.load",
+        "system.cpu",
+        "system.ram",
       ]);
       for (const url of scoped) {
         expect(url.origin).toBe("http://127.0.0.1:19999");
@@ -235,7 +288,7 @@ describe("Netdata host status", () => {
           scope_nodes: selected,
           nodes: selected,
           contexts: url.searchParams.get("contexts"),
-          dimensions: url.searchParams.get("contexts") === "system.load" ? "load1" : "avail",
+          dimensions: url.searchParams.get("contexts") === "system.cpu" ? "*" : "free",
           after: "-5",
           points: "1",
           format: "json",
@@ -245,6 +298,107 @@ describe("Netdata host status", () => {
       }
     }
     expect(JSON.stringify(result)).not.toContain(guid);
+  });
+
+  it("accepts the captured Netdata 2.11.0 Linux CPU shape", async () => {
+    const payload = {
+      api: 3,
+      db: { last_entry: now / 1000 },
+      view: { units: "percentage" },
+      result: {
+        labels: [
+          "time",
+          "guest_nice",
+          "guest",
+          "steal",
+          "softirq",
+          "irq",
+          "user",
+          "system",
+          "nice",
+          "iowait",
+        ],
+        data: [[now / 1000, 0, 0, 0.0690339, 0.501911, 0, 10.5347086, 8.0013066, 0, 0.2448231]],
+      },
+    };
+    const result = (await readHostStatus(config, fixtureFetch(payload), () => now)).hosts[0];
+    expect(result).toMatchObject({ status: "available" });
+    if (result?.status === "available") expect(result.cpuUsagePercent).toBeCloseTo(19.0379262);
+  });
+
+  it("accepts optional idle but excludes it and validates every CPU value", async () => {
+    expect(
+      (await readHostStatus(config, fixtureFetch(cpu({ idle: 70 })), () => now)).hosts[0],
+    ).toMatchObject({ cpuUsagePercent: 16 });
+    for (const overrides of [{ idle: null }, { iowait: null }, { steal: 101 }]) {
+      expect(
+        (await readHostStatus(config, fixtureFetch(cpu(overrides)), () => now)).hosts[0],
+      ).toMatchObject({ reason: "invalid_response" });
+    }
+  });
+
+  it("accepts complete Mac CPU dimensions in any order without core normalization", async () => {
+    const payload = {
+      api: 3,
+      db: { last_entry: now / 1000 },
+      view: { units: "percentage" },
+      result: { labels: ["time", "system", "nice", "user"], data: [[now / 1000, 15, 5, 20]] },
+    };
+    expect((await readHostStatus(config, fixtureFetch(payload), () => now)).hosts[0]).toMatchObject(
+      { status: "available", cpuUsagePercent: 40 },
+    );
+  });
+
+  it("rejects incomplete, duplicate, and unknown CPU dimensions", async () => {
+    for (const labels of [
+      ["user", "system", "idle"],
+      ["user", "nice", "system", "idle", "irq"],
+      ["user", "nice", "system", "idle", "user"],
+      ["user", "nice", "system", "idle", "unexpected"],
+    ]) {
+      const payload = {
+        api: 3,
+        db: { last_entry: now / 1000 },
+        view: { units: "percentage" },
+        result: { labels: ["time", ...labels], data: [[now / 1000, ...labels.map(() => 1)]] },
+      };
+      expect(
+        (await readHostStatus(config, fixtureFetch(payload), () => now)).hosts[0],
+      ).toMatchObject({ reason: "invalid_response" });
+    }
+  });
+
+  it("rejects missing, null, negative, or wrongly labeled free RAM", async () => {
+    for (const payload of [
+      data("free", null, "MiB"),
+      data("free", -1, "MiB"),
+      data("avail", 1, "MiB"),
+      { api: 3 },
+    ]) {
+      expect(
+        (await readHostStatus(config, fixtureFetch(undefined, payload), () => now)).hosts[0],
+      ).toMatchObject({ reason: "invalid_response" });
+    }
+  });
+
+  it("uses the oldest CPU/RAM bucket or database time and rejects either stale source", async () => {
+    const memory = data("free", 4096, "MiB", now / 1000 - 3);
+    memory.db.last_entry = now / 1000 - 4;
+    expect(
+      (await readHostStatus(config, fixtureFetch(cpu({}, now / 1000 - 2), memory), () => now))
+        .hosts[0],
+    ).toMatchObject({ sampledAt: "2027-01-15T07:59:56.000Z" });
+    for (const payload of [
+      data("free", 1, "MiB", now / 1000 - 31),
+      { ...data("free", 1, "MiB"), db: { last_entry: now / 1000 - 31 } },
+    ]) {
+      expect(
+        (await readHostStatus(config, fixtureFetch(undefined, payload), () => now)).hosts[0],
+      ).toMatchObject({ reason: "stale" });
+    }
+    expect(
+      (await readHostStatus(config, fixtureFetch(cpu({}, now / 1000 - 31)), () => now)).hosts[0],
+    ).toMatchObject({ reason: "stale" });
   });
 
   it("leaves shared collector slots without an explicit node unconfigured", async () => {
