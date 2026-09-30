@@ -91,6 +91,71 @@ it.effect("atomically registers a connected host and correlates its response", (
   ),
 );
 
+it.effect("adds a connection-bound selected client receipt to status only", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: { available: true, selectedClient: { clientId: "forged" } },
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const result = yield* broker.invoke<{
+        available: boolean;
+        selectedClient: {
+          clientId: string;
+          connectionId: string;
+          requestId: string;
+          runtimeIdentity: null;
+        };
+      }>({ scope, operation: "status", input: {} });
+      expect(result.selectedClient).toMatchObject({
+        clientId: "client-1",
+        requestId: "preview-0",
+        runtimeIdentity: null,
+      });
+      expect(result.selectedClient.connectionId).toBeTruthy();
+    }),
+  ),
+);
+
+it.effect("binds the runtime descriptor to the selected connection", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const runtimeIdentity = {
+        schemaVersion: 1,
+        runtimeKind: "electron",
+        runtimeInstanceId: "runtime-1",
+        appVersion: "0.1.0",
+        buildCommit: "a".repeat(40),
+      } as const;
+      const requests = requestsFrom(yield* broker.connect(makeHost({ runtimeIdentity })));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: { available: true, selectedClient: { clientId: "forged" } },
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const result = yield* broker.invoke<{
+        selectedClient: { runtimeIdentity: typeof runtimeIdentity; completedAt: string };
+      }>({ scope, operation: "status", input: {} });
+      expect(result.selectedClient.runtimeIdentity).toEqual(runtimeIdentity);
+      expect(Number.isNaN(Date.parse(result.selectedClient.completedAt))).toBe(false);
+    }),
+  ),
+);
+
 it.effect("targets multiple tabs explicitly while retaining a default tab", () =>
   Effect.scoped(
     Effect.gen(function* () {

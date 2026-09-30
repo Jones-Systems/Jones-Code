@@ -11,6 +11,7 @@ import * as Stream from "effect/Stream";
 
 import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
+import * as ProcessAttribution from "../resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceAttribution from "../resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceTelemetry from "../resourceTelemetry/ResourceTelemetry.ts";
 import * as ProcessDiagnostics from "./ProcessDiagnostics.ts";
@@ -57,7 +58,14 @@ function makeTelemetryLayer(
       })
     : DesktopTelemetryReceiver.layerTest();
   return ResourceTelemetry.layer.pipe(
-    Layer.provide(Layer.mergeAll(nativeLayer, desktopLayer, ResourceAttribution.layer)),
+    Layer.provide(
+      Layer.mergeAll(
+        nativeLayer,
+        desktopLayer,
+        ProcessAttribution.layer,
+        ResourceAttribution.layer,
+      ),
+    ),
   );
 }
 

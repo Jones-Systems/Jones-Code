@@ -18,6 +18,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as DesktopTelemetryReceiver from "./DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "./NativeTelemetryClient.ts";
+import * as ProcessAttribution from "./ProcessAttribution.ts";
 import * as ResourceAttribution from "./ResourceAttribution.ts";
 import * as ResourceTelemetry from "./ResourceTelemetry.ts";
 
@@ -169,7 +170,14 @@ describe("ResourceTelemetry", () => {
           Ref.update(demandChanges, (changes) => [...changes, enabled]),
       });
       const telemetryLayer = ResourceTelemetry.layer.pipe(
-        Layer.provide(Layer.mergeAll(nativeLayer, desktopLayer, ResourceAttribution.layer)),
+        Layer.provide(
+          Layer.mergeAll(
+            nativeLayer,
+            desktopLayer,
+            ProcessAttribution.layer,
+            ResourceAttribution.layer,
+          ),
+        ),
       );
 
       const live = yield* Stream.runHead(
@@ -205,7 +213,14 @@ describe("ResourceTelemetry", () => {
           Ref.update(demandChanges, (changes) => [...changes, enabled]),
       });
       const telemetryLayer = ResourceTelemetry.layer.pipe(
-        Layer.provide(Layer.mergeAll(nativeLayer, desktopLayer, ResourceAttribution.layer)),
+        Layer.provide(
+          Layer.mergeAll(
+            nativeLayer,
+            desktopLayer,
+            ProcessAttribution.layer,
+            ResourceAttribution.layer,
+          ),
+        ),
       );
 
       const resultFiber = yield* Stream.runHead(
@@ -254,7 +269,14 @@ describe("ResourceTelemetry", () => {
           latest: Effect.succeedSome(desktop),
         });
         const telemetryLayer = ResourceTelemetry.layer.pipe(
-          Layer.provide(Layer.mergeAll(nativeLayer, desktopLayer, ResourceAttribution.layer)),
+          Layer.provide(
+            Layer.mergeAll(
+              nativeLayer,
+              desktopLayer,
+              ProcessAttribution.layer,
+              ResourceAttribution.layer,
+            ),
+          ),
         );
 
         const snapshot = yield* Effect.gen(function* () {
@@ -305,6 +327,7 @@ describe("ResourceTelemetry", () => {
             Layer.mergeAll(
               nativeLayer,
               DesktopTelemetryReceiver.layerTest(),
+              ProcessAttribution.layer,
               ResourceAttribution.layer,
             ),
           ),
@@ -366,6 +389,7 @@ describe("ResourceTelemetry", () => {
             Layer.mergeAll(
               NativeTelemetryClient.layerTest(),
               desktopLayer,
+              ProcessAttribution.layer,
               ResourceAttribution.layer,
             ),
           ),
@@ -443,7 +467,9 @@ describe("ResourceTelemetry", () => {
           changes: Stream.fromPubSub(desktopChanges),
         });
         const telemetryLayer = ResourceTelemetry.layer.pipe(
-          Layer.provide(Layer.mergeAll(nativeLayer, desktopLayer, attributionLayer)),
+          Layer.provide(
+            Layer.mergeAll(nativeLayer, desktopLayer, ProcessAttribution.layer, attributionLayer),
+          ),
         );
 
         yield* Effect.gen(function* () {
@@ -547,7 +573,12 @@ describe("ResourceTelemetry", () => {
         }),
       });
       const attributionLayer = ResourceAttribution.layer;
-      const dependencies = Layer.mergeAll(nativeLayer, desktopLayer, attributionLayer);
+      const dependencies = Layer.mergeAll(
+        nativeLayer,
+        desktopLayer,
+        ProcessAttribution.layer,
+        attributionLayer,
+      );
       const telemetryLayer = ResourceTelemetry.layer.pipe(Layer.provide(dependencies));
       const layer = Layer.mergeAll(dependencies, telemetryLayer);
 
