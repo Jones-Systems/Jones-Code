@@ -960,7 +960,327 @@ function codexTurnEvent(method: "turn/started" | "turn/completed", turnId: strin
   };
 }
 
+function capacityEvent(
+  turnId: string,
+  willRetry = false,
+  errorInfo = "serverOverloaded",
+): ProviderEvent {
+  return {
+    ...codexTurnEvent("turn/completed", turnId),
+    id: asEventId(`capacity-error-${turnId}`),
+    method: "error",
+    payload: {
+      threadId: "thread-1",
+      turnId,
+      willRetry,
+      error: { message: "Model at capacity", codexErrorInfo: errorInfo },
+    },
+  };
+}
+
+function capacityCompletion(turnId: string): ProviderEvent {
+  return {
+    ...codexTurnEvent("turn/completed", turnId),
+    payload: {
+      threadId: "thread-1",
+      turn: {
+        id: turnId,
+        items: [],
+        status: "failed",
+        error: { message: "Model at capacity", codexErrorInfo: "serverOverloaded" },
+      },
+    },
+  };
+}
+
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect(
+    "retries capacity five times with promptless unchanged settings and one logical completion",
+    () =>
+      Effect.gen(function* () {
+        const { adapter, runtime } = yield* startLifecycleRuntime();
+        const starts = yield* Queue.unbounded<string>();
+        const events = yield* Queue.unbounded<import("@t3tools/contracts").ProviderRuntimeEvent>();
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) => Queue.offer(events, event)),
+          Effect.forkChild,
+        );
+        let index = 0;
+        runtime.sendTurnImpl.mockImplementation(async () => {
+          const turnId = `capacity-${index++}`;
+          return { threadId: asThreadId("thread-1"), turnId: asTurnId(turnId) };
+        });
+        const sendTurn = runtime.sendTurn.bind(runtime);
+        runtime.sendTurn = (input) =>
+          sendTurn(input).pipe(Effect.tap((result) => Queue.offer(starts, String(result.turnId))));
+        yield* adapter.sendTurn({
+          threadId: asThreadId("thread-1"),
+          input: "Do the work",
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-6-astra", [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "priority" },
+          ]),
+        });
+        let current = yield* Queue.take(starts);
+        for (let attempt = 1; attempt <= 5; attempt++) {
+          yield* runtime.emit(capacityEvent(current));
+          yield* runtime.emit(capacityCompletion(current));
+          const warning = yield* Queue.take(events);
+          NodeAssert.equal(warning.type, "runtime.warning");
+          yield* TestClock.adjust("9 seconds");
+          NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, attempt);
+          yield* TestClock.adjust("1 second");
+          current = yield* Queue.take(starts);
+          NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[attempt]?.[0], {
+            model: "gpt-6-astra",
+            effort: "high",
+            serviceTier: "priority",
+          });
+        }
+        yield* runtime.emit(capacityEvent(current));
+        yield* runtime.emit(capacityCompletion(current));
+        NodeAssert.equal((yield* Queue.take(events)).type, "runtime.error");
+        const completed = yield* Queue.take(events);
+        NodeAssert.equal(completed.type, "turn.completed");
+        NodeAssert.equal(completed.turnId, asTurnId("capacity-0"));
+        yield* TestClock.adjust("1 minute");
+        NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 6);
+      }),
+  );
+
+  it.effect("cancels a delayed capacity continuation without sending another request", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      yield* adapter.sendTurn({ threadId: asThreadId("thread-1"), input: "work" });
+      const warning = yield* adapter.streamEvents.pipe(Stream.runHead, Effect.forkChild);
+      yield* runtime.emit(capacityEvent("turn-1"));
+      yield* runtime.emit(capacityCompletion("turn-1"));
+      yield* Fiber.join(warning);
+      const completion = yield* adapter.streamEvents.pipe(Stream.runHead, Effect.forkChild);
+      yield* adapter.interruptTurn(asThreadId("thread-1"), asTurnId("turn-1"));
+      const cancelled = yield* Fiber.join(completion);
+      NodeAssert.ok(Option.isSome(cancelled));
+      NodeAssert.equal(cancelled.value.type, "turn.completed");
+      NodeAssert.equal(runtime.pauseActiveGoalImpl.mock.calls.length, 1);
+      NodeAssert.equal(runtime.interruptChildTurnsImpl.mock.calls.length, 1);
+      yield* TestClock.adjust("1 minute");
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect(
+    "maps a successful continuation emitted before its start response to the original turn",
+    () =>
+      Effect.gen(function* () {
+        const { adapter, runtime } = yield* startLifecycleRuntime();
+        yield* adapter.sendTurn({ threadId: asThreadId("thread-1"), input: "work" });
+        runtime.sendTurnImpl.mockImplementation(async () => {
+          return { threadId: asThreadId("thread-1"), turnId: asTurnId("retry-success") };
+        });
+        const sendTurn = runtime.sendTurn.bind(runtime);
+        runtime.sendTurn = (input) =>
+          Effect.gen(function* () {
+            yield* runtime.emit(codexTurnEvent("turn/started", "retry-success"));
+            yield* runtime.emit(codexTurnEvent("turn/completed", "retry-success"));
+            return yield* sendTurn(input);
+          });
+        const events = yield* Queue.unbounded<import("@t3tools/contracts").ProviderRuntimeEvent>();
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) => Queue.offer(events, event)),
+          Effect.forkChild,
+        );
+        yield* runtime.emit(capacityEvent("turn-1"));
+        yield* runtime.emit(capacityCompletion("turn-1"));
+        NodeAssert.equal((yield* Queue.take(events)).type, "runtime.warning");
+        yield* TestClock.adjust("10 seconds");
+        const completed = yield* Queue.take(events);
+        NodeAssert.equal(completed.type, "turn.completed");
+        NodeAssert.equal(completed.turnId, asTurnId("turn-1"));
+        if (completed.type === "turn.completed")
+          NodeAssert.equal(completed.payload.state, "completed");
+      }),
+  );
+
+  it.effect("does not continue after the provider session closes during the delay", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      yield* adapter.sendTurn({ threadId: asThreadId("thread-1"), input: "work" });
+      const warning = yield* adapter.streamEvents.pipe(Stream.runHead, Effect.forkChild);
+      yield* runtime.emit(capacityEvent("turn-1"));
+      yield* runtime.emit(capacityCompletion("turn-1"));
+      yield* Fiber.join(warning);
+      yield* adapter.stopSession(asThreadId("thread-1"));
+      yield* TestClock.adjust("1 minute");
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect(
+    "preserves native queued follow-ups while superseding recovery of the active turn",
+    () =>
+      Effect.gen(function* () {
+        const { adapter, runtime } = yield* startLifecycleRuntime();
+        let index = 0;
+        runtime.sendTurnImpl.mockImplementation(async () => ({
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId(`queued-${index++}`),
+        }));
+        const first = yield* adapter.sendTurn({ threadId: asThreadId("thread-1"), input: "first" });
+        const second = yield* adapter.sendTurn({
+          threadId: asThreadId("thread-1"),
+          input: "follow-up",
+        });
+        NodeAssert.equal(first.turnId, asTurnId("queued-0"));
+        NodeAssert.equal(second.turnId, asTurnId("queued-1"));
+        NodeAssert.equal(runtime.sendTurnImpl.mock.calls[1]?.[0].input, "follow-up");
+        const completions = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.completed"),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* runtime.emit(capacityEvent("queued-0"));
+        yield* runtime.emit(capacityCompletion("queued-0"));
+        yield* runtime.emit(codexTurnEvent("turn/completed", "queued-1"));
+        const completed = yield* Fiber.join(completions);
+        NodeAssert.deepStrictEqual(
+          Array.from(completed, (event) => event.turnId),
+          [first.turnId, second.turnId],
+        );
+        yield* TestClock.adjust("1 minute");
+        NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 2);
+      }),
+  );
+
+  it.effect("retries a queued follow-up using that request's own settings and logical turn", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      let index = 0;
+      runtime.sendTurnImpl.mockImplementation(async () => ({
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId(`follow-${index++}`),
+      }));
+      yield* adapter.sendTurn({ threadId: asThreadId("thread-1"), input: "first" });
+      yield* adapter.sendTurn({
+        threadId: asThreadId("thread-1"),
+        input: "queued",
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-6-astra", [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "priority" },
+        ]),
+      });
+      const events = yield* Queue.unbounded<import("@t3tools/contracts").ProviderRuntimeEvent>();
+      yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) => Queue.offer(events, event)),
+        Effect.forkChild,
+      );
+      yield* runtime.emit(codexTurnEvent("turn/completed", "follow-0"));
+      NodeAssert.equal((yield* Queue.take(events)).type, "turn.completed");
+      yield* runtime.emit(capacityEvent("follow-1"));
+      yield* runtime.emit(capacityCompletion("follow-1"));
+      NodeAssert.equal((yield* Queue.take(events)).type, "runtime.warning");
+      const started = yield* Queue.unbounded<void>();
+      const sendTurn = runtime.sendTurn.bind(runtime);
+      runtime.sendTurn = (input) =>
+        sendTurn(input).pipe(Effect.tap(() => Queue.offer(started, undefined)));
+      yield* TestClock.adjust("10 seconds");
+      yield* Queue.take(started);
+      NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[2]?.[0], {
+        model: "gpt-6-astra",
+        effort: "high",
+        serviceTier: "priority",
+      });
+      yield* runtime.emit(codexTurnEvent("turn/completed", "follow-2"));
+      const completed = yield* Queue.take(events);
+      NodeAssert.equal(completed.type, "turn.completed");
+      NodeAssert.equal(completed.turnId, asTurnId("follow-1"));
+    }),
+  );
+
+  it.effect("finishes a delayed logical turn when new owner input supersedes its retry", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      yield* adapter.sendTurn({ threadId: asThreadId("thread-1"), input: "first" });
+      const warning = yield* adapter.streamEvents.pipe(Stream.runHead, Effect.forkChild);
+      yield* runtime.emit(capacityEvent("turn-1"));
+      yield* runtime.emit(capacityCompletion("turn-1"));
+      yield* Fiber.join(warning);
+      runtime.sendTurnImpl.mockResolvedValue({
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("follow-up"),
+      });
+      const terminal = yield* adapter.streamEvents.pipe(Stream.runHead, Effect.forkChild);
+      yield* adapter.sendTurn({ threadId: asThreadId("thread-1"), input: "follow-up" });
+      const completed = yield* Fiber.join(terminal);
+      NodeAssert.ok(Option.isSome(completed));
+      NodeAssert.equal(completed.value.turnId, asTurnId("turn-1"));
+      NodeAssert.equal(completed.value.type, "turn.completed");
+      if (completed.value.type === "turn.completed")
+        NodeAssert.equal(completed.value.payload.state, "interrupted");
+      yield* TestClock.adjust("1 minute");
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 2);
+    }),
+  );
+
+  it.effect("Stop closes a pending continuation without waiting for its start response", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      yield* adapter.sendTurn({ threadId: asThreadId("thread-1"), input: "first" });
+      const started = yield* Queue.unbounded<void>();
+      runtime.sendTurn = () => Queue.offer(started, undefined).pipe(Effect.andThen(Effect.never));
+      const warning = yield* adapter.streamEvents.pipe(Stream.runHead, Effect.forkChild);
+      yield* runtime.emit(capacityEvent("turn-1"));
+      yield* runtime.emit(capacityCompletion("turn-1"));
+      yield* Fiber.join(warning);
+      yield* TestClock.adjust("10 seconds");
+      yield* Queue.take(started);
+      const terminal = yield* adapter.streamEvents.pipe(Stream.runHead, Effect.forkChild);
+      yield* adapter.interruptTurn(asThreadId("thread-1"), asTurnId("turn-1"));
+      const completed = yield* Fiber.join(terminal);
+      NodeAssert.ok(Option.isSome(completed));
+      NodeAssert.equal(completed.value.type, "turn.completed");
+      NodeAssert.equal(runtime.closeImpl.mock.calls.length, 1);
+      NodeAssert.equal(runtime.interruptTurnImpl.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("Stop closes a pending initial start without waiting for its response", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const started = yield* Queue.unbounded<void>();
+      runtime.sendTurn = () => Queue.offer(started, undefined).pipe(Effect.andThen(Effect.never));
+      yield* adapter
+        .sendTurn({ threadId: asThreadId("thread-1"), input: "first" })
+        .pipe(Effect.forkChild);
+      yield* Queue.take(started);
+      yield* adapter.interruptTurn(asThreadId("thread-1"));
+      NodeAssert.equal(runtime.closeImpl.mock.calls.length, 1);
+      NodeAssert.equal(runtime.interruptTurnImpl.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("leaves native retries and noncapacity errors alone", () =>
+    Effect.gen(function* () {
+      for (const [willRetry, code] of [
+        [true, "serverOverloaded"],
+        [false, "other"],
+      ] as const) {
+        const { adapter, runtime } = yield* startLifecycleRuntime();
+        yield* adapter.sendTurn({ threadId: asThreadId("thread-1"), input: "work" });
+        const receipt = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.completed"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* runtime.emit(capacityEvent("turn-1", willRetry, code));
+        yield* runtime.emit(capacityCompletion("turn-1"));
+        yield* Fiber.join(receipt);
+        yield* TestClock.adjust("1 minute");
+        NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 1);
+      }
+    }),
+  );
+
   it.effect("pauses the active goal before a user-facing interrupt", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
@@ -3368,6 +3688,109 @@ usageLimitLayer("CodexAdapterLive usage limits", (it) => {
     }),
   );
 });
+
+for (const rotated of [false, true]) {
+  it.effect(
+    `managed capacity continuation ${rotated ? "rejects a changed runtime" : "preserves runtime settings and generation"}`,
+    () => {
+      const factory = makeRuntimeFactory();
+      let revision = "first";
+      const layer = Layer.effect(
+        CodexAdapter,
+        makeCodexAdapter(decodeCodexSettings({}), {
+          resolveRuntime: Effect.sync(() => ({
+            config: decodeCodexSettings({}),
+            environment: {},
+            revision,
+          })),
+          makeRuntime: factory.factory,
+        }),
+      ).pipe(
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+        Layer.provideMerge(ServerSettingsService.layerTest()),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+      return Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        const threadId = asThreadId("thread-1");
+        yield* adapter.startSession({
+          threadId,
+          runtimeMode: "full-access",
+          runtimeGeneration: "capacity-generation",
+        });
+        const runtime = factory.lastRuntime!;
+        yield* adapter.sendTurn({
+          threadId,
+          input: "work",
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-6-astra", [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "priority" },
+          ]),
+        });
+        const events = yield* Queue.unbounded<import("@t3tools/contracts").ProviderRuntimeEvent>();
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) => Queue.offer(events, event)),
+          Effect.forkChild,
+        );
+        const emit = (event: ProviderEvent) =>
+          runtime.emit({ ...event, runtimeGeneration: "capacity-generation" });
+        yield* emit(capacityEvent("turn-1"));
+        yield* emit(capacityCompletion("turn-1"));
+        NodeAssert.equal((yield* Queue.take(events)).type, "runtime.warning");
+        if (rotated) revision = "rotated";
+        const starts = yield* Queue.unbounded<void>();
+        const sendTurn = runtime.sendTurn.bind(runtime);
+        runtime.sendTurn = (input) =>
+          sendTurn(input).pipe(Effect.tap(() => Queue.offer(starts, undefined)));
+        yield* TestClock.adjust("10 seconds");
+        if (rotated) {
+          NodeAssert.equal(
+            runtime.sendTurnImpl.mock.calls.length,
+            1,
+            "changed runtime must not receive the continuation",
+          );
+          const error = yield* Queue.take(events);
+          NodeAssert.equal(error.type, "runtime.error");
+          if (error.type === "runtime.error")
+            NodeAssert.match(error.payload.message, /runtime changed/i);
+          const completion = yield* Queue.take(events);
+          NodeAssert.equal(completion.type, "turn.completed");
+          NodeAssert.equal(completion.turnId, asTurnId("turn-1"));
+          NodeAssert.equal(completion.runtimeGeneration, "capacity-generation");
+          NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 1);
+          yield* TestClock.adjust("1 minute");
+          NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 1);
+          let replacements = 0;
+          yield* adapter.sendTurn(
+            { threadId, input: "next work" },
+            {
+              withRuntimeReplacement: (restart) =>
+                Effect.suspend(() => {
+                  replacements += 1;
+                  return restart("next-generation");
+                }),
+            },
+          );
+          NodeAssert.equal(replacements, 1);
+          NodeAssert.equal(runtime.closeImpl.mock.calls.length, 1);
+          NodeAssert.equal(factory.lastRuntime?.options.runtimeGeneration, "next-generation");
+          NodeAssert.equal(factory.lastRuntime?.sendTurnImpl.mock.calls[0]?.[0].input, "next work");
+        } else {
+          yield* Queue.take(starts);
+          NodeAssert.deepEqual(runtime.sendTurnImpl.mock.calls[1]?.[0], {
+            model: "gpt-6-astra",
+            effort: "high",
+          });
+          yield* emit(codexTurnEvent("turn/completed", "turn-1"));
+          const completion = yield* Queue.take(events);
+          NodeAssert.equal(completion.type, "turn.completed");
+          NodeAssert.equal(completion.runtimeGeneration, "capacity-generation");
+        }
+      }).pipe(Effect.provide(layer));
+    },
+  );
+}
 
 it.effect("managed runtime rotation restarts app-server and resumes the same native thread", () => {
   const runtimes: FakeCodexRuntime[] = [];
