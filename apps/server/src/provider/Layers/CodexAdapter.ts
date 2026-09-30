@@ -60,6 +60,7 @@ import {
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import type { ProcessAttribution } from "../../resourceTelemetry/ProcessAttribution.ts";
 import {
   CodexResumeCursorSchema,
   CodexSessionRuntimeThreadIdMissingError,
@@ -101,6 +102,7 @@ export interface CodexAdapterLiveOptions {
   >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly processAttribution?: ProcessAttribution["Service"];
 }
 
 interface CodexAdapterSessionContext {
@@ -2306,6 +2308,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { model: input.modelSelection.model }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
+          ...(options?.processAttribution
+            ? { processAttribution: options.processAttribution }
+            : {}),
           ...(mcpSession
             ? {
                 environment: {

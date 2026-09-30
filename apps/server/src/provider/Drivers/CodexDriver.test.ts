@@ -16,6 +16,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
+import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as ResetCreditCoordinator from "../Layers/resetCreditCoordinator.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
@@ -33,6 +34,7 @@ const testLayer = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(ServerSettingsService.layerTest()),
   Layer.provideMerge(ModelManifest.layerTest),
+  Layer.provideMerge(ProcessAttribution.layer),
   Layer.provideMerge(ResetCreditCoordinator.layerTest),
   Layer.provideMerge(
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({
