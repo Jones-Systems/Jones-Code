@@ -28,6 +28,7 @@ import {
 import * as Context from "effect/Context";
 import type * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -71,6 +72,7 @@ interface ClientConnection {
   readonly clientId: string;
   readonly connectionId: string;
   readonly environmentId: PreviewAutomationHost["environmentId"];
+  readonly runtimeIdentity: PreviewAutomationHost["runtimeIdentity"];
   readonly supportedOperations: ReadonlySet<PreviewAutomationOperation>;
   readonly focused: boolean;
   readonly liveTabs: NonNullable<PreviewAutomationHostFocus["liveTabs"]>;
@@ -80,6 +82,7 @@ interface ClientConnection {
 
 interface PendingRequest {
   readonly queue: ClientConnection["queue"];
+  readonly runtimeIdentity: ClientConnection["runtimeIdentity"];
   readonly deferred: Deferred.Deferred<unknown, PreviewAutomationError>;
   readonly context: PreviewAutomationRequestErrorContext;
 }
@@ -375,6 +378,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       clientId,
       connectionId,
       environmentId: host.environmentId,
+      runtimeIdentity: host.runtimeIdentity,
       supportedOperations: new Set(host.supportedOperations ?? PREVIEW_AUTOMATION_V1_OPERATIONS),
       focused: false,
       liveTabs: [],
@@ -459,7 +463,25 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     });
     if (!pending) return;
     if (response.ok) {
-      yield* Deferred.succeed(pending.deferred, response.result);
+      const result = response.result;
+      yield* Deferred.succeed(
+        pending.deferred,
+        pending.context.operation === "status" &&
+          typeof result === "object" &&
+          result !== null &&
+          !Array.isArray(result)
+          ? {
+              ...result,
+              selectedClient: {
+                clientId: pending.context.clientId,
+                connectionId: pending.context.connectionId,
+                requestId: pending.context.requestId,
+                completedAt: DateTime.formatIso(yield* DateTime.now),
+                runtimeIdentity: pending.runtimeIdentity ?? null,
+              },
+            }
+          : result,
+      );
     } else {
       yield* Deferred.fail(
         pending.deferred,
@@ -556,7 +578,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ...selectorDiagnostics,
       };
       const pending = new Map(current.pending);
-      pending.set(requestId, { queue: connection.queue, deferred, context });
+      pending.set(requestId, {
+        queue: connection.queue,
+        runtimeIdentity: connection.runtimeIdentity,
+        deferred,
+        context,
+      });
       return [
         { connection, requestId, requestContext: context, requestSequence },
         { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },

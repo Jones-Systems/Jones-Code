@@ -4,6 +4,7 @@ import {
   PreviewAutomationClickInput,
   PreviewAutomationEvaluateInput,
   PreviewAutomationPressInput,
+  PreviewAutomationRuntimeIdentity,
   PreviewAutomationScrollInput,
   PreviewAutomationSnapshot,
   PreviewAutomationStatus,
@@ -1123,6 +1124,7 @@ export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
+  getPreviewAutomationRuntimeIdentity?: () => Promise<PreviewAutomationRuntimeIdentity>;
   /** Absolute path of a dropped or picked file; absent on desktop builds predating it. */
   getPathForFile?: (file: File) => string;
   /** The desktop client's OS platform, read from Electron's preload process. */
