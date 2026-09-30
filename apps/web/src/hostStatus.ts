@@ -23,7 +23,18 @@ export function fetchHostStatus(signal: AbortSignal): Promise<HostStatusSnapshot
   );
 }
 
-export function hostStatusMetrics(host: HostStatus | undefined) {
+const HOST_STATUS_MAX_AGE_MS = 30_000;
+
+function freshHostStatus(host: HostStatus, now: number): HostStatus {
+  if (host.status === "unavailable") return host;
+  const age = now - Date.parse(host.sampledAt);
+  return !Number.isFinite(age) || age < 0 || age >= HOST_STATUS_MAX_AGE_MS
+    ? { id: host.id, status: "unavailable", reason: "stale" }
+    : host;
+}
+
+export function hostStatusMetrics(sample: HostStatus | undefined) {
+  const host = sample && freshHostStatus(sample, Date.now());
   if (!host || host.status === "unavailable") {
     const reason = !host
       ? "Waiting for host status"
@@ -33,33 +44,17 @@ export function hostStatusMetrics(host: HostStatus | undefined) {
           invalid_response: "Invalid host status response",
           stale: "Host status sample is stale",
         }[host.reason];
-    return {
-      load: "—",
-      ram: "—",
-      health: "unavailable",
-      loadHealth: "unavailable",
-      ramHealth: "unavailable",
-      detail: reason,
-    } as const;
+    return { cpu: "—", ram: "—", health: "unavailable", detail: reason } as const;
   }
-  const loadPerCore = host.load1 / host.logicalCpuCount;
-  const availableFraction = host.availableMemoryBytes / host.totalMemoryBytes;
-  const loadHealth = loadPerCore >= 1 ? "critical" : loadPerCore >= 0.8 ? "warning" : "healthy";
-  const ramHealth =
-    availableFraction < 0.05 ? "critical" : availableFraction < 0.1 ? "warning" : "healthy";
-  const health =
-    loadHealth === "critical" || ramHealth === "critical"
-      ? "critical"
-      : loadHealth === "warning" || ramHealth === "warning"
-        ? "warning"
-        : "healthy";
+  const health = host.cpuUsagePercent >= 95 ? "critical" : host.cpuUsagePercent >= 80 ? "warning" : "healthy";
+  const format = (value: number) => value.toFixed(1).replace(/\.0$/, "");
+  const cpu = `${format(host.cpuUsagePercent)}%`;
+  const ram = `${format(host.occupiedMemoryBytes / 1024 ** 3)}/${format(host.totalMemoryBytes / 1024 ** 3)} GiB`;
   return {
     health,
-    load: host.load1.toFixed(1).replace(/\.0$/, ""),
-    ram: (host.availableMemoryBytes / 1024 ** 3).toFixed(1).replace(/\.0$/, ""),
-    loadHealth,
-    ramHealth,
-    detail: `1-minute load ${host.load1}; ${host.logicalCpuCount} logical CPUs. Available RAM ${(host.availableMemoryBytes / 1024 ** 3).toFixed(1)} GiB (${(availableFraction * 100).toFixed(1)}%).`,
+    cpu,
+    ram,
+    detail: `CPU ${cpu}. Occupied RAM ${ram}; includes reclaimable cache, not memory pressure. Color reflects CPU utilization only.`,
   } as const;
 }
 
@@ -71,19 +66,42 @@ export function observeHostStatus(
   let disposed = false;
   let pending = false;
   const abort = new AbortController();
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearExpiry = () => {
+    clearTimeout(expiryTimer);
+    expiryTimer = undefined;
+  };
+  const publish = (snapshot: HostStatusSnapshot) => {
+    clearExpiry();
+    const now = Date.now();
+    const hosts = snapshot.hosts.map((host) => freshHostStatus(host, now));
+    receive({ ...snapshot, hosts });
+    const deadlines = hosts.flatMap((host) =>
+      host.status === "available" ? [Date.parse(host.sampledAt) + HOST_STATUS_MAX_AGE_MS] : [],
+    );
+    if (deadlines.length > 0) {
+      expiryTimer = setTimeout(() => {
+        if (!disposed && visibility.visibilityState === "visible") publish({ ...snapshot, hosts });
+      }, Math.min(...deadlines) - now);
+    }
+  };
   const refresh = async () => {
     if (disposed || pending || visibility.visibilityState !== "visible") return;
     pending = true;
     try {
       const snapshot = await request(abort.signal);
-      if (!disposed && visibility.visibilityState === "visible") receive(snapshot);
+      if (!disposed && visibility.visibilityState === "visible") publish(snapshot);
     } catch {
-      if (!disposed) receive(null);
+      if (!disposed) {
+        clearExpiry();
+        receive(null);
+      }
     } finally {
       pending = false;
     }
   };
   const onVisibility = () => {
+    clearExpiry();
     receive(null);
     void refresh();
   };
@@ -93,6 +111,7 @@ export function observeHostStatus(
   return () => {
     disposed = true;
     clearInterval(timer);
+    clearExpiry();
     visibility.removeEventListener("visibilitychange", onVisibility);
     abort.abort();
   };

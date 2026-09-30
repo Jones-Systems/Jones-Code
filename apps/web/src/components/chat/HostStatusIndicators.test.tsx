@@ -42,13 +42,13 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-it("keeps one bubble per host while live samples update text, worst health, and accessible detail", async () => {
+it("keeps one bubble per host while live samples update text, CPU health, and accessible detail", async () => {
   const bubbles = () => Array.from(container.querySelectorAll('[role="img"]'));
   expect(bubbles().map((bubble) => bubble.textContent)).toEqual([
-    "VPS · — · — GiB",
-    "Test · — · — GiB",
-    "Mini · — · — GiB",
-    "Home · — · — GiB",
+    "VPS · CPU — · RAM —",
+    "Test · CPU — · RAM —",
+    "Mini · CPU — · RAM —",
+    "Home · CPU — · RAM —",
   ]);
   expect(bubbles().every((bubble) => bubble.className.includes("bg-muted"))).toBe(true);
   await act(async () =>
@@ -57,24 +57,29 @@ it("keeps one bubble per host while live samples update text, worst health, and 
         {
           id: "vps",
           status: "available",
-          load1: 17,
+          cpuUsagePercent: 23,
           logicalCpuCount: 16,
-          availableMemoryBytes: 44 * 1024 ** 3,
-          totalMemoryBytes: 64 * 1024 ** 3,
-          sampledAt: "2026-09-29T12:00:00.000Z",
+          occupiedMemoryBytes: 12 * 1024 ** 3,
+          totalMemoryBytes: 16 * 1024 ** 3,
+          sampledAt: new Date().toISOString(),
         },
       ],
     }),
   );
   expect(bubbles()).toHaveLength(4);
-  expect(bubbles()[0]?.textContent).toBe("VPS · 17 · 44 GiB");
-  expect(bubbles()[0]?.className).toContain("bg-red-500/15");
-  expect(bubbles()[0]?.getAttribute("aria-label")).toContain("16 logical CPUs");
-  expect(bubbles()[0]?.getAttribute("aria-label")).toContain("Available RAM 44.0 GiB");
+  expect(bubbles()[0]?.textContent).toBe("VPS · CPU 23% · RAM 12/16 GiB");
+  expect(bubbles()[0]?.className).toContain("bg-emerald-500/10");
+  expect(bubbles()[0]?.getAttribute("aria-label")).toContain("CPU 23%");
+  expect(bubbles()[0]?.getAttribute("aria-label")).toContain("Occupied RAM 12/16 GiB");
+  expect(bubbles()[0]?.getAttribute("aria-label")).toContain("includes reclaimable cache");
+  expect(bubbles()[0]?.getAttribute("aria-label")).toContain("not memory pressure");
+  expect(bubbles()[1]?.textContent).toBe("Test · CPU — · RAM —");
+  await act(async () => receive(null));
+  expect(bubbles()[0]?.textContent).toBe("VPS · CPU — · RAM —");
   await act(async () =>
     receive({ hosts: [{ id: "vps", status: "unavailable", reason: "stale" }] }),
   );
-  expect(bubbles()[0]?.textContent).toBe("VPS · — · — GiB");
+  expect(bubbles()[0]?.textContent).toBe("VPS · CPU — · RAM —");
   expect(bubbles()[0]?.className).toContain("bg-muted");
   expect(bubbles()[0]?.getAttribute("aria-label")).toContain("stale");
 });

@@ -43,7 +43,7 @@ export const HostStatusIndicators = memo(function HostStatusIndicators() {
                 />
               }
             >
-              {`${name} · ${metrics.load} · ${metrics.ram} GiB`}
+              {`${name} · CPU ${metrics.cpu} · RAM ${metrics.ram}`}
             </TooltipTrigger>
             <TooltipPopup>{label}</TooltipPopup>
           </Tooltip>

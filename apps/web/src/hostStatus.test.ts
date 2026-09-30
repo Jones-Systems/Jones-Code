@@ -1,5 +1,5 @@
 import type { HostStatus, HostStatusSnapshot } from "@t3tools/contracts";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { fetchHostStatus, hostStatusMetrics, observeHostStatus } from "./hostStatus";
 
@@ -7,9 +7,9 @@ const gib = 1024 ** 3;
 const available = {
   id: "vps",
   status: "available",
-  load1: 4,
+  cpuUsagePercent: 23,
   logicalCpuCount: 4,
-  availableMemoryBytes: 4 * gib,
+  occupiedMemoryBytes: 12 * gib,
   totalMemoryBytes: 16 * gib,
   sampledAt: "2026-09-29T12:00:00.000Z",
 } satisfies Extract<HostStatus, { status: "available" }>;
@@ -23,81 +23,42 @@ class Visibility extends EventTarget {
   }
 }
 
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(available.sampledAt));
+});
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
 describe("host status metrics", () => {
-  it.each([
-    [1, 25, "healthy"],
-    [3.2, 25, "warning"],
-    [4, 25, "critical"],
-    [1, 7, "warning"],
-    [1, 4, "critical"],
-    [3.2, 4, "critical"],
-    [4, 7, "critical"],
-    [3.2, 7, "warning"],
-    [4, 4, "critical"],
-  ] as const)("combines load %s and RAM %s percent into %s", (load1, percent, health) => {
-    expect(
-      hostStatusMetrics({
-        ...available,
-        load1,
-        availableMemoryBytes: percent,
-        totalMemoryBytes: 100,
-      }),
-    ).toHaveProperty("health", health);
+  it("shows CPU percentage and occupied/total RAM in GiB with an explicit definition", () => {
+    const metrics = hostStatusMetrics(available);
+    expect(metrics).toMatchObject({ cpu: "23%", ram: "12/16 GiB", health: "healthy" });
+    expect(metrics.detail).toContain("CPU 23%");
+    expect(metrics.detail).toContain("Occupied RAM 12/16 GiB");
+    expect(metrics.detail).toContain("includes reclaimable cache");
+    expect(metrics.detail).toContain("not memory pressure");
+    expect(hostStatusMetrics({ ...available, logicalCpuCount: 128 }).cpu).toBe("23%");
   });
-  it("keeps combined health unavailable for missing or stale hosts", () => {
-    expect(hostStatusMetrics(undefined)).toHaveProperty("health", "unavailable");
-    expect(
-      hostStatusMetrics({ id: "home", status: "unavailable", reason: "stale" }),
-    ).toHaveProperty("health", "unavailable");
+  it.each([[0, "healthy"], [79.9, "healthy"], [80, "warning"], [95, "critical"], [100, "critical"]] as const)(
+    "colors CPU %s independently of occupied memory", (cpuUsagePercent, health) => {
+      expect(hostStatusMetrics({ ...available, cpuUsagePercent, occupiedMemoryBytes: 16 * gib }).health).toBe(health);
+    },
+  );
+  it("formats fractional GiB and zero usage without confusing zero with missing", () => {
+    expect(hostStatusMetrics({ ...available, cpuUsagePercent: 0, occupiedMemoryBytes: 0 })).toMatchObject({ cpu: "0%", ram: "0/16 GiB" });
+    expect(hostStatusMetrics({ ...available, cpuUsagePercent: 23.26, occupiedMemoryBytes: 12.26 * gib })).toMatchObject({ cpu: "23.3%", ram: "12.3/16 GiB" });
+    expect(hostStatusMetrics(undefined)).toMatchObject({ cpu: "—", ram: "—", health: "unavailable" });
   });
-  it("omits trailing zeros for whole metrics and keeps one decimal for fractional values", () => {
-    expect(
-      hostStatusMetrics({
-        ...available,
-        load1: 17,
-        logicalCpuCount: 16,
-        availableMemoryBytes: 44 * gib,
-        totalMemoryBytes: 64 * gib,
-      }),
-    ).toMatchObject({ load: "17", ram: "44" });
-    expect(
-      hostStatusMetrics({ ...available, load1: 17.26, availableMemoryBytes: 4.26 * gib }),
-    ).toMatchObject({ load: "17.3", ram: "4.3" });
-  });
-  it("keeps raw load above CPU count and classifies per-core thresholds", () => {
-    expect(hostStatusMetrics({ ...available, load1: 7 }).load).toBe("7");
-    expect(hostStatusMetrics({ ...available, load1: 3.19 }).loadHealth).toBe("healthy");
-    expect(hostStatusMetrics({ ...available, load1: 3.2 }).loadHealth).toBe("warning");
-    expect(hostStatusMetrics(available).loadHealth).toBe("critical");
-    expect(hostStatusMetrics(available).detail).toContain("4 logical CPUs");
-  });
-  it("uses GiB and the strict available-RAM percentage boundaries", () => {
-    expect(hostStatusMetrics(available).ram).toBe("4");
-    for (const [fraction, health] of [
-      [0.1, "healthy"],
-      [0.099, "warning"],
-      [0.05, "warning"],
-      [0.049, "critical"],
-    ] as const) {
-      expect(
-        hostStatusMetrics({
-          ...available,
-          availableMemoryBytes: 10000 * fraction,
-          totalMemoryBytes: 10000,
-        }).ramHealth,
-      ).toBe(health);
-    }
-  });
-  it("keeps missing and unavailable hosts gray with a reason", () => {
-    expect(hostStatusMetrics(undefined).loadHealth).toBe("unavailable");
-    expect(hostStatusMetrics({ id: "home", status: "unavailable", reason: "stale" })).toMatchObject(
-      { ram: "—", ramHealth: "unavailable", detail: "Host status sample is stale" },
-    );
+  it("hides values at the thirty-second source freshness boundary", () => {
+    vi.advanceTimersByTime(29_999);
+    expect(hostStatusMetrics(available).cpu).toBe("23%");
+    vi.advanceTimersByTime(1);
+    expect(hostStatusMetrics(available)).toMatchObject({ cpu: "—", ram: "—", health: "unavailable", detail: "Host status sample is stale" });
+    expect(hostStatusMetrics({ id: "home", status: "unavailable", reason: "stale" }).health).toBe("unavailable");
   });
 });
 
@@ -165,6 +126,34 @@ describe("visible host-status polling", () => {
   });
 });
 
+describe("source timestamp expiry", () => {
+  it("expires a presented sample while the next refresh remains in flight", async () => {
+    const receive = vi.fn();
+    let resolve!: (value: HostStatusSnapshot) => void;
+    const request = vi.fn().mockResolvedValueOnce(snapshot).mockImplementation(() => new Promise<HostStatusSnapshot>((done) => { resolve = done; }));
+    const stop = observeHostStatus(new Visibility(), receive, request);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(receive).toHaveBeenLastCalledWith(snapshot);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(receive).toHaveBeenLastCalledWith({ hosts: [{ id: "vps", status: "unavailable", reason: "stale" }] });
+    expect(request).toHaveBeenCalledTimes(2);
+    resolve(snapshot);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(receive).toHaveBeenLastCalledWith({ hosts: [{ id: "vps", status: "unavailable", reason: "stale" }] });
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("expires each host from its own source time and rejects already stale samples", async () => {
+    const receive = vi.fn();
+    const older = { ...available, sampledAt: new Date(Date.now() - 25_000).toISOString() };
+    const mini = { ...available, id: "mini" as const };
+    const stop = observeHostStatus(new Visibility(), receive, vi.fn().mockResolvedValue({ hosts: [older, mini] }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(receive).toHaveBeenLastCalledWith({ hosts: [{ id: "vps", status: "unavailable", reason: "stale" }, mini] });
+    stop();
+  });
+});
+
 describe("typed gateway request", () => {
   it("requests only the primary gateway endpoint with browser credentials", async () => {
     vi.stubGlobal("window", {
@@ -183,7 +172,7 @@ describe("typed gateway request", () => {
     });
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(Response.json({ hosts: [{ ...available, load1: -1 }] })),
+      vi.fn().mockResolvedValue(Response.json({ hosts: [{ ...available, cpuUsagePercent: -1 }] })),
     );
     await expect(fetchHostStatus(new AbortController().signal)).rejects.toThrow();
   });
