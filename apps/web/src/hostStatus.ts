@@ -46,7 +46,8 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
         }[host.reason];
     return { cpu: "—", ram: "—", health: "unavailable", detail: reason } as const;
   }
-  const health = host.cpuUsagePercent >= 95 ? "critical" : host.cpuUsagePercent >= 80 ? "warning" : "healthy";
+  const health =
+    host.cpuUsagePercent >= 95 ? "critical" : host.cpuUsagePercent >= 80 ? "warning" : "healthy";
   const format = (value: number) => value.toFixed(1).replace(/\.0$/, "");
   const cpu = `${format(host.cpuUsagePercent)}%`;
   const ram = `${format(host.occupiedMemoryBytes / 1024 ** 3)}/${format(host.totalMemoryBytes / 1024 ** 3)} GiB`;
@@ -80,9 +81,13 @@ export function observeHostStatus(
       host.status === "available" ? [Date.parse(host.sampledAt) + HOST_STATUS_MAX_AGE_MS] : [],
     );
     if (deadlines.length > 0) {
-      expiryTimer = setTimeout(() => {
-        if (!disposed && visibility.visibilityState === "visible") publish({ ...snapshot, hosts });
-      }, Math.min(...deadlines) - now);
+      expiryTimer = setTimeout(
+        () => {
+          if (!disposed && visibility.visibilityState === "visible")
+            publish({ ...snapshot, hosts });
+        },
+        Math.min(...deadlines) - now,
+      );
     }
   };
   const refresh = async () => {

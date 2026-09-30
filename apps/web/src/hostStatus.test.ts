@@ -43,22 +43,43 @@ describe("host status metrics", () => {
     expect(metrics.detail).toContain("not memory pressure");
     expect(hostStatusMetrics({ ...available, logicalCpuCount: 128 }).cpu).toBe("23%");
   });
-  it.each([[0, "healthy"], [79.9, "healthy"], [80, "warning"], [95, "critical"], [100, "critical"]] as const)(
-    "colors CPU %s independently of occupied memory", (cpuUsagePercent, health) => {
-      expect(hostStatusMetrics({ ...available, cpuUsagePercent, occupiedMemoryBytes: 16 * gib }).health).toBe(health);
-    },
-  );
+  it.each([
+    [0, "healthy"],
+    [79.9, "healthy"],
+    [80, "warning"],
+    [95, "critical"],
+    [100, "critical"],
+  ] as const)("colors CPU %s independently of occupied memory", (cpuUsagePercent, health) => {
+    expect(
+      hostStatusMetrics({ ...available, cpuUsagePercent, occupiedMemoryBytes: 16 * gib }).health,
+    ).toBe(health);
+  });
   it("formats fractional GiB and zero usage without confusing zero with missing", () => {
-    expect(hostStatusMetrics({ ...available, cpuUsagePercent: 0, occupiedMemoryBytes: 0 })).toMatchObject({ cpu: "0%", ram: "0/16 GiB" });
-    expect(hostStatusMetrics({ ...available, cpuUsagePercent: 23.26, occupiedMemoryBytes: 12.26 * gib })).toMatchObject({ cpu: "23.3%", ram: "12.3/16 GiB" });
-    expect(hostStatusMetrics(undefined)).toMatchObject({ cpu: "—", ram: "—", health: "unavailable" });
+    expect(
+      hostStatusMetrics({ ...available, cpuUsagePercent: 0, occupiedMemoryBytes: 0 }),
+    ).toMatchObject({ cpu: "0%", ram: "0/16 GiB" });
+    expect(
+      hostStatusMetrics({ ...available, cpuUsagePercent: 23.26, occupiedMemoryBytes: 12.26 * gib }),
+    ).toMatchObject({ cpu: "23.3%", ram: "12.3/16 GiB" });
+    expect(hostStatusMetrics(undefined)).toMatchObject({
+      cpu: "—",
+      ram: "—",
+      health: "unavailable",
+    });
   });
   it("hides values at the thirty-second source freshness boundary", () => {
     vi.advanceTimersByTime(29_999);
     expect(hostStatusMetrics(available).cpu).toBe("23%");
     vi.advanceTimersByTime(1);
-    expect(hostStatusMetrics(available)).toMatchObject({ cpu: "—", ram: "—", health: "unavailable", detail: "Host status sample is stale" });
-    expect(hostStatusMetrics({ id: "home", status: "unavailable", reason: "stale" }).health).toBe("unavailable");
+    expect(hostStatusMetrics(available)).toMatchObject({
+      cpu: "—",
+      ram: "—",
+      health: "unavailable",
+      detail: "Host status sample is stale",
+    });
+    expect(hostStatusMetrics({ id: "home", status: "unavailable", reason: "stale" }).health).toBe(
+      "unavailable",
+    );
   });
 });
 
@@ -130,16 +151,28 @@ describe("source timestamp expiry", () => {
   it("expires a presented sample while the next refresh remains in flight", async () => {
     const receive = vi.fn();
     let resolve!: (value: HostStatusSnapshot) => void;
-    const request = vi.fn().mockResolvedValueOnce(snapshot).mockImplementation(() => new Promise<HostStatusSnapshot>((done) => { resolve = done; }));
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(snapshot)
+      .mockImplementation(
+        () =>
+          new Promise<HostStatusSnapshot>((done) => {
+            resolve = done;
+          }),
+      );
     const stop = observeHostStatus(new Visibility(), receive, request);
     await vi.advanceTimersByTimeAsync(29_999);
     expect(receive).toHaveBeenLastCalledWith(snapshot);
     await vi.advanceTimersByTimeAsync(1);
-    expect(receive).toHaveBeenLastCalledWith({ hosts: [{ id: "vps", status: "unavailable", reason: "stale" }] });
+    expect(receive).toHaveBeenLastCalledWith({
+      hosts: [{ id: "vps", status: "unavailable", reason: "stale" }],
+    });
     expect(request).toHaveBeenCalledTimes(2);
     resolve(snapshot);
     await vi.advanceTimersByTimeAsync(0);
-    expect(receive).toHaveBeenLastCalledWith({ hosts: [{ id: "vps", status: "unavailable", reason: "stale" }] });
+    expect(receive).toHaveBeenLastCalledWith({
+      hosts: [{ id: "vps", status: "unavailable", reason: "stale" }],
+    });
     stop();
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -147,9 +180,15 @@ describe("source timestamp expiry", () => {
     const receive = vi.fn();
     const older = { ...available, sampledAt: new Date(Date.now() - 25_000).toISOString() };
     const mini = { ...available, id: "mini" as const };
-    const stop = observeHostStatus(new Visibility(), receive, vi.fn().mockResolvedValue({ hosts: [older, mini] }));
+    const stop = observeHostStatus(
+      new Visibility(),
+      receive,
+      vi.fn().mockResolvedValue({ hosts: [older, mini] }),
+    );
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(receive).toHaveBeenLastCalledWith({ hosts: [{ id: "vps", status: "unavailable", reason: "stale" }, mini] });
+    expect(receive).toHaveBeenLastCalledWith({
+      hosts: [{ id: "vps", status: "unavailable", reason: "stale" }, mini],
+    });
     stop();
   });
 });
