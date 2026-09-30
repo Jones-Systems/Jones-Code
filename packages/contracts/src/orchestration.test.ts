@@ -1363,6 +1363,49 @@ it.effect("decodes orchestration session runtime mode defaults", () =>
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
+    assert.strictEqual(parsed.runtimeIdentity, undefined);
+  }),
+);
+
+it.effect("keeps requested routing separate from observed runtime identity", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationSession({
+      threadId: "thread-1",
+      status: "ready",
+      providerName: "codex",
+      providerInstanceId: "codex_work",
+      runtimeMode: "full-access",
+      activeTurnId: null,
+      lastError: null,
+      runtimeIdentity: {
+        runtimeGeneration: "runtime-generation-1",
+        requested: {
+          providerInstanceId: "codex_work",
+          providerDriver: "codex",
+          model: "gpt-5.6-sol",
+          serviceTier: "priority",
+        },
+        observed: {
+          backend: {
+            status: "observed",
+            value: "openai",
+            sourceEvent: "codex.thread/open",
+          },
+          model: { status: "unknown" },
+          account: {
+            status: "unavailable",
+            reason: "No provider event binds the account.",
+          },
+          serviceTier: { status: "unknown" },
+        },
+      },
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.runtimeIdentity?.requested.model, "gpt-5.6-sol");
+    assert.strictEqual(parsed.runtimeIdentity?.runtimeGeneration, "runtime-generation-1");
+    assert.deepStrictEqual(parsed.runtimeIdentity?.observed.model, { status: "unknown" });
+    assert.strictEqual(parsed.runtimeIdentity?.observed.account.status, "unavailable");
   }),
 );
 

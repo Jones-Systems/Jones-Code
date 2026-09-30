@@ -13,6 +13,7 @@ import {
   type ProviderApprovalDecision,
   type ProviderEvent,
   type ProviderSession,
+  type ServerProviderModel,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
   ThreadId,
@@ -42,6 +43,7 @@ import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
   type CodexSessionRuntimeOptions,
+  CodexSessionRuntimeInterruptTimeoutError,
   type CodexSessionRuntimeSendTurnInput,
   type CodexSessionRuntimeShape,
   type CodexThreadSnapshot,
@@ -90,6 +92,9 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     Promise.resolve(undefined),
   );
 
+  public readonly pauseActiveGoalImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+  public readonly interruptChildTurnsImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+
   public readonly readThreadImpl = vi.fn((): Promise<CodexThreadSnapshot> =>
     Promise.resolve({
       threadId: "provider-thread-1",
@@ -136,9 +141,12 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     return Effect.promise(() => this.sendTurnImpl(input));
   }
 
-  interruptTurn(turnId?: TurnId) {
+  interruptTurn(turnId?: TurnId): ReturnType<CodexSessionRuntimeShape["interruptTurn"]> {
     return Effect.promise(() => this.interruptTurnImpl(turnId));
   }
+
+  pauseActiveGoal = Effect.promise(() => this.pauseActiveGoalImpl());
+  interruptChildTurns = Effect.promise(() => this.interruptChildTurnsImpl());
 
   readThread = Effect.promise(() => this.readThreadImpl());
 
@@ -372,6 +380,76 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       NodeAssert.equal(result.failure.threadId, "sess-missing");
     }),
   );
+
+  for (const serviceTier of ["priority", null] as const) {
+    it.effect(
+      `maps the typed thread-open response to authoritative identity (${serviceTier})`,
+      () =>
+        Effect.gen(function* () {
+          const adapter = yield* CodexAdapter;
+          const threadId = asThreadId("thread-identity");
+          yield* adapter.startSession({
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeGeneration: "runtime-generation-1",
+            threadId,
+            runtimeMode: "full-access",
+          });
+          const runtime = sessionRuntimeFactory.lastRuntime;
+          NodeAssert.ok(runtime);
+          const eventFiber = yield* adapter.streamEvents.pipe(Stream.runHead, Effect.forkChild);
+
+          yield* runtime.emit({
+            id: asEventId("evt-thread-opened"),
+            kind: "session",
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeGeneration: "runtime-generation-1",
+            threadId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            method: "thread/opened",
+            payload: {
+              model: "gpt-5.6-sol-2026-09-01",
+              modelProvider: "openai",
+              serviceTier,
+            },
+          });
+
+          const event = Option.getOrThrow(yield* Fiber.join(eventFiber));
+          NodeAssert.equal(event.type, "session.configured");
+          if (event.type !== "session.configured") return;
+          NodeAssert.equal(event.runtimeGeneration, "runtime-generation-1");
+          NodeAssert.equal(event.raw?.source, "codex.app-server.response");
+          NodeAssert.deepStrictEqual(event.payload.identity, {
+            backend: {
+              status: "observed",
+              value: "openai",
+              sourceEvent: "codex.thread/open",
+            },
+            model: {
+              status: "observed",
+              value: "gpt-5.6-sol-2026-09-01",
+              sourceEvent: "codex.thread/open",
+            },
+            account: {
+              status: "unavailable",
+              reason: "The thread-open response does not bind an account to this runtime.",
+            },
+            serviceTier:
+              serviceTier === null
+                ? {
+                    status: "unavailable",
+                    reason: "The thread-open response did not report a service tier.",
+                  }
+                : {
+                    status: "observed",
+                    value: serviceTier,
+                    sourceEvent: "codex.thread/open",
+                  },
+          });
+        }),
+    );
+  }
 
   it.effect("compacts the active Codex thread and emits compacted state", () =>
     Effect.gen(function* () {
@@ -651,6 +729,135 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
   });
 });
 
+function reasoningModel(slug: string, currentValue: string): ServerProviderModel {
+  return {
+    slug,
+    name: slug,
+    isCustom: false,
+    capabilities: {
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning effort",
+          type: "select",
+          currentValue,
+          options: [
+            { id: "low", label: "Low", isDefault: true },
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High" },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+function makeReasoningDefaultTestContext() {
+  const instanceId = ProviderInstanceId.make("codex_reasoning_defaults");
+  const runtimeFactory = makeRuntimeFactory();
+  const readModels = vi.fn((): ReadonlyArray<ServerProviderModel> => []);
+  const layer = Layer.effect(
+    CodexAdapter,
+    makeCodexAdapter(decodeCodexSettings({}), {
+      instanceId,
+      models: Effect.sync(readModels),
+      makeRuntime: runtimeFactory.factory,
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return { instanceId, runtimeFactory, readModels, layer };
+}
+
+it.effect("inherits the selected model's current reasoning default when switching models", () => {
+  const { instanceId, runtimeFactory, readModels, layer } = makeReasoningDefaultTestContext();
+  readModels.mockReturnValue([
+    reasoningModel("model-a", "high"),
+    reasoningModel("model-b", "medium"),
+  ]);
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    const threadId = asThreadId("thread-model-reasoning-default");
+    yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+    const runtime = runtimeFactory.lastRuntime;
+    NodeAssert.ok(runtime);
+    yield* adapter.sendTurn({
+      threadId,
+      modelSelection: createModelSelection(instanceId, "model-a"),
+    });
+    yield* adapter.sendTurn({
+      threadId,
+      modelSelection: createModelSelection(instanceId, "model-b"),
+    });
+    NodeAssert.deepStrictEqual(
+      runtime.sendTurnImpl.mock.calls.map(([input]) => input),
+      [
+        { model: "model-a", effort: "high" },
+        { model: "model-b", effort: "medium" },
+      ],
+    );
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("reads a changed reasoning default on each turn without changing model selection", () => {
+  const { instanceId, runtimeFactory, readModels, layer } = makeReasoningDefaultTestContext();
+  readModels.mockReturnValue([reasoningModel("model-a", "medium")]);
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    const threadId = asThreadId("thread-live-reasoning-default");
+    const modelSelection = createModelSelection(instanceId, "model-a");
+    yield* adapter.startSession({ threadId, runtimeMode: "full-access", modelSelection });
+    const runtime = runtimeFactory.lastRuntime;
+    NodeAssert.ok(runtime);
+    yield* adapter.sendTurn({ threadId, modelSelection });
+    readModels.mockReturnValue([reasoningModel("model-a", "high")]);
+    yield* adapter.sendTurn({ threadId, modelSelection });
+    NodeAssert.deepStrictEqual(
+      runtime.sendTurnImpl.mock.calls.map(([input]) => input.effort),
+      ["medium", "high"],
+    );
+    NodeAssert.equal(modelSelection.options, undefined);
+    NodeAssert.equal(runtime.options.model, "model-a");
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect(
+  "preserves explicit reasoning effort and ignores another provider instance without reading models",
+  () => {
+    const { instanceId, runtimeFactory, readModels, layer } = makeReasoningDefaultTestContext();
+    readModels.mockImplementation(() => {
+      throw new Error("Model catalog must not be read");
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-explicit-reasoning-effort");
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      const runtime = runtimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      yield* adapter.sendTurn({
+        threadId,
+        modelSelection: createModelSelection(instanceId, "model-a", [
+          { id: "reasoningEffort", value: "low" },
+          { id: "serviceTier", value: "priority" },
+        ]),
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex_other"), "model-a"),
+      });
+      yield* adapter.sendTurn({ threadId });
+      NodeAssert.deepStrictEqual(
+        runtime.sendTurnImpl.mock.calls.map(([input]) => input),
+        [{ model: "model-a", effort: "low", serviceTier: "priority" }, {}, {}],
+      );
+      NodeAssert.equal(readModels.mock.calls.length, 0);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
 const lifecycleRuntimeFactory = makeRuntimeFactory();
 const lifecycleLayer = it.layer(
   Layer.effect(
@@ -754,6 +961,47 @@ function codexTurnEvent(method: "turn/started" | "turn/completed", turnId: strin
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("pauses the active goal before a user-facing interrupt", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const callOrder: Array<string> = [];
+      runtime.pauseActiveGoalImpl.mockImplementation(() => {
+        callOrder.push("pause-goal");
+        return Promise.resolve(undefined);
+      });
+      runtime.interruptTurnImpl.mockImplementation((turnId) => {
+        callOrder.push(`interrupt:${turnId ?? "omitted"}`);
+        return Promise.resolve(undefined);
+      });
+
+      yield* adapter.interruptTurn(asThreadId("thread-1"));
+
+      NodeAssert.deepStrictEqual(callOrder, ["pause-goal", "interrupt:omitted"]);
+    }),
+  );
+
+  it.effect("reports a typed root timeout as failed Stop instead of success", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const timeout = new CodexSessionRuntimeInterruptTimeoutError({
+        threadId: "provider-thread-1",
+        turnId: "hanging-root",
+      });
+      vi.spyOn(runtime, "interruptTurn").mockReturnValue(Effect.fail(timeout));
+
+      const result = yield* adapter.interruptTurn(asThreadId("thread-1")).pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      if (result._tag !== "Failure") return;
+      NodeAssert.equal(result.failure._tag, "ProviderAdapterRequestError");
+      if (result.failure._tag !== "ProviderAdapterRequestError") return;
+      NodeAssert.equal(result.failure.method, "turn/interrupt");
+      NodeAssert.equal(result.failure.cause, timeout);
+      NodeAssert.match(result.failure.detail, /may still be running/);
+      NodeAssert.equal(runtime.pauseActiveGoalImpl.mock.calls.length, 1);
+    }),
+  );
+
   it.effect("calculates one Codex turn total from cumulative counters", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
@@ -3119,4 +3367,175 @@ usageLimitLayer("CodexAdapterLive usage limits", (it) => {
       NodeAssert.equal(first.value.payload.class, "provider_error");
     }),
   );
+});
+
+it.effect("managed runtime rotation restarts app-server and resumes the same native thread", () => {
+  const runtimes: FakeCodexRuntime[] = [];
+  let revision = "first";
+  const layer = Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      return yield* makeCodexAdapter(decodeCodexSettings({}), {
+        resolveRuntime: Effect.sync(() => ({
+          config: decodeCodexSettings({
+            binaryPath: "/t3/tools/codex/0.155.1/bin/codex",
+            homePath: "/t3/caches/codex/home",
+            launchArgs: "-c 'model_provider=managed'",
+          }),
+          environment: { ACCESS_TOKEN: `dummy-${revision}` },
+          revision,
+        })),
+        makeRuntime: (options) => {
+          const runtime = new FakeCodexRuntime(options);
+          runtime.startImpl.mockImplementation(() =>
+            Promise.resolve({
+              provider: ProviderDriverKind.make("codex"),
+              threadId: options.threadId,
+              runtimeMode: options.runtimeMode,
+              cwd: options.cwd,
+              status: "ready",
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+              resumeCursor: { threadId: "native-managed-thread" },
+            }),
+          );
+          runtimes.push(runtime);
+          return Effect.succeed(runtime);
+        },
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    const threadId = asThreadId("managed-token-rotation");
+    yield* adapter.startSession({
+      threadId,
+      runtimeMode: "full-access",
+      runtimeGeneration: "original-runtime",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "original-requested-model",
+      },
+    });
+    let replacements = 0;
+    const runtimeContext: NonNullable<Parameters<CodexAdapterShape["sendTurn"]>[1]> = {
+      withRuntimeReplacement: (restart) =>
+        Effect.suspend(() => {
+          replacements += 1;
+          return restart("replacement-runtime");
+        }),
+    };
+    yield* adapter.sendTurn({ threadId, input: "first" }, runtimeContext);
+    NodeAssert.equal(replacements, 0);
+    NodeAssert.equal(runtimes.length, 1);
+    revision = "rotated";
+    yield* adapter.sendTurn(
+      {
+        threadId,
+        input: "second",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "current-requested-model",
+        },
+      },
+      runtimeContext,
+    );
+    NodeAssert.equal(replacements, 1);
+    NodeAssert.equal(runtimes[1]?.options.runtimeGeneration, "replacement-runtime");
+    NodeAssert.equal(runtimes[1]?.options.model, "current-requested-model");
+    NodeAssert.equal(runtimes.length, 2);
+    NodeAssert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+    NodeAssert.deepEqual(runtimes[1]?.options.resumeCursor, { threadId: "native-managed-thread" });
+    NodeAssert.equal(runtimes[1]?.options.environment?.ACCESS_TOKEN, "dummy-rotated");
+    NodeAssert.equal(runtimes[1]?.options.binaryPath, "/t3/tools/codex/0.155.1/bin/codex");
+    const identityEvent = yield* adapter.streamEvents.pipe(
+      Stream.filter(
+        (event) => event.type === "session.configured" && event.payload.identity !== undefined,
+      ),
+      Stream.runHead,
+      Effect.forkChild,
+    );
+    yield* runtimes[1]!.emit({
+      id: asEventId("managed-replacement-identity"),
+      kind: "session",
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeGeneration: runtimes[1]!.options.runtimeGeneration!,
+      threadId,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      method: "thread/opened",
+      payload: { model: "native-managed-model", modelProvider: "managed", serviceTier: null },
+    });
+    const observed = Option.getOrThrow(yield* Fiber.join(identityEvent));
+    NodeAssert.equal(observed.runtimeGeneration, "replacement-runtime");
+    if (observed.type === "session.configured")
+      NodeAssert.deepEqual(observed.payload.identity?.model, {
+        status: "observed",
+        value: "native-managed-model",
+        sourceEvent: "codex.thread/open",
+      });
+    revision = "rotated-again";
+    yield* adapter.sendTurn({ threadId, input: "third" });
+    NodeAssert.equal(runtimes.length, 3);
+    NodeAssert.equal(typeof runtimes[2]?.options.runtimeGeneration, "string");
+    NodeAssert.notEqual(runtimes[2]?.options.runtimeGeneration, "replacement-runtime");
+    NodeAssert.equal(runtimes[2]?.options.environment?.ACCESS_TOKEN, "dummy-rotated-again");
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("managed turn failures preserve the sharing-limit code for client notices", () => {
+  const factory = makeRuntimeFactory();
+  const layer = Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      return yield* makeCodexAdapter(decodeCodexSettings({}), {
+        makeRuntime: factory.factory,
+        resolveRuntime: Effect.succeed({
+          config: decodeCodexSettings({}),
+          environment: {},
+          revision: "managed",
+        }),
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    yield* adapter.startSession({ threadId: asThreadId("thread-1"), runtimeMode: "full-access" });
+    const eventsFiber = yield* adapter.streamEvents.pipe(
+      Stream.take(2),
+      Stream.runCollect,
+      Effect.forkChild,
+    );
+    const notification = codexUsageLimitTurnFailed("managed-sharing-limit");
+    yield* factory.lastRuntime!.emit({
+      ...notification,
+      payload: {
+        threadId: "thread-1",
+        turn: {
+          id: "turn-limit",
+          items: [],
+          status: "failed",
+          error: { message: "subscription_sharing_usage_limit_exceeded", codexErrorInfo: "other" },
+        },
+      },
+    });
+    const events = Array.from(yield* Fiber.join(eventsFiber));
+    NodeAssert.equal(events[0]?.type, "runtime.error");
+    if (events[0]?.type === "runtime.error") {
+      NodeAssert.equal(events[0].payload.code, "subscription_sharing_usage_limit_exceeded");
+      NodeAssert.match(events[0].payload.message, /ChatGPT usage limit/);
+    }
+    NodeAssert.equal(events[1]?.type, "turn.completed");
+    if (events[1]?.type === "turn.completed") NodeAssert.equal(events[1].payload.state, "failed");
+  }).pipe(Effect.provide(layer));
 });

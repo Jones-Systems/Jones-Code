@@ -616,6 +616,49 @@ export const OrchestrationSessionStatus = Schema.Literals([
 ]);
 export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
 
+/**
+ * One provider-reported runtime identity dimension.
+ *
+ * `unknown` means no authoritative provider evidence has arrived for the
+ * current request. `unavailable` means the provider boundary does not safely
+ * attest the dimension. Neither state may be filled from routing settings,
+ * authentication metadata, or a model catalog.
+ */
+export const RuntimeIdentityObservation = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("unknown") }),
+  Schema.Struct({
+    status: Schema.Literal("unavailable"),
+    reason: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("observed"),
+    value: TrimmedNonEmptyString,
+    sourceEvent: TrimmedNonEmptyString,
+  }),
+]);
+export type RuntimeIdentityObservation = typeof RuntimeIdentityObservation.Type;
+
+export const ObservedRuntimeIdentity = Schema.Struct({
+  backend: RuntimeIdentityObservation,
+  model: RuntimeIdentityObservation,
+  account: RuntimeIdentityObservation,
+  serviceTier: RuntimeIdentityObservation,
+});
+export type ObservedRuntimeIdentity = typeof ObservedRuntimeIdentity.Type;
+
+export const RuntimeIdentityAttestation = Schema.Struct({
+  /** Opaque launch correlation. Observations must match this exact runtime. */
+  runtimeGeneration: Schema.optional(TrimmedNonEmptyString),
+  requested: Schema.Struct({
+    providerInstanceId: ProviderInstanceId,
+    providerDriver: TrimmedNonEmptyString,
+    model: TrimmedNonEmptyString,
+    serviceTier: Schema.NullOr(TrimmedNonEmptyString),
+  }),
+  observed: ObservedRuntimeIdentity,
+});
+export type RuntimeIdentityAttestation = typeof RuntimeIdentityAttestation.Type;
+
 export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
@@ -624,6 +667,8 @@ export const OrchestrationSession = Schema.Struct({
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
+  /** Requested route beside provider-attested identity. Optional for old snapshots. */
+  runtimeIdentity: Schema.optional(RuntimeIdentityAttestation),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
