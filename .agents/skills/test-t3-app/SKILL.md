@@ -34,8 +34,9 @@ for a fresh one. Keep using the same tab.
 
 ## Verify and retain
 
-Exercise the affected flow and capture the state that proves it works. Keep
-the server, state, and panel available while the user inspects or iterates.
+Follow [capture-ui-evidence](../capture-ui-evidence/SKILL.md) for the common evidence format. Use snapshots and focused locators to exercise the changed flow, assert its visible result, and check backend readback or reload persistence where relevant. Capture the states that demonstrate the action and record the tested revision, served build/source correspondence, route, actual viewport/scale/theme, fixture, and coverage limits. Distinguish an interaction's before/after states from a comparison of two separately built source revisions.
+
+Keep the server, state, and panel available while the user inspects or iterates.
 An assistant turn ending is not teardown. Stop only processes you started,
 using retained terminal sessions or captured PIDs.
 
