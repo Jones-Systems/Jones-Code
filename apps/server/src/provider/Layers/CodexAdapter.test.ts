@@ -13,6 +13,7 @@ import {
   type ProviderApprovalDecision,
   type ProviderEvent,
   type ProviderSession,
+  type ServerProviderModel,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
   ThreadId,
@@ -727,6 +728,135 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }).pipe(Effect.provide(customLayer));
   });
 });
+
+function reasoningModel(slug: string, currentValue: string): ServerProviderModel {
+  return {
+    slug,
+    name: slug,
+    isCustom: false,
+    capabilities: {
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning effort",
+          type: "select",
+          currentValue,
+          options: [
+            { id: "low", label: "Low", isDefault: true },
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High" },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+function makeReasoningDefaultTestContext() {
+  const instanceId = ProviderInstanceId.make("codex_reasoning_defaults");
+  const runtimeFactory = makeRuntimeFactory();
+  const readModels = vi.fn((): ReadonlyArray<ServerProviderModel> => []);
+  const layer = Layer.effect(
+    CodexAdapter,
+    makeCodexAdapter(decodeCodexSettings({}), {
+      instanceId,
+      models: Effect.sync(readModels),
+      makeRuntime: runtimeFactory.factory,
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return { instanceId, runtimeFactory, readModels, layer };
+}
+
+it.effect("inherits the selected model's current reasoning default when switching models", () => {
+  const { instanceId, runtimeFactory, readModels, layer } = makeReasoningDefaultTestContext();
+  readModels.mockReturnValue([
+    reasoningModel("model-a", "high"),
+    reasoningModel("model-b", "medium"),
+  ]);
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    const threadId = asThreadId("thread-model-reasoning-default");
+    yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+    const runtime = runtimeFactory.lastRuntime;
+    NodeAssert.ok(runtime);
+    yield* adapter.sendTurn({
+      threadId,
+      modelSelection: createModelSelection(instanceId, "model-a"),
+    });
+    yield* adapter.sendTurn({
+      threadId,
+      modelSelection: createModelSelection(instanceId, "model-b"),
+    });
+    NodeAssert.deepStrictEqual(
+      runtime.sendTurnImpl.mock.calls.map(([input]) => input),
+      [
+        { model: "model-a", effort: "high" },
+        { model: "model-b", effort: "medium" },
+      ],
+    );
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("reads a changed reasoning default on each turn without changing model selection", () => {
+  const { instanceId, runtimeFactory, readModels, layer } = makeReasoningDefaultTestContext();
+  readModels.mockReturnValue([reasoningModel("model-a", "medium")]);
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    const threadId = asThreadId("thread-live-reasoning-default");
+    const modelSelection = createModelSelection(instanceId, "model-a");
+    yield* adapter.startSession({ threadId, runtimeMode: "full-access", modelSelection });
+    const runtime = runtimeFactory.lastRuntime;
+    NodeAssert.ok(runtime);
+    yield* adapter.sendTurn({ threadId, modelSelection });
+    readModels.mockReturnValue([reasoningModel("model-a", "high")]);
+    yield* adapter.sendTurn({ threadId, modelSelection });
+    NodeAssert.deepStrictEqual(
+      runtime.sendTurnImpl.mock.calls.map(([input]) => input.effort),
+      ["medium", "high"],
+    );
+    NodeAssert.equal(modelSelection.options, undefined);
+    NodeAssert.equal(runtime.options.model, "model-a");
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect(
+  "preserves explicit reasoning effort and ignores another provider instance without reading models",
+  () => {
+    const { instanceId, runtimeFactory, readModels, layer } = makeReasoningDefaultTestContext();
+    readModels.mockImplementation(() => {
+      throw new Error("Model catalog must not be read");
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-explicit-reasoning-effort");
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      const runtime = runtimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      yield* adapter.sendTurn({
+        threadId,
+        modelSelection: createModelSelection(instanceId, "model-a", [
+          { id: "reasoningEffort", value: "low" },
+          { id: "serviceTier", value: "priority" },
+        ]),
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex_other"), "model-a"),
+      });
+      yield* adapter.sendTurn({ threadId });
+      NodeAssert.deepStrictEqual(
+        runtime.sendTurnImpl.mock.calls.map(([input]) => input),
+        [{ model: "model-a", effort: "low", serviceTier: "priority" }, {}, {}],
+      );
+      NodeAssert.equal(readModels.mock.calls.length, 0);
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 const lifecycleRuntimeFactory = makeRuntimeFactory();
 const lifecycleLayer = it.layer(

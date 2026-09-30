@@ -2,6 +2,44 @@ import { assert, it } from "@effect/vitest";
 
 import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
 
+it("uses medium instead of low for newly discovered Codex models when supported", () => {
+  const capabilities = mapCodexModelCapabilities({
+    additionalSpeedTiers: [],
+    defaultReasoningEffort: "low",
+    description: "Future model",
+    displayName: "Future model",
+    hidden: false,
+    id: "future-model",
+    isDefault: false,
+    model: "future-model",
+    supportedReasoningEfforts: ["low", "medium", "high"].map((reasoningEffort) => ({
+      reasoningEffort,
+      description: reasoningEffort,
+    })),
+  });
+  const reasoning = capabilities.optionDescriptors?.find(({ id }) => id === "reasoningEffort");
+  assert.strictEqual(reasoning?.currentValue, "medium");
+  assert.deepStrictEqual(
+    reasoning?.type === "select" ? reasoning.options.filter(({ isDefault }) => isDefault) : [],
+    [{ id: "medium", label: "Medium", isDefault: true }],
+  );
+});
+
+it("retains a low catalog default when the model does not support medium", () => {
+  const capabilities = mapCodexModelCapabilities({
+    additionalSpeedTiers: [],
+    defaultReasoningEffort: "low",
+    description: "Limited model",
+    displayName: "Limited model",
+    hidden: false,
+    id: "limited-model",
+    isDefault: false,
+    model: "limited-model",
+    supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Low" }],
+  });
+  assert.strictEqual(capabilities.optionDescriptors?.[0]?.currentValue, "low");
+});
+
 it("maps current Codex model capability fields", () => {
   const capabilities = mapCodexModelCapabilities({
     additionalSpeedTiers: [],

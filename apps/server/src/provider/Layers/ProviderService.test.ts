@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import type {
   ProviderApprovalDecision,
   ProviderRuntimeEvent,
+  ServerProvider,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderTurnStartResult,
@@ -20,6 +21,7 @@ import {
   EventId,
   MessageId,
   OrchestrationThreadShell,
+  OrchestrationProjectShell,
   ProjectId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProviderDriverKind,
@@ -63,6 +65,8 @@ import {
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
+import * as ProviderRegistry from "../Services/ProviderRegistry.ts";
+import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
 import { makeProviderServiceLive } from "./ProviderService.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
@@ -421,6 +425,9 @@ function makeProviderServiceLayer(
     readonly supportsConversationRollback?: boolean;
     readonly analyticsLayer?: Layer.Layer<AnalyticsService.AnalyticsService>;
     readonly settingsLayer?: typeof defaultServerSettingsLayer;
+    readonly catalogLayer?: Layer.Layer<ProviderRegistry.ProviderRegistry>;
+    readonly instanceLayer?: Layer.Layer<ProviderInstanceRegistry.ProviderInstanceRegistry>;
+    readonly projectionLayer?: Layer.Layer<ProjectionSnapshotQuery.ProjectionSnapshotQuery>;
     readonly registry?: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"];
   } = {},
 ) {
@@ -453,7 +460,10 @@ function makeProviderServiceLayer(
         Layer.provide(NodeServices.layer),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
-        Layer.provide(input.settingsLayer ?? defaultServerSettingsLayer),
+        Layer.provideMerge(input.settingsLayer ?? defaultServerSettingsLayer),
+        Layer.provide(input.catalogLayer ?? Layer.empty),
+        Layer.provide(input.instanceLayer ?? Layer.empty),
+        Layer.provide(input.projectionLayer ?? Layer.empty),
         Layer.provide(serverConfigTestLayer),
         Layer.provideMerge(input.analyticsLayer ?? AnalyticsService.layerTest),
         Layer.provide(
@@ -5534,6 +5544,318 @@ describe("agent browser access", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
+
+const configuredEffortAccountId = ProviderInstanceId.make("codex_effort_account");
+const configuredEffortProjectId = ProjectId.make("project-configured-effort");
+const configuredEffortSelection = (effort: string) =>
+  createModelSelection(codexInstanceId, "gpt-5.4", [{ id: "reasoningEffort", value: effort }]);
+const configuredEffortSnapshot = {
+  instanceId: configuredEffortAccountId,
+  driver: CODEX_DRIVER,
+  enabled: true,
+  installed: true,
+  version: null,
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-01-01T00:00:00.000Z",
+  models: [
+    {
+      slug: "gpt-5.4",
+      name: "GPT-5.4",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Reasoning effort",
+            type: "select",
+            options: [
+              { id: "low", label: "Low" },
+              { id: "high", label: "High", isDefault: true },
+              { id: "xhigh", label: "Extra high" },
+            ],
+          },
+        ],
+      },
+    },
+  ],
+  slashCommands: [],
+  skills: [],
+} satisfies ServerProvider;
+const configuredEffortCatalogLayer = Layer.succeed(ProviderRegistry.ProviderRegistry, {
+  getProviders: Effect.succeed([configuredEffortSnapshot]),
+  refresh: () => Effect.die("dispatch must not refresh provider snapshots"),
+  refreshInstance: () => Effect.die("dispatch must not refresh an instance"),
+  refreshWorkspaceSnapshot: () => Effect.die("dispatch must not refresh workspace snapshots"),
+  getProviderMaintenanceCapabilitiesForInstance: () => Effect.die("unused"),
+  setProviderMaintenanceActionState: () => Effect.die("unused"),
+  streamChanges: Stream.empty,
+});
+
+function makeConfiguredEffortProjectionLayer(projectDefault: string | null = null) {
+  return Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+    getTurnStartMessage: () => Effect.die("unused"),
+    getImportedAgentSessionSources: () => Effect.die("unused"),
+    getUserInputActivity: () => Effect.die("unused"),
+    listActivitiesByKind: () => Effect.die("unused"),
+    getCommandReadModel: () => Effect.die("unused"),
+    getSnapshot: () => Effect.die("must not read thread history"),
+    getShellSnapshot: () => Effect.die("unused"),
+    getDeletedWorktreeThreads: () => Effect.die("unused"),
+    listThreadsWithPullRequests: () => Effect.die("unused"),
+    getArchivedShellSnapshot: () => Effect.die("unused"),
+    getSnapshotSequence: () => Effect.die("unused"),
+    getCounts: () => Effect.die("unused"),
+    getEventReplayStats: () => Effect.die("unused"),
+    getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
+    getProjectShells: () => Effect.die("unused"),
+    getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
+    getThreadCheckpointContext: () => Effect.die("unused"),
+    getFullThreadDiffContext: () => Effect.die("unused"),
+    getThreadRuntimeContext: () => Effect.die("unused"),
+    getThreadDetailById: () => Effect.die("must not read thread history"),
+    getThreadDetailSnapshot: () => Effect.die("must not read thread history"),
+    searchThreads: () => Effect.die("unused"),
+    getThreadShellById: (threadId) =>
+      Schema.decodeUnknownEffect(OrchestrationThreadShell)({
+        id: threadId,
+        projectId: configuredEffortProjectId,
+        title: "Configured effort",
+        modelSelection: createModelSelection(configuredEffortAccountId, "gpt-5.4"),
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        latestTurn: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        session: null,
+        latestUserMessageAt: null,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        hasActionableProposedPlan: false,
+      }).pipe(Effect.map(Option.some), Effect.orDie),
+    getProjectShellById: (projectId) =>
+      Schema.decodeUnknownEffect(OrchestrationProjectShell)({
+        id: projectId,
+        title: "Configured effort project",
+        workspaceRoot: process.cwd(),
+        defaultModelSelection:
+          projectDefault === null ? null : configuredEffortSelection(projectDefault),
+        scripts: [],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }).pipe(Effect.map(Option.some), Effect.orDie),
+  });
+}
+
+for (const setupMode of ["existing", "managed"] as const) {
+  const adapter = makeFakeCodexAdapter();
+  const configuredEffort = makeProviderServiceLayer({
+    registry: makeStaticInstanceRegistry([[configuredEffortAccountId, adapter.adapter]]),
+    catalogLayer: configuredEffortCatalogLayer,
+    settingsLayer: ServerSettings.ServerSettingsService.layerTest({
+      defaultModelSelection: configuredEffortSelection("xhigh"),
+      providerInstances: {
+        [codexInstanceId]: { driver: CODEX_DRIVER, config: { setupMode } },
+        [configuredEffortAccountId]: { driver: CODEX_DRIVER, config: { setupMode } },
+      },
+    }),
+  });
+  configuredEffort.layer(`configured reasoning effort dispatch (${setupMode})`, (it) => {
+    it.effect("uses the current cross-account default without persisting inherited effort", () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        const threadId = asThreadId(`configured-effort-${setupMode}`);
+        const selection = createModelSelection(configuredEffortAccountId, "gpt-5.4", [
+          { id: "fastMode", value: true },
+        ]);
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: configuredEffortAccountId,
+          threadId,
+          runtimeMode: "full-access",
+          modelSelection: selection,
+        });
+        adapter.sendTurn.mockClear();
+        yield* provider.sendTurn({ threadId, input: "first", modelSelection: selection });
+        assert.deepEqual(adapter.sendTurn.mock.calls[0]?.[0].modelSelection, {
+          ...selection,
+          options: [...(selection.options ?? []), { id: "reasoningEffort", value: "xhigh" }],
+        });
+        let binding = yield* directory.getBinding(threadId);
+        assert.isTrue(Option.isSome(binding));
+        if (Option.isSome(binding))
+          assert.deepEqual(
+            (binding.value.runtimePayload as { modelSelection?: unknown } | null)?.modelSelection,
+            selection,
+          );
+
+        yield* settings.updateSettings({ defaultModelSelection: configuredEffortSelection("low") });
+        yield* provider.sendTurn({ threadId, input: "second", modelSelection: selection });
+        assert.deepEqual(adapter.sendTurn.mock.calls[1]?.[0].modelSelection, {
+          ...selection,
+          options: [...(selection.options ?? []), { id: "reasoningEffort", value: "low" }],
+        });
+        binding = yield* directory.getBinding(threadId);
+        if (Option.isSome(binding))
+          assert.deepEqual(
+            (binding.value.runtimePayload as { modelSelection?: unknown } | null)?.modelSelection,
+            selection,
+          );
+
+        const explicit = createModelSelection(configuredEffortAccountId, "gpt-5.4", [
+          { id: "reasoningEffort", value: "high" },
+        ]);
+        yield* provider.sendTurn({ threadId, input: "explicit", modelSelection: explicit });
+        assert.deepEqual(adapter.sendTurn.mock.calls[2]?.[0].modelSelection, explicit);
+        yield* provider.sendTurn({ threadId, input: "without selection" });
+        assert.isUndefined(adapter.sendTurn.mock.calls[3]?.[0].modelSelection);
+      }),
+    );
+  });
+}
+
+const snapshotEffortAdapter = makeFakeCodexAdapter();
+const snapshotEffortGetInstance = vi.fn((instanceId: ProviderInstanceId) => {
+  assert.equal(instanceId, configuredEffortAccountId);
+  return Effect.succeed({
+    instanceId,
+    driverKind: CODEX_DRIVER,
+    enabled: true,
+    displayName: undefined,
+    continuationIdentity: { driverKind: CODEX_DRIVER, continuationKey: "effort-snapshot" },
+    adapter: snapshotEffortAdapter.adapter,
+    snapshot: {
+      getSnapshot: Effect.succeed(configuredEffortSnapshot),
+      refresh: Effect.die("dispatch must not refresh"),
+      resolveMaintenance: () => Effect.die("unused"),
+      streamChanges: Stream.empty,
+      applyUsageLimits: () => Effect.die("unused"),
+    },
+    textGeneration: {
+      generateCommitMessage: () => Effect.die("unused"),
+      generatePrContent: () => Effect.die("unused"),
+      generateBranchName: () => Effect.die("unused"),
+      generateThreadTitle: () => Effect.die("unused"),
+    },
+  });
+});
+const snapshotEffort = makeProviderServiceLayer({
+  registry: makeStaticInstanceRegistry([
+    [configuredEffortAccountId, snapshotEffortAdapter.adapter],
+  ]),
+  instanceLayer: Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+    getInstance: snapshotEffortGetInstance,
+    listInstances: Effect.die("dispatch must not scan instances"),
+    listUnavailable: Effect.die("unused"),
+    streamChanges: Stream.empty,
+    subscribeChanges: Effect.die("unused"),
+  }),
+  settingsLayer: ServerSettings.ServerSettingsService.layerTest({
+    defaultModelSelection: configuredEffortSelection("xhigh"),
+    providerInstances: {
+      [codexInstanceId]: { driver: CODEX_DRIVER, config: {} },
+      [configuredEffortAccountId]: { driver: CODEX_DRIVER, config: {} },
+    },
+  }),
+});
+snapshotEffort.layer("configured reasoning effort from instance snapshot", (it) => {
+  it.effect("keeps the original selection in runtime replacement and turn bindings", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("configured-effort-runtime-replacement");
+      const selection = createModelSelection(configuredEffortAccountId, "openai.gpt-5.4");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: configuredEffortAccountId,
+        threadId,
+        runtimeMode: "full-access",
+        modelSelection: selection,
+      });
+      snapshotEffortGetInstance.mockClear();
+      snapshotEffortAdapter.sendTurn.mockImplementationOnce((input, runtime) =>
+        Effect.gen(function* () {
+          assert.deepEqual(input.modelSelection, {
+            ...selection,
+            options: [{ id: "reasoningEffort", value: "xhigh" }],
+          });
+          if (runtime === undefined) return yield* Effect.die("missing replacement context");
+          yield* runtime.withRuntimeReplacement(() => Effect.succeed(session));
+          const replacement = yield* directory.getBinding(threadId).pipe(Effect.orDie);
+          assert.isTrue(Option.isSome(replacement));
+          if (Option.isSome(replacement)) {
+            assert.deepEqual(
+              (replacement.value.runtimePayload as { modelSelection?: unknown } | null)
+                ?.modelSelection,
+              selection,
+            );
+          }
+          return { threadId, turnId: asTurnId("configured-effort-replaced") };
+        }),
+      );
+      yield* provider.sendTurn({ threadId, input: "replace runtime", modelSelection: selection });
+      assert.deepEqual(snapshotEffortGetInstance.mock.calls, [[configuredEffortAccountId]]);
+      const binding = yield* directory.getBinding(threadId);
+      assert.isTrue(Option.isSome(binding));
+      if (Option.isSome(binding)) {
+        assert.deepEqual(
+          (binding.value.runtimePayload as { modelSelection?: unknown } | null)?.modelSelection,
+          selection,
+        );
+      }
+    }),
+  );
+});
+
+for (const source of ["override", "project-shell"] as const) {
+  const adapter = makeFakeCodexAdapter();
+  const configuredProjectEffort = makeProviderServiceLayer({
+    registry: makeStaticInstanceRegistry([[configuredEffortAccountId, adapter.adapter]]),
+    catalogLayer: configuredEffortCatalogLayer,
+    projectionLayer: makeConfiguredEffortProjectionLayer(source === "project-shell" ? "low" : null),
+    settingsLayer: ServerSettings.ServerSettingsService.layerTest({
+      defaultModelSelection: configuredEffortSelection("xhigh"),
+      providerInstances: {
+        [codexInstanceId]: { driver: CODEX_DRIVER, config: {} },
+        [configuredEffortAccountId]: { driver: CODEX_DRIVER, config: {} },
+      },
+      ...(source === "override"
+        ? {
+            projectSettingsOverrides: {
+              [configuredEffortProjectId]: {
+                defaultModelSelection: configuredEffortSelection("low"),
+              },
+            },
+          }
+        : {}),
+    }),
+  });
+  configuredProjectEffort.layer(`configured reasoning effort from ${source}`, (it) => {
+    it.effect("uses the project default before the environment default", () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const threadId = asThreadId(`configured-effort-project-${source}`);
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: configuredEffortAccountId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+        yield* provider.sendTurn({
+          threadId,
+          input: "project default",
+          modelSelection: createModelSelection(configuredEffortAccountId, "gpt-5.4"),
+        });
+        assert.deepEqual(adapter.sendTurn.mock.calls[0]?.[0].modelSelection?.options, [
+          { id: "reasoningEffort", value: "low" },
+        ]);
+      }),
+    );
+  });
+}
 
 const chatGptAnalytics = makeRecordingAnalytics();
 const chatGptAdapter = makeFakeCodexAdapter();
