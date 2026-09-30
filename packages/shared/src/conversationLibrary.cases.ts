@@ -9,7 +9,7 @@ import {
   normalizeConversationExport,
 } from "./conversationLibrary.ts";
 
-export function sampleConversation(): ExportConversation {
+function sampleConversation(): ExportConversation {
   return {
     id: "chat-one",
     title: "A sample conversation",

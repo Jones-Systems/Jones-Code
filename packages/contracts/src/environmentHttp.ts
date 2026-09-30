@@ -394,7 +394,7 @@ const EnvironmentConversationLibraryUnsupportedError = Schema.Struct({
   traceId: TrimmedNonEmptyString,
 }).pipe(HttpApiSchema.status(501));
 
-export const EnvironmentConversationLibraryErrorSchemas = [
+const EnvironmentConversationLibraryErrorSchemas = [
   EnvironmentConversationLibraryInvalidError,
   EnvironmentConversationLibraryForbiddenError,
   EnvironmentConversationLibraryNotFoundError,

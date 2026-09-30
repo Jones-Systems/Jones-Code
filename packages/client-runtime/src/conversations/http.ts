@@ -2,13 +2,10 @@ import {
   EnvironmentConversationLibraryErrorSchema,
   type EnvironmentConversationLibraryError,
 } from "@t3tools/contracts";
-import type { LibraryReply, LibraryRequest } from "@t3tools/contracts/conversationLibrary";
-import * as Context from "effect/Context";
+import type { LibraryRequest } from "@t3tools/contracts/conversationLibrary";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
 
 import { RemoteEnvironmentAuthorization } from "../authorization/service.ts";
 import type { PreparedConnection } from "../connection/model.ts";
@@ -77,35 +74,3 @@ export const fetchEnvironmentConversationLibraryRequest = Effect.fn(
     ),
   );
 });
-
-export class ConversationLibraryRequester extends Context.Service<
-  ConversationLibraryRequester,
-  {
-    readonly request: (
-      prepared: PreparedConnection,
-      request: LibraryRequest,
-    ) => Effect.Effect<LibraryReply, ConversationLibraryRequestError>;
-  }
->()("@t3tools/client-runtime/conversations/http/ConversationLibraryRequester") {}
-
-export const conversationLibraryRequesterLayer: Layer.Layer<
-  ConversationLibraryRequester,
-  never,
-  HttpClient.HttpClient
-> = Layer.effect(
-  ConversationLibraryRequester,
-  Effect.gen(function* () {
-    const httpClient = yield* HttpClient.HttpClient;
-    const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
-    const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
-    return ConversationLibraryRequester.of({
-      request: (prepared, request) =>
-        fetchEnvironmentConversationLibraryRequest({
-          prepared,
-          request,
-          signer,
-          remoteAuthorization,
-        }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient)),
-    });
-  }),
-);
