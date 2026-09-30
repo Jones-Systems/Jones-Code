@@ -776,7 +776,7 @@ export const T3WorkstreamListResult = Schema.Struct({
 });
 export type T3WorkstreamListResult = typeof T3WorkstreamListResult.Type;
 
-export const T3WorkstreamListQuery = {
+export const T3WorkstreamPageQuery = {
   limit: Schema.optional(
     Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100 })),
   ),
@@ -787,4 +787,3 @@ export const T3WorkstreamCommandRequest = Schema.Struct({ command: WorkstreamCom
 export const T3WorkstreamCommandPollParams = Schema.Struct({ commandId: CommandId });
 export const T3WorkstreamDetailParams = Schema.Struct({ workstreamId: Id });
 export const T3WorkstreamReferenceParams = Schema.Struct({ nativeReferenceId: Id });
-export const T3WorkstreamPageQuery = T3WorkstreamListQuery;

@@ -9,10 +9,10 @@ import * as NodeSqlite from "node:sqlite";
 import { validateNativeStoreAuthorityPath } from "./nativeStoreAuthorityPath.ts";
 import { parseServiceState, SERVICE_RESTART_PENDING_FILE } from "../cloud/serviceProtocol.ts";
 
-export const NATIVE_STORE_AUTHORITY_RECORD_VERSION = "t3-native-store-authority/1.0.0" as const;
-export const NATIVE_STORE_AUTHORITY_FILE = "native-store-authority-v1.json" as const;
-export const NATIVE_STORE_AUTHORITY_LOCK_FILE = "native-store-authority-v1.lock" as const;
-export const NATIVE_STORE_AUTHORITY_NAMESPACE_PREFIX = "t3-native:" as const;
+const NATIVE_STORE_AUTHORITY_RECORD_VERSION = "t3-native-store-authority/1.0.0" as const;
+const NATIVE_STORE_AUTHORITY_FILE = "native-store-authority-v1.json" as const;
+const NATIVE_STORE_AUTHORITY_LOCK_FILE = "native-store-authority-v1.lock" as const;
+const NATIVE_STORE_AUTHORITY_NAMESPACE_PREFIX = "t3-native:" as const;
 
 export type NativeStoreAuthorityState = {
   readonly record_version: typeof NATIVE_STORE_AUTHORITY_RECORD_VERSION;
@@ -68,7 +68,7 @@ export const nativeStoreAuthorityPaths = (authorityStateDir: string) => ({
 });
 
 /** The launcher has only the T3 home, so it uses the same explicit override as the server. */
-export const nativeStoreAuthorityStateDirForBaseDir = (baseDir: string): string => {
+const nativeStoreAuthorityStateDirForBaseDir = (baseDir: string): string => {
   const configured = process.env.T3CODE_NATIVE_AUTHORITY_STATE_DIR?.trim();
   const expanded =
     configured === undefined || configured === ""
@@ -252,7 +252,7 @@ const readStateUnlocked = (authorityStateDir: string): NativeStoreAuthorityState
   }
 };
 
-export const hasNativeStoreAuthorityState = (authorityStateDir: string): boolean => {
+const hasNativeStoreAuthorityState = (authorityStateDir: string): boolean => {
   try {
     NodeFS.lstatSync(nativeStoreAuthorityPaths(authorityStateDir).statePath);
     return true;

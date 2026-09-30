@@ -8,7 +8,7 @@ export const T3_PLACEMENT_MANIFEST_SHA256 =
 export const T3_PLACEMENT_MAX_REQUEST_BYTES = 262_144;
 export const T3_PLACEMENT_MAX_IDENTITIES = 1_000;
 export const T3_PLACEMENT_MAX_PAGES = 10;
-export const T3_PLACEMENT_MAX_LOAD_ITEMS = 1_000;
+const T3_PLACEMENT_MAX_LOAD_ITEMS = 1_000;
 const Id = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/));
 const NativeId = Schema.String.check(
   Schema.isMinLength(1),

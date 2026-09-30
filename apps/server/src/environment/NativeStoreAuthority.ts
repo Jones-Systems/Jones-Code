@@ -15,10 +15,6 @@ import {
 import * as ServerEnvironment from "./ServerEnvironment.ts";
 import type { T3PlacementTrustProvider } from "./NativePlacementTrust.ts";
 import {
-  advanceNativeStoreAuthority,
-  decodeNativeStoreAuthorityState,
-  fenceNativeStoreAuthority,
-  initializeNativeStoreAuthority,
   readNativeStoreAuthorityState,
   requireNativeStoreAuthorityLauncherProtocolForBaseDir,
   NativeStoreAuthorityPersistenceError,
@@ -126,11 +122,3 @@ export const make = Effect.fn("NativeStoreAuthority.make")(function* () {
 });
 
 export const layer = Layer.effect(NativeStoreAuthority, make());
-
-export {
-  advanceNativeStoreAuthority,
-  decodeNativeStoreAuthorityState,
-  fenceNativeStoreAuthority,
-  initializeNativeStoreAuthority,
-  readNativeStoreAuthorityState,
-};
