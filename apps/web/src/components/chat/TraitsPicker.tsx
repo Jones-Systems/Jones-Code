@@ -1,4 +1,5 @@
 import {
+  type ModelCapabilities,
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderOptionDescriptor,
@@ -8,7 +9,7 @@ import {
 } from "@t3tools/contracts";
 import {
   applyClaudePromptEffortPrefix,
-  buildProviderOptionSelectionsFromDescriptors,
+  buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
@@ -119,6 +120,17 @@ function replaceDescriptorCurrentValue(
   );
 }
 
+export function buildTraitsOptionSelections(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+  selections: ProviderOptions | null | undefined,
+  change: ProviderOptionSelection,
+): ProviderOptions | undefined {
+  return buildExplicitProviderOptionSelectionsFromDescriptors(
+    replaceDescriptorCurrentValue(descriptors, change.id, change.value),
+    [...(selections ?? []), change],
+  );
+}
+
 function getDescriptorStringValue(
   descriptor: Extract<ProviderOptionDescriptor, { type: "select" }> | null,
 ): string | null {
@@ -137,8 +149,10 @@ function getSelectedTraits(
   modelOptions: ProviderOptions | null | undefined,
   allowPromptInjectedEffort: boolean,
   planModeEnabled: boolean,
+  displayCapabilities?: ModelCapabilities,
 ) {
-  const caps = getProviderModelCapabilities(models, model, provider, planModeEnabled);
+  const caps =
+    displayCapabilities ?? getProviderModelCapabilities(models, model, provider, planModeEnabled);
   const modelIsUnavailable =
     provider === "opencode" &&
     !models.some((candidate) => candidate.slug === normalizeModelSlug(model, provider));
@@ -219,6 +233,7 @@ function getTraitsSectionVisibility(input: {
   modelOptions: ProviderOptions | null | undefined;
   allowPromptInjectedEffort?: boolean;
   planModeEnabled: boolean;
+  displayCapabilities?: ModelCapabilities | undefined;
 }) {
   const selected = getSelectedTraits(
     input.provider,
@@ -228,6 +243,7 @@ function getTraitsSectionVisibility(input: {
     input.modelOptions,
     input.allowPromptInjectedEffort ?? true,
     input.planModeEnabled,
+    input.displayCapabilities,
   );
 
   const showEffort = selected.primarySelectDescriptor !== null;
@@ -266,6 +282,7 @@ export function shouldRenderTraitsControls(input: {
 }
 
 export interface TraitsMenuContentProps {
+  displayCapabilities?: ModelCapabilities | undefined;
   provider: ProviderDriverKind;
   instanceId?: ProviderInstanceId;
   models: ReadonlyArray<ServerProviderModel>;
@@ -287,6 +304,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   prompt,
   onPromptChange,
   modelOptions,
+  displayCapabilities,
   allowPromptInjectedEffort = true,
   planModeEnabled,
   ...persistence
@@ -327,9 +345,10 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     modelOptions,
     allowPromptInjectedEffort,
     planModeEnabled,
+    displayCapabilities,
   });
-  const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
-    updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
+  const updateOption = (change: ProviderOptionSelection) => {
+    updateModelOptions(buildTraitsOptionSelections(descriptors, modelOptions, change));
   };
 
   const handleSelectChange = (
@@ -350,7 +369,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
       const stripped = prompt.replace(/^Ultrathink:\s*/i, "");
       onPromptChange(stripped);
     }
-    updateDescriptors(replaceDescriptorCurrentValue(descriptors, descriptor.id, value));
+    updateOption({ id: descriptor.id, value });
   };
 
   if (!hasAnyControls) {
@@ -452,9 +471,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
               <MenuRadioGroup
                 value={selectedValue}
                 onValueChange={(value) => {
-                  updateDescriptors(
-                    replaceDescriptorCurrentValue(descriptors, descriptor.id, value === "on"),
-                  );
+                  updateOption({ id: descriptor.id, value: value === "on" });
                 }}
               >
                 {(["on", "off"] as const).map((value) => (
@@ -539,6 +556,7 @@ export const TraitsPicker = memo(function TraitsPicker({
   prompt,
   onPromptChange,
   modelOptions,
+  displayCapabilities,
   allowPromptInjectedEffort = true,
   planModeEnabled,
   triggerClassName,
@@ -562,6 +580,7 @@ export const TraitsPicker = memo(function TraitsPicker({
       modelOptions,
       allowPromptInjectedEffort,
       planModeEnabled,
+      displayCapabilities,
     });
   if (
     !shouldRenderTraitsControls({
@@ -679,6 +698,7 @@ export const TraitsPicker = memo(function TraitsPicker({
           prompt={prompt}
           onPromptChange={onPromptChange}
           modelOptions={modelOptions}
+          displayCapabilities={displayCapabilities}
           allowPromptInjectedEffort={allowPromptInjectedEffort}
           planModeEnabled={planModeEnabled}
           {...persistence}

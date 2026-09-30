@@ -40,6 +40,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
+import type { ProcessAttribution } from "../../resourceTelemetry/ProcessAttribution.ts";
 import {
   buildCodexAdditionalContext,
   buildCodexDeveloperInstructions,
@@ -58,6 +59,8 @@ const BENIGN_ERROR_LOG_SNIPPETS = [
   "state db record_discrepancy: find_thread_path_by_id_str_in_subdir, falling_back",
 ];
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
+const CODEX_CHILD_INTERRUPT_TIMEOUT_MS = 10_000;
+const CODEX_ROOT_INTERRUPT_TIMEOUT_MS = 3_000;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
   "missing thread",
@@ -172,6 +175,7 @@ type CodexThreadItem =
 
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
+  readonly runtimeGeneration?: string;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly binaryPath: string;
   readonly homePath?: string;
@@ -188,6 +192,7 @@ export interface CodexSessionRuntimeOptions {
   readonly models?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   /** Capabilities the session's `t3-code` MCP credential grants; drives the prompt blocks. */
   readonly mcpCapabilities?: ReadonlySet<string>;
+  readonly processAttribution?: ProcessAttribution["Service"];
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
@@ -201,6 +206,21 @@ export interface CodexSessionRuntimeSendTurnInput {
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
   readonly interactionMode?: ProviderInteractionMode;
 }
+
+export const registerCodexAppServerProcess = Effect.fn("registerCodexAppServerProcess")(
+  function* (input: {
+    readonly pid: number;
+    readonly threadId: ThreadId;
+    readonly processAttribution?: ProcessAttribution["Service"];
+  }) {
+    if (!input.processAttribution) return;
+    yield* input.processAttribution.registerProviderRoot({
+      pid: input.pid,
+      threadId: input.threadId,
+      provider: PROVIDER,
+    });
+  },
+);
 
 export interface CodexThreadTurnSnapshot {
   readonly id: TurnId;
@@ -219,6 +239,8 @@ export interface CodexSessionRuntimeShape {
     input: CodexSessionRuntimeSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
   readonly compactThread: Effect.Effect<void, CodexSessionRuntimeError>;
+  readonly pauseActiveGoal: Effect.Effect<void>;
+  readonly interruptChildTurns: Effect.Effect<void>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
@@ -244,7 +266,8 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
-  | CodexSessionRuntimeThreadIdMissingError;
+  | CodexSessionRuntimeThreadIdMissingError
+  | CodexSessionRuntimeInterruptTimeoutError;
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedError<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
@@ -287,6 +310,15 @@ export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedError<
 ) {
   override get message(): string {
     return `Codex session is missing a provider thread id for ${this.threadId}`;
+  }
+}
+
+export class CodexSessionRuntimeInterruptTimeoutError extends Schema.TaggedError<CodexSessionRuntimeInterruptTimeoutError>()(
+  "CodexSessionRuntimeInterruptTimeoutError",
+  { threadId: Schema.String, turnId: Schema.String },
+) {
+  override get message(): string {
+    return `Codex did not acknowledge interruption of turn ${this.turnId} within ${CODEX_ROOT_INTERRUPT_TIMEOUT_MS}ms; the turn may still be running.`;
   }
 }
 
@@ -711,6 +743,8 @@ export function isRecoverableThreadResumeError(error: unknown): boolean {
 const CodexThreadResumeMetadata = Schema.Struct({
   cwd: Schema.String,
   model: Schema.String,
+  modelProvider: Schema.String,
+  serviceTier: Schema.optional(Schema.NullOr(Schema.String)),
   thread: Schema.Struct({ id: Schema.String }),
 });
 const decodeCodexThreadResumeMetadata = Schema.decodeUnknownEffect(CodexThreadResumeMetadata);
@@ -1361,6 +1395,12 @@ export const makeCodexSessionRuntime = (
         ),
       );
 
+    yield* registerCodexAppServerProcess({
+      pid: Number(child.pid),
+      threadId: options.threadId,
+      ...(options.processAttribution ? { processAttribution: options.processAttribution } : {}),
+    });
+
     const clientContext = yield* CodexClient.layerChildProcess(child).pipe(
       Layer.build,
       Effect.provideService(Scope.Scope, runtimeScope),
@@ -1404,6 +1444,7 @@ export const makeCodexSessionRuntime = (
           id: EventId.make(id),
           provider: PROVIDER,
           ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
+          ...(options.runtimeGeneration ? { runtimeGeneration: options.runtimeGeneration } : {}),
           createdAt: yield* nowIso,
           ...event,
         });
@@ -2510,6 +2551,16 @@ export const makeCodexSessionRuntime = (
         updatedAt: yield* nowIso,
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
+      yield* emitEvent({
+        kind: "session",
+        threadId: options.threadId,
+        method: "thread/opened",
+        payload: {
+          model: opened.model,
+          modelProvider: opened.modelProvider,
+          serviceTier: opened.serviceTier ?? null,
+        },
+      });
       yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
       return session;
     });
@@ -2545,9 +2596,34 @@ export const makeCodexSessionRuntime = (
       yield* Queue.shutdown(events);
     });
 
+    const pauseActiveGoal = Effect.gen(function* () {
+      // User-facing Stop pauses persisted goal state; direct runtime interrupts remain goal-neutral.
+      const providerThreadId = yield* readProviderThreadId;
+      const { goal } = yield* client.request("thread/goal/get", { threadId: providerThreadId });
+      if (goal?.status !== "active") return;
+      yield* client.request("thread/goal/set", { threadId: providerThreadId, status: "paused" });
+    }).pipe(Effect.timeoutOption("1 second"), Effect.ignore);
+
+    const interruptChildTurns = Effect.gen(function* () {
+      // Children are full threads with their own turns and can outlive a
+      // completed root. The transport awaits an unbounded Deferred per
+      // request, so bound each child and the fleet to keep root Stop reachable.
+      const liveChildTurns = yield* Ref.get(collabChildLiveTurnsRef);
+      yield* Effect.forEach(
+        Array.from(liveChildTurns.entries()),
+        ([childThreadId, childTurnId]) =>
+          client
+            .request("turn/interrupt", { threadId: childThreadId, turnId: childTurnId })
+            .pipe(Effect.timeoutOption("3 seconds"), Effect.ignore),
+        { concurrency: 8, discard: true },
+      ).pipe(Effect.timeoutOption(CODEX_CHILD_INTERRUPT_TIMEOUT_MS), Effect.ignore);
+    });
+
     return {
       start,
       getSession: Ref.get(sessionRef),
+      pauseActiveGoal,
+      interruptChildTurns,
       compactThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
         yield* client.request("thread/compact/start", { threadId: providerThreadId });
@@ -2619,7 +2695,6 @@ export const makeCodexSessionRuntime = (
       interruptTurn: (turnId) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
-          const session = yield* Ref.get(sessionRef);
           // Settle parked approvals FIRST. The transport answers server
           // requests inline on its stdin read loop, so a pending
           // command/file/app-permission prompt blocks every incoming message,
@@ -2630,34 +2705,27 @@ export const makeCodexSessionRuntime = (
           yield* settlePendingApprovals("cancel");
           // Pending user-input prompts block the same way; settle them too.
           yield* settlePendingUserInputs({});
-          // Stop-everything: children are full threads with their own turns;
-          // interrupting only the parent leaves the fleet running. Interrupt
-          // each live child turn first, best-effort per child, BOUNDED: the
-          // transport awaits an unbounded Deferred per request, so a wedged
-          // child would otherwise block the parent interrupt forever —
-          // exactly during the runaway fleet where Stop matters most
-          // (review finding). Per-child and overall deadlines guarantee the
-          // parent interrupt below always runs.
-          const liveChildTurns = yield* Ref.get(collabChildLiveTurnsRef);
-          yield* Effect.forEach(
-            Array.from(liveChildTurns.entries()),
-            ([childThreadId, childTurnId]) =>
-              client
-                .request("turn/interrupt", {
-                  threadId: childThreadId,
-                  turnId: childTurnId,
-                })
-                .pipe(Effect.timeoutOption("3 seconds"), Effect.ignore),
-            { concurrency: 8, discard: true },
-          ).pipe(Effect.timeoutOption("10 seconds"), Effect.ignore);
-          const effectiveTurnId = turnId ?? session.activeTurnId;
+          yield* interruptChildTurns;
+          // A queued follow-up may become active while children are interrupted.
+          const effectiveTurnId = turnId ?? (yield* Ref.get(sessionRef)).activeTurnId;
           if (!effectiveTurnId) {
             return;
           }
-          yield* client.request("turn/interrupt", {
-            threadId: providerThreadId,
-            turnId: effectiveTurnId,
-          });
+          yield* client
+            .request("turn/interrupt", {
+              threadId: providerThreadId,
+              turnId: effectiveTurnId,
+            })
+            .pipe(
+              Effect.timeoutOrElse({
+                duration: CODEX_ROOT_INTERRUPT_TIMEOUT_MS,
+                orElse: () =>
+                  new CodexSessionRuntimeInterruptTimeoutError({
+                    threadId: providerThreadId,
+                    turnId: effectiveTurnId,
+                  }),
+              }),
+            );
         }),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;

@@ -9,6 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import { emptyTelemetryCounters, mergeProcesses, type MergeProcessesResult } from "./Model.ts";
+import type { ProcessAttributionRecord } from "./ProcessAttribution.ts";
 
 const SERVER_PID = 100;
 const BASE_TIME_MS = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-06-17T12:00:00.000Z"));
@@ -97,6 +98,7 @@ function merge(input: {
   readonly desktop?: DesktopHostTelemetrySnapshot;
   readonly previous?: MergeProcessesResult;
   readonly sidecarPid?: number;
+  readonly processAttributions?: ReadonlyMap<number, ProcessAttributionRecord>;
 }): MergeProcessesResult {
   return mergeProcesses({
     serverPid: SERVER_PID,
@@ -104,6 +106,7 @@ function merge(input: {
     fallbackSampledAtMs: input.native.sampledAtUnixMs,
     nativeSnapshot: Option.some(input.native),
     desktopSnapshot: Option.fromUndefinedOr(input.desktop),
+    ...(input.processAttributions ? { processAttributions: input.processAttributions } : {}),
     previous: input.previous?.previous ?? new Map(),
     counters: input.previous?.counters ?? emptyTelemetryCounters(),
     updatePrevious: true,
@@ -111,6 +114,70 @@ function merge(input: {
 }
 
 describe("resource telemetry process model", () => {
+  it("attributes a registered provider root without copying ownership to descendants", () => {
+    const result = merge({
+      native: nativeSnapshot(BASE_TIME_MS, [
+        processSample({ pid: SERVER_PID, ppid: 1, startTimeMs: 1_000 }),
+        processSample({ pid: 200, ppid: SERVER_PID, startTimeMs: BASE_TIME_MS - 1_000 }),
+        processSample({ pid: 201, ppid: 200, startTimeMs: BASE_TIME_MS }),
+      ]),
+      processAttributions: new Map([
+        [
+          200,
+          {
+            pid: 200,
+            category: "provider-root",
+            owner: { kind: "provider", threadId: "thread-1", provider: "codex" },
+            registeredAtMs: BASE_TIME_MS,
+          },
+        ],
+      ]),
+    });
+
+    expect(result.processes.find((process) => process.identity.pid === 200)).toMatchObject({
+      category: "provider-root",
+      owner: { kind: "provider", threadId: "thread-1", provider: "codex" },
+    });
+    expect(result.processes.find((process) => process.identity.pid === 201)).toMatchObject({
+      category: "server-child",
+    });
+    expect(result.processes.find((process) => process.identity.pid === 201)?.owner).toBeUndefined();
+  });
+
+  it.each([
+    { offsetMs: 0, category: "provider-root", attributed: true },
+    { offsetMs: 1_000, category: "server-child", attributed: false },
+    { offsetMs: 2_000, category: "server-child", attributed: false },
+  ] as const)(
+    "matches only process start buckets at or before registration ($offsetMs ms)",
+    ({ offsetMs, category, attributed }) => {
+      const result = merge({
+        native: nativeSnapshot(BASE_TIME_MS, [
+          processSample({ pid: SERVER_PID, ppid: 1, startTimeMs: 1_000 }),
+          processSample({ pid: 200, ppid: SERVER_PID, startTimeMs: BASE_TIME_MS + offsetMs }),
+        ]),
+        processAttributions: new Map([
+          [
+            200,
+            {
+              pid: 200,
+              category: "provider-root",
+              owner: { kind: "provider", threadId: "thread-1", provider: "codex" },
+              registeredAtMs: BASE_TIME_MS,
+            },
+          ],
+        ]),
+      });
+
+      expect(result.processes.find((process) => process.identity.pid === 200)).toMatchObject({
+        category,
+      });
+      expect(
+        result.processes.find((process) => process.identity.pid === 200)?.owner !== undefined,
+      ).toBe(attributed);
+    },
+  );
+
   it("builds complete descendant depths and isolates monitor overhead", () => {
     const result = merge({
       sidecarPid: 900,

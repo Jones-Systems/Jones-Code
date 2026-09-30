@@ -4,7 +4,7 @@ import type {
   ProviderOptionSelection,
 } from "@t3tools/contracts";
 import {
-  buildProviderOptionSelectionsFromDescriptors,
+  buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
 
@@ -22,13 +22,13 @@ export function resolveProviderOptionDescriptors(input: {
 }
 
 /**
- * Applies one option change (by descriptor id) and returns the full selection
- * list to store on the model selection, or null when the change doesn't match
- * an advertised descriptor / choice.
+ * Applies one option change while preserving only previously explicit choices.
+ * Displayed defaults stay inherited. Returns null for an unadvertised change.
  */
 export function applyProviderOptionSelection(
   descriptors: ReadonlyArray<ProviderOptionDescriptor>,
   change: ProviderOptionSelection,
+  selections?: ReadonlyArray<ProviderOptionSelection> | null | undefined,
 ): ReadonlyArray<ProviderOptionSelection> | null {
   const descriptor = descriptors.find((candidate) => candidate.id === change.id);
   if (!descriptor) {
@@ -52,5 +52,10 @@ export function applyProviderOptionSelection(
       : candidate,
   ) as ReadonlyArray<ProviderOptionDescriptor>;
 
-  return buildProviderOptionSelectionsFromDescriptors(nextDescriptors) ?? [];
+  return (
+    buildExplicitProviderOptionSelectionsFromDescriptors(nextDescriptors, [
+      ...(selections ?? []),
+      change,
+    ]) ?? []
+  );
 }

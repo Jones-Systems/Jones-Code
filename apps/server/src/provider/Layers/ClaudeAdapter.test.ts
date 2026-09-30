@@ -31,6 +31,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -6442,6 +6443,7 @@ describe("ClaudeAdapterLive", () => {
       yield* adapter.startSession({
         threadId: RESUME_THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeGeneration: "runtime-generation-1",
         resumeCursor: {
           threadId: RESUME_THREAD_ID,
           resume: durableSessionId,
@@ -6494,6 +6496,32 @@ describe("ClaudeAdapterLive", () => {
       } as unknown as SDKMessage);
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const configured = runtimeEvents.find(
+        (event) => event.type === "session.configured" && event.payload.identity !== undefined,
+      );
+      assert.equal(configured?.type, "session.configured");
+      if (configured?.type === "session.configured") {
+        assert.equal(configured.runtimeGeneration, "runtime-generation-1");
+        assert.deepEqual(configured.payload.identity, {
+          backend: {
+            status: "unavailable",
+            reason: "The SDK init message does not identify the effective model backend.",
+          },
+          model: {
+            status: "observed",
+            value: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+            sourceEvent: "claude.system:init",
+          },
+          account: {
+            status: "unavailable",
+            reason: "The SDK init message does not bind an account to this runtime.",
+          },
+          serviceTier: {
+            status: "unavailable",
+            reason: "The SDK init message does not report a service tier.",
+          },
+        });
+      }
       const threadStartedEvents = runtimeEvents.filter((event) => event.type === "thread.started");
       assert.equal(threadStartedEvents.length, 1);
       const threadStarted = threadStartedEvents[0];
@@ -7218,6 +7246,7 @@ describe("ClaudeAdapterLive", () => {
         threadId: THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
         runtimeMode: "full-access",
+        runtimeGeneration: "before-rewind",
       });
       firstTurnId = (yield* sendCompletedClaudeTurn(adapter, harness, session.threadId, "first"))
         .turnId;
@@ -7226,7 +7255,16 @@ describe("ClaudeAdapterLive", () => {
       thirdTurnId = (yield* sendCompletedClaudeTurn(adapter, harness, session.threadId, "third"))
         .turnId;
 
-      const snapshot = yield* adapter.rollbackThread(session.threadId, 1);
+      const started = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "session.started" && event.runtimeGeneration === "after-rewind",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const snapshot = yield* adapter.rollbackThread(session.threadId, 1, "after-rewind");
+      const replacement = yield* Fiber.join(started);
+      assert.equal(Option.getOrThrow(replacement).runtimeGeneration, "after-rewind");
       assert.equal(snapshot.turns.length, 2);
       assert.deepEqual((yield* adapter.listSessions())[0]?.resumeCursor, {
         threadId: session.threadId,
@@ -7257,11 +7295,21 @@ describe("ClaudeAdapterLive", () => {
         threadId: THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
         runtimeMode: "full-access",
+        runtimeGeneration: "before-rewind",
       });
       yield* sendCompletedClaudeTurn(adapter, harness, session.threadId, "first");
       yield* sendCompletedClaudeTurn(adapter, harness, session.threadId, "second");
 
-      const snapshot = yield* adapter.rollbackThread(session.threadId, 2);
+      const started = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "session.started" && event.runtimeGeneration === "after-rewind",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const snapshot = yield* adapter.rollbackThread(session.threadId, 2, "after-rewind");
+      const replacement = yield* Fiber.join(started);
+      assert.equal(Option.getOrThrow(replacement).runtimeGeneration, "after-rewind");
       assert.equal(snapshot.turns.length, 0);
       assert.equal(forkCalls.length, 0);
       const resetOptions = harness.getLastCreateQueryInput()?.options;

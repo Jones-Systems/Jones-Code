@@ -4,6 +4,7 @@ import {
   PreviewAutomationClickInput,
   PreviewAutomationEvaluateInput,
   PreviewAutomationPressInput,
+  PreviewAutomationRuntimeIdentity,
   PreviewAutomationScrollInput,
   PreviewAutomationSnapshot,
   PreviewAutomationStatus,
@@ -1123,6 +1124,7 @@ export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
+  getPreviewAutomationRuntimeIdentity?: () => Promise<PreviewAutomationRuntimeIdentity>;
   /** Absolute path of a dropped or picked file; absent on desktop builds predating it. */
   getPathForFile?: (file: File) => string;
   /** The desktop client's OS platform, read from Electron's preload process. */
@@ -1212,6 +1214,9 @@ export interface DesktopBridge {
     items: readonly ContextMenuItem<T>[],
     position?: { x: number; y: number },
   ) => Promise<T | null>;
+  /** Receives a local OAuth code for a sign-in owned by a remote environment. */
+  receiveProviderAuthCallback?: (authorizationUrl: string) => Promise<string>;
+  cancelProviderAuthCallback?: (authorizationUrl: string) => Promise<void>;
   openExternal: (url: string) => Promise<boolean>;
   /**
    * Open a System Settings pane by identifier. Optional: older desktop builds
