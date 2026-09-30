@@ -87,6 +87,11 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   );
 
   public readonly compactThread = Effect.void;
+  public getProviderGoalState = Effect.succeed({
+    nativeThreadId: "provider-thread-1",
+    state: "inactive" as const,
+    reasonCode: "goal_null" as const,
+  });
 
   public readonly interruptTurnImpl = vi.fn((_turnId?: TurnId): Promise<void> =>
     Promise.resolve(undefined),
@@ -255,6 +260,54 @@ const validationLayer = it.layer(
     Layer.provideMerge(NodeServices.layer),
   ),
 );
+
+it.effect("reads goals without starting or recovering sessions and rejects stop races", () => {
+  const goalRuntimeFactory = makeRuntimeFactory();
+  const layer = Layer.effect(
+    CodexAdapter,
+    makeCodexAdapter(decodeCodexSettings({}), {
+      makeRuntime: goalRuntimeFactory.factory,
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    const readGoal = adapter.getProviderGoalState;
+    NodeAssert.ok(readGoal);
+    const threadId = asThreadId("goal-read-existing");
+    const before = goalRuntimeFactory.factory.mock.calls.length;
+    NodeAssert.equal((yield* readGoal(threadId)).reasonCode, "no_session");
+    NodeAssert.equal(goalRuntimeFactory.factory.mock.calls.length, before);
+    yield* adapter.startSession({
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      runtimeMode: "full-access",
+    });
+    const runtime = goalRuntimeFactory.lastRuntime;
+    NodeAssert.ok(runtime);
+    const starts = runtime.startImpl.mock.calls.length;
+    NodeAssert.equal((yield* readGoal(threadId)).state, "inactive");
+    NodeAssert.equal(runtime.startImpl.mock.calls.length, starts);
+    NodeAssert.equal(runtime.pauseActiveGoalImpl.mock.calls.length, 0);
+    NodeAssert.equal(runtime.interruptTurnImpl.mock.calls.length, 0);
+    NodeAssert.equal(runtime.interruptChildTurnsImpl.mock.calls.length, 0);
+    runtime.getProviderGoalState = adapter.stopSession(threadId).pipe(
+      Effect.orDie,
+      Effect.as({
+        nativeThreadId: "provider-thread-1",
+        state: "inactive" as const,
+        reasonCode: "goal_null" as const,
+      }),
+    );
+    NodeAssert.equal((yield* readGoal(threadId)).reasonCode, "context_changed");
+    NodeAssert.equal((yield* readGoal(threadId)).reasonCode, "no_session");
+    NodeAssert.equal(goalRuntimeFactory.factory.mock.calls.length, before + 1);
+  }).pipe(Effect.provide(layer));
+});
 
 validationLayer("CodexAdapterLive validation", (it) => {
   it.effect("returns validation error for non-codex provider on startSession", () =>
