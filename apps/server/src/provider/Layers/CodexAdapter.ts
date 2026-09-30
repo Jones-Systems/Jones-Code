@@ -30,6 +30,7 @@ import {
   type TurnTokenUsage,
   ProviderApprovalDecision,
   ThreadId,
+  TrimmedNonEmptyString,
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -137,6 +138,12 @@ interface CodexTurnTokenUsageState {
   activeTurnId: string | undefined;
   readonly byTurnId: Map<string, CodexTurnTokenUsageAccumulator>;
 }
+
+const CodexThreadOpenedIdentity = Schema.Struct({
+  model: TrimmedNonEmptyString,
+  modelProvider: TrimmedNonEmptyString,
+  serviceTier: Schema.NullOr(TrimmedNonEmptyString),
+});
 
 function mapCodexRuntimeError(
   threadId: ThreadId,
@@ -963,6 +970,9 @@ function asRuntimeRequestId(requestId: string): RuntimeRequestId {
 }
 
 function eventRawSource(event: ProviderEvent): NonNullable<ProviderRuntimeEvent["raw"]>["source"] {
+  if (event.kind === "session" && event.method === "thread/opened") {
+    return "codex.app-server.response";
+  }
   return event.kind === "request" ? "codex.app-server.request" : "codex.app-server.notification";
 }
 
@@ -985,6 +995,12 @@ function runtimeEventBase(
   return {
     eventId: event.id,
     provider: event.provider,
+    ...(event.providerInstanceId !== undefined
+      ? { providerInstanceId: event.providerInstanceId }
+      : {}),
+    ...(event.runtimeGeneration !== undefined
+      ? { runtimeGeneration: event.runtimeGeneration }
+      : {}),
     threadId: canonicalThreadId,
     createdAt: event.createdAt,
     ...(event.turnId ? { turnId: event.turnId } : {}),
@@ -1491,6 +1507,38 @@ function mapToRuntimeEvents(
         payload: {
           ...(event.message ? { message: event.message } : {}),
           ...(event.payload !== undefined ? { resume: event.payload } : {}),
+        },
+      },
+    ];
+  }
+
+  if (event.method === "thread/opened") {
+    const payload = readPayload(CodexThreadOpenedIdentity, event.payload);
+    if (!payload) {
+      return [];
+    }
+    const sourceEvent = "codex.thread/open";
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "session.configured",
+        payload: {
+          config: {},
+          identity: {
+            backend: { status: "observed", value: payload.modelProvider, sourceEvent },
+            model: { status: "observed", value: payload.model, sourceEvent },
+            account: {
+              status: "unavailable",
+              reason: "The thread-open response does not bind an account to this runtime.",
+            },
+            serviceTier:
+              payload.serviceTier === null
+                ? {
+                    status: "unavailable",
+                    reason: "The thread-open response did not report a service tier.",
+                  }
+                : { status: "observed", value: payload.serviceTier, sourceEvent },
+          },
         },
       },
     ];
@@ -2292,6 +2340,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
+          ...(input.runtimeGeneration ? { runtimeGeneration: input.runtimeGeneration } : {}),
           providerInstanceId: boundInstanceId,
           cwd: input.cwd ?? process.cwd(),
           binaryPath: codexConfig.binaryPath,

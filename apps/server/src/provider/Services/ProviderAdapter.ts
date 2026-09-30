@@ -132,11 +132,13 @@ export interface ProviderAdapterShape<TError> {
   readonly readThread: (threadId: ThreadId) => Effect.Effect<ProviderThreadSnapshot, TError>;
 
   /**
-   * Roll back a provider thread by N turns.
+   * Roll back a provider thread by N turns. Replacement runtimes carry the
+   * supplied generation on events emitted by that runtime.
    */
   readonly rollbackThread: (
     threadId: ThreadId,
     numTurns: number,
+    runtimeGeneration?: string,
   ) => Effect.Effect<ProviderThreadSnapshot, TError>;
 
   /**

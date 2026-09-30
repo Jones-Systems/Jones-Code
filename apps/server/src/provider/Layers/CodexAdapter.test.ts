@@ -380,6 +380,76 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
+  for (const serviceTier of ["priority", null] as const) {
+    it.effect(
+      `maps the typed thread-open response to authoritative identity (${serviceTier})`,
+      () =>
+        Effect.gen(function* () {
+          const adapter = yield* CodexAdapter;
+          const threadId = asThreadId("thread-identity");
+          yield* adapter.startSession({
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeGeneration: "runtime-generation-1",
+            threadId,
+            runtimeMode: "full-access",
+          });
+          const runtime = sessionRuntimeFactory.lastRuntime;
+          NodeAssert.ok(runtime);
+          const eventFiber = yield* adapter.streamEvents.pipe(Stream.runHead, Effect.forkChild);
+
+          yield* runtime.emit({
+            id: asEventId("evt-thread-opened"),
+            kind: "session",
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeGeneration: "runtime-generation-1",
+            threadId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            method: "thread/opened",
+            payload: {
+              model: "gpt-5.6-sol-2026-09-01",
+              modelProvider: "openai",
+              serviceTier,
+            },
+          });
+
+          const event = Option.getOrThrow(yield* Fiber.join(eventFiber));
+          NodeAssert.equal(event.type, "session.configured");
+          if (event.type !== "session.configured") return;
+          NodeAssert.equal(event.runtimeGeneration, "runtime-generation-1");
+          NodeAssert.equal(event.raw?.source, "codex.app-server.response");
+          NodeAssert.deepStrictEqual(event.payload.identity, {
+            backend: {
+              status: "observed",
+              value: "openai",
+              sourceEvent: "codex.thread/open",
+            },
+            model: {
+              status: "observed",
+              value: "gpt-5.6-sol-2026-09-01",
+              sourceEvent: "codex.thread/open",
+            },
+            account: {
+              status: "unavailable",
+              reason: "The thread-open response does not bind an account to this runtime.",
+            },
+            serviceTier:
+              serviceTier === null
+                ? {
+                    status: "unavailable",
+                    reason: "The thread-open response did not report a service tier.",
+                  }
+                : {
+                    status: "observed",
+                    value: serviceTier,
+                    sourceEvent: "codex.thread/open",
+                  },
+          });
+        }),
+    );
+  }
+
   it.effect("compacts the active Codex thread and emits compacted state", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

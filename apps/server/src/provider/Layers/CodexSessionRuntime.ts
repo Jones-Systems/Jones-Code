@@ -175,6 +175,7 @@ type CodexThreadItem =
 
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
+  readonly runtimeGeneration?: string;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly binaryPath: string;
   readonly homePath?: string;
@@ -742,6 +743,8 @@ export function isRecoverableThreadResumeError(error: unknown): boolean {
 const CodexThreadResumeMetadata = Schema.Struct({
   cwd: Schema.String,
   model: Schema.String,
+  modelProvider: Schema.String,
+  serviceTier: Schema.optional(Schema.NullOr(Schema.String)),
   thread: Schema.Struct({ id: Schema.String }),
 });
 const decodeCodexThreadResumeMetadata = Schema.decodeUnknownEffect(CodexThreadResumeMetadata);
@@ -1441,6 +1444,7 @@ export const makeCodexSessionRuntime = (
           id: EventId.make(id),
           provider: PROVIDER,
           ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
+          ...(options.runtimeGeneration ? { runtimeGeneration: options.runtimeGeneration } : {}),
           createdAt: yield* nowIso,
           ...event,
         });
@@ -2547,6 +2551,16 @@ export const makeCodexSessionRuntime = (
         updatedAt: yield* nowIso,
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
+      yield* emitEvent({
+        kind: "session",
+        threadId: options.threadId,
+        method: "thread/opened",
+        payload: {
+          model: opened.model,
+          modelProvider: opened.modelProvider,
+          serviceTier: opened.serviceTier ?? null,
+        },
+      });
       yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
       return session;
     });

@@ -143,27 +143,28 @@ function makeFakeCodexAdapter(
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
-  const startSession = vi.fn((input: ProviderSessionStartInput) =>
-    Effect.sync(() => {
-      const now = "2026-01-01T00:00:00.000Z";
-      const session: ProviderSession = {
-        provider,
-        ...(input.providerInstanceId !== undefined
-          ? { providerInstanceId: input.providerInstanceId }
-          : {}),
-        status: "ready",
-        runtimeMode: input.runtimeMode,
-        threadId: input.threadId,
-        resumeCursor: input.resumeCursor ?? {
-          opaque: `resume-${String(input.threadId)}`,
-        },
-        cwd: input.cwd ?? process.cwd(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      sessions.set(session.threadId, session);
-      return session;
-    }),
+  const startSession = vi.fn(
+    (input: ProviderSessionStartInput): Effect.Effect<ProviderSession, ProviderAdapterError> =>
+      Effect.sync(() => {
+        const now = "2026-01-01T00:00:00.000Z";
+        const session: ProviderSession = {
+          provider,
+          ...(input.providerInstanceId !== undefined
+            ? { providerInstanceId: input.providerInstanceId }
+            : {}),
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          threadId: input.threadId,
+          resumeCursor: input.resumeCursor ?? {
+            opaque: `resume-${String(input.threadId)}`,
+          },
+          cwd: input.cwd ?? process.cwd(),
+          createdAt: now,
+          updatedAt: now,
+        };
+        sessions.set(session.threadId, session);
+        return session;
+      }),
   );
 
   const sendTurn = vi.fn(
@@ -253,6 +254,7 @@ function makeFakeCodexAdapter(
     (
       threadId: ThreadId,
       _numTurns: number,
+      _runtimeGeneration?: string,
     ): Effect.Effect<{ threadId: ThreadId; turns: readonly [] }, ProviderAdapterError> =>
       Effect.succeed({ threadId, turns: [] }),
   );
@@ -1813,6 +1815,120 @@ routing.layer("ProviderServiceLive routing", (it) => {
       routing.claude.stopSession.mockClear();
     }),
   );
+
+  for (const operation of ["recovery", "rollback"] as const) {
+    for (const outcome of ["success", "failure", "interruption"] as const) {
+      it.effect(
+        `orders ${operation} identity and discards unsuccessful launch events (${outcome})`,
+        () =>
+          Effect.gen(function* () {
+            const provider = yield* ProviderService.ProviderService;
+            const threadId = asThreadId(`thread-identity-${operation}-${outcome}`);
+            const driver = operation === "rollback" ? CLAUDE_AGENT_DRIVER : CODEX_DRIVER;
+            const instanceId = operation === "rollback" ? claudeAgentInstanceId : codexInstanceId;
+            const adapter = operation === "rollback" ? routing.claude : routing.codex;
+            yield* provider.startSession(threadId, {
+              provider: driver,
+              providerInstanceId: instanceId,
+              threadId,
+              runtimeMode: "full-access",
+              runtimeGeneration: "prior-runtime",
+            });
+            if (operation === "recovery") yield* provider.stopSession({ threadId });
+            const release = yield* Deferred.make<void>();
+            const configured = (
+              eventId: string,
+              runtimeGeneration?: string,
+            ): ProviderRuntimeEvent => ({
+              type: "session.configured",
+              eventId: asEventId(eventId),
+              provider: driver,
+              providerInstanceId: instanceId,
+              threadId,
+              ...(runtimeGeneration !== undefined ? { runtimeGeneration } : {}),
+              createdAt: "2026-01-01T00:00:00.000Z",
+              payload: { config: {} },
+            });
+            const collectThrough = (id: string) =>
+              provider.streamEvents.pipe(
+                Stream.filter((event) => event.threadId === threadId),
+                Stream.takeUntil((event) => event.eventId === id),
+                Stream.runCollect,
+                Effect.forkChild({ startImmediately: true }),
+              );
+            const before = yield* collectThrough("identity-before-marker");
+            let generation: string | undefined;
+            const duringLaunch = (nextGeneration: string | undefined) =>
+              Effect.gen(function* () {
+                generation = nextGeneration;
+                adapter.emit(configured("identity-buffered", generation));
+                adapter.emit(configured("identity-before-marker"));
+                yield* Deferred.await(release);
+                if (outcome === "failure")
+                  return yield* new ProviderAdapterRequestError({
+                    provider: driver,
+                    method: operation,
+                    detail: "identity test failure",
+                  });
+              });
+            if (operation === "recovery") {
+              const originalStart = adapter.startSession.getMockImplementation()!;
+              adapter.startSession.mockImplementationOnce((input) =>
+                duringLaunch(input.runtimeGeneration).pipe(Effect.andThen(originalStart(input))),
+              );
+            } else {
+              adapter.rollbackThread.mockImplementationOnce((threadId, _turns, nextGeneration) =>
+                duringLaunch(nextGeneration).pipe(Effect.as({ threadId, turns: [] as const })),
+              );
+            }
+            const recovery = yield* (
+              operation === "recovery"
+                ? provider
+                    .sendTurn({ threadId, input: "resume", attachments: [] })
+                    .pipe(Effect.asVoid)
+                : provider.rollbackConversation({ threadId, numTurns: 1 })
+            ).pipe(Effect.exit, Effect.forkChild);
+            const beforeEvents = Array.from(yield* Fiber.join(before));
+            assert.deepEqual(
+              beforeEvents.map((event) => event.eventId),
+              ["identity-before-marker"],
+            );
+            assert.equal(typeof generation, "string");
+            assert.notEqual(generation, "prior-runtime");
+            const after = yield* collectThrough("identity-after-marker");
+            if (outcome === "interruption") {
+              yield* Fiber.interrupt(recovery);
+            } else {
+              yield* Deferred.succeed(release, undefined);
+              const result = yield* Fiber.join(recovery);
+              assert.equal(Exit.isSuccess(result), outcome === "success");
+            }
+            adapter.emit(configured("identity-late", generation));
+            adapter.emit(configured("identity-prior", "prior-runtime"));
+            adapter.emit(configured("identity-after-marker"));
+            const afterEvents = Array.from(yield* Fiber.join(after));
+            if (outcome === "success") {
+              assert.equal(afterEvents[0]?.raw?.source, "t3.provider-service.recovery");
+              assert.equal(afterEvents[0]?.runtimeGeneration, generation);
+              assert.deepEqual(
+                afterEvents.slice(1).map((event) => event.eventId),
+                ["identity-buffered", "identity-late", "identity-after-marker"],
+              );
+            } else {
+              assert.deepEqual(
+                afterEvents.map((event) => event.eventId),
+                ["identity-prior", "identity-after-marker"],
+              );
+            }
+            yield* provider.stopSession({ threadId });
+            adapter.startSession.mockClear();
+            adapter.sendTurn.mockClear();
+            adapter.rollbackThread.mockClear();
+            adapter.stopSession.mockClear();
+          }),
+      );
+    }
+  }
 
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {
