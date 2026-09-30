@@ -3238,3 +3238,174 @@ usageLimitLayer("CodexAdapterLive usage limits", (it) => {
     }),
   );
 });
+
+it.effect("managed runtime rotation restarts app-server and resumes the same native thread", () => {
+  const runtimes: FakeCodexRuntime[] = [];
+  let revision = "first";
+  const layer = Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      return yield* makeCodexAdapter(decodeCodexSettings({}), {
+        resolveRuntime: Effect.sync(() => ({
+          config: decodeCodexSettings({
+            binaryPath: "/t3/tools/codex/0.155.1/bin/codex",
+            homePath: "/t3/caches/codex/home",
+            launchArgs: "-c 'model_provider=managed'",
+          }),
+          environment: { ACCESS_TOKEN: `dummy-${revision}` },
+          revision,
+        })),
+        makeRuntime: (options) => {
+          const runtime = new FakeCodexRuntime(options);
+          runtime.startImpl.mockImplementation(() =>
+            Promise.resolve({
+              provider: ProviderDriverKind.make("codex"),
+              threadId: options.threadId,
+              runtimeMode: options.runtimeMode,
+              cwd: options.cwd,
+              status: "ready",
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+              resumeCursor: { threadId: "native-managed-thread" },
+            }),
+          );
+          runtimes.push(runtime);
+          return Effect.succeed(runtime);
+        },
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    const threadId = asThreadId("managed-token-rotation");
+    yield* adapter.startSession({
+      threadId,
+      runtimeMode: "full-access",
+      runtimeGeneration: "original-runtime",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "original-requested-model",
+      },
+    });
+    let replacements = 0;
+    const runtimeContext: NonNullable<Parameters<CodexAdapterShape["sendTurn"]>[1]> = {
+      withRuntimeReplacement: (restart) =>
+        Effect.suspend(() => {
+          replacements += 1;
+          return restart("replacement-runtime");
+        }),
+    };
+    yield* adapter.sendTurn({ threadId, input: "first" }, runtimeContext);
+    NodeAssert.equal(replacements, 0);
+    NodeAssert.equal(runtimes.length, 1);
+    revision = "rotated";
+    yield* adapter.sendTurn(
+      {
+        threadId,
+        input: "second",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "current-requested-model",
+        },
+      },
+      runtimeContext,
+    );
+    NodeAssert.equal(replacements, 1);
+    NodeAssert.equal(runtimes[1]?.options.runtimeGeneration, "replacement-runtime");
+    NodeAssert.equal(runtimes[1]?.options.model, "current-requested-model");
+    NodeAssert.equal(runtimes.length, 2);
+    NodeAssert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+    NodeAssert.deepEqual(runtimes[1]?.options.resumeCursor, { threadId: "native-managed-thread" });
+    NodeAssert.equal(runtimes[1]?.options.environment?.ACCESS_TOKEN, "dummy-rotated");
+    NodeAssert.equal(runtimes[1]?.options.binaryPath, "/t3/tools/codex/0.155.1/bin/codex");
+    const identityEvent = yield* adapter.streamEvents.pipe(
+      Stream.filter(
+        (event) => event.type === "session.configured" && event.payload.identity !== undefined,
+      ),
+      Stream.runHead,
+      Effect.forkChild,
+    );
+    yield* runtimes[1]!.emit({
+      id: asEventId("managed-replacement-identity"),
+      kind: "session",
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeGeneration: runtimes[1]!.options.runtimeGeneration!,
+      threadId,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      method: "thread/opened",
+      payload: { model: "native-managed-model", modelProvider: "managed", serviceTier: null },
+    });
+    const observed = Option.getOrThrow(yield* Fiber.join(identityEvent));
+    NodeAssert.equal(observed.runtimeGeneration, "replacement-runtime");
+    if (observed.type === "session.configured")
+      NodeAssert.deepEqual(observed.payload.identity?.model, {
+        status: "observed",
+        value: "native-managed-model",
+        sourceEvent: "codex.thread/open",
+      });
+    revision = "rotated-again";
+    yield* adapter.sendTurn({ threadId, input: "third" });
+    NodeAssert.equal(runtimes.length, 3);
+    NodeAssert.equal(typeof runtimes[2]?.options.runtimeGeneration, "string");
+    NodeAssert.notEqual(runtimes[2]?.options.runtimeGeneration, "replacement-runtime");
+    NodeAssert.equal(runtimes[2]?.options.environment?.ACCESS_TOKEN, "dummy-rotated-again");
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("managed turn failures preserve the sharing-limit code for client notices", () => {
+  const factory = makeRuntimeFactory();
+  const layer = Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      return yield* makeCodexAdapter(decodeCodexSettings({}), {
+        makeRuntime: factory.factory,
+        resolveRuntime: Effect.succeed({
+          config: decodeCodexSettings({}),
+          environment: {},
+          revision: "managed",
+        }),
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    yield* adapter.startSession({ threadId: asThreadId("thread-1"), runtimeMode: "full-access" });
+    const eventsFiber = yield* adapter.streamEvents.pipe(
+      Stream.take(2),
+      Stream.runCollect,
+      Effect.forkChild,
+    );
+    const notification = codexUsageLimitTurnFailed("managed-sharing-limit");
+    yield* factory.lastRuntime!.emit({
+      ...notification,
+      payload: {
+        threadId: "thread-1",
+        turn: {
+          id: "turn-limit",
+          items: [],
+          status: "failed",
+          error: { message: "subscription_sharing_usage_limit_exceeded", codexErrorInfo: "other" },
+        },
+      },
+    });
+    const events = Array.from(yield* Fiber.join(eventsFiber));
+    NodeAssert.equal(events[0]?.type, "runtime.error");
+    if (events[0]?.type === "runtime.error") {
+      NodeAssert.equal(events[0].payload.code, "subscription_sharing_usage_limit_exceeded");
+      NodeAssert.match(events[0].payload.message, /ChatGPT usage limit/);
+    }
+    NodeAssert.equal(events[1]?.type, "turn.completed");
+    if (events[1]?.type === "turn.completed") NodeAssert.equal(events[1].payload.state, "failed");
+  }).pipe(Effect.provide(layer));
+});

@@ -17,9 +17,11 @@ Adapter-generated turn-start model metadata is requested configuration.
 Every launch receives a generation before it starts. Events retain the emitting
 runtime's generation and provider instance; looking up the latest session while
 emitting an old event can falsely attest a replacement runtime. Ingestion requires
-an exact driver, instance, and generation match. A live model or tier change
-clears old observations while retaining the running process's generation, so
-subsequent native observations remain correlatable.
+an exact driver, instance, and generation match. A live model change or a change
+to the explicit `serviceTier` option clears old observations while retaining the
+running process's generation, so subsequent native observations remain
+correlatable. The legacy `fastMode` alias is not normalized into the requested
+service tier; changing that alias alone does not invalidate a prior observation.
 
 Startup events wait until binding succeeds. Recovery publishes its new generation
 boundary before releasing buffered observations. Failed or interrupted launches
