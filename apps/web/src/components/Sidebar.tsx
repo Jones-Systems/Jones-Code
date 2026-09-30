@@ -1,5 +1,6 @@
+import { WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
 import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
-import { moveNativeThreadOrder } from "./workstreams/nativeWorkstreamActions";
+import { canEditWorkstreams, moveNativeThreadOrder } from "./workstreams/nativeWorkstreamActions";
 import { useWorkstreams } from "../state/workstreams";
 import { groupNativeThreadsByWorkstream } from "./workstreams/nativeThreadGrouping";
 import { WorkstreamNativeSidebar } from "./workstreams/WorkstreamNativeSidebar";
@@ -2672,6 +2673,9 @@ export default function Sidebar() {
   }, [nowMinute, optimisticDrop, scopedProjectKeys, serverConfigs, snoozeWakeTick, threads]);
 
   const workstreamController = useWorkstreams(true, activeThreads);
+  const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
+  const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
+  const closeWorkstreamCreate = useCallback(() => setWorkstreamCreateOpen(false), []);
   const workstreamGrouping = useMemo(
     () =>
       groupNativeThreadsByWorkstream({
@@ -4656,6 +4660,13 @@ export default function Sidebar() {
                   </ComboboxPopup>
                 </Combobox>
               }
+              onNewWorkstream={() => setWorkstreamCreateOpen(true)}
+              newWorkstreamDisabled={
+                !canEditWorkstreams(workstreamController.data) ||
+                workstreamController.loading ||
+                workstreamCreatePending ||
+                workstreamCreateOpen
+              }
               onNewProject={openAddProjectCommandPalette}
               onNewThread={handleNewThreadClick}
               newThreadDisabled={projects.length === 0}
@@ -4673,6 +4684,12 @@ export default function Sidebar() {
               searchResultCount={threadSearchResults.length}
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
+            />
+            <WorkstreamCreateForm
+              controller={workstreamController}
+              open={workstreamCreateOpen}
+              onClose={closeWorkstreamCreate}
+              onPendingChange={setWorkstreamCreatePending}
             />
           </SidebarGroup>
         }

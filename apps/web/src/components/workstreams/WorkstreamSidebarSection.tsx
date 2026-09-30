@@ -35,6 +35,144 @@ export const workstreamCommandId = () =>
 
 const bindingSuperseded = Symbol("binding superseded");
 
+export function WorkstreamCreateForm({
+  controller,
+  open,
+  onClose,
+  onPendingChange,
+}: {
+  readonly controller: WorkstreamListView;
+  readonly open: boolean;
+  readonly onClose: () => void;
+  readonly onPendingChange: (pending: boolean) => void;
+}) {
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const sessionRef = useRef(0);
+  const binding = controller.data ? workstreamBindingKey(controller.data.binding) : null;
+  const bindingRef = useRef(binding);
+  const canWrite = canEditWorkstreams(controller.data);
+
+  useLayoutEffect(() => {
+    if (bindingRef.current !== binding) onClose();
+    bindingRef.current = binding;
+    sessionRef.current += 1;
+    setName("");
+    setError(null);
+    return () => {
+      sessionRef.current += 1;
+    };
+  }, [binding, open, onClose]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    if (!canWrite) {
+      onClose();
+      return;
+    }
+    inputRef.current?.focus();
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !formRef.current?.contains(event.target)) onClose();
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("pointerdown", outside, true);
+    document.addEventListener("keydown", escape, true);
+    return () => {
+      document.removeEventListener("pointerdown", outside, true);
+      document.removeEventListener("keydown", escape, true);
+    };
+  }, [open, canWrite, onClose]);
+
+  if (!open || !canWrite) return null;
+  return (
+    <form
+      ref={formRef}
+      aria-label="Create Workstream"
+      className="px-1 pt-1"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const data = controller.data;
+        const trimmedName = name.trim();
+        if (!data || !canWrite || controller.loading || pendingRef.current || !trimmedName) return;
+        const startedSession = sessionRef.current;
+        const startedBinding = binding;
+        pendingRef.current = true;
+        setPending(true);
+        onPendingChange(true);
+        setError(null);
+        void (async () => {
+          const id = await workstreamCommandId();
+          if (sessionRef.current !== startedSession || bindingRef.current !== startedBinding)
+            return;
+          const receipt = await controller.submit({
+            command_id: id,
+            expected_server_generation: data.binding.serverGeneration,
+            expected_registry_version: data.binding.registryVersion,
+            action: {
+              operation: "create_workstream",
+              name: trimmedName,
+              lifecycle: "planned",
+              progress: { state: "unknown" },
+              sort_order: Math.min(
+                2_147_483_647,
+                Math.max(-1, ...data.items.map((item) => item.sortOrder)) + 1,
+              ),
+            },
+          });
+          if (sessionRef.current !== startedSession || bindingRef.current !== startedBinding)
+            return;
+          if (receipt.state === "committed") onClose();
+          else
+            setError(
+              receipt.state === "rejected"
+                ? `Creation was rejected: ${receipt.error.code}.`
+                : "Creation is still pending.",
+            );
+        })()
+          .catch((cause: unknown) => {
+            if (sessionRef.current === startedSession && bindingRef.current === startedBinding)
+              setError(cause instanceof Error ? cause.message : "Workstream creation failed.");
+          })
+          .finally(() => {
+            pendingRef.current = false;
+            setPending(false);
+            onPendingChange(false);
+          });
+      }}
+    >
+      <div className="flex gap-1">
+        <Input
+          ref={inputRef}
+          aria-label="New Workstream name"
+          placeholder="Workstream name"
+          nativeInput
+          size="compact"
+          value={name}
+          disabled={pending}
+          onChange={(event) => setName(event.target.value)}
+        />
+        <Button size="xs" type="submit" disabled={pending || controller.loading || !name.trim()}>
+          {pending ? "Creating…" : "Create"}
+        </Button>
+      </div>
+      {error ? (
+        <p role="alert" className="pt-1 text-xs text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </form>
+  );
+}
+
 export function WorkstreamSidebarSection(props: {
   readonly controller: WorkstreamListView;
   readonly renderMembers?: (workstreamId: string | null) => ReactNode;
@@ -46,7 +184,6 @@ export function WorkstreamSidebarSection(props: {
 }) {
   const { data, placementInventory, submit, runBindingOperation, loadDetail, loadReference } =
     props.controller;
-  const [newName, setNewName] = useState("");
   const [collapsed, setCollapsed] = useLocalStorage<readonly string[], readonly string[]>(
     `t3:workstreams:collapsed:${data?.binding.registryId ?? "none"}:${data?.binding.ownerId ?? "none"}`,
     [],
@@ -230,43 +367,9 @@ export function WorkstreamSidebarSection(props: {
 
   return (
     <section aria-label="Owner Workstreams" className="border-b border-sidebar-border/60 px-2 pb-2">
-      <div className="flex h-8 items-center px-1 text-xs font-medium text-sidebar-muted-foreground">
-        Workstreams
-      </div>
-      {canWrite ? (
-        <form
-          className="flex gap-1 pb-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const name = newName.trim();
-            if (!name) return;
-            invoke({
-              operation: "create_workstream",
-              name,
-              lifecycle: "planned",
-              progress: { state: "unknown" },
-              sort_order: Math.min(
-                2_147_483_647,
-                Math.max(-1, ...items.map((item) => item.sortOrder)) + 1,
-              ),
-            });
-            setNewName("");
-          }}
-        >
-          <Input
-            aria-label="New Workstream name"
-            nativeInput
-            size="compact"
-            value={newName}
-            onChange={(event) => setNewName(event.target.value)}
-          />
-          <Button size="xs" type="submit" disabled={!newName.trim()}>
-            Create
-          </Button>
-        </form>
-      ) : (
+      {!canWrite ? (
         <p className="px-1 pb-1 text-xs text-muted-foreground">Workstreams are read-only.</p>
-      )}
+      ) : null}
       {placementInventory.coverage === "partial" ? (
         <p className="px-1 pb-1 text-xs text-sidebar-muted-foreground">
           Thread placement lookup scope is partial (

@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, useState, useCallback, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import type { WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";
 import type { WorkstreamDetailView, WorkstreamListView } from "../../state/workstreams";
+import { WorkstreamCreateForm } from "./WorkstreamSidebarSection";
+import { SidebarThreadHeader } from "../sidebar/SidebarThreadHeader";
+import { SidebarProvider } from "../ui/sidebar";
+import { canEditWorkstreams } from "./nativeWorkstreamActions";
 import { WorkstreamNativeSidebar } from "./WorkstreamNativeSidebar";
 import { groupNativeThreadsByWorkstream } from "./nativeThreadGrouping";
 import { data, now, placements, reference, thread } from "./nativeWorkstreamActions.fixtures";
@@ -141,6 +145,7 @@ function nativeRow(index: number) {
 describe("native Workstream sidebar interactions", () => {
   it("drags the native row into another Workstream with compatible target feedback", async () => {
     await render();
+    expect(container.querySelector('[aria-label="New Workstream name"]')).toBeNull();
     const row = nativeRow(0);
     expect(row.closest('[draggable="true"]')?.textContent).not.toContain("alpha");
     await dragEvent(row, "dragstart");
@@ -373,5 +378,194 @@ describe("native Workstream sidebar interactions", () => {
     });
     expect(controller.submit).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Workstreams are read-only");
+  });
+});
+
+function CreationHeader({ controller }: { readonly controller: WorkstreamListView }) {
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  return (
+    <SidebarProvider>
+      <SidebarThreadHeader
+        hasProjects
+        projectScope={null}
+        onNewProject={() => undefined}
+        onNewThread={() => undefined}
+        onNewWorkstream={() => setOpen(true)}
+        newWorkstreamDisabled={
+          !canEditWorkstreams(controller.data) || controller.loading || pending || open
+        }
+        newThreadDisabled={false}
+        newThreadShortcutLabel={null}
+        newThreadInProjectShortcutLabel={null}
+        showNewThreadInProjectHint={false}
+        searchInputRef={searchRef}
+        searchQuery=""
+        onSearchQueryChange={() => undefined}
+        onSearchKeyDown={() => undefined}
+        isSearching={false}
+        searchResultCount={0}
+        activeSearchResultIndex={0}
+        onClearSearch={() => undefined}
+      />
+      <WorkstreamCreateForm
+        controller={controller}
+        open={open}
+        onClose={close}
+        onPendingChange={setPending}
+      />
+    </SidebarProvider>
+  );
+}
+
+async function renderCreation() {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  );
+  await act(async () => root.render(<CreationHeader controller={controller} />));
+}
+
+function nameInput() {
+  return container.querySelector<HTMLInputElement>('[aria-label="New Workstream name"]');
+}
+
+async function enterName(value: string) {
+  await act(async () => {
+    const input = nameInput()!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+async function submitCreation() {
+  await act(async () => {
+    container
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+}
+
+describe("Workstream toolbar creation", () => {
+  it("opens a focused temporary form between the toolbar actions and cancels outside or with Escape", async () => {
+    await renderCreation();
+    expect(nameInput()).toBeNull();
+    const actions = [...container.querySelectorAll("button[aria-label]")].map((button) =>
+      button.getAttribute("aria-label"),
+    );
+    expect(actions).toEqual(["New project", "New Workstream", "New thread"]);
+    await clickLabel("New Workstream");
+    expect(document.activeElement).toBe(nameInput());
+    await enterName("Discard me");
+    await act(async () => nameInput()!.dispatchEvent(new Event("pointerdown", { bubbles: true })));
+    expect(nameInput()?.value).toBe("Discard me");
+    await act(async () => document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })));
+    expect(nameInput()).toBeNull();
+    await clickLabel("New Workstream");
+    expect(nameInput()?.value).toBe("");
+    await act(async () =>
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+    );
+    expect(nameInput()).toBeNull();
+    expect(controller.submit).not.toHaveBeenCalled();
+  });
+
+  it("submits the trimmed typed create command through form submission and closes only on success", async () => {
+    await renderCreation();
+    await clickLabel("New Workstream");
+    await enterName("  Release prep  ");
+    await submitCreation();
+    await vi.waitFor(() => expect(nameInput()).toBeNull());
+    expect(controller.submit).toHaveBeenCalledOnce();
+    expect(controller.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expected_server_generation: 7,
+        expected_registry_version: 11,
+        action: expect.objectContaining({
+          operation: "create_workstream",
+          name: "Release prep",
+          lifecycle: "planned",
+        }),
+      }),
+    );
+  });
+
+  it("retains the name and reports a rejected receipt or transport error for correction", async () => {
+    vi.mocked(controller.submit).mockResolvedValueOnce({
+      state: "rejected",
+      error: { code: "validation_error" },
+    } as unknown as WorkstreamReceipt);
+    await renderCreation();
+    await clickLabel("New Workstream");
+    await enterName("Release prep");
+    await submitCreation();
+    await vi.waitFor(() =>
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("validation_error"),
+    );
+    expect(nameInput()?.value).toBe("Release prep");
+    vi.mocked(controller.submit).mockRejectedValueOnce(new Error("Connection failed"));
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Create")!
+        .click(),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe("Connection failed"),
+    );
+    expect(nameInput()?.value).toBe("Release prep");
+  });
+
+  it("blocks duplicate pending creates even after dismissal and respects loading and authority", async () => {
+    let resolve!: (receipt: WorkstreamReceipt) => void;
+    vi.mocked(controller.submit).mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    await renderCreation();
+    await clickLabel("New Workstream");
+    await enterName("Release prep");
+    await submitCreation();
+    await vi.waitFor(() => expect(controller.submit).toHaveBeenCalledOnce());
+    await submitCreation();
+    expect(controller.submit).toHaveBeenCalledOnce();
+    await act(async () =>
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+    );
+    expect(nameInput()).toBeNull();
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="New Workstream"]')?.disabled,
+    ).toBe(true);
+    await act(async () => resolve(committed));
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="New Workstream"]')?.disabled,
+    ).toBe(false);
+    controller = { ...controller, loading: true };
+    await renderCreation();
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="New Workstream"]')?.disabled,
+    ).toBe(true);
+    controller = { ...controller, loading: false };
+    await renderCreation();
+    await clickLabel("New Workstream");
+    await enterName("Must not cross authority");
+    controller = {
+      ...controller,
+      loading: false,
+      data: { ...data, binding: { ...data.binding, permissions: ["workstreams:read"] } },
+    };
+    await renderCreation();
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="New Workstream"]')?.disabled,
+    ).toBe(true);
+    expect(nameInput()).toBeNull();
+    expect(controller.submit).toHaveBeenCalledOnce();
   });
 });
