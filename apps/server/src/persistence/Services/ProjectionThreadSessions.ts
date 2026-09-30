@@ -11,6 +11,7 @@ import {
   IsoDateTime,
   OrchestrationSessionStatus,
   ProviderInstanceId,
+  RuntimeIdentityAttestation,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -29,6 +30,7 @@ export const ProjectionThreadSession = Schema.Struct({
   runtimeMode: RuntimeMode,
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(Schema.String),
+  runtimeIdentity: Schema.NullOr(RuntimeIdentityAttestation),
   updatedAt: IsoDateTime,
 });
 export type ProjectionThreadSession = typeof ProjectionThreadSession.Type;

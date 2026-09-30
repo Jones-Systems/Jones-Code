@@ -40,6 +40,7 @@ import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
+import { hostStatusHttpApiLayer } from "./hostStatus/http.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
@@ -606,6 +607,7 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(orchestrationHttpApiLayer),
       Layer.provide(conversationLibraryHttpApiLayer),
       Layer.provide(pullRequestHttpApiLayer),
+      Layer.provide(hostStatusHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),
     ),
