@@ -2,15 +2,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { packageAt } from "./runtime.mjs";
 
-const writableNames = [
-  "home",
-  "xdg-config",
-  "xdg-data",
-  "xdg-cache",
-  "t3home",
-  "workspace",
-  "tmp",
-];
+const writableNames = ["home", "xdg-config", "xdg-data", "xdg-cache", "t3home", "workspace", "tmp"];
 export function sandboxEnvironment() {
   return {
     PATH: "/usr/bin:/bin",
