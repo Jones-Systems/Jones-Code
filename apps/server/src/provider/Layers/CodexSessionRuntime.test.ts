@@ -1,8 +1,10 @@
 import * as NodeAssert from "node:assert/strict";
 
-import { it } from "@effect/vitest";
+import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import { describe } from "vite-plus/test";
 import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -22,10 +24,36 @@ import {
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
   readCodexThread,
+  registerCodexAppServerProcess,
   rollbackCodexThread,
   toMcpElicitationResponse,
 } from "./CodexSessionRuntime.ts";
+import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+
+describe("registerCodexAppServerProcess", () => {
+  it.effect("registers the spawned PID until the runtime scope closes", () =>
+    Effect.gen(function* () {
+      const attribution = yield* ProcessAttribution.make();
+      const runtimeScope = yield* Scope.make();
+
+      yield* registerCodexAppServerProcess({
+        pid: 4_242,
+        threadId: ThreadId.make("thread-1"),
+        processAttribution: attribution,
+      }).pipe(Effect.provideService(Scope.Scope, runtimeScope));
+
+      expect((yield* attribution.snapshot).get(4_242)?.owner).toEqual({
+        kind: "provider",
+        threadId: "thread-1",
+        provider: "codex",
+      });
+
+      yield* Scope.close(runtimeScope, Exit.void);
+      expect((yield* attribution.snapshot).has(4_242)).toBe(false);
+    }),
+  );
+});
 
 describe("Codex thread history", () => {
   for (const numTurns of [1, 2, 3, 5]) {

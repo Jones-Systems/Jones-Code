@@ -36,6 +36,7 @@ import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import { applyProviderCompatibility } from "../providerCompatibility.ts";
@@ -1867,6 +1868,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 }),
               ),
               Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+              Layer.provideMerge(ProcessAttribution.layer),
               Layer.provideMerge(NodeServices.layer),
             ),
           ).pipe(Scope.provide(scope));
@@ -2098,6 +2100,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 }),
               ),
               Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+              Layer.provideMerge(ProcessAttribution.layer),
               Layer.provideMerge(NodeServices.layer),
             ),
           ).pipe(Scope.provide(scope));
@@ -2214,6 +2217,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 }),
               ),
               Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+              Layer.provideMerge(ProcessAttribution.layer),
               Layer.provideMerge(NodeServices.layer),
             ),
           ).pipe(Scope.provide(scope));
@@ -2324,6 +2328,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             Layer.provideMerge(ResetCreditCoordinator.layerTest),
             Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
             Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+            Layer.provideMerge(ProcessAttribution.layer),
             // NO spawner mock — `ChildProcessSpawner` is supplied by the
             // outer `NodeServices.layer` on `it.layer(...)` and will
             // genuinely spawn a subprocess. The missing-binary ENOENT is
@@ -2437,6 +2442,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             ),
             Layer.provideMerge(NodeServices.layer),
             Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+            Layer.provideMerge(ProcessAttribution.layer),
           );
           const runtimeServices = yield* Layer.build(providerRegistryLayer).pipe(
             Scope.provide(scope),
@@ -2540,6 +2546,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
             Layer.provideMerge(NodeServices.layer),
             Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+            Layer.provideMerge(ProcessAttribution.layer),
           );
           const runtimeServices = yield* Layer.build(providerRegistryLayer).pipe(
             Scope.provide(scope),
@@ -2601,6 +2608,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               Layer.provideMerge(ResetCreditCoordinator.layerTest),
               Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
               Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+              Layer.provideMerge(ProcessAttribution.layer),
               Layer.provideMerge(
                 mockCommandSpawnerLayer((command, args) => {
                   if (command === "cursor-agent") {

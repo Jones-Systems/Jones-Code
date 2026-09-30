@@ -44,6 +44,7 @@ import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 import type { BuiltInDriversEnv } from "../builtInDrivers.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 import { ServerConfig } from "../../config.ts";
@@ -252,6 +253,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     Layer.provideMerge(ModelManifest.layerTest),
     Layer.provideMerge(ResetCreditCoordinator.layerTest),
+    Layer.provideMerge(ProcessAttribution.layer),
   );
 
   it.live("boots two independent codex instances from a ProviderInstanceConfigMap", () =>
@@ -608,6 +610,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     Layer.provideMerge(ModelManifest.layerTest),
     Layer.provideMerge(ResetCreditCoordinator.layerTest),
+    Layer.provideMerge(ProcessAttribution.layer),
   );
 
   it.live("boots one instance of every shipped driver from a single config map", () =>

@@ -189,6 +189,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClient.ts";
+import * as ProcessAttribution from "./resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
@@ -755,6 +756,7 @@ const buildAppUnderTest = (options?: {
         Layer.mergeAll(
           NativeTelemetryClient.layerTest(options?.layers?.nativeTelemetryClient),
           DesktopTelemetryReceiver.layerTest(options?.layers?.desktopTelemetryReceiver),
+          ProcessAttribution.layer,
           ResourceAttribution.layer,
         ),
       ),
