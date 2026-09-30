@@ -18,6 +18,24 @@ const script = JSON.parse(NodeFS.readFileSync(process.env.T3_CODEX_COLLAB_SCRIPT
 const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 let turnStartCount = 0;
 let activeTurn;
+const readGoalStatus = () => {
+  if (script.goalStatePath && NodeFS.existsSync(script.goalStatePath)) {
+    return JSON.parse(NodeFS.readFileSync(script.goalStatePath, "utf8")).status;
+  }
+  return script.goalStatus;
+};
+const recordControlRequest = (method, params) => {
+  if (!script.recordControlRequests) return;
+  NodeFS.appendFileSync(
+    `${process.env.T3_CODEX_COLLAB_SCRIPT}.control`,
+    `${JSON.stringify({ method, params })}\n`,
+  );
+};
+const writeGoalStatus = (status) => {
+  if (script.goalStatePath) {
+    NodeFS.writeFileSync(script.goalStatePath, JSON.stringify({ status }), "utf8");
+  }
+};
 // Server->client requests the runtime must answer (approval prompts), keyed
 // by the numeric JSON-RPC id this peer allocated for them.
 const openServerRequests = new Map();
@@ -212,6 +230,59 @@ rl.on("line", (line) => {
     }
     return;
   }
+  if (method === "thread/goal/get") {
+    recordControlRequest(method, message.params);
+    if (script.hangGoalGet === true) return;
+    if (script.failGoalGet === true) {
+      write({ id, error: { code: -32000, message: "goal unavailable" } });
+      return;
+    }
+    const status = readGoalStatus();
+    write({
+      id,
+      result: {
+        goal: status
+          ? {
+              createdAt: 1,
+              objective: "Keep working",
+              status,
+              threadId: script.rootThreadId,
+              timeUsedSeconds: 0,
+              tokenBudget: null,
+              tokensUsed: 0,
+              updatedAt: 1,
+            }
+          : null,
+      },
+    });
+    return;
+  }
+  if (method === "thread/goal/set") {
+    recordControlRequest(method, message.params);
+    if (script.hangGoalSet === true) return;
+    if (script.failGoalSet === true) {
+      write({ id, error: { code: -32000, message: "goal update unavailable" } });
+      return;
+    }
+    const status = message.params?.status ?? readGoalStatus() ?? "active";
+    writeGoalStatus(status);
+    write({
+      id,
+      result: {
+        goal: {
+          createdAt: 1,
+          objective: "Keep working",
+          status,
+          threadId: script.rootThreadId,
+          timeUsedSeconds: 0,
+          tokenBudget: null,
+          tokensUsed: 0,
+          updatedAt: 2,
+        },
+      },
+    });
+    return;
+  }
   if (method === "turn/interrupt") {
     // Record which thread/turn was interrupted (append-only sidecar file the
     // test reads) so Stop coverage can assert every live child was reached.
@@ -221,6 +292,21 @@ rl.on("line", (line) => {
       `${process.env.T3_CODEX_COLLAB_SCRIPT}.interrupts`,
       `${JSON.stringify({ threadId: target, turnId: message.params?.turnId })}\n`,
     );
+    recordControlRequest(method, message.params);
+    if (script.turnStartedOnInterrupt?.threadId === target) {
+      const turn = {
+        ...(activeTurn ?? fixture.responses.turnStart.turn),
+        id: script.turnStartedOnInterrupt.turnId,
+      };
+      write({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          threadId: script.rootThreadId,
+          turn,
+        },
+      });
+    }
     if (
       script.expectedActiveTurnId &&
       message.params?.threadId === script.rootThreadId &&
@@ -239,9 +325,8 @@ rl.on("line", (line) => {
       write({ id, error: { code: -32000, message: "thread already closed" } });
       return;
     }
-    if (script.hangInterruptFor && script.hangInterruptFor === target) {
-      // Never respond: simulates a wedged child whose RPC neither resolves
-      // nor rejects. The runtime's bounded deadline must move on.
+    if (script.hangInterruptFor === target || script.hangInterruptsFor?.includes(target)) {
+      // Never respond: simulate child or root RPCs that exhaust their deadlines.
       return;
     }
     write({ id, result: {} });

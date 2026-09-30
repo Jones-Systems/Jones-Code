@@ -2818,6 +2818,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     requireSession(threadId).pipe(
       Effect.flatMap((session) =>
         Effect.gen(function* () {
+          // Only user-facing Stop pauses native goals; recovery remains goal-neutral.
+          yield* session.runtime.pauseActiveGoal;
           const turn = turnId
             ? Array.from(session.capacityTurns).find((candidate) => candidate.logicalId === turnId)
             : session.capacityTurn;
@@ -2827,6 +2829,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               (candidate) => !candidate.nativeId || candidate.pending,
             )
           ) {
+            yield* session.runtime.interruptChildTurns;
             if (turn?.completion) {
               yield* Queue.offer(runtimeEventQueue, {
                 ...runtimeEventBase(turn.completion, threadId),
@@ -2847,6 +2850,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             delete turn.waiting;
           }
           if (turn.completion) {
+            yield* session.runtime.interruptChildTurns;
             yield* Queue.offer(runtimeEventQueue, {
               ...runtimeEventBase(turn.completion, threadId),
               ...(turn.logicalId ? { turnId: turn.logicalId } : {}),

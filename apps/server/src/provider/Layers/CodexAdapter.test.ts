@@ -42,6 +42,7 @@ import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
   type CodexSessionRuntimeOptions,
+  CodexSessionRuntimeInterruptTimeoutError,
   type CodexSessionRuntimeSendTurnInput,
   type CodexSessionRuntimeShape,
   type CodexThreadSnapshot,
@@ -90,6 +91,9 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     Promise.resolve(undefined),
   );
 
+  public readonly pauseActiveGoalImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+  public readonly interruptChildTurnsImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+
   public readonly readThreadImpl = vi.fn((): Promise<CodexThreadSnapshot> =>
     Promise.resolve({
       threadId: "provider-thread-1",
@@ -136,9 +140,12 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     return Effect.promise(() => this.sendTurnImpl(input));
   }
 
-  interruptTurn(turnId?: TurnId) {
+  interruptTurn(turnId?: TurnId): ReturnType<CodexSessionRuntimeShape["interruptTurn"]> {
     return Effect.promise(() => this.interruptTurnImpl(turnId));
   }
+
+  pauseActiveGoal = Effect.promise(() => this.pauseActiveGoalImpl());
+  interruptChildTurns = Effect.promise(() => this.interruptChildTurnsImpl());
 
   readThread = Effect.promise(() => this.readThreadImpl());
 
@@ -754,6 +761,47 @@ function codexTurnEvent(method: "turn/started" | "turn/completed", turnId: strin
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("pauses the active goal before a user-facing interrupt", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const callOrder: Array<string> = [];
+      runtime.pauseActiveGoalImpl.mockImplementation(() => {
+        callOrder.push("pause-goal");
+        return Promise.resolve(undefined);
+      });
+      runtime.interruptTurnImpl.mockImplementation((turnId) => {
+        callOrder.push(`interrupt:${turnId ?? "omitted"}`);
+        return Promise.resolve(undefined);
+      });
+
+      yield* adapter.interruptTurn(asThreadId("thread-1"));
+
+      NodeAssert.deepStrictEqual(callOrder, ["pause-goal", "interrupt:omitted"]);
+    }),
+  );
+
+  it.effect("reports a typed root timeout as failed Stop instead of success", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const timeout = new CodexSessionRuntimeInterruptTimeoutError({
+        threadId: "provider-thread-1",
+        turnId: "hanging-root",
+      });
+      vi.spyOn(runtime, "interruptTurn").mockReturnValue(Effect.fail(timeout));
+
+      const result = yield* adapter.interruptTurn(asThreadId("thread-1")).pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      if (result._tag !== "Failure") return;
+      NodeAssert.equal(result.failure._tag, "ProviderAdapterRequestError");
+      if (result.failure._tag !== "ProviderAdapterRequestError") return;
+      NodeAssert.equal(result.failure.method, "turn/interrupt");
+      NodeAssert.equal(result.failure.cause, timeout);
+      NodeAssert.match(result.failure.detail, /may still be running/);
+      NodeAssert.equal(runtime.pauseActiveGoalImpl.mock.calls.length, 1);
+    }),
+  );
+
   function capacityEvent(
     turnId: string,
     willRetry = false,
@@ -854,6 +902,8 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       const cancelled = yield* Fiber.join(completion);
       NodeAssert.ok(Option.isSome(cancelled));
       NodeAssert.equal(cancelled.value.type, "turn.completed");
+      NodeAssert.equal(runtime.pauseActiveGoalImpl.mock.calls.length, 1);
+      NodeAssert.equal(runtime.interruptChildTurnsImpl.mock.calls.length, 1);
       yield* TestClock.adjust("1 minute");
       NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 1);
     }),
@@ -1032,6 +1082,8 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       NodeAssert.equal(completed.value.type, "turn.completed");
       NodeAssert.equal(runtime.closeImpl.mock.calls.length, 1);
       NodeAssert.equal(runtime.interruptTurnImpl.mock.calls.length, 0);
+      NodeAssert.equal(runtime.pauseActiveGoalImpl.mock.calls.length, 1);
+      NodeAssert.equal(runtime.interruptChildTurnsImpl.mock.calls.length, 1);
     }),
   );
 
@@ -1047,6 +1099,8 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       yield* adapter.interruptTurn(asThreadId("thread-1"));
       NodeAssert.equal(runtime.closeImpl.mock.calls.length, 1);
       NodeAssert.equal(runtime.interruptTurnImpl.mock.calls.length, 0);
+      NodeAssert.equal(runtime.pauseActiveGoalImpl.mock.calls.length, 1);
+      NodeAssert.equal(runtime.interruptChildTurnsImpl.mock.calls.length, 1);
     }),
   );
 
