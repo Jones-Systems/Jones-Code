@@ -1,0 +1,1321 @@
+{
+  "contract_family": "workstreams",
+  "contract_version": "1.0.0",
+  "note": "Synthetic independent shape examples; receipt digests and capability manifest are illustrative placeholders, not hashes of adjacent examples.",
+  "cases": [
+    {
+      "name": "create_workstream",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-create_workstream",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "create_workstream",
+          "name": "Synthetic coordination",
+          "lifecycle": "active",
+          "progress": { "state": "progressing" },
+          "sort_order": 10
+        }
+      }
+    },
+    {
+      "name": "update_workstream",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-update_workstream",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "update_workstream",
+          "workstream_id": "ws-alpha",
+          "expected_version": 3,
+          "name": "Synthetic updated name",
+          "lifecycle": "paused",
+          "progress": { "state": "waiting", "condition": "Synthetic dependency" },
+          "sort_order": 20
+        }
+      }
+    },
+    {
+      "name": "register_reference",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-register_reference",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "register_reference",
+          "identity": {
+            "provider": "github",
+            "source_instance_id": "github-public-synthetic",
+            "resource_kind": "pull_request",
+            "id_kind": "external",
+            "native_id": "synthetic-owner/fixture-repository#42",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "pr_locator": {
+            "host": "github.com",
+            "repository_owner": "synthetic-owner",
+            "repository_name": "fixture-repository",
+            "number": 42
+          }
+        }
+      }
+    },
+    {
+      "name": "attach_primary",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-attach-primary",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "attach_primary",
+          "workstream_id": "ws-alpha",
+          "expected_version": 3,
+          "native_reference_id": "ref-pr"
+        }
+      }
+    },
+    {
+      "name": "verify_reference",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-verify-reference",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "verify_reference",
+          "native_reference_id": "ref-pr",
+          "expected_attestation_version": 0
+        }
+      }
+    },
+    {
+      "name": "link_secondary",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-link-secondary",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "link_secondary",
+          "workstream_id": "ws-beta",
+          "expected_version": 2,
+          "native_reference_id": "ref-pr"
+        }
+      }
+    },
+    {
+      "name": "set_coordination_disposition",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-coordinate-done",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "set_coordination_disposition",
+          "workstream_id": "ws-alpha",
+          "expected_version": 3,
+          "membership_id": "membership-alpha",
+          "disposition": "completed",
+          "other_disposition": null
+        }
+      }
+    },
+    {
+      "name": "request_native_t3_settlement",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-native-settle",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "request_native_t3_settlement",
+          "native_reference_id": "ref-t3-thread",
+          "expected_attestation_version": 2,
+          "native_action": "settle"
+        }
+      }
+    },
+    {
+      "name": "remove_membership",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-remove_membership",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "remove_membership",
+          "workstream_id": "ws-alpha",
+          "expected_version": 3,
+          "membership_id": "membership-alpha"
+        }
+      }
+    },
+    {
+      "name": "move_primary",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-move-primary",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "move_primary",
+          "source_workstream_id": "ws-alpha",
+          "expected_source_version": 3,
+          "source_membership_id": "membership-alpha",
+          "destination_workstream_id": "ws-beta",
+          "expected_destination_version": 2
+        }
+      }
+    },
+    {
+      "name": "set_declaration",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-set_declaration",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "set_declaration",
+          "workstream_id": "ws-alpha",
+          "expected_version": 3,
+          "declaration_id": null,
+          "expected_revision": 0,
+          "text": "Synthetic owner statement; no execution authority."
+        }
+      }
+    },
+    {
+      "name": "withdraw_declaration",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-withdraw_declaration",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "withdraw_declaration",
+          "workstream_id": "ws-alpha",
+          "expected_version": 3,
+          "declaration_id": "declaration-alpha",
+          "expected_revision": 1
+        }
+      }
+    },
+    {
+      "name": "add_edge",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "synthetic-cmd-add_edge",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "add_edge",
+          "from_workstream_id": "ws-alpha",
+          "expected_from_version": 3,
+          "to_workstream_id": "ws-beta",
+          "expected_to_version": 2,
+          "relation": "continues_as"
+        }
+      }
+    },
+    {
+      "name": "remove_edge",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "synthetic-cmd-remove_edge",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "remove_edge",
+          "edge_id": "edge-alpha-beta",
+          "from_workstream_id": "ws-alpha",
+          "expected_from_version": 3,
+          "to_workstream_id": "ws-beta",
+          "expected_to_version": 2
+        }
+      }
+    },
+    {
+      "name": "refresh_linked_pr",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-refresh_linked_pr",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "refresh_linked_pr",
+          "workstream_id": "ws-alpha",
+          "expected_version": 3,
+          "membership_id": "membership-alpha",
+          "expected_observation_version": 0
+        }
+      }
+    },
+    {
+      "name": "owner metadata",
+      "schema": "registry.schema.json#/$defs/Workstream",
+      "value": {
+        "workstream_id": "ws-alpha",
+        "owner_id": "owner-synthetic",
+        "name": "Synthetic coordination",
+        "lifecycle": "active",
+        "progress": { "state": "progressing" },
+        "delivery": "pr-open",
+        "freshness": "current",
+        "sort_order": 10,
+        "version": 3,
+        "created_at": "2026-09-12T00:00:00.000Z",
+        "updated_at": "2026-09-12T00:00:00.000Z",
+        "created_by": {
+          "principal_id": "principal-synthetic"
+        },
+        "updated_by": {
+          "principal_id": "principal-synthetic"
+        }
+      }
+    },
+    {
+      "name": "explicit PR reference",
+      "schema": "registry.schema.json#/$defs/NativeReference",
+      "value": {
+        "native_reference_id": "ref-pr",
+        "owner_id": "owner-synthetic",
+        "identity": {
+          "provider": "github",
+          "source_instance_id": "github-public-synthetic",
+          "resource_kind": "pull_request",
+          "id_kind": "external",
+          "native_id": "synthetic-owner/fixture-repository#42",
+          "account_provenance": {
+            "kind": "not_account_scoped"
+          }
+        },
+        "pr_locator": {
+          "host": "github.com",
+          "repository_owner": "synthetic-owner",
+          "repository_name": "fixture-repository",
+          "number": 42
+        },
+        "registration": {
+          "state": "attested",
+          "attestation_version": 1,
+          "attested_at": "2026-09-12T00:00:00.000Z",
+          "expires_at": "2026-09-13T00:00:00.000Z",
+          "evidence": {
+            "provider": "github",
+            "source_instance_id": "github-public-synthetic",
+            "authority_namespace": "synthetic-owner",
+            "native_id": "synthetic-owner/fixture-repository#42",
+            "store_generation": 1,
+            "evidence_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        "created_at": "2026-09-12T00:00:00.000Z",
+        "created_by": {
+          "principal_id": "principal-synthetic"
+        },
+        "created_registry_version": 2
+      }
+    },
+    {
+      "name": "account-specific external identity",
+      "schema": "registry.schema.json#/$defs/NativeIdentity",
+      "value": {
+        "provider": "chatgpt",
+        "source_instance_id": "chatgpt-synthetic",
+        "resource_kind": "conversation",
+        "id_kind": "external",
+        "native_id": "conversation-synthetic",
+        "account_provenance": {
+          "kind": "account",
+          "account_id": "account-synthetic",
+          "account_namespace": "namespace-synthetic"
+        }
+      }
+    },
+    {
+      "name": "active membership episode",
+      "schema": "registry.schema.json#/$defs/MembershipEpisode",
+      "value": {
+        "membership_id": "membership-alpha",
+        "workstream_id": "ws-alpha",
+        "native_reference_id": "ref-pr",
+        "kind": "primary",
+        "opened": {
+          "at": "2026-09-12T00:00:00.000Z",
+          "actor": {
+            "principal_id": "principal-synthetic"
+          },
+          "command_id": "synthetic-cmd-add-alpha",
+          "registry_version": 3
+        },
+        "closed": null
+      }
+    },
+    {
+      "name": "closed membership episode",
+      "schema": "registry.schema.json#/$defs/MembershipEpisode",
+      "value": {
+        "membership_id": "membership-alpha",
+        "workstream_id": "ws-alpha",
+        "native_reference_id": "ref-pr",
+        "kind": "secondary",
+        "opened": {
+          "at": "2026-09-12T00:00:00.000Z",
+          "actor": {
+            "principal_id": "principal-synthetic"
+          },
+          "command_id": "synthetic-cmd-add-alpha",
+          "registry_version": 3
+        },
+        "closed": {
+          "at": "2026-09-12T00:00:00.000Z",
+          "actor": {
+            "principal_id": "principal-synthetic"
+          },
+          "command_id": "cmd-remove-alpha",
+          "registry_version": 8,
+          "reason": "removed",
+          "other_reason": null
+        }
+      }
+    },
+    {
+      "name": "declaration revision",
+      "schema": "registry.schema.json#/$defs/DeclarationRevision",
+      "value": {
+        "declaration_id": "declaration-alpha",
+        "workstream_id": "ws-alpha",
+        "revision": 1,
+        "text": "Synthetic owner statement; no execution authority.",
+        "state": "active",
+        "recorded_at": "2026-09-12T00:00:00.000Z",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "command_id": "cmd-declaration-alpha",
+        "registry_version": 4
+      }
+    },
+    {
+      "name": "explicit continuation",
+      "schema": "registry.schema.json#/$defs/Edge",
+      "value": {
+        "edge_id": "edge-alpha-beta",
+        "from_workstream_id": "ws-alpha",
+        "to_workstream_id": "ws-beta",
+        "relation": "continues_as",
+        "opened": {
+          "at": "2026-09-12T00:00:00.000Z",
+          "actor": {
+            "principal_id": "principal-synthetic"
+          },
+          "command_id": "cmd-edge-alpha-beta",
+          "registry_version": 5
+        },
+        "closed": null
+      }
+    },
+    {
+      "name": "successful PR observation",
+      "schema": "registry.schema.json#/$defs/PrObservation",
+      "value": {
+        "native_reference_id": "ref-pr",
+        "observation_version": 1,
+        "attempted_at": "2026-09-12T00:00:00.000Z",
+        "outcome": "observed",
+        "retry_after_seconds": null,
+        "last_success": {
+          "state": "open",
+          "draft": true,
+          "observed_at": "2026-09-12T00:00:00.000Z",
+          "provider_updated_at": "2026-09-12T00:00:00.000Z"
+        },
+        "command_id": "synthetic-cmd-refresh-pr"
+      }
+    },
+    {
+      "name": "inaccessible PR retains success",
+      "schema": "registry.schema.json#/$defs/PrObservation",
+      "value": {
+        "native_reference_id": "ref-pr",
+        "observation_version": 2,
+        "attempted_at": "2026-09-12T00:00:00.000Z",
+        "outcome": "inaccessible",
+        "retry_after_seconds": null,
+        "last_success": {
+          "state": "open",
+          "draft": true,
+          "observed_at": "2026-09-12T00:00:00.000Z",
+          "provider_updated_at": "2026-09-12T00:00:00.000Z"
+        },
+        "command_id": "cmd-refresh-inaccessible"
+      }
+    },
+    {
+      "name": "first inaccessible PR has no invented snapshot",
+      "schema": "registry.schema.json#/$defs/PrObservation",
+      "value": {
+        "native_reference_id": "ref-pr",
+        "observation_version": 1,
+        "attempted_at": "2026-09-12T00:00:00.000Z",
+        "outcome": "inaccessible",
+        "retry_after_seconds": null,
+        "last_success": null,
+        "command_id": "synthetic-cmd-refresh-pr"
+      }
+    },
+    {
+      "name": "committed refresh receipt",
+      "schema": "registry.schema.json#/$defs/Receipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "committed",
+        "completed_at": "2026-09-12T00:00:00.000Z",
+        "registry_version": 8,
+        "changed": true,
+        "effects": {
+          "workstream_versions": [],
+          "native_reference_id": "ref-pr",
+          "membership_ids": [],
+          "declaration_id": null,
+          "declaration_revision": null,
+          "edge_id": null,
+          "observation": {
+            "native_reference_id": "ref-pr",
+            "observation_version": 1,
+            "attempted_at": "2026-09-12T00:00:00.000Z",
+            "outcome": "observed",
+            "retry_after_seconds": null,
+            "last_success": {
+              "state": "open",
+              "draft": true,
+              "observed_at": "2026-09-12T00:00:00.000Z",
+              "provider_updated_at": "2026-09-12T00:00:00.000Z"
+            },
+            "command_id": "synthetic-cmd-refresh-pr"
+          },
+          "registration": null,
+          "lifecycle_declaration": null,
+          "coordination_disposition": null,
+          "native_settlement": null
+        }
+      }
+    },
+    {
+      "name": "pending refresh receipt",
+      "schema": "registry.schema.json#/$defs/Receipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "pending",
+        "retry_after_seconds": 2
+      }
+    },
+    {
+      "name": "unresolved refresh receipt",
+      "schema": "registry.schema.json#/$defs/Receipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "unresolved",
+        "retry_after_seconds": 2
+      }
+    },
+    {
+      "name": "rejected stale refresh receipt",
+      "schema": "registry.schema.json#/$defs/Receipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "rejected",
+        "completed_at": "2026-09-12T00:00:00.000Z",
+        "error": {
+          "code": "version_conflict",
+          "status": 409,
+          "request_id": "request-synthetic",
+          "recovery": "reload"
+        }
+      }
+    },
+    {
+      "name": "audit effect metadata",
+      "schema": "registry.schema.json#/$defs/AuditEvent",
+      "value": {
+        "event_id": "event-synthetic",
+        "command_id": "synthetic-cmd-add-alpha",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "attach_primary",
+        "occurred_at": "2026-09-12T00:00:00.000Z",
+        "registry_version": 3,
+        "changed": true,
+        "workstream_versions": [
+          {
+            "workstream_id": "ws-alpha",
+            "version": 2
+          }
+        ],
+        "native_reference_id": "ref-pr",
+        "membership_ids": [
+          "membership-alpha"
+        ],
+        "declaration_id": null,
+        "declaration_revision": null,
+        "edge_id": null,
+        "lifecycle_declaration": null
+      }
+    },
+    {
+      "name": "terminal lifecycle reopening declaration",
+      "schema": "registry.schema.json#/$defs/LifecycleDeclaration",
+      "value": {
+        "lifecycle_declaration_id": "lifecycle-declaration-active-3",
+        "workstream_id": "ws-alpha",
+        "revision": 3,
+        "prior_lifecycle": "completed",
+        "new_lifecycle": "active",
+        "recorded_at": "2026-09-12T00:00:00.000Z",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "command_id": "cmd-reopen-workstream",
+        "supersedes_lifecycle_declaration_id": "lifecycle-declaration-completed-2",
+        "registry_version": 8
+      }
+    },
+    {
+      "name": "WorkstreamPage",
+      "schema": "registry.schema.json#/$defs/WorkstreamPage",
+      "value": {
+        "context": {
+          "owner_id": "owner-synthetic",
+          "server_generation": 1,
+          "registry_version": 7
+        },
+        "items": [
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "progress": { "state": "progressing" },
+            "delivery": "pr-open",
+            "freshness": "current",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "ReferencePage",
+      "schema": "registry.schema.json#/$defs/ReferencePage",
+      "value": {
+        "context": {
+          "owner_id": "owner-synthetic",
+          "server_generation": 1,
+          "registry_version": 7
+        },
+        "items": [
+          {
+            "native_reference_id": "ref-pr",
+            "owner_id": "owner-synthetic",
+            "identity": {
+              "provider": "github",
+              "source_instance_id": "github-public-synthetic",
+              "resource_kind": "pull_request",
+              "id_kind": "external",
+              "native_id": "synthetic-owner/fixture-repository#42",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "pr_locator": {
+              "host": "github.com",
+              "repository_owner": "synthetic-owner",
+              "repository_name": "fixture-repository",
+              "number": 42
+            },
+            "registration": {
+              "state": "quarantined",
+              "attestation_version": 0,
+              "attested_at": null,
+              "expires_at": null,
+              "evidence": null
+            },
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "created_registry_version": 2
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "MembershipPage",
+      "schema": "registry.schema.json#/$defs/MembershipPage",
+      "value": {
+        "context": {
+          "owner_id": "owner-synthetic",
+          "server_generation": 1,
+          "registry_version": 7
+        },
+        "items": [
+          {
+            "membership_id": "membership-alpha",
+            "workstream_id": "ws-alpha",
+            "native_reference_id": "ref-pr",
+            "kind": "primary",
+            "opened": {
+              "at": "2026-09-12T00:00:00.000Z",
+              "actor": {
+                "principal_id": "principal-synthetic"
+              },
+              "command_id": "synthetic-cmd-add-alpha",
+              "registry_version": 3
+            },
+            "closed": null
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "DeclarationPage",
+      "schema": "registry.schema.json#/$defs/DeclarationPage",
+      "value": {
+        "context": {
+          "owner_id": "owner-synthetic",
+          "server_generation": 1,
+          "registry_version": 7
+        },
+        "items": [
+          {
+            "declaration_id": "declaration-alpha",
+            "workstream_id": "ws-alpha",
+            "revision": 1,
+            "text": "Synthetic owner statement; no execution authority.",
+            "state": "active",
+            "recorded_at": "2026-09-12T00:00:00.000Z",
+            "actor": {
+              "principal_id": "principal-synthetic"
+            },
+            "command_id": "cmd-declaration-alpha",
+            "registry_version": 4
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "EdgePage",
+      "schema": "registry.schema.json#/$defs/EdgePage",
+      "value": {
+        "context": {
+          "owner_id": "owner-synthetic",
+          "server_generation": 1,
+          "registry_version": 7
+        },
+        "items": [
+          {
+            "edge_id": "edge-alpha-beta",
+            "from_workstream_id": "ws-alpha",
+            "to_workstream_id": "ws-beta",
+            "relation": "continues_as",
+            "opened": {
+              "at": "2026-09-12T00:00:00.000Z",
+              "actor": {
+                "principal_id": "principal-synthetic"
+              },
+              "command_id": "cmd-edge-alpha-beta",
+              "registry_version": 5
+            },
+            "closed": null
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "HistoryPage",
+      "schema": "registry.schema.json#/$defs/HistoryPage",
+      "value": {
+        "context": {
+          "owner_id": "owner-synthetic",
+          "server_generation": 1,
+          "registry_version": 7
+        },
+        "items": [],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "workstream detail",
+      "schema": "registry.schema.json#/$defs/WorkstreamDetail",
+      "value": {
+        "context": {
+          "owner_id": "owner-synthetic",
+          "server_generation": 1,
+          "registry_version": 7
+        },
+        "workstream": {
+          "workstream_id": "ws-alpha",
+          "owner_id": "owner-synthetic",
+          "name": "Synthetic coordination",
+          "lifecycle": "active",
+          "progress": { "state": "progressing" },
+          "delivery": "pr-open",
+          "freshness": "current",
+          "sort_order": 10,
+          "version": 3,
+          "created_at": "2026-09-12T00:00:00.000Z",
+          "updated_at": "2026-09-12T00:00:00.000Z",
+          "created_by": {
+            "principal_id": "principal-synthetic"
+          },
+          "updated_by": {
+            "principal_id": "principal-synthetic"
+          }
+        }
+      }
+    },
+    {
+      "name": "reference detail",
+      "schema": "registry.schema.json#/$defs/ReferenceDetail",
+      "value": {
+        "context": {
+          "owner_id": "owner-synthetic",
+          "server_generation": 1,
+          "registry_version": 7
+        },
+        "reference": {
+          "native_reference_id": "ref-pr",
+          "owner_id": "owner-synthetic",
+          "identity": {
+            "provider": "github",
+            "source_instance_id": "github-public-synthetic",
+            "resource_kind": "pull_request",
+            "id_kind": "external",
+            "native_id": "synthetic-owner/fixture-repository#42",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "pr_locator": {
+            "host": "github.com",
+            "repository_owner": "synthetic-owner",
+            "repository_name": "fixture-repository",
+            "number": 42
+          },
+          "registration": {
+            "state": "attested",
+            "attestation_version": 1,
+            "attested_at": "2026-09-12T00:00:00.000Z",
+            "expires_at": "2026-09-13T00:00:00.000Z",
+            "evidence": {
+              "provider": "github",
+              "source_instance_id": "github-public-synthetic",
+              "authority_namespace": "synthetic-owner",
+              "native_id": "synthetic-owner/fixture-repository#42",
+              "store_generation": 1,
+              "evidence_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          "created_at": "2026-09-12T00:00:00.000Z",
+          "created_by": {
+            "principal_id": "principal-synthetic"
+          },
+          "created_registry_version": 2
+        },
+        "latest_observation": {
+          "native_reference_id": "ref-pr",
+          "observation_version": 1,
+          "attempted_at": "2026-09-12T00:00:00.000Z",
+          "outcome": "observed",
+          "retry_after_seconds": null,
+          "last_success": {
+            "state": "open",
+            "draft": true,
+            "observed_at": "2026-09-12T00:00:00.000Z",
+            "provider_updated_at": "2026-09-12T00:00:00.000Z"
+          },
+          "command_id": "synthetic-cmd-refresh-pr"
+        }
+      }
+    },
+    {
+      "name": "explicit owner grant internal seam",
+      "schema": "registry.schema.json#/$defs/OwnerGrant",
+      "value": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "grant_version": 1,
+        "permissions": [
+          "workstreams:read",
+          "workstreams:write"
+        ],
+        "state": "active"
+      }
+    },
+    {
+      "name": "capabilities synthetic digest placeholder",
+      "schema": "registry.schema.json#/$defs/Capabilities",
+      "value": {
+        "contract_family": "workstreams",
+        "contract_version": "1.0.0",
+        "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "context": {
+          "owner_id": "owner-synthetic",
+          "server_generation": 1,
+          "registry_version": 7
+        },
+        "permissions": [
+          "workstreams:read",
+          "workstreams:write"
+        ],
+        "max_request_bytes": 32768,
+        "max_response_bytes": 1048576,
+        "max_json_depth": 10,
+        "max_page_items": 100,
+        "max_pr_response_bytes": 262144,
+        "max_pr_request_seconds": 15,
+        "cursor_ttl_seconds": 900
+      }
+    },
+    {
+      "name": "error unauthorized",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "unauthorized",
+        "status": 401,
+        "request_id": "request-synthetic",
+        "recovery": "stop"
+      }
+    },
+    {
+      "name": "error forbidden",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "forbidden",
+        "status": 403,
+        "request_id": "request-synthetic",
+        "recovery": "stop"
+      }
+    },
+    {
+      "name": "error not_found",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "not_found",
+        "status": 404,
+        "request_id": "request-synthetic",
+        "recovery": "stop"
+      }
+    },
+    {
+      "name": "error invalid_request",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "invalid_request",
+        "status": 400,
+        "request_id": "request-synthetic",
+        "recovery": "correct_request"
+      }
+    },
+    {
+      "name": "error contract_mismatch",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "contract_mismatch",
+        "status": 409,
+        "request_id": "request-synthetic",
+        "recovery": "stop"
+      }
+    },
+    {
+      "name": "error version_conflict",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "version_conflict",
+        "status": 409,
+        "request_id": "request-synthetic",
+        "recovery": "reload"
+      }
+    },
+    {
+      "name": "error generation_conflict",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "generation_conflict",
+        "status": 409,
+        "request_id": "request-synthetic",
+        "recovery": "reconcile"
+      }
+    },
+    {
+      "name": "error identity_conflict",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "identity_conflict",
+        "status": 409,
+        "request_id": "request-synthetic",
+        "recovery": "correct_request"
+      }
+    },
+    {
+      "name": "error membership_conflict",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "membership_conflict",
+        "status": 409,
+        "request_id": "request-synthetic",
+        "recovery": "reload"
+      }
+    },
+    {
+      "name": "error relationship_conflict",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "relationship_conflict",
+        "status": 409,
+        "request_id": "request-synthetic",
+        "recovery": "correct_request"
+      }
+    },
+    {
+      "name": "error cycle_conflict",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "cycle_conflict",
+        "status": 409,
+        "request_id": "request-synthetic",
+        "recovery": "correct_request"
+      }
+    },
+    {
+      "name": "error idempotency_conflict",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "idempotency_conflict",
+        "status": 409,
+        "request_id": "request-synthetic",
+        "recovery": "reconcile"
+      }
+    },
+    {
+      "name": "error cursor_invalid",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "cursor_invalid",
+        "status": 400,
+        "request_id": "request-synthetic",
+        "recovery": "restart_page"
+      }
+    },
+    {
+      "name": "error cursor_stale",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "cursor_stale",
+        "status": 409,
+        "request_id": "request-synthetic",
+        "recovery": "restart_page"
+      }
+    },
+    {
+      "name": "error payload_too_large",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "payload_too_large",
+        "status": 413,
+        "request_id": "request-synthetic",
+        "recovery": "correct_request"
+      }
+    },
+    {
+      "name": "error unsupported_media_type",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "unsupported_media_type",
+        "status": 415,
+        "request_id": "request-synthetic",
+        "recovery": "correct_request"
+      }
+    },
+    {
+      "name": "error backpressure",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "backpressure",
+        "status": 429,
+        "request_id": "request-synthetic",
+        "recovery": "retry_after",
+        "retry_after_seconds": 60
+      }
+    },
+    {
+      "name": "error provider_unconfigured",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "provider_unconfigured",
+        "status": 503,
+        "request_id": "request-synthetic",
+        "recovery": "stop"
+      }
+    },
+    {
+      "name": "error unavailable",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "unavailable",
+        "status": 503,
+        "request_id": "request-synthetic",
+        "recovery": "reconcile"
+      }
+    },
+    {
+      "name": "error unknown_effect",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "unknown_effect",
+        "status": 503,
+        "request_id": "request-synthetic",
+        "recovery": "reconcile"
+      }
+    },
+    {
+      "name": "trusted owner browser bootstrap",
+      "schema": "registry.schema.json#/$defs/BrowserSession",
+      "value": {
+        "context": {
+          "owner_id": "owner-synthetic",
+          "server_generation": 1,
+          "registry_version": 7
+        },
+        "permissions": [
+          "workstreams:read",
+          "workstreams:write"
+        ],
+        "csrf_token": "v1.1789171200.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "csrf_ttl_seconds": 900
+      }
+    },
+    {
+      "name": "HTTP 200 committed terminal",
+      "schema": "registry.schema.json#/$defs/TerminalReceipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "committed",
+        "completed_at": "2026-09-12T00:00:00.000Z",
+        "registry_version": 8,
+        "changed": true,
+        "effects": {
+          "workstream_versions": [],
+          "native_reference_id": "ref-pr",
+          "membership_ids": [],
+          "declaration_id": null,
+          "declaration_revision": null,
+          "edge_id": null,
+          "observation": {
+            "native_reference_id": "ref-pr",
+            "observation_version": 1,
+            "attempted_at": "2026-09-12T00:00:00.000Z",
+            "outcome": "observed",
+            "retry_after_seconds": null,
+            "last_success": {
+              "state": "open",
+              "draft": true,
+              "observed_at": "2026-09-12T00:00:00.000Z",
+              "provider_updated_at": "2026-09-12T00:00:00.000Z"
+            },
+            "command_id": "synthetic-cmd-refresh-pr"
+          },
+          "registration": null,
+          "lifecycle_declaration": null,
+          "coordination_disposition": null,
+          "native_settlement": null
+        }
+      }
+    },
+    {
+      "name": "HTTP 200 rejected terminal",
+      "schema": "registry.schema.json#/$defs/TerminalReceipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "rejected",
+        "completed_at": "2026-09-12T00:00:00.000Z",
+        "error": {
+          "code": "version_conflict",
+          "status": 409,
+          "request_id": "request-synthetic",
+          "recovery": "reload"
+        }
+      }
+    },
+    {
+      "name": "HTTP 202 pending",
+      "schema": "registry.schema.json#/$defs/PendingReceipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "pending",
+        "retry_after_seconds": 2
+      }
+    },
+    {
+      "name": "HTTP 202 unresolved",
+      "schema": "registry.schema.json#/$defs/PendingReceipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "unresolved",
+        "retry_after_seconds": 2
+      }
+    },
+    {
+      "name": "committed coordination disposition receipt",
+      "schema": "registry.schema.json#/$defs/CommittedReceipt",
+      "value": {
+        "command_id": "cmd-coordinate-done",
+        "owner_id": "owner-synthetic",
+        "actor": { "principal_id": "principal-synthetic" },
+        "operation": "set_coordination_disposition",
+        "request_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "committed",
+        "completed_at": "2026-09-12T00:00:01.000Z",
+        "registry_version": 9,
+        "changed": true,
+        "effects": {
+          "workstream_versions": [{ "workstream_id": "ws-alpha", "version": 4 }],
+          "native_reference_id": "ref-t3-thread",
+          "membership_ids": ["membership-alpha"],
+          "declaration_id": null,
+          "declaration_revision": null,
+          "edge_id": null,
+          "observation": null,
+          "registration": null,
+          "lifecycle_declaration": null,
+          "coordination_disposition": {
+            "membership_id": "membership-alpha",
+            "disposition": "completed"
+          },
+          "native_settlement": null
+        }
+      }
+    },
+    {
+      "name": "denied native T3 settlement receipt",
+      "schema": "registry.schema.json#/$defs/CommittedReceipt",
+      "value": {
+        "command_id": "cmd-native-settle",
+        "owner_id": "owner-synthetic",
+        "actor": { "principal_id": "principal-synthetic" },
+        "operation": "request_native_t3_settlement",
+        "request_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "committed",
+        "completed_at": "2026-09-12T00:00:01.000Z",
+        "registry_version": 9,
+        "changed": false,
+        "effects": {
+          "workstream_versions": [],
+          "native_reference_id": "ref-t3-thread",
+          "membership_ids": [],
+          "declaration_id": null,
+          "declaration_revision": null,
+          "edge_id": null,
+          "observation": null,
+          "registration": null,
+          "lifecycle_declaration": null,
+          "coordination_disposition": null,
+          "native_settlement": {
+            "native_reference_id": "ref-t3-thread",
+            "native_action": "settle",
+            "outcome": "denied"
+          }
+        }
+      }
+    }
+  ]
+}

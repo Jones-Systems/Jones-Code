@@ -1,0 +1,2028 @@
+{
+  "contract_family": "workstreams",
+  "contract_version": "1.0.0",
+  "cases": [
+    {
+      "name": "client owner selector forbidden",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-create_workstream",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "create_workstream",
+          "name": "Synthetic coordination",
+          "lifecycle": "active",
+          "sort_order": 10
+        },
+        "owner_id": "owner-other"
+      }
+    },
+    {
+      "name": "client actor forbidden",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-create_workstream",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "create_workstream",
+          "name": "Synthetic coordination",
+          "lifecycle": "active",
+          "sort_order": 10
+        },
+        "actor": {
+          "principal_id": "principal-synthetic"
+        }
+      }
+    },
+    {
+      "name": "unsafe version",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-create_workstream",
+        "expected_server_generation": 1,
+        "expected_registry_version": 9007199254740992,
+        "action": {
+          "operation": "create_workstream",
+          "name": "Synthetic coordination",
+          "lifecycle": "active",
+          "sort_order": 10
+        }
+      }
+    },
+    {
+      "name": "zero existing workstream version",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-update_workstream",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "update_workstream",
+          "workstream_id": "ws-alpha",
+          "expected_version": 0,
+          "name": "Synthetic updated name",
+          "lifecycle": "paused",
+          "sort_order": 20
+        }
+      }
+    },
+    {
+      "name": "arbitrary URL forbidden",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-refresh_linked_pr",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "refresh_linked_pr",
+          "workstream_id": "ws-alpha",
+          "expected_version": 3,
+          "membership_id": "membership-alpha",
+          "expected_observation_version": 0,
+          "url": "https://example.invalid/private"
+        }
+      }
+    },
+    {
+      "name": "missing exact source episode",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "cmd-move_membership",
+        "expected_server_generation": 1,
+        "expected_registry_version": 7,
+        "action": {
+          "operation": "move_membership",
+          "source_workstream_id": "ws-alpha",
+          "expected_source_version": 3,
+          "destination_workstream_id": "ws-beta",
+          "expected_destination_version": 2
+        }
+      }
+    },
+    {
+      "name": "missing account provenance",
+      "schema": "registry.schema.json#/$defs/NativeIdentity",
+      "value": {
+        "provider": "github",
+        "source_instance_id": "github-public-synthetic",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "native_id": "synthetic-owner/fixture-repository#42"
+      }
+    },
+    {
+      "name": "missing account namespace",
+      "schema": "registry.schema.json#/$defs/NativeIdentity",
+      "value": {
+        "provider": "github",
+        "source_instance_id": "github-public-synthetic",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "native_id": "synthetic-owner/fixture-repository#42",
+        "account_provenance": {
+          "kind": "account",
+          "account_id": "account-synthetic"
+        }
+      }
+    },
+    {
+      "name": "PR arbitrary host",
+      "schema": "registry.schema.json#/$defs/PrLocator",
+      "value": {
+        "host": "example.invalid",
+        "repository_owner": "synthetic-owner",
+        "repository_name": "fixture-repository",
+        "number": 42
+      }
+    },
+    {
+      "name": "PR zero number",
+      "schema": "registry.schema.json#/$defs/PrLocator",
+      "value": {
+        "host": "github.com",
+        "repository_owner": "synthetic-owner",
+        "repository_name": "fixture-repository",
+        "number": 0
+      }
+    },
+    {
+      "name": "declaration too long",
+      "schema": "registry.schema.json#/$defs/DeclarationRevision",
+      "value": {
+        "declaration_id": "declaration-alpha",
+        "workstream_id": "ws-alpha",
+        "revision": 1,
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "state": "active",
+        "recorded_at": "2026-09-12T00:00:00.000Z",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "command_id": "cmd-declaration-alpha",
+        "registry_version": 4
+      }
+    },
+    {
+      "name": "unknown lifecycle",
+      "schema": "registry.schema.json#/$defs/Workstream",
+      "value": {
+        "workstream_id": "ws-alpha",
+        "owner_id": "owner-synthetic",
+        "name": "Synthetic coordination",
+        "lifecycle": "inferred_complete",
+        "sort_order": 10,
+        "version": 3,
+        "created_at": "2026-09-12T00:00:00.000Z",
+        "updated_at": "2026-09-12T00:00:00.000Z",
+        "created_by": {
+          "principal_id": "principal-synthetic"
+        },
+        "updated_by": {
+          "principal_id": "principal-synthetic"
+        }
+      }
+    },
+    {
+      "name": "unknown error body text",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "forbidden",
+        "status": 403,
+        "request_id": "request-synthetic",
+        "recovery": "stop",
+        "message": "must not echo"
+      }
+    },
+    {
+      "name": "missing backpressure delay",
+      "schema": "registry.schema.json#/$defs/Error",
+      "value": {
+        "code": "backpressure",
+        "status": 429,
+        "request_id": "request-synthetic",
+        "recovery": "retry_after"
+      }
+    },
+    {
+      "name": "unknown PR status",
+      "schema": "registry.schema.json#/$defs/PrObservation",
+      "value": {
+        "native_reference_id": "ref-pr",
+        "observation_version": 1,
+        "attempted_at": "2026-09-12T00:00:00.000Z",
+        "outcome": "deleted",
+        "retry_after_seconds": null,
+        "last_success": {
+          "state": "open",
+          "draft": true,
+          "observed_at": "2026-09-12T00:00:00.000Z",
+          "provider_updated_at": "2026-09-12T00:00:00.000Z"
+        },
+        "command_id": "synthetic-cmd-refresh-pr"
+      }
+    },
+    {
+      "name": "unbounded page",
+      "schema": "registry.schema.json#/$defs/WorkstreamPage",
+      "value": {
+        "context": {
+          "owner_id": "owner-synthetic",
+          "server_generation": 1,
+          "registry_version": 7
+        },
+        "items": [
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          },
+          {
+            "workstream_id": "ws-alpha",
+            "owner_id": "owner-synthetic",
+            "name": "Synthetic coordination",
+            "lifecycle": "active",
+            "sort_order": 10,
+            "version": 3,
+            "created_at": "2026-09-12T00:00:00.000Z",
+            "updated_at": "2026-09-12T00:00:00.000Z",
+            "created_by": {
+              "principal_id": "principal-synthetic"
+            },
+            "updated_by": {
+              "principal_id": "principal-synthetic"
+            }
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "command ID below existing guard bound",
+      "schema": "registry.schema.json#/$defs/Command",
+      "value": {
+        "command_id": "short",
+        "expected_server_generation": 1,
+        "expected_registry_version": 0,
+        "action": {
+          "operation": "create_workstream",
+          "name": "Synthetic",
+          "lifecycle": "active",
+          "sort_order": 0
+        }
+      }
+    },
+    {
+      "name": "HTTP 200 cannot carry pending",
+      "schema": "registry.schema.json#/$defs/TerminalReceipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "pending",
+        "retry_after_seconds": 2
+      }
+    },
+    {
+      "name": "HTTP 200 cannot carry unresolved",
+      "schema": "registry.schema.json#/$defs/TerminalReceipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "unresolved",
+        "retry_after_seconds": 2
+      }
+    },
+    {
+      "name": "HTTP 202 cannot carry committed",
+      "schema": "registry.schema.json#/$defs/PendingReceipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "committed",
+        "completed_at": "2026-09-12T00:00:00.000Z",
+        "registry_version": 8,
+        "changed": true,
+        "effects": {
+          "workstream_versions": [],
+          "native_reference_id": "ref-pr",
+          "membership_ids": [],
+          "declaration_id": null,
+          "declaration_revision": null,
+          "edge_id": null,
+          "observation": {
+            "native_reference_id": "ref-pr",
+            "observation_version": 1,
+            "attempted_at": "2026-09-12T00:00:00.000Z",
+            "outcome": "observed",
+            "retry_after_seconds": null,
+            "last_success": {
+              "state": "open",
+              "draft": true,
+              "observed_at": "2026-09-12T00:00:00.000Z",
+              "provider_updated_at": "2026-09-12T00:00:00.000Z"
+            },
+            "command_id": "synthetic-cmd-refresh-pr"
+          }
+        }
+      }
+    },
+    {
+      "name": "HTTP 202 cannot carry rejected",
+      "schema": "registry.schema.json#/$defs/PendingReceipt",
+      "value": {
+        "command_id": "synthetic-cmd-refresh-pr",
+        "owner_id": "owner-synthetic",
+        "actor": {
+          "principal_id": "principal-synthetic"
+        },
+        "operation": "refresh_linked_pr",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "server_generation": 1,
+        "accepted_at": "2026-09-12T00:00:00.000Z",
+        "state": "rejected",
+        "completed_at": "2026-09-12T00:00:00.000Z",
+        "error": {
+          "code": "version_conflict",
+          "status": 409,
+          "request_id": "request-synthetic",
+          "recovery": "reload"
+        }
+      }
+    },
+    {
+      "name": "waiting progress requires named condition",
+      "schema": "registry.schema.json#/$defs/ProgressCondition",
+      "value": { "state": "waiting" }
+    },
+    {
+      "name": "unknown delivery taxonomy member",
+      "schema": "registry.schema.json#/$defs/DeliveryState",
+      "value": "done"
+    },
+    {
+      "name": "unknown freshness taxonomy member",
+      "schema": "registry.schema.json#/$defs/FreshnessState",
+      "value": "fresh"
+    },
+    {
+      "name": "attested registration requires immutable evidence",
+      "schema": "registry.schema.json#/$defs/RegistrationVerification",
+      "value": {
+        "state": "attested",
+        "attestation_version": 1,
+        "attested_at": "2026-09-12T00:00:00.000Z",
+        "expires_at": "2026-09-13T00:00:00.000Z",
+        "evidence": null
+      }
+    },
+    {
+      "name": "membership kind cannot invent tertiary association",
+      "schema": "registry.schema.json#/$defs/MembershipEpisode",
+      "value": {
+        "membership_id": "membership-alpha",
+        "workstream_id": "ws-alpha",
+        "native_reference_id": "ref-pr",
+        "kind": "tertiary",
+        "opened": {
+          "at": "2026-09-12T00:00:00.000Z",
+          "actor": { "principal_id": "principal-synthetic" },
+          "command_id": "synthetic-cmd-add-alpha",
+          "registry_version": 3
+        },
+        "closed": null
+      }
+    },
+    {
+      "name": "lifecycle reopening must identify superseded declaration",
+      "schema": "registry.schema.json#/$defs/LifecycleDeclaration",
+      "value": {
+        "lifecycle_declaration_id": "lifecycle-declaration-active-3",
+        "workstream_id": "ws-alpha",
+        "revision": 3,
+        "prior_lifecycle": "completed",
+        "new_lifecycle": "active",
+        "recorded_at": "2026-09-12T00:00:00.000Z",
+        "actor": { "principal_id": "principal-synthetic" },
+        "command_id": "cmd-reopen-workstream",
+        "registry_version": 8
+      }
+    }
+  ]
+}
