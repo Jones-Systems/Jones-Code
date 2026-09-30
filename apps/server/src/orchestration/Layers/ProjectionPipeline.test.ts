@@ -12,6 +12,7 @@ import {
   ThreadLinkedPullRequest,
   TurnId,
   ProviderInstanceId,
+  type RuntimeIdentityAttestation,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -32,6 +33,8 @@ import {
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/ProjectionThreadSessions.ts";
+import { ProjectionThreadSessionRepository } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
@@ -4767,6 +4770,21 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
     const sourcePlanId = "plan-source";
     const turnStartedAt = "2026-02-26T14:00:00.000Z";
     const sessionSetAt = "2026-02-26T14:00:05.000Z";
+    const runtimeIdentity: RuntimeIdentityAttestation = {
+      runtimeGeneration: "persisted-runtime-generation",
+      requested: {
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerDriver: "codex",
+        model: "requested-model",
+        serviceTier: "priority",
+      },
+      observed: {
+        backend: { status: "unknown" },
+        model: { status: "observed", value: "native-model", sourceEvent: "thread/started" },
+        account: { status: "unavailable", reason: "No provider account attestation" },
+        serviceTier: { status: "unknown" },
+      },
+    };
 
     yield* Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
@@ -4821,6 +4839,7 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
             runtimeMode: "approval-required",
             activeTurnId: turnId,
             lastError: null,
+            runtimeIdentity,
             updatedAt: sessionSetAt,
           },
         },
@@ -4854,6 +4873,18 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
         WHERE turn_id = ${turnId}
       `;
     }).pipe(Effect.provide(secondProjectionLayer));
+
+    const reopenedSession = yield* Effect.gen(function* () {
+      const sessions = yield* ProjectionThreadSessionRepository;
+      return yield* sessions.getByThreadId({ threadId });
+    }).pipe(
+      Effect.provide(
+        ProjectionThreadSessionRepositoryLive.pipe(
+          Layer.provide(makeSqlitePersistenceLive(dbPath)),
+        ),
+      ),
+    );
+    assert.deepEqual(Option.getOrThrow(reopenedSession).runtimeIdentity, runtimeIdentity);
 
     assert.deepEqual(turnRows, [
       {

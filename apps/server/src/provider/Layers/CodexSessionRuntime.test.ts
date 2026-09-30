@@ -929,6 +929,37 @@ describe("isRecoverableThreadResumeError", () => {
 });
 
 describe("openCodexThread", () => {
+  for (const resumeThreadId of [undefined, "saved-thread"]) {
+    for (const serviceTier of [undefined, null, "priority"] as const) {
+      it.effect(
+        `preserves native identity on ${resumeThreadId ? "resume" : "start"} with tier ${serviceTier}`,
+        () =>
+          Effect.gen(function* () {
+            const response = {
+              ...makeThreadOpenResponse("native-thread"),
+              model: "native-model",
+              modelProvider: "native-backend",
+              ...(serviceTier !== undefined ? { serviceTier } : {}),
+            };
+            const opened = yield* openCodexThread({
+              client: {
+                request: () => Effect.succeed(response),
+                raw: { request: () => Effect.succeed(response) },
+              },
+              threadId: ThreadId.make("thread-identity"),
+              runtimeMode: "full-access",
+              cwd: "/tmp/project",
+              requestedModel: "requested-model",
+              serviceTier: "fast",
+              resumeThreadId,
+            });
+            NodeAssert.equal(opened.model, "native-model");
+            NodeAssert.equal(opened.modelProvider, "native-backend");
+            NodeAssert.equal(opened.serviceTier, serviceTier);
+          }),
+      );
+    }
+  }
   it.effect("resumes metadata when historical turns contain unknown error values", () =>
     Effect.gen(function* () {
       const response = makeThreadOpenResponse("saved-thread");
@@ -970,6 +1001,7 @@ describe("openCodexThread", () => {
       NodeAssert.deepStrictEqual(opened, {
         cwd: response.cwd,
         model: response.model,
+        modelProvider: response.modelProvider,
         thread: { id: "saved-thread" },
       });
       NodeAssert.deepStrictEqual(calls, [

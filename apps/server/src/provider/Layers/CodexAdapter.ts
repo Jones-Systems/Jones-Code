@@ -30,6 +30,7 @@ import {
   type TurnTokenUsage,
   ProviderApprovalDecision,
   ThreadId,
+  TrimmedNonEmptyString,
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -148,6 +149,12 @@ interface CodexTurnTokenUsageState {
   activeTurnId: string | undefined;
   readonly byTurnId: Map<string, CodexTurnTokenUsageAccumulator>;
 }
+
+const CodexThreadOpenedIdentity = Schema.Struct({
+  model: TrimmedNonEmptyString,
+  modelProvider: TrimmedNonEmptyString,
+  serviceTier: Schema.NullOr(TrimmedNonEmptyString),
+});
 
 function mapCodexRuntimeError(
   threadId: ThreadId,
@@ -974,6 +981,9 @@ function asRuntimeRequestId(requestId: string): RuntimeRequestId {
 }
 
 function eventRawSource(event: ProviderEvent): NonNullable<ProviderRuntimeEvent["raw"]>["source"] {
+  if (event.kind === "session" && event.method === "thread/opened") {
+    return "codex.app-server.response";
+  }
   return event.kind === "request" ? "codex.app-server.request" : "codex.app-server.notification";
 }
 
@@ -996,6 +1006,12 @@ function runtimeEventBase(
   return {
     eventId: event.id,
     provider: event.provider,
+    ...(event.providerInstanceId !== undefined
+      ? { providerInstanceId: event.providerInstanceId }
+      : {}),
+    ...(event.runtimeGeneration !== undefined
+      ? { runtimeGeneration: event.runtimeGeneration }
+      : {}),
     threadId: canonicalThreadId,
     createdAt: event.createdAt,
     ...(event.turnId ? { turnId: event.turnId } : {}),
@@ -1502,6 +1518,38 @@ function mapToRuntimeEvents(
         payload: {
           ...(event.message ? { message: event.message } : {}),
           ...(event.payload !== undefined ? { resume: event.payload } : {}),
+        },
+      },
+    ];
+  }
+
+  if (event.method === "thread/opened") {
+    const payload = readPayload(CodexThreadOpenedIdentity, event.payload);
+    if (!payload) {
+      return [];
+    }
+    const sourceEvent = "codex.thread/open";
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "session.configured",
+        payload: {
+          config: {},
+          identity: {
+            backend: { status: "observed", value: payload.modelProvider, sourceEvent },
+            model: { status: "observed", value: payload.model, sourceEvent },
+            account: {
+              status: "unavailable",
+              reason: "The thread-open response does not bind an account to this runtime.",
+            },
+            serviceTier:
+              payload.serviceTier === null
+                ? {
+                    status: "unavailable",
+                    reason: "The thread-open response did not report a service tier.",
+                  }
+                : { status: "observed", value: payload.serviceTier, sourceEvent },
+          },
         },
       },
     ];
@@ -2323,6 +2371,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
+          ...(input.runtimeGeneration ? { runtimeGeneration: input.runtimeGeneration } : {}),
           providerInstanceId: boundInstanceId,
           cwd: input.cwd ?? process.cwd(),
           ...(options?.models ? { models: options.models } : {}),
@@ -2596,76 +2645,91 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     };
   });
 
-  const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
-    // Codex ingests images only. Anything else would be inlined as an image
-    // and rejected or misread; generic files reach the agent through the path
-    // line ProviderService puts in the prompt. Images are passed by path
-    // instead of base64 so the turn/start request does not scale with file
-    // size; the CLI reads the file itself.
-    const codexAttachments = yield* Effect.forEach(
-      (input.attachments ?? []).filter((attachment) => attachment.type === "image"),
-      (attachment) => resolveAttachment(input, attachment),
-      { concurrency: 1 },
-    );
-
-    let session = yield* requireSession(input.threadId);
-    if (options?.resolveRuntime) {
-      const next = yield* options.resolveRuntime.pipe(
-        Effect.scoped,
-        Effect.mapError(
-          (cause) =>
-            new ProviderAdapterValidationError({
-              provider: PROVIDER,
-              operation: "sendTurn",
-              issue: cause.detail,
-            }),
-        ),
+  const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(
+    function* (input, runtimeContext) {
+      // Codex ingests images only. Anything else would be inlined as an image
+      // and rejected or misread; generic files reach the agent through the path
+      // line ProviderService puts in the prompt. Images are passed by path
+      // instead of base64 so the turn/start request does not scale with file
+      // size; the CLI reads the file itself.
+      const codexAttachments = yield* Effect.forEach(
+        (input.attachments ?? []).filter((attachment) => attachment.type === "image"),
+        (attachment) => resolveAttachment(input, attachment),
+        { concurrency: 1 },
       );
-      if (next.revision !== session.runtimeRevision) {
-        const previous = yield* session.runtime.getSession;
-        yield* startSession({
-          ...session.startInput,
-          ...(previous.resumeCursor ? { resumeCursor: previous.resumeCursor } : {}),
-        });
-        session = yield* requireSession(input.threadId);
-      }
-    }
-    const modelSelection =
-      input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
-    let reasoningEffort = getModelSelectionStringOptionValue(modelSelection, "reasoningEffort");
-    if (reasoningEffort === undefined && modelSelection && options?.models) {
-      const models = yield* options.models;
-      const descriptor = models
-        .find((model) => model.slug === modelSelection.model)
-        ?.capabilities?.optionDescriptors?.find(
-          (option) => option.id === "reasoningEffort" && option.type === "select",
+
+      let session = yield* requireSession(input.threadId);
+      if (options?.resolveRuntime) {
+        const next = yield* options.resolveRuntime.pipe(
+          Effect.scoped,
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "sendTurn",
+                issue: cause.detail,
+              }),
+          ),
         );
-      const currentValue = getProviderOptionCurrentValue(descriptor);
-      if (typeof currentValue === "string") {
-        reasoningEffort = currentValue;
+        if (next.revision !== session.runtimeRevision) {
+          const previous = yield* session.runtime.getSession;
+          const startInput = session.startInput;
+          const restart = (runtimeGeneration: string) =>
+            startSession({
+              ...startInput,
+              runtimeGeneration,
+              ...(input.modelSelection?.instanceId === boundInstanceId
+                ? { modelSelection: input.modelSelection }
+                : {}),
+              ...(previous.resumeCursor ? { resumeCursor: previous.resumeCursor } : {}),
+            });
+          yield* runtimeContext
+            ? runtimeContext.withRuntimeReplacement(restart)
+            : restart(NodeCrypto.randomUUID());
+          session = yield* requireSession(input.threadId);
+        }
       }
-    }
-    const serviceTier =
-      !options?.resolveRuntime && input.modelSelection?.instanceId === boundInstanceId
-        ? getCodexServiceTierOptionValue(input.modelSelection)
-        : undefined;
-    return yield* session.runtime
-      .sendTurn({
-        ...(input.input !== undefined ? { input: input.input } : {}),
-        ...(input.modelSelection?.instanceId === boundInstanceId
-          ? { model: input.modelSelection.model }
-          : {}),
-        ...(reasoningEffort
-          ? {
-              effort: reasoningEffort as EffectCodexSchema.V2TurnStartParams__ReasoningEffort,
-            }
-          : {}),
-        ...(serviceTier ? { serviceTier } : {}),
-        ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-        ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
-      })
-      .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
-  });
+      const modelSelection =
+        input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
+      let reasoningEffort = getModelSelectionStringOptionValue(modelSelection, "reasoningEffort");
+      if (reasoningEffort === undefined && modelSelection && options?.models) {
+        const models = yield* options.models;
+        const descriptor = models
+          .find((model) => model.slug === modelSelection.model)
+          ?.capabilities?.optionDescriptors?.find(
+            (option) => option.id === "reasoningEffort" && option.type === "select",
+          );
+        const currentValue = getProviderOptionCurrentValue(descriptor);
+        if (typeof currentValue === "string") {
+          reasoningEffort = currentValue;
+        }
+      }
+      const serviceTier =
+        !options?.resolveRuntime && input.modelSelection?.instanceId === boundInstanceId
+          ? getCodexServiceTierOptionValue(input.modelSelection)
+          : undefined;
+      return yield* session.runtime
+        .sendTurn({
+          ...(input.input !== undefined ? { input: input.input } : {}),
+          ...(input.modelSelection?.instanceId === boundInstanceId
+            ? { model: input.modelSelection.model }
+            : {}),
+          ...(reasoningEffort
+            ? {
+                effort: reasoningEffort as EffectCodexSchema.V2TurnStartParams__ReasoningEffort,
+              }
+            : {}),
+          ...(serviceTier ? { serviceTier } : {}),
+          ...(input.interactionMode !== undefined
+            ? { interactionMode: input.interactionMode }
+            : {}),
+          ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
+        })
+        .pipe(
+          Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)),
+        );
+    },
+  );
 
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {
     const session = sessions.get(threadId);

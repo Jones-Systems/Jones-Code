@@ -381,6 +381,76 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
+  for (const serviceTier of ["priority", null] as const) {
+    it.effect(
+      `maps the typed thread-open response to authoritative identity (${serviceTier})`,
+      () =>
+        Effect.gen(function* () {
+          const adapter = yield* CodexAdapter;
+          const threadId = asThreadId("thread-identity");
+          yield* adapter.startSession({
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeGeneration: "runtime-generation-1",
+            threadId,
+            runtimeMode: "full-access",
+          });
+          const runtime = sessionRuntimeFactory.lastRuntime;
+          NodeAssert.ok(runtime);
+          const eventFiber = yield* adapter.streamEvents.pipe(Stream.runHead, Effect.forkChild);
+
+          yield* runtime.emit({
+            id: asEventId("evt-thread-opened"),
+            kind: "session",
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeGeneration: "runtime-generation-1",
+            threadId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            method: "thread/opened",
+            payload: {
+              model: "gpt-5.6-sol-2026-09-01",
+              modelProvider: "openai",
+              serviceTier,
+            },
+          });
+
+          const event = Option.getOrThrow(yield* Fiber.join(eventFiber));
+          NodeAssert.equal(event.type, "session.configured");
+          if (event.type !== "session.configured") return;
+          NodeAssert.equal(event.runtimeGeneration, "runtime-generation-1");
+          NodeAssert.equal(event.raw?.source, "codex.app-server.response");
+          NodeAssert.deepStrictEqual(event.payload.identity, {
+            backend: {
+              status: "observed",
+              value: "openai",
+              sourceEvent: "codex.thread/open",
+            },
+            model: {
+              status: "observed",
+              value: "gpt-5.6-sol-2026-09-01",
+              sourceEvent: "codex.thread/open",
+            },
+            account: {
+              status: "unavailable",
+              reason: "The thread-open response does not bind an account to this runtime.",
+            },
+            serviceTier:
+              serviceTier === null
+                ? {
+                    status: "unavailable",
+                    reason: "The thread-open response did not report a service tier.",
+                  }
+                : {
+                    status: "observed",
+                    value: serviceTier,
+                    sourceEvent: "codex.thread/open",
+                  },
+          });
+        }),
+    );
+  }
+
   it.effect("compacts the active Codex thread and emits compacted state", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -3343,16 +3413,78 @@ it.effect("managed runtime rotation restarts app-server and resumes the same nat
   return Effect.gen(function* () {
     const adapter = yield* CodexAdapter;
     const threadId = asThreadId("managed-token-rotation");
-    yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
-    yield* adapter.sendTurn({ threadId, input: "first" });
+    yield* adapter.startSession({
+      threadId,
+      runtimeMode: "full-access",
+      runtimeGeneration: "original-runtime",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "original-requested-model",
+      },
+    });
+    let replacements = 0;
+    const runtimeContext: NonNullable<Parameters<CodexAdapterShape["sendTurn"]>[1]> = {
+      withRuntimeReplacement: (restart) =>
+        Effect.suspend(() => {
+          replacements += 1;
+          return restart("replacement-runtime");
+        }),
+    };
+    yield* adapter.sendTurn({ threadId, input: "first" }, runtimeContext);
+    NodeAssert.equal(replacements, 0);
     NodeAssert.equal(runtimes.length, 1);
     revision = "rotated";
-    yield* adapter.sendTurn({ threadId, input: "second" });
+    yield* adapter.sendTurn(
+      {
+        threadId,
+        input: "second",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "current-requested-model",
+        },
+      },
+      runtimeContext,
+    );
+    NodeAssert.equal(replacements, 1);
+    NodeAssert.equal(runtimes[1]?.options.runtimeGeneration, "replacement-runtime");
+    NodeAssert.equal(runtimes[1]?.options.model, "current-requested-model");
     NodeAssert.equal(runtimes.length, 2);
     NodeAssert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
     NodeAssert.deepEqual(runtimes[1]?.options.resumeCursor, { threadId: "native-managed-thread" });
     NodeAssert.equal(runtimes[1]?.options.environment?.ACCESS_TOKEN, "dummy-rotated");
     NodeAssert.equal(runtimes[1]?.options.binaryPath, "/t3/tools/codex/0.155.1/bin/codex");
+    const identityEvent = yield* adapter.streamEvents.pipe(
+      Stream.filter(
+        (event) => event.type === "session.configured" && event.payload.identity !== undefined,
+      ),
+      Stream.runHead,
+      Effect.forkChild,
+    );
+    yield* runtimes[1]!.emit({
+      id: asEventId("managed-replacement-identity"),
+      kind: "session",
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeGeneration: runtimes[1]!.options.runtimeGeneration!,
+      threadId,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      method: "thread/opened",
+      payload: { model: "native-managed-model", modelProvider: "managed", serviceTier: null },
+    });
+    const observed = Option.getOrThrow(yield* Fiber.join(identityEvent));
+    NodeAssert.equal(observed.runtimeGeneration, "replacement-runtime");
+    if (observed.type === "session.configured")
+      NodeAssert.deepEqual(observed.payload.identity?.model, {
+        status: "observed",
+        value: "native-managed-model",
+        sourceEvent: "codex.thread/open",
+      });
+    revision = "rotated-again";
+    yield* adapter.sendTurn({ threadId, input: "third" });
+    NodeAssert.equal(runtimes.length, 3);
+    NodeAssert.equal(typeof runtimes[2]?.options.runtimeGeneration, "string");
+    NodeAssert.notEqual(runtimes[2]?.options.runtimeGeneration, "replacement-runtime");
+    NodeAssert.equal(runtimes[2]?.options.environment?.ACCESS_TOKEN, "dummy-rotated-again");
   }).pipe(Effect.provide(layer));
 });
 
