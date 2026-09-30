@@ -1,10 +1,37 @@
 # Codex
 
-For one account, use the default Codex provider with your normal Codex login.
-[Provider setup](./install.md#providers) covers installation, Settings > Providers,
-and custom binaries or environment variables.
+Use your ChatGPT plan or an existing Codex CLI login to code in T3 Code.
+
+## Connect with ChatGPT
+
+Connect during onboarding or in **Settings → Providers**. For a remote machine,
+select that environment first. T3 Code handles Codex installation; sign in on
+OpenAI and allow sharing of your ChatGPT plan.
+
+Manage shared usage and credits in ChatGPT through **Manage usage** in T3 Code.
+If a request uses a feature that ChatGPT sharing does not support, use another
+provider for that request.
+
+When reconnecting, choose the same account in T3 Code and on OpenAI's sign-in
+page. Disconnecting stops running threads but keeps their history and lets you
+reconnect later.
+
+If remote sign-in cannot return automatically, paste the full URL from the final
+localhost page into the sign-in panel, even if that page could not load.
+
+## Use an existing Codex login
+
+T3 Code can use your installed Codex and its existing login. Run `codex login`
+on the environment's machine to sign in. [Provider setup](./install.md#providers)
+covers installation and custom configuration.
 
 ## Use multiple accounts
+
+Add another ChatGPT account in **Settings → Providers**, then select the account
+from the thread's model picker. Compatible accounts can continue the same thread.
+Connecting accounts through T3 Code leaves your CLI login unchanged.
+
+### Multiple CLI logins
 
 A shared Codex home with a shadow home lets work and personal accounts continue
 the same threads. The accounts share Codex sessions and configuration while keeping
@@ -53,6 +80,15 @@ settings. If two instances show the same unexpected account or models, check the
 reported accounts, refresh provider status, and confirm the second instance has
 its own shadow path and login. A shadow-home conflict usually means the directory
 contains a copied Codex setup. Use a fresh shadow directory and sign in again.
+
+## Stop a goal
+
+Selecting **Stop** pauses an active native Codex goal before interrupting the current turn and
+its sub-agents.
+If Codex cannot read or pause the goal, T3 Code still attempts to interrupt the turn. The goal may
+remain active in that case. Threads without an active goal keep their ordinary Stop behavior.
+If Codex does not acknowledge the root turn's interrupt request within three seconds after
+sub-agent interruption, Stop reports an error; the turn may still be running.
 
 ## Answer questions while Codex works
 
