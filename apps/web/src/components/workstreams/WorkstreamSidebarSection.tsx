@@ -24,6 +24,11 @@ import type { WorkstreamListView } from "../../state/workstreams";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Spinner } from "../ui/spinner";
+import {
+  EMPTY_WORKSTREAM_THREAD_STATUS,
+  type WorkstreamThreadStatusSummary,
+} from "./workstreamThreadStatus";
 
 export const workstreamCommandId = () =>
   runtime.runPromise(
@@ -175,6 +180,7 @@ export function WorkstreamCreateForm({
 
 export function WorkstreamSidebarSection(props: {
   readonly controller: WorkstreamListView;
+  readonly threadStatusSummaries?: ReadonlyMap<string, WorkstreamThreadStatusSummary>;
   readonly renderMembers?: (workstreamId: string | null) => ReactNode;
   readonly onThreadDragOver?: (event: DragEvent, workstreamId: string | null) => boolean;
   readonly threadDropTarget?: string | null | undefined;
@@ -494,18 +500,16 @@ export function WorkstreamSidebarSection(props: {
                   onClick={() => showDetail(item.workstreamId)}
                   type="button"
                 >
-                  {item.name}{" "}
-                  <span className="text-3xs text-muted-foreground">
-                    {item.lifecycle === "completed"
-                      ? selected !== item.workstreamId || completionAuthority === null
-                        ? "completed — open to verify"
-                        : completionAuthority.state === "owner-declared"
-                          ? "completed — owner-declared"
-                          : "completed — unverified"
-                      : item.lifecycle}
-                  </span>
+                  {item.name}
                 </button>
               )}
+              <WorkstreamHeaderStatus
+                name={item.name}
+                summary={
+                  props.threadStatusSummaries?.get(item.workstreamId) ??
+                  EMPTY_WORKSTREAM_THREAD_STATUS
+                }
+              />
               {canWrite ? (
                 <Menu>
                   <MenuTrigger
@@ -981,5 +985,52 @@ export function WorkstreamSidebarSection(props: {
         </div>
       ) : null}
     </section>
+  );
+}
+
+function WorkstreamHeaderStatus({
+  name,
+  summary,
+}: {
+  readonly name: string;
+  readonly summary: WorkstreamThreadStatusSummary;
+}) {
+  return (
+    <span className="flex shrink-0 items-center gap-1.5 text-3xs">
+      {summary.failed > 0 ? (
+        <span
+          className="font-medium text-red-700 dark:text-red-300"
+          role="img"
+          aria-label={`${summary.failed} failed ${summary.failed === 1 ? "thread" : "threads"}`}
+        >
+          Failed
+        </span>
+      ) : (
+        <>
+          {summary.waiting > 0 ? (
+            <span
+              role="img"
+              aria-label={`${summary.waiting} ${summary.waiting === 1 ? "thread" : "threads"} waiting for input or approval`}
+              className="size-1.5 rounded-full bg-violet-500 dark:bg-violet-300"
+            />
+          ) : null}
+          {summary.running > 0 ? (
+            <span className="text-sky-600 dark:text-sky-400">
+              <Spinner
+                size="xs"
+                aria-label={`${summary.running} running ${summary.running === 1 ? "thread" : "threads"}`}
+              />
+            </span>
+          ) : null}
+        </>
+      )}
+      <span
+        role="img"
+        className="tabular-nums text-muted-foreground"
+        aria-label={`${name}: ${summary.running} of ${summary.total} known threads running`}
+      >
+        {summary.running}/{summary.total}
+      </span>
+    </span>
   );
 }

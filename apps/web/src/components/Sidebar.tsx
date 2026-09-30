@@ -2672,7 +2672,7 @@ export default function Sidebar() {
     };
   }, [nowMinute, optimisticDrop, scopedProjectKeys, serverConfigs, snoozeWakeTick, threads]);
 
-  const workstreamController = useWorkstreams(true, activeThreads);
+  const workstreamController = useWorkstreams(true, threads);
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
   const closeWorkstreamCreate = useCallback(() => setWorkstreamCreateOpen(false), []);
@@ -2691,6 +2691,23 @@ export default function Sidebar() {
         ),
       }),
     [activeThreads, snoozeNow, workstreamController.data?.items, workstreamController.placements],
+  );
+
+  const workstreamSummaryGrouping = useMemo(
+    () =>
+      groupNativeThreadsByWorkstream({
+        workstreams: workstreamController.data?.items ?? [],
+        placements: workstreamController.placements?.items ?? [],
+        threads,
+        trustedNow: snoozeNow,
+        trustedEnvironments: new Map(
+          (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
+            value.environmentId,
+            value,
+          ]),
+        ),
+      }),
+    [threads, snoozeNow, workstreamController.data?.items, workstreamController.placements],
   );
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
@@ -4950,6 +4967,7 @@ export default function Sidebar() {
                             <WorkstreamNativeSidebar
                               controller={workstreamController}
                               grouping={workstreamGrouping}
+                              summaryGrouping={workstreamSummaryGrouping}
                               renderThread={(thread) => renderThreadRowInner(thread, "active")}
                               canReorder={(thread) =>
                                 activeReorderableThreadKeys.has(

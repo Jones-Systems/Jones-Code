@@ -1,7 +1,7 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { workstreamBindingKey } from "@t3tools/client-runtime/state/workstreams";
 import { GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
-import { useLayoutEffect, useRef, useState, type ReactNode, type DragEvent } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode, type DragEvent } from "react";
 import type { WorkstreamListView } from "../../state/workstreams";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -13,9 +13,12 @@ import {
   type NativeWorkstreamThreadGrouping,
 } from "./nativeThreadGrouping";
 
+import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
+
 export function WorkstreamNativeSidebar(props: {
   readonly controller: WorkstreamListView;
   readonly grouping: NativeWorkstreamThreadGrouping<EnvironmentThreadShell>;
+  readonly summaryGrouping?: NativeWorkstreamThreadGrouping<EnvironmentThreadShell>;
   readonly renderThread: (thread: EnvironmentThreadShell) => ReactNode;
   readonly canReorder: (thread: EnvironmentThreadShell) => boolean;
   readonly reorder: (
@@ -25,6 +28,11 @@ export function WorkstreamNativeSidebar(props: {
   ) => Promise<void>;
 }) {
   const { controller, grouping } = props;
+  const statusGrouping = props.summaryGrouping ?? grouping;
+  const threadStatusSummaries = useMemo(
+    () => summarizeWorkstreamThreadStatuses(statusGrouping),
+    [statusGrouping],
+  );
   const [dragged, setDragged] = useState<EnvironmentThreadShell | null>(null);
   const [dropTarget, setDropTarget] = useState<{
     workstreamId: string | null;
@@ -346,6 +354,7 @@ export function WorkstreamNativeSidebar(props: {
       <WorkstreamSidebarSection
         controller={controller}
         renderMembers={renderMembers}
+        threadStatusSummaries={threadStatusSummaries}
         onThreadDrop={drop}
         onThreadDragOver={dragOver}
         threadDropTarget={dropTarget && !dropTarget.threadKey ? dropTarget.workstreamId : undefined}

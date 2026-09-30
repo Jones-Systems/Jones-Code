@@ -10,6 +10,7 @@ import { WorkstreamCreateForm } from "./WorkstreamSidebarSection";
 import { SidebarThreadHeader } from "../sidebar/SidebarThreadHeader";
 import { SidebarProvider } from "../ui/sidebar";
 import { canEditWorkstreams } from "./nativeWorkstreamActions";
+import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
 import { WorkstreamNativeSidebar } from "./WorkstreamNativeSidebar";
 import { groupNativeThreadsByWorkstream } from "./nativeThreadGrouping";
 import { data, now, placements, reference, thread } from "./nativeWorkstreamActions.fixtures";
@@ -80,24 +81,29 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function render() {
-  const grouping = groupNativeThreadsByWorkstream({
-    workstreams: controller.data?.items ?? [],
-    placements: controller.placements?.items ?? [],
-    threads,
-    trustedNow: new Date(now).toISOString(),
-    trustedEnvironments: new Map(
-      (controller.placements?.trustedEnvironments ?? []).map((entry) => [
-        entry.environmentId,
-        entry,
-      ]),
-    ),
-  });
+async function render(
+  visibleThreads: readonly EnvironmentThreadShell[] = threads,
+  summaryThreads: readonly EnvironmentThreadShell[] = visibleThreads,
+) {
+  const group = (members: readonly EnvironmentThreadShell[]) =>
+    groupNativeThreadsByWorkstream({
+      workstreams: controller.data?.items ?? [],
+      placements: controller.placements?.items ?? [],
+      threads: members,
+      trustedNow: new Date(now).toISOString(),
+      trustedEnvironments: new Map(
+        (controller.placements?.trustedEnvironments ?? []).map((entry) => [
+          entry.environmentId,
+          entry,
+        ]),
+      ),
+    });
   await act(async () =>
     root.render(
       <WorkstreamNativeSidebar
         controller={controller}
-        grouping={grouping}
+        grouping={group(visibleThreads)}
+        summaryGrouping={group(summaryThreads)}
         renderThread={(item) => (
           <li>
             <button type="button">{item.title}</button>
@@ -567,5 +573,178 @@ describe("Workstream toolbar creation", () => {
     ).toBe(true);
     expect(nameInput()).toBeNull();
     expect(controller.submit).toHaveBeenCalledOnce();
+  });
+});
+
+function statusThread(
+  id: string,
+  status: NonNullable<EnvironmentThreadShell["session"]>["status"] | null,
+  changes: Partial<EnvironmentThreadShell> = {},
+): EnvironmentThreadShell {
+  return {
+    ...threads[0]!,
+    id,
+    title: id,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    backgroundLiveness: null,
+    session: status === null ? null : { status },
+    ...changes,
+  } as EnvironmentThreadShell;
+}
+
+function primaryPlacementsFor(members: readonly EnvironmentThreadShell[]) {
+  return members.map((member, index) => ({
+    ...placements.items[0]!,
+    native_reference_id: `reference-${index}`,
+    membership_id: `membership-${index}`,
+    native_thread_id: member.id,
+    source_instance_id: member.environmentId,
+  }));
+}
+
+describe("Workstream live thread summaries", () => {
+  it("matches native row precedence for running, connecting, approval, input, failed and background states", () => {
+    const members = [
+      statusThread("running", "running"),
+      statusThread("starting", "starting"),
+      statusThread("input", "running", { hasPendingUserInput: true }),
+      statusThread("approval", "running", { hasPendingApprovals: true }),
+      statusThread("failed", "error", { backgroundLiveness: "working" }),
+      statusThread("background", "idle", { backgroundLiveness: "working" }),
+      statusThread("monitoring", "idle", { backgroundLiveness: "monitoring" }),
+      statusThread("unknown", null),
+      statusThread("ready", "ready"),
+    ];
+    expect(
+      summarizeWorkstreamThreadStatuses({
+        groups: [{ workstream: data.items[0]!, threads: members }],
+      }).get("alpha"),
+    ).toEqual({ total: 9, running: 3, waiting: 2, failed: 1 });
+    expect(
+      summarizeWorkstreamThreadStatuses({
+        groups: [
+          {
+            workstream: data.items[0]!,
+            threads: [
+              statusThread("approval-error", "error", { hasPendingApprovals: true }),
+              statusThread("input-error", "error", { hasPendingUserInput: true }),
+            ],
+          },
+        ],
+      }).get("alpha"),
+    ).toEqual({ total: 2, running: 0, waiting: 2, failed: 0 });
+  });
+
+  it("counts distinct environment/thread pairs and never invents a running state for unknown sessions", () => {
+    const running = statusThread("same", "running");
+    const remote = { ...running, environmentId: "env:other" } as EnvironmentThreadShell;
+    expect(
+      summarizeWorkstreamThreadStatuses({
+        groups: [
+          {
+            workstream: data.items[0]!,
+            threads: [running, running, remote, statusThread("unknown", null)],
+          },
+        ],
+      }).get("alpha"),
+    ).toEqual({ total: 3, running: 2, waiting: 0, failed: 0 });
+    expect(summarizeWorkstreamThreadStatuses({ groups: [] }).size).toBe(0);
+  });
+
+  it("keeps all known primary members in collapsed counts and replaces input/running indicators with Failed", async () => {
+    const members = [
+      statusThread("running", "running"),
+      statusThread("waiting", "running", { hasPendingUserInput: true }),
+      statusThread("pinned", "idle", { pinnedAt: new Date(now).toISOString() }),
+      statusThread("settled", "idle", { settledOverride: "settled" }),
+      statusThread("snoozed", "idle", { snoozedAt: new Date(now).toISOString() }),
+      statusThread("archived", null, { archivedAt: new Date(now).toISOString() }),
+    ];
+    const primary = primaryPlacementsFor(members);
+    controller = {
+      ...controller,
+      placements: {
+        ...placements,
+        items: [
+          ...primary,
+          ...primary.map((item) => ({
+            ...item,
+            kind: "secondary" as const,
+            workstream_id: "beta",
+            membership_id: `${item.membership_id}-secondary`,
+          })),
+        ],
+      },
+    };
+    await render(members.slice(0, 2), members);
+    const count = () =>
+      container.querySelector('[aria-label="alpha: 1 of 6 known threads running"]');
+    expect(count()?.textContent).toBe("1/6");
+    expect(
+      container.querySelector('[aria-label="beta: 0 of 0 known threads running"]')?.textContent,
+    ).toBe("0/0");
+    const indicators = count()!.parentElement!;
+    expect(indicators.children[0]?.getAttribute("aria-label")).toBe(
+      "1 thread waiting for input or approval",
+    );
+    expect(indicators.children[1]?.querySelector("svg")?.getAttribute("aria-label")).toBe(
+      "1 running thread",
+    );
+    expect(indicators.children[1]?.querySelector("svg")?.getAttribute("class")).toContain(
+      "motion-safe:visible-animate-spin",
+    );
+    expect(indicators.children[0]?.getAttribute("class")).toContain("bg-violet-500");
+    expect(indicators.children[1]?.getAttribute("class")).toContain("text-sky-600");
+    const header = container.querySelector('[aria-label="Collapse alpha"]')!.parentElement!;
+    expect(header.textContent).not.toContain("active");
+    await clickLabel("Collapse alpha");
+    expect(count()?.textContent).toBe("1/6");
+    expect(
+      [...container.querySelectorAll("button")].some((button) => button.textContent === "running"),
+    ).toBe(false);
+    const mixedFailure = [
+      ...members.slice(0, 2),
+      statusThread("pinned", "error"),
+      ...members.slice(3),
+    ];
+    await render(mixedFailure.slice(0, 2), mixedFailure);
+    expect(count()?.parentElement?.textContent).toBe("Failed1/6");
+    expect(count()?.parentElement?.querySelector("svg")).toBeNull();
+    const failedMembers = [statusThread("running", "error"), ...members.slice(1)];
+    await render(failedMembers.slice(0, 2), failedMembers);
+    const failedCount = container.querySelector(
+      '[aria-label="alpha: 0 of 6 known threads running"]',
+    )!;
+    const failedIndicators = failedCount.parentElement!;
+    expect(failedIndicators.textContent).toBe("Failed0/6");
+    expect(failedIndicators.querySelector('[aria-label="1 failed thread"]')?.className).toContain(
+      "text-red-700",
+    );
+    expect(failedIndicators.querySelector("svg")).toBeNull();
+    expect(
+      failedIndicators.querySelector('[aria-label="1 thread waiting for input or approval"]'),
+    ).toBeNull();
+    const recoveredMembers = [statusThread("running", "ready"), ...members.slice(1)];
+    await render(recoveredMembers.slice(0, 2), recoveredMembers);
+    expect(container.querySelector('[aria-label="1 failed thread"]')).toBeNull();
+    expect(
+      container.querySelector('[aria-label="1 thread waiting for input or approval"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[aria-label="alpha: 0 of 6 known threads running"]')?.textContent,
+    ).toBe("0/6");
+  });
+
+  it("uses zero counts when primary placement trust is unavailable, keeping visible threads unassigned", async () => {
+    controller = { ...controller, placements: null };
+    await render([statusThread("thread", "running")]);
+    expect(
+      container.querySelector('[aria-label="alpha: 0 of 0 known threads running"]')?.textContent,
+    ).toBe("0/0");
+    expect(container.querySelector('[aria-label="Unassigned threads"]')?.textContent).toContain(
+      "thread",
+    );
+    expect(container.querySelector('[aria-label="1 running thread"]')).toBeNull();
   });
 });

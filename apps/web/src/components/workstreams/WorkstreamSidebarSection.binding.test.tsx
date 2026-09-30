@@ -203,7 +203,7 @@ describe("Workstream sidebar binding cancellation", () => {
 
     hooks.beginRender();
     const initial = WorkstreamSidebarSection({ controller });
-    expect(containsText(initial, "completed — open to verify")).toBe(true);
+    expect(containsText(initial, "completed — open to verify")).toBe(false);
     const alpha = visitElements(
       initial,
       (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
@@ -214,7 +214,7 @@ describe("Workstream sidebar binding cancellation", () => {
 
     hooks.beginRender();
     const current = WorkstreamSidebarSection({ controller });
-    expect(containsText(current, "completed — owner-declared")).toBe(true);
+    expect(containsText(current, "completed — owner-declared")).toBe(false);
     expect(containsText(current, "owner-declared by owner-principal")).toBe(true);
     expect(containsText(current, "Revision ")).toBe(true);
     expect(containsText(current, "registry version")).toBe(true);
@@ -268,7 +268,7 @@ describe("Workstream sidebar binding cancellation", () => {
 
     hooks.beginRender();
     const initial = WorkstreamSidebarSection({ controller });
-    expect(containsText(initial, "completed — open to verify")).toBe(true);
+    expect(containsText(initial, "completed — open to verify")).toBe(false);
     const alpha = visitElements(
       initial,
       (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
@@ -278,7 +278,7 @@ describe("Workstream sidebar binding cancellation", () => {
     await Promise.resolve();
     hooks.beginRender();
     const current = WorkstreamSidebarSection({ controller });
-    expect(containsText(current, "completed — unverified")).toBe(true);
+    expect(containsText(current, "completed — unverified")).toBe(false);
     expect(containsText(current, "completed — open to verify")).toBe(false);
     expect(containsText(current, "missing declaration")).toBe(true);
   });
