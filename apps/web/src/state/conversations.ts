@@ -11,7 +11,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 
-export class ConversationLibraryConnectionNotReadyError extends Data.TaggedError(
+class ConversationLibraryConnectionNotReadyError extends Data.TaggedError(
   "ConversationLibraryConnectionNotReadyError",
 )<{ readonly message: string }> {}
 
