@@ -1,4 +1,4 @@
-import { useMobileWorkstreams } from "../../state/workstreams";
+import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
 import {
   projectMobileWorkstreamList,
   mobileWorkstreamMoveDestination,

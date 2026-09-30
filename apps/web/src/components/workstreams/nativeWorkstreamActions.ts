@@ -21,11 +21,7 @@ export const canEditWorkstreams = (data: T3WorkstreamListResult | null): boolean
   data.nextCursor === null &&
   data.binding.permissions.includes("workstreams:write");
 
-export {
-  WORKSTREAM_TINT_PALETTE,
-  workstreamPaletteIndex,
-  workstreamTint,
-} from "@t3tools/client-runtime/state/workstreams";
+export { workstreamTint } from "@t3tools/client-runtime/state/workstreams";
 
 export function planNativeMembership(input: {
   readonly data: T3WorkstreamListResult;

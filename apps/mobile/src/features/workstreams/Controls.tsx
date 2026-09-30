@@ -7,7 +7,8 @@ import {
   resolveWorkstreamCompletionAuthority,
 } from "@t3tools/client-runtime/state/workstreams";
 import type { T3WorkstreamMetadata, WorkstreamLifecycle } from "@t3tools/contracts";
-import type { MobileWorkstreams, MobileWorkstreamSnapshot } from "../../state/workstreams";
+import type { MobileWorkstreams } from "./types";
+import type { MobileWorkstreamSnapshot } from "./projection";
 import { canEditWorkstreams, planNativeMembership } from "./actions";
 
 export function MobileWorkstreamControls({

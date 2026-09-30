@@ -999,7 +999,7 @@ function WorkstreamHeaderStatus({
     <span className="flex shrink-0 items-center gap-1.5 text-3xs">
       {summary.failed > 0 ? (
         <span
-          className="font-medium text-red-700 dark:text-red-300"
+          className="font-medium text-thread-failed"
           role="img"
           aria-label={`${summary.failed} failed ${summary.failed === 1 ? "thread" : "threads"}`}
         >
@@ -1011,11 +1011,11 @@ function WorkstreamHeaderStatus({
             <span
               role="img"
               aria-label={`${summary.waiting} ${summary.waiting === 1 ? "thread" : "threads"} waiting for input or approval`}
-              className="size-1.5 rounded-full bg-violet-500 dark:bg-violet-300"
+              className="size-1.5 rounded-full bg-waiting"
             />
           ) : null}
           {summary.running > 0 ? (
-            <span className="text-sky-600 dark:text-sky-400">
+            <span className="text-info-foreground">
               <Spinner
                 size="xs"
                 aria-label={`${summary.running} running ${summary.running === 1 ? "thread" : "threads"}`}

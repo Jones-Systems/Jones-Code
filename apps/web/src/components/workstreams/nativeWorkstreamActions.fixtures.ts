@@ -13,7 +13,7 @@ export const thread = {
   pinnedAt: null,
   settledOverride: null,
 };
-export const metadata = (id: string, sortOrder: number) => ({
+const metadata = (id: string, sortOrder: number) => ({
   workstreamId: id,
   name: id,
   sortOrder,

@@ -1176,7 +1176,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               ? {
                   label: "Failed",
                   icon: "failed" as const,
-                  className: "text-red-700 dark:text-red-300",
+                  className: "text-thread-failed",
                 }
               : isWoke
                 ? {

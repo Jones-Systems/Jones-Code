@@ -23,32 +23,26 @@ import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { Pressable, Text } from "react-native";
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { connectionAtomRuntime } from "../connection/runtime";
-import { environmentCatalog } from "../connection/catalog";
-import { runtime } from "../lib/runtime";
-import { MobileSecureStorage } from "../persistence/mobile-secure-storage";
-import { environmentSession } from "./session";
-import { useEnvironments } from "./environments";
-import { workstreamRequest, type WorkstreamClient } from "../features/workstreams/gateway";
+import { connectionAtomRuntime } from "../../connection/runtime";
+import { environmentCatalog } from "../../connection/catalog";
+import { runtime } from "../../lib/runtime";
+import { MobileSecureStorage } from "../../persistence/mobile-secure-storage";
+import { environmentSession } from "../../state/session";
+import { useEnvironments } from "../../state/environments";
+import { workstreamRequest, type WorkstreamClient } from "./gateway";
 import type { EnvironmentHttpAuthHeaders } from "@t3tools/client-runtime/state/environmentHttpAuth";
-import { loadCompleteWorkstreamList } from "../features/workstreams/loaders";
-import {
-  reconcileMobileWorkstreamCommand,
-  waitForWorkstreamReceipt,
-} from "../features/workstreams/commands";
-import { canEditWorkstreams } from "../features/workstreams/actions";
-import { MobileWorkstreamControls } from "../features/workstreams/Controls";
+import { loadCompleteWorkstreamList } from "./loaders";
+import { reconcileMobileWorkstreamCommand, waitForWorkstreamReceipt } from "./commands";
+import { canEditWorkstreams } from "./actions";
+import { MobileWorkstreamControls } from "./Controls";
 
 import {
   mobilePlacementInventory,
   projectMobileWorkstreams,
   type MobileWorkstreamSnapshot,
   type MobileWorkstreamGroup,
-} from "../features/workstreams/projection";
-export type {
-  MobileWorkstreamSnapshot,
-  MobileWorkstreamGroup,
-} from "../features/workstreams/projection";
+} from "./projection";
+import type { MobileWorkstreams } from "./types";
 const COLLAPSE_KEY = "t3code.workstream-collapse.v1";
 const refreshSubscribers = new Set<() => void>();
 const refreshMountedWorkstreams = () => {
@@ -485,39 +479,4 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       onClose: () => setSelection(null),
     }),
   };
-}
-export interface MobileWorkstreams {
-  readonly groups: readonly MobileWorkstreamGroup[];
-  readonly secondaryLabelsByKey: ReadonlyMap<string, readonly string[]>;
-  readonly snapshots: readonly MobileWorkstreamSnapshot[];
-  readonly enabled: boolean;
-  readonly toggleEnabled: () => void;
-  readonly collapsedKeys: ReadonlySet<string>;
-  readonly toggleGroup: (key: string) => void;
-  readonly bindingRevision: string;
-  readonly readiness: string;
-  readonly error: string | null;
-  readonly refresh: () => void;
-  readonly reorderGroup: (
-    group: MobileWorkstreamGroup,
-    direction: -1 | 1,
-  ) => Promise<WorkstreamReceipt>;
-  readonly submit: (
-    snapshot: MobileWorkstreamSnapshot,
-    action: WorkstreamCommand["action"],
-  ) => Promise<WorkstreamReceipt>;
-  readonly read: <A, E>(
-    snapshot: MobileWorkstreamSnapshot,
-    path: string,
-    run: (client: WorkstreamClient, headers: EnvironmentHttpAuthHeaders) => Effect.Effect<A, E>,
-  ) => Promise<A>;
-  readonly pages: <Item>(
-    snapshot: MobileWorkstreamSnapshot,
-    path: string,
-    run: (
-      client: WorkstreamClient,
-      headers: EnvironmentHttpAuthHeaders,
-      cursor?: string,
-    ) => Effect.Effect<WorkstreamDtoPage<Item>, unknown>,
-  ) => Promise<WorkstreamDtoPage<Item>>;
 }

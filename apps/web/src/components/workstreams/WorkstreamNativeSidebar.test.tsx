@@ -694,8 +694,8 @@ describe("Workstream live thread summaries", () => {
     expect(indicators.children[1]?.querySelector("svg")?.getAttribute("class")).toContain(
       "motion-safe:visible-animate-spin",
     );
-    expect(indicators.children[0]?.getAttribute("class")).toContain("bg-violet-500");
-    expect(indicators.children[1]?.getAttribute("class")).toContain("text-sky-600");
+    expect(indicators.children[0]?.getAttribute("class")).toContain("bg-waiting");
+    expect(indicators.children[1]?.getAttribute("class")).toContain("text-info-foreground");
     const header = container.querySelector('[aria-label="Collapse alpha"]')!.parentElement!;
     expect(header.textContent).not.toContain("active");
     await clickLabel("Collapse alpha");
@@ -719,7 +719,7 @@ describe("Workstream live thread summaries", () => {
     const failedIndicators = failedCount.parentElement!;
     expect(failedIndicators.textContent).toBe("Failed0/6");
     expect(failedIndicators.querySelector('[aria-label="1 failed thread"]')?.className).toContain(
-      "text-red-700",
+      "text-thread-failed",
     );
     expect(failedIndicators.querySelector("svg")).toBeNull();
     expect(
