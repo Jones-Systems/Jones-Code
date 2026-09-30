@@ -1,3 +1,4 @@
+import { HostStatusSnapshot } from "./hostStatus.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
@@ -5,6 +6,7 @@ import * as HttpApi from "effect/unstable/httpapi/HttpApi";
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/unstable/httpapi/HttpApiMiddleware";
+import * as HttpApiSchema from "effect/unstable/httpapi/HttpApiSchema";
 import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondable";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
@@ -44,6 +46,12 @@ import {
   PullRequestOperationError,
   PullRequestUnavailableError,
 } from "./pullRequest.ts";
+import {
+  CONVERSATION_LIBRARY_PATH,
+  LibraryErrorCodeSchema,
+  LibraryReplySchema,
+  LibraryRequestSchema,
+} from "./conversationLibrary.ts";
 import {
   RelayCloudEnvironmentHealthRequest,
   RelayCloudMintCredentialRequest,
@@ -364,6 +372,73 @@ const EnvironmentOrchestrationDispatchErrors = [
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
 ] as const;
+
+const EnvironmentConversationLibraryInvalidError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("invalid"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(400));
+
+const EnvironmentConversationLibraryForbiddenError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("forbidden"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(403));
+
+const EnvironmentConversationLibraryNotFoundError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("not-found"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(404));
+
+const EnvironmentConversationLibraryConflictError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("conflict"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(409));
+
+const EnvironmentConversationLibraryTooLargeError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("too-large"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(413));
+
+const EnvironmentConversationLibraryStorageError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("storage"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(500));
+
+const EnvironmentConversationLibraryUnsupportedError = Schema.Struct({
+  kind: Schema.Literal("error"),
+  code: Schema.Literal("unsupported"),
+  message: Schema.String,
+  traceId: TrimmedNonEmptyString,
+}).pipe(HttpApiSchema.status(501));
+
+const EnvironmentConversationLibraryErrorSchemas = [
+  EnvironmentConversationLibraryInvalidError,
+  EnvironmentConversationLibraryForbiddenError,
+  EnvironmentConversationLibraryNotFoundError,
+  EnvironmentConversationLibraryConflictError,
+  EnvironmentConversationLibraryTooLargeError,
+  EnvironmentConversationLibraryStorageError,
+  EnvironmentConversationLibraryUnsupportedError,
+] as const;
+
+export const EnvironmentConversationLibraryErrorSchema = Schema.Union(
+  EnvironmentConversationLibraryErrorSchemas,
+);
+export type EnvironmentConversationLibraryError =
+  typeof EnvironmentConversationLibraryErrorSchema.Type;
+
+export const EnvironmentConversationLibraryErrorCode = LibraryErrorCodeSchema;
 
 export interface EnvironmentSessionPrincipalShape {
   readonly sessionId: AuthSessionId;
@@ -736,10 +811,31 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
+class EnvironmentHostStatusHttpApi extends HttpApiGroup.make("hostStatus").add(
+  HttpApiEndpoint.get("snapshot", "/api/host-status", {
+    headers: OptionalBearerHeaders,
+    success: HostStatusSnapshot,
+    error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
+export class EnvironmentConversationLibraryHttpApi extends HttpApiGroup.make(
+  "conversationLibrary",
+).add(
+  HttpApiEndpoint.post("conversationLibrary", CONVERSATION_LIBRARY_PATH, {
+    headers: OptionalBearerHeaders,
+    payload: LibraryRequestSchema,
+    success: LibraryReplySchema,
+    error: [...EnvironmentConversationLibraryErrorSchemas, EnvironmentScopeRequiredError],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
+  .add(EnvironmentHostStatusHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentWorkstreamsHttpApi)
-  .add(EnvironmentConnectHttpApi) {}
+  .add(EnvironmentConnectHttpApi)
+  .add(EnvironmentConversationLibraryHttpApi) {}

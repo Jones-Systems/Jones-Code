@@ -38,15 +38,37 @@ describe("mobile provider options", () => {
 
     expect(
       applyProviderOptionSelection(descriptors, { id: "serviceTier", value: "priority" }),
-    ).toEqual([
-      { id: "reasoningEffort", value: "medium" },
-      { id: "serviceTier", value: "priority" },
-    ]);
+    ).toEqual([{ id: "serviceTier", value: "priority" }]);
     // Choices the model doesn't advertise are rejected, not stored.
     expect(
       applyProviderOptionSelection(descriptors, { id: "serviceTier", value: "turbo" }),
     ).toBeNull();
     expect(applyProviderOptionSelection(descriptors, { id: "unknown", value: "high" })).toBeNull();
+  });
+
+  it("keeps explicit effort when changing an unrelated trait", () => {
+    const selections = [{ id: "reasoningEffort", value: "high" }] as const;
+    const descriptors = resolveProviderOptionDescriptors({
+      capabilities: CODEX_CAPABILITIES,
+      selections,
+    });
+    expect(
+      applyProviderOptionSelection(
+        descriptors,
+        { id: "serviceTier", value: "priority" },
+        selections,
+      ),
+    ).toEqual([
+      { id: "reasoningEffort", value: "high" },
+      { id: "serviceTier", value: "priority" },
+    ]);
+    expect(
+      applyProviderOptionSelection(
+        descriptors,
+        { id: "reasoningEffort", value: "medium" },
+        selections,
+      ),
+    ).toEqual([{ id: "reasoningEffort", value: "medium" }]);
   });
 
   it("updates generic boolean options", () => {

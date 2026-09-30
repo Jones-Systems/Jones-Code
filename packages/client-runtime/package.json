@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./conversations": {
+      "types": "./src/conversations/index.ts",
+      "default": "./src/conversations/index.ts"
+    },
     "./device/stream": {
       "types": "./src/device/stream.ts",
       "default": "./src/device/stream.ts"
