@@ -45,7 +45,10 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import {
+  getModelSelectionStringOptionValue,
+  getProviderOptionCurrentValue,
+} from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
@@ -91,7 +94,7 @@ const PROVIDER = ProviderDriverKind.make("codex");
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
   readonly environment?: NodeJS.ProcessEnv;
-  /** The provider's model list; supplies model display names for runtime info. */
+  /** Live model capabilities supply inherited reasoning defaults and runtime display names. */
   readonly models?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   readonly makeRuntime?: (
     options: CodexSessionRuntimeOptions,
@@ -2627,10 +2630,21 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         session = yield* requireSession(input.threadId);
       }
     }
-    const reasoningEffort =
-      input.modelSelection?.instanceId === boundInstanceId
-        ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
-        : undefined;
+    const modelSelection =
+      input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
+    let reasoningEffort = getModelSelectionStringOptionValue(modelSelection, "reasoningEffort");
+    if (reasoningEffort === undefined && modelSelection && options?.models) {
+      const models = yield* options.models;
+      const descriptor = models
+        .find((model) => model.slug === modelSelection.model)
+        ?.capabilities?.optionDescriptors?.find(
+          (option) => option.id === "reasoningEffort" && option.type === "select",
+        );
+      const currentValue = getProviderOptionCurrentValue(descriptor);
+      if (typeof currentValue === "string") {
+        reasoningEffort = currentValue;
+      }
+    }
     const serviceTier =
       !options?.resolveRuntime && input.modelSelection?.instanceId === boundInstanceId
         ? getCodexServiceTierOptionValue(input.modelSelection)

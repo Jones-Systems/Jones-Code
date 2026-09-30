@@ -80,6 +80,46 @@ describe("getComposerProviderState", () => {
     );
   });
 
+  it("displays inherited reasoning effort from the live model default without persisting it", () => {
+    const modelOptions = selections(["fastMode", true], ["serviceTier", "priority"]);
+    for (const defaultEffort of ["medium", "high"]) {
+      const state = getComposerProviderState({
+        provider: PROVIDER,
+        model: MODEL,
+        models: modelWith([
+          selectDescriptor("reasoningEffort", [
+            { id: "low", label: "Low" },
+            { id: defaultEffort, label: defaultEffort, isDefault: true },
+          ]),
+          booleanDescriptor("fastMode"),
+          selectDescriptor("serviceTier", [{ id: "priority", label: "Priority" }]),
+        ]),
+        modelOptions,
+        planModeEnabled: false,
+      });
+      expect(state.promptEffort).toBe(defaultEffort);
+      expect(state.modelOptionsForDispatch).toEqual(modelOptions);
+      expect(modelOptions).toEqual(selections(["fastMode", true], ["serviceTier", "priority"]));
+    }
+  });
+
+  it("honors an explicit supported reasoning effort for the current model", () => {
+    const state = getComposerProviderState({
+      provider: PROVIDER,
+      model: MODEL,
+      models: modelWith([
+        selectDescriptor("reasoningEffort", [
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium", isDefault: true },
+        ]),
+      ]),
+      modelOptions: selections(["reasoningEffort", "low"]),
+      planModeEnabled: false,
+    });
+    expect(state.promptEffort).toBe("low");
+    expect(state.modelOptionsForDispatch).toEqual(selections(["reasoningEffort", "low"]));
+  });
+
   it("uses descriptor defaults for display without dispatching them as overrides", () => {
     const state = getComposerProviderState({
       provider: PROVIDER,
