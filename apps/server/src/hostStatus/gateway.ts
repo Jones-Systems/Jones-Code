@@ -9,16 +9,19 @@ const MAX_BODY_BYTES = 256 * 1024;
 type HostConfig = { readonly url: string; readonly token?: string; readonly node?: string };
 export type HostStatusConfig = Partial<Record<HostStatusId, HostConfig>>;
 
-// Configure T3CODE_NETDATA_<VPS|TEST|MINI|HOME>_URL on the server only.
-// Optional _TOKEN stays upstream; _NODE selects a machine GUID when a parent serves several nodes.
+// Shared collector slots require an explicit _NODE so one local node cannot fill every host.
+// Tokens stay server-side and shared credentials never follow a per-host URL override.
 export function hostStatusConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
 ): HostStatusConfig {
   return Object.fromEntries(
     HOST_IDS.flatMap((id) => {
       const prefix = `T3CODE_NETDATA_${id.toUpperCase()}`;
-      const url = env[`${prefix}_URL`];
-      return url ? [[id, { url, token: env[`${prefix}_TOKEN`], node: env[`${prefix}_NODE`] }]] : [];
+      const overrideUrl = env[`${prefix}_URL`];
+      const node = env[`${prefix}_NODE`]?.trim() || undefined;
+      const url = overrideUrl || (node ? env.T3CODE_NETDATA_URL : undefined);
+      const token = env[`${prefix}_TOKEN`] ?? (overrideUrl ? undefined : env.T3CODE_NETDATA_TOKEN);
+      return url ? [[id, { url, token, node }]] : [];
     }),
   );
 }
@@ -42,13 +45,18 @@ function nodeInfo(payload: unknown, selectedNode?: string) {
   const nodes = record(payload).nodes;
   if (!Array.isArray(nodes)) throw new InvalidResponse();
   const matching = nodes
-    .map(record)
-    .filter((node) => !selectedNode || node.machine_guid === selectedNode);
+    .map((value) => {
+      const node = record(value);
+      if (node.mg !== undefined && node.machine_guid !== undefined && node.mg !== node.machine_guid)
+        throw new InvalidResponse();
+      const guid = node.mg ?? node.machine_guid;
+      if (typeof guid !== "string" || !/^[a-f0-9-]{36}$/i.test(guid)) throw new InvalidResponse();
+      return { node, guid };
+    })
+    .filter(({ guid }) => !selectedNode || guid === selectedNode);
   if (matching.length !== 1) throw new InvalidResponse();
-  const node = matching[0]!;
+  const { node, guid } = matching[0]!;
   if (node.state !== "reachable") throw new StaleResponse();
-  if (typeof node.machine_guid !== "string" || !/^[a-f0-9-]{36}$/i.test(node.machine_guid))
-    throw new InvalidResponse();
   const cpus = record(node.hw).cpus;
   if (typeof cpus !== "string" || !/^[1-9][0-9]*$/.test(cpus)) throw new InvalidResponse();
   const logicalCpuCount = Number(cpus);
@@ -58,7 +66,7 @@ function nodeInfo(payload: unknown, selectedNode?: string) {
   if (typeof memory !== "string" || !/^[1-9][0-9]*$/.test(memory)) throw new InvalidResponse();
   const totalMemoryBytes = Number(memory);
   if (!Number.isSafeInteger(totalMemoryBytes)) throw new InvalidResponse();
-  return { guid: node.machine_guid, logicalCpuCount, totalMemoryBytes };
+  return { guid, logicalCpuCount, totalMemoryBytes };
 }
 
 function metric(payload: unknown, dimension: string, units: string, now: number) {
