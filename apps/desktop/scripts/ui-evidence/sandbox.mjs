@@ -2,7 +2,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { packageAt } from "./runtime.mjs";
 
-export const writableNames = [
+const writableNames = [
   "home",
   "xdg-config",
   "xdg-data",

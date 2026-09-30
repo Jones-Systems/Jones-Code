@@ -18,7 +18,7 @@ async function git(root, args) {
     await execute("git", ["-C", root, ...args], { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 })
   ).stdout;
 }
-export async function hashTree(root) {
+async function hashTree(root) {
   const entries = [];
   let earliest = Infinity;
   let latest = -Infinity;
