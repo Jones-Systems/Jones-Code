@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeChildProcess from "node:child_process";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -554,7 +557,7 @@ if (context.update?.status === "pending") {
     }),
   );
 
-  it.effect("resumes a marked restore before any trial can restart", () =>
+  it.effect("resumes a marked restore after abrupt authority writer death", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -579,8 +582,51 @@ if (context.update?.status === "pending") {
         "environment-restore-resume",
       );
 
+      const authorityStateDir = path.join(root, "native-store-authority");
+      const crash = NodeChildProcess.spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `
+          import fs from "node:fs";
+          import { syncBuiltinESMExports } from "node:module";
+          const authority = await import(process.argv[1]);
+          const statePath = authority.nativeStoreAuthorityPaths(process.argv[2]).statePath;
+          const rename = fs.renameSync;
+          fs.renameSync = (...args) => {
+            rename(...args);
+            if (args[1] === statePath) process.kill(process.pid, "SIGKILL");
+          };
+          syncBuiltinESMExports();
+          authority.fenceNativeStoreAuthority(process.argv[2], "environment-restore-resume");
+          throw new Error("writer unexpectedly survived");
+        `,
+          new URL("./environment/nativeStoreAuthorityPersistence.ts", import.meta.url).href,
+          authorityStateDir,
+        ],
+        { timeout: 10_000, encoding: "utf8" },
+      );
+      assert.isUndefined(crash.error);
+      assert.equal(crash.signal, "SIGKILL");
+      assert.equal(readNativeStoreAuthorityState(authorityStateDir).state, "fenced");
+      assert.equal(readNativeStoreAuthorityState(authorityStateDir).store_generation, 1);
+      assert.equal(
+        yield* fs.readFileString(databasePath),
+        "SQLite format 3\0trial-modified database",
+      );
+
       const versionDir = path.join(root, "runtime", "versions", "1.0.0");
-      yield* writeFakeRuntime(fs, path, versionDir, "process.exit(0);\n");
+      const previousStarted = path.join(root, "previous-runtime-started");
+      // @effect-diagnostics-next-line preferSchemaOverJson:off - path embedded in a fixture executable.
+      const previousStartedLiteral = JSON.stringify(previousStarted);
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        versionDir,
+        `require("node:fs").writeFileSync(${previousStartedLiteral}, "started"); process.exit(0);\n`,
+      );
+
       yield* Effect.promise(() =>
         writeServiceState(statePath, {
           protocol: SERVICE_LAUNCHER_PROTOCOL,
@@ -616,6 +662,7 @@ if (context.update?.status === "pending") {
         2,
       );
       assert.isFalse(yield* fs.exists(backupDir));
+      assert.equal(yield* fs.readFileString(previousStarted), "started");
     }),
   );
 });

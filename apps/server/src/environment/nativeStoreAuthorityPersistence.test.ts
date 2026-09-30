@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeChildProcess from "node:child_process";
+import * as NodeSqlite from "node:sqlite";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -96,6 +98,84 @@ describe("native store authority persistence", () => {
       expect(active.transition_id).toBeNull();
       expect(active.store_generation).toBe(2);
       expect(readNativeStoreAuthorityState(authorityStateDir)).toEqual(active);
+    });
+  });
+
+  it("excludes a live writer across processes without unlinking the lock database", () => {
+    withDirectory((authorityStateDir) => {
+      initializeNativeStoreAuthority(authorityStateDir, "env-live-lock");
+      const lockDatabasePath = NodePath.join(
+        authorityStateDir,
+        "native-store-authority-v1.lock.sqlite",
+      );
+      expect(NodeFS.statSync(lockDatabasePath).mode & 0o777).toBe(0o600);
+      const lockDatabase = new NodeSqlite.DatabaseSync(lockDatabasePath);
+      try {
+        lockDatabase.exec("BEGIN EXCLUSIVE");
+        expect(() => fenceNativeStoreAuthority(authorityStateDir, "env-live-lock")).toThrow();
+        const contender = NodeChildProcess.spawnSync(
+          process.execPath,
+          [
+            "--input-type=module",
+            "-e",
+            `
+            const authority = await import(process.argv[1]);
+            try {
+              authority.fenceNativeStoreAuthority(process.argv[2], "env-live-lock");
+              process.exitCode = 2;
+            } catch (error) {
+              if (error.code !== "source_unavailable") throw error;
+            }
+          `,
+            new URL("./nativeStoreAuthorityPersistence.ts", import.meta.url).href,
+            authorityStateDir,
+          ],
+          { timeout: 10_000, encoding: "utf8" },
+        );
+        expect(contender.error).toBeUndefined();
+        expect(contender.status, contender.stderr).toBe(0);
+        expect(readNativeStoreAuthorityState(authorityStateDir).state).toBe("active");
+        expect(NodeFS.existsSync(lockDatabasePath)).toBe(true);
+      } finally {
+        lockDatabase.close();
+      }
+      expect(fenceNativeStoreAuthority(authorityStateDir, "env-live-lock").state).toBe("fenced");
+      expect(NodeFS.existsSync(lockDatabasePath)).toBe(true);
+    });
+  });
+
+  it("rejects non-private lock anchors and sidecars before opening SQLite", () => {
+    for (const suffix of ["", "-journal", "-wal", "-shm"]) {
+      withDirectory((authorityStateDir) => {
+        initializeNativeStoreAuthority(authorityStateDir, "env-private-lock");
+        const lockPath = `${nativeStoreAuthorityPaths(authorityStateDir).lockDatabasePath}${suffix}`;
+        NodeFS.writeFileSync(lockPath, "", { mode: 0o600 });
+        NodeFS.chmodSync(lockPath, 0o644);
+        expect(() => fenceNativeStoreAuthority(authorityStateDir, "env-private-lock")).toThrow(
+          "not a private regular file",
+        );
+        expect(readNativeStoreAuthorityState(authorityStateDir).state).toBe("active");
+      });
+    }
+    withDirectory((authorityStateDir) => {
+      initializeNativeStoreAuthority(authorityStateDir, "env-private-lock");
+      const lockPath = nativeStoreAuthorityPaths(authorityStateDir).lockDatabasePath;
+      NodeFS.renameSync(lockPath, `${lockPath}.saved`);
+      NodeFS.symlinkSync(`${lockPath}.saved`, lockPath);
+      expect(() => fenceNativeStoreAuthority(authorityStateDir, "env-private-lock")).toThrow(
+        "not a private regular file",
+      );
+    });
+  });
+
+  it("does not reclaim legacy lock files whose owner cannot be proved absent", () => {
+    withDirectory((authorityStateDir) => {
+      initializeNativeStoreAuthority(authorityStateDir, "env-legacy-lock");
+      const lockPath = nativeStoreAuthorityPaths(authorityStateDir).lockPath;
+      NodeFS.writeFileSync(lockPath, "", { mode: 0o600 });
+      expect(() => fenceNativeStoreAuthority(authorityStateDir, "env-legacy-lock")).toThrow();
+      expect(NodeFS.readFileSync(lockPath, "utf8")).toBe("");
+      expect(readNativeStoreAuthorityState(authorityStateDir).state).toBe("active");
     });
   });
 

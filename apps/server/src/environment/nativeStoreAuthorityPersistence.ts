@@ -5,6 +5,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 import { validateNativeStoreAuthorityPath } from "./nativeStoreAuthorityPath.ts";
 import { parseServiceState, SERVICE_RESTART_PENDING_FILE } from "../cloud/serviceProtocol.ts";
 
@@ -63,6 +64,7 @@ export const nativeStoreAuthorityPaths = (authorityStateDir: string) => ({
   authorityStateDir,
   statePath: NodePath.join(authorityStateDir, NATIVE_STORE_AUTHORITY_FILE),
   lockPath: NodePath.join(authorityStateDir, NATIVE_STORE_AUTHORITY_LOCK_FILE),
+  lockDatabasePath: NodePath.join(authorityStateDir, `${NATIVE_STORE_AUTHORITY_LOCK_FILE}.sqlite`),
 });
 
 /** The launcher has only the T3 home, so it uses the same explicit override as the server. */
@@ -417,6 +419,16 @@ const writeStateUnlocked = (authorityStateDir: string, state: NativeStoreAuthori
   }
 };
 
+const verifyPrivateFileIfPresent = (path: string): void => {
+  try {
+    verifyRegularPrivateFile(path, "missing");
+  } catch (cause) {
+    if (!(cause instanceof NativeStoreAuthorityPersistenceError) || cause.code !== "missing") {
+      throw cause;
+    }
+  }
+};
+
 const withWriterLock = <A>(authorityStateDir: string, operation: () => A): A => {
   const paths = nativeStoreAuthorityPaths(authorityStateDir);
   verifyAuthorityDirectory(authorityStateDir);
@@ -424,20 +436,44 @@ const withWriterLock = <A>(authorityStateDir: string, operation: () => A): A => 
     throw persistenceError("source_unavailable", "Native authority writer is already active.");
   }
   let lockFd: number | undefined;
-  let lockOwned = false;
+  let database: NodeSqlite.DatabaseSync | undefined;
+  let transactionOpen = false;
   WRITER_LOCKS.add(authorityStateDir);
   try {
-    lockFd = NodeFS.openSync(
-      paths.lockPath,
-      NodeFS.constants.O_WRONLY | NodeFS.constants.O_CREAT | NodeFS.constants.O_EXCL | NOFOLLOW,
-      0o600,
-    );
-    lockOwned = true;
-    const lockStat = NodeFS.fstatSync(lockFd);
-    if (!lockStat.isFile() || mode(lockStat) !== 0o600) {
-      throw persistenceError("source_unavailable", "Native authority lock is not private.");
+    // Legacy sentinels have no owner identity. Neither age nor a new lock format
+    // proves their writer is gone, so they require explicit offline recovery.
+    try {
+      NodeFS.lstatSync(paths.lockPath);
+      throw persistenceError(
+        "source_unavailable",
+        "Legacy native authority writer ownership is unknown.",
+      );
+    } catch (cause) {
+      if (!isErrno(cause, "ENOENT")) throw cause;
     }
-    verifyOwner(lockStat, paths.lockPath);
+    // Do not open and close an extra descriptor for an existing SQLite file:
+    // POSIX close can release another connection's locks in this process.
+    try {
+      lockFd = NodeFS.openSync(
+        paths.lockDatabasePath,
+        NodeFS.constants.O_WRONLY | NodeFS.constants.O_CREAT | NodeFS.constants.O_EXCL | NOFOLLOW,
+        0o600,
+      );
+      NodeFS.closeSync(lockFd);
+      lockFd = undefined;
+    } catch (cause) {
+      if (!isErrno(cause, "EEXIST")) throw cause;
+    }
+    verifyRegularPrivateFile(paths.lockDatabasePath, "missing");
+    for (const suffix of ["-journal", "-wal", "-shm"]) {
+      verifyPrivateFileIfPresent(`${paths.lockDatabasePath}${suffix}`);
+    }
+    database = new NodeSqlite.DatabaseSync(paths.lockDatabasePath);
+    database.exec("PRAGMA busy_timeout = 0; PRAGMA journal_mode = DELETE; BEGIN EXCLUSIVE");
+    transactionOpen = true;
+    // SQLite releases this process-owned lock after abrupt death on every
+    // supported platform. Keep its stable file: unlinking it could let another
+    // writer lock a different inode while this transaction still owns the old one.
     return operation();
   } catch (cause) {
     if (cause instanceof NativeStoreAuthorityPersistenceError) throw cause;
@@ -447,15 +483,18 @@ const withWriterLock = <A>(authorityStateDir: string, operation: () => A): A => 
       cause,
     );
   } finally {
-    if (lockFd !== undefined) NodeFS.closeSync(lockFd);
-    if (lockOwned) {
-      try {
-        NodeFS.rmSync(paths.lockPath, { force: true });
-      } catch {
-        // Preserve a fail-closed lock if release has an unknown effect.
+    try {
+      if (lockFd !== undefined) NodeFS.closeSync(lockFd);
+      if (database !== undefined) {
+        try {
+          if (transactionOpen) database.exec("ROLLBACK");
+        } finally {
+          database.close();
+        }
       }
+    } finally {
+      WRITER_LOCKS.delete(authorityStateDir);
     }
-    WRITER_LOCKS.delete(authorityStateDir);
   }
 };
 

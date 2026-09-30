@@ -186,7 +186,7 @@ async function markDatabaseRestorePending(backupDir: string): Promise<void> {
   }
 }
 
-/** Restore is retryable after any process crash while the backup directory remains. */
+/** Resume durable restore intent; missing backups or unproved writer ownership stop recovery. */
 async function restoreDatabaseBackup(
   baseDir: string,
   pending: PendingServiceUpdate,
