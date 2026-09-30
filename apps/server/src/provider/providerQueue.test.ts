@@ -2,6 +2,7 @@ import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
+import * as Schema from "effect/Schema";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -25,6 +26,7 @@ import {
 } from "./qualifiedQuota.ts";
 
 const start = Date.parse("2026-09-30T12:00:00.000Z");
+const encodeLegacyState = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const stamp = (n = start) => DateTime.formatIso(DateTime.makeUnsafe(n));
 const instanceId = ProviderInstanceId.make("codex-one");
 const buckets = {
@@ -475,7 +477,7 @@ describe("qualified native quota", () => {
         version: 1,
         attempts: [{ instanceId, attemptedAt: start, resetRefreshUsed: false, quota: quota() }],
       };
-      const upgraded = yield* decodeProviderQueueState(JSON.stringify(legacy));
+      const upgraded = yield* decodeProviderQueueState(yield* encodeLegacyState(legacy));
       expect(upgraded.version).toBe(2);
       expect(upgraded.attempts[0]?.attemptedAt).toBe(start);
       expect(upgraded.attempts[0]?.quota?.status).toBe("unknown");
