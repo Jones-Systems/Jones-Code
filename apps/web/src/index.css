@@ -1979,8 +1979,23 @@ code {
   border-bottom: 1px solid color-mix(in srgb, var(--contrast-border) 60%, transparent);
 }
 
+/* The row is the width boundary, so expansion follows the conversation pane
+   when side panels or the window resize, rather than the entire viewport. */
+[data-timeline-root] .chat-markdown > .chat-markdown-table-container[data-expanded="true"] {
+  width: calc(100cqw - 0.5rem);
+  margin-inline: calc((100% - 100cqw + 0.5rem) / 2);
+}
+
+.chat-markdown [data-markdown-table-scroll] {
+  max-height: min(24rem, 60dvh);
+}
+
+.chat-markdown .chat-markdown-table-container[data-expanded="true"] [data-markdown-table-scroll] {
+  max-height: min(30rem, 75dvh);
+}
+
 /* Collapsed (default): single-line cells truncate so arbitrary chat content
-   cannot blow the column out; the footer toggle expands cells to wrap. */
+   cannot blow the column out; the footer toggle expands the table and wraps cells. */
 .chat-markdown .chat-markdown-table-container[data-expanded="false"] th,
 .chat-markdown .chat-markdown-table-container[data-expanded="false"] td {
   overflow: hidden;
