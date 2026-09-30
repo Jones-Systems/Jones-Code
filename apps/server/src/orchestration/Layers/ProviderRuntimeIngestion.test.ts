@@ -407,8 +407,27 @@ describe("ProviderRuntimeIngestion", () => {
         threadId: ThreadId.make("thread-1"),
         status: "ready",
         providerName: "codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         runtimeMode: "approval-required",
         activeTurnId: null,
+        runtimeIdentity: {
+          runtimeGeneration: "runtime-current",
+          requested: {
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            providerDriver: "codex",
+            model: "gpt-5-codex",
+            serviceTier: null,
+          },
+          observed: {
+            backend: { status: "unknown" },
+            model: { status: "unknown" },
+            account: {
+              status: "unavailable",
+              reason: "No supported provider event safely binds an account to this runtime.",
+            },
+            serviceTier: { status: "unknown" },
+          },
+        },
         updatedAt: createdAt,
         lastError: null,
       },
@@ -416,6 +435,7 @@ describe("ProviderRuntimeIngestion", () => {
     });
     provider.setSession({
       provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
       status: "ready",
       runtimeMode: "approval-required",
       threadId: ThreadId.make("thread-1"),
@@ -765,6 +785,279 @@ describe("ProviderRuntimeIngestion", () => {
       state: "running",
       requestedAt: pendingAt,
     });
+  });
+
+  it("projects requested routing beside only provider-attested runtime identity", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "session.configured",
+      eventId: asEventId("evt-runtime-identity"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeGeneration: "runtime-current",
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        config: {},
+        identity: {
+          backend: {
+            status: "observed",
+            value: "openai",
+            sourceEvent: "codex.thread/open",
+          },
+          model: {
+            status: "observed",
+            value: "gpt-5.6-sol-2026-09-01",
+            sourceEvent: "codex.thread/open",
+          },
+          account: {
+            status: "unavailable",
+            reason: "The response does not bind an account.",
+          },
+          serviceTier: {
+            status: "unavailable",
+            reason: "The response did not report a tier.",
+          },
+        },
+      },
+    });
+
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(thread).toBeDefined();
+    if (!thread) return;
+    expect(thread.session?.runtimeIdentity).toEqual({
+      runtimeGeneration: "runtime-current",
+      requested: {
+        providerInstanceId: "codex",
+        providerDriver: "codex",
+        model: "gpt-5-codex",
+        serviceTier: null,
+      },
+      observed: {
+        backend: {
+          status: "observed",
+          value: "openai",
+          sourceEvent: "codex.thread/open",
+        },
+        model: {
+          status: "observed",
+          value: "gpt-5.6-sol-2026-09-01",
+          sourceEvent: "codex.thread/open",
+        },
+        account: {
+          status: "unavailable",
+          reason: "The response does not bind an account.",
+        },
+        serviceTier: {
+          status: "unavailable",
+          reason: "The response did not report a tier.",
+        },
+      },
+    });
+  });
+
+  it("rejects identity observations that are not exactly bound to the active runtime", async () => {
+    const harness = await createHarness();
+    const observedIdentity = {
+      backend: { status: "observed" as const, value: "wrong", sourceEvent: "test" },
+      model: { status: "observed" as const, value: "wrong", sourceEvent: "test" },
+      account: { status: "unavailable" as const, reason: "not reported" },
+      serviceTier: { status: "unavailable" as const, reason: "not reported" },
+    };
+
+    for (const [eventId, providerInstanceId, runtimeGeneration] of [
+      ["evt-identity-missing-instance", undefined, "runtime-current"],
+      ["evt-identity-missing-generation", ProviderInstanceId.make("codex"), undefined],
+      ["evt-identity-stale-instance", ProviderInstanceId.make("codex_old"), "runtime-current"],
+      ["evt-identity-stale-generation", ProviderInstanceId.make("codex"), "runtime-old"],
+    ] as const) {
+      harness.emit({
+        type: "session.configured",
+        eventId: asEventId(eventId),
+        provider: ProviderDriverKind.make("codex"),
+        ...(providerInstanceId !== undefined ? { providerInstanceId } : {}),
+        ...(runtimeGeneration !== undefined ? { runtimeGeneration } : {}),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: { config: {}, identity: observedIdentity },
+      });
+    }
+
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(thread?.session?.runtimeIdentity?.observed.model).toEqual({ status: "unknown" });
+  });
+
+  it("establishes recovery identity for a historical session with no recorded attestation", async () => {
+    const harness = await createHarness();
+    const session = (await harness.readModel()).threads.find(
+      (entry) => entry.id === "thread-1",
+    )?.session;
+    if (!session) throw new Error("Expected fixture session");
+    const { runtimeIdentity, ...historicalSession } = session;
+    expect(runtimeIdentity).toBeDefined();
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("historical-session"),
+      threadId: asThreadId("thread-1"),
+      session: historicalSession,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    await harness.emitAndDrain([
+      {
+        type: "session.started",
+        eventId: asEventId("historical-recovery-boundary"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeGeneration: "historical-recovery",
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        payload: {},
+        raw: { source: "t3.provider-service.recovery", method: "session/recovered", payload: {} },
+      },
+    ]);
+    const recovered = (await harness.readModel()).threads.find(
+      (entry) => entry.id === "thread-1",
+    )?.session;
+    expect(recovered?.runtimeIdentity).toMatchObject({
+      runtimeGeneration: "historical-recovery",
+      requested: { model: "gpt-5-codex", providerDriver: "codex" },
+      observed: { model: { status: "unknown" } },
+    });
+  });
+
+  it("resets observations at a provider-service recovery generation boundary", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "session.configured",
+      eventId: asEventId("evt-identity-before-recovery"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeGeneration: "runtime-current",
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: {
+        config: {},
+        identity: {
+          backend: { status: "observed", value: "openai", sourceEvent: "thread/opened" },
+          model: { status: "observed", value: "gpt-runtime", sourceEvent: "thread/opened" },
+          account: { status: "unavailable", reason: "not reported" },
+          serviceTier: { status: "unavailable", reason: "not reported" },
+        },
+      },
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "session.started",
+      eventId: asEventId("evt-recovery-boundary"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeGeneration: "runtime-recovered",
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { resume: {} },
+      raw: {
+        source: "t3.provider-service.recovery",
+        method: "session/recovered",
+        payload: {},
+      },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(thread?.session?.runtimeIdentity).toMatchObject({
+      runtimeGeneration: "runtime-recovered",
+      observed: { model: { status: "unknown" } },
+    });
+  });
+
+  it("only treats a native Codex reroute for the active instance as observed", async () => {
+    const harness = await createHarness();
+    const base = {
+      type: "model.rerouted" as const,
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { fromModel: "gpt-5-codex", toModel: "gpt-5.6-sol" },
+    };
+
+    harness.emit({
+      ...base,
+      eventId: asEventId("evt-reroute-without-raw"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeGeneration: "runtime-current",
+    });
+    harness.emit({
+      ...base,
+      eventId: asEventId("evt-reroute-stale-instance"),
+      providerInstanceId: ProviderInstanceId.make("codex_old"),
+      runtimeGeneration: "runtime-current",
+      raw: {
+        source: "codex.app-server.notification",
+        method: "model/rerouted",
+        payload: {},
+      },
+    });
+    harness.emit({
+      ...base,
+      eventId: asEventId("evt-reroute-stale-generation"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeGeneration: "runtime-old",
+      raw: {
+        source: "codex.app-server.notification",
+        method: "model/rerouted",
+        payload: {},
+      },
+    });
+    await harness.drain();
+    let thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(thread?.session?.runtimeIdentity?.observed.model).toEqual({ status: "unknown" });
+
+    harness.emit({
+      ...base,
+      eventId: asEventId("evt-reroute-native"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeGeneration: "runtime-current",
+      raw: {
+        source: "codex.app-server.notification",
+        method: "model/rerouted",
+        payload: {},
+      },
+    });
+    await harness.drain();
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(thread?.session?.runtimeIdentity?.observed.model).toEqual({
+      status: "observed",
+      value: "gpt-5.6-sol",
+      sourceEvent: "model/rerouted",
+    });
+  });
+
+  it("does not treat adapter-synthesized turn model metadata as observation", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-unattested-turn-model"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId: asTurnId("turn-unattested"),
+      payload: { model: "configured-model" },
+    });
+
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(thread).toBeDefined();
+    if (!thread) return;
+    expect(thread?.session?.activeTurnId).toBe("turn-unattested");
+    expect(thread.session?.runtimeIdentity?.requested.model).toBe("gpt-5-codex");
+    expect(thread.session?.runtimeIdentity?.observed.model).toEqual({ status: "unknown" });
+    expect(thread.session?.runtimeIdentity?.observed.account.status).toBe("unavailable");
   });
 
   it("applies provider session.state.changed transitions directly", async () => {
