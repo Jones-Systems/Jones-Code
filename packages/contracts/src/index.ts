@@ -48,3 +48,4 @@ export * from "./worktreeSetup.ts";
 
 export * from "./workstreams.ts";
 export * from "./workstreamPlacements.ts";
+export * from "./hostStatus.ts";

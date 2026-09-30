@@ -2013,6 +2013,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [selectedProviderEntry],
   );
 
+  const configuredDefaultDriverKind = providerInstanceEntries.find(
+    (entry) => entry.instanceId === activeProjectDefaultModelSelection?.instanceId,
+  )?.driverKind;
+
   const composerPromptInjectionState = useMemo(
     () => getComposerPromptInjectionState(prompt),
     [prompt],
@@ -2021,6 +2025,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () =>
       getComposerProviderState({
         provider: selectedProvider,
+        instanceId: selectedInstanceId,
+        defaultModelSelection: activeProjectDefaultModelSelection,
+        defaultDriverKind: configuredDefaultDriverKind,
         model: selectedModel,
         models: selectedProviderModels,
         promptInjectionState: composerPromptInjectionState,
@@ -2028,6 +2035,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         planModeEnabled: settings.planModeEnabled,
       }),
     [
+      activeProjectDefaultModelSelection,
+      configuredDefaultDriverKind,
       composerModelOptions,
       composerPromptInjectionState,
       selectedInstanceId,
@@ -2634,6 +2643,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const providerTraitsMenuContent = renderProviderTraitsMenuContent({
     provider: selectedProvider,
     instanceId: selectedInstanceId,
+    defaultModelSelection: activeProjectDefaultModelSelection,
+    defaultDriverKind: configuredDefaultDriverKind,
     ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
     ...(routeKind === "draft" && draftId ? { draftId } : {}),
     model: selectedModel,
@@ -2646,6 +2657,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const providerTraitsPickerInput = {
     provider: selectedProvider,
     instanceId: selectedInstanceId,
+    defaultModelSelection: activeProjectDefaultModelSelection,
+    defaultDriverKind: configuredDefaultDriverKind,
     ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
     ...(routeKind === "draft" && draftId ? { draftId } : {}),
     model: selectedModel,

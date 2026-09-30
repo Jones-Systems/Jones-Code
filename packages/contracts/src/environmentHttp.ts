@@ -1,3 +1,4 @@
+import { HostStatusSnapshot } from "./hostStatus.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
@@ -809,6 +810,14 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
+class EnvironmentHostStatusHttpApi extends HttpApiGroup.make("hostStatus").add(
+  HttpApiEndpoint.get("snapshot", "/api/host-status", {
+    headers: OptionalBearerHeaders,
+    success: HostStatusSnapshot,
+    error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
 export class EnvironmentConversationLibraryHttpApi extends HttpApiGroup.make(
   "conversationLibrary",
 ).add(
@@ -821,6 +830,7 @@ export class EnvironmentConversationLibraryHttpApi extends HttpApiGroup.make(
 ) {}
 
 export class EnvironmentHttpApi extends HttpApi.make("environment")
+  .add(EnvironmentHostStatusHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
