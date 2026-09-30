@@ -1,3 +1,8 @@
+import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
+import { moveNativeThreadOrder } from "./workstreams/nativeWorkstreamActions";
+import { useWorkstreams } from "../state/workstreams";
+import { groupNativeThreadsByWorkstream } from "./workstreams/nativeThreadGrouping";
+import { WorkstreamNativeSidebar } from "./workstreams/WorkstreamNativeSidebar";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
@@ -2665,6 +2670,24 @@ export default function Sidebar() {
     };
   }, [nowMinute, optimisticDrop, scopedProjectKeys, serverConfigs, snoozeWakeTick, threads]);
 
+  const workstreamController = useWorkstreams(true, activeThreads);
+  const workstreamGrouping = useMemo(
+    () =>
+      groupNativeThreadsByWorkstream({
+        workstreams: workstreamController.data?.items ?? [],
+        placements: workstreamController.placements?.items ?? [],
+        threads: activeThreads,
+        trustedNow: snoozeNow,
+        trustedEnvironments: new Map(
+          (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
+            value.environmentId,
+            value,
+          ]),
+        ),
+      }),
+    [activeThreads, snoozeNow, workstreamController.data?.items, workstreamController.placements],
+  );
+
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [activeSearchResultIndex, setActiveSearchResultIndex] = useState(0);
@@ -3404,7 +3427,8 @@ export default function Sidebar() {
         activeThreads.length +
         snoozedThreads.length +
         settledThreads.length ===
-      0
+        0 &&
+      workstreamController.data === null
     ) {
       return [];
     }
@@ -3426,6 +3450,7 @@ export default function Sidebar() {
     return items;
   }, [
     activeThreads,
+    workstreamController.data,
     pinnedThreads,
     renderedSettledThreads,
     settledThreads.length,
@@ -3529,6 +3554,33 @@ export default function Sidebar() {
       ),
     }),
     [threads],
+  );
+  const reorderWorkstreamThread = useCallback(
+    async (thread: EnvironmentThreadShell, neighbor: EnvironmentThreadShell, after: boolean) => {
+      const movedId = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+      const neighborId = scopedThreadKey(scopeThreadRef(neighbor.environmentId, neighbor.id));
+      if (
+        movedId === neighborId ||
+        !activeKeys.includes(movedId) ||
+        !activeKeys.includes(neighborId)
+      )
+        return;
+      const orderedIds = moveNativeThreadOrder(activeKeys, movedId, neighborId, after);
+      const assignments = planPinnedReorder({ orderedIds, keysById: activeKeysById, movedId });
+      if (assignments.some((assignment) => !activeReorderableThreadKeys.has(assignment.id)))
+        throw new Error("An environment does not support active thread ordering.");
+      for (const assignment of assignments) {
+        const target = threadByKey.get(assignment.id);
+        if (!target) throw new Error("Thread changed while reordering. Try again.");
+        const result = await reorderActiveThread(
+          scopeThreadRef(target.environmentId, target.id),
+          assignment.orderKey,
+        );
+        if (result._tag !== "Success")
+          throw new Error("Active thread reorder did not complete. Refresh before retrying.");
+      }
+    },
+    [activeKeys, activeKeysById, activeReorderableThreadKeys, reorderActiveThread, threadByKey],
   );
   const draggedThreadKey = dragState?.activeKey;
   const draggedFromSection = dragState?.activeSection;
@@ -4692,6 +4744,14 @@ export default function Sidebar() {
               </p>
             )
           ) : null}
+          {!isSearchingThreads && workstreamController.error ? (
+            <p role="status" className="px-2 py-1 text-xs text-sidebar-muted-foreground">
+              Workstreams unavailable.{" "}
+              <button type="button" onClick={workstreamController.refresh}>
+                Retry
+              </button>
+            </p>
+          ) : null}
           {!isSearchingThreads ? (
             <TooltipProvider
               key="sidebar-thread-tooltips-150"
@@ -4868,6 +4928,8 @@ export default function Sidebar() {
                       ];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
+                          if (item.section === "active" && workstreamController.data !== null)
+                            continue;
                           items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
                           continue;
                         }
@@ -4895,6 +4957,28 @@ export default function Sidebar() {
                             );
                             break;
                           case "active-placeholder":
+                            if (workstreamController.data !== null) {
+                              items.push(
+                                <li key="native-workstream-groups" className="list-none">
+                                  <WorkstreamNativeSidebar
+                                    controller={workstreamController}
+                                    grouping={workstreamGrouping}
+                                    renderThread={(thread) =>
+                                      renderThreadRowInner(thread, "active")
+                                    }
+                                    canReorder={(thread) =>
+                                      activeReorderableThreadKeys.has(
+                                        scopedThreadKey(
+                                          scopeThreadRef(thread.environmentId, thread.id),
+                                        ),
+                                      )
+                                    }
+                                    reorder={reorderWorkstreamThread}
+                                  />
+                                </li>,
+                              );
+                              break;
+                            }
                             items.push(
                               <SidebarSectionPlaceholder
                                 key="active-placeholder"
