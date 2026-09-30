@@ -81,6 +81,15 @@ reported accounts, refresh provider status, and confirm the second instance has
 its own shadow path and login. A shadow-home conflict usually means the directory
 contains a copied Codex setup. Use a fresh shadow directory and sign in again.
 
+## Stop a goal
+
+Selecting **Stop** pauses an active native Codex goal before interrupting the current turn and
+its sub-agents.
+If Codex cannot read or pause the goal, T3 Code still attempts to interrupt the turn. The goal may
+remain active in that case. Threads without an active goal keep their ordinary Stop behavior.
+If Codex does not acknowledge the root turn's interrupt request within three seconds after
+sub-agent interruption, Stop reports an error; the turn may still be running.
+
 ## Answer questions while Codex works
 
 Codex can ask a question and keep working. Answer it in the thread's question
