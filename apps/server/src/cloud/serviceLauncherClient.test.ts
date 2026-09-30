@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 
 import {
+  LEGACY_SERVICE_LAUNCHER_PROTOCOL,
   SERVICE_LAUNCHER_CONTEXT_ENV,
   SERVICE_LAUNCHER_PROTOCOL,
   type ServiceLauncherChildMessage,
@@ -56,6 +57,7 @@ it.effect("waits for the launcher to durably commit the trial update ID", () =>
       targetVersion: "1.1.0",
       dbPath: "/tmp/state.sqlite",
       status: "pending" as const,
+      phase: "trial-ready" as const,
     };
     const host = new FakeLauncherProcess({
       protocol: SERVICE_LAUNCHER_PROTOCOL,
@@ -76,6 +78,50 @@ it.effect("waits for the launcher to durably commit the trial update ID", () =>
     host.emit({ type: "committed", updateId: committed.id });
     expect(yield* Fiber.join(prepared)).toEqual(committed);
   }),
+);
+
+it.effect(
+  "completes a trial started by the legacy launcher without authorizing another update",
+  () =>
+    Effect.gen(function* () {
+      const host = new FakeLauncherProcess({
+        protocol: LEGACY_SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.1.0",
+        update: {
+          id: "legacy-update",
+          fromVersion: "1.0.0",
+          targetVersion: "1.1.0",
+          dbPath: "/tmp/state.sqlite",
+          status: "pending",
+        },
+      });
+      const client = yield* makeClient(host, "1.1.0");
+      const prepared = yield* Effect.forkChild(client.prepareTrial, { startImmediately: true });
+      yield* Effect.yieldNow;
+      expect(host.sent).toEqual([{ type: "prepared", updateId: "legacy-update" }]);
+      host.emit({ type: "committed", updateId: "legacy-update" });
+      expect(yield* Fiber.join(prepared)).toMatchObject({ status: "committed" });
+    }),
+);
+
+it.effect(
+  "requires a launcher upgrade before a legacy-managed server can request another update",
+  () =>
+    Effect.gen(function* () {
+      const host = new FakeLauncherProcess({
+        protocol: LEGACY_SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.1.0",
+      });
+      const client = yield* makeClient(host, "1.1.0");
+      const error = yield* client
+        .requestUpdate({ targetVersion: "1.2.0", dbPath: "/tmp/state.sqlite" })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "ServiceLauncherRejectedError",
+        reason: "The installed service launcher must be upgraded before another remote update.",
+      });
+      expect(host.sent).toEqual([]);
+    }),
 );
 
 it.effect("returns the launcher-generated ID only after update acceptance", () =>
@@ -130,6 +176,7 @@ it.effect("rejects contradictory trial context instead of leaving activation clo
         targetVersion: "1.2.0",
         dbPath: "/tmp/state.sqlite",
         status: "pending",
+        phase: "trial-ready",
       },
     });
     const error = yield* makeClient(host, "1.1.0").pipe(Effect.flip);
