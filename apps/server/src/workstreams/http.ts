@@ -67,7 +67,7 @@ export const workstreamResponseHeadersLayer = HttpRouter.middleware(
 );
 
 const configured = makeControlPlaneWorkstreamTransport();
-export const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrustProvider) =>
+const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrustProvider) =>
   Layer.effect(
     WorkstreamGateway,
     Effect.gen(function* () {

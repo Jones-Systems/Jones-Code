@@ -66,7 +66,6 @@ import {
   T3WorkstreamCommandPollParams,
   T3WorkstreamCommandRequest,
   T3WorkstreamDetailParams,
-  T3WorkstreamListQuery,
   T3WorkstreamListResult,
   T3WorkstreamPageQuery,
   T3WorkstreamReferenceParams,
@@ -656,7 +655,7 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
   }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
 
-export class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
+class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
   .add(
     HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
       headers: OptionalBearerHeaders,
@@ -668,7 +667,7 @@ export class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstream
   .add(
     HttpApiEndpoint.get("list", "/api/workstreams", {
       headers: OptionalBearerHeaders,
-      payload: T3WorkstreamListQuery,
+      payload: T3WorkstreamPageQuery,
       success: T3WorkstreamListResult,
       error: EnvironmentWorkstreamPagedSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),

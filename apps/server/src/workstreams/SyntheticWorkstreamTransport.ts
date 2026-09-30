@@ -16,7 +16,7 @@ import {
   WorkstreamTransportError,
 } from "./WorkstreamGateway.ts";
 
-export const SYNTHETIC_WORKSTREAMS: ReadonlyArray<WorkstreamMetadata> = [
+const SYNTHETIC_WORKSTREAMS: ReadonlyArray<WorkstreamMetadata> = [
   {
     workstream_id: "ws-core-v1",
     owner_id: "owner-fixture",

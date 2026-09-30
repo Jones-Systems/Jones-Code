@@ -193,7 +193,7 @@ const canonicalizePath = Effect.fn("ServerConfig.canonicalizePath")(function* (i
       );
     }
     const parent = path.dirname(candidate);
-    if (parent === candidate) return candidate;
+    if (parent === candidate) return path.join(candidate, ...missingSegments);
     missingSegments.unshift(path.basename(candidate));
     candidate = parent;
   }
@@ -220,23 +220,25 @@ export class AuthorityStateDirConflictError extends Schema.TaggedError<Authority
 ) {}
 
 /** Reject authority placement inside application state or rollback backups. */
-export const validateAuthorityStateDir = Effect.fn("ServerConfig.validateAuthorityStateDir")(
-  function* (authorityStateDir: string, stateDir: string, databaseBackupDir: string) {
-    const path = yield* Path.Path;
-    const [authority, state, backup] = yield* Effect.all([
-      canonicalizePath(authorityStateDir),
-      canonicalizePath(stateDir),
-      canonicalizePath(databaseBackupDir),
-    ]);
-    if (pathsOverlap(path, state, authority) || pathsOverlap(path, backup, authority)) {
-      return yield* new AuthorityStateDirConflictError({
-        authorityStateDir,
-        stateDir,
-        databaseBackupDir,
-      });
-    }
-  },
-);
+const validateAuthorityStateDir = Effect.fn("ServerConfig.validateAuthorityStateDir")(function* (
+  authorityStateDir: string,
+  stateDir: string,
+  databaseBackupDir: string,
+) {
+  const path = yield* Path.Path;
+  const [authority, state, backup] = yield* Effect.all([
+    canonicalizePath(authorityStateDir),
+    canonicalizePath(stateDir),
+    canonicalizePath(databaseBackupDir),
+  ]);
+  if (pathsOverlap(path, state, authority) || pathsOverlap(path, backup, authority)) {
+    return yield* new AuthorityStateDirConflictError({
+      authorityStateDir,
+      stateDir,
+      databaseBackupDir,
+    });
+  }
+});
 
 export const ensureServerDirectories = Effect.fn(function* (derivedPaths: ServerDerivedPaths) {
   const fs = yield* FileSystem.FileSystem;
