@@ -796,6 +796,9 @@ it.layer(integrationLayer)("AgentSessionImporter integration", (it) => {
           );
           expect(sendTurn).toHaveBeenCalledExactlyOnceWith(
             expect.objectContaining({ threadId, input: "Continue this session" }),
+            ...(provider === "codex"
+              ? [expect.objectContaining({ withRuntimeReplacement: expect.any(Function) })]
+              : []),
           );
           expect(Option.getOrThrow(yield* directory.getBinding(threadId))).toMatchObject({
             provider,
