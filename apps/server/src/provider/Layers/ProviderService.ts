@@ -34,11 +34,17 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ServerSettings as ServerSettingsValue,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { causeErrorTag } from "@t3tools/shared/observability";
-import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import {
+  codexModelFamily,
+  getConfiguredReasoningEffort,
+  getModelSelectionStringOptionValue,
+  normalizeModelSlug,
+} from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -79,6 +85,8 @@ import {
 import type { ProviderAdapterShape, ProviderSendTurnRuntime } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
+import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
+import * as ProviderRegistry from "../Services/ProviderRegistry.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
@@ -489,6 +497,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const instanceRegistry = yield* Effect.serviceOption(
+    ProviderInstanceRegistry.ProviderInstanceRegistry,
+  );
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
   const projectionQuery = yield* Effect.serviceOption(
     ProjectionSnapshotQuery.ProjectionSnapshotQuery,
   );
@@ -1689,6 +1701,79 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const withConfiguredReasoningEffort = Effect.fnUntraced(function* (
+    input: ProviderSendTurnInput,
+    driverKind: ProviderDriverKind,
+    instanceId: ProviderInstanceId,
+  ) {
+    const modelSelection = input.modelSelection;
+    if (
+      driverKind !== "codex" ||
+      modelSelection === undefined ||
+      modelSelection.instanceId !== instanceId ||
+      modelSelection.options?.some((option) => option.id === "reasoningEffort")
+    ) {
+      return input;
+    }
+    const current = yield* serverSettings.getSettings.pipe(Effect.option);
+    if (Option.isNone(current)) return input;
+    let settings = current.value;
+    if (Option.isSome(projectionQuery)) {
+      const thread = yield* projectionQuery.value
+        .getThreadShellById(input.threadId)
+        .pipe(Effect.catch(() => Effect.succeedNone));
+      if (Option.isSome(thread)) {
+        const project = yield* projectionQuery.value
+          .getProjectShellById(thread.value.projectId)
+          .pipe(Effect.catch(() => Effect.succeedNone));
+        settings = resolveProjectSettings(
+          settings,
+          thread.value.projectId,
+          Option.getOrUndefined(project),
+        ).settings;
+      }
+    }
+    const defaultModelSelection = settings.defaultModelSelection ?? undefined;
+    if (defaultModelSelection === undefined) return input;
+    let snapshot: ServerProvider | undefined;
+    if (Option.isSome(instanceRegistry)) {
+      const instance = yield* instanceRegistry.value.getInstance(instanceId);
+      if (instance) snapshot = yield* instance.snapshot.getSnapshot;
+    }
+    let defaultDriverKind = settings.providerInstances[defaultModelSelection.instanceId]?.driver;
+    if (Option.isSome(providerRegistry) && (!snapshot || defaultDriverKind === undefined)) {
+      const providers = yield* providerRegistry.value.getProviders;
+      snapshot ??= providers.find((provider) => provider.instanceId === instanceId);
+      defaultDriverKind ??= providers.find(
+        (provider) => provider.instanceId === defaultModelSelection.instanceId,
+      )?.driver;
+    }
+    const canonicalModel = normalizeModelSlug(codexModelFamily(modelSelection.model), driverKind);
+    const model =
+      snapshot?.models.find((model) => model.slug === modelSelection.model) ??
+      snapshot?.models.find((model) =>
+        [model.slug, ...(model.aliases ?? [])].some(
+          (slug) => normalizeModelSlug(codexModelFamily(slug), driverKind) === canonicalModel,
+        ),
+      );
+    const effort = getConfiguredReasoningEffort({
+      modelSelection,
+      driverKind,
+      capabilities: model?.capabilities ?? undefined,
+      defaultModelSelection,
+      defaultDriverKind,
+    });
+    return effort === undefined
+      ? input
+      : {
+          ...input,
+          modelSelection: {
+            ...modelSelection,
+            options: [...(modelSelection.options ?? []), { id: "reasoningEffort", value: effort }],
+          },
+        };
+  });
+
   const sendTurn: ProviderServiceMethod<"sendTurn"> = Effect.fn("sendTurn")(function* (rawInput) {
     const parsed = yield* decodeInputOrValidationError({
       operation: "ProviderService.sendTurn",
@@ -1912,10 +1997,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               model: input.modelSelection?.model,
               runtimeMode: routed.runtimeMode,
             });
+            const dispatchInput = yield* withConfiguredReasoningEffort(
+              input,
+              routed.adapter.provider,
+              routed.instanceId,
+            );
             const send =
               routed.adapter.provider === "codex"
-                ? routed.adapter.sendTurn(input, runtimeContext)
-                : routed.adapter.sendTurn(input);
+                ? routed.adapter.sendTurn(dispatchInput, runtimeContext)
+                : routed.adapter.sendTurn(dispatchInput);
             const turn = yield* send.pipe(
               Effect.tapError((error) =>
                 analytics.record("provider.turn.rejected", {

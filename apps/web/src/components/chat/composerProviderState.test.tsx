@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   ProviderDriverKind,
+  ProviderInstanceId,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type ServerProviderModel,
 } from "@t3tools/contracts";
-import { getProviderOptionDescriptors } from "@t3tools/shared/model";
+import {
+  applyConfiguredReasoningEffortDefault,
+  getProviderOptionDescriptors,
+} from "@t3tools/shared/model";
+import { buildTraitsOptionSelections } from "./TraitsPicker";
 import { getProviderModelCapabilities } from "../../providerModels";
 import {
   getComposerPromptInjectionState,
@@ -15,9 +20,8 @@ import {
   withImplicitFastModeDefault,
 } from "./composerProviderState";
 
-// Everything in composerProviderState is now data-driven by the model's
-// optionDescriptors, so these tests use a single synthetic provider/model and
-// vary only the descriptor shape per scenario.
+// Synthetic model descriptors keep selection and default behavior independent
+// of provider catalog changes.
 
 const PROVIDER: ProviderDriverKind = ProviderDriverKind.make("codex");
 const MODEL = "test-model";
@@ -118,6 +122,45 @@ describe("getComposerProviderState", () => {
     });
     expect(state.promptEffort).toBe("low");
     expect(state.modelOptionsForDispatch).toEqual(selections(["reasoningEffort", "low"]));
+  });
+
+  it("follows the current configured effort across Codex accounts without dispatching it", () => {
+    const models = modelWith([
+      selectDescriptor("reasoningEffort", [
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium", isDefault: true },
+        { id: "high", label: "High" },
+      ]),
+      selectDescriptor("serviceTier", [
+        { id: "default", label: "Standard", isDefault: true },
+        { id: "priority", label: "Fast" },
+      ]),
+    ]);
+    const options = selections(["serviceTier", "priority"]);
+    for (const effort of ["high", "low"]) {
+      const input = {
+        provider: PROVIDER,
+        instanceId: ProviderInstanceId.make("codex_personal"),
+        model: MODEL,
+        models,
+        modelOptions: options,
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex_work"),
+          model: MODEL,
+          options: selections(["reasoningEffort", effort]),
+        },
+        defaultDriverKind: PROVIDER,
+        planModeEnabled: false,
+      };
+      expect(getComposerProviderState(input).promptEffort).toBe(effort);
+      expect(getComposerProviderState(input).modelOptionsForDispatch).toEqual(options);
+      expect(
+        getComposerProviderState({
+          ...input,
+          modelOptions: selections(["reasoningEffort", "medium"]),
+        }).promptEffort,
+      ).toBe("medium");
+    }
   });
 
   it("uses descriptor defaults for display without dispatching them as overrides", () => {
@@ -508,6 +551,42 @@ describe("trait controls fastMode display", () => {
     if (fastMode?.type === "boolean") {
       expect(fastMode.currentValue).toBe(false);
     }
+  });
+});
+
+describe("traits option persistence", () => {
+  it("keeps configured effort inherited after changing an unrelated trait", () => {
+    const caps = modelWith([
+      selectDescriptor("reasoningEffort", [
+        { id: "low", label: "Low", isDefault: true },
+        { id: "high", label: "High" },
+      ]),
+      booleanDescriptor("thinking", false),
+    ])[0]!.capabilities;
+    const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: MODEL };
+    const displayCaps = applyConfiguredReasoningEffortDefault({
+      modelSelection,
+      driverKind: PROVIDER,
+      capabilities: caps ?? undefined,
+      defaultModelSelection: {
+        ...modelSelection,
+        options: selections(["reasoningEffort", "high"]),
+      },
+      defaultDriverKind: PROVIDER,
+    })!;
+    const descriptors = getProviderOptionDescriptors({ caps: displayCaps, selections: undefined });
+    expect(
+      buildTraitsOptionSelections(descriptors, undefined, { id: "thinking", value: true }),
+    ).toEqual(selections(["thinking", true]));
+    expect(
+      buildTraitsOptionSelections(descriptors, undefined, { id: "reasoningEffort", value: "low" }),
+    ).toEqual(selections(["reasoningEffort", "low"]));
+    expect(
+      buildTraitsOptionSelections(descriptors, selections(["reasoningEffort", "high"]), {
+        id: "thinking",
+        value: true,
+      }),
+    ).toEqual(selections(["reasoningEffort", "high"], ["thinking", true]));
   });
 });
 
