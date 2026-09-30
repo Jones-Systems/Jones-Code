@@ -12,6 +12,7 @@ import {
   TurnId,
   ProviderInstanceId,
   OrchestrationMessageContext,
+  RuntimeIdentityAttestation,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -44,6 +45,7 @@ const encodeChatAttachments = Schema.encodeEffect(
 const encodeThreadLinkedPullRequest = Schema.encodeSync(
   Schema.fromJsonString(ThreadLinkedPullRequest),
 );
+const encodeRuntimeIdentity = Schema.encodeSync(Schema.fromJsonString(RuntimeIdentityAttestation));
 const encodeMessageContext = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationMessageContext),
 );
@@ -661,6 +663,48 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (unlinkedShell._tag === "Some") {
         assert.deepEqual(unlinkedShell.value.pullRequests, []);
         assert.equal("linkedPullRequest" in unlinkedShell.value, false);
+      }
+
+      const runtimeIdentity: RuntimeIdentityAttestation = {
+        runtimeGeneration: "snapshot-runtime-1",
+        requested: {
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerDriver: "codex",
+          model: "requested-model",
+          serviceTier: "priority",
+        },
+        observed: {
+          backend: { status: "observed", value: "openai", sourceEvent: "thread/started" },
+          model: { status: "observed", value: "native-model", sourceEvent: "thread/started" },
+          account: { status: "unavailable", reason: "No provider account attestation" },
+          serviceTier: { status: "unknown" },
+        },
+      };
+      const threadId = ThreadId.make("thread-1");
+      for (const identity of [runtimeIdentity, null]) {
+        yield* sql`UPDATE projection_thread_sessions
+          SET runtime_identity_json = ${identity === null ? null : encodeRuntimeIdentity(identity)}
+          WHERE thread_id = ${threadId}`;
+        const expected = identity ?? undefined;
+        const snapshotWithIdentity = yield* snapshotQuery.getSnapshot();
+        assert.deepEqual(snapshotWithIdentity.threads[0]?.session?.runtimeIdentity, expected);
+        const shellWithIdentity = yield* snapshotQuery.getShellSnapshot();
+        assert.deepEqual(shellWithIdentity.threads[0]?.session?.runtimeIdentity, expected);
+        const unsettledWithIdentity = yield* snapshotQuery.getShellSnapshot({
+          unsettledOnly: true,
+        });
+        assert.deepEqual(unsettledWithIdentity.threads[0]?.session?.runtimeIdentity, expected);
+        const shell = Option.getOrThrow(yield* snapshotQuery.getThreadShellById(threadId));
+        assert.deepEqual(shell.session?.runtimeIdentity, expected);
+        const detail = Option.getOrThrow(yield* snapshotQuery.getThreadDetailById(threadId));
+        assert.deepEqual(detail.session?.runtimeIdentity, expected);
+        const context = Option.getOrThrow(yield* snapshotQuery.getThreadRuntimeContext(threadId));
+        assert.deepEqual(context.session?.runtimeIdentity, expected);
+        yield* sql`UPDATE projection_threads SET archived_at = '2026-02-25T00:00:00.000Z'
+          WHERE thread_id = ${threadId}`;
+        const archived = yield* snapshotQuery.getArchivedShellSnapshot();
+        assert.deepEqual(archived.threads[0]?.session?.runtimeIdentity, expected);
+        yield* sql`UPDATE projection_threads SET archived_at = NULL WHERE thread_id = ${threadId}`;
       }
 
       yield* sql`

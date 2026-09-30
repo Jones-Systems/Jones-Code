@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -5,13 +6,16 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import type { PreviewAutomationRuntimeIdentity } from "@t3tools/contracts";
 
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopAssets from "./DesktopAssets.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
 const COMMIT_HASH_PATTERN = /^[0-9a-f]{7,40}$/i;
+const FULL_COMMIT_HASH_PATTERN = /^[0-9a-f]{40}$/i;
 const COMMIT_HASH_DISPLAY_LENGTH = 12;
+const runtimeInstanceId = NodeCrypto.randomUUID();
 
 const AppPackageMetadata = Schema.Struct({
   t3codeCommitHash: Schema.optional(Schema.String),
@@ -34,6 +38,7 @@ export class DesktopAppIdentity extends Context.Service<
   DesktopAppIdentity,
   {
     readonly resolveUserDataPath: Effect.Effect<string, DesktopUserDataPathResolutionError>;
+    readonly previewAutomationRuntimeIdentity: Effect.Effect<PreviewAutomationRuntimeIdentity>;
     readonly configure: Effect.Effect<void>;
   }
 >()("@t3tools/desktop/app/DesktopAppIdentity") {}
@@ -73,6 +78,39 @@ export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const commitHashCache = yield* Ref.make<Option.Option<Option.Option<string>>>(Option.none());
+  const runtimeIdentityCache = yield* Ref.make<Option.Option<PreviewAutomationRuntimeIdentity>>(
+    Option.none(),
+  );
+
+  const previewAutomationRuntimeIdentity = Effect.gen(function* () {
+    const cached = yield* Ref.get(runtimeIdentityCache);
+    if (Option.isSome(cached)) return cached.value;
+
+    const packageJsonPath = environment.path.join(environment.appRoot, "package.json");
+    const raw = yield* fileSystem.readFileString(packageJsonPath).pipe(Effect.option);
+    const buildCommit = yield* Option.match(raw, {
+      onNone: () => Effect.succeed(null),
+      onSome: (value) =>
+        decodeAppPackageMetadata(value).pipe(
+          Effect.map((parsed) => {
+            const commit = parsed.t3codeCommitHash?.trim();
+            return commit !== undefined && FULL_COMMIT_HASH_PATTERN.test(commit)
+              ? commit.toLowerCase()
+              : null;
+          }),
+          Effect.orElseSucceed(() => null),
+        ),
+    });
+    const identity = {
+      schemaVersion: 1,
+      runtimeKind: "electron",
+      runtimeInstanceId,
+      appVersion: environment.appVersion,
+      buildCommit,
+    } as const;
+    yield* Ref.set(runtimeIdentityCache, Option.some(identity));
+    return identity;
+  });
 
   const resolveEmbeddedCommitHash = Effect.gen(function* () {
     const packageJsonPath = environment.path.join(environment.appRoot, "package.json");
@@ -145,6 +183,7 @@ export const make = Effect.gen(function* () {
 
   return DesktopAppIdentity.of({
     resolveUserDataPath: userDataPath,
+    previewAutomationRuntimeIdentity,
     configure,
   });
 });

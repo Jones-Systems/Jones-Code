@@ -11,6 +11,7 @@ import {
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
+  type RuntimeIdentityAttestation,
   type TurnId,
 } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
@@ -91,6 +92,68 @@ type ProviderIntentEvent = Extract<
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+function requestedRuntimeIdentity(
+  modelSelection: ModelSelection,
+  providerDriver: ProviderDriverKind,
+): RuntimeIdentityAttestation["requested"] {
+  const serviceTier = modelSelection.options?.find(
+    (option) => option.id === "serviceTier" && typeof option.value === "string",
+  )?.value;
+  return {
+    providerInstanceId: modelSelection.instanceId,
+    providerDriver,
+    model: modelSelection.model,
+    serviceTier: typeof serviceTier === "string" ? serviceTier : null,
+  };
+}
+
+function unobservedRuntimeIdentity(): RuntimeIdentityAttestation["observed"] {
+  return {
+    backend: { status: "unknown" },
+    model: { status: "unknown" },
+    account: {
+      status: "unavailable",
+      reason: "No supported provider event safely binds an account to this runtime.",
+    },
+    serviceTier: { status: "unknown" },
+  };
+}
+
+function runtimeIdentityForRequest(
+  modelSelection: ModelSelection,
+  providerDriver: ProviderDriverKind,
+  previous: RuntimeIdentityAttestation | undefined,
+): RuntimeIdentityAttestation {
+  const requested = requestedRuntimeIdentity(modelSelection, providerDriver);
+  const sameRequest =
+    previous?.requested.providerInstanceId === requested.providerInstanceId &&
+    previous.requested.providerDriver === requested.providerDriver &&
+    previous.requested.model === requested.model &&
+    previous.requested.serviceTier === requested.serviceTier;
+  return {
+    ...(previous?.requested.providerInstanceId === requested.providerInstanceId &&
+    previous.requested.providerDriver === requested.providerDriver &&
+    previous.runtimeGeneration !== undefined
+      ? { runtimeGeneration: previous.runtimeGeneration }
+      : {}),
+    requested,
+    observed:
+      sameRequest && previous !== undefined ? previous.observed : unobservedRuntimeIdentity(),
+  };
+}
+
+function resetRuntimeIdentityForRequest(
+  modelSelection: ModelSelection,
+  providerDriver: ProviderDriverKind,
+  runtimeGeneration: string,
+): RuntimeIdentityAttestation {
+  return {
+    runtimeGeneration,
+    requested: requestedRuntimeIdentity(modelSelection, providerDriver),
+    observed: unobservedRuntimeIdentity(),
+  };
 }
 
 const isCompactCommandMessage = (message: ThreadTitleMessage): boolean =>
@@ -652,6 +715,7 @@ const make = Effect.gen(function* () {
       });
     }
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
+    const rollbackSession = thread.session;
     if (options?.pendingTurnStart === true && thread.session?.status !== "running") {
       yield* setThreadSession({
         threadId,
@@ -663,6 +727,9 @@ const make = Effect.gen(function* () {
           runtimeMode: desiredRuntimeMode,
           activeTurnId: null,
           lastError: null,
+          ...(thread.session?.runtimeIdentity !== undefined
+            ? { runtimeIdentity: thread.session.runtimeIdentity }
+            : {}),
           updatedAt: createdAt,
         },
         createdAt,
@@ -725,13 +792,34 @@ const make = Effect.gen(function* () {
     const sessionTitle =
       manualTitle.length > 0 && manualTitle !== promptSeed ? thread.title : undefined;
 
-    const startProviderSession = (input?: {
+    const startProviderSession = Effect.fnUntraced(function* (input?: {
       readonly resumeCursor?: unknown;
       readonly provider?: ProviderDriverKind;
-    }) =>
-      providerService
+    }) {
+      const runtimeGeneration = String(yield* serverCommandId("provider-runtime-generation"));
+      yield* setThreadSession({
+        threadId,
+        session: {
+          threadId,
+          status: "starting",
+          providerName: desiredInfo.driverKind,
+          providerInstanceId: desiredInstanceId,
+          runtimeMode: desiredRuntimeMode,
+          activeTurnId: null,
+          lastError: null,
+          runtimeIdentity: resetRuntimeIdentityForRequest(
+            desiredModelSelection,
+            desiredInfo.driverKind,
+            runtimeGeneration,
+          ),
+          updatedAt: createdAt,
+        },
+        createdAt,
+      });
+      const session = yield* providerService
         .startSession(threadId, {
           threadId,
+          runtimeGeneration,
           ...(preferredProvider ? { provider: preferredProvider } : {}),
           providerInstanceId: desiredInstanceId,
           ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
@@ -740,7 +828,30 @@ const make = Effect.gen(function* () {
           ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
           runtimeMode: desiredRuntimeMode,
         })
-        .pipe(Effect.tap(() => refreshWorkspaceSnapshot));
+        .pipe(
+          Effect.onError((cause) =>
+            (rollbackSession != null
+              ? setThreadSession({ threadId, session: rollbackSession, createdAt })
+              : setThreadSession({
+                  threadId,
+                  session: {
+                    threadId,
+                    status: "error",
+                    providerName: desiredDriverKind,
+                    providerInstanceId: desiredInstanceId,
+                    runtimeMode: desiredRuntimeMode,
+                    activeTurnId: null,
+                    lastError: formatFailureDetail(cause),
+                    updatedAt: createdAt,
+                  },
+                  createdAt,
+                })
+            ).pipe(Effect.orDie),
+          ),
+        );
+      yield* refreshWorkspaceSnapshot;
+      return session;
+    });
 
     const bindSessionToThread = (session: ProviderSession) =>
       Effect.gen(function* () {
@@ -751,6 +862,7 @@ const make = Effect.gen(function* () {
             detail: `Provider session '${session.threadId}' started without a provider instance id.`,
           });
         }
+        const projectedThread = yield* resolveThreadShell(threadId);
         yield* setThreadSession({
           threadId,
           session: {
@@ -765,6 +877,11 @@ const make = Effect.gen(function* () {
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
             lastError: session.lastError ?? null,
+            runtimeIdentity: runtimeIdentityForRequest(
+              desiredModelSelection,
+              session.provider,
+              projectedThread?.session?.runtimeIdentity,
+            ),
             updatedAt: session.updatedAt,
           },
           createdAt,
@@ -896,6 +1013,23 @@ const make = Effect.gen(function* () {
             }
           : requestedModelSelection
         : input.modelSelection;
+
+    const projectedThread = yield* resolveThreadShell(input.threadId);
+    if (projectedThread?.session && activeSession !== undefined) {
+      yield* setThreadSession({
+        threadId: input.threadId,
+        session: {
+          ...projectedThread.session,
+          runtimeIdentity: runtimeIdentityForRequest(
+            modelForTurn ?? requestedModelSelection,
+            activeSession.provider,
+            projectedThread.session.runtimeIdentity,
+          ),
+          updatedAt: input.createdAt,
+        },
+        createdAt: input.createdAt,
+      });
+    }
 
     return {
       threadId: input.threadId,
@@ -1317,6 +1451,9 @@ const make = Effect.gen(function* () {
           runtimeMode: thread.runtimeMode,
           activeTurnId: null,
           lastError: null,
+          ...(thread.session?.runtimeIdentity !== undefined
+            ? { runtimeIdentity: thread.session.runtimeIdentity }
+            : {}),
           updatedAt: event.payload.createdAt,
         },
         createdAt: event.payload.createdAt,
@@ -1776,6 +1913,9 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
               activeTurnId: null,
               lastError: thread.session?.lastError ?? null,
+              ...(thread.session?.runtimeIdentity !== undefined
+                ? { runtimeIdentity: thread.session.runtimeIdentity }
+                : {}),
               updatedAt: now,
             },
             createdAt: now,

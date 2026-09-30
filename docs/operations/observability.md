@@ -693,3 +693,72 @@ Before you take one:
   swapping, it can make the problem worse or crash the server.
 - The file contains everything in server memory, including tokens, secrets, and thread content. Do
   not share it publicly. Delete it when you are done, because storage cleanup does not remove it.
+
+## Netdata host status
+
+To expose CPU utilization and occupied RAM through the authenticated `/api/host-status` endpoint,
+configure Netdata API v3 connections in the T3 Code **server process environment**.
+The fixed host IDs are `vps`, `test`, `mini`, and `home`; use their uppercase names
+in the variables below. Configure only the hosts you want to monitor.
+
+The primary setup uses one Netdata parent collector on the VPS. Remote hosts
+stream their metrics into that parent; T3 Code reads each mapped node from the
+parent's API. The browser calls only the authenticated T3 Code API, and neither
+the browser nor the T3 Code gateway contacts each remote host in this setup.
+
+```sh
+T3CODE_NETDATA_URL=http://127.0.0.1:19999
+T3CODE_NETDATA_VPS_NODE='<vps-machine-guid>'
+T3CODE_NETDATA_TEST_NODE='<test-machine-guid>'
+T3CODE_NETDATA_MINI_NODE='<mini-machine-guid>'
+T3CODE_NETDATA_HOME_NODE='<home-machine-guid>'
+```
+
+Replace each placeholder with that host's exact `mg` from the parent's
+`/api/v3/nodes` response. Set only mappings for nodes collected by that parent.
+Each slot using the shared URL requires its own `_NODE`; an unmapped slot stays
+`not_configured`, even when the collector has only one node.
+
+| Variable                    | Value                                                                                                                                                                  |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `T3CODE_NETDATA_URL`        | Shared parent base URL reachable from the T3 Code server.                                                                                                              |
+| `T3CODE_NETDATA_TOKEN`      | Optional bearer token for the shared parent only. Supply it through the server's protected environment configuration.                                                  |
+| `T3CODE_NETDATA_<ID>_NODE`  | Exact Netdata machine GUID selecting that host from the shared parent.                                                                                                 |
+| `T3CODE_NETDATA_<ID>_URL`   | Optional per-host base URL override for a separate Netdata agent or parent. Without `_NODE`, this endpoint must return exactly one node.                               |
+| `T3CODE_NETDATA_<ID>_TOKEN` | Optional bearer token for that host's configured endpoint. Overrides the shared token for a slot using the shared URL. A per-host URL never inherits the shared token. |
+
+The optional `_TOKEN` values authenticate API requests; they are not Netdata
+streaming keys. These are server settings; do not put upstream URLs or tokens
+into browser build variables. Supply them through your process launcher or service manager before
+starting the server. A running service must be restarted to receive changed
+launch settings; coordinate that restart with active agent work.
+
+A missing URL or shared node mapping returns `not_configured` for that host. An
+unknown or ambiguous node, invalid or unsupported metrics, an unreachable
+upstream, or samples older than 30 seconds return an unavailable state without
+hiding the other hosts. Redirects are not followed; configure the final base
+URL. Access requires an authenticated T3 Code session with `orchestration:read`
+scope.
+
+Available hosts report `cpuUsagePercent`, `occupiedMemoryBytes`,
+`totalMemoryBytes`, `logicalCpuCount`, and `sampledAt`. The gateway scopes both
+metric queries to the selected node's machine GUID on the configured parent,
+using a short five-second window aggregated to one point. Logical CPU count and
+total RAM come from that same node's metadata. The sample time is the oldest
+CPU or RAM query timestamp or database last-entry timestamp; all must be within
+30 seconds.
+
+CPU utilization comes from `system.cpu` with `percentage` units. The gateway
+requires the complete macOS set (`user`, `nice`, `system`) or Linux set
+(`user`, `nice`, `system`, `irq`, `softirq`, `guest`, `guest_nice`,
+`iowait`, `steal`), allowing an optional `idle` dimension. It sums executing
+CPU percentages and excludes `idle`, `iowait`, and `steal`. Netdata's Linux
+collector already subtracts guest time from user and nice, so guest dimensions
+are added exactly once. The result is a finite percentage from 0 to 100 and is
+not divided by the logical CPU count.
+
+Occupied RAM is total RAM minus `system.ram/free`, converting free MiB to bytes
+and rounding to the nearest byte before subtraction. It includes reclaimable
+cache and is not a memory-pressure or available-memory estimate; the gateway
+does not invent a macOS available-memory value or sum overlapping RAM categories.
+Missing total RAM, invalid free RAM, or free RAM above total is invalid data.

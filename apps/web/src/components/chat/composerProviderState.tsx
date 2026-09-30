@@ -1,5 +1,7 @@
 import {
+  defaultInstanceIdForDriver,
   type ModelCapabilities,
+  type ModelSelection,
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderOptionSelection,
@@ -7,6 +9,7 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
+  applyConfiguredReasoningEffortDefault,
   buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
@@ -22,6 +25,9 @@ import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./T
 
 export type ComposerProviderStateInput = {
   provider: ProviderDriverKind;
+  instanceId?: ProviderInstanceId;
+  defaultModelSelection?: ModelSelection | null | undefined;
+  defaultDriverKind?: ProviderDriverKind | undefined;
   model: string;
   models: ReadonlyArray<ServerProviderModel>;
   promptInjectionState?: ComposerPromptInjectionState;
@@ -43,6 +49,8 @@ export type ComposerProviderState = {
 type TraitsRenderInput = {
   provider: ProviderDriverKind;
   instanceId?: ProviderInstanceId;
+  defaultModelSelection?: ModelSelection | null | undefined;
+  defaultDriverKind?: ProviderDriverKind | undefined;
   threadRef?: ScopedThreadRef;
   draftId?: DraftId;
   model: string;
@@ -99,6 +107,29 @@ function resolveComposerOptionSelections(
   return { caps, selections: withImplicitFastModeDefault(caps, modelOptions) };
 }
 
+function resolveComposerDisplayCapabilities(
+  input: Pick<
+    ComposerProviderStateInput,
+    "provider" | "instanceId" | "model" | "defaultModelSelection" | "defaultDriverKind"
+  >,
+  caps: ModelCapabilities,
+  selections: ReadonlyArray<ProviderOptionSelection> | undefined,
+): ModelCapabilities {
+  return (
+    applyConfiguredReasoningEffortDefault({
+      modelSelection: {
+        instanceId: input.instanceId ?? defaultInstanceIdForDriver(input.provider),
+        model: input.model,
+        ...(selections ? { options: selections } : {}),
+      },
+      driverKind: input.provider,
+      capabilities: caps,
+      defaultModelSelection: input.defaultModelSelection ?? undefined,
+      defaultDriverKind: input.defaultDriverKind,
+    }) ?? caps
+  );
+}
+
 export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
   const {
     provider,
@@ -130,7 +161,10 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     modelOptions,
     planModeEnabled,
   );
-  const descriptors = getProviderOptionDescriptors({ caps, selections });
+  const descriptors = getProviderOptionDescriptors({
+    caps: resolveComposerDisplayCapabilities(input, caps, selections),
+    selections,
+  });
   const primarySelectDescriptor = descriptors.find(
     (descriptor): descriptor is Extract<(typeof descriptors)[number], { type: "select" }> =>
       descriptor.type === "select",
@@ -145,7 +179,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     provider,
     promptEffort,
     modelOptionsForDispatch: buildExplicitProviderOptionSelectionsFromDescriptors(
-      descriptors,
+      getProviderOptionDescriptors({ caps, selections }),
       selections,
     ),
     ...(ultrathinkActive
@@ -179,13 +213,14 @@ function renderTraitsControl(
     isComposerOwned,
   } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
-  const { selections: resolvedModelOptions } = resolveComposerOptionSelections(
+  const { caps, selections: resolvedModelOptions } = resolveComposerOptionSelections(
     models,
     model,
     provider,
     modelOptions,
     planModeEnabled,
   );
+  const displayCapabilities = resolveComposerDisplayCapabilities(input, caps, resolvedModelOptions);
   if (
     !hasTarget ||
     !shouldRenderTraitsControls({
@@ -204,6 +239,7 @@ function renderTraitsControl(
       provider={provider}
       {...(instanceId ? { instanceId } : {})}
       models={models}
+      displayCapabilities={displayCapabilities}
       {...(threadRef ? { threadRef } : {})}
       {...(draftId ? { draftId } : {})}
       model={model}

@@ -53,6 +53,13 @@ export const ResourceTelemetryProcessIdentity = Schema.Struct({
 });
 export type ResourceTelemetryProcessIdentity = typeof ResourceTelemetryProcessIdentity.Type;
 
+export const ResourceTelemetryProcessOwner = Schema.Struct({
+  kind: Schema.Literal("provider"),
+  threadId: TrimmedNonEmptyString,
+  provider: TrimmedNonEmptyString,
+});
+export type ResourceTelemetryProcessOwner = typeof ResourceTelemetryProcessOwner.Type;
+
 export const ResourceMonitorExternalProcess = Schema.Struct({
   pid: PositiveInt,
   startTimeMs: Schema.optionalKey(NonNegativeInt),
@@ -373,6 +380,7 @@ export const ResourceTelemetryProcess = Schema.Struct({
   command: Schema.String,
   status: Schema.String,
   category: ResourceTelemetryProcessCategory,
+  owner: Schema.optionalKey(ResourceTelemetryProcessOwner),
   electronType: Schema.optionalKey(DesktopElectronProcessType),
   electronServiceName: Schema.optionalKey(Schema.String),
   cpuPercent: Schema.Number,

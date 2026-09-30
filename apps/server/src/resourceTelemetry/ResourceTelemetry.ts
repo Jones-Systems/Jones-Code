@@ -30,6 +30,7 @@ import {
   type TelemetryCounters,
 } from "./Model.ts";
 import * as NativeTelemetryClient from "./NativeTelemetryClient.ts";
+import * as ProcessAttribution from "./ProcessAttribution.ts";
 import * as ResourceAttribution from "./ResourceAttribution.ts";
 import {
   buildResourceTelemetryHistory,
@@ -146,6 +147,7 @@ function buildHealth(input: {
 export const make = Effect.fn("resourceTelemetry.resourceTelemetry.make")(function* () {
   const nativeClient = yield* NativeTelemetryClient.NativeTelemetryClient;
   const desktopReceiver = yield* DesktopTelemetryReceiver.DesktopTelemetryReceiver;
+  const processAttribution = yield* ProcessAttribution.ProcessAttribution;
   const attribution = yield* ResourceAttribution.ResourceAttribution;
   const mutex = yield* Semaphore.make(1);
   const changes = yield* PubSub.sliding<ResourceTelemetrySnapshot>(8);
@@ -263,9 +265,10 @@ export const make = Effect.fn("resourceTelemetry.resourceTelemetry.make")(functi
         const desktopSnapshot = input.desktopSnapshot
           ? Option.some(input.desktopSnapshot)
           : current.desktopSnapshot;
-        const [desktopHealth, attributionSnapshot] = yield* Effect.all([
+        const [desktopHealth, attributionSnapshot, processAttributions] = yield* Effect.all([
           desktopReceiver.health,
           attribution.snapshot,
+          processAttribution.snapshot,
         ]);
         const recordedElectronRoots = Option.match(nativeSnapshot, {
           onNone: () => [],
@@ -287,6 +290,7 @@ export const make = Effect.fn("resourceTelemetry.resourceTelemetry.make")(functi
           fallbackSampledAtMs: DateTime.toEpochMillis(current.latest.readAt),
           nativeSnapshot,
           desktopSnapshot,
+          processAttributions,
           electronRootPids,
           electronRootStartTimes,
           previous: current.previous,

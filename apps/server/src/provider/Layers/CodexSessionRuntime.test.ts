@@ -1,8 +1,10 @@
 import * as NodeAssert from "node:assert/strict";
 
-import { it } from "@effect/vitest";
+import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import { describe } from "vite-plus/test";
 import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -22,10 +24,36 @@ import {
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
   readCodexThread,
+  registerCodexAppServerProcess,
   rollbackCodexThread,
   toMcpElicitationResponse,
 } from "./CodexSessionRuntime.ts";
+import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+
+describe("registerCodexAppServerProcess", () => {
+  it.effect("registers the spawned PID until the runtime scope closes", () =>
+    Effect.gen(function* () {
+      const attribution = yield* ProcessAttribution.make();
+      const runtimeScope = yield* Scope.make();
+
+      yield* registerCodexAppServerProcess({
+        pid: 4_242,
+        threadId: ThreadId.make("thread-1"),
+        processAttribution: attribution,
+      }).pipe(Effect.provideService(Scope.Scope, runtimeScope));
+
+      expect((yield* attribution.snapshot).get(4_242)?.owner).toEqual({
+        kind: "provider",
+        threadId: "thread-1",
+        provider: "codex",
+      });
+
+      yield* Scope.close(runtimeScope, Exit.void);
+      expect((yield* attribution.snapshot).has(4_242)).toBe(false);
+    }),
+  );
+});
 
 describe("Codex thread history", () => {
   for (const numTurns of [1, 2, 3, 5]) {
@@ -901,6 +929,37 @@ describe("isRecoverableThreadResumeError", () => {
 });
 
 describe("openCodexThread", () => {
+  for (const resumeThreadId of [undefined, "saved-thread"]) {
+    for (const serviceTier of [undefined, null, "priority"] as const) {
+      it.effect(
+        `preserves native identity on ${resumeThreadId ? "resume" : "start"} with tier ${serviceTier}`,
+        () =>
+          Effect.gen(function* () {
+            const response = {
+              ...makeThreadOpenResponse("native-thread"),
+              model: "native-model",
+              modelProvider: "native-backend",
+              ...(serviceTier !== undefined ? { serviceTier } : {}),
+            };
+            const opened = yield* openCodexThread({
+              client: {
+                request: () => Effect.succeed(response),
+                raw: { request: () => Effect.succeed(response) },
+              },
+              threadId: ThreadId.make("thread-identity"),
+              runtimeMode: "full-access",
+              cwd: "/tmp/project",
+              requestedModel: "requested-model",
+              serviceTier: "fast",
+              resumeThreadId,
+            });
+            NodeAssert.equal(opened.model, "native-model");
+            NodeAssert.equal(opened.modelProvider, "native-backend");
+            NodeAssert.equal(opened.serviceTier, serviceTier);
+          }),
+      );
+    }
+  }
   it.effect("resumes metadata when historical turns contain unknown error values", () =>
     Effect.gen(function* () {
       const response = makeThreadOpenResponse("saved-thread");
@@ -942,6 +1001,7 @@ describe("openCodexThread", () => {
       NodeAssert.deepStrictEqual(opened, {
         cwd: response.cwd,
         model: response.model,
+        modelProvider: response.modelProvider,
         thread: { id: "saved-thread" },
       });
       NodeAssert.deepStrictEqual(calls, [
