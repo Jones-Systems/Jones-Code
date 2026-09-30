@@ -26,6 +26,11 @@ export function WorkstreamNativeSidebar(props: {
 }) {
   const { controller, grouping } = props;
   const [dragged, setDragged] = useState<EnvironmentThreadShell | null>(null);
+  const [dropTarget, setDropTarget] = useState<{
+    workstreamId: string | null;
+    threadKey?: string;
+    after?: boolean;
+  } | null>(null);
   const [menuThread, setMenuThread] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -37,6 +42,7 @@ export function WorkstreamNativeSidebar(props: {
     bindingRef.current = binding;
     request.current?.abort();
     setDragged(null);
+    setDropTarget(null);
     setError(null);
     setBusy(false);
     busyRef.current = false;
@@ -119,6 +125,43 @@ export function WorkstreamNativeSidebar(props: {
     if (receipt.state !== "committed")
       throw new Error(`Membership change ${receipt.state}. Refresh before retrying.`);
   };
+  const currentWorkstream = (thread: EnvironmentThreadShell) =>
+    grouping.groups.find((group) => group.threads.includes(thread))?.workstream.workstreamId ??
+    null;
+  const acceptsDrop = (destination: string | null, neighbor?: EnvironmentThreadShell) =>
+    dragged !== null &&
+    canMove(dragged) &&
+    (currentWorkstream(dragged) !== destination ||
+      (!!neighbor &&
+        neighbor !== dragged &&
+        props.canReorder(dragged) &&
+        props.canReorder(neighbor)));
+  const dragOver = (
+    event: DragEvent,
+    destination: string | null,
+    neighbor?: EnvironmentThreadShell,
+  ) => {
+    if (!dragged) return false;
+    event.stopPropagation();
+    if (!acceptsDrop(destination, neighbor)) {
+      event.dataTransfer.dropEffect = "none";
+      setDropTarget(null);
+      return true;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setDropTarget({
+      workstreamId: destination,
+      ...(neighbor && currentWorkstream(dragged) === destination
+        ? {
+            threadKey: nativeWorkstreamThreadKey(neighbor.environmentId, neighbor.id),
+            after: event.clientY > bounds.top + bounds.height / 2,
+          }
+        : {}),
+    });
+    return true;
+  };
   const drop = (
     event: DragEvent,
     destination: string | null,
@@ -130,8 +173,10 @@ export function WorkstreamNativeSidebar(props: {
     const thread = dragged;
     const bounds = event.currentTarget.getBoundingClientRect();
     const after = event.clientY > bounds.top + bounds.height / 2;
+    const accepted = acceptsDrop(destination, neighbor);
     setDragged(null);
-    if (!canMove(thread)) return true;
+    setDropTarget(null);
+    if (!accepted) return true;
     const current =
       grouping.groups.find((group) => group.threads.includes(thread))?.workstream.workstreamId ??
       null;
@@ -164,11 +209,49 @@ export function WorkstreamNativeSidebar(props: {
           return (
             <li
               key={key}
-              onDragOver={(event) => {
-                if (dragged && canMove(dragged)) event.preventDefault();
+              className={`relative rounded ${canMove(thread) ? "cursor-grab active:cursor-grabbing" : ""} ${dragged === thread ? "opacity-50" : ""}`}
+              draggable={canMove(thread)}
+              data-drop-position={
+                dropTarget?.threadKey === key ? (dropTarget.after ? "after" : "before") : undefined
+              }
+              onDragStartCapture={(event) => {
+                event.stopPropagation();
+                const selection = window.getSelection();
+                if (
+                  !canMove(thread) ||
+                  (event.target as HTMLElement).closest(
+                    "input, textarea, select, [contenteditable=true]",
+                  ) ||
+                  (selection &&
+                    !selection.isCollapsed &&
+                    event.currentTarget.contains(selection.anchorNode))
+                ) {
+                  event.preventDefault();
+                  return;
+                }
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("application/x-t3-workstream-thread", key);
+                setDragged(thread);
+                setDropTarget(null);
               }}
-              onDrop={(event) => drop(event, workstreamId, thread)}
+              onDragEndCapture={(event) => {
+                event.stopPropagation();
+                setDragged(null);
+                setDropTarget(null);
+              }}
+              onDragOverCapture={(event) => dragOver(event, workstreamId, thread)}
+              onDropCapture={(event) => drop(event, workstreamId, thread)}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                  setDropTarget(null);
+              }}
             >
+              {dropTarget?.threadKey === key ? (
+                <div
+                  aria-hidden
+                  className={`pointer-events-none absolute inset-x-1 z-20 h-0.5 bg-primary ${dropTarget.after ? "bottom-0" : "top-0"}`}
+                />
+              ) : null}
               <ul>{props.renderThread(thread)}</ul>
               <div className="flex items-center gap-1 px-2 pb-1 text-xs text-muted-foreground">
                 <button
@@ -176,18 +259,7 @@ export function WorkstreamNativeSidebar(props: {
                   draggable={canMove(thread)}
                   disabled={!canMove(thread)}
                   aria-label={`Drag ${thread.title} to a Workstream or reorder`}
-                  className="rounded p-1 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
-                  onDragStart={(event) => {
-                    event.stopPropagation();
-                    if (!canMove(thread)) {
-                      event.preventDefault();
-                      return;
-                    }
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("application/x-t3-workstream-thread", key);
-                    setDragged(thread);
-                  }}
-                  onDragEnd={() => setDragged(null)}
+                  className="cursor-grab rounded p-1 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
                 >
                   <GripVerticalIcon aria-hidden className="size-3" />
                 </button>
@@ -275,6 +347,10 @@ export function WorkstreamNativeSidebar(props: {
         controller={controller}
         renderMembers={renderMembers}
         onThreadDrop={drop}
+        onThreadDragOver={dragOver}
+        threadDropTarget={dropTarget && !dropTarget.threadKey ? dropTarget.workstreamId : undefined}
+        onThreadDragLeave={() => setDropTarget(null)}
+        threadActionBusy={busy}
       />
     </>
   );

@@ -38,6 +38,10 @@ const bindingSuperseded = Symbol("binding superseded");
 export function WorkstreamSidebarSection(props: {
   readonly controller: WorkstreamListView;
   readonly renderMembers?: (workstreamId: string | null) => ReactNode;
+  readonly onThreadDragOver?: (event: DragEvent, workstreamId: string | null) => boolean;
+  readonly threadDropTarget?: string | null | undefined;
+  readonly onThreadDragLeave?: () => void;
+  readonly threadActionBusy?: boolean;
   readonly onThreadDrop?: (event: DragEvent, workstreamId: string | null) => boolean;
 }) {
   const { data, placementInventory, submit, runBindingOperation, loadDetail, loadReference } =
@@ -51,6 +55,9 @@ export function WorkstreamSidebarSection(props: {
   const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [dragging, setDragging] = useState<string | null>(null);
+  const [groupDropTarget, setGroupDropTarget] = useState<{ id: string; after: boolean } | null>(
+    null,
+  );
   const [selected, setSelected] = useState<string | null>(null);
   const [targetId, setTargetId] = useState("");
   const [declarationText, setDeclarationText] = useState("");
@@ -75,6 +82,7 @@ export function WorkstreamSidebarSection(props: {
     setReceipt(null);
     setEditing(null);
     setDragging(null);
+    setGroupDropTarget(null);
     setCommandError(null);
     if (bindingKey === null) {
       setSelected(null);
@@ -87,7 +95,7 @@ export function WorkstreamSidebarSection(props: {
     };
   }, [bindingKey]);
   if (!data) return null;
-  const canWrite = canEditWorkstreams(data);
+  const canWrite = canEditWorkstreams(data) && !props.controller.loading && !props.threadActionBusy;
 
   const showDetail = (workstreamId: string) => {
     detailRequest.current?.abort();
@@ -270,24 +278,46 @@ export function WorkstreamSidebarSection(props: {
       <ul className="space-y-0.5">
         {items.map((item, index) => (
           <li
-            className={`rounded-md border-l-2 ${workstreamTint(item.workstreamId)}`}
-            draggable={canWrite}
+            className={`relative rounded-md border-l-2 ${workstreamTint(item.workstreamId)} ${props.threadDropTarget === item.workstreamId ? "ring-2 ring-primary bg-primary/10" : ""}`}
+            data-drop-target={props.threadDropTarget === item.workstreamId ? "thread" : undefined}
             key={item.workstreamId}
-            onDragEnd={() => setDragging(null)}
-            onDragStart={() => {
-              if (canWrite) setDragging(item.workstreamId);
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                props.onThreadDragLeave?.();
+                setGroupDropTarget(null);
+              }
             }}
             onDragOver={(event) => {
-              if (canWrite) event.preventDefault();
+              if (props.onThreadDragOver?.(event, item.workstreamId)) return;
+              if (!canWrite || !dragging || dragging === item.workstreamId) return;
+              event.preventDefault();
+              event.stopPropagation();
+              event.dataTransfer.dropEffect = "move";
+              const bounds = event.currentTarget.getBoundingClientRect();
+              setGroupDropTarget({
+                id: item.workstreamId,
+                after: event.clientY > bounds.top + bounds.height / 2,
+              });
             }}
             onDrop={(event) => {
-              if (!canWrite) return;
-              event.preventDefault();
               if (props.onThreadDrop?.(event, item.workstreamId)) return;
-              if (dragging) reorder(dragging, index);
+              if (!canWrite || !dragging || dragging === item.workstreamId) return;
+              event.preventDefault();
+              event.stopPropagation();
+              const bounds = event.currentTarget.getBoundingClientRect();
+              const after = event.clientY > bounds.top + bounds.height / 2;
+              const sourceIndex = items.findIndex((entry) => entry.workstreamId === dragging);
+              reorder(dragging, index + (after ? 1 : 0) - (sourceIndex < index ? 1 : 0));
               setDragging(null);
+              setGroupDropTarget(null);
             }}
           >
+            {groupDropTarget?.id === item.workstreamId ? (
+              <div
+                aria-hidden
+                className={`pointer-events-none absolute inset-x-0 z-20 h-0.5 bg-primary ${groupDropTarget.after ? "bottom-0" : "top-0"}`}
+              />
+            ) : null}
             <div className="flex min-h-8 items-center gap-1 px-1">
               {props.renderMembers ? (
                 <button
@@ -310,7 +340,32 @@ export function WorkstreamSidebarSection(props: {
                 </button>
               ) : null}
               {canWrite ? (
-                <GripVerticalIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+                <button
+                  type="button"
+                  draggable
+                  aria-label={`Drag Workstream ${item.name} to reorder`}
+                  className="cursor-grab rounded p-1 text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+                  onDragStart={(event) => {
+                    event.stopPropagation();
+                    if (!canWrite) {
+                      event.preventDefault();
+                      return;
+                    }
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData(
+                      "application/x-t3-workstream-group",
+                      item.workstreamId,
+                    );
+                    setDragging(item.workstreamId);
+                  }}
+                  onDragEnd={(event) => {
+                    event.stopPropagation();
+                    setDragging(null);
+                    setGroupDropTarget(null);
+                  }}
+                >
+                  <GripVerticalIcon aria-hidden className="size-3.5 shrink-0" />
+                </button>
               ) : null}
               {canWrite && editing === item.workstreamId ? (
                 <Input
@@ -389,12 +444,15 @@ export function WorkstreamSidebarSection(props: {
       </ul>
       {props.renderMembers ? (
         <div
-          className="mt-2 rounded-md border-l-2 border-sidebar-border"
-          onDragOver={(event) => {
-            if (canWrite) event.preventDefault();
+          className={`mt-2 rounded-md border-l-2 border-sidebar-border ${props.threadDropTarget === null ? "ring-2 ring-primary bg-primary/10" : ""}`}
+          data-drop-target={props.threadDropTarget === null ? "thread" : undefined}
+          onDragOver={(event) => props.onThreadDragOver?.(event, null)}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+              props.onThreadDragLeave?.();
           }}
           onDrop={(event) => {
-            if (canWrite) props.onThreadDrop?.(event, null);
+            props.onThreadDrop?.(event, null);
           }}
         >
           <button

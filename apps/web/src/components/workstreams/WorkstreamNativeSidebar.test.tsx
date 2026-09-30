@@ -120,7 +120,155 @@ async function clickMenu(text: string) {
   await act(async () => item!.click());
 }
 
+async function dragEvent(element: Element, type: string, clientY = 0) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    dataTransfer: { value: { effectAllowed: "none", dropEffect: "none", setData: vi.fn() } },
+    clientY: { value: clientY },
+  });
+  await act(async () => {
+    element.dispatchEvent(event);
+  });
+  return event;
+}
+
+function nativeRow(index: number) {
+  return [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === threads[index]!.title,
+  )!;
+}
+
 describe("native Workstream sidebar interactions", () => {
+  it("drags the native row into another Workstream with compatible target feedback", async () => {
+    await render();
+    const row = nativeRow(0);
+    expect(row.closest('[draggable="true"]')?.textContent).not.toContain("alpha");
+    await dragEvent(row, "dragstart");
+    const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
+    expect((await dragEvent(target, "dragover")).defaultPrevented).toBe(true);
+    expect(target.getAttribute("data-drop-target")).toBe("thread");
+    await dragEvent(target, "drop");
+    await vi.waitFor(() => expect(controller.submit).toHaveBeenCalledOnce());
+    expect(controller.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: expect.objectContaining({
+          operation: "move_primary",
+          destination_workstream_id: "beta",
+        }),
+      }),
+    );
+    expect(reorder).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
+  });
+
+  it("drops a native row on Unassigned to remove its primary membership", async () => {
+    await render();
+    await dragEvent(nativeRow(0), "dragstart");
+    const target = container.querySelector('[aria-label="Collapse Unassigned"]')!.parentElement!;
+    await dragEvent(target, "dragover");
+    expect(target.getAttribute("data-drop-target")).toBe("thread");
+    await dragEvent(target, "drop");
+    await vi.waitFor(() => expect(controller.submit).toHaveBeenCalledOnce());
+    expect(controller.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: expect.objectContaining({
+          operation: "remove_membership",
+          membership_id: "membership",
+        }),
+      }),
+    );
+  });
+
+  it("shows the insertion edge and reorders native rows without changing membership", async () => {
+    controller = {
+      ...controller,
+      placements: {
+        ...placements,
+        items: [
+          ...placements.items,
+          {
+            ...placements.items[0]!,
+            native_reference_id: "reference-two",
+            native_thread_id: "unassigned",
+            membership_id: "member-two",
+          },
+        ],
+      },
+    };
+    await render();
+    await dragEvent(nativeRow(0), "dragstart");
+    const target = nativeRow(1).closest('[draggable="true"]')!;
+    await dragEvent(target, "dragover", 10);
+    expect(target.getAttribute("data-drop-position")).toBe("after");
+    await dragEvent(target, "drop", 10);
+    expect(reorder).toHaveBeenCalledWith(threads[0], threads[1], true);
+    expect(controller.submit).not.toHaveBeenCalled();
+  });
+
+  it("starts group reordering only from the group grip and never submits membership changes", async () => {
+    await render();
+    const header = container.querySelector('[aria-label="Collapse alpha"]')!.parentElement!;
+    expect(header.closest('[draggable="true"]')).toBeNull();
+    const handle = container.querySelector('[aria-label="Drag Workstream alpha to reorder"]')!;
+    await dragEvent(handle, "dragstart");
+    const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
+    await dragEvent(target, "dragover", 10);
+    expect(target.getAttribute("data-drop-target")).toBeNull();
+    await dragEvent(target, "drop", 10);
+    await vi.waitFor(() => expect(controller.submit).toHaveBeenCalled());
+    expect(
+      vi
+        .mocked(controller.submit)
+        .mock.calls.every(([command]) => command.action.operation === "update_workstream"),
+    ).toBe(true);
+    expect(reorder).not.toHaveBeenCalled();
+  });
+
+  it("clears drop feedback on cancellation and rejects a drop after write access changes", async () => {
+    await render();
+    await dragEvent(nativeRow(0), "dragstart");
+    const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
+    await dragEvent(target, "dragover");
+    await dragEvent(nativeRow(0), "dragend");
+    expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
+    await dragEvent(nativeRow(0), "dragstart");
+    controller = {
+      ...controller,
+      data: {
+        ...data,
+        binding: { ...data.binding, authorizationRevision: 2, permissions: ["workstreams:read"] },
+      },
+    };
+    await render();
+    await dragEvent(target, "drop");
+    expect(controller.submit).not.toHaveBeenCalled();
+  });
+
+  it("does not treat selected native text as a thread drag", async () => {
+    await render();
+    const row = nativeRow(0);
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(row);
+    selection.addRange(range);
+    expect((await dragEvent(row, "dragstart")).defaultPrevented).toBe(true);
+    const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
+    await dragEvent(target, "drop");
+    expect(controller.submit).not.toHaveBeenCalled();
+    selection.removeAllRanges();
+  });
+
+  it("ignores external drags and refuses row drags without verified placements", async () => {
+    controller = { ...controller, placements: null };
+    await render();
+    const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
+    expect((await dragEvent(target, "dragover")).defaultPrevented).toBe(false);
+    expect((await dragEvent(nativeRow(0), "dragstart")).defaultPrevented).toBe(true);
+    await dragEvent(target, "drop");
+    expect(controller.submit).not.toHaveBeenCalled();
+    expect(reorder).not.toHaveBeenCalled();
+  });
+
   it("preserves all native conversations under partial or untrusted placement coverage", async () => {
     controller = {
       ...controller,

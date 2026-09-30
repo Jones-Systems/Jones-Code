@@ -206,7 +206,7 @@ describe("Workstream sidebar binding cancellation", () => {
     expect(containsText(initial, "completed — open to verify")).toBe(true);
     const alpha = visitElements(
       initial,
-      (element) => element.type === "button" && containsText(element, "Alpha"),
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     alpha?.props.onClick();
     await Promise.resolve();
@@ -271,7 +271,7 @@ describe("Workstream sidebar binding cancellation", () => {
     expect(containsText(initial, "completed — open to verify")).toBe(true);
     const alpha = visitElements(
       initial,
-      (element) => element.type === "button" && containsText(element, "Alpha"),
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     alpha?.props.onClick();
     await Promise.resolve();
@@ -326,7 +326,7 @@ describe("Workstream sidebar binding cancellation", () => {
     const initial = WorkstreamSidebarSection({ controller });
     const alpha = visitElements(
       initial,
-      (element) => element.type === "button" && containsText(element, "Alpha"),
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     alpha?.props.onClick();
     await Promise.resolve();
@@ -373,7 +373,7 @@ describe("Workstream sidebar binding cancellation", () => {
     const unverifiedInitial = WorkstreamSidebarSection({ controller: unverifiedController });
     const unverifiedAlpha = visitElements(
       unverifiedInitial,
-      (element) => element.type === "button" && containsText(element, "Alpha"),
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     unverifiedAlpha?.props.onClick();
     await Promise.resolve();
@@ -413,7 +413,7 @@ describe("Workstream sidebar binding cancellation", () => {
     expect(containsText(initial, "Actions for Alpha")).toBe(false);
     const alpha = visitElements(
       initial,
-      (element) => element.type === "button" && containsText(element, "Alpha"),
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     alpha?.props.onClick();
     await Promise.resolve();
@@ -519,7 +519,7 @@ describe("Workstream sidebar binding cancellation", () => {
     const initial = WorkstreamSidebarSection({ controller });
     const alpha = visitElements(
       initial,
-      (element) => element.type === "button" && containsText(element, "Alpha"),
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     alpha?.props.onClick();
     const signal = loadDetail.mock.calls[0]?.[1]?.signal;
@@ -568,7 +568,7 @@ describe("Workstream sidebar binding cancellation", () => {
     const initial = WorkstreamSidebarSection({ controller });
     const alpha = visitElements(
       initial,
-      (element) => element.type === "button" && containsText(element, "Alpha"),
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     expect(alpha).toBeDefined();
     alpha?.props.onClick();
@@ -630,7 +630,7 @@ describe("Workstream sidebar binding cancellation", () => {
     const initial = WorkstreamSidebarSection({ controller });
     const initialAlpha = visitElements(
       initial,
-      (element) => element.type === "button" && containsText(element, "Alpha"),
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     initialAlpha?.props.onClick();
     await Promise.resolve();
@@ -660,7 +660,7 @@ describe("Workstream sidebar binding cancellation", () => {
     const rebound = WorkstreamSidebarSection({ controller });
     const reboundAlpha = visitElements(
       rebound,
-      (element) => element.type === "button" && containsText(element, "Alpha"),
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     reboundAlpha?.props.onClick();
     await Promise.resolve();
@@ -707,7 +707,7 @@ describe("Workstream sidebar binding cancellation", () => {
     const initial = WorkstreamSidebarSection({ controller });
     const alpha = visitElements(
       initial,
-      (element) => element.type === "button" && containsText(element, "Alpha"),
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     alpha?.props.onClick();
     await Promise.resolve();
@@ -777,7 +777,7 @@ describe("Workstream sidebar binding cancellation", () => {
     const initial = WorkstreamSidebarSection({ controller });
     const alpha = visitElements(
       initial,
-      (element) => element.type === "button" && containsText(element, "Alpha"),
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     alpha?.props.onClick();
     await Promise.resolve();
@@ -907,17 +907,25 @@ describe("Workstream sidebar binding cancellation", () => {
     const initial = WorkstreamSidebarSection({ controller });
     const gamma = findElement(
       initial,
-      (element) => element.type === "li" && containsText(element, "Gamma"),
-    ) as ReactElement<{ onDragStart: () => void }> | undefined;
-    gamma?.props.onDragStart();
+      (element) => element.props["aria-label"] === "Drag Workstream Gamma to reorder",
+    ) as ReactElement<{ onDragStart: (event: object) => void }> | undefined;
+    gamma?.props.onDragStart({
+      stopPropagation: vi.fn(),
+      dataTransfer: { effectAllowed: "none", setData: vi.fn() },
+    });
 
     hooks.beginRender();
     const dragging = WorkstreamSidebarSection({ controller });
     const alpha = findElement(
       dragging,
       (element) => element.type === "li" && containsText(element, "Alpha"),
-    ) as ReactElement<{ onDrop: (event: { preventDefault: () => void }) => void }> | undefined;
-    alpha?.props.onDrop({ preventDefault: vi.fn() });
+    ) as ReactElement<{ onDrop: (event: object) => void }> | undefined;
+    alpha?.props.onDrop({
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+      clientY: 0,
+      currentTarget: { getBoundingClientRect: () => ({ top: 0, height: 40 }) },
+    });
 
     await vi.waitFor(() => expect(submitStep).toHaveBeenCalledTimes(2));
     expect(runBindingOperation).toHaveBeenCalledTimes(1);

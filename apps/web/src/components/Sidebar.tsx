@@ -4927,6 +4927,23 @@ export default function Sidebar() {
                           onNavigateToDraft={navigateToDraft}
                         />,
                       ];
+                      if (workstreamController.data !== null) {
+                        items.unshift(
+                          <li key="native-workstream-groups" className="list-none">
+                            <WorkstreamNativeSidebar
+                              controller={workstreamController}
+                              grouping={workstreamGrouping}
+                              renderThread={(thread) => renderThreadRowInner(thread, "active")}
+                              canReorder={(thread) =>
+                                activeReorderableThreadKeys.has(
+                                  scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+                                )
+                              }
+                              reorder={reorderWorkstreamThread}
+                            />
+                          </li>,
+                        );
+                      }
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
                           if (item.section === "active" && workstreamController.data !== null)
@@ -4958,28 +4975,7 @@ export default function Sidebar() {
                             );
                             break;
                           case "active-placeholder":
-                            if (workstreamController.data !== null) {
-                              items.push(
-                                <li key="native-workstream-groups" className="list-none">
-                                  <WorkstreamNativeSidebar
-                                    controller={workstreamController}
-                                    grouping={workstreamGrouping}
-                                    renderThread={(thread) =>
-                                      renderThreadRowInner(thread, "active")
-                                    }
-                                    canReorder={(thread) =>
-                                      activeReorderableThreadKeys.has(
-                                        scopedThreadKey(
-                                          scopeThreadRef(thread.environmentId, thread.id),
-                                        ),
-                                      )
-                                    }
-                                    reorder={reorderWorkstreamThread}
-                                  />
-                                </li>,
-                              );
-                              break;
-                            }
+                            if (workstreamController.data !== null) break;
                             items.push(
                               <SidebarSectionPlaceholder
                                 key="active-placeholder"
