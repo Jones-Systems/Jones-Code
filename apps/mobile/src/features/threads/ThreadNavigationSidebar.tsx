@@ -1,3 +1,9 @@
+import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
+import {
+  projectMobileWorkstreamList,
+  mobileWorkstreamMoveDestination,
+} from "../workstreams/listProjection";
+import type { ThreadMoveDestination } from "./threadOrder";
 import { useAndroidControlSizing } from "../../components/useAndroidControlSizing";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { computeThreadMoveAvailability } from "./threadOrder";
@@ -57,6 +63,7 @@ import { SidebarFilterButton } from "./sidebar-filter-button";
 import { createSidebarHeaderItems } from "./sidebar-native-header-items";
 import { SidebarNavigationShell } from "./sidebar-navigation-shell";
 import {
+  ThreadListV2WorkstreamHeader,
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
@@ -137,6 +144,7 @@ function ThreadNavigationSidebarPane(
   const { fabClearance } = useAndroidControlSizing();
   const projects = useProjects();
   const threads = useThreadShells();
+  const workstreams = useMobileWorkstreams(threads);
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const searchInputRef = useRef<TextInput>(null);
@@ -492,7 +500,7 @@ function ThreadNavigationSidebarPane(
         (v2SearchQuery.length === 0 ||
           pendingTask.title.toLocaleLowerCase().includes(v2SearchQuery)),
     );
-    const items: SidebarListItem[] = buildThreadListV2ListItems({
+    const nativeItems = buildThreadListV2ListItems({
       items: threadListV2Layout.items,
       pendingTasks: v2PendingTasks,
       snoozedCount: threadListV2Layout.snoozedCount,
@@ -507,6 +515,14 @@ function ThreadNavigationSidebarPane(
       moveAvailability: threadMoveAvailability,
       shelfPreferencesLoading: !shelfPreferencesLoaded,
     });
+    const items: SidebarListItem[] = projectMobileWorkstreamList(nativeItems, {
+      enabled: workstreams.enabled,
+      groups: workstreams.groups,
+      collapsedKeys: workstreams.collapsedKeys,
+      secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+      searching: props.searchQuery.trim().length > 0,
+      selectedThreadKey: props.selectedThreadKey,
+    });
     if (settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0) {
       items.push({
         type: "v2-show-more",
@@ -516,6 +532,11 @@ function ThreadNavigationSidebarPane(
     }
     return items;
   }, [
+    workstreams.enabled,
+    workstreams.groups,
+    workstreams.collapsedKeys,
+    workstreams.secondaryLabelsByKey,
+    props.selectedThreadKey,
     nowMinute,
     options.selectedEnvironmentId,
     pendingTasks,
@@ -652,6 +673,7 @@ function ThreadNavigationSidebarPane(
   // tick only re-renders rows whose displayed text actually moved.
   const listExtraData = useMemo(
     () => ({
+      workstreamBindingRevision: workstreams.bindingRevision,
       selectedThreadKey: props.selectedThreadKey ?? "",
       projectByKey,
       projectTitleByProjectKey,
@@ -660,6 +682,7 @@ function ThreadNavigationSidebarPane(
       threadSearchMatchByKey,
     }),
     [
+      workstreams.bindingRevision,
       props.selectedThreadKey,
       projectByKey,
       projectTitleByProjectKey,
@@ -699,9 +722,30 @@ function ThreadNavigationSidebarPane(
     return true;
   }, [props.nativeChrome, props.onRequestVisibility, props.visible]);
   useHardwareKeyboardCommand("focusSearch", focusSearch);
+  const moveWithinWorkstream = useCallback(
+    (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
+      const target = workstreams.enabled
+        ? mobileWorkstreamMoveDestination(
+            listItems.filter(isThreadListV2ListItem),
+            thread,
+            direction,
+          )
+        : direction;
+      if (target !== null) void moveThread(thread, target);
+    },
+    [workstreams.enabled, listItems, moveThread],
+  );
   const renderListItem = useCallback(
     ({ item }: { readonly item: SidebarListItem }) => {
       switch (item.type) {
+        case "v2-workstream":
+          return (
+            <ThreadListV2WorkstreamHeader
+              {...item}
+              onToggle={() => workstreams.toggleGroup(item.groupKey)}
+              onOpen={() => workstreams.openGroup(item.groupKey)}
+            />
+          );
         case "v2-pending": {
           const pendingScopeKey = scopedProjectKey(
             item.pendingTask.environmentId,
@@ -740,6 +784,8 @@ function ThreadNavigationSidebarPane(
             <ThreadListV2Row
               onNewThreadOnBranch={props.onNewThreadOnBranch}
               thread={thread}
+              onOpenWorkstreams={workstreams.openThread}
+              secondaryWorkstreamLabel={item.secondaryWorkstreamLabel}
               variant={item.item.variant}
               hasQueuedMessages={item.hasQueuedMessages}
               snoozed={item.item.snoozed}
@@ -792,7 +838,7 @@ function ThreadNavigationSidebarPane(
               onPinThread={pinThread}
               onUnpinThread={unpinThread}
               onSetThreadAutoSettle={setThreadAutoSettle}
-              onMoveThread={moveThread}
+              onMoveThread={moveWithinWorkstream}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
               simultaneousSwipeGesture={sidebarScrollGesture}
@@ -839,6 +885,10 @@ function ThreadNavigationSidebarPane(
       handleSwipeableWillOpen,
       machineByEnvironmentId,
       moveThread,
+      moveWithinWorkstream,
+      workstreams.toggleGroup,
+      workstreams.openGroup,
+      workstreams.openThread,
       openPendingTask,
       pinReorderEnvironmentIds,
       pinThread,
@@ -871,8 +921,8 @@ function ThreadNavigationSidebarPane(
       unsnoozeThread,
     ],
   );
-  // The list ignores sort/group options, so only the environment and project
-  // filters can light the "customized" state.
+  // Project sort/group preferences do not change this flat list. Workstream
+  // grouping has its own control; this indicator tracks environment/project filters.
   const filterCustomized = options.selectedEnvironmentId !== null || selectedProjectKey !== null;
   const filterIcon = filterCustomized
     ? "line.3.horizontal.decrease.circle.fill"
@@ -925,6 +975,7 @@ function ThreadNavigationSidebarPane(
   if (props.nativeChrome) {
     return (
       <>
+        {workstreams.sheet}
         <NativeStackScreenOptions
           optionsVersion={[nativeHeaderItems, props.width]}
           options={{
@@ -962,6 +1013,7 @@ function ThreadNavigationSidebarPane(
             <GestureDetector gesture={sidebarScrollGesture}>
               <LegendList
                 data={listItems}
+                ListHeaderComponent={workstreams.controls}
                 drawDistance={500}
                 estimatedItemSize={64}
                 extraData={listExtraData}
@@ -1005,6 +1057,7 @@ function ThreadNavigationSidebarPane(
       }
       style={{ width: props.width }}
     >
+      {workstreams.sheet}
       <View
         className="flex-1"
         style={
@@ -1028,6 +1081,7 @@ function ThreadNavigationSidebarPane(
             <GestureDetector gesture={sidebarScrollGesture}>
               <LegendList
                 data={listItems}
+                ListHeaderComponent={workstreams.controls}
                 drawDistance={500}
                 estimatedItemSize={64}
                 extraData={listExtraData}

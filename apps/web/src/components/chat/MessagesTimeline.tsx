@@ -1252,11 +1252,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // from TimelineRowCtx, which propagates through LegendList's memo.
   const renderItem = useCallback(
     ({ item }: { item: MessagesTimelineRow }) => (
-      <div
-        className="mx-auto w-full min-w-0 max-w-(--chat-max-width) overflow-x-clip"
-        data-timeline-root="true"
-      >
-        <TimelineRowContent row={item} />
+      <div className="w-full min-w-0 [container-type:inline-size]" data-timeline-root="true">
+        <div className="mx-auto w-full min-w-0 max-w-(--chat-max-width)">
+          <TimelineRowContent row={item} />
+        </div>
       </div>
     ),
     [],

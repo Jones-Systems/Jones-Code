@@ -131,6 +131,10 @@
       "types": "./src/state/connections.ts",
       "default": "./src/state/connections.ts"
     },
+    "./state/environmentHttpAuth": {
+      "types": "./src/state/environmentHttpAuth.ts",
+      "default": "./src/state/environmentHttpAuth.ts"
+    },
     "./state/entities": {
       "types": "./src/state/entities.ts",
       "default": "./src/state/entities.ts"
@@ -230,6 +234,10 @@
     "./state/subagentRuntime": {
       "types": "./src/state/subagentRuntime.ts",
       "default": "./src/state/subagentRuntime.ts"
+    },
+    "./state/workstreams": {
+      "types": "./src/state/workstreams/index.ts",
+      "default": "./src/state/workstreams/index.ts"
     },
     "./state/thread-sort": {
       "types": "./src/state/threadSort.ts",
