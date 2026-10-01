@@ -51,8 +51,8 @@ async function missing(filename) {
   }
 }
 
-const acceptedPackageSource = "f094c6e5fc383c1bea90d55a205f23ba6cb63143";
-const acceptedT2Source = "e3daddad7516a3a40f8611a00b8de1d7b2f48ed4";
+const acceptedPackageSource = "f7301caf3fff1ebff013e94570e324579deaa6ca";
+const acceptedT2Source = "50935bb50f2dae620e93686b7a6e10c9c3067285";
 
 async function compiledCandidate(context) {
   const mode = process.env.T4_QUAL_MODE ?? "dev";
@@ -74,20 +74,20 @@ async function compiledCandidate(context) {
   }
   assert.equal(descriptor.acceptedCumulativeSource, acceptedPackageSource);
   assert.equal(descriptor.acceptedT2Source, acceptedT2Source);
-  assert.equal(descriptor.acceptedCumulativeTree, "67c936d1687c0beac2784cbfa5566ba4f1f6f6a8");
+  assert.equal(descriptor.acceptedCumulativeTree, "704a5cf13f6fcb5d279dd5e3191b5febece0e76e");
   assert.equal(descriptor.candidate?.sourceCommit, acceptedPackageSource);
   assert.equal(descriptor.candidate?.sourceTree, descriptor.acceptedCumulativeTree);
   assert.equal(
     descriptor.candidate?.sha256,
-    "cd1a5bc9e064d22f36aa621a8369e803ef8b48914eb82ffe3182b239203fa2bd",
+    "db2ced245b32d3f651864e5427be4ef8c0c74d4d1a6525d5bba868d93c55bcc9",
   );
   assert.equal(
     descriptor.candidate?.runnerSha256,
-    "81874b1a6302dc829999e2bdd1c4a096bae75d68083ffc1ea9bebf6f86a15036",
+    "f5246360095283f89c5f49e936f9c75dcd89e9f3212c58b87baf8fda10910b8a",
   );
   assert.equal(descriptor.candidate?.platform, "linux");
   assert.equal(descriptor.candidate?.architecture, "x64");
-  assert.equal(descriptor.candidate?.version, "0.0.44-preview.20261001.1003");
+  assert.equal(descriptor.candidate?.version, "0.0.44-preview.20261001.1004");
   assert.equal(descriptor.candidate?.channel, "preview");
   assert.equal(HostProcessPlatform.defaultValue(), "linux");
   assert.equal(HostProcessArchitecture.defaultValue(), "x64");
