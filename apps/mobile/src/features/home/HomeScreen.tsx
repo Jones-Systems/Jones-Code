@@ -1,3 +1,9 @@
+import {
+  mobileThreadOrderScope,
+  mobileThreadOrderSection,
+  mobileThreadOrderScopes,
+  type MobileThreadMoveContext,
+} from "../../lib/threadOrderScope";
 import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
 import {
   projectMobileWorkstreamList,
@@ -118,6 +124,7 @@ interface HomeScreenProps {
   readonly onMoveThread: (
     thread: EnvironmentThreadShell,
     direction: ThreadMoveDestination,
+    context?: MobileThreadMoveContext,
   ) => Promise<boolean>;
   readonly onRenameThread: (thread: EnvironmentThreadShell) => void;
   readonly onRegenerateThreadTitle: (thread: EnvironmentThreadShell) => Promise<boolean>;
@@ -429,8 +436,12 @@ export function HomeScreen(props: HomeScreenProps) {
     [props.onPinThread],
   );
   const handleMoveThread = useCallback(
-    (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
-      void props.onMoveThread(thread, direction);
+    (
+      thread: EnvironmentThreadShell,
+      direction: ThreadMoveDestination,
+      context?: MobileThreadMoveContext,
+    ) => {
+      void props.onMoveThread(thread, direction, context);
     },
     [props.onMoveThread],
   );
@@ -578,8 +589,9 @@ export function HomeScreen(props: HomeScreenProps) {
   // rebuild (see computeThreadMoveAvailability): per-thread planner calls made
   // list construction quadratic, and this list rebuilds on every minute tick.
   const threadMoveAvailability = useMemo(() => {
-    const sectionAvailability = (section: "pinned" | "active") =>
-      computeThreadMoveAvailability({
+    const scopeAvailability = (scope: MobileThreadMoveContext["scope"]) => {
+      const section = mobileThreadOrderSection(scope);
+      return computeThreadMoveAvailability({
         allThreads: props.threads,
         section,
         pendingOrder,
@@ -595,6 +607,8 @@ export function HomeScreen(props: HomeScreenProps) {
         ordered: getThreadListV2OrderedSection({
           threads: props.threads,
           section,
+          scope,
+          snapshot: workstreams.orderSnapshot,
           pendingOrder,
           now: new Date().toISOString(),
           settlementEnvironmentIds,
@@ -602,8 +616,14 @@ export function HomeScreen(props: HomeScreenProps) {
           queuedThreadKeys,
         }),
       });
-    return new Map([...sectionAvailability("pinned"), ...sectionAvailability("active")]);
+    };
+    return new Map(
+      mobileThreadOrderScopes(workstreams.orderSnapshot).flatMap((scope) => [
+        ...scopeAvailability(scope),
+      ]),
+    );
   }, [
+    workstreams.orderSnapshot,
     serverConfigs,
     props.threads,
     pendingOrder,
@@ -617,6 +637,7 @@ export function HomeScreen(props: HomeScreenProps) {
     // Settled threads are live shells; archived threads keep their original
     // "hidden from lists" meaning.
     return buildThreadListV2Items({
+      snapshot: workstreams.orderSnapshot,
       pendingOrder,
       threads: props.threads.filter((thread) => thread.archivedAt === null),
       environmentId: props.selectedEnvironmentId,
@@ -633,6 +654,7 @@ export function HomeScreen(props: HomeScreenProps) {
       selectedThreadKey: null,
     });
   }, [
+    workstreams.orderSnapshot,
     pendingOrder,
     queuedThreadKeys,
     nowMinute,
@@ -719,10 +741,12 @@ export function HomeScreen(props: HomeScreenProps) {
         groups: workstreams.groups,
         collapsedKeys: workstreams.collapsedKeys,
         secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+        pendingOrder,
         searching: props.searchQuery.trim().length > 0,
       }),
     [
       nativeThreadListV2Items,
+      pendingOrder,
       workstreams.enabled,
       workstreams.groups,
       workstreams.collapsedKeys,
@@ -735,9 +759,21 @@ export function HomeScreen(props: HomeScreenProps) {
       const target = workstreams.enabled
         ? mobileWorkstreamMoveDestination(threadListV2Items, thread, direction)
         : direction;
-      if (target !== null) handleMoveThread(thread, target);
+      if (target !== null)
+        handleMoveThread(thread, target, {
+          scope: mobileThreadOrderScope(thread, workstreams.orderSnapshot),
+          source: workstreams.orderSource,
+          removePrimary: workstreams.removePrimary,
+        });
     },
-    [workstreams.enabled, threadListV2Items, handleMoveThread],
+    [
+      workstreams.enabled,
+      workstreams.orderSnapshot,
+      workstreams.orderSource,
+      workstreams.removePrimary,
+      threadListV2Items,
+      handleMoveThread,
+    ],
   );
 
   useThreadJumpShortcuts(threadListV2Items, props.onSelectThread);

@@ -893,11 +893,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const occurredAt = yield* nowIso;
       // Snooze retains this slot. Changing it cannot wake the thread, and
       // accepting it handles races with snooze and retained wake timestamps.
-      if (
-        thread.deletedAt !== null ||
-        thread.pinnedAt != null ||
-        thread.settledOverride === "settled"
-      ) {
+      if (thread.deletedAt !== null || thread.settledOverride === "settled") {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `thread ${command.threadId} is not active and cannot be reordered`,

@@ -10,6 +10,7 @@ import {
   workstreamBindingKey,
   resolveWorkstreamCompletionAuthority,
 } from "@t3tools/client-runtime/state/workstreams";
+import { useDroppable } from "@dnd-kit/core";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
@@ -39,6 +40,9 @@ export const workstreamCommandId = () =>
   );
 
 const bindingSuperseded = Symbol("binding superseded");
+// Stable inputs prevent unchanged collapse state from notifying the parent on every render.
+const collapsedWorkstreamIdsSchema = Schema.Array(Schema.String);
+const EMPTY_COLLAPSED_WORKSTREAM_IDS: readonly string[] = [];
 
 export function WorkstreamCreateForm({
   controller,
@@ -181,6 +185,7 @@ export function WorkstreamCreateForm({
 export function WorkstreamSidebarSection(props: {
   readonly controller: WorkstreamListView;
   readonly threadStatusSummaries?: ReadonlyMap<string, WorkstreamThreadStatusSummary>;
+  readonly onVisibleGroupsChange?: ((ids: readonly (string | null)[]) => void) | undefined;
   readonly renderMembers?: (workstreamId: string | null) => ReactNode;
   readonly onThreadDragOver?: (event: DragEvent, workstreamId: string | null) => boolean;
   readonly threadDropTarget?: string | null | undefined;
@@ -192,8 +197,8 @@ export function WorkstreamSidebarSection(props: {
     props.controller;
   const [collapsed, setCollapsed] = useLocalStorage<readonly string[], readonly string[]>(
     `t3:workstreams:collapsed:${data?.binding.registryId ?? "none"}:${data?.binding.ownerId ?? "none"}`,
-    [],
-    Schema.Array(Schema.String),
+    EMPTY_COLLAPSED_WORKSTREAM_IDS,
+    collapsedWorkstreamIdsSchema,
   );
   const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -211,6 +216,14 @@ export function WorkstreamSidebarSection(props: {
   const detailRequest = useRef<AbortController | null>(null);
   const manualRefreshRequest = useRef<AbortController | null>(null);
   const items = useMemo(() => orderWorkstreamMetadata(data?.items ?? []), [data]);
+  useLayoutEffect(() => {
+    props.onVisibleGroupsChange?.([
+      ...items
+        .filter((item) => !collapsed.includes(item.workstreamId))
+        .map((item) => item.workstreamId),
+      ...(!collapsed.includes("__unassigned__") ? [null] : []),
+    ]);
+  }, [items, collapsed, props.onVisibleGroupsChange]);
   const bindingKey = data ? workstreamBindingKey(data.binding) : null;
   const bindingKeyRef = useRef(bindingKey);
 
@@ -427,122 +440,127 @@ export function WorkstreamSidebarSection(props: {
                 className={`pointer-events-none absolute inset-x-0 z-20 h-0.5 bg-primary ${groupDropTarget.after ? "bottom-0" : "top-0"}`}
               />
             ) : null}
-            <div className="flex min-h-8 items-center gap-1 px-1">
-              {props.renderMembers ? (
-                <button
-                  type="button"
-                  aria-label={`${collapsed.includes(item.workstreamId) ? "Expand" : "Collapse"} ${item.name}`}
-                  aria-expanded={!collapsed.includes(item.workstreamId)}
-                  onClick={() =>
-                    setCollapsed((values) =>
-                      values.includes(item.workstreamId)
-                        ? values.filter((id) => id !== item.workstreamId)
-                        : [...values, item.workstreamId],
-                    )
-                  }
-                  className="rounded p-1 focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  <ChevronDownIcon
-                    aria-hidden
-                    className={`size-3.5 ${collapsed.includes(item.workstreamId) ? "-rotate-90" : ""}`}
-                  />
-                </button>
-              ) : null}
-              {canWrite ? (
-                <button
-                  type="button"
-                  draggable
-                  aria-label={`Drag Workstream ${item.name} to reorder`}
-                  className="cursor-grab rounded p-1 text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
-                  onDragStart={(event) => {
-                    event.stopPropagation();
-                    if (!canWrite) {
-                      event.preventDefault();
-                      return;
+            <WorkstreamThreadDropHeader
+              destination={item.workstreamId}
+              disabled={!props.renderMembers || !canWrite}
+            >
+              <div className="flex min-h-8 items-center gap-1 px-1">
+                {props.renderMembers ? (
+                  <button
+                    type="button"
+                    aria-label={`${collapsed.includes(item.workstreamId) ? "Expand" : "Collapse"} ${item.name}`}
+                    aria-expanded={!collapsed.includes(item.workstreamId)}
+                    onClick={() =>
+                      setCollapsed((values) =>
+                        values.includes(item.workstreamId)
+                          ? values.filter((id) => id !== item.workstreamId)
+                          : [...values, item.workstreamId],
+                      )
                     }
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData(
-                      "application/x-t3-workstream-group",
-                      item.workstreamId,
-                    );
-                    setDragging(item.workstreamId);
-                  }}
-                  onDragEnd={(event) => {
-                    event.stopPropagation();
-                    setDragging(null);
-                    setGroupDropTarget(null);
-                  }}
-                >
-                  <GripVerticalIcon aria-hidden className="size-3.5 shrink-0" />
-                </button>
-              ) : null}
-              {canWrite && editing === item.workstreamId ? (
-                <Input
-                  aria-label="Workstream name"
-                  autoFocus
-                  nativeInput
-                  onBlur={() => {
-                    const next = name.trim();
-                    if (next && next !== item.name) update(item, { name: next });
-                    setEditing(null);
-                  }}
-                  onChange={(event) => setName(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") event.currentTarget.blur();
-                    if (event.key === "Escape") setEditing(null);
-                  }}
-                  size="compact"
-                  value={name}
-                />
-              ) : (
-                <button
-                  className="min-w-0 flex-1 truncate px-1 text-left text-sm"
-                  onClick={() => showDetail(item.workstreamId)}
-                  type="button"
-                >
-                  {item.name}
-                </button>
-              )}
-              <WorkstreamHeaderStatus
-                name={item.name}
-                summary={
-                  props.threadStatusSummaries?.get(item.workstreamId) ??
-                  EMPTY_WORKSTREAM_THREAD_STATUS
-                }
-              />
-              {canWrite ? (
-                <Menu>
-                  <MenuTrigger
-                    aria-label={`Actions for ${item.name}`}
-                    render={<Button size="icon-micro" variant="ghost-muted" />}
+                    className="rounded p-1 focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    <MoreHorizontalIcon />
-                  </MenuTrigger>
-                  <MenuPopup align="end">
-                    <MenuItem
-                      onClick={() => {
-                        setName(item.name);
-                        setEditing(item.workstreamId);
-                      }}
+                    <ChevronDownIcon
+                      aria-hidden
+                      className={`size-3.5 ${collapsed.includes(item.workstreamId) ? "-rotate-90" : ""}`}
+                    />
+                  </button>
+                ) : null}
+                {canWrite ? (
+                  <button
+                    type="button"
+                    draggable
+                    aria-label={`Drag Workstream ${item.name} to reorder`}
+                    className="cursor-grab rounded p-1 text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+                    onDragStart={(event) => {
+                      event.stopPropagation();
+                      if (!canWrite) {
+                        event.preventDefault();
+                        return;
+                      }
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData(
+                        "application/x-t3-workstream-group",
+                        item.workstreamId,
+                      );
+                      setDragging(item.workstreamId);
+                    }}
+                    onDragEnd={(event) => {
+                      event.stopPropagation();
+                      setDragging(null);
+                      setGroupDropTarget(null);
+                    }}
+                  >
+                    <GripVerticalIcon aria-hidden className="size-3.5 shrink-0" />
+                  </button>
+                ) : null}
+                {canWrite && editing === item.workstreamId ? (
+                  <Input
+                    aria-label="Workstream name"
+                    autoFocus
+                    nativeInput
+                    onBlur={() => {
+                      const next = name.trim();
+                      if (next && next !== item.name) update(item, { name: next });
+                      setEditing(null);
+                    }}
+                    onChange={(event) => setName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                      if (event.key === "Escape") setEditing(null);
+                    }}
+                    size="compact"
+                    value={name}
+                  />
+                ) : (
+                  <button
+                    className="min-w-0 flex-1 truncate px-1 text-left text-sm"
+                    onClick={() => showDetail(item.workstreamId)}
+                    type="button"
+                  >
+                    {item.name}
+                  </button>
+                )}
+                <WorkstreamHeaderStatus
+                  name={item.name}
+                  summary={
+                    props.threadStatusSummaries?.get(item.workstreamId) ??
+                    EMPTY_WORKSTREAM_THREAD_STATUS
+                  }
+                />
+                {canWrite ? (
+                  <Menu>
+                    <MenuTrigger
+                      aria-label={`Actions for ${item.name}`}
+                      render={<Button size="icon-micro" variant="ghost-muted" />}
                     >
-                      Rename
-                    </MenuItem>
-                    <MenuItem
-                      disabled={index === 0}
-                      onClick={() => reorder(item.workstreamId, index - 1)}
-                    >
-                      <ChevronUpIcon /> Move up
-                    </MenuItem>
-                    <MenuItem
-                      disabled={index === items.length - 1}
-                      onClick={() => reorder(item.workstreamId, index + 1)}
-                    >
-                      <ChevronDownIcon /> Move down
-                    </MenuItem>
-                  </MenuPopup>
-                </Menu>
-              ) : null}
-            </div>
+                      <MoreHorizontalIcon />
+                    </MenuTrigger>
+                    <MenuPopup align="end">
+                      <MenuItem
+                        onClick={() => {
+                          setName(item.name);
+                          setEditing(item.workstreamId);
+                        }}
+                      >
+                        Rename
+                      </MenuItem>
+                      <MenuItem
+                        disabled={index === 0}
+                        onClick={() => reorder(item.workstreamId, index - 1)}
+                      >
+                        <ChevronUpIcon /> Move up
+                      </MenuItem>
+                      <MenuItem
+                        disabled={index === items.length - 1}
+                        onClick={() => reorder(item.workstreamId, index + 1)}
+                      >
+                        <ChevronDownIcon /> Move down
+                      </MenuItem>
+                    </MenuPopup>
+                  </Menu>
+                ) : null}
+              </div>
+            </WorkstreamThreadDropHeader>
             {props.renderMembers && !collapsed.includes(item.workstreamId)
               ? props.renderMembers(item.workstreamId)
               : null}
@@ -562,25 +580,27 @@ export function WorkstreamSidebarSection(props: {
             props.onThreadDrop?.(event, null);
           }}
         >
-          <button
-            type="button"
-            className="flex items-center gap-1 px-2 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label={`${collapsed.includes("__unassigned__") ? "Expand" : "Collapse"} Unassigned`}
-            aria-expanded={!collapsed.includes("__unassigned__")}
-            onClick={() =>
-              setCollapsed((values) =>
-                values.includes("__unassigned__")
-                  ? values.filter((id) => id !== "__unassigned__")
-                  : [...values, "__unassigned__"],
-              )
-            }
-          >
-            <ChevronDownIcon
-              aria-hidden
-              className={`size-3.5 ${collapsed.includes("__unassigned__") ? "-rotate-90" : ""}`}
-            />{" "}
-            Unassigned
-          </button>
+          <WorkstreamThreadDropHeader destination={null} disabled={!canWrite}>
+            <button
+              type="button"
+              className="flex items-center gap-1 px-2 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={`${collapsed.includes("__unassigned__") ? "Expand" : "Collapse"} Unassigned`}
+              aria-expanded={!collapsed.includes("__unassigned__")}
+              onClick={() =>
+                setCollapsed((values) =>
+                  values.includes("__unassigned__")
+                    ? values.filter((id) => id !== "__unassigned__")
+                    : [...values, "__unassigned__"],
+                )
+              }
+            >
+              <ChevronDownIcon
+                aria-hidden
+                className={`size-3.5 ${collapsed.includes("__unassigned__") ? "-rotate-90" : ""}`}
+              />{" "}
+              Unassigned
+            </button>
+          </WorkstreamThreadDropHeader>
           {!collapsed.includes("__unassigned__") ? props.renderMembers(null) : null}
         </div>
       ) : null}
@@ -1032,5 +1052,26 @@ function WorkstreamHeaderStatus({
         {summary.running}/{summary.total}
       </span>
     </span>
+  );
+}
+
+function WorkstreamThreadDropHeader(props: {
+  readonly destination: string | null;
+  readonly disabled: boolean;
+  readonly children: ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `workstream-thread-destination:${props.destination ?? "__unassigned__"}`,
+    disabled: props.disabled,
+    data: { workstreamThreadDestination: props.destination },
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      data-thread-drop-header={props.destination ?? "__unassigned__"}
+      className={isOver ? "rounded ring-2 ring-primary bg-primary/10" : undefined}
+    >
+      {props.children}
+    </div>
   );
 }

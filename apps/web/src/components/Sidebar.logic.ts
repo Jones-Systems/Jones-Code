@@ -156,16 +156,15 @@ export function sidebarListItemId(item: SidebarListItem): string {
   return item.kind === "thread" ? item.key : sidebarMarkerId(item.marker);
 }
 
-/** The section a slot belongs to, read off the markers around it: from
-    the top down, everything before the pinned divider is pinned, then the
-    inbox until the snoozed header, the shelf until the settled header,
-    then settled. */
+/** Read shelf boundaries in rendered order, including Workstreams before Pinned. */
 function sectionAtSidebarSlot(items: readonly SidebarListItem[], index: number): SidebarSection {
   let section: SidebarSection = "pinned";
   for (let i = 0; i < index && i < items.length; i += 1) {
     const item = items[i]!;
     if (item.kind !== "marker") continue;
-    if (item.marker === "pinned-divider") section = "active";
+    if (item.marker === "pinned-header") section = "pinned";
+    else if (item.marker === "pinned-divider" || item.marker === "active-placeholder")
+      section = "active";
     else if (item.marker === "snoozed-header") section = "snoozed";
     else if (item.marker === "settled-header") section = "settled";
   }
@@ -197,7 +196,9 @@ export function resolveSidebarDropTarget(
   let currentSection: SidebarSection = "pinned";
   for (const item of moved) {
     if (item.kind === "marker") {
-      if (item.marker === "pinned-divider") currentSection = "active";
+      if (item.marker === "pinned-header") currentSection = "pinned";
+      else if (item.marker === "pinned-divider" || item.marker === "active-placeholder")
+        currentSection = "active";
       else if (item.marker === "snoozed-header" || item.marker === "settled-header") break;
     } else if (currentSection === "pinned") pinnedOrder.push(item.key);
     else activeOrder.push(item.key);
@@ -286,6 +287,7 @@ export function planSidebarThreadDrop(input: {
       const order = target.activeOrder;
       if (
         activeSection === "active" &&
+        !activePinned &&
         order.length === activeOrder.length &&
         order.every((key, index) => key === activeOrder[index])
       ) {
@@ -328,7 +330,7 @@ export function planSidebarThreadDrop(input: {
       if (reorderableKeys && assignments.some(({ id }) => !reorderableKeys.has(id))) {
         return { kind: "none" };
       }
-      if (activeSection === "pinned") {
+      if (activePinned && !activeSettled && activeSection !== "snoozed") {
         return assignments.length === 0
           ? { kind: "none" }
           : { kind: "reorder-pinned", order, assignments };
