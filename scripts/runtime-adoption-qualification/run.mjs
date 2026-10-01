@@ -3,7 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
-import { bindArtifactInputs } from "./support.mjs";
+import { bindArtifactInputs, qualifyPackageSourceDiff } from "./support.mjs";
 
 // The caller supplies the host's bounded collector and project lock; this runner installs neither.
 const script = NodeURL.fileURLToPath(import.meta.url);
@@ -161,17 +161,33 @@ async function main() {
       throw new Error("Final candidate attribution must retain its actual source commit and tree");
     }
     const changed = git("diff", "--name-only", inputs.acceptedCumulativeSource, observed.commit);
-    const outsideHarness = changed
-      .split("\n")
-      .filter((name) => name && !name.startsWith("scripts/runtime-adoption-qualification/"));
-    if (outsideHarness.length)
-      throw new Error("Candidate package source differs from qualified production source");
-    // A harness-only commit changes HEAD without changing the package's production inputs.
+    const changedPaths = changed.split("\n").filter(Boolean);
+    let packageKnip;
+    let qualificationKnip;
+    if (changedPaths.includes("knip.jsonc")) {
+      for (const revision of [inputs.acceptedCumulativeSource, observed.commit]) {
+        const entry = git("ls-tree", revision, "--", "knip.jsonc");
+        if (!/^100644 blob [a-f0-9]{40}\tknip\.jsonc$/.test(entry)) {
+          throw new Error("Knip metadata must retain its regular-file mode");
+        }
+      }
+      const bytes = NodeChildProcess.spawnSync(
+        "git",
+        ["show", `${inputs.acceptedCumulativeSource}:knip.jsonc`],
+        { cwd: repositoryRoot },
+      );
+      if (bytes.status !== 0) throw new Error("Exact package Knip bytes unavailable");
+      packageKnip = bytes.stdout;
+      qualificationKnip = await NodeFSP.readFile(NodePath.join(repositoryRoot, "knip.jsonc"));
+    }
+    const sourceDiff = qualifyPackageSourceDiff(changedPaths, packageKnip, qualificationKnip);
+    // Harness and proved one-entry Knip metadata changes retain the actual package source.
     sourceObservation.harnessCommit = observed.commit;
     sourceObservation.commit = inputs.acceptedCumulativeSource;
     sourceObservation.packageSourceTree = packageTree;
     sourceObservation.qualificationTree = observed.tree;
-    sourceObservation.productionDiffPaths = outsideHarness;
+    sourceObservation.productionDiffPaths = sourceDiff.productionDiffPaths;
+    sourceObservation.nonBuildMetadataDiff = sourceDiff.nonBuildMetadataDiff;
   }
   const binding = incompleteDevelopment
     ? { status: "unbound", reasons: ["Development source or artifact inputs are incomplete"] }

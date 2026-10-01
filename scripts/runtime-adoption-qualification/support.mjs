@@ -90,6 +90,56 @@ export function withRunScratchEffect(options, useEffect) {
   );
 }
 
+export function qualifyPackageSourceDiff(changedPaths, packageKnip, qualificationKnip) {
+  const outsideHarness = changedPaths.filter(
+    (name) => !name.startsWith("scripts/runtime-adoption-qualification/"),
+  );
+  if (outsideHarness.length === 0) return { productionDiffPaths: [], nonBuildMetadataDiff: [] };
+  if (outsideHarness.length !== 1 || outsideHarness[0] !== "knip.jsonc") {
+    throw new Error("Candidate package source differs from qualified production source");
+  }
+  if (!Buffer.isBuffer(packageKnip) || !Buffer.isBuffer(qualificationKnip)) {
+    throw new Error("Exact Knip source bytes are required");
+  }
+  const anchor = Buffer.from('        "smoke-cli-archive.ts",\n');
+  const insertion = Buffer.from('        "runtime-adoption-qualification/run.mjs",\n');
+  const offset = packageKnip.indexOf(anchor);
+  const scriptsEntry = Buffer.from('    "scripts": {\n');
+  const section = packageKnip.indexOf(scriptsEntry);
+  const entry = packageKnip.indexOf(Buffer.from('      "entry": [\n'), section);
+  if (
+    section < 0 ||
+    entry < 0 ||
+    offset < entry ||
+    packageKnip.indexOf(anchor, offset + anchor.length) !== -1 ||
+    packageKnip.indexOf(insertion) !== -1 ||
+    packageKnip.subarray(entry, offset).includes(Buffer.from("      ],"))
+  ) {
+    throw new Error("Expected unique scripts entry anchor is absent from package Knip bytes");
+  }
+  const expected = Buffer.concat([
+    packageKnip.subarray(0, offset + anchor.length),
+    insertion,
+    packageKnip.subarray(offset + anchor.length),
+  ]);
+  if (!qualificationKnip.equals(expected)) {
+    throw new Error("Knip metadata differs beyond the exact runner entry insertion");
+  }
+  const hash = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+  return {
+    productionDiffPaths: [],
+    nonBuildMetadataDiff: [
+      {
+        path: "knip.jsonc",
+        entry: "runtime-adoption-qualification/run.mjs",
+        packageSha256: hash(packageKnip),
+        qualificationSha256: hash(qualificationKnip),
+        proofKind: "exact-one-entry-byte-insertion",
+      },
+    ],
+  };
+}
+
 export async function bindArtifactInputs(inputs, observedSource) {
   const descriptor =
     typeof inputs === "string" ? JSON.parse(await NodeFSP.readFile(inputs, "utf8")) : inputs;

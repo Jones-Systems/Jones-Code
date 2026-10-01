@@ -26,7 +26,11 @@ survivors preserve scratch for reconciliation.
 source and its retained accepted T2 ancestor, candidate
 version/platform/architecture/channel and file hashes. A checkout with a
 harness-only difference is allowed only when its production-tree diff against
-the descriptor's actual package source is empty. The package source commit and
+the descriptor's actual package source is empty. The sole non-build exception is
+`knip.jsonc` containing exactly one runner entry after `smoke-cli-archive.ts`;
+the guard compares complete bytes against the package-source preimage plus that
+insertion, retains regular-file mode and records both hashes. Other metadata
+or runtime changes fail binding. The package source commit and
 qualification checkout commit/tree remain separate evidence identities.
 Development runs with incomplete artifacts remain explicitly unbound.
 
