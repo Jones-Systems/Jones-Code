@@ -10,6 +10,8 @@ Workstreams need a connected owner registry with current access. Assignment also
 
 Changing membership preserves the conversation's repository, project, pinning, snooze and settlement state. Pinned, snoozed and settled conversations keep their native sidebar shelves.
 
+On web and desktop, Shift-click to select a range of threads, or Ctrl-click on Windows and Linux or Cmd-click on macOS to select individual threads. Drag a selected row onto a Workstream to move the selection, or use the selection's **Workstream** menu. If a move stops partway through, the result identifies the moved and remaining threads; refresh before trying the remaining threads again.
+
 You can also ask your agent to organize threads and pins or move threads between Workstreams. Its organization tools use the same access and verified-reference requirements as the sidebar. Agents can inspect a move's result before continuing with another one.
 
 Each group shows running threads out of its total known primary members, including members in those shelves. Secondary associations do not increase the total. A purple dot marks threads waiting for input or approval, followed by a blue spinner while threads are running. **Failed** replaces both indicators when a member fails; the running count remains visible.
