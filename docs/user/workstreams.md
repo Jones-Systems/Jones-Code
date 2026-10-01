@@ -10,6 +10,8 @@ Workstreams need a connected owner registry with current access. Assignment also
 
 Changing membership preserves the conversation's repository, project, pinning, snooze and settlement state. Pinned, snoozed and settled conversations keep their native sidebar shelves.
 
+You can also ask your agent to organize threads and pins or move threads between Workstreams. Its organization tools use the same access and verified-reference requirements as the sidebar. Agents can inspect a move's result before continuing with another one.
+
 Each group shows running threads out of its total known primary members, including members in those shelves. Secondary associations do not increase the total. A purple dot marks threads waiting for input or approval, followed by a blue spinner while threads are running. **Failed** replaces both indicators when a member fails; the running count remains visible.
 
 A completed turn or settled thread does not complete a Workstream. Open its details and change **Owner-declared workstream lifecycle** to record completion. Completion is shown as verified only when its owner declaration is present in the permanent history. Owner statements add context separately. T3 settlement and restore requests are explicit, separate actions.
