@@ -1131,6 +1131,27 @@ describe("resolveSidebarDropTarget", () => {
   const resolve = (activeKey: string, overId: string) =>
     resolveSidebarDropTarget(items, activeKey, overId);
 
+  it("plans shelf drops from the active-first Workstream projection", () => {
+    const list = [
+      marker("active-placeholder"),
+      thread("group-pin", "active"),
+      thread("group-active", "active"),
+      marker("pinned-header"),
+      thread("unassigned-pin", "pinned"),
+      marker("pinned-divider"),
+      marker("settled-header"),
+    ];
+    expect(resolveSidebarDropTarget(list, "group-pin", sidebarMarkerId("pinned-header"))).toEqual({
+      section: "pinned",
+      pinnedOrder: ["group-pin", "unassigned-pin"],
+      activeOrder: ["group-active"],
+    });
+    expect(resolveSidebarDropTarget(list, "group-pin", sidebarMarkerId("pinned-divider"))).toEqual({
+      section: "active",
+      pinnedOrder: ["unassigned-pin"],
+      activeOrder: ["group-active", "group-pin"],
+    });
+  });
   it("keeps marker-like scoped thread keys draggable", () => {
     const key = "marker:pinned-header";
     const list: SidebarListItem[] = [

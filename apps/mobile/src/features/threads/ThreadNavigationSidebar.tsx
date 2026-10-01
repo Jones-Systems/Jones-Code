@@ -1,3 +1,9 @@
+import {
+  mobileThreadOrderScope,
+  mobileThreadOrderSection,
+  mobileThreadOrderScopes,
+  type MobileThreadMoveContext,
+} from "../threads/threadOrderScope";
 import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
 import {
   projectMobileWorkstreamList,
@@ -399,8 +405,9 @@ function ThreadNavigationSidebarPane(
   // rebuild (see computeThreadMoveAvailability): per-thread planner calls made
   // list construction quadratic, and this list rebuilds on every minute tick.
   const threadMoveAvailability = useMemo(() => {
-    const sectionAvailability = (section: "pinned" | "active") =>
-      computeThreadMoveAvailability({
+    const scopeAvailability = (scope: MobileThreadMoveContext["scope"]) => {
+      const section = mobileThreadOrderSection(scope);
+      return computeThreadMoveAvailability({
         allThreads: threads,
         section,
         pendingOrder,
@@ -416,6 +423,8 @@ function ThreadNavigationSidebarPane(
         ordered: getThreadListV2OrderedSection({
           threads,
           section,
+          scope,
+          snapshot: workstreams.orderSnapshot,
           pendingOrder,
           now: new Date().toISOString(),
           settlementEnvironmentIds,
@@ -423,8 +432,14 @@ function ThreadNavigationSidebarPane(
           queuedThreadKeys,
         }),
       });
-    return new Map([...sectionAvailability("pinned"), ...sectionAvailability("active")]);
+    };
+    return new Map(
+      mobileThreadOrderScopes(workstreams.orderSnapshot).flatMap((scope) => [
+        ...scopeAvailability(scope),
+      ]),
+    );
   }, [
+    workstreams.orderSnapshot,
     serverConfigs,
     threads,
     pendingOrder,
@@ -436,6 +451,7 @@ function ThreadNavigationSidebarPane(
   ]);
   const threadListV2Layout = useMemo(() => {
     return buildThreadListV2Items({
+      snapshot: workstreams.orderSnapshot,
       pendingOrder,
       threads: threads.filter((thread) => thread.archivedAt === null),
       environmentId: options.selectedEnvironmentId,
@@ -452,6 +468,7 @@ function ThreadNavigationSidebarPane(
       selectedThreadKey: props.selectedThreadKey ?? null,
     });
   }, [
+    workstreams.orderSnapshot,
     pendingOrder,
     queuedThreadKeys,
     nowMinute,
@@ -520,6 +537,7 @@ function ThreadNavigationSidebarPane(
       groups: workstreams.groups,
       collapsedKeys: workstreams.collapsedKeys,
       secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+      pendingOrder,
       searching: props.searchQuery.trim().length > 0,
       selectedThreadKey: props.selectedThreadKey,
     });
@@ -731,9 +749,21 @@ function ThreadNavigationSidebarPane(
             direction,
           )
         : direction;
-      if (target !== null) void moveThread(thread, target);
+      if (target !== null)
+        void moveThread(thread, target, {
+          scope: mobileThreadOrderScope(thread, workstreams.orderSnapshot),
+          source: workstreams.orderSource,
+          removePrimary: workstreams.removePrimary,
+        });
     },
-    [workstreams.enabled, listItems, moveThread],
+    [
+      workstreams.enabled,
+      workstreams.orderSnapshot,
+      workstreams.orderSource,
+      workstreams.removePrimary,
+      listItems,
+      moveThread,
+    ],
   );
   const renderListItem = useCallback(
     ({ item }: { readonly item: SidebarListItem }) => {

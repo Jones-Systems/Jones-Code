@@ -1,6 +1,7 @@
 import {
   planSelectedShelfDrop,
   runSelectedThreadSteps,
+  runSelectedShelfSteps,
   type SelectedShelfThread,
 } from "./sidebar/selectedThreadMovement";
 import { workstreamCommandId, WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
@@ -10,6 +11,7 @@ import {
   captureDraggedThreadKeys,
   moveNativeThreadBlock,
   moveNativeMembershipThreads,
+  projectWorkstreamShelves,
   ThreadMovementError,
 } from "./workstreams/nativeWorkstreamActions";
 import { useWorkstreams } from "../state/workstreams";
@@ -2584,7 +2586,7 @@ export default function Sidebar() {
     readonly assignedKeys: ReadonlyMap<string, string>;
   } | null>(null);
   const {
-    pinnedThreads,
+    pinnedThreads: classificationPinnedThreads,
     draggableThreadKeys,
     activeReorderableThreadKeys,
     activeThreads,
@@ -2694,21 +2696,30 @@ export default function Sidebar() {
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
   const closeWorkstreamCreate = useCallback(() => setWorkstreamCreateOpen(false), []);
-  const workstreamGrouping = useMemo(
+  const { grouping: workstreamGrouping, pinnedThreads } = useMemo(
     () =>
-      groupNativeThreadsByWorkstream({
-        workstreams: workstreamController.data?.items ?? [],
-        placements: workstreamController.placements?.items ?? [],
-        threads: activeThreads,
-        trustedNow: snoozeNow,
-        trustedEnvironments: new Map(
-          (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
-            value.environmentId,
-            value,
-          ]),
-        ),
-      }),
-    [activeThreads, snoozeNow, workstreamController.data?.items, workstreamController.placements],
+      projectWorkstreamShelves(
+        groupNativeThreadsByWorkstream({
+          workstreams: workstreamController.data?.items ?? [],
+          placements: workstreamController.placements?.items ?? [],
+          threads: sortThreadsForSidebar([...activeThreads, ...classificationPinnedThreads]),
+          trustedNow: snoozeNow,
+          trustedEnvironments: new Map(
+            (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
+              value.environmentId,
+              value,
+            ]),
+          ),
+        }),
+        classificationPinnedThreads,
+      ),
+    [
+      activeThreads,
+      classificationPinnedThreads,
+      snoozeNow,
+      workstreamController.data?.items,
+      workstreamController.placements,
+    ],
   );
 
   const workstreamSummaryGrouping = useMemo(
@@ -2733,8 +2744,8 @@ export default function Sidebar() {
   const [activeSearchResultIndex, setActiveSearchResultIndex] = useState(0);
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
   const searchableThreads = useMemo(
-    () => [...pinnedThreads, ...activeThreads, ...snoozedThreads, ...settledThreads],
-    [activeThreads, pinnedThreads, settledThreads, snoozedThreads],
+    () => [...classificationPinnedThreads, ...activeThreads, ...snoozedThreads, ...settledThreads],
+    [activeThreads, classificationPinnedThreads, settledThreads, snoozedThreads],
   );
   const searchEnvironmentIds = useMemo(
     () =>
@@ -2957,14 +2968,22 @@ export default function Sidebar() {
       try {
         const key = (thread: EnvironmentThreadShell) =>
           scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+        if (destination === null) {
+          await moveNativeMembershipThreads({
+            controller: workstreamController,
+            threads: selected,
+            destination,
+            commandId: workstreamCommandId,
+            now: Date.now(),
+          });
+          useThreadSelectionStore.getState().removeFromSelection(selected.map(key));
+          return;
+        }
         const activeOrder = visibleActiveThreads.map(key);
         const selectedActive = selected.filter((thread) => activeOrder.includes(key(thread)));
         const destinationThreads =
-          destination === null
-            ? workstreamGrouping.ungrouped
-            : (workstreamGrouping.groups.find(
-                (group) => group.workstream.workstreamId === destination,
-              )?.threads ?? []);
+          workstreamGrouping.groups.find((group) => group.workstream.workstreamId === destination)
+            ?.threads ?? [];
         const movedIds = selectedActive.map(key);
         const destinationRemaining = destinationThreads.filter(
           (thread) => !movedIds.includes(key(thread)),
@@ -3463,11 +3482,11 @@ export default function Sidebar() {
       }
     };
     add(pinnedThreads, "pinned");
-    add(activeThreads, "active");
-    add(snoozedThreads, "snoozed");
-    add(settledThreads, "settled");
+    add(visibleActiveThreads, "active");
+    add(visibleSnoozedThreads, "snoozed");
+    add(renderedSettledThreads, "settled");
     return map;
-  }, [activeThreads, pinnedThreads, settledThreads, snoozedThreads]);
+  }, [visibleActiveThreads, pinnedThreads, renderedSettledThreads, visibleSnoozedThreads]);
   const pinnedKeys = useMemo(
     () =>
       pinnedThreads.map((thread) =>
@@ -3477,10 +3496,10 @@ export default function Sidebar() {
   );
   const activeKeys = useMemo(
     () =>
-      activeThreads.map((thread) =>
+      visibleActiveThreads.map((thread) =>
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       ),
-    [activeThreads],
+    [visibleActiveThreads],
   );
   useEffect(() => {
     if (optimisticDrop === null) return;
@@ -3601,7 +3620,7 @@ export default function Sidebar() {
       listMotionRef.current?.suspend();
       const list = threadListRef.current;
       const header = list?.querySelector<HTMLElement>('[data-testid="sidebar-pinned-header"]');
-      if (list && header) {
+      if (list && header && workstreamController.data === null) {
         const listRect = list.getBoundingClientRect();
         const scale = list.offsetWidth > 0 ? listRect.width / list.offsetWidth : 1;
         dragLabelOffsetRef.current =
@@ -3623,7 +3642,7 @@ export default function Sidebar() {
           event.activatorEvent instanceof PointerEvent ? event.activatorEvent.clientY : null,
       });
     },
-    [sectionByThreadKey],
+    [sectionByThreadKey, workstreamController.data],
   );
   // Include every visible row in the measured order. Older servers disable
   // pickup on their rows without changing where those rows render.
@@ -3646,13 +3665,24 @@ export default function Sidebar() {
     ) {
       return [];
     }
-    const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
     const pinnedRows = rowsOf(pinnedThreads, "pinned");
-    items.push(...pinnedRows);
-    items.push({ kind: "marker", marker: "pinned-divider" });
-    const activeRows = rowsOf(activeThreads, "active");
-    items.push({ kind: "marker", marker: "active-placeholder" });
-    items.push(...activeRows);
+    const activeRows = rowsOf(visibleActiveThreads, "active");
+    const items: SidebarListItem[] =
+      workstreamController.data === null
+        ? [
+            { kind: "marker", marker: "pinned-header" },
+            ...pinnedRows,
+            { kind: "marker", marker: "pinned-divider" },
+            { kind: "marker", marker: "active-placeholder" },
+            ...activeRows,
+          ]
+        : [
+            { kind: "marker", marker: "active-placeholder" },
+            ...activeRows,
+            { kind: "marker", marker: "pinned-header" },
+            ...pinnedRows,
+            { kind: "marker", marker: "pinned-divider" },
+          ];
     if (snoozedThreads.length > 0) {
       items.push({ kind: "marker", marker: "snoozed-header" });
       items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
@@ -3664,6 +3694,7 @@ export default function Sidebar() {
     return items;
   }, [
     activeThreads,
+    visibleActiveThreads,
     workstreamController.data,
     pinnedThreads,
     renderedSettledThreads,
@@ -3922,10 +3953,53 @@ export default function Sidebar() {
         reorderableKeys:
           target.section === "pinned" ? draggableThreadKeys : activeReorderableThreadKeys,
       });
+      if (membershipBusyRef.current)
+        throw new Error("A Workstream movement is already in progress.");
+      membershipBusyRef.current = true;
       try {
-        const completed = await runSelectedThreadSteps({
+        const completed = await runSelectedShelfSteps({
           selectedKeys,
           steps,
+          removeMembership: async () => {
+            if (target.section === "settled") return;
+            const members = selectedKeys
+              .map((key) => threadByKey.get(key)!)
+              .filter((thread) =>
+                workstreamController.placements?.items.some(
+                  (placement) =>
+                    placement.kind === "primary" &&
+                    placement.source_instance_id === thread.environmentId &&
+                    placement.native_thread_id === thread.id,
+                ),
+              );
+            if (members.length === 0) return;
+            try {
+              await moveNativeMembershipThreads({
+                controller: workstreamController,
+                threads: members,
+                destination: null,
+                commandId: workstreamCommandId,
+                now: Date.now(),
+              });
+            } catch (cause) {
+              if (cause instanceof ThreadMovementError) {
+                const scopedKeys = new Map(
+                  members.map((thread) => [
+                    nativeWorkstreamThreadKey(thread.environmentId, thread.id),
+                    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+                  ]),
+                );
+                throw new ThreadMovementError(
+                  cause.message,
+                  [],
+                  scopedKeys.get(cause.stoppedKey) ?? cause.stoppedKey,
+                  selectedKeys,
+                  cause.commandId,
+                );
+              }
+              throw cause;
+            }
+          },
           run: async (step) => {
             const thread = threadByKey.get(step.key);
             if (!thread) throw new Error("Thread changed during movement.");
@@ -3954,9 +4028,12 @@ export default function Sidebar() {
         if (cause instanceof ThreadMovementError)
           useThreadSelectionStore.getState().removeFromSelection(cause.completedKeys);
         throw cause;
+      } finally {
+        membershipBusyRef.current = false;
       }
     },
     [
+      workstreamController,
       threadByKey,
       sectionByThreadKey,
       serverConfigs,
@@ -4013,7 +4090,10 @@ export default function Sidebar() {
       const activeThread = threadByKey.get(activeKey);
       if (activeSection === undefined || target === null || activeThread === undefined) return;
       const selectedKeys = dragState?.selectedKeys ?? [activeKey];
-      if (selectedKeys.length > 1) {
+      if (
+        selectedKeys.length > 1 ||
+        (workstreamController.data !== null && target.section !== "settled")
+      ) {
         void performSelectedShelfDrop(selectedKeys, activeKey, target).catch(
           reportThreadMoveFailure,
         );
@@ -4151,6 +4231,7 @@ export default function Sidebar() {
     },
     [
       performSelectedShelfDrop,
+      workstreamController.data,
       dragState,
       moveWorkstreamThreads,
       reportThreadMoveFailure,
@@ -5395,6 +5476,13 @@ export default function Sidebar() {
                           >
                             Move to Pinned
                           </li>,
+                          <li
+                            key="html-active-drop"
+                            data-sidebar-drop-id={sidebarMarkerId("pinned-divider")}
+                            className="mx-2 rounded border border-dashed border-primary/40 px-2 py-2 text-xs"
+                          >
+                            Move to Active
+                          </li>,
                         );
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
@@ -5524,7 +5612,7 @@ export default function Sidebar() {
           ) : null}
           {!isSearchingThreads &&
           visibleDraftSessionCount === 0 &&
-          pinnedThreads.length +
+          classificationPinnedThreads.length +
             activeThreads.length +
             snoozedThreads.length +
             settledThreads.length ===

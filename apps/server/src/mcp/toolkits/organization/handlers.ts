@@ -171,7 +171,7 @@ const make = Effect.gen(function* () {
     reorder_thread: (input) =>
       Effect.gen(function* () {
         const thread = yield* requireThread(input.threadId, true);
-        if ((thread.pinnedAt != null) !== (input.list === "pinned"))
+        if (input.list === "pinned" && thread.pinnedAt == null)
           return yield* new OrganizationToolError({
             reason: "pin-state-mismatch",
             threadId: input.threadId,

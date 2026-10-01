@@ -3,11 +3,13 @@ import type { WorkstreamListView } from "../../state/workstreams";
 import {
   planSelectedShelfDrop,
   runSelectedThreadSteps,
+  runSelectedShelfSteps,
   type SelectedShelfThread,
 } from "../sidebar/selectedThreadMovement";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   captureDraggedThreadKeys,
+  projectWorkstreamShelves,
   moveNativeThreadBlock,
   moveNativeMembershipThreads,
   submitNativeMembershipBatch,
@@ -338,6 +340,57 @@ describe("selected thread movement", () => {
     ]);
     expect(steps.some((step) => step.key === "hidden" || step.orderKey === "V")).toBe(false);
   });
+  it("orders an already pinned Workstream member at the chosen pin slot without pinning it again", () => {
+    const steps = planSelectedShelfDrop({
+      ...shelfInput,
+      threads: [{ ...shelfThread("c", "active"), pinned: true }],
+    });
+    expect(steps.some((step) => step.operation === "pin")).toBe(false);
+    expect(steps.find((step) => step.key === "c")?.operation).toBe("order-pinned");
+    const ordered = steps
+      .filter((step) => step.orderKey)
+      .toSorted((a, b) => a.orderKey!.localeCompare(b.orderKey!));
+    expect(ordered.map((step) => step.key)).toEqual(["x", "c", "y"]);
+  });
+  it("stops all native shelf commands when membership removal fails", async () => {
+    const run = vi.fn(async () => {});
+    const failure = new ThreadMovementError(
+      "Membership effect unknown",
+      ["a"],
+      "b",
+      ["c"],
+      "command",
+    );
+    const removeMembership = vi.fn(async () => {
+      throw failure;
+    });
+    const error = await runSelectedShelfSteps({
+      selectedKeys: ["a", "b", "c"],
+      steps: [{ key: "a", operation: "unpin" }],
+      removeMembership,
+      run,
+    }).catch((cause: unknown) => cause);
+    expect(run).not.toHaveBeenCalled();
+    expect(error).toMatchObject({ completedKeys: [], stoppedKey: "b", commandId: "command" });
+    expect(String(error)).toContain("Membership effect unknown");
+  });
+  it("commits membership removals before the first native shelf command", async () => {
+    const calls: string[] = [];
+    await runSelectedShelfSteps({
+      selectedKeys: ["a", "b"],
+      steps: [
+        { key: "a", operation: "unpin" },
+        { key: "b", operation: "order-active", orderKey: "V" },
+      ],
+      removeMembership: async () => {
+        calls.push("remove-a", "remove-b");
+      },
+      run: async (step) => {
+        calls.push(step.operation);
+      },
+    });
+    expect(calls).toEqual(["remove-a", "remove-b", "unpin", "order-active"]);
+  });
   it("requires explicit shelf movement before restoring or unpinning", () => {
     const steps = planSelectedShelfDrop({
       ...shelfInput,
@@ -378,5 +431,43 @@ describe("selected thread movement", () => {
     }).catch((cause: unknown) => cause);
     expect(error).toMatchObject({ completedKeys: ["a"], stoppedKey: "b", unprocessedKeys: ["c"] });
     expect(run).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("active Workstream shelf projection", () => {
+  it("keeps trusted grouped pins exclusively in mixed active groups and fallback pins on Pinned", () => {
+    const pinned = {
+      environmentId: "env",
+      id: "pinned",
+      createdAt: "2026-10-01",
+      pinnedAt: "2026-10-01",
+      activeOrderKey: "a",
+      pinOrderKey: "z",
+    };
+    const active = {
+      environmentId: "env",
+      id: "active",
+      createdAt: "2026-10-01",
+      pinnedAt: null,
+      activeOrderKey: "b",
+      pinOrderKey: null,
+    };
+    const fallback = { ...pinned, id: "fallback" };
+    const unassigned = { ...active, id: "unassigned" };
+    const grouping = {
+      groups: [{ workstream: data.items[0]!, threads: [active, pinned] }],
+      ungrouped: [fallback, unassigned],
+      ordered: [pinned, active, fallback, unassigned],
+      groupedKeys: new Set([JSON.stringify(["env", "pinned"]), JSON.stringify(["env", "active"])]),
+      secondaryWorkstreamIdsByKey: new Map(),
+      secondaryWorkstreamLabelsByKey: new Map(),
+      conflictingKeys: new Set<string>(),
+    };
+    const before = structuredClone([pinned, active, fallback, unassigned]);
+    const projected = projectWorkstreamShelves(grouping, [fallback, pinned]);
+    expect(projected.grouping.groups[0]!.threads).toEqual([pinned, active]);
+    expect(projected.grouping.ungrouped).toEqual([unassigned]);
+    expect(projected.pinnedThreads).toEqual([fallback]);
+    expect([pinned, active, fallback, unassigned]).toEqual(before);
   });
 });

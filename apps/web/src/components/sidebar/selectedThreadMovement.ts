@@ -47,7 +47,8 @@ export function planSelectedShelfDrop(input: {
     if (target.section === "pinned") {
       if (!thread.supportsPinning || (thread.settled && !thread.supportsSettlement))
         throw new Error(`Pinning is unavailable for ${thread.key}. No threads were moved.`);
-      if (thread.section !== "pinned") steps.push({ key: thread.key, operation: "pin" });
+      if (!thread.pinned || thread.settled || thread.section === "snoozed")
+        steps.push({ key: thread.key, operation: "pin" });
     } else {
       if (thread.pinned) {
         if (!thread.supportsPinning)
@@ -136,4 +137,26 @@ export async function runSelectedThreadSteps(input: {
     }
   }
   return input.selectedKeys;
+}
+
+export async function runSelectedShelfSteps(
+  input: Parameters<typeof runSelectedThreadSteps>[0] & {
+    readonly removeMembership: () => Promise<void>;
+  },
+): Promise<readonly string[]> {
+  try {
+    await input.removeMembership();
+  } catch (cause) {
+    // Committed membership removal alone does not complete native shelf placement.
+    if (cause instanceof ThreadMovementError)
+      throw new ThreadMovementError(
+        cause.message,
+        [],
+        cause.stoppedKey,
+        input.selectedKeys.filter((key) => key !== cause.stoppedKey),
+        cause.commandId,
+      );
+    throw cause;
+  }
+  return runSelectedThreadSteps(input);
 }

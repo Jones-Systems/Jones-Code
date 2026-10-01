@@ -205,6 +205,29 @@ it.effect(
       expect(pinned.commands[0]!.type).toBe("thread.pin.reorder");
     }),
 );
+it.effect("dispatches active ordering for a pinned thread without changing its pin placement", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({
+      thread: {
+        ...thread,
+        pinnedAt: thread.createdAt,
+        pinOrderKey: "a2",
+        activeOrderKey: "a0",
+      },
+    });
+    expect(
+      yield* h.call("reorder_thread", { commandId, threadId, list: "active", orderKey: "a1" }),
+    ).toMatchObject({
+      commandId,
+      sequence: 42,
+      readback: "pending",
+      thread: { pinnedAt: thread.createdAt, pinOrderKey: "a2", activeOrderKey: "a0" },
+    });
+    expect(h.commands).toEqual([
+      { type: "thread.active.reorder", commandId, threadId, orderKey: "a1" },
+    ]);
+  }),
+);
 it.effect("refuses missing, parked and mismatched targets without dispatch", () =>
   Effect.gen(function* () {
     for (const target of [
@@ -215,6 +238,11 @@ it.effect("refuses missing, parked and mismatched targets without dispatch", () 
     ]) {
       const h = yield* makeHarness({ thread: target });
       yield* h.call("set_thread_pinned", { commandId, threadId, pinned: true }).pipe(Effect.flip);
+      for (const list of ["active", "pinned"] as const) {
+        yield* h
+          .call("reorder_thread", { commandId, threadId, list, orderKey: "a0" })
+          .pipe(Effect.flip);
+      }
       expect(h.commands).toEqual([]);
     }
     const h = yield* makeHarness();

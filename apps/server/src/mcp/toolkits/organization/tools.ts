@@ -222,7 +222,7 @@ export const OrganizationToolkit = Toolkit.make(
   annotation(
     Tool.make("reorder_thread", {
       description:
-        "Set one local thread's validated order key in pinned or active order. Match its current pin state; parked threads cannot be reordered. No provider or lifecycle command is exposed.",
+        "Set one local thread's validated order key in pinned or active order. Pinned order requires a pinned thread; active order is independent of pin state. Parked threads cannot be reordered. No provider or lifecycle command is exposed.",
       parameters: Schema.Struct({
         commandId: CommandId,
         threadId: ThreadId,

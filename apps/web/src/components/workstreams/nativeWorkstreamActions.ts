@@ -5,6 +5,7 @@ import type {
   WorkstreamCommand,
   WorkstreamReceipt,
 } from "@t3tools/contracts";
+import { sortActiveThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
 import type { WorkstreamListView } from "../../state/workstreams";
 import {
   currentT3Placement,
@@ -14,6 +15,7 @@ import {
   attestedNativeThreadKey,
   nativeWorkstreamThreadKey,
   type WorkstreamThreadLike,
+  type NativeWorkstreamThreadGrouping,
 } from "./nativeThreadGrouping";
 
 export const canEditWorkstreams = (data: T3WorkstreamListResult | null): boolean =>
@@ -316,4 +318,33 @@ export async function moveNativeMembershipThreads(input: {
       }),
     );
   return threads.map((thread) => nativeWorkstreamThreadKey(thread.environmentId, thread.id));
+}
+
+export function projectWorkstreamShelves<
+  T extends WorkstreamThreadLike & {
+    readonly createdAt: string;
+    readonly pinnedAt?: string | null | undefined;
+    readonly activeOrderKey?: string | null | undefined;
+  },
+>(
+  grouping: NativeWorkstreamThreadGrouping<T>,
+  pinnedThreads: readonly T[],
+): { readonly grouping: NativeWorkstreamThreadGrouping<T>; readonly pinnedThreads: readonly T[] } {
+  const groups = grouping.groups.map((group) => ({
+    ...group,
+    threads: sortActiveThreadsByOrderKey(group.threads),
+  }));
+  const ungrouped = grouping.ungrouped.filter((thread) => thread.pinnedAt == null);
+  return {
+    grouping: {
+      ...grouping,
+      groups,
+      ungrouped,
+      ordered: [...groups.flatMap((group) => group.threads), ...ungrouped],
+    },
+    pinnedThreads: pinnedThreads.filter(
+      (thread) =>
+        !grouping.groupedKeys.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id)),
+    ),
+  };
 }
