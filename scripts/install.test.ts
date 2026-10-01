@@ -10,9 +10,11 @@ import { describe, expect, it } from "vite-plus/test";
 
 // util-linux's script gives the real installer a terminal without a browser or extra packages.
 describe.skipIf(HostProcessPlatform.defaultValue() !== "linux")("installer terminal", () => {
-  it.each([false, true])(
-    "preserves download and install behavior (HTTP failure: %s)",
-    async (fail) => {
+  it.each(["success", "http-failure", "wrong-version"])(
+    "preserves download and install behavior (%s)",
+    async (scenario) => {
+      const fail = scenario === "http-failure";
+      const wrongVersion = scenario === "wrong-version";
       const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-progress-"));
       const version = "1.2.3";
       const stem = `t3-${version}-linux-${HostProcessArchitecture.defaultValue()}`;
@@ -21,9 +23,13 @@ describe.skipIf(HostProcessPlatform.defaultValue() !== "linux")("installer termi
       let sawPartialProgress = false;
       let output = "";
       await NodeFSP.mkdir(NodePath.join(root, stem));
-      await NodeFSP.writeFile(NodePath.join(root, stem, "t3"), "#!/bin/sh\necho 't3 v1.2.3'\n", {
-        mode: 0o755,
-      });
+      await NodeFSP.writeFile(
+        NodePath.join(root, stem, "t3"),
+        `#!/bin/sh\necho 't3 v${wrongVersion ? "9.9.9" : "1.2.3"}'\n`,
+        {
+          mode: 0o755,
+        },
+      );
       await NodeFSP.writeFile(
         NodePath.join(root, stem, "payload"),
         NodeCrypto.randomBytes(64 * 1024),
@@ -82,10 +88,10 @@ describe.skipIf(HostProcessPlatform.defaultValue() !== "linux")("installer termi
           child.on("close", resolve);
         });
         const versions = NodePath.join(root, "home/runtime/versions");
-        if (fail) {
+        if (fail || wrongVersion) {
           expect(code).not.toBe(0);
-          expect(output).toContain("500");
-          expect(output).not.toContain("100%");
+          expect(output).toContain(wrongVersion ? "executable version does not match" : "500");
+          if (fail) expect(output).not.toContain("100%");
           expect(output).not.toContain("Installed T3 Code");
           expect(await NodeFSP.readdir(versions)).toEqual([]);
         } else {

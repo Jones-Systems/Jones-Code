@@ -202,8 +202,11 @@ if ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $version)) {
     Get-ChildItem (Join-Path $staging $stem) | Move-Item -Destination $staging
     Remove-Item (Join-Path $staging $stem), (Join-Path $staging $archive), (Join-Path $staging "SHA256SUMS") -Recurse -Force
 
-    & (Join-Path $staging "t3.exe") --version | Out-Null
+    $reportedVersion = & (Join-Path $staging "t3.exe") --version
     if ($LASTEXITCODE -ne 0) { Fail "the downloaded executable does not run" }
+    if (($reportedVersion | Select-Object -Last 1).Trim().Split(" ")[-1].TrimStart("v") -ne $version) {
+      Fail "the downloaded executable version does not match $version"
+    }
     Set-Content -Path (Join-Path $staging ".install-complete") -Value $version -NoNewline
     Set-Content -Path (Join-Path $staging ".install-source") -Value $sourceUrl -NoNewline
 

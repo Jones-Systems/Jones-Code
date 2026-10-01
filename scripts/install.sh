@@ -181,7 +181,7 @@ versions_dir="${t3_home}/runtime/versions"
 target_dir="${versions_dir}/${version}"
 
 source_url="${base_url}/v${version}"
-if [ -d "$target_dir" ] && { [ ! -f "${target_dir}/.install-source" ] || [ "$(cat "${target_dir}/.install-source")" != "$source_url" ]; }; then
+if { [ -e "$target_dir" ] || [ -L "$target_dir" ]; } && { [ ! -f "${target_dir}/.install-source" ] || [ "$(cat "${target_dir}/.install-source")" != "$source_url" ]; }; then
   fail "cached ${version} has unknown or different source provenance; preserve it and use a distinct Jones version or isolated T3CODE_HOME"
 fi
 if [ -f "${target_dir}/.install-complete" ] && [ "$(cat "${target_dir}/.install-complete")" = "$version" ]; then
@@ -215,7 +215,10 @@ else
   step "Extracting T3 Code..."
   tar -xzf "${staging}/${archive}" -C "$staging" --strip-components=1
   rm -f "${staging}/${archive}" "${staging}/SHA256SUMS"
-  "${staging}/t3" --version >/dev/null || fail "the downloaded executable does not run"
+  reported_version="$("${staging}/t3" --version)" || fail "the downloaded executable does not run"
+  reported_version="${reported_version##* }"
+  reported_version="${reported_version#v}"
+  [ "$reported_version" = "$version" ] || fail "the downloaded executable version does not match ${version}"
   printf '%s\n' "$version" > "${staging}/.install-complete"
   printf '%s\n' "$source_url" > "${staging}/.install-source"
 
