@@ -42,9 +42,23 @@ and its sidecars; these checks do not establish rollback of modified non-databas
 files. Fixture snapshots use `VACUUM INTO` after all prior SQLite scopes close.
 
 Artifact binding verifies bytes and source provenance supplied by the packaging
-lane; it does not execute the candidate archive. Package smoke evidence remains
-separate. Mock provider clients prove resume-path selection and serialized native
-identity, with fresh-start fallback rejection. Native provider continuation,
-installed adoption, real Electron keychain decryption, browser durability,
-Connect login/peer access, signing and notarization remain unproved by this
-harness. It reads no installed homes or provider/browser credential stores.
+lane. With a bound runner, two additional adoption cases execute the exact compiled
+candidate against populated historical synthetic state: successful startup and
+migration-trigger startup failure. They use loopback, synthetic HOME/XDG/authority
+paths, disabled providers/update checks and a controlled shell. Defaults and the
+custom keybinding are seeded before baseline capture. The compiled startup intentionally
+folds redundant provider flags and marks project settings folded; settings are
+compared as complete decoded values after those specific migrations, with raw
+before/after hashes retained. Every other fixture file keeps byte equality.
+Runtime publication and an
+HTTP response establish readiness; captured child exit precedes database/file
+readback and cleanup. Unknown child closure preserves scratch. Development without
+a bound runner explicitly skips these cases; final mode requires bound inputs.
+Package smoke evidence remains separate, and there is no qualified prior actual
+archive for a real package-pair rollback claim.
+
+Mock provider clients prove resume-path selection and serialized native identity,
+with fresh-start fallback rejection. Native provider continuation, installed
+adoption, real Electron keychain decryption, browser durability, Connect login/peer
+access, signing and notarization remain unproved by this harness. It reads no
+installed homes or provider/browser credential stores.
