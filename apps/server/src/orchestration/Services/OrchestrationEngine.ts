@@ -11,6 +11,9 @@
  * @module OrchestrationEngineService
  */
 import type {
+  CommandId,
+  MessageId,
+  OrchestrationCommandObservation,
   OrchestrationClientOrigin,
   OrchestrationCommand,
   OrchestrationEvent,
@@ -26,6 +29,7 @@ import type { OrchestrationDispatchError } from "../Errors.ts";
 import type {
   OrchestrationEventStoreError,
   PersistenceSqlError,
+  ProjectionRepositoryError,
 } from "../../persistence/Errors.ts";
 import type { OrchestrationAggregateReplayStats } from "../../persistence/Services/OrchestrationEventStore.ts";
 import type { WorktreeOwnershipLease } from "../WorktreeOwnershipLease.ts";
@@ -40,6 +44,13 @@ export interface OrchestrationThreadReplayRange {
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
  */
 export interface OrchestrationEngineShape {
+  /** Observe a command and its historical turn from one consistent persistence snapshot. */
+  readonly observeCommand?: (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+    readonly messageId: MessageId;
+  }) => Effect.Effect<OrchestrationCommandObservation, ProjectionRepositoryError>;
+
   /**
    * Replay persisted orchestration events from an exclusive sequence cursor.
    *

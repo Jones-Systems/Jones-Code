@@ -60,6 +60,7 @@ import * as SchemaIssue from "effect/SchemaIssue";
 import * as Stream from "effect/Stream";
 import * as NodeCrypto from "node:crypto";
 
+import { unknownProviderGoal } from "../providerGoal.ts";
 import { appendUserInputAttachmentPaths } from "../userInputAttachments.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
@@ -2380,6 +2381,78 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const getProviderGoalState: NonNullable<ProviderServiceMethod<"getProviderGoalState">> =
+    Effect.fn("getProviderGoalState")(function* (input) {
+      const observe = Effect.gen(function* () {
+        const beforeOption = yield* directory.getBinding(input.threadId);
+        if (Option.isNone(beforeOption)) return unknownProviderGoal("no_session");
+        const before = beforeOption.value;
+        if (
+          before.threadId !== input.threadId ||
+          before.providerInstanceId !== input.expectedInstanceId
+        ) {
+          return unknownProviderGoal("instance_mismatch");
+        }
+        if (before.status === "stopped") return unknownProviderGoal("session_stopped");
+        const nativeCursor = (cursor: unknown): string | null =>
+          typeof cursor === "object" &&
+          cursor !== null &&
+          "threadId" in cursor &&
+          typeof cursor.threadId === "string" &&
+          cursor.threadId.trim().length > 0
+            ? cursor.threadId
+            : null;
+        const nativeThreadId = nativeCursor(before.resumeCursor);
+        if (nativeThreadId === null) return unknownProviderGoal("native_cursor_missing");
+        const resolved = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.getProviderGoalState",
+          allowRecovery: false,
+        });
+        if (resolved.instanceId !== input.expectedInstanceId)
+          return unknownProviderGoal("instance_mismatch");
+        if (!resolved.isActive) return unknownProviderGoal("session_stopped", nativeThreadId);
+        if (resolved.adapter.provider !== before.provider)
+          return unknownProviderGoal("instance_mismatch");
+        if (resolved.adapter.getProviderGoalState === undefined)
+          return unknownProviderGoal("unsupported", nativeThreadId);
+        const result = yield* resolved.adapter.getProviderGoalState(input.threadId);
+        const afterOption = yield* directory.getBinding(input.threadId);
+        if (Option.isNone(afterOption)) return unknownProviderGoal("context_changed");
+        const after = afterOption.value;
+        const currentAdapter = yield* registry.getByInstance(input.expectedInstanceId);
+        if (
+          after.threadId !== input.threadId ||
+          after.providerInstanceId !== input.expectedInstanceId ||
+          after.provider !== before.provider ||
+          after.status === "stopped" ||
+          nativeCursor(after.resumeCursor) !== nativeThreadId ||
+          currentAdapter !== resolved.adapter ||
+          !(yield* currentAdapter.hasSession(input.threadId))
+        ) {
+          return unknownProviderGoal("context_changed");
+        }
+        if (result.nativeThreadId !== null && result.nativeThreadId !== nativeThreadId) {
+          return unknownProviderGoal("context_changed");
+        }
+        if (result.state !== "unknown" && result.nativeThreadId === null)
+          return unknownProviderGoal("malformed");
+        return {
+          nativeThreadId: result.nativeThreadId,
+          state: result.state,
+          reasonCode: result.reasonCode,
+        };
+      }).pipe(Effect.catchCause(() => Effect.succeed(unknownProviderGoal("rpc_error"))));
+      const result = yield* observe;
+      return {
+        schema: "t3.provider-goal-state/v1" as const,
+        threadId: input.threadId,
+        providerInstanceId: input.expectedInstanceId,
+        observedAtMs: DateTime.toEpochMillis(yield* DateTime.now),
+        ...result,
+      };
+    });
+
   const listSessions: ProviderServiceMethod<"listSessions"> = Effect.fn("listSessions")(
     function* () {
       const currentAdapters = yield* getAdapterEntries;
@@ -2722,6 +2795,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     listSessions,
     getCapabilities,
     getInstanceInfo,
+    getProviderGoalState,
     assertConversationRollbackSupported,
     rollbackConversation,
     uploadFeedback,
