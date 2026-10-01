@@ -143,6 +143,20 @@ awake; it can sleep normally once recording stops.
 Transcription runs on your device. T3 Code deletes the temporary audio after
 transcription or cancellation; only the message text is sent when you submit.
 
+## Review external voice prompts
+
+On web and desktop, open **Voice review** from the sidebar and choose the
+environment connected to your voice source. Voice review requires that environment
+to be configured; it does not record audio. Held prompts release after their
+countdown. Pause a prompt when you need more time to review it. Double-click its
+text, or choose **Edit**, to edit it before release.
+
+Editing holds release until you save or cancel, and both leave the prompt paused.
+Resume the countdown when you are ready, or use **Save and send** to release the
+saved text immediately. Closing the page does not resume an edit hold. If a result
+is uncertain, check the current state before acting again. Released means handed
+off for processing; it does not mean an agent has started.
+
 ## Commands and skills
 
 Type `/` for commands or `$` to add a skill from the selected environment and
