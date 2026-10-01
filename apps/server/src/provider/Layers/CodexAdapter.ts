@@ -63,6 +63,7 @@ import {
   ProviderAdapterValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
+import { unknownProviderGoal } from "../providerGoal.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -2992,6 +2993,18 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     return session;
   });
 
+  const getProviderGoalState: NonNullable<CodexAdapterShape["getProviderGoalState"]> = (threadId) =>
+    Effect.gen(function* () {
+      const session = sessions.get(threadId);
+      if (!session) return unknownProviderGoal("no_session");
+      if (session.stopped) return unknownProviderGoal("session_stopped");
+      const result = yield* session.runtime.getProviderGoalState;
+      if (session.stopped || sessions.get(threadId) !== session) {
+        return unknownProviderGoal("context_changed", result.nativeThreadId);
+      }
+      return result;
+    });
+
   const interruptTurn: CodexAdapterShape["interruptTurn"] = (threadId, turnId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) =>
@@ -3200,6 +3213,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     sendTurn,
     compaction: { type: "native", start: compactThread },
     interruptTurn,
+    getProviderGoalState,
     readThread,
     rollbackThread,
     uploadFeedback,

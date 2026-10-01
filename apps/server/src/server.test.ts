@@ -27,6 +27,7 @@ import {
   type OrchestrationThreadShell,
   TerminalNotRunningError,
   type OrchestrationCommand,
+  type OrchestrationCommandObservation,
   type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
   type PreviewEvent,
@@ -34,6 +35,9 @@ import {
   type ProviderAuthState,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderQueueRefreshResult,
+  type ProviderQueueInventory,
+  type ServerProvider,
   type ProviderInstallState,
   ProviderSetupError,
   ResolvedKeybindingRule,
@@ -400,6 +404,32 @@ const makeDefaultOrchestrationThreadShell = (
     ...overrides,
   };
 };
+
+const makeGuardedQueueTransportCommand = (
+  suffix: string,
+): Extract<OrchestrationCommand, { type: "thread.turn.start" }> => ({
+  type: "thread.turn.start",
+  commandId: CommandId.make(`cmd-queue-${suffix}`),
+  threadId: defaultThreadId,
+  message: {
+    messageId: MessageId.make(`msg-queue-${suffix}`),
+    role: "user",
+    text: "Synthetic queue request",
+    attachments: [],
+  },
+  modelSelection: defaultModelSelection,
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  dispatchGuard: {
+    observedSnapshotSequence: 0,
+    expectedModelSelection: defaultModelSelection,
+    expectedSessionStatus: null,
+    expectedActiveTurnId: null,
+    expectedLatestTurnId: null,
+    requireIdle: true,
+  },
+  createdAt: "2026-01-01T00:00:00.000Z",
+});
 
 const browserOtlpTracingLayer = Layer.mergeAll(
   FetchHttpClient.layer,
@@ -2186,6 +2216,401 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.status, 200);
       assert.deepEqual(body, testEnvironmentDescriptor);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "mounts queue compatibility routes with closed responses and scoped provider access",
+    () =>
+      Effect.gen(function* () {
+        const instanceId = defaultModelSelection.instanceId;
+        const providers: ReadonlyArray<ServerProvider> = [
+          {
+            instanceId,
+            driver: ProviderDriverKind.make("codex"),
+            displayName: "Synthetic Codex",
+            enabled: true,
+            installed: true,
+            version: null,
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: "2026-01-01T00:00:00.000Z",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          },
+        ];
+        const refreshes: ProviderInstanceId[] = [];
+        const goalReads: unknown[] = [];
+        const observationReads: unknown[] = [];
+        const command = makeGuardedQueueTransportCommand("routes");
+        const observation: OrchestrationCommandObservation = {
+          threadId: command.threadId,
+          commandId: command.commandId,
+          messageId: command.message.messageId,
+          snapshotSequence: 0,
+          commandStatus: "not_found",
+          acceptedSequence: null,
+          correlation: "missing",
+          turn: null,
+          target: null,
+        };
+        const goal = {
+          schema: "t3.provider-goal-state/v1" as const,
+          threadId: defaultThreadId,
+          providerInstanceId: instanceId,
+          nativeThreadId: "synthetic-native-thread",
+          observedAtMs: 1000,
+          state: "active" as const,
+          reasonCode: "goal_present" as const,
+        };
+        yield* buildAppUnderTest({
+          layers: {
+            providerRegistry: {
+              getProviders: Effect.succeed(providers),
+              refreshInstance: (requested) =>
+                Effect.sync(() => {
+                  refreshes.push(requested);
+                  return providers;
+                }),
+            },
+            providerService: {
+              getProviderGoalState: (input) =>
+                Effect.sync(() => {
+                  goalReads.push(input);
+                  return { ...goal, objective: "private synthetic objective" };
+                }),
+            },
+            projectionSnapshotQuery: {
+              getThreadShellById: () =>
+                Effect.succeedSome(
+                  makeDefaultOrchestrationThreadShell({
+                    session: {
+                      threadId: defaultThreadId,
+                      status: "ready",
+                      providerName: "codex",
+                      providerInstanceId: instanceId,
+                      runtimeMode: "full-access",
+                      activeTurnId: null,
+                      lastError: null,
+                      updatedAt: "2026-01-01T00:00:00.000Z",
+                    },
+                  }),
+                ),
+            },
+            orchestrationEngine: {
+              observeCommand: (input) =>
+                Effect.sync(() => {
+                  observationReads.push(input);
+                  return observation;
+                }),
+            },
+          },
+        });
+        const operateToken = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:operate",
+        });
+        assert.equal(operateToken.response.status, 200);
+        const queuePath = `/api/provider-queue/instances/${instanceId}`;
+        const goalPath = `/api/orchestration/threads/${defaultThreadId}/provider-goal-state?expectedInstanceId=${instanceId}`;
+        const observationPath = `/api/orchestration/threads/${defaultThreadId}/commands/${command.commandId}?messageId=${command.message.messageId}`;
+        for (const path of [
+          "/api/provider-queue/inventory",
+          `${queuePath}/usage`,
+          goalPath,
+          observationPath,
+        ]) {
+          const response = yield* fetchEffect(yield* getHttpServerUrl(path), {
+            headers: { authorization: `Bearer ${operateToken.body.access_token}` },
+          });
+          assert.equal(response.status, 403);
+        }
+        const readToken = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:read",
+        });
+        assert.equal(readToken.response.status, 200);
+        const readHeaders = { authorization: `Bearer ${readToken.body.access_token}` };
+        const forbiddenRefresh = yield* fetchEffect(
+          yield* getHttpServerUrl(`${queuePath}/refresh`),
+          {
+            method: "POST",
+            headers: readHeaders,
+          },
+        );
+        assert.equal(forbiddenRefresh.status, 403);
+        assert.deepEqual(refreshes, []);
+        assert.deepEqual(goalReads, []);
+        assert.deepEqual(observationReads, []);
+
+        const inventoryResponse = yield* fetchEffect(
+          yield* getHttpServerUrl("/api/provider-queue/inventory"),
+          { headers: readHeaders },
+        );
+        assert.equal(inventoryResponse.status, 200);
+        const inventory = yield* responseJsonEffect<ProviderQueueInventory>(inventoryResponse);
+        const instances: ProviderQueueInventory["instances"] = [
+          {
+            instanceId,
+            displayName: "Synthetic Codex",
+            driver: "codex",
+            enabled: true,
+            capabilityRefs: [],
+          },
+        ];
+        assert.deepEqual(inventory, {
+          schemaVersion: "t3.provider-queue-inventory/v1",
+          inventoryRevision: NodeCrypto.createHash("sha256")
+            .update(encodeTestJson(instances))
+            .digest("hex"),
+          observedAt: inventory.observedAt,
+          evidence: "configured-provider-registry",
+          instances,
+        });
+        assertTrue(Number.isFinite(Date.parse(inventory.observedAt)));
+        const usageResponse = yield* fetchEffect(yield* getHttpServerUrl(`${queuePath}/usage`), {
+          headers: readHeaders,
+        });
+        assert.equal(usageResponse.status, 200);
+        assert.deepEqual(yield* responseJsonEffect(usageResponse), {
+          instanceId,
+          status: "cached",
+          nextRefreshAt: null,
+          quota: null,
+        });
+        const goalResponse = yield* fetchEffect(yield* getHttpServerUrl(goalPath), {
+          headers: readHeaders,
+        });
+        assert.equal(goalResponse.status, 200);
+        assert.deepEqual(yield* responseJsonEffect(goalResponse), goal);
+        const observationResponse = yield* fetchEffect(yield* getHttpServerUrl(observationPath), {
+          headers: readHeaders,
+        });
+        assert.equal(observationResponse.status, 200);
+        assert.deepEqual(yield* responseJsonEffect(observationResponse), observation);
+        assert.deepEqual(goalReads, [
+          { threadId: defaultThreadId, expectedInstanceId: instanceId },
+        ]);
+        assert.deepEqual(observationReads, [
+          {
+            threadId: defaultThreadId,
+            commandId: command.commandId,
+            messageId: command.message.messageId,
+          },
+        ]);
+        assert.deepEqual(refreshes, []);
+
+        const adminToken = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:read access:write",
+        });
+        assert.equal(adminToken.response.status, 200);
+        const adminHeaders = { authorization: `Bearer ${adminToken.body.access_token}` };
+        const refreshResponse = yield* fetchEffect(
+          yield* getHttpServerUrl(`${queuePath}/refresh`),
+          {
+            method: "POST",
+            headers: adminHeaders,
+          },
+        );
+        assert.equal(refreshResponse.status, 200);
+        const refreshed = yield* responseJsonEffect<ProviderQueueRefreshResult>(refreshResponse);
+        assertTrue(Schema.is(ProviderQueueRefreshResult)(refreshed));
+        assert.isNotNull(refreshed.quota);
+        const quota = refreshed.quota!;
+        assert.deepEqual(refreshed, {
+          instanceId,
+          status: "refreshed",
+          nextRefreshAt: refreshed.nextRefreshAt,
+          quota: {
+            schemaVersion: "codex.t3-qualified-quota/v1",
+            instanceId,
+            probeId: quota.probeId,
+            status: "failed",
+            attemptedAt: quota.attemptedAt,
+            quotaReceivedAt: null,
+            probeCompletedAt: quota.probeCompletedAt,
+            complete: false,
+            rateLimitsByLimitId: null,
+            windowProvenance: [],
+            capabilityRefs: [],
+            failureCode: "refresh_not_observed",
+          },
+        });
+        assert.equal(Date.parse(refreshed.nextRefreshAt!) - Date.parse(quota.attemptedAt), 300_000);
+        const cachedResponse = yield* fetchEffect(yield* getHttpServerUrl(`${queuePath}/usage`), {
+          headers: adminHeaders,
+        });
+        assert.equal(cachedResponse.status, 200);
+        assert.deepEqual(yield* responseJsonEffect(cachedResponse), {
+          ...refreshed,
+          status: "cached",
+        });
+        assert.deepEqual(refreshes, [instanceId]);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("preserves guarded WebSocket command IDs through HTTP command observation", () =>
+    Effect.gen(function* () {
+      const command = makeGuardedQueueTransportCommand("observation");
+      const dispatched: OrchestrationCommand[] = [];
+      const observed: unknown[] = [];
+      const observation: OrchestrationCommandObservation = {
+        threadId: command.threadId,
+        commandId: command.commandId,
+        messageId: command.message.messageId,
+        snapshotSequence: 17,
+        commandStatus: "accepted",
+        acceptedSequence: 17,
+        correlation: "pending",
+        turn: null,
+        target: null,
+      };
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (input) =>
+              Effect.sync(() => {
+                dispatched.push(input);
+                return { sequence: 17 };
+              }),
+            observeCommand: (input) =>
+              Effect.sync(() => {
+                assert.equal(dispatched.length, 1);
+                observed.push(input);
+                return observation;
+              }),
+          },
+        },
+      });
+      const receipt = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand](command),
+        ),
+      );
+      assert.deepEqual(receipt, { sequence: 17 });
+      const dispatchedCommand = dispatched[0];
+      assertTrue(dispatchedCommand?.type === "thread.turn.start");
+      if (dispatchedCommand?.type === "thread.turn.start") {
+        assertTrue(Number.isFinite(Date.parse(dispatchedCommand.createdAt)));
+        assert.deepEqual(dispatched, [{ ...command, createdAt: dispatchedCommand.createdAt }]);
+      }
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "orchestration:read",
+      });
+      assert.equal(token.response.status, 200);
+      const response = yield* fetchEffect(
+        yield* getHttpServerUrl(
+          `/api/orchestration/threads/${command.threadId}/commands/${command.commandId}?messageId=${command.message.messageId}`,
+        ),
+        { headers: { authorization: `Bearer ${token.body.access_token}` } },
+      );
+      assert.equal(response.status, 200);
+      assert.deepEqual(yield* responseJsonEffect(response), observation);
+      assert.deepEqual(observed, [
+        {
+          threadId: command.threadId,
+          commandId: command.commandId,
+          messageId: command.message.messageId,
+        },
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "rejects guarded HTTP bootstrap while WebSocket prepares before final guarded dispatch",
+    () =>
+      Effect.gen(function* () {
+        const baseCommand = makeGuardedQueueTransportCommand("bootstrap");
+        const command = {
+          ...baseCommand,
+          bootstrap: {
+            createThread: {
+              projectId: defaultProjectId,
+              title: "Synthetic bootstrap",
+              modelSelection: defaultModelSelection,
+              runtimeMode: "full-access" as const,
+              interactionMode: "default" as const,
+              branch: null,
+              worktreePath: null,
+              createdAt: baseCommand.createdAt,
+            },
+          },
+        };
+        const dispatched: OrchestrationCommand[] = [];
+        const drains: unknown[] = [];
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              dispatch: (input) =>
+                Effect.sync(() => {
+                  dispatched.push(input);
+                  return { sequence: dispatched.length };
+                }),
+            },
+            threadDeletionReactor: {
+              drainThrough: (sequence, threadId) =>
+                Effect.sync(() => {
+                  drains.push({ sequence, threadId });
+                }),
+            },
+          },
+        });
+        const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:operate",
+        });
+        assert.equal(token.response.status, 200);
+        const rejected = yield* fetchEffect(
+          yield* getHttpServerUrl("/api/orchestration/dispatch"),
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token.body.access_token}`,
+              "content-type": "application/json",
+            },
+            body: jsonRequestBody(command),
+          },
+        );
+        assert.equal(rejected.status, 400);
+        const failure = yield* responseJsonEffect<{ reason: string }>(rejected);
+        assert.equal(failure.reason, "dispatch_guard_bootstrap_unsupported");
+        assert.deepEqual(dispatched, []);
+        assert.deepEqual(drains, []);
+        const receipt = yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand](command),
+          ),
+        );
+        assert.deepEqual(receipt, { sequence: 3 });
+        assert.deepEqual(
+          dispatched.map((input) => input.type),
+          ["thread.create", "thread.message.user.append", "thread.turn.start"],
+        );
+        assert.deepEqual(drains, [{ sequence: 1, threadId: command.threadId }]);
+        const finalCommand = dispatched[2];
+        assertTrue(finalCommand?.type === "thread.turn.start");
+        if (finalCommand?.type !== "thread.turn.start") return;
+        assertTrue(Number.isFinite(Date.parse(finalCommand.createdAt)));
+        assert.deepEqual(dispatched[0], {
+          type: "thread.create",
+          commandId: dispatched[0]!.commandId,
+          threadId: command.threadId,
+          ...command.bootstrap.createThread,
+          createdAt: finalCommand.createdAt,
+        });
+        assert.deepEqual(dispatched[1], {
+          type: "thread.message.user.append",
+          commandId: dispatched[1]!.commandId,
+          threadId: command.threadId,
+          message: {
+            messageId: command.message.messageId,
+            text: command.message.text,
+            attachments: [],
+          },
+          createdAt: finalCommand.createdAt,
+        });
+        assert.notEqual(dispatched[0]!.commandId, command.commandId);
+        assert.notEqual(dispatched[1]!.commandId, command.commandId);
+        assert.notEqual(dispatched[0]!.commandId, dispatched[1]!.commandId);
+        assert.deepEqual(finalCommand, { ...baseCommand, createdAt: finalCommand.createdAt });
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("serves snapshots for MCP handoff thread IDs above the router default", () =>

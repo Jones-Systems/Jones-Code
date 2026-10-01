@@ -1369,6 +1369,65 @@ const ThreadTurnStartBootstrap = Schema.Struct({
 
 export type ThreadTurnStartBootstrap = typeof ThreadTurnStartBootstrap.Type;
 
+export const ThreadTurnDispatchGuard = Schema.Struct({
+  observedSnapshotSequence: NonNegativeInt,
+  expectedModelSelection: ModelSelection,
+  expectedSessionStatus: Schema.NullOr(OrchestrationSessionStatus),
+  expectedActiveTurnId: Schema.NullOr(TurnId),
+  expectedLatestTurnId: Schema.NullOr(TurnId),
+  requireIdle: Schema.Literal(true),
+});
+export type ThreadTurnDispatchGuard = typeof ThreadTurnDispatchGuard.Type;
+
+export const OrchestrationDispatchTarget = Schema.Struct({
+  modelSelection: ModelSelection,
+  sessionStatus: Schema.NullOr(OrchestrationSessionStatus),
+  activeTurnId: Schema.NullOr(TurnId),
+  latestTurnId: Schema.NullOr(TurnId),
+  requireIdle: Schema.Literal(true),
+  idle: Schema.Boolean,
+  blockers: Schema.Array(
+    Schema.Literals([
+      "archived",
+      "settled",
+      "pending_turn",
+      "running_turn",
+      "session_starting",
+      "session_running",
+      "active_turn",
+      "pending_approval",
+      "pending_user_input",
+      "actionable_plan",
+      "background_work",
+    ]),
+  ),
+});
+export type OrchestrationDispatchTarget = typeof OrchestrationDispatchTarget.Type;
+
+export const OrchestrationObservedTurn = Schema.Struct({
+  turnId: Schema.NullOr(TurnId),
+  state: Schema.Literals(["pending", "running", "interrupted", "completed", "error"]),
+  requestedAt: IsoDateTime,
+  startedAt: Schema.NullOr(IsoDateTime),
+  completedAt: Schema.NullOr(IsoDateTime),
+  assistantMessageId: Schema.NullOr(MessageId),
+});
+export type OrchestrationObservedTurn = typeof OrchestrationObservedTurn.Type;
+
+// Correlation is historical projection evidence, not proof of task delivery.
+export const OrchestrationCommandObservation = Schema.Struct({
+  threadId: ThreadId,
+  commandId: CommandId,
+  messageId: MessageId,
+  snapshotSequence: NonNegativeInt,
+  commandStatus: Schema.Literals(["accepted", "rejected", "not_found"]),
+  acceptedSequence: Schema.NullOr(NonNegativeInt),
+  correlation: Schema.Literals(["exact", "pending", "missing", "ambiguous", "mismatched"]),
+  turn: Schema.NullOr(OrchestrationObservedTurn),
+  target: Schema.NullOr(OrchestrationDispatchTarget),
+});
+export type OrchestrationCommandObservation = typeof OrchestrationCommandObservation.Type;
+
 export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
@@ -1387,6 +1446,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
+  dispatchGuard: Schema.optional(ThreadTurnDispatchGuard),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,
 });
@@ -1407,6 +1467,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
+  dispatchGuard: Schema.optional(ThreadTurnDispatchGuard),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,
 });
