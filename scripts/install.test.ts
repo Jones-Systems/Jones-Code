@@ -98,6 +98,9 @@ describe.skipIf(HostProcessPlatform.defaultValue() !== "linux")("installer termi
             await NodeFSP.readFile(NodePath.join(versions, version, ".install-complete"), "utf8"),
           ).toBe("1.2.3\n");
           expect(
+            await NodeFSP.readFile(NodePath.join(versions, version, ".install-source"), "utf8"),
+          ).toBe(`http://127.0.0.1:${address.port}/v${version}\n`);
+          expect(
             NodeChildProcess.execFileSync(NodePath.join(root, "bin/t3"), ["--version"], {
               encoding: "utf8",
             }).trim(),
@@ -113,3 +116,98 @@ describe.skipIf(HostProcessPlatform.defaultValue() !== "linux")("installer termi
     },
   );
 });
+
+describe.skipIf(HostProcessPlatform.defaultValue() !== "linux")(
+  "Jones installer provenance",
+  () => {
+    it.each(["missing", "upstream"])("preserves a %s same-version cache", async (source) => {
+      const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-install-source-"));
+      try {
+        const target = NodePath.join(root, "home/runtime/versions/1.2.3");
+        await NodeFSP.mkdir(target, { recursive: true });
+        await NodeFSP.writeFile(NodePath.join(target, ".install-complete"), "1.2.3\n");
+        await NodeFSP.writeFile(NodePath.join(target, "t3"), "preserve prior binary");
+        if (source === "upstream")
+          await NodeFSP.writeFile(
+            NodePath.join(target, ".install-source"),
+            "https://github.com/pingdotgg/t3code/releases/download/v1.2.3\n",
+          );
+        const result = NodeChildProcess.spawnSync(
+          "sh",
+          [NodePath.resolve(import.meta.dirname, "install.sh")],
+          {
+            env: {
+              ...process.env,
+              T3CODE_HOME: NodePath.join(root, "home"),
+              T3CODE_VERSION: "1.2.3",
+              T3CODE_INSTALL_BIN_DIR: NodePath.join(root, "bin"),
+              T3CODE_RELEASE_BASE_URL:
+                "https://github.com/Jones-Systems/Jones-Code/releases/download",
+            },
+            encoding: "utf8",
+          },
+        );
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("unknown or different source provenance");
+        expect(await NodeFSP.readFile(NodePath.join(target, "t3"), "utf8")).toBe(
+          "preserve prior binary",
+        );
+        expect(await NodeFSP.readdir(NodePath.dirname(target))).toEqual(["1.2.3"]);
+      } finally {
+        await NodeFSP.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it.each([200, 500])(
+      "reports absent Jones or failed discovery without an upstream request or retained scratch (HTTP %s)",
+      async (httpStatus) => {
+        const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-install-absent-"));
+        try {
+          const bin = NodePath.join(root, "bin");
+          await NodeFSP.mkdir(bin);
+          await NodeFSP.writeFile(
+            NodePath.join(bin, "curl"),
+            `#!/bin/sh
+printf '%s\\n' "$*" >> "$REQUEST_LOG"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then shift; printf '[]' > "$1"; fi
+  shift
+done
+printf '${httpStatus}'
+`,
+            { mode: 0o755 },
+          );
+          const result = NodeChildProcess.spawnSync(
+            "sh",
+            [NodePath.resolve(import.meta.dirname, "install.sh")],
+            {
+              env: {
+                ...process.env,
+                PATH: `${bin}:/usr/bin:/bin`,
+                TMPDIR: root,
+                T3CODE_HOME: NodePath.join(root, "home"),
+                T3CODE_VERSION: "",
+                T3CODE_CHANNEL: "preview",
+                REQUEST_LOG: NodePath.join(root, "requests"),
+                T3CODE_RELEASE_BASE_URL: "",
+              },
+              encoding: "utf8",
+            },
+          );
+          expect(result.status).not.toBe(0);
+          expect(result.stderr).toContain(
+            httpStatus === 200
+              ? "no published preview release in Jones-Systems/Jones-Code"
+              : "returned HTTP 500",
+          );
+          const requests = await NodeFSP.readFile(NodePath.join(root, "requests"), "utf8");
+          expect(requests).toContain("api.github.com/repos/Jones-Systems/Jones-Code/releases");
+          expect(requests).not.toContain("pingdotgg");
+          expect((await NodeFSP.readdir(root)).sort()).toEqual(["bin", "requests"]);
+        } finally {
+          await NodeFSP.rm(root, { recursive: true, force: true });
+        }
+      },
+    );
+  },
+);
