@@ -67,37 +67,50 @@ const RELEASE_INDEX_TIMEOUT = Duration.seconds(30);
 const RELEASE_INDEX_MAX_PAGES = 10;
 
 /** Asks GitHub for the newest published version on a channel, page by page. */
-const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(function* (
+export const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(function* (
   channel: CliReleaseChannel,
 ) {
   const httpClient = yield* HttpClient.HttpClient;
   for (let page = 1; page <= RELEASE_INDEX_MAX_PAGES; page += 1) {
+    const releaseIndexUrl = cliReleaseIndexPageUrl(page);
     const body = yield* httpClient
       .execute(
-        HttpClientRequest.get(cliReleaseIndexPageUrl(page)).pipe(
+        HttpClientRequest.get(releaseIndexUrl).pipe(
           HttpClientRequest.setHeader("Accept", "application/vnd.github+json"),
         ),
       )
       .pipe(
         Effect.flatMap(HttpClientResponse.filterStatusOk),
         Effect.flatMap((response) => response.text),
-        Effect.mapError(() => new CliUpdateError({ reason: "Could not list t3 releases." })),
+        Effect.mapError(
+          () =>
+            new CliUpdateError({ reason: `Could not list t3 releases from ${releaseIndexUrl}.` }),
+        ),
         Effect.timeoutOrElse({
           duration: RELEASE_INDEX_TIMEOUT,
           orElse: () =>
-            Effect.fail(new CliUpdateError({ reason: "Timed out listing t3 releases." })),
+            Effect.fail(
+              new CliUpdateError({
+                reason: `Timed out listing t3 releases from ${releaseIndexUrl}.`,
+              }),
+            ),
         }),
       );
     const releases = yield* decodeReleaseIndex(body).pipe(
       Effect.mapError(
-        () => new CliUpdateError({ reason: "The t3 release index had an unexpected shape." }),
+        () =>
+          new CliUpdateError({
+            reason: `The t3 release index from ${releaseIndexUrl} had an unexpected shape.`,
+          }),
       ),
     );
     const version = newestCliReleaseVersion(releases, channel);
     if (version !== undefined) return version;
     if (releases.length === 0) break;
   }
-  return yield* new CliUpdateError({ reason: `No published ${channel} release was found.` });
+  return yield* new CliUpdateError({
+    reason: `No published ${channel} release was found in ${cliReleaseIndexPageUrl(1)}.`,
+  });
 });
 
 /** Whether a launcher target lives inside `<baseDir>/runtime/versions`. */
