@@ -6,12 +6,14 @@ import {
   ProviderDriverKind,
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
+  type UsageSummaryInput,
   type UsageProviderKind,
 } from "@t3tools/contracts";
 import {
   CircleAlertIcon,
   ChevronDownIcon,
   CircleDashedIcon,
+  EllipsisIcon,
   InfoIcon,
   SlidersHorizontalIcon,
 } from "lucide-react";
@@ -52,6 +54,7 @@ import {
   makeWindow,
 } from "@t3tools/shared/usageFormat";
 import { Button, InlineButton } from "../ui/button";
+import { Input } from "../ui/input";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import {
   Menu,
@@ -92,6 +95,23 @@ import {
   saveUsagePagePreferences,
   type UsagePagePreferences,
 } from "./usagePagePreferences";
+import {
+  makeRollingUsageWindow,
+  toLocalDateTimeValue,
+  validateCustomUsageWindow,
+  type CustomUsageWindowValidation,
+} from "./usageDateRange";
+
+type UsageWindowSelection =
+  | {
+      readonly kind: "day";
+      readonly days: UsagePagePreferences["windowDays"];
+      readonly window: UsageSummaryInput;
+    }
+  | { readonly kind: "hours"; readonly hours: number; readonly window: UsageSummaryInput }
+  | { readonly kind: "custom"; readonly window: UsageSummaryInput };
+
+const QUICK_USAGE_HOUR_OPTIONS = [1, 3, 6, 12] as const;
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
   return METRIC_OPTIONS.some((option) => option.value === value);
@@ -113,7 +133,8 @@ export function UsagePage() {
     });
     return shortcut ? `${option.label} (${shortcut})` : option.label;
   };
-  const [windowSelection, setWindowSelection] = useState(() => ({
+  const [windowSelection, setWindowSelection] = useState<UsageWindowSelection>(() => ({
+    kind: "day",
     days: preferences.windowDays,
     window: makeWindow(
       preferences.windowDays,
@@ -123,14 +144,18 @@ export function UsagePage() {
   }));
   const metric = preferences.metric;
   const showingLimits = metric === "limits";
+  const windowDays = windowSelection.kind === "day" ? windowSelection.days : preferences.windowDays;
+  const { window } = windowSelection;
+  const isHourly = window.resolution === "hour";
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const refreshingRef = useRef(false);
   const [breakdown, setBreakdown] = useState<"model" | "time">("model");
+  const [customSinceValue, setCustomSinceValue] = useState("");
+  const [customUntilValue, setCustomUntilValue] = useState("");
+  const customWindowValidation = validateCustomUsageWindow(customSinceValue, customUntilValue);
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
-  const { days: windowDays, window } = windowSelection;
-  const isPast24Hours = windowDays === 1;
   const { merged, environments, selectedEnvironments, isPending, isPartial, refresh } = useUsage(
     window,
     selectedEnvironmentIds,
@@ -163,16 +188,16 @@ export function UsagePage() {
   );
   const hours = useMemo(
     () =>
-      window.sinceTime === undefined || window.untilTime === undefined
+      !isHourly || window.sinceTime === undefined || window.untilTime === undefined
         ? []
         : enumerateHourStarts(window.sinceTime, window.untilTime),
-    [window.sinceTime, window.untilTime],
+    [isHourly, window.sinceTime, window.untilTime],
   );
-  // Newest first: the window can run 90 periods, so the interesting end
+  // Newest first: the window can run 90 days, so the interesting end
   // belongs at the top of the table.
   const breakdownPeriods = useMemo<readonly (DailyTotals | HourlyTotals)[]>(
-    () => (isPast24Hours ? merged.hourly : merged.daily).toReversed(),
-    [isPast24Hours, merged.daily, merged.hourly],
+    () => (isHourly ? merged.hourly : merged.daily).toReversed(),
+    [isHourly, merged.daily, merged.hourly],
   );
   const breakdownModels = useMemo(
     () =>
@@ -200,10 +225,31 @@ export function UsagePage() {
     const nextPreferences = { metric, windowDays: days };
     setPreferences(nextPreferences);
     saveUsagePagePreferences(nextPreferences);
+    setCustomSinceValue("");
+    setCustomUntilValue("");
     setWindowSelection({
+      kind: "day",
       days,
       window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
     });
+  };
+  const selectHourWindow = (hours: (typeof QUICK_USAGE_HOUR_OPTIONS)[number]) => {
+    const nextWindow = makeRollingUsageWindow(hours);
+    setWindowSelection({ kind: "hours", hours, window: nextWindow });
+    if (nextWindow.sinceTime !== undefined && nextWindow.untilTime !== undefined) {
+      setCustomSinceValue(toLocalDateTimeValue(new Date(nextWindow.sinceTime)));
+      setCustomUntilValue(toLocalDateTimeValue(new Date(nextWindow.untilTime)));
+    }
+  };
+  const applyCustomWindow = () => {
+    const validation = validateCustomUsageWindow(customSinceValue, customUntilValue);
+    if (!validation.ok) return;
+    setWindowSelection({ kind: "custom", window: validation.window });
+  };
+  const clearCustomWindow = () => {
+    setCustomSinceValue("");
+    setCustomUntilValue("");
+    selectWindow(preferences.windowDays);
   };
   const selectMetric = (nextMetric: UsageMetric) => {
     if (nextMetric === "limits") setLimitsNow(Date.now());
@@ -268,14 +314,19 @@ export function UsagePage() {
       });
       return;
     }
-    const nextWindow = makeWindow(windowDays, undefined, isPast24Hours ? "hour" : "day");
-    if (
+    const nextWindow =
+      windowSelection.kind === "day"
+        ? makeWindow(windowDays, undefined, windowDays === 1 ? "hour" : "day")
+        : windowSelection.kind === "hours"
+          ? makeRollingUsageWindow(windowSelection.hours)
+          : windowSelection.window;
+    const windowChanged =
       nextWindow.sinceDay !== window.sinceDay ||
       nextWindow.untilDay !== window.untilDay ||
       nextWindow.sinceTime !== window.sinceTime ||
-      nextWindow.untilTime !== window.untilTime
-    ) {
-      setWindowSelection({ days: windowDays, window: nextWindow });
+      nextWindow.untilTime !== window.untilTime;
+    if (windowChanged && windowSelection.kind !== "custom") {
+      setWindowSelection({ ...windowSelection, window: nextWindow });
     }
     refreshingRef.current = true;
     setIsRefreshing(true);
@@ -302,9 +353,29 @@ export function UsagePage() {
   }, [showingLimits, connectedLimitsEnvironments]);
 
   const windowLabel =
-    isPast24Hours && window.sinceTime !== undefined && window.untilTime !== undefined
+    window.sinceTime !== undefined && window.untilTime !== undefined
       ? `${formatDateTimeShort(window.sinceTime, window.timeZone)} to ${formatDateTimeShort(window.untilTime, window.timeZone)}`
       : `${formatDayShort(window.sinceDay)} to ${formatDayShort(window.untilDay)}`;
+  const desktopWindowLabel =
+    windowSelection.kind === "hours"
+      ? `Past ${windowSelection.hours}h · ${windowLabel}`
+      : windowSelection.kind === "custom"
+        ? `Custom range · ${windowLabel}`
+        : windowLabel;
+  const windowPeriodValue = windowSelection.kind === "day" ? String(windowDays) : "";
+  const rangePickerProps = {
+    selection: windowSelection,
+    timeZone: window.timeZone,
+    sinceValue: customSinceValue,
+    untilValue: customUntilValue,
+    validation: customWindowValidation,
+    disabled: showingLimits,
+    onSinceValueChange: setCustomSinceValue,
+    onUntilValueChange: setCustomUntilValue,
+    onSelectHours: selectHourWindow,
+    onApplyCustom: applyCustomWindow,
+    onClear: clearCustomWindow,
+  };
   const topbarContent = (
     <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 py-2 xl:flex">
       <WorkspaceBreadcrumb ariaLabel="Usage breadcrumb" className="col-span-2 min-w-0">
@@ -327,7 +398,7 @@ export function UsagePage() {
       </WorkspaceBreadcrumb>
       {!showingLimits ? (
         <span className="hidden min-w-0 truncate text-xs text-muted-foreground 2xl:block">
-          {windowLabel}
+          {desktopWindowLabel}
         </span>
       ) : null}
       <div className="ms-auto hidden min-w-0 items-center justify-end gap-2 xl:flex">
@@ -351,7 +422,7 @@ export function UsagePage() {
         <ToggleGroup
           aria-label="Usage period"
           variant="segmented"
-          value={[String(windowDays)]}
+          value={windowPeriodValue ? [windowPeriodValue] : []}
           disabled={showingLimits}
           onValueChange={(next) => {
             const value = next[0];
@@ -364,6 +435,7 @@ export function UsagePage() {
             </Toggle>
           ))}
         </ToggleGroup>
+        <UsageRangePicker {...rangePickerProps} />
         <Button
           onClick={refreshWindow}
           aria-label={showingLimits ? "Refresh limits" : "Refresh usage"}
@@ -401,7 +473,7 @@ export function UsagePage() {
           </SelectPopup>
         </Select>
         <Select
-          value={String(windowDays)}
+          value={windowPeriodValue || null}
           disabled={showingLimits}
           onValueChange={(value) => selectWindow(Number(value))}
         >
@@ -412,7 +484,11 @@ export function UsagePage() {
             className="w-auto min-w-0"
           >
             <SelectValue>
-              {WINDOW_OPTIONS.find((option) => option.days === windowDays)?.label}
+              {windowSelection.kind === "day"
+                ? WINDOW_OPTIONS.find((option) => option.days === windowDays)?.label
+                : windowSelection.kind === "hours"
+                  ? `Past ${windowSelection.hours}h`
+                  : "Custom range"}
             </SelectValue>
           </SelectTrigger>
           <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -427,6 +503,7 @@ export function UsagePage() {
             ))}
           </SelectPopup>
         </Select>
+        <UsageRangePicker {...rangePickerProps} />
         <Button
           onClick={refreshWindow}
           aria-label={showingLimits ? "Refresh limits" : "Refresh usage"}
@@ -450,6 +527,14 @@ export function UsagePage() {
 
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="wide">
+            {!showingLimits && windowSelection.kind === "custom" ? (
+              <p
+                aria-label="Applied custom usage range"
+                className="mb-4 text-xs text-muted-foreground"
+              >
+                Custom range: {windowLabel} ({window.timeZone}; end exclusive)
+              </p>
+            ) : null}
             {selectedEnvironments.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 {environments.length === 0
@@ -591,7 +676,7 @@ export function UsagePage() {
 
                   <div className="flex min-w-0 flex-col gap-3">
                     <h2 className="text-sm font-medium text-foreground">
-                      {isPast24Hours ? "Hourly" : "Daily"}{" "}
+                      {isHourly ? "Hourly" : "Daily"}{" "}
                       {metric === "tokens" ? "processed tokens" : "cost"}
                     </h2>
                     <UsageProviderChart
@@ -602,7 +687,7 @@ export function UsagePage() {
                       hourly={merged.hourly}
                       metric={metric}
                       referenceTime={window.untilTime}
-                      resolution={isPast24Hours ? "hour" : "day"}
+                      resolution={isHourly ? "hour" : "day"}
                       timeZone={window.timeZone}
                     />
                   </div>
@@ -640,7 +725,7 @@ export function UsagePage() {
                       {(
                         [
                           { value: "model", label: "Model" },
-                          { value: "time", label: isPast24Hours ? "Hour" : "Day" },
+                          { value: "time", label: isHourly ? "Hour" : "Day" },
                         ] as const
                       ).map((option) => (
                         <Toggle key={option.value} value={option.value}>
@@ -715,7 +800,7 @@ export function UsagePage() {
                       </colgroup>
                       <thead>
                         <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                          <th className="py-2 font-normal">{isPast24Hours ? "Hour" : "Day"}</th>
+                          <th className="py-2 font-normal">{isHourly ? "Hour" : "Day"}</th>
                           {activeProviders.map((provider) => (
                             <th key={provider} className="py-2 text-right font-normal">
                               {PROVIDER_PRESENTATION[provider].label}
@@ -773,6 +858,148 @@ export function UsagePage() {
         </ScrollArea>
       </div>
     </SidebarInset>
+  );
+}
+
+function UsageRangePicker({
+  selection,
+  timeZone,
+  sinceValue,
+  untilValue,
+  validation,
+  disabled,
+  onSinceValueChange,
+  onUntilValueChange,
+  onSelectHours,
+  onApplyCustom,
+  onClear,
+}: {
+  readonly selection: UsageWindowSelection;
+  readonly timeZone: string;
+  readonly sinceValue: string;
+  readonly untilValue: string;
+  readonly validation: CustomUsageWindowValidation;
+  readonly disabled: boolean;
+  readonly onSinceValueChange: (value: string) => void;
+  readonly onUntilValueChange: (value: string) => void;
+  readonly onSelectHours: (hours: (typeof QUICK_USAGE_HOUR_OPTIONS)[number]) => void;
+  readonly onApplyCustom: () => void;
+  readonly onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const hasAlternateSelection = selection.kind !== "day";
+  const hasRangeDraft = sinceValue !== "" || untilValue !== "";
+  const validationMessage =
+    sinceValue !== "" && untilValue !== "" && !validation.ok ? validation.error : null;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <Button
+            aria-label="Additional usage ranges"
+            title="Additional usage ranges"
+            disabled={disabled}
+            size="icon-sm"
+            variant={hasAlternateSelection ? "secondary" : "ghost"}
+          >
+            <EllipsisIcon aria-hidden />
+          </Button>
+        }
+      />
+      <PopoverPopup align="end" width="lg" aria-label="Additional usage ranges">
+        <div className="flex w-full flex-col gap-4 p-4">
+          <section className="flex flex-col gap-2">
+            <h2 className="text-xs font-medium text-muted-foreground">Short ranges</h2>
+            <ToggleGroup
+              aria-label="Hourly usage range"
+              variant="segmented"
+              value={selection.kind === "hours" ? [String(selection.hours)] : []}
+              onValueChange={(next) => {
+                const selectedHours = Number(next[0]);
+                if (
+                  QUICK_USAGE_HOUR_OPTIONS.includes(
+                    selectedHours as (typeof QUICK_USAGE_HOUR_OPTIONS)[number],
+                  )
+                ) {
+                  onSelectHours(selectedHours as (typeof QUICK_USAGE_HOUR_OPTIONS)[number]);
+                  setOpen(false);
+                }
+              }}
+            >
+              {QUICK_USAGE_HOUR_OPTIONS.map((hours) => (
+                <Toggle key={hours} value={String(hours)}>
+                  {hours}h
+                </Toggle>
+              ))}
+            </ToggleGroup>
+          </section>
+
+          <div className="border-t border-border/60" />
+
+          <section className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
+              <h2 className="text-xs font-medium text-muted-foreground">Custom range</h2>
+              <p className="text-xs text-muted-foreground">
+                Times use {timeZone}. The end is exclusive.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
+                Start (inclusive)
+                <Input
+                  aria-label="Custom range start"
+                  nativeInput
+                  type="datetime-local"
+                  step={60}
+                  value={sinceValue}
+                  onChange={(event) => onSinceValueChange(event.target.value)}
+                />
+              </label>
+              <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
+                End (exclusive)
+                <Input
+                  aria-label="Custom range end"
+                  nativeInput
+                  type="datetime-local"
+                  step={60}
+                  value={untilValue}
+                  onChange={(event) => onUntilValueChange(event.target.value)}
+                />
+              </label>
+            </div>
+            {validationMessage ? (
+              <p role="alert" className="text-xs text-destructive">
+                {validationMessage}
+              </p>
+            ) : null}
+            <div className="flex items-center justify-between gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={!hasAlternateSelection && !hasRangeDraft}
+                onClick={() => {
+                  onClear();
+                  setOpen(false);
+                }}
+              >
+                Clear custom selection
+              </Button>
+              <Button
+                size="sm"
+                disabled={!validation.ok}
+                onClick={() => {
+                  onApplyCustom();
+                  setOpen(false);
+                }}
+              >
+                Apply range
+              </Button>
+            </div>
+          </section>
+        </div>
+      </PopoverPopup>
+    </Popover>
   );
 }
 

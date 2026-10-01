@@ -1,8 +1,11 @@
 import { EnvironmentId, UsageDay, USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
 import { act } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+import { saveUsagePagePreferences } from "./usagePagePreferences";
 
 const testState = vi.hoisted(() => ({
   useUsage: vi.fn(),
@@ -25,7 +28,32 @@ vi.mock("../ui/select", () => ({
   SelectValue: "div",
 }));
 vi.mock("../ui/sidebar", () => ({ SidebarInset: "div" }));
-vi.mock("../ui/toggle-group", () => ({ Toggle: "button", ToggleGroup: "div" }));
+vi.mock("../ui/toggle-group", async () => {
+  const React = await import("react");
+  return {
+    Toggle: "button",
+    ToggleGroup: ({
+      children,
+      onValueChange,
+      ...props
+    }: {
+      readonly children?: ReactNode;
+      readonly onValueChange?: (value: readonly string[]) => void;
+      readonly [key: string]: unknown;
+    }) =>
+      React.createElement(
+        "div",
+        props,
+        React.Children.map(children, (child) => {
+          if (!React.isValidElement<{ value: string }>(child)) return child;
+          const toggle = child as ReactElement<{ value: string; onClick?: () => void }>;
+          return React.cloneElement(toggle, {
+            onClick: () => onValueChange?.([toggle.props.value]),
+          });
+        }),
+      ),
+  };
+});
 vi.mock("../WorkspaceBreadcrumb", () => ({
   WorkspaceBreadcrumb: "div",
   WorkspaceBreadcrumbItem: "div",
@@ -84,6 +112,7 @@ describe("UsagePage Escape navigation", () => {
   let back: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
+    saveUsagePagePreferences({ metric: "tokens", windowDays: 30 });
     back = vi.spyOn(window.history, "back").mockImplementation(() => {});
     testState.navigate.mockClear();
     testState.canGoBack = true;
@@ -146,6 +175,67 @@ describe("UsagePage Escape navigation", () => {
     document.body.dispatchEvent(escape(properties));
     expect(back).not.toHaveBeenCalled();
     expect(testState.navigate).not.toHaveBeenCalled();
+  });
+
+  it("selects an exact three-hour range from the overflow panel", async () => {
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Additional usage ranges"]',
+    );
+    expect(trigger).not.toBeNull();
+
+    await act(() => trigger?.click());
+    const threeHours = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "3h",
+    );
+    expect(threeHours).toBeDefined();
+    await act(() => threeHours?.click());
+
+    const input = testState.useUsage.mock.calls.at(-1)?.[0];
+    expect(input).toMatchObject({ resolution: "hour", timeZone: expect.any(String) });
+    expect(Date.parse(input.untilTime) - Date.parse(input.sinceTime)).toBe(3 * 60 * 60 * 1000);
+  });
+
+  it("applies and clears an exact multi-day custom range", async () => {
+    vi.stubEnv("TZ", "UTC");
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Additional usage ranges"]',
+    );
+    expect(trigger).not.toBeNull();
+    await act(() => trigger?.click());
+
+    const setInputValue = (label: string, value: string) => {
+      const input = document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`);
+      expect(input).not.toBeNull();
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      if (!input || !valueSetter) throw new Error("The custom range input is unavailable.");
+      valueSetter.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    await act(() => setInputValue("Custom range start", "2026-09-15T10:30"));
+    await act(() => setInputValue("Custom range end", "2026-09-18T12:37"));
+    const apply = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Apply range",
+    );
+    expect(apply?.disabled).toBe(false);
+    await act(() => apply?.click());
+
+    const customInput = testState.useUsage.mock.calls.at(-1)?.[0];
+    expect(customInput).toMatchObject({
+      sinceDay: "2026-09-15",
+      untilDay: "2026-09-18",
+      timeZone: "UTC",
+      resolution: "exactDay",
+      sinceTime: "2026-09-15T10:30:00.000Z",
+      untilTime: "2026-09-18T12:37:00.000Z",
+    });
+
+    await act(() => trigger?.click());
+    const clear = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Clear custom selection",
+    );
+    expect(clear?.disabled).toBe(false);
+    await act(() => clear?.click());
+    expect(testState.useUsage.mock.calls.at(-1)?.[0]).not.toHaveProperty("sinceTime");
   });
 });
 
