@@ -36,6 +36,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderQueueRefreshResult,
+  type ProviderQueueInventory,
   type ServerProvider,
   type ProviderInstallState,
   ProviderSetupError,
@@ -2345,11 +2346,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           { headers: readHeaders },
         );
         assert.equal(inventoryResponse.status, 200);
-        const inventory = yield* responseJsonEffect<{
-          observedAt: string;
-          inventoryRevision: string;
-        }>(inventoryResponse);
-        const instances = [
+        const inventory = yield* responseJsonEffect<ProviderQueueInventory>(inventoryResponse);
+        const instances: ProviderQueueInventory["instances"] = [
           {
             instanceId,
             displayName: "Synthetic Codex",

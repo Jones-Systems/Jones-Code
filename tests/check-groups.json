@@ -101,6 +101,19 @@
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/cli/update.test.ts",
       "modules": ["apps/server/src/cli/update.test.ts"],
       "scope": ["apps/server/src/cli/update.ts"]
+    },
+    {
+      "group_id": "jones-runtime-adoption-qualification",
+      "command": "node_modules/.bin/vp test run scripts/runtime-adoption-qualification --fileParallelism=false --maxWorkers=1",
+      "modules": [
+        "scripts/runtime-adoption-qualification/adoption.test.mjs",
+        "scripts/runtime-adoption-qualification/launcher.test.mjs",
+        "scripts/runtime-adoption-qualification/resume-identity.test.mjs",
+        "scripts/runtime-adoption-qualification/desktop-storage.test.mjs",
+        "scripts/runtime-adoption-qualification/browser-storage.test.mjs",
+        "scripts/runtime-adoption-qualification/artifact-binding.test.mjs"
+      ],
+      "scope": ["scripts/runtime-adoption-qualification/**"]
     }
   ]
 }
