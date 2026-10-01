@@ -23,7 +23,7 @@ import {
   samePrivateQuotaProof,
 } from "./qualifiedQuota.ts";
 
-export const PROVIDER_QUEUE_REFRESH_MS = 300_000;
+const PROVIDER_QUEUE_REFRESH_MS = 300_000;
 const MAX_STATE_BYTES = 2 * 1024 * 1024;
 const LegacyAttempt = Schema.Struct({
   instanceId: Schema.String,
