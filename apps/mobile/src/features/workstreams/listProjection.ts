@@ -1,6 +1,6 @@
 import { sortActiveThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
 import { applyPendingThreadOrder, type PendingThreadOrder } from "../threads/threadOrder";
-import { mobilePrimaryGroupMap } from "../threads/threadOrderScope";
+import { mobilePrimaryGroupMap } from "../../lib/threadOrderScope";
 import { nativeWorkstreamThreadKey } from "@t3tools/client-runtime/state/workstreams";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { ThreadListV2ListItem, ThreadListV2ThreadListItem } from "../threads/threadListV2";

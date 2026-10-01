@@ -4,7 +4,7 @@ import {
   sameMobileThreadOrderScope,
   type MobileThreadOrderScope,
   type MobileThreadOrderSnapshot,
-} from "./threadOrderScope";
+} from "../../lib/threadOrderScope";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import {
   canSnooze,

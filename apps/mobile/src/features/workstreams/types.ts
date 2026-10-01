@@ -2,7 +2,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import type {
   MobileThreadOrderSnapshot,
   MobileThreadOrderSource,
-} from "../threads/threadOrderScope";
+} from "../../lib/threadOrderScope";
 import type { WorkstreamDtoPage } from "@t3tools/client-runtime/state/workstreams";
 import type { EnvironmentHttpAuthHeaders } from "@t3tools/client-runtime/state/environmentHttpAuth";
 import type { WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";

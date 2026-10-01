@@ -1,7 +1,4 @@
-import type {
-  MobileThreadOrderSnapshot,
-  MobileThreadOrderSource,
-} from "../features/threads/threadOrderScope";
+import type { MobileThreadOrderSnapshot, MobileThreadOrderSource } from "../lib/threadOrderScope";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { Atom } from "effect/unstable/reactivity";

@@ -1,4 +1,4 @@
-import type { MobileThreadOrderScope } from "./threadOrderScope";
+import type { MobileThreadOrderScope } from "../../lib/threadOrderScope";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   generateSpreadPinOrderKeys,

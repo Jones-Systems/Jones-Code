@@ -3,7 +3,7 @@ import {
   mobileThreadOrderScope,
   sameMobileThreadOrderScope,
   type MobileThreadOrderScope,
-} from "./threadOrderScope";
+} from "../../lib/threadOrderScope";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";

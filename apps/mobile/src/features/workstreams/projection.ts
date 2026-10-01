@@ -1,4 +1,4 @@
-import { mobilePrimaryGroupMap } from "../threads/threadOrderScope";
+import { mobilePrimaryGroupMap } from "../../lib/threadOrderScope";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import {
   groupNativeThreadsByWorkstream,

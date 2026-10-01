@@ -7,10 +7,7 @@ import {
   buildThreadListV2ListItems,
   getThreadListV2OrderedSection,
 } from "../threads/threadListV2";
-import {
-  mobileThreadOrderScope,
-  type MobileThreadOrderSnapshot,
-} from "../threads/threadOrderScope";
+import { mobileThreadOrderScope, type MobileThreadOrderSnapshot } from "../../lib/threadOrderScope";
 import { projectMobileWorkstreamList, mobileWorkstreamMoveDestination } from "./listProjection";
 
 const now = "2026-10-01T12:00:00Z";

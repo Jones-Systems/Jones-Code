@@ -5,7 +5,7 @@ import {
   mobileThreadOrderSection,
   sameMobileThreadOrderScope,
   type MobileThreadMoveContext,
-} from "../threads/threadOrderScope";
+} from "../../lib/threadOrderScope";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";

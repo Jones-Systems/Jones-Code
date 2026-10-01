@@ -2,7 +2,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import type {
   MobileThreadOrderSnapshot,
   MobileThreadOrderSource,
-} from "../threads/threadOrderScope";
+} from "../../lib/threadOrderScope";
 import { useAtomValue } from "@effect/atom-react";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import {

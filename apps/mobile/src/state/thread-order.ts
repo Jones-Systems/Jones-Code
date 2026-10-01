@@ -1,4 +1,4 @@
-import type { MobileThreadOrderSource } from "../features/threads/threadOrderScope";
+import type { MobileThreadOrderSource } from "../lib/threadOrderScope";
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect } from "react";
 import { Atom } from "effect/unstable/reactivity";

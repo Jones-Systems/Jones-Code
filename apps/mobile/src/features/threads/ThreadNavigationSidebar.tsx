@@ -3,7 +3,7 @@ import {
   mobileThreadOrderSection,
   mobileThreadOrderScopes,
   type MobileThreadMoveContext,
-} from "../threads/threadOrderScope";
+} from "../../lib/threadOrderScope";
 import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
 import {
   projectMobileWorkstreamList,
