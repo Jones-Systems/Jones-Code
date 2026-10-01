@@ -184,6 +184,7 @@ async function main() {
     // Harness and proved one-entry Knip metadata changes retain the actual package source.
     sourceObservation.harnessCommit = observed.commit;
     sourceObservation.commit = inputs.acceptedCumulativeSource;
+    sourceObservation.tree = packageTree;
     sourceObservation.packageSourceTree = packageTree;
     sourceObservation.qualificationTree = observed.tree;
     sourceObservation.productionDiffPaths = sourceDiff.productionDiffPaths;
