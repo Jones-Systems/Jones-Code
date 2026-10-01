@@ -663,7 +663,7 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
   DeviceScreenshotRegistrationLive,
 );
 
-export const OrganizationToolkitRegistrationLive = McpServer.toolkit(OrganizationToolkit).pipe(
+const OrganizationToolkitRegistrationLive = McpServer.toolkit(OrganizationToolkit).pipe(
   Layer.provide(OrganizationToolkitHandlersLive),
 );
 

@@ -11,9 +11,7 @@ import {
 } from "../../../workstreams/WorkstreamGateway.ts";
 import { OrganizationToolkit, OrganizationToolError, type OrganizationThread } from "./tools.ts";
 
-export const organizationThread = (
-  thread: OrchestrationThreadShell,
-): typeof OrganizationThread.Type => ({
+const organizationThread = (thread: OrchestrationThreadShell): typeof OrganizationThread.Type => ({
   threadId: thread.id,
   title: thread.title.slice(0, 512),
   projectId: thread.projectId,
