@@ -35,5 +35,25 @@ The benchmark profile keeps the actual production WAL mode. It compares journal 
 Run the bounded group with:
 
 ```sh
-node --test --test-concurrency=1 scripts/performance-staging/guard.test.mjs scripts/performance-staging/lifecycle.test.mjs scripts/performance-staging/fixtures.test.mjs
+node --test --test-concurrency=1 scripts/performance-staging/guard.test.mjs scripts/performance-staging/lifecycle.test.mjs scripts/performance-staging/fixtures.test.mjs scripts/performance-staging/migration-restore.test.mjs
 ```
+
+## Private migration and restore qualification
+
+The private qualification entry is `scripts/performance-staging/migration-restore.test.mjs`. It runs synthetic Node24 source cases independently of the separate runtime diagnostic harness. It does not qualify the compiled application, production data, providers or a live update. Its writable owner stays in process; the public callback APIs do not acquire a retain flag or a serialized write capability.
+
+Qualification binds the actual old-source heads e5 `e5a31aceec91484b64315c63dcce80f6e7581604` (fork migrations1–4), 414 `414bb8da204c3275cd0b76b2ec4d74dfb09a97e4` (1–2), and history `c4c68bb0b33eafb72545e6e23b0b7258e49bd613` (1–6), then the candidate `da5f4aee0035beec471b38598eaa2857d1e5155c` (1–7). History's production source, manifests, workspace, patches and lockfile match frozen main8de; its actual c4 head remains the source identity. Source paths, loaded adapter bytes, actual Node/SQLite identity and connection settings must accompany results. No ledger edits or duplicate same-source labels substitute for a cross-version reopen.
+
+Separate migration-only state from subsequent Engine bootstrap and writes. Compare full fixed-table capture, ordered ledgers, native005/006 schemas and data, auth session state, integrity, foreign keys, replay, pagination and repeated-command/lease fencing outcomes across the actual phases. Repeat the native migration to prove idempotence. A migration007 rollback case must observe real index DDL in the transaction before injecting its declared test-only failure and then compare the rolled-back schema and ledgers; a failure before DDL proves abort only. Remove only the test interceptor before the real retry.
+
+Backup rehearsals must await the actual native backup, close the readonly source resource and observe the destination's header, sidecars and canonical content before reopening changes its journal state. The fixed offline backup leaf has no descendants; captured terminal close/reap supplies its process-lifetime evidence. Fresh restore destinations retain genuine creating-owner custody and exact registered file identities. Capture synthetic companion files and references separately: database integrity does not prove attachment or checkpoint-file recovery. Real Git checkpoint objects and real provider transcripts are outside these synthetic cases.
+
+Old414 reopen and new writes, followed by candidate rollforward, are distinct required phases; regenerating a fresh414 fixture does not establish rollback compatibility. A successful synthetic rehearsal does not promise that arbitrary later application schemas can roll back. Preserve the exact qualified source pair and backup evidence before any separately authorized live operation. Backup rejection, cancellation or unknown resource/child closure retains the owned evidence and tree; there is no generic retry, reset or deletion command.
+
+Run the private entry under the coordinator's serial admission and explicit execution grant:
+
+```sh
+node --test --test-concurrency=1 scripts/performance-staging/migration-restore.test.mjs
+```
+
+Authored cases and this procedure are not passing qualification evidence. Record each exact candidate result, failed or unavailable phase and owned cleanup readback before relying on it.
