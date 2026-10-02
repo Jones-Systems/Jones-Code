@@ -5,11 +5,17 @@ import {
   fetchVoiceReviewDraft,
   fetchVoiceReviewDrafts,
   mutateVoiceReviewDraft,
+  fetchVoiceReviewRecent,
+  fetchThreadRegistrySnapshot,
+  fetchThreadRegistryWorkstreams,
+  fetchVoiceReviewDiagnostics,
+  correctThreadRegistryAssociation,
 } from "@t3tools/client-runtime/voice-review";
 import type {
   EnvironmentId,
   VoiceReviewAction,
   VoiceReviewMutationPayload,
+  ThreadRegistryAssociationPayload,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -53,10 +59,81 @@ const mutate = createEnvironmentCommand(connectionAtomRuntime, {
     }),
 });
 
+const recent = createEnvironmentCommand(connectionAtomRuntime, {
+  label: "web-voice-review:recent",
+  execute: () =>
+    Effect.gen(function* () {
+      return yield* fetchVoiceReviewRecent({ ...(yield* requestContext), limit: 50 });
+    }),
+});
+const registry = createEnvironmentCommand(connectionAtomRuntime, {
+  label: "web-voice-review:registry",
+  execute: () =>
+    Effect.gen(function* () {
+      return yield* fetchThreadRegistrySnapshot({ ...(yield* requestContext), limit: 200 });
+    }),
+});
+const workstreams = createEnvironmentCommand(connectionAtomRuntime, {
+  label: "web-voice-review:workstreams",
+  execute: () =>
+    Effect.gen(function* () {
+      return yield* fetchThreadRegistryWorkstreams(yield* requestContext);
+    }),
+});
+const diagnostics = createEnvironmentCommand(connectionAtomRuntime, {
+  label: "web-voice-review:diagnostics",
+  execute: (id: string) =>
+    Effect.gen(function* () {
+      return yield* fetchVoiceReviewDiagnostics({ ...(yield* requestContext), id });
+    }),
+});
+const association = createEnvironmentCommand(connectionAtomRuntime, {
+  label: "web-voice-review:association",
+  execute: (payload: ThreadRegistryAssociationPayload) =>
+    Effect.gen(function* () {
+      return yield* correctThreadRegistryAssociation({ ...(yield* requestContext), payload });
+    }),
+});
+
 export function useVoiceReview(environmentId: EnvironmentId) {
   const runList = useAtomCommand(list, { reportFailure: false, reportDefect: false });
   const runGet = useAtomCommand(get, { reportFailure: false, reportDefect: false });
   const runMutate = useAtomCommand(mutate, { reportFailure: false, reportDefect: false });
+  const runRecent = useAtomCommand(recent, { reportFailure: false, reportDefect: false });
+  const runRegistry = useAtomCommand(registry, { reportFailure: false, reportDefect: false });
+  const runWorkstreams = useAtomCommand(workstreams, { reportFailure: false, reportDefect: false });
+  const runDiagnostics = useAtomCommand(diagnostics, { reportFailure: false, reportDefect: false });
+  const runAssociation = useAtomCommand(association, { reportFailure: false, reportDefect: false });
+  const review = useMemo(
+    () => ({
+      recent: async () => {
+        const result = await runRecent({ environmentId, input: undefined });
+        if (result._tag === "Failure") throw Cause.squash(result.cause);
+        return result.value;
+      },
+      registry: async () => {
+        const result = await runRegistry({ environmentId, input: undefined });
+        if (result._tag === "Failure") throw Cause.squash(result.cause);
+        return result.value;
+      },
+      workstreams: async () => {
+        const result = await runWorkstreams({ environmentId, input: undefined });
+        if (result._tag === "Failure") throw Cause.squash(result.cause);
+        return result.value;
+      },
+      diagnostics: async (id: string) => {
+        const result = await runDiagnostics({ environmentId, input: id });
+        if (result._tag === "Failure") throw Cause.squash(result.cause);
+        return result.value;
+      },
+      correctAssociation: async (payload: ThreadRegistryAssociationPayload) => {
+        const result = await runAssociation({ environmentId, input: payload });
+        if (result._tag === "Failure") throw Cause.squash(result.cause);
+        return result.value;
+      },
+    }),
+    [environmentId, runRecent, runRegistry, runWorkstreams, runDiagnostics, runAssociation],
+  );
   const fetchList = useCallback(
     async (scope: "pending" | "recent") => {
       const result = await runList({ environmentId, input: scope });
@@ -84,5 +161,5 @@ export function useVoiceReview(environmentId: EnvironmentId) {
     }),
     [environmentId, runGet, runMutate],
   );
-  return { fetchList, transport };
+  return { fetchList, transport, review };
 }

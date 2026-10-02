@@ -43,3 +43,39 @@ export const voiceReviewConfigFromEnv = (env: NodeJS.ProcessEnv): VoiceReviewCon
     return null;
   }
 };
+
+const NativeBindingName = Schema.String.check(
+  Schema.isNonEmpty(),
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^[^\s*\u0000-\u001f\u007f]+$/),
+);
+export const VoiceReviewNativeBinding = Schema.Record(Schema.String, Schema.Unknown)
+  .check(
+    Schema.isPropertyNames(
+      Schema.Literals(["registry_host", "registry_environment", "native_environment_id"]),
+    ),
+  )
+  .pipe(
+    Schema.decodeTo(
+      Schema.Struct({
+        registry_host: NativeBindingName,
+        registry_environment: NativeBindingName,
+        native_environment_id: Schema.String.check(
+          Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/),
+        ),
+      }),
+    ),
+  );
+export type VoiceReviewNativeBinding = typeof VoiceReviewNativeBinding.Type;
+
+export const voiceReviewNativeBindingFromEnv = (
+  env: NodeJS.ProcessEnv,
+): VoiceReviewNativeBinding | null => {
+  try {
+    const raw = env.T3CODE_VOICE_REVIEW_NATIVE_BINDING;
+    if (raw === undefined || raw.length > 4096) return null;
+    return Schema.decodeUnknownSync(VoiceReviewNativeBinding)(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+};

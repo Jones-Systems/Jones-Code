@@ -56,7 +56,10 @@ import {
 import * as NativeStoreAuthority from "./environment/NativeStoreAuthority.ts";
 import { jonesUpdatesHttpApiLayer } from "./jonesUpdates/http.ts";
 import * as JonesUpdates from "./jonesUpdates/service.ts";
-import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./voiceReview/http.ts";
+import {
+  voiceReviewHttpApiLayerLive,
+  voiceReviewResponseHeadersLayer,
+} from "./voiceReview/http.ts";
 import { hostStatusHttpApiLayer } from "./hostStatus/http.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
@@ -643,7 +646,9 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(nativeWorkstreamsHttpApiLayer),
       Layer.provide(hostStatusHttpApiLayer),
       Layer.provide(jonesUpdatesHttpApiLayer),
-      Layer.provide(voiceReviewHttpApiLayer),
+      Layer.provide(
+        voiceReviewHttpApiLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer)),
+      ),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),
     ),
