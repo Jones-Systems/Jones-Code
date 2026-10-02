@@ -492,6 +492,7 @@ describe("populated historical database adoption", () => {
         assert.deepEqual(after.ledgers.fork, [
           { migration_id: 1, name: "WorktreeOwnershipLeases" },
           { migration_id: 2, name: "ProjectionThreadRuntimeIdentity" },
+          { migration_id: 3, name: "NativeCreationIntents" },
         ]);
         for (const thread of after.tables.projection_threads)
           assert.isNull(thread.auto_settle_disabled_at);
@@ -545,7 +546,7 @@ describe("populated historical database adoption", () => {
       const recovered = await readFixture(fixture);
       assertHistoricalRowsPreserved(before, recovered);
       assert.equal(recovered.ledgers.upstream.at(-1).migration_id, 54);
-      assert.equal(recovered.ledgers.fork.length, 2);
+      assert.equal(recovered.ledgers.fork.length, 3);
       record({
         checkId: "migration-54-pre-effect-recovery",
         proofKind: "synthetic-trigger-real-startup",
@@ -605,7 +606,7 @@ describe("populated historical database adoption", () => {
       const recovered = await readFixture(fixture);
       assertHistoricalRowsPreserved(before, recovered);
       assert.equal(recovered.ledgers.upstream.at(-1).migration_id, 54);
-      assert.equal(recovered.ledgers.fork.length, 2);
+      assert.equal(recovered.ledgers.fork.length, 3);
       record({
         checkId: "migration-post-write-transaction-recovery",
         proofKind: "real-migrations-with-appended-fault",

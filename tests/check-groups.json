@@ -99,13 +99,19 @@
     {
       "group_id": "jones-cli-release-provenance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/cli/update.test.ts",
-      "modules": ["apps/server/src/cli/update.test.ts"],
-      "scope": ["apps/server/src/cli/update.ts"]
+      "modules": [
+        "apps/server/src/cli/update.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/cli/update.ts"
+      ]
     },
     {
       "group_id": "voice-native-bootstrap-conformance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/voiceNativeBootstrap.test.ts",
-      "modules": ["apps/server/src/voiceNativeBootstrap.test.ts"],
+      "modules": [
+        "apps/server/src/voiceNativeBootstrap.test.ts"
+      ],
       "scope": [
         "apps/server/src/voiceNativeBootstrap.test.ts",
         "apps/server/src/voiceNativeBootstrap.fixtures/**",
@@ -124,7 +130,9 @@
         "scripts/runtime-adoption-qualification/browser-storage.test.mjs",
         "scripts/runtime-adoption-qualification/artifact-binding.test.mjs"
       ],
-      "scope": ["scripts/runtime-adoption-qualification/**"]
+      "scope": [
+        "scripts/runtime-adoption-qualification/**"
+      ]
     },
     {
       "group_id": "t3-native-creation-contracts",
@@ -165,7 +173,8 @@
         "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.test.ts",
         "apps/server/src/persistence/Migrations.test.ts",
         "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.ts",
-        "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.test.ts"
+        "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.test.ts",
+        "knip.jsonc"
       ]
     },
     {
@@ -204,6 +213,19 @@
         "apps/server/src/serverRuntimeStartup.worktreeSetup.test.ts",
         "apps/server/src/server.test.ts",
         "apps/server/src/voiceNativeBootstrap.test.ts"
+      ]
+    },
+    {
+      "group_id": "jones-creation-adoption-ledger",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism scripts/runtime-adoption-qualification/adoption.test.mjs scripts/runtime-adoption-qualification/launcher.test.mjs",
+      "modules": [
+        "scripts/runtime-adoption-qualification/adoption.test.mjs",
+        "scripts/runtime-adoption-qualification/launcher.test.mjs"
+      ],
+      "scope": [
+        "apps/server/src/persistence/Migrations.ts",
+        "scripts/runtime-adoption-qualification/adoption.test.mjs",
+        "scripts/runtime-adoption-qualification/launcher.test.mjs"
       ]
     }
   ]
