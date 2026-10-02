@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Native CLI fixtures capture child PIDs, watch ready barriers and compare exact filesystem identities and bytes.
+// @effect-diagnostics globalTimers:off -- The fixture creator bounds captured-PID termination/reap and clears its timers on close and finally.
+// @effect-diagnostics globalConsole:off -- Failure diagnostics preserve the original test error and report bounded native stderr or the retained fixture path.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -6,7 +9,7 @@ import * as NodePath from "node:path";
 import * as NodeProcess from "node:process";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeURL from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 
 import {
   assertOwnedDatabase,

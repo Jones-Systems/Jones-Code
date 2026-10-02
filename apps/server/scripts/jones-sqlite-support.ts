@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- This native CLI hashes fixed source files and constructs the canonical guard's explicit path policy without an Effect runtime.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";

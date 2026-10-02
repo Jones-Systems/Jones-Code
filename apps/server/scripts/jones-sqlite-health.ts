@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+// @effect-diagnostics globalTimers:off -- The native CLI bounds stdin and its owned child with a deadline cleared in finally; an Effect timeout cannot preempt synchronous SQLite.
 import * as NodeCrypto from "node:crypto";
 import * as NodePerfHooks from "node:perf_hooks";
 import * as NodeProcess from "node:process";
@@ -497,8 +498,8 @@ if (import.meta.main) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const controller = new AbortController();
   const cancel = () => controller.abort(new HealthInputError("cancelled"));
-  NodeProcess.default.once("SIGINT", cancel);
-  NodeProcess.default.once("SIGTERM", cancel);
+  process.once("SIGINT", cancel);
+  process.once("SIGTERM", cancel);
   try {
     request = parseHealthArguments(NodeProcess.argv.slice(2));
     timer = setTimeout(
@@ -525,10 +526,10 @@ if (import.meta.main) {
     };
   } finally {
     clearTimeout(timer);
-    NodeProcess.default.removeListener("SIGINT", cancel);
-    NodeProcess.default.removeListener("SIGTERM", cancel);
+    process.removeListener("SIGINT", cancel);
+    process.removeListener("SIGTERM", cancel);
   }
   const encoded = encodeHealthEnvelope(report);
   NodeProcess.stdout.write(encoded.text);
-  NodeProcess.default.exitCode = healthExitCode(encoded.report);
+  process.exitCode = healthExitCode(encoded.report);
 }

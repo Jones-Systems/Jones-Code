@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+// @effect-diagnostics nodeBuiltinImport:off -- Read-only header qualification requires O_NOFOLLOW and the same native descriptor closed in finally.
 import * as NodeFS from "node:fs";
 import * as NodeProcess from "node:process";
 import * as NodeSqlite from "node:sqlite";
@@ -382,7 +383,7 @@ export async function runHealthWorker(
           if (error instanceof HealthInputError && error.reason === "output_limit") throw error;
           result(
             name,
-            component(
+            component<never>(
               error instanceof HealthInputError && error.reason === "record_limit"
                 ? "truncated"
                 : "failed",
@@ -474,11 +475,11 @@ if (import.meta.main) {
     const input = decodeInput(NodeProcess.argv[3]);
     budget = input.request.limits.maxOutputBytes - envelopeReserveBytes;
     const status = await runHealthWorker(input, emit);
-    NodeProcess.default.exitCode =
+    process.exitCode =
       status === "completed" ? 0 : status === "failed" ? 1 : status === "refused" ? 2 : 3;
   } catch (error) {
     const reason = error instanceof HealthInputError ? error.reason : "worker_failed";
     emit({ kind: "complete", status: reason === "output_limit" ? "partial" : "failed", reason });
-    NodeProcess.default.exitCode = reason === "output_limit" ? 3 : 1;
+    process.exitCode = reason === "output_limit" ? 3 : 1;
   }
 }
