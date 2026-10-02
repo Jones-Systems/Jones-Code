@@ -11,7 +11,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import type { OrchestrationThread } from "@t3tools/contracts";
+import type { OrchestrationEvent, OrchestrationThread } from "@t3tools/contracts";
 
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 
@@ -613,6 +613,324 @@ describe("applyThreadDetailEvent", () => {
       for (const [index, message] of messages.entries()) {
         if (message.id !== id) expect(result.thread.messages[index]).toBe(message);
       }
+    });
+
+    describe("message history characterization", () => {
+      type Message = OrchestrationThread["messages"][number];
+      type MessageEvent = Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
+      const updatedAt = "2026-04-01T01:00:00.000Z";
+      const message = (id: string, text: string, fields: Partial<Message> = {}): Message =>
+        Object.freeze({
+          id: MessageId.make(id),
+          role: "assistant",
+          text,
+          turnId: null,
+          streaming: true,
+          createdAt: baseThread.createdAt,
+          updatedAt: baseThread.updatedAt,
+          ...fields,
+        });
+      const send = (
+        thread: OrchestrationThread,
+        id: string,
+        fields: Partial<MessageEvent["payload"]> = {},
+      ): OrchestrationThread => {
+        const result = applyThreadDetailEvent(thread, {
+          ...baseEventFields,
+          sequence: 20,
+          occurredAt: updatedAt,
+          aggregateKind: "thread",
+          aggregateId: baseThread.id,
+          type: "thread.message-sent",
+          payload: {
+            threadId: baseThread.id,
+            messageId: MessageId.make(id),
+            role: "assistant",
+            text: "+",
+            turnId: null,
+            streaming: true,
+            createdAt: updatedAt,
+            updatedAt,
+            ...fields,
+          },
+        });
+        expect(result.kind).toBe("updated");
+        if (result.kind !== "updated") throw new Error("Expected a message update");
+        return result.thread;
+      };
+      const attachment = {
+        type: "file" as const,
+        id: "attachment-1",
+        name: "fixture.txt",
+        mimeType: "text/plain",
+        sizeBytes: 42,
+      };
+      const context = {
+        version: 1 as const,
+        records: [
+          {
+            version: 1 as const,
+            contextId: ComposerContextId.make("context-1"),
+            kind: "file" as const,
+            label: "fixture.txt",
+            attachmentId: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+          },
+        ],
+      };
+
+      it("updates every duplicate ID and preserves each entry's role and timestamps", () => {
+        const messages = Object.freeze([
+          message("duplicate", "first", { role: "user" }),
+          message("other", "untouched"),
+          message("duplicate", "last", { createdAt: "2026-03-01T00:00:00.000Z" }),
+        ]);
+        const result = send({ ...baseThread, messages }, "duplicate");
+        expect(result.messages.map((entry) => entry.text)).toEqual([
+          "first+",
+          "untouched",
+          "last+",
+        ]);
+        expect(result.messages[0]?.role).toBe("user");
+        expect(result.messages[0]?.createdAt).toBe(baseThread.createdAt);
+        expect(result.messages[2]?.createdAt).toBe("2026-03-01T00:00:00.000Z");
+        expect(result.messages[0]?.updatedAt).toBe(baseThread.updatedAt);
+        expect(result.messages[2]?.updatedAt).toBe(baseThread.updatedAt);
+        expect(result.messages[1]).toBe(messages[1]);
+        expect(messages.map((entry) => entry.text)).toEqual(["first", "untouched", "last"]);
+      });
+
+      it("revisits an immutable predecessor after two sibling branches advance", () => {
+        const messages = Object.freeze([
+          message("first", "first"),
+          message("middle", "middle"),
+          message("last", "last"),
+        ]);
+        const predecessor = Object.freeze({ ...baseThread, messages });
+        const left = send(predecessor, "last", { text: " L" });
+        const right = send(predecessor, "first", { text: " R" });
+        const leftNext = send(left, "first", { text: " L2" });
+        const rightNext = send(right, "last", { text: " R2" });
+        const revisited = send(predecessor, "middle");
+        expect(leftNext.messages.map((entry) => entry.text)).toEqual([
+          "first L2",
+          "middle",
+          "last L",
+        ]);
+        expect(rightNext.messages.map((entry) => entry.text)).toEqual([
+          "first R",
+          "middle",
+          "last R2",
+        ]);
+        expect(revisited.messages.map((entry) => entry.text)).toEqual(["first", "middle+", "last"]);
+        expect(left.messages.map((entry) => entry.text)).toEqual(["first", "middle", "last L"]);
+        expect(right.messages.map((entry) => entry.text)).toEqual(["first R", "middle", "last"]);
+        expect(predecessor.messages).toBe(messages);
+        expect(messages.map((entry) => entry.text)).toEqual(["first", "middle", "last"]);
+        expect(revisited.messages[0]).toBe(messages[0]);
+        expect(revisited.messages[2]).toBe(messages[2]);
+      });
+
+      it("uses positions from replaced snapshots and prepended message arrays", () => {
+        const original = send(
+          { ...baseThread, messages: [message("first", "first"), message("target", "target")] },
+          "target",
+        );
+        const snapshotMessages = Object.freeze([
+          message("target", "snapshot target", { role: "user" }),
+          message("first", "snapshot first"),
+        ]);
+        const snapshotResult = send({ ...original, messages: snapshotMessages }, "target");
+        expect(snapshotResult.messages.map((entry) => entry.text)).toEqual([
+          "snapshot target+",
+          "snapshot first",
+        ]);
+        expect(snapshotResult.messages[0]?.role).toBe("user");
+        expect(snapshotResult.messages[1]).toBe(snapshotMessages[1]);
+        const prepended = Object.freeze([message("older", "older"), ...original.messages]);
+        const prependResult = send({ ...original, messages: prepended }, "target");
+        expect(prependResult.messages.map((entry) => entry.text)).toEqual([
+          "older",
+          "first",
+          "target++",
+        ]);
+        expect(prependResult.messages[0]).toBe(prepended[0]);
+        expect(prependResult.messages[1]).toBe(prepended[1]);
+        expect(original.messages.map((entry) => entry.text)).toEqual(["first", "target+"]);
+        expect(snapshotMessages[0]?.text).toBe("snapshot target");
+        expect(prepended[2]?.text).toBe("target+");
+      });
+
+      it("updates retained messages after revert and appends a removed ID when sent again", () => {
+        const turnId = TurnId.make("turn-1");
+        const removedTurnId = TurnId.make("turn-2");
+        const before = send(
+          {
+            ...baseThread,
+            messages: Object.freeze([
+              message("import:codex:session-1:000000", "imported", { role: "user" }),
+              message("kept", "kept", { turnId }),
+              message("removed", "removed", { turnId: removedTurnId }),
+            ]),
+            checkpoints: [turnId, removedTurnId].map((id, index) => ({
+              turnId: id,
+              checkpointTurnCount: index + 1,
+              checkpointRef: CheckpointRef.make(`ref-${index + 1}`),
+              status: "ready" as const,
+              files: [],
+              assistantMessageId: MessageId.make(index === 0 ? "kept" : "removed"),
+              completedAt: updatedAt,
+            })),
+          },
+          "removed",
+          { turnId: removedTurnId },
+        );
+        const reverted = applyThreadDetailEvent(before, {
+          ...baseEventFields,
+          sequence: 21,
+          occurredAt: updatedAt,
+          aggregateKind: "thread",
+          aggregateId: baseThread.id,
+          type: "thread.reverted",
+          payload: { threadId: baseThread.id, turnCount: 1 },
+        });
+        expect(reverted.kind).toBe("updated");
+        if (reverted.kind !== "updated") throw new Error("Expected a revert update");
+        const retained = send(reverted.thread, "kept", { turnId });
+        expect(retained.messages.map((entry) => entry.text)).toEqual(["imported", "kept+"]);
+        const appended = send(retained, "removed", {
+          text: "resent",
+          streaming: false,
+          turnId: removedTurnId,
+        });
+        expect(appended.messages.map((entry) => entry.text)).toEqual([
+          "imported",
+          "kept+",
+          "resent",
+        ]);
+        expect(reverted.thread.messages.map((entry) => entry.text)).toEqual(["imported", "kept"]);
+        expect(before.messages.map((entry) => entry.text)).toEqual([
+          "imported",
+          "kept",
+          "removed+",
+        ]);
+      });
+
+      it("appends a missing ID with metadata and reuses that entry on the next delta", () => {
+        const existing = message("existing", "existing");
+        const appended = send({ ...baseThread, messages: [existing] }, "missing", {
+          role: "user",
+          text: "new",
+          attachments: [attachment],
+          context,
+        });
+        expect(appended.messages[0]).toBe(existing);
+        expect(appended.messages[1]).toEqual({
+          id: MessageId.make("missing"),
+          role: "user",
+          text: "new",
+          attachments: [attachment],
+          context,
+          turnId: null,
+          streaming: true,
+          createdAt: updatedAt,
+          updatedAt,
+        });
+        const continued = send(appended, "missing");
+        expect(continued.messages).toHaveLength(2);
+        expect(continued.messages[1]?.text).toBe("new+");
+        expect(continued.messages[1]?.role).toBe("user");
+        expect(continued.messages[1]?.context).toBe(context);
+        expect(appended.messages[1]?.text).toBe("new");
+      });
+
+      it.each([
+        ["", "seed"],
+        ["complete", "complete"],
+      ] as const)("final text %j produces %j without changing creation time", (text, expected) => {
+        const original = message("target", "seed", { role: "user" });
+        const result = send({ ...baseThread, messages: [original] }, "target", {
+          text,
+          streaming: false,
+        });
+        expect(result.messages[0]).toMatchObject({
+          text: expected,
+          streaming: false,
+          role: "user",
+          createdAt: baseThread.createdAt,
+          updatedAt,
+        });
+        expect(original.text).toBe("seed");
+        expect(original.streaming).toBe(true);
+      });
+
+      it("preserves omitted metadata and applies explicit clears and replacements", () => {
+        const attachments = [attachment];
+        const original = message("target", "seed", { attachments, context });
+        const preserved = send({ ...baseThread, messages: [original] }, "target");
+        expect(preserved.messages[0]?.attachments).toBe(attachments);
+        expect(preserved.messages[0]?.context).toBe(context);
+        const emptyContext = { version: 1 as const, records: [] };
+        const cleared = send(preserved, "target", { attachments: [], context: emptyContext });
+        expect(cleared.messages[0]?.attachments).toEqual([]);
+        expect(cleared.messages[0]?.context).toBe(emptyContext);
+        const replacement = [{ ...attachment, id: "attachment-2", name: "replacement.txt" }];
+        const replaced = send(cleared, "target", {
+          text: "complete",
+          streaming: false,
+          attachments: replacement,
+          context,
+        });
+        expect(replaced.messages[0]?.attachments).toBe(replacement);
+        expect(replaced.messages[0]?.context).toBe(context);
+        expect(replaced.messages[0]?.text).toBe("complete");
+        expect(preserved.messages[0]?.attachments).toBe(attachments);
+        expect(cleared.messages[0]?.context).toBe(emptyContext);
+        expect(original.text).toBe("seed");
+      });
+
+      it("rebinds an existing assistant ID in latestTurn and checkpoints without changing predecessors", () => {
+        const turnId = TurnId.make("turn-1");
+        const checkpoint = Object.freeze({
+          turnId,
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("ref-1"),
+          status: "ready" as const,
+          files: [],
+          assistantMessageId: MessageId.make("before"),
+          completedAt: updatedAt,
+        });
+        const otherCheckpoint = { ...checkpoint, turnId: TurnId.make("turn-2") };
+        const predecessor: OrchestrationThread = {
+          ...baseThread,
+          messages: Object.freeze([
+            message("before", "before", { turnId }),
+            message("after", "after", { turnId }),
+          ]),
+          latestTurn: Object.freeze({
+            turnId,
+            state: "running",
+            requestedAt: baseThread.createdAt,
+            startedAt: baseThread.createdAt,
+            completedAt: null,
+            assistantMessageId: MessageId.make("before"),
+          }),
+          checkpoints: Object.freeze([checkpoint, otherCheckpoint]),
+        };
+        const rebound = send(predecessor, "after", { turnId });
+        expect(rebound.latestTurn?.assistantMessageId).toBe("after");
+        expect(rebound.latestTurn?.state).toBe("running");
+        expect(rebound.checkpoints[0]?.assistantMessageId).toBe("after");
+        expect(rebound.checkpoints[1]).toBe(otherCheckpoint);
+        const continued = send(rebound, "after", { turnId });
+        expect(continued.latestTurn).toBe(rebound.latestTurn);
+        expect(continued.checkpoints).toBe(rebound.checkpoints);
+        expect(predecessor.latestTurn?.assistantMessageId).toBe("before");
+        expect(checkpoint.assistantMessageId).toBe("before");
+        expect(predecessor.messages[1]?.text).toBe("after");
+      });
     });
 
     it("appends a new message", () => {

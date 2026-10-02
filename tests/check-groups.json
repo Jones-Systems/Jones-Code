@@ -2,6 +2,32 @@
   "manifest_version": 1,
   "groups": [
     {
+      "group_id": "jones-performance-history",
+      "command": "node_modules/.bin/vp test run --maxWorkers=1 --no-file-parallelism apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts packages/client-runtime/src/state/threadReducer.test.ts packages/client-runtime/src/state/threads-pagination.test.ts packages/client-runtime/src/state/threads-atoms.test.ts apps/mobile/src/lib/threadActivity.test.ts apps/mobile/src/features/threads/pending-thread-feed.test.ts",
+      "modules": [
+        "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts",
+        "packages/client-runtime/src/state/threadReducer.test.ts",
+        "packages/client-runtime/src/state/threads-pagination.test.ts",
+        "packages/client-runtime/src/state/threads-atoms.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts",
+        "apps/mobile/src/features/threads/pending-thread-feed.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts",
+        "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.history.bench.ts",
+        "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts",
+        "packages/client-runtime/src/remotePerformance.bench.ts",
+        "packages/client-runtime/src/state/threadReducer.ts",
+        "packages/client-runtime/src/state/threadReducer.test.ts",
+        "packages/client-runtime/src/state/threads-pagination.test.ts",
+        "packages/client-runtime/src/state/threads-atoms.test.ts",
+        "apps/mobile/src/lib/threadActivity.ts",
+        "apps/mobile/src/lib/threadActivity.bench.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts",
+        "apps/mobile/src/features/threads/pending-thread-feed.test.ts"
+      ]
+    },
+    {
       "group_id": "t3-conditional-dispatch",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration/DispatchGuard.test.ts apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts packages/contracts/src/orchestration.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts",
       "modules": [

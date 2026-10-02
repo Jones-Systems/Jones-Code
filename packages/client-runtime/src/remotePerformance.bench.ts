@@ -138,7 +138,15 @@ const delta: OrchestrationEvent = {
 };
 
 describe("remote message replay", () => {
-  for (const count of [100, 1_000]) {
+  // The default 10-user-turn page bounds turns, not message count; pagination
+  // and fan-out load more. Immutable message array copies remain linear.
+  const characterizationOptions = {
+    warmupTime: 250,
+    time: 500,
+    warmupIterations: 1,
+    iterations: 1,
+  };
+  for (const count of [10, 100, 1_000, 10_000]) {
     const loaded = {
       ...thread,
       messages: Array.from({ length: count }, (_, index) => ({
@@ -159,7 +167,73 @@ describe("remote message replay", () => {
           if (result.kind === "updated") current = result.thread;
         }
       },
-      { warmupTime: 1_000, time: 1_500 },
+      count === 100 || count === 1_000
+        ? { warmupTime: 1_000, time: 1_500 }
+        : characterizationOptions,
+    );
+    bench(
+      `apply first tail delta to a fresh array of ${count} loaded messages (includes array copy)`,
+      () => {
+        applyThreadDetailEvent({ ...loaded, messages: [...loaded.messages] }, event);
+      },
+      characterizationOptions,
+    );
+    const middleEvent = {
+      ...event,
+      payload: { ...event.payload, messageId: loaded.messages[Math.floor(count / 2)]!.id },
+    };
+    const firstEvent = {
+      ...event,
+      payload: { ...event.payload, messageId: loaded.messages[0]!.id },
+    };
+    for (const [name, events] of [
+      ["middle", [middleEvent]],
+      ["alternating first/tail", [firstEvent, event]],
+    ] as const) {
+      bench(
+        `apply 200 ${name} text deltas to ${count} loaded messages`,
+        () => {
+          let current: OrchestrationThread = loaded;
+          for (let index = 0; index < 200; index += 1) {
+            const result = applyThreadDetailEvent(current, events[index % events.length]!);
+            if (result.kind === "updated") current = result.thread;
+          }
+        },
+        characterizationOptions,
+      );
+    }
+    const missingEvent = {
+      ...event,
+      payload: { ...event.payload, messageId: MessageId.make("message-missing") },
+    };
+    bench(
+      `append one missing message ID to ${count} loaded messages`,
+      () => {
+        applyThreadDetailEvent(loaded, missingEvent);
+      },
+      characterizationOptions,
     );
   }
+  const duplicateLoaded: OrchestrationThread = {
+    ...thread,
+    messages: Array.from({ length: 1_000 }, (_, index) => ({
+      ...thread.messages[0]!,
+      id: MessageId.make(index === 999 ? "message-0" : `message-${index}`),
+    })),
+  };
+  const duplicateEvent = {
+    ...delta,
+    payload: { ...delta.payload, messageId: MessageId.make("message-0") },
+  };
+  bench(
+    "apply 200 text deltas to two duplicate IDs among 1000 loaded messages",
+    () => {
+      let current = duplicateLoaded;
+      for (let index = 0; index < 200; index += 1) {
+        const result = applyThreadDetailEvent(current, duplicateEvent);
+        if (result.kind === "updated") current = result.thread;
+      }
+    },
+    characterizationOptions,
+  );
 });
