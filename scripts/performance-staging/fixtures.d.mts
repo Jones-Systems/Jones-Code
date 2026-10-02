@@ -27,12 +27,70 @@ export interface SyntheticFixtureRecipe {
   readonly payloadBytes: number;
 }
 
+export type SyntheticFixtureProfile = "health-offline-delete" | "benchmark-wal";
+
+export interface SyntheticProfilePragmas {
+  readonly journal_mode: string;
+  readonly synchronous: number;
+  readonly foreign_keys: number;
+  readonly busy_timeout: number;
+  readonly journal_size_limit: number;
+  readonly page_size: number;
+  readonly user_version: number;
+}
+
+export interface SyntheticProfileEvidence {
+  readonly kind: SyntheticFixtureProfile;
+  readonly stage: string;
+  readonly failedStage?: string;
+  readonly productionObservations: readonly {
+    readonly phase:
+      | "before-seed"
+      | "after-seed"
+      | "before-callback"
+      | "after-callback"
+      | "before-production-close";
+    readonly pragmas: SyntheticProfilePragmas;
+  }[];
+  readonly productionClosed?: boolean;
+  readonly canonicalContent?: {
+    readonly originalSha256: string;
+    readonly beforeSha256?: string;
+    readonly afterSha256?: string;
+  };
+  readonly maintenance?: {
+    readonly beforePragmas?: SyntheticProfilePragmas;
+    readonly afterPragmas?: SyntheticProfilePragmas;
+    readonly checkpoint?: {
+      readonly busy: number;
+      readonly logFrames: number;
+      readonly checkpointedFrames: number;
+    } | null;
+    readonly returnedMode?: string | null;
+    readonly integrity?: {
+      readonly ok: boolean;
+      readonly resultCount: number;
+      readonly sha256: string;
+    };
+    readonly foreignKeys?: { readonly violations: number; readonly sha256: string };
+    readonly closed?: boolean;
+    readonly header?: {
+      readonly bytesRead: number;
+      readonly writeVersion: number;
+      readonly readVersion: number;
+    };
+    readonly sidecars?: { readonly wal: boolean; readonly shm: boolean; readonly journal: boolean };
+  };
+  readonly failure?: { readonly code: string };
+}
+
 export interface SyntheticFixtureOptions {
   readonly parentPath: string;
   readonly childName: string;
   readonly binding: PerformanceBinding;
   readonly policy: StagingPolicy;
   readonly databaseSource: SyntheticDatabaseSource;
+  readonly profile?: SyntheticFixtureProfile;
   readonly recipe?: {
     readonly kind?: "coherent-v1";
     readonly historyTurns?: number;
@@ -84,8 +142,9 @@ export interface SyntheticFixtureCapture {
     readonly nodeVersion: string;
     readonly sqliteVersion: string;
     readonly pragmas: Readonly<Record<string, string | number>>;
-    readonly profile: "observed-production-defaults";
+    readonly profile: "observed-production-defaults" | SyntheticFixtureProfile;
   };
+  readonly profile?: SyntheticProfileEvidence;
   readonly tables: Readonly<Record<string, SyntheticTableCapture>>;
   readonly ledgers: Readonly<
     Record<string, readonly { readonly id: number; readonly name: string }[]>
@@ -193,6 +252,7 @@ export interface SyntheticFixtureFailureEvidence {
   readonly capture?: SyntheticFixtureCapture;
   readonly receipt?: SyntheticFixtureReceipt;
   readonly receiptSha256?: string;
+  readonly profile?: SyntheticProfileEvidence;
   readonly value?: unknown;
   readonly cleanup: OwnedCleanupReceipt;
   readonly primaryEvidence?: unknown;

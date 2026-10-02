@@ -20,6 +20,16 @@ const sourceBindings = new Map([
 ]);
 const requestLimit = 49 * 1024;
 const receiptLimit = 24 * 1024;
+const profileNames = ["health-offline-delete", "benchmark-wal"];
+const pragmaNames = [
+  "journal_mode",
+  "synchronous",
+  "foreign_keys",
+  "busy_timeout",
+  "journal_size_limit",
+  "page_size",
+  "user_version",
+];
 const contexts = new WeakMap();
 const timestampBase = Date.parse("2026-10-02T12:00:00.000Z");
 const nativeTables = [
@@ -103,8 +113,8 @@ function checkedSource(source) {
 function checkedOptions(options) {
   if (!options || typeof options !== "object")
     refuse("invalid_options", "fixture options required");
-  if (Object.hasOwn(options, "profile"))
-    refuse("unsupported_profile", "core fixtures use observed production defaults only");
+  if (options.profile !== undefined && !profileNames.includes(options.profile))
+    refuse("unsupported_profile", "profile must be health-offline-delete or benchmark-wal");
   if (options.signal !== undefined && !(options.signal instanceof AbortSignal))
     refuse("invalid_options", "signal must be an AbortSignal");
   const databaseSource = checkedSource(options.databaseSource);
@@ -145,6 +155,7 @@ async function loadSource(source) {
     Contracts: "packages/contracts/src/index.ts",
     Config: "apps/server/src/config.ts",
     Sqlite: "apps/server/src/persistence/Layers/Sqlite.ts",
+    NodeSqliteClient: "packages/shared/src/nodeSqliteClient.ts",
     EngineLayer: "apps/server/src/orchestration/Layers/OrchestrationEngine.ts",
     EngineService: "apps/server/src/orchestration/Services/OrchestrationEngine.ts",
     SnapshotLayer: "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts",
@@ -635,6 +646,42 @@ async function query(state, text, values = []) {
   );
 }
 
+async function observedPragmas(state) {
+  const pragmas = {};
+  for (const name of pragmaNames) {
+    const value = Object.values((await query(state, `PRAGMA ${name}`))[0])[0];
+    pragmas[name] = typeof value === "bigint" ? Number(value) : value;
+  }
+  return pragmas;
+}
+
+function profileSnapshot(profile) {
+  // Freezing an earlier capture must not freeze the producer's later close observations.
+  return freeze(structuredClone(profile));
+}
+
+async function observeProductionProfile(state, phase) {
+  if (!state.profileEvidence) return;
+  state.signal?.throwIfAborted();
+  const pragmas = await observedPragmas(state);
+  state.profileEvidence.stage = phase;
+  const observations = state.profileEvidence.productionObservations;
+  observations.push({ phase, pragmas });
+  const first = observations[0].pragmas;
+  if (
+    pragmas.journal_mode !== "wal" ||
+    pragmaNames.some(
+      (name) =>
+        name !== "journal_mode" &&
+        (!Number.isSafeInteger(pragmas[name]) || pragmas[name] !== first[name]),
+    )
+  )
+    refuse(
+      "profile_mismatch",
+      "named fixture requires actual source-default WAL and unchanged observed pragmas",
+    );
+}
+
 const identifier = (value) => {
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value))
     refuse("invalid_capture", "invalid observed SQL identifier");
@@ -677,6 +724,21 @@ async function tableSummary(state, table) {
     last = rows.at(-1);
   }
   return { status: "present", count, sha256: hash.digest("hex"), pagingKey: keys };
+}
+
+async function orderedLedgers(state) {
+  const ledgers = {};
+  for (const table of ["effect_sql_migrations", "jones_sql_migrations"])
+    ledgers[table] = (
+      await query(state, `SELECT migration_id,name FROM ${identifier(table)} ORDER BY migration_id`)
+    ).map((row) => ({ id: Number(row.migration_id), name: row.name }));
+  return ledgers;
+}
+
+async function canonicalContent(state) {
+  const tables = {};
+  for (const table of capturedTables) tables[table] = await tableSummary(state, table);
+  return { tables, ledgers: await orderedLedgers(state) };
 }
 
 function publicModel(model) {
@@ -830,19 +892,7 @@ export async function captureFixture(context) {
   const bootstrapCursors = projectionCursors.filter(
     (row) => row.projector === "projection.attachment-cleanup",
   );
-  const pragmas = {};
-  for (const name of [
-    "journal_mode",
-    "synchronous",
-    "foreign_keys",
-    "busy_timeout",
-    "journal_size_limit",
-    "page_size",
-    "user_version",
-  ])
-    pragmas[name] = Object.values((await query(state, `PRAGMA ${name}`))[0])[0];
-  for (const name of Object.keys(pragmas))
-    if (typeof pragmas[name] === "bigint") pragmas[name] = Number(pragmas[name]);
+  const pragmas = await observedPragmas(state);
   const files = [];
   for (const path of state.files) {
     const info = await NodeFSP.lstat(path);
@@ -885,11 +935,7 @@ export async function captureFixture(context) {
     sizeBytes: Buffer.byteLength(row.diff),
     sha256: NodeCrypto.createHash("sha256").update(row.diff).digest("hex"),
   }));
-  const ledgers = {};
-  for (const table of ["effect_sql_migrations", "jones_sql_migrations"])
-    ledgers[table] = (
-      await query(state, `SELECT migration_id,name FROM ${identifier(table)} ORDER BY migration_id`)
-    ).map((row) => ({ id: Number(row.migration_id), name: row.name }));
+  const ledgers = await orderedLedgers(state);
   const attachmentRefs = snapshot.threads.flatMap((thread) =>
     thread.messages.flatMap((message) => message.attachments ?? []),
   );
@@ -924,8 +970,9 @@ export async function captureFixture(context) {
       nodeVersion: process.versions.node,
       sqliteVersion: (await query(state, "SELECT sqlite_version() AS version"))[0].version,
       pragmas,
-      profile: "observed-production-defaults",
+      profile: state.profile ?? "observed-production-defaults",
     },
+    ...(state.profileEvidence ? { profile: profileSnapshot(state.profileEvidence) } : {}),
     tables,
     ledgers,
     coupling: {
@@ -1021,6 +1068,172 @@ export async function captureFixture(context) {
   return freeze(capture);
 }
 
+async function prepareHealthProfile(state, result, priorPermit) {
+  const profile = state.profileEvidence;
+  state.signal?.throwIfAborted();
+  profile.stage = "maintenance-open";
+  const permit = assertOwnedDatabase(state.owner, {
+    databaseRelativePath: priorPermit.relativePath,
+    access: "readwrite",
+  });
+  result.closeKnown = false;
+  profile.maintenance = {};
+  const runtime = state.modules.ManagedRuntime.make(
+    state.modules.NodeSqliteClient.layer({ filename: permit.canonicalPath }).pipe(
+      state.modules.Layer.provide(state.modules.Logger.layer([])),
+    ),
+  );
+  const maintenance = {
+    modules: state.modules,
+    run: (effect) => runtime.runPromise(effect, { signal: state.signal }),
+  };
+  let failure;
+  let closedProof;
+  try {
+    profile.stage = "pre-transition-content";
+    profile.maintenance.beforePragmas = await observedPragmas(maintenance);
+    profile.canonicalContent.beforeSha256 = digest(await canonicalContent(maintenance));
+    if (profile.canonicalContent.beforeSha256 !== profile.canonicalContent.originalSha256)
+      refuse(
+        "profile_content_changed",
+        "production shutdown changed the original canonical tables or ordered ledgers",
+      );
+    if (profile.maintenance.beforePragmas.journal_mode !== "wal")
+      refuse(
+        "profile_mismatch",
+        "maintenance must observe the source-default WAL before transition",
+      );
+    profile.stage = "checkpoint";
+    const rows = await query(maintenance, "PRAGMA wal_checkpoint(TRUNCATE)");
+    const checkpoint =
+      rows.length === 1
+        ? {
+            busy: Number(rows[0].busy),
+            logFrames: Number(rows[0].log),
+            checkpointedFrames: Number(rows[0].checkpointed),
+          }
+        : null;
+    profile.maintenance.checkpoint = checkpoint;
+    if (
+      !checkpoint ||
+      Object.values(checkpoint).some((value) => !Number.isSafeInteger(value) || value < 0) ||
+      checkpoint.busy !== 0 ||
+      checkpoint.logFrames !== checkpoint.checkpointedFrames
+    )
+      refuse("profile_checkpoint_failed", "owned checkpoint was busy, incomplete or malformed");
+    profile.stage = "delete-transition";
+    const modes = await query(maintenance, "PRAGMA journal_mode = DELETE");
+    profile.maintenance.returnedMode = modes.length === 1 ? modes[0].journal_mode : null;
+    profile.maintenance.afterPragmas = await observedPragmas(maintenance);
+    if (
+      profile.maintenance.returnedMode !== "delete" ||
+      profile.maintenance.afterPragmas.journal_mode !== "delete"
+    )
+      refuse("profile_mismatch", "DELETE transition returned or observed a different journal mode");
+    profile.stage = "post-transition-content";
+    profile.canonicalContent.afterSha256 = digest(await canonicalContent(maintenance));
+    if (profile.canonicalContent.afterSha256 !== profile.canonicalContent.originalSha256)
+      refuse(
+        "profile_content_changed",
+        "DELETE transition changed the original canonical tables or ordered ledgers",
+      );
+    const integrity = (await query(maintenance, "PRAGMA integrity_check")).map(
+      (row) => Object.values(row)[0],
+    );
+    const foreignKeys = await query(maintenance, "PRAGMA foreign_key_check");
+    profile.maintenance.integrity = {
+      ok: integrity.length === 1 && integrity[0] === "ok",
+      resultCount: integrity.length,
+      sha256: digest(integrity),
+    };
+    profile.maintenance.foreignKeys = {
+      violations: foreignKeys.length,
+      sha256: digest(foreignKeys),
+    };
+    if (!profile.maintenance.integrity.ok || foreignKeys.length)
+      refuse("profile_integrity_failed", "maintenance integrity or foreign-key checks failed");
+    state.signal?.throwIfAborted();
+  } catch (error) {
+    profile.failedStage = profile.stage;
+    failure = error;
+  } finally {
+    profile.stage = "maintenance-close";
+    try {
+      closedProof = await observeSyntheticClose(state.owner, {
+        permit,
+        producerStep: state.binding.taskRef,
+        resource: runtime,
+        close: (resource) => resource.dispose(),
+      });
+      result.closeKnown = true;
+      profile.maintenance.closed = true;
+    } catch (error) {
+      result.closeKnown = false;
+      profile.maintenance.closed = false;
+      profile.failedStage ??= profile.stage;
+      failure ??= error;
+    }
+  }
+  if (failure) throw failure;
+  state.signal?.throwIfAborted();
+  profile.stage = "closed-layout";
+  const handle = await NodeFSP.open(
+    permit.canonicalPath,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+  );
+  let headerFailure;
+  try {
+    const info = await handle.stat({ bigint: true });
+    if (
+      !info.isFile() ||
+      info.nlink !== 1n ||
+      info.dev.toString() !== permit.identity.device ||
+      info.ino.toString() !== permit.identity.inode
+    )
+      refuse(
+        "profile_identity_changed",
+        "closed database identity differs from the maintenance permit",
+      );
+    const bytes = Buffer.alloc(20);
+    const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+    profile.maintenance.header = { bytesRead, writeVersion: bytes[18], readVersion: bytes[19] };
+    if (bytesRead !== 20 || bytes[18] !== 1 || bytes[19] !== 1)
+      refuse("profile_header_failed", "closed health database header is not rollback format 1,1");
+  } catch (error) {
+    headerFailure = error;
+  } finally {
+    try {
+      await handle.close();
+    } catch (error) {
+      result.closeKnown = false;
+      headerFailure ??= error;
+    }
+  }
+  if (headerFailure) throw headerFailure;
+  const sidecars = {};
+  for (const [name, suffix] of [
+    ["wal", "-wal"],
+    ["shm", "-shm"],
+    ["journal", "-journal"],
+  ]) {
+    try {
+      await NodeFSP.lstat(`${permit.canonicalPath}${suffix}`);
+      sidecars[name] = true;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      sidecars[name] = false;
+    }
+  }
+  profile.maintenance.sidecars = sidecars;
+  if (Object.values(sidecars).some(Boolean))
+    refuse(
+      "profile_sidecars_present",
+      "closed health database still has WAL, SHM or journal sidecars",
+    );
+  state.signal?.throwIfAborted();
+  return { permit, closedProof };
+}
+
 // Internal producer results carry the genuine owner only within this audited process.
 export async function produceFixture(input, use) {
   const options = checkedOptions(input);
@@ -1028,6 +1241,8 @@ export async function produceFixture(input, use) {
   const owner = createOwnedRoot(options);
   const root = owner.creationReceipt.canonicalRootPath;
   const result = { owner, closeKnown: true };
+  if (options.profile)
+    result.profile = { kind: options.profile, stage: "starting", productionObservations: [] };
   let state;
   let runtime;
   let permit;
@@ -1066,6 +1281,7 @@ export async function produceFixture(input, use) {
       runtime,
       cancellation,
       active,
+      profileEvidence: result.profile,
       status: "open",
       now: () => new Date(timestampBase + clock++ * 1000).toISOString(),
     };
@@ -1095,13 +1311,23 @@ export async function produceFixture(input, use) {
       run: state.run,
     });
     contexts.set(context, state);
+    await observeProductionProfile(state, "before-seed");
     await produceFiles(state);
     await populate(state);
     await quiesceEngineLeases(state);
+    await observeProductionProfile(state, "after-seed");
+    await observeProductionProfile(state, "before-callback");
     result.value = await use(context);
+    await observeProductionProfile(state, "after-callback");
     await quiesceEngineLeases(state);
     result.capture = await captureFixture(context);
+    if (state.profile === "health-offline-delete")
+      result.profile.canonicalContent = {
+        originalSha256: digest({ tables: result.capture.tables, ledgers: result.capture.ledgers }),
+      };
+    await observeProductionProfile(state, "before-production-close");
   } catch (error) {
+    if (result.profile) result.profile.failedStage = result.profile.stage;
     result.error = error;
   } finally {
     if (runtime && permit) {
@@ -1111,6 +1337,7 @@ export async function produceFixture(input, use) {
         await Promise.allSettled([...state.active]);
       }
       let closedProof;
+      if (result.profile) result.profile.stage = "production-close";
       try {
         closedProof = await observeSyntheticClose(owner, {
           permit,
@@ -1119,28 +1346,74 @@ export async function produceFixture(input, use) {
           close: (resource) => resource.dispose(),
         });
         result.closeKnown = true;
+        if (result.profile) result.profile.productionClosed = true;
       } catch (error) {
         result.closeKnown = false;
+        if (result.profile) result.profile.productionClosed = false;
+        if (result.profile) result.profile.failedStage ??= result.profile.stage;
         result.error ??= error;
+      }
+      if (state) state.status = "closed";
+      if (closedProof && !result.error && options.profile === "health-offline-delete") {
+        closedProof = undefined;
+        try {
+          const prepared = await prepareHealthProfile(state, result, permit);
+          permit = prepared.permit;
+          closedProof = prepared.closedProof;
+        } catch (error) {
+          result.profile.failedStage ??= result.profile.stage;
+          result.error ??= error;
+        }
       }
       if (closedProof && !result.error) {
         try {
+          if (result.profile) {
+            options.signal?.throwIfAborted();
+            result.profile.stage = "seal";
+          }
           result.receipt = await sealSyntheticFixture(owner, {
             databaseRelativePath: permit.relativePath,
             producerStep: options.binding.taskRef,
             closedProof,
           });
           result.receiptSha256 = syntheticFixtureReceiptSha256(result.receipt);
+          if (result.profile) {
+            options.signal?.throwIfAborted();
+            result.profile.stage = "sealed";
+            result.capture = freeze({
+              ...result.capture,
+              profile: profileSnapshot(result.profile),
+            });
+          }
           result.captureSha256 = NodeCrypto.createHash("sha256")
             .update(`${JSON.stringify(result.capture)}\n`)
             .digest("hex");
         } catch (error) {
+          if (result.profile) {
+            result.profile.failedStage ??= result.profile.stage;
+            delete result.receipt;
+            delete result.receiptSha256;
+            delete result.captureSha256;
+          }
           result.retainReason = error.code ?? "seal_failed";
           result.error = error;
         }
       }
-      if (state) state.status = "closed";
     }
+  }
+  if (result.profile) {
+    if (result.error) {
+      result.retainReason = !result.closeKnown
+        ? "unknown_resource_close"
+        : options.signal?.aborted
+          ? "profile_cancelled"
+          : (result.retainReason ?? result.error.code ?? "profile_failed");
+      if (typeof result.retainReason !== "string" || result.retainReason.length > 64)
+        result.retainReason = "profile_failed";
+      result.profile.failure = { code: result.retainReason };
+    }
+    result.profile = profileSnapshot(result.profile);
+    if (result.capture) result.capture = freeze({ ...result.capture, profile: result.profile });
   }
   return result;
 }
@@ -1162,15 +1435,17 @@ async function workerMain() {
     );
     if (produced.error) {
       process.exitCode = 1;
-      process.stdout.write(
-        `${JSON.stringify({
-          schema: "jones-performance-fixture-failure/v1",
-          code: produced.error.code ?? "producer_failed",
-          closeKnown: produced.closeKnown,
-          retainReason: produced.retainReason,
-          creationReceipt: produced.owner.creationReceipt,
-        })}\n`,
-      );
+      const bytes = `${JSON.stringify({
+        schema: "jones-performance-fixture-failure/v1",
+        code: produced.error.code ?? "producer_failed",
+        closeKnown: produced.closeKnown,
+        retainReason: produced.retainReason,
+        creationReceipt: produced.owner.creationReceipt,
+        ...(produced.profile ? { profile: produced.profile } : {}),
+      })}\n`;
+      if (Buffer.byteLength(bytes) > 49 * 1024)
+        refuse("envelope_limit", "complete failure envelope exceeds 49 KiB");
+      process.stdout.write(bytes);
       return;
     }
     const envelope = {

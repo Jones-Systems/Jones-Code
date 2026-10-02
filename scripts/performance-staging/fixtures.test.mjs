@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 import * as NodeTest from "node:test";
 import * as NodeURL from "node:url";
 
@@ -11,7 +12,9 @@ import {
   withClosedSyntheticFixture,
   withOpenSyntheticFixture,
 } from "./fixtures.mjs";
+import { produceFixture } from "./fixtures-worker.mjs";
 import {
+  assertOwnedDatabase,
   createOwnedRoot,
   disposeOwnedRoot,
   syntheticFixtureReceiptSha256,
@@ -33,7 +36,7 @@ const liveSource = {
 };
 const producerBinding = {
   repository: "Jones-Systems/Jones-Code",
-  sourceRevision: "da83ffbbfa2dd1bd3c67b7d9185b3c8bbb180d7f",
+  sourceRevision: "67e203c3306b25bca104efbc449e10ebae384763",
   taskRef: "spec.jones-performance-portfolio#task.e-fixture.001",
   runId: "fixture-tests",
 };
@@ -103,6 +106,7 @@ async function withInvocation(body) {
     options,
     open: (input, use) => track(withOpenSyntheticFixture(input, use)),
     closed: (input, use) => track(withClosedSyntheticFixture(input, use)),
+    produce: (input, use) => track(produceFixture(input, use)),
   };
   let value;
   let failure;
@@ -254,9 +258,9 @@ async function withInjectedConsumerOutcome(use, inspect) {
   });
 }
 
-function assertCoherent(capture, source) {
+function assertCoherent(capture, source, profile = "observed-production-defaults") {
   NodeAssert.deepEqual(capture.databaseSource, source);
-  NodeAssert.equal(capture.runtime.profile, "observed-production-defaults");
+  NodeAssert.equal(capture.runtime.profile, profile);
   NodeAssert.equal(capture.runtime.pragmas.journal_mode, "wal");
   NodeAssert.equal(capture.runtime.pragmas.foreign_keys, 1);
   NodeAssert.equal(capture.ledgers.effect_sql_migrations.at(-1).id, 54);
@@ -543,7 +547,7 @@ NodeTest.test(
 );
 
 NodeTest.test(
-  "source aliases, profile selectors, recipe overflow and cloned contexts are refused",
+  "source aliases, unsupported profile selectors, recipe overflow and cloned contexts are refused",
   async () => {
     await withInvocation(async (scope) => {
       await NodeAssert.rejects(
@@ -554,7 +558,7 @@ NodeTest.test(
         { code: "invalid_source" },
       );
       await NodeAssert.rejects(
-        scope.open(scope.options(oldSource, { profile: "health-offline-delete" }), () => undefined),
+        scope.open(scope.options(oldSource, { profile: "copied-wal" }), () => undefined),
         { code: "unsupported_profile" },
       );
       await NodeAssert.rejects(
@@ -708,6 +712,559 @@ NodeTest.test(
       NodeAssert.equal(result.cleanup.outcome, "complete");
       NodeAssert.equal(result.cleanup.absent, true);
       NodeAssert.equal(NodeFS.existsSync(result.receipt.creationReceipt.canonicalRootPath), false);
+    });
+  },
+);
+
+const profilePhases = [
+  "before-seed",
+  "after-seed",
+  "before-callback",
+  "after-callback",
+  "before-production-close",
+];
+
+async function appendProfileActivity(context, suffix) {
+  const createdAt = "2026-10-02T13:00:00.000Z";
+  await context.run(
+    context.engine.dispatch({
+      type: "thread.activity.append",
+      commandId: `profile-activity-${suffix}`,
+      threadId: "fixture-empty",
+      activity: {
+        id: `profile-activity-${suffix}`,
+        kind: "fixture.note",
+        summary: "Synthetic profile workload",
+        tone: "info",
+        turnId: null,
+        payload: { synthetic: true },
+        createdAt,
+      },
+      createdAt,
+    }),
+  );
+}
+
+async function withKnownClosedProfileFailure(profile, use, inspect, closeAuxiliary = () => {}) {
+  return withInvocation(async (scope) => {
+    let produced;
+    let failure;
+    try {
+      produced = await scope.produce(scope.options(oldSource, { profile }), use);
+      NodeAssert.ok(produced.error);
+      NodeAssert.equal(produced.receipt, undefined);
+      NodeAssert.ok(produced.retainReason);
+      NodeAssert.equal(NodeFS.existsSync(produced.owner.creationReceipt.canonicalRootPath), true);
+      await inspect(produced);
+    } catch (error) {
+      failure = error;
+    } finally {
+      try {
+        await closeAuxiliary();
+        NodeAssert.equal(
+          produced?.closeKnown,
+          true,
+          "unknown resource closure retains this fixture",
+        );
+        produced.cleanup = disposeOwnedRoot(produced.owner);
+        NodeAssert.equal(produced.cleanup.outcome, "complete");
+        NodeAssert.equal(produced.cleanup.absent, true);
+      } catch (cleanupError) {
+        failure = failure
+          ? new AggregateError(
+              [failure, cleanupError],
+              "Profile test failure and retained scratch",
+              {
+                cause: failure,
+              },
+            )
+          : cleanupError;
+      }
+    }
+    if (failure) throw failure;
+    return produced;
+  });
+}
+
+for (const [label, source] of [
+  ["e5", oldSource],
+  ["414", liveSource],
+]) {
+  NodeTest.test(
+    `${label} named profiles seed independent roots and close health before readonly use`,
+    async () => {
+      await withInvocation(async (scope) => {
+        const recipe = { kind: "coherent-v1", historyTurns: 3, payloadBytes: 256 };
+        const healthOptions = scope.options(source, { profile: "health-offline-delete", recipe });
+        let healthPath;
+        let benchmarkContext;
+        const health = await scope.closed(healthOptions, async (context) => {
+          healthPath = context.fixture.canonicalPath;
+          assertCoherent(context.capture, source, "health-offline-delete");
+          const profile = context.capture.profile;
+          NodeAssert.equal(profile.stage, "sealed");
+          NodeAssert.equal(profile.productionClosed, true);
+          NodeAssert.deepEqual(
+            profile.productionObservations.map((entry) => entry.phase),
+            profilePhases,
+          );
+          NodeAssert.ok(
+            profile.productionObservations.every((entry) => entry.pragmas.journal_mode === "wal"),
+          );
+          NodeAssert.equal(
+            profile.canonicalContent.originalSha256,
+            profile.canonicalContent.beforeSha256,
+          );
+          NodeAssert.equal(
+            profile.canonicalContent.originalSha256,
+            profile.canonicalContent.afterSha256,
+          );
+          NodeAssert.equal(profile.maintenance.beforePragmas.journal_mode, "wal");
+          NodeAssert.equal(profile.maintenance.returnedMode, "delete");
+          NodeAssert.equal(profile.maintenance.afterPragmas.journal_mode, "delete");
+          NodeAssert.equal(profile.maintenance.checkpoint.busy, 0);
+          NodeAssert.equal(
+            profile.maintenance.checkpoint.logFrames,
+            profile.maintenance.checkpoint.checkpointedFrames,
+          );
+          NodeAssert.equal(profile.maintenance.closed, true);
+          NodeAssert.equal(profile.maintenance.integrity.ok, true);
+          NodeAssert.equal(profile.maintenance.foreignKeys.violations, 0);
+          NodeAssert.deepEqual(profile.maintenance.header, {
+            bytesRead: 20,
+            writeVersion: 1,
+            readVersion: 1,
+          });
+          NodeAssert.deepEqual(profile.maintenance.sidecars, {
+            wal: false,
+            shm: false,
+            journal: false,
+          });
+          NodeAssert.ok(context.receipt.layout.slice(1).every((entry) => entry.present === false));
+          const reader = new NodeSqlite.DatabaseSync(healthPath, { readOnly: true });
+          try {
+            NodeAssert.equal(reader.prepare("PRAGMA journal_mode").get().journal_mode, "delete");
+            NodeAssert.equal(
+              reader.prepare("SELECT count(*) AS n FROM projection_thread_messages").get().n,
+              6,
+            );
+          } finally {
+            reader.close();
+          }
+          const verifiedAfterRead = await validateSyntheticFixture({
+            receipt: context.receipt,
+            expectedReceiptSha256: context.receiptSha256,
+            expectedBinding: healthOptions.binding,
+            policy: scope.policy,
+          });
+          NodeAssert.deepEqual(verifiedAfterRead.layout, context.fixture.layout);
+          const benchmark = await scope.open(
+            scope.options(source, { profile: "benchmark-wal", recipe }),
+            async (open) => {
+              benchmarkContext = open;
+              NodeAssert.notEqual(
+                open.owner.creationReceipt.rootId,
+                context.receipt.creationReceipt.rootId,
+              );
+              NodeAssert.notEqual(open.paths.dbPath, healthPath);
+              const [healthIdentity, benchmarkIdentity] = await Promise.all([
+                NodeFSP.stat(healthPath, { bigint: true }),
+                NodeFSP.stat(open.paths.dbPath, { bigint: true }),
+              ]);
+              NodeAssert.ok(
+                healthIdentity.dev !== benchmarkIdentity.dev ||
+                  healthIdentity.ino !== benchmarkIdentity.ino,
+              );
+              NodeAssert.throws(
+                () =>
+                  assertOwnedDatabase(open.owner, {
+                    databaseRelativePath: NodePath.relative(
+                      open.owner.creationReceipt.canonicalRootPath,
+                      open.paths.dbPath,
+                    ),
+                    access: "readwrite",
+                  }),
+                { code: "unknown_close" },
+              );
+              const during = await captureSyntheticFixture(open);
+              assertCoherent(during, source, "benchmark-wal");
+              NodeAssert.equal(during.profile.productionObservations.length, 3);
+              await appendProfileActivity(open, label);
+              return "bounded workload";
+            },
+          );
+          assertCoherent(benchmark.capture, source, "benchmark-wal");
+          NodeAssert.deepEqual(benchmark.capture.recipe, context.capture.recipe);
+          NodeAssert.deepEqual(benchmark.capture.databaseSource, context.capture.databaseSource);
+          NodeAssert.deepEqual(
+            benchmark.capture.profile.productionObservations.map((entry) => entry.phase),
+            profilePhases,
+          );
+          NodeAssert.ok(
+            benchmark.capture.profile.productionObservations.every(
+              (entry) =>
+                JSON.stringify(entry.pragmas) ===
+                JSON.stringify(benchmark.capture.profile.productionObservations[0].pragmas),
+            ),
+          );
+          NodeAssert.equal(benchmark.capture.profile.productionClosed, true);
+          NodeAssert.equal(benchmark.capture.profile.maintenance, undefined);
+          NodeAssert.equal(benchmark.value, "bounded workload");
+          NodeAssert.equal(benchmark.cleanup.absent, true);
+          NodeAssert.equal(NodeFS.existsSync(healthPath), true);
+          NodeAssert.ok(Buffer.byteLength(context.childReceipt.stdout) <= 49 * 1024);
+          NodeAssert.ok(Buffer.byteLength(`${JSON.stringify(context.receipt)}\n`) <= 24 * 1024);
+          NodeAssert.ok(context.receipt.manifest.length <= 32);
+          return {
+            schema: "jones-performance-fixture-consumer/v1",
+            fixtureReceiptSha256: context.receiptSha256,
+            disposition: "release",
+            value: "readonly complete",
+          };
+        });
+        NodeAssert.equal(health.value, "readonly complete");
+        NodeAssert.equal(health.cleanup.absent, true);
+        NodeAssert.equal(NodeFS.existsSync(healthPath), false);
+        NodeAssert.throws(() => benchmarkContext.run(benchmarkContext.engine.latestSequence), {
+          code: "closed_context",
+        });
+      });
+    },
+  );
+}
+
+NodeTest.test(
+  "benchmark profile refuses an actual changed synchronous observation",
+  async (test) => {
+    const prepare = NodeSqlite.DatabaseSync.prototype.prepare;
+    let database;
+    test.mock.method(NodeSqlite.DatabaseSync.prototype, "prepare", function (sql) {
+      database ??= this;
+      return prepare.call(this, sql);
+    });
+    try {
+      await withKnownClosedProfileFailure(
+        "benchmark-wal",
+        () => {
+          database.exec("PRAGMA synchronous = OFF");
+        },
+        (produced) => {
+          NodeAssert.equal(produced.error.code, "profile_mismatch");
+          NodeAssert.equal(produced.retainReason, "profile_mismatch");
+          NodeAssert.equal(produced.profile.failedStage, "after-callback");
+          NodeAssert.equal(produced.profile.productionObservations.at(-1).pragmas.synchronous, 0);
+          NodeAssert.notEqual(produced.profile.productionObservations[0].pragmas.synchronous, 0);
+          NodeAssert.equal(produced.profile.productionClosed, true);
+        },
+      );
+    } finally {
+      test.mock.restoreAll();
+    }
+  },
+);
+
+NodeTest.test(
+  "health profile refuses a real owned reader's busy checkpoint and closes the blocker",
+  async () => {
+    let blocker;
+    await withKnownClosedProfileFailure(
+      "health-offline-delete",
+      async (context) => {
+        blocker = new NodeSqlite.DatabaseSync(context.paths.dbPath, { readOnly: true });
+        blocker.exec("BEGIN");
+        NodeAssert.equal(
+          blocker.prepare("SELECT count(*) AS n FROM checkpoint_diff_blobs").get().n,
+          1,
+        );
+        await appendProfileActivity(context, "busy-reader");
+      },
+      (produced) => {
+        NodeAssert.equal(produced.error.code, "profile_checkpoint_failed");
+        NodeAssert.equal(produced.profile.maintenance.checkpoint.busy, 1);
+        NodeAssert.equal(produced.profile.maintenance.returnedMode, undefined);
+        NodeAssert.equal(produced.profile.maintenance.closed, true);
+        NodeAssert.equal(produced.profile.failedStage, "checkpoint");
+      },
+      () => {
+        if (blocker) {
+          blocker.close();
+          blocker = undefined;
+        }
+      },
+    );
+  },
+);
+
+NodeTest.test(
+  "health profile closes production before maintenance and refuses a shutdown content change",
+  async (test) => {
+    const close = NodeSqlite.DatabaseSync.prototype.close;
+    let closes = 0;
+    test.mock.method(NodeSqlite.DatabaseSync.prototype, "close", function () {
+      closes += 1;
+      if (closes === 1)
+        this.exec("UPDATE checkpoint_diff_blobs SET diff = diff || ' synthetic shutdown mutation'");
+      return close.call(this);
+    });
+    try {
+      await withKnownClosedProfileFailure(
+        "health-offline-delete",
+        () => undefined,
+        (produced) => {
+          NodeAssert.equal(produced.error.code, "profile_content_changed");
+          NodeAssert.equal(produced.profile.productionClosed, true);
+          NodeAssert.equal(produced.profile.maintenance.closed, true);
+          NodeAssert.equal(produced.profile.maintenance.checkpoint, undefined);
+          NodeAssert.notEqual(
+            produced.profile.canonicalContent.originalSha256,
+            produced.profile.canonicalContent.beforeSha256,
+          );
+          NodeAssert.equal(produced.profile.failedStage, "pre-transition-content");
+          NodeAssert.equal(closes, 2);
+        },
+      );
+    } finally {
+      test.mock.restoreAll();
+    }
+  },
+);
+
+NodeTest.test(
+  "health profile cancellation preserves the primary failure and its original owner",
+  async () => {
+    const cancellation = new AbortController();
+    const primary = new Error("deliberate named-profile cancellation");
+    await withInvocation(async (scope) => {
+      const produced = await scope.produce(
+        scope.options(oldSource, {
+          profile: "health-offline-delete",
+          signal: cancellation.signal,
+        }),
+        () => {
+          cancellation.abort(primary);
+          throw primary;
+        },
+      );
+      let failure;
+      try {
+        NodeAssert.strictEqual(produced.error, primary);
+        NodeAssert.equal(produced.retainReason, "profile_cancelled");
+        NodeAssert.equal(produced.receipt, undefined);
+        NodeAssert.equal(produced.profile.productionClosed, true);
+        NodeAssert.equal(produced.profile.maintenance, undefined);
+      } catch (error) {
+        failure = error;
+      }
+      try {
+        NodeAssert.equal(produced.closeKnown, true);
+        produced.cleanup = disposeOwnedRoot(produced.owner);
+        NodeAssert.equal(produced.cleanup.outcome, "complete");
+      } catch (error) {
+        failure = failure
+          ? new AggregateError([failure, error], "Cancellation test retained scratch", {
+              cause: failure,
+            })
+          : error;
+      }
+      if (failure) throw failure;
+    });
+  },
+);
+
+NodeTest.test(
+  "health profile injected close rejection retains despite separately captured native close",
+  async (test) => {
+    await withInvocation(async (scope) => {
+      const testOwner = createOwnedRoot({
+        parentPath: scope.outer,
+        childName: "unknown-close-enclosure",
+        policy: scope.policy,
+        binding: { ...producerBinding, runId: NodeCrypto.randomUUID() },
+      });
+      const prepare = NodeSqlite.DatabaseSync.prototype.prepare;
+      const close = NodeSqlite.DatabaseSync.prototype.close;
+      const resources = new Set();
+      const closed = new Set();
+      test.mock.method(NodeSqlite.DatabaseSync.prototype, "prepare", function (sql) {
+        resources.add(this);
+        return prepare.call(this, sql);
+      });
+      test.mock.method(NodeSqlite.DatabaseSync.prototype, "close", function () {
+        close.call(this);
+        closed.add(this);
+        throw new Error("injected rejection after actual native close");
+      });
+      let failure;
+      let produced;
+      try {
+        produced = await produceFixture(
+          {
+            parentPath: testOwner.creationReceipt.canonicalRootPath,
+            childName: "producer",
+            policy: scope.policy,
+            binding: { ...producerBinding, runId: NodeCrypto.randomUUID() },
+            databaseSource: oldSource,
+            profile: "health-offline-delete",
+          },
+          () => undefined,
+        );
+        NodeAssert.equal(produced.closeKnown, false);
+        NodeAssert.equal(produced.profile.productionClosed, false);
+        NodeAssert.equal(produced.retainReason, "unknown_resource_close");
+        NodeAssert.equal(produced.receipt, undefined);
+        NodeAssert.equal(produced.profile.maintenance, undefined);
+        NodeAssert.equal(disposeOwnedRoot(produced.owner).outcome, "retained");
+        NodeAssert.equal(NodeFS.existsSync(produced.owner.creationReceipt.canonicalRootPath), true);
+      } catch (error) {
+        failure = error;
+      } finally {
+        test.mock.restoreAll();
+        try {
+          // Only this injected failure has independent actual native-close evidence. A genuine unknown
+          // close cannot use the producer result to remove its retained tree or retry that resource.
+          NodeAssert.equal(resources.size, 1);
+          NodeAssert.equal(closed.size, resources.size);
+          NodeAssert.ok([...resources].every((resource) => closed.has(resource)));
+          NodeAssert.equal(disposeOwnedRoot(testOwner).outcome, "complete");
+        } catch (error) {
+          failure = failure
+            ? new AggregateError([failure, error], "Injected close test retained scratch", {
+                cause: failure,
+              })
+            : error;
+        }
+      }
+      if (failure) throw failure;
+    });
+  },
+);
+
+for (const defect of ["header", "sidecar"]) {
+  NodeTest.test(
+    `health profile refuses an injected closed ${defect} defect before sealing`,
+    async (test) => {
+      const prepare = NodeSqlite.DatabaseSync.prototype.prepare;
+      const close = NodeSqlite.DatabaseSync.prototype.close;
+      let dbPath;
+      let closes = 0;
+      test.mock.method(NodeSqlite.DatabaseSync.prototype, "close", function () {
+        close.call(this);
+        closes += 1;
+        if (closes === 2) {
+          if (defect === "header") {
+            const fd = NodeFS.openSync(
+              dbPath,
+              NodeFS.constants.O_WRONLY | NodeFS.constants.O_NOFOLLOW,
+            );
+            try {
+              NodeFS.writeSync(fd, Buffer.from([2, 2]), 0, 2, 18);
+            } finally {
+              NodeFS.closeSync(fd);
+            }
+          } else
+            NodeFS.writeFileSync(`${dbPath}-journal`, "synthetic sidecar", {
+              flag: "wx",
+              mode: 0o600,
+            });
+        }
+      });
+      const stages = [];
+      test.mock.method(NodeSqlite.DatabaseSync.prototype, "prepare", function (sql) {
+        if (/^PRAGMA journal_mode\s*=\s*WAL;?$/i.test(sql.trim())) stages.push("production-wal");
+        if (/^PRAGMA wal_checkpoint\(TRUNCATE\)$/i.test(sql.trim()))
+          stages.push(`checkpoint-after-${closes}-closes`);
+        if (/^PRAGMA journal_mode\s*=\s*DELETE$/i.test(sql.trim()))
+          stages.push(`delete-after-${closes}-closes`);
+        return prepare.call(this, sql);
+      });
+      try {
+        await withKnownClosedProfileFailure(
+          "health-offline-delete",
+          (context) => {
+            dbPath = context.paths.dbPath;
+          },
+          (produced) => {
+            NodeAssert.equal(
+              produced.error.code,
+              defect === "header" ? "profile_header_failed" : "profile_sidecars_present",
+            );
+            NodeAssert.equal(produced.profile.maintenance.closed, true);
+            NodeAssert.equal(closes, 2);
+            NodeAssert.deepEqual(stages, [
+              "production-wal",
+              "checkpoint-after-1-closes",
+              "delete-after-1-closes",
+            ]);
+            NodeAssert.equal(
+              produced.profile.canonicalContent.originalSha256,
+              produced.profile.canonicalContent.afterSha256,
+            );
+          },
+        );
+      } finally {
+        test.mock.restoreAll();
+      }
+    },
+  );
+}
+
+NodeTest.test(
+  "closed named profile pre-cancellation retains bounded evidence with no child or database opened",
+  async () => {
+    await withInvocation(async (scope) => {
+      const testOwner = createOwnedRoot({
+        parentPath: scope.outer,
+        childName: "cancelled-profile-enclosure",
+        policy: scope.policy,
+        binding: { ...producerBinding, runId: NodeCrypto.randomUUID() },
+      });
+      const cancellation = new AbortController();
+      cancellation.abort();
+      let rejected;
+      let failure;
+      try {
+        rejected = await withClosedSyntheticFixture(
+          {
+            parentPath: testOwner.creationReceipt.canonicalRootPath,
+            childName: "consumer",
+            policy: scope.policy,
+            binding: { ...producerBinding, runId: NodeCrypto.randomUUID() },
+            databaseSource: oldSource,
+            profile: "health-offline-delete",
+            signal: cancellation.signal,
+          },
+          () => undefined,
+        ).catch((error) => error);
+        NodeAssert.equal(rejected.evidence.cleanup.outcome, "retained");
+        NodeAssert.equal(rejected.evidence.cleanup.reason, "profile_cancelled");
+        NodeAssert.equal(rejected.evidence.profile.kind, "health-offline-delete");
+        NodeAssert.equal(rejected.evidence.profile.stage, "producer-transport");
+        NodeAssert.equal(rejected.evidence.receipt, undefined);
+        NodeAssert.equal(rejected.evidence.childReceipt.pid, null);
+      } catch (error) {
+        failure = error;
+      } finally {
+        try {
+          NodeAssert.equal(rejected.evidence.childReceipt.pid, null);
+          NodeAssert.equal(rejected.evidence.childReceipt.closed, true);
+          NodeAssert.equal(rejected.evidence.childReceipt.reaped, true);
+          NodeAssert.equal(rejected.evidence.childReceipt.truncated, false);
+          NodeAssert.deepEqual(
+            await NodeFSP.readdir(
+              NodePath.join(testOwner.creationReceipt.canonicalRootPath, "consumer"),
+            ),
+            [".jones-performance-root.json"],
+          );
+          NodeAssert.equal(disposeOwnedRoot(testOwner).outcome, "complete");
+        } catch (error) {
+          failure = failure
+            ? new AggregateError([failure, error], "Pre-cancelled profile test retained scratch", {
+                cause: failure,
+              })
+            : error;
+        }
+      }
+      if (failure) throw failure;
     });
   },
 );
