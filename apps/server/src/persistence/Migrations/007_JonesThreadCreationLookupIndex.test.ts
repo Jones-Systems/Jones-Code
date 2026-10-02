@@ -167,8 +167,8 @@ it.effect(
       });
       assert.isTrue(Option.isSome(lease));
       yield* sql`INSERT INTO auth_sessions
-      (session_id, subject, role, method, issued_at, expires_at)
-      VALUES ('upgrade-session', 'upgrade-owner', 'admin', 'pairing', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`;
+      (session_id, subject, scopes, method, issued_at, expires_at)
+      VALUES ('upgrade-session', 'upgrade-owner', '[]', 'pairing', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`;
       const digest = "a".repeat(64);
       yield* sql`INSERT INTO workstreams_native_attempts
       (owner_id, principal_id, command_id, request_json, request_bytes_sha256, enrollment_sha256, enrollment_json, native_command_id, created_at)
