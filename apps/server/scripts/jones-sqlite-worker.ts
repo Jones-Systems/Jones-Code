@@ -474,11 +474,11 @@ if (import.meta.main) {
     const input = decodeInput(NodeProcess.argv[3]);
     budget = input.request.limits.maxOutputBytes - envelopeReserveBytes;
     const status = await runHealthWorker(input, emit);
-    NodeProcess.exitCode =
+    NodeProcess.default.exitCode =
       status === "completed" ? 0 : status === "failed" ? 1 : status === "refused" ? 2 : 3;
   } catch (error) {
     const reason = error instanceof HealthInputError ? error.reason : "worker_failed";
     emit({ kind: "complete", status: reason === "output_limit" ? "partial" : "failed", reason });
-    NodeProcess.exitCode = reason === "output_limit" ? 3 : 1;
+    NodeProcess.default.exitCode = reason === "output_limit" ? 3 : 1;
   }
 }

@@ -497,8 +497,8 @@ if (import.meta.main) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const controller = new AbortController();
   const cancel = () => controller.abort(new HealthInputError("cancelled"));
-  NodeProcess.once("SIGINT", cancel);
-  NodeProcess.once("SIGTERM", cancel);
+  NodeProcess.default.once("SIGINT", cancel);
+  NodeProcess.default.once("SIGTERM", cancel);
   try {
     request = parseHealthArguments(NodeProcess.argv.slice(2));
     timer = setTimeout(
@@ -525,10 +525,10 @@ if (import.meta.main) {
     };
   } finally {
     clearTimeout(timer);
-    NodeProcess.removeListener("SIGINT", cancel);
-    NodeProcess.removeListener("SIGTERM", cancel);
+    NodeProcess.default.removeListener("SIGINT", cancel);
+    NodeProcess.default.removeListener("SIGTERM", cancel);
   }
   const encoded = encodeHealthEnvelope(report);
   NodeProcess.stdout.write(encoded.text);
-  NodeProcess.exitCode = healthExitCode(encoded.report);
+  NodeProcess.default.exitCode = healthExitCode(encoded.report);
 }

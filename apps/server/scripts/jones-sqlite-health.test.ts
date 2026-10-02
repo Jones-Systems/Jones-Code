@@ -252,12 +252,24 @@ async function cli(
     const result = await closed;
     if (!result.closed) throw failure ?? new Error("CLI test child closure is unknown");
     const output = Buffer.concat(stdout).toString("utf8");
-    const report = JSON.parse(output) as HealthEnvelope;
+    const stderrBytes = Buffer.concat(stderr);
+    const stderrText = stderrBytes.subarray(0, 16 * 1024).toString("utf8");
+    const nativeDiagnostic = `CLI exit=${result.code ?? "null"} signal=${result.signal ?? "null"}; stderr=${stderrBytes.length} bytes (first 16 KiB): ${stderrText}`;
+    if (failure) {
+      console.error(nativeDiagnostic);
+      throw failure;
+    }
+    if (!output.trim()) throw new Error(`CLI emitted no JSON report; ${nativeDiagnostic}`);
+    let report: HealthEnvelope;
+    try {
+      report = JSON.parse(output) as HealthEnvelope;
+    } catch {
+      throw new Error(`CLI emitted an invalid JSON report; ${nativeDiagnostic}`);
+    }
     observedConsumerClose = report.child.closed && report.child.reaped;
-    if (failure) throw failure;
     expect(output.trim().split("\n")).toHaveLength(1);
     expect(Buffer.byteLength(output)).toBeLessThanOrEqual(report.limits.maxOutputBytes);
-    return { ...result, output, report, stderr: Buffer.concat(stderr).toString("utf8") };
+    return { ...result, output, report, stderr: stderrText };
   } finally {
     child.stdin.destroy();
     if (!observedClose) {
