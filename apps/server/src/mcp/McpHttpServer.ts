@@ -45,6 +45,10 @@ import {
 import { OrganizationToolkit } from "./toolkits/organization/tools.ts";
 import { OrganizationToolkitHandlersLive } from "./toolkits/organization/handlers.ts";
 
+import { DecisionSnapshotToolkit } from "./toolkits/decisionSnapshot/tools.ts";
+import { DecisionSnapshotToolkitHandlersLive } from "./toolkits/decisionSnapshot/handlers.ts";
+import { DecisionSnapshotCollectorLive } from "./toolkits/decisionSnapshot/collector.ts";
+
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
     error: "invalid_mcp_credential",
@@ -663,6 +667,13 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
   DeviceScreenshotRegistrationLive,
 );
 
+export const DecisionSnapshotToolkitRegistrationLive = McpServer.toolkit(
+  DecisionSnapshotToolkit,
+).pipe(
+  Layer.provide(DecisionSnapshotToolkitHandlersLive),
+  Layer.provide(DecisionSnapshotCollectorLive),
+);
+
 const OrganizationToolkitRegistrationLive = McpServer.toolkit(OrganizationToolkit).pipe(
   Layer.provide(OrganizationToolkitHandlersLive),
 );
@@ -679,4 +690,5 @@ export const layer = Layer.mergeAll(
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
   OrganizationToolkitRegistrationLive,
+  DecisionSnapshotToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));
