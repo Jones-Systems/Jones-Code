@@ -22,6 +22,8 @@ it.effect("records runtime identity as fork migration 2 after fresh upstream mig
       [
         { migration_id: 1, name: "WorktreeOwnershipLeases" },
         { migration_id: 2, name: "ProjectionThreadRuntimeIdentity" },
+        { migration_id: 3, name: "NativeCreationIntents" },
+        { migration_id: 4, name: "NativeCreationCommandIdentities" },
       ],
     );
     assert.deepEqual(

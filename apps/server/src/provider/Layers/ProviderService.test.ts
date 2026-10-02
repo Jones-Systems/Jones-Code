@@ -143,6 +143,7 @@ type LegacyProviderRuntimeEvent = {
 function makeFakeCodexAdapter(
   provider: ProviderDriverKind = CODEX_DRIVER,
   supportsConversationRollback?: boolean,
+  getProviderGoalState?: ProviderAdapterShape<ProviderAdapterError>["getProviderGoalState"],
 ) {
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
@@ -298,6 +299,7 @@ function makeFakeCodexAdapter(
     stopSession,
     listSessions,
     hasSession,
+    ...(getProviderGoalState ? { getProviderGoalState } : {}),
     readThread,
     rollbackThread,
     ...(provider === CODEX_DRIVER ? { uploadFeedback } : {}),
@@ -423,6 +425,7 @@ function makeProviderServiceLayer(
   input: {
     readonly directory?: ProviderSessionDirectory.ProviderSessionDirectory["Service"];
     readonly supportsConversationRollback?: boolean;
+    readonly getProviderGoalState?: ProviderAdapterShape<ProviderAdapterError>["getProviderGoalState"];
     readonly analyticsLayer?: Layer.Layer<AnalyticsService.AnalyticsService>;
     readonly settingsLayer?: typeof defaultServerSettingsLayer;
     readonly catalogLayer?: Layer.Layer<ProviderRegistry.ProviderRegistry>;
@@ -431,7 +434,11 @@ function makeProviderServiceLayer(
     readonly registry?: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"];
   } = {},
 ) {
-  const codex = makeFakeCodexAdapter(CODEX_DRIVER, input.supportsConversationRollback);
+  const codex = makeFakeCodexAdapter(
+    CODEX_DRIVER,
+    input.supportsConversationRollback,
+    input.getProviderGoalState,
+  );
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
   const registry =
@@ -5461,15 +5468,15 @@ describe("agent browser access", () => {
     });
 
   // The capability on the credential is the observable that matters: a session
-  // always gets a credential (the pull request toolkit is never withheld), and
+  // always gets a credential for pull requests and organization, and
   // `preview` on it is what actually grants or denies the browser tools.
-  it.effect("issues a credential without preview when agent browser access is off", () =>
+  it.effect("issues organization independently of browser and device access", () =>
     Effect.gen(function* () {
       const threadId = asThreadId("thread-browser-off");
 
       const issued = yield* startSessionWith(false, threadId);
 
-      assert.deepEqual(issued, [{ threadId, capabilities: ["pull-requests"] }]);
+      assert.deepEqual(issued, [{ threadId, capabilities: ["organization", "pull-requests"] }]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5480,7 +5487,7 @@ describe("agent browser access", () => {
       const issued = yield* startSessionWith(true, threadId);
 
       assert.deepEqual(issued, [
-        { threadId, capabilities: ["device", "preview", "pull-requests"] },
+        { threadId, capabilities: ["device", "organization", "preview", "pull-requests"] },
       ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -5491,7 +5498,9 @@ describe("agent browser access", () => {
 
       const issued = yield* startSessionWith({ browser: false, device: true }, threadId);
 
-      assert.deepEqual(issued, [{ threadId, capabilities: ["device", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["device", "organization", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5499,7 +5508,7 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-off");
       const issued = yield* startSessionWith({ browser: true, device: false }, threadId, false);
-      assert.deepEqual(issued, [{ threadId, capabilities: ["pull-requests"] }]);
+      assert.deepEqual(issued, [{ threadId, capabilities: ["organization", "pull-requests"] }]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5507,7 +5516,9 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-off-device-on");
       const issued = yield* startSessionWith(true, threadId, false);
-      assert.deepEqual(issued, [{ threadId, capabilities: ["device", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["device", "organization", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5515,7 +5526,9 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-on");
       const issued = yield* startSessionWith({ browser: false, device: false }, threadId, true);
-      assert.deepEqual(issued, [{ threadId, capabilities: ["preview", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["organization", "preview", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5525,7 +5538,9 @@ describe("agent browser access", () => {
       const issued = yield* startSessionWith({ browser: false, device: false }, threadId, {
         device: true,
       });
-      assert.deepEqual(issued, [{ threadId, capabilities: ["device", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["device", "organization", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5540,7 +5555,9 @@ describe("agent browser access", () => {
         { device: false },
         { withoutOrchestration: true },
       );
-      assert.deepEqual(issued, [{ threadId, capabilities: ["preview", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["organization", "preview", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
@@ -5941,4 +5958,100 @@ chatGptTelemetry.layer("ChatGPT connector turn analytics", (it) => {
       });
     }),
   );
+});
+
+describe("read-only native provider goal", () => {
+  for (const condition of [
+    "missing",
+    "mismatch",
+    "stopped",
+    "missing-cursor",
+    "closed",
+    "unsupported",
+    "current",
+    "changed",
+  ] as const) {
+    const threadId = asThreadId(`goal-${condition}`);
+    const nativeThreadId = `native-${condition}`;
+    let duringRead: Effect.Effect<void> = Effect.void;
+    const read = vi.fn(() =>
+      duringRead.pipe(
+        Effect.as({
+          nativeThreadId,
+          state: "inactive" as const,
+          reasonCode: "goal_null" as const,
+          objective: "private objective must never leave the adapter",
+        }),
+      ),
+    );
+    const { codex, layer } = makeProviderServiceLayer({
+      ...(condition === "unsupported" ? {} : { getProviderGoalState: read }),
+    });
+    layer(`native goal ${condition}`, (it) => {
+      it.effect(`holds ${condition} without starting or recovering a provider`, () =>
+        Effect.gen(function* () {
+          const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+          const provider = yield* ProviderService.ProviderService;
+          if (condition !== "missing") {
+            yield* directory.upsert({
+              threadId,
+              provider: CODEX_DRIVER,
+              providerInstanceId:
+                condition === "mismatch" ? claudeAgentInstanceId : codexInstanceId,
+              status: condition === "stopped" ? "stopped" : "running",
+              ...(condition === "missing-cursor"
+                ? {}
+                : { resumeCursor: { threadId: nativeThreadId } }),
+            });
+          }
+          if (!["missing", "closed"].includes(condition)) {
+            yield* codex.startSession({
+              threadId,
+              provider: CODEX_DRIVER,
+              providerInstanceId: codexInstanceId,
+              runtimeMode: "full-access",
+              resumeCursor: { threadId: nativeThreadId },
+            });
+          }
+          codex.startSession.mockClear();
+          if (condition === "changed") {
+            duringRead = directory
+              .upsert({
+                threadId,
+                provider: CODEX_DRIVER,
+                providerInstanceId: codexInstanceId,
+                status: "running",
+                resumeCursor: { threadId: "replaced-native-thread" },
+              })
+              .pipe(Effect.orDie);
+          }
+          assert(provider.getProviderGoalState !== undefined);
+          const result = yield* provider.getProviderGoalState({
+            threadId,
+            expectedInstanceId: codexInstanceId,
+          });
+          const reasons = {
+            missing: "no_session",
+            mismatch: "instance_mismatch",
+            stopped: "session_stopped",
+            "missing-cursor": "native_cursor_missing",
+            closed: "session_stopped",
+            unsupported: "unsupported",
+            current: "goal_null",
+            changed: "context_changed",
+          } as const;
+          assert.equal(result.reasonCode, reasons[condition]);
+          assert.equal(result.state, condition === "current" ? "inactive" : "unknown");
+          assert.equal(result.threadId, threadId);
+          assert.equal(result.providerInstanceId, codexInstanceId);
+          assert.notProperty(result, "objective");
+          assert.equal(codex.startSession.mock.calls.length, 0);
+          assert.equal(
+            read.mock.calls.length,
+            condition === "current" || condition === "changed" ? 1 : 0,
+          );
+        }),
+      );
+    });
+  }
 });

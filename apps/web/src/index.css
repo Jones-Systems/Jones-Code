@@ -1979,11 +1979,16 @@ code {
   border-bottom: 1px solid color-mix(in srgb, var(--contrast-border) 60%, transparent);
 }
 
-/* The row is the width boundary, so expansion follows the conversation pane
-   when side panels or the window resize, rather than the entire viewport. */
+/* Size expanded tables to their content, capped by the conversation pane.
+   Center on the reading column even when the table grows beyond it. The row
+   remains the width boundary when side panels or the window resize. */
 [data-timeline-root] .chat-markdown > .chat-markdown-table-container[data-expanded="true"] {
-  width: calc(100cqw - 0.5rem);
-  margin-inline: calc((100% - 100cqw + 0.5rem) / 2);
+  position: relative;
+  left: 50%;
+  width: max-content;
+  max-width: calc(100cqw - 0.5rem);
+  margin-inline: 0;
+  transform: translateX(-50%);
 }
 
 .chat-markdown [data-markdown-table-scroll] {

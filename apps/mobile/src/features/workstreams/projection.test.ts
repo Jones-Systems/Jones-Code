@@ -118,3 +118,20 @@ describe("mobile registry projection", () => {
     ).toBe(true);
   });
 });
+
+it("retains verified primary membership across independent pin and parked states", () => {
+  const current = snapshot("env:a");
+  const groupKey = projectMobileWorkstreams([current], [thread], now).groups[0]!.key;
+  for (const state of [
+    { pinnedAt: "2026-09-30T11:00:00Z" },
+    { settledOverride: "settled" },
+    { snoozedUntil: "2026-10-01T11:00:00Z" },
+  ]) {
+    const member = { ...thread, ...state };
+    expect(
+      projectMobileWorkstreams([current], [member], now).primaryGroupByThreadKey.get(
+        nativeWorkstreamThreadKey(member.environmentId, member.id),
+      ),
+    ).toBe(groupKey);
+  }
+});

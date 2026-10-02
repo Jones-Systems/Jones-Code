@@ -1,3 +1,6 @@
+import * as NativeCreationRepositoryLayer from "./persistence/Layers/NativeCreationRepository.ts";
+import { NativeCreationAuthorityUnavailable } from "./orchestration/NativeCreationAuthority.ts";
+import * as AuthSessions from "./persistence/AuthSessions.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
@@ -45,6 +48,7 @@ import {
   workstreamHttpApiLayer,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
+import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./voiceReview/http.ts";
 import { hostStatusHttpApiLayer } from "./hostStatus/http.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
@@ -178,6 +182,7 @@ import {
 } from "./serverRuntimeState.ts";
 import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
 import { conversationLibraryHttpApiLayer } from "./conversations/http.ts";
+import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
 import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { disableTailscaleServe, ensureTailscaleServe } from "@t3tools/tailscale";
@@ -300,7 +305,15 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
 );
 
-const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
+const PersistenceLayerLive = Layer.empty.pipe(
+  Layer.provideMerge(
+    NativeCreationAuthorityUnavailable.pipe(
+      Layer.provide(AuthSessions.layer),
+      Layer.provideMerge(NativeCreationRepositoryLayer.layer),
+    ),
+  ),
+  Layer.provideMerge(SqlitePersistenceLayerLive),
+);
 
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
@@ -611,9 +624,11 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(connectHttpApiLayer),
       Layer.provide(orchestrationHttpApiLayer),
       Layer.provide(conversationLibraryHttpApiLayer),
+      Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(workstreamHttpApiLayer),
       Layer.provide(hostStatusHttpApiLayer),
+      Layer.provide(voiceReviewHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),
     ),
@@ -636,6 +651,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),
   Layer.provide(workstreamResponseHeadersLayer),
+  Layer.provide(voiceReviewResponseHeadersLayer),
   Layer.provide(browserApiCorsLayer),
   Layer.provide(httpCompressionLayer),
 );

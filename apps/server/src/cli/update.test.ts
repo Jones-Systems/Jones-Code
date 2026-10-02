@@ -1,9 +1,14 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import { TestClock } from "effect/testing";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { cliReleaseIndexPageUrl } from "@t3tools/shared/cliRelease";
 import {
   HostProcessEnvironment,
   HostProcessInvokedAs,
@@ -11,7 +16,7 @@ import {
   HostProcessWorkingDirectory,
 } from "@t3tools/shared/hostProcess";
 
-import { repointLauncher, resolveLauncherPath } from "./update.ts";
+import { repointLauncher, resolveLauncherPath, resolveNewestVersion } from "./update.ts";
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
   it.effect("repoints a symlink that lives in a runtime versions tree", () =>
@@ -105,5 +110,165 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       assert.equal(relative, launcher);
       assert.equal(absent, undefined);
     }).pipe(Effect.scoped, Effect.provideService(HostProcessPlatform, "linux")),
+  );
+});
+
+describe("t3 update release source", () => {
+  it.effect("walks only the configured source pages to find a stable release", () =>
+    Effect.gen(function* () {
+      const requests: string[] = [];
+      const client = HttpClient.make((request) => {
+        requests.push(request.url);
+        const releases =
+          requests.length === 1
+            ? [{ tag_name: "v2.0.0-nightly.20261001.1" }, { tag_name: "v2.0.0-preview.20261001.1" }]
+            : [{ tag_name: "v1.9.0", draft: true }, { tag_name: "v1.8.0" }];
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(request, new Response(JSON.stringify(releases))),
+        );
+      });
+      const version = yield* resolveNewestVersion("stable").pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
+      assert.equal(version, "1.8.0");
+      assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1), cliReleaseIndexPageUrl(2)]);
+    }),
+  );
+
+  it.effect.each(["nightly", "preview"] as const)(
+    "selects the %s channel from the configured source",
+    (channel) =>
+      Effect.gen(function* () {
+        const requests: string[] = [];
+        const client = HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(
+                JSON.stringify([
+                  { tag_name: "v2.0.0" },
+                  { tag_name: "v2.0.0-nightly.20261001.1" },
+                  { tag_name: "v2.0.0-preview.20261001.1" },
+                ]),
+              ),
+            ),
+          );
+        });
+        const version = yield* resolveNewestVersion(channel).pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+        );
+        assert.equal(version, `2.0.0-${channel}.20261001.1`);
+        assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
+      }),
+  );
+
+  it.effect.each([404, 503])(
+    "names the configured source when unavailable (%s), without fallback",
+    (status) =>
+      Effect.gen(function* () {
+        const requests: string[] = [];
+        const client = HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("", { status })));
+        });
+        const error = yield* resolveNewestVersion("stable").pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+          Effect.flip,
+        );
+        assert.equal(error.reason, `Could not list t3 releases from ${cliReleaseIndexPageUrl(1)}.`);
+        assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
+      }),
+  );
+
+  it.effect("names the configured source on timeout, without fallback", () =>
+    Effect.gen(function* () {
+      const requests: string[] = [];
+      const client = HttpClient.make((request) => {
+        requests.push(request.url);
+        return Effect.never;
+      });
+      const lookup = yield* resolveNewestVersion("stable").pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.flip,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust(Duration.seconds(30));
+      const error = yield* Fiber.join(lookup);
+      assert.equal(
+        error.reason,
+        `Timed out listing t3 releases from ${cliReleaseIndexPageUrl(1)}.`,
+      );
+      assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
+    }),
+  );
+
+  it.effect.each(["not json", "{}", '[{"draft":false}]'])(
+    "names the configured source for malformed index %s, without fallback",
+    (body) =>
+      Effect.gen(function* () {
+        const requests: string[] = [];
+        const client = HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(HttpClientResponse.fromWeb(request, new Response(body)));
+        });
+        const error = yield* resolveNewestVersion("stable").pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+          Effect.flip,
+        );
+        assert.equal(
+          error.reason,
+          `The t3 release index from ${cliReleaseIndexPageUrl(1)} had an unexpected shape.`,
+        );
+        assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
+      }),
+  );
+
+  it.effect("names the configured source when the channel is unpublished, without fallback", () =>
+    Effect.gen(function* () {
+      const requests: string[] = [];
+      const client = HttpClient.make((request) => {
+        requests.push(request.url);
+        return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("[]")));
+      });
+      const error = yield* resolveNewestVersion("preview").pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.flip,
+      );
+      assert.equal(
+        error.reason,
+        `No published preview release was found in ${cliReleaseIndexPageUrl(1)}.`,
+      );
+      assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
+    }),
+  );
+
+  it.effect(
+    "bounds pagination to ten configured source pages when the channel is unpublished",
+    () =>
+      Effect.gen(function* () {
+        const requests: string[] = [];
+        const client = HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(JSON.stringify([{ tag_name: "v2.0.0-nightly.20261001.1" }])),
+            ),
+          );
+        });
+        const error = yield* resolveNewestVersion("stable").pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+          Effect.flip,
+        );
+        assert.equal(
+          error.reason,
+          `No published stable release was found in ${cliReleaseIndexPageUrl(1)}.`,
+        );
+        assert.deepStrictEqual(
+          requests,
+          Array.from({ length: 10 }, (_, index) => cliReleaseIndexPageUrl(index + 1)),
+        );
+      }),
   );
 });

@@ -3,7 +3,10 @@ import type {
   NativeReference,
   T3WorkstreamListResult,
   WorkstreamCommand,
+  WorkstreamReceipt,
 } from "@t3tools/contracts";
+import { sortActiveThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
+import type { WorkstreamListView } from "../../state/workstreams";
 import {
   currentT3Placement,
   type LiveT3Placements,
@@ -12,6 +15,7 @@ import {
   attestedNativeThreadKey,
   nativeWorkstreamThreadKey,
   type WorkstreamThreadLike,
+  type NativeWorkstreamThreadGrouping,
 } from "./nativeThreadGrouping";
 
 export const canEditWorkstreams = (data: T3WorkstreamListResult | null): boolean =>
@@ -23,6 +27,17 @@ export const canEditWorkstreams = (data: T3WorkstreamListResult | null): boolean
 
 export { workstreamTint } from "@t3tools/client-runtime/state/workstreams";
 
+export type NativeMembershipAction = Extract<
+  WorkstreamCommand["action"],
+  {
+    readonly operation:
+      | "move_primary"
+      | "attach_primary"
+      | "reattach_primary"
+      | "remove_membership";
+  }
+>;
+
 export function planNativeMembership(input: {
   readonly data: T3WorkstreamListResult;
   readonly placements: LiveT3Placements;
@@ -31,7 +46,7 @@ export function planNativeMembership(input: {
   readonly thread: WorkstreamThreadLike;
   readonly destination: string | null;
   readonly now: number;
-}): WorkstreamCommand["action"] | null {
+}): NativeMembershipAction | null {
   if (!canEditWorkstreams(input.data))
     throw new Error("Refresh Workstreams with write access before changing membership.");
   const context = input.placements.context;
@@ -130,4 +145,206 @@ export function moveNativeThreadOrder(
   const next = order.filter((key) => key !== movedId);
   next.splice(next.indexOf(neighborId) + (after ? 1 : 0), 0, movedId);
   return next;
+}
+
+export function captureDraggedThreadKeys(
+  initiator: string,
+  selected: ReadonlySet<string>,
+  rendered: readonly string[],
+): readonly string[] {
+  return selected.has(initiator) ? rendered.filter((key) => selected.has(key)) : [initiator];
+}
+
+export function moveNativeThreadBlock(
+  order: readonly string[],
+  moved: readonly string[],
+  neighbor: string | null,
+  after: boolean,
+): readonly string[] {
+  const selected = new Set(moved);
+  if (neighbor !== null && selected.has(neighbor)) return order;
+  const next = order.filter((key) => !selected.has(key));
+  const index = neighbor === null ? next.length : next.indexOf(neighbor);
+  if (index < 0) return order;
+  next.splice(index + (neighbor !== null && after ? 1 : 0), 0, ...moved);
+  return next;
+}
+
+export class ThreadMovementError extends Error {
+  constructor(
+    reason: string,
+    readonly completedKeys: readonly string[],
+    readonly stoppedKey: string,
+    readonly unprocessedKeys: readonly string[],
+    readonly commandId: string | null,
+  ) {
+    super(
+      `${reason}. Completed: ${completedKeys.join(", ") || "none"}. Stopped: ${stoppedKey} (${commandId ?? "not submitted"}). Unprocessed: ${unprocessedKeys.join(", ") || "none"}. Refresh before retrying.`,
+    );
+    this.name = "ThreadMovementError";
+  }
+}
+
+export async function submitNativeMembershipBatch(input: {
+  readonly data: T3WorkstreamListResult;
+  readonly steps: readonly { readonly key: string; readonly action: NativeMembershipAction }[];
+  readonly commandId: () => Promise<WorkstreamCommand["command_id"]>;
+  readonly submit: (command: WorkstreamCommand) => Promise<WorkstreamReceipt>;
+}): Promise<readonly string[]> {
+  let registryVersion = input.data.binding.registryVersion;
+  const versions = new Map(input.data.items.map((item) => [item.workstreamId, item.version]));
+  const completed: string[] = [];
+  for (const [index, step] of input.steps.entries()) {
+    let commandId: WorkstreamCommand["command_id"] | null = null;
+    try {
+      const action = step.action;
+      const versioned =
+        action.operation === "move_primary"
+          ? {
+              ...action,
+              expected_source_version:
+                versions.get(action.source_workstream_id) ?? action.expected_source_version,
+              expected_destination_version:
+                versions.get(action.destination_workstream_id) ??
+                action.expected_destination_version,
+            }
+          : action.operation === "attach_primary" ||
+              action.operation === "reattach_primary" ||
+              action.operation === "remove_membership"
+            ? {
+                ...action,
+                expected_version: versions.get(action.workstream_id) ?? action.expected_version,
+              }
+            : action;
+      commandId = await input.commandId();
+      const receipt = await input.submit({
+        command_id: commandId,
+        expected_server_generation: input.data.binding.serverGeneration,
+        expected_registry_version: registryVersion,
+        action: versioned,
+      });
+      if (receipt.state !== "committed") throw new Error(`Membership change ${receipt.state}`);
+      registryVersion = receipt.registry_version;
+      for (const version of receipt.effects.workstream_versions)
+        versions.set(version.workstream_id, version.version);
+      completed.push(step.key);
+    } catch (cause) {
+      throw new ThreadMovementError(
+        cause instanceof Error ? cause.message : "Membership effect unknown",
+        completed,
+        step.key,
+        input.steps.slice(index + 1).map((item) => item.key),
+        commandId,
+      );
+    }
+  }
+  return completed;
+}
+
+export async function moveNativeMembershipThreads(input: {
+  readonly controller: WorkstreamListView;
+  readonly threads: readonly WorkstreamThreadLike[];
+  readonly destination: string | null;
+  readonly commandId: () => Promise<WorkstreamCommand["command_id"]>;
+  readonly now: number;
+  readonly signal?: AbortSignal;
+}): Promise<readonly string[]> {
+  input.signal?.throwIfAborted();
+  const { controller, threads, destination } = input;
+  const data = controller.data;
+  const placements = controller.placements;
+  if (!data || !placements || !canEditWorkstreams(data) || controller.loading)
+    throw new Error("Refresh thread placements with write access before changing membership.");
+  const inventory = new Set(
+    controller.placementInventory.identities.map((item) =>
+      nativeWorkstreamThreadKey(item.source_instance_id, item.native_thread_id),
+    ),
+  );
+  if (
+    threads.some(
+      (thread) => !inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id)),
+    )
+  )
+    throw new Error(
+      "A selected environment has no verified placement inventory. No threads were moved.",
+    );
+  const details = new Map<string, Awaited<ReturnType<typeof controller.loadDetail>>>();
+  const steps: { key: string; action: NativeMembershipAction }[] = [];
+  for (const thread of threads) {
+    const current =
+      placements.items.find(
+        (item) =>
+          item.kind === "primary" &&
+          item.source_instance_id === thread.environmentId &&
+          item.native_thread_id === thread.id,
+      )?.workstream_id ?? null;
+    const detailId = destination ?? current;
+    if (detailId === null) continue;
+    let detail = details.get(detailId);
+    if (!detail) {
+      detail = await controller.loadDetail(
+        detailId,
+        input.signal === undefined ? {} : { signal: input.signal },
+      );
+      input.signal?.throwIfAborted();
+      details.set(detailId, detail);
+    }
+    if (
+      detail.detail.context.registry_version !== data.binding.registryVersion ||
+      detail.detail.context.server_generation !== data.binding.serverGeneration ||
+      detail.detail.context.owner_id !== data.binding.ownerId
+    )
+      throw new Error("Workstreams changed. Refresh before moving the selection.");
+    const action = planNativeMembership({
+      data,
+      placements,
+      references: detail.references.items,
+      destinationMemberships: detail.memberships.items,
+      thread,
+      destination,
+      now: input.now,
+    });
+    if (action)
+      steps.push({ key: nativeWorkstreamThreadKey(thread.environmentId, thread.id), action });
+  }
+  input.signal?.throwIfAborted();
+  if (steps.length)
+    await controller.runBindingOperation((submit) =>
+      submitNativeMembershipBatch({
+        data,
+        steps,
+        commandId: input.commandId,
+        submit,
+      }),
+    );
+  return threads.map((thread) => nativeWorkstreamThreadKey(thread.environmentId, thread.id));
+}
+
+export function projectWorkstreamShelves<
+  T extends WorkstreamThreadLike & {
+    readonly createdAt: string;
+    readonly pinnedAt?: string | null | undefined;
+    readonly activeOrderKey?: string | null | undefined;
+  },
+>(
+  grouping: NativeWorkstreamThreadGrouping<T>,
+  pinnedThreads: readonly T[],
+): { readonly grouping: NativeWorkstreamThreadGrouping<T>; readonly pinnedThreads: readonly T[] } {
+  const groups = grouping.groups.map((group) => ({
+    ...group,
+    threads: sortActiveThreadsByOrderKey(group.threads),
+  }));
+  const ungrouped = grouping.ungrouped.filter((thread) => thread.pinnedAt == null);
+  return {
+    grouping: {
+      ...grouping,
+      groups,
+      ungrouped,
+      ordered: [...groups.flatMap((group) => group.threads), ...ungrouped],
+    },
+    pinnedThreads: pinnedThreads.filter(
+      (thread) =>
+        !grouping.groupedKeys.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id)),
+    ),
+  };
 }

@@ -1,3 +1,12 @@
+import {
+  VoiceReviewDraft,
+  VoiceReviewDraftList,
+  VoiceReviewMutationResult,
+  VoiceReviewErrors,
+  VoiceReviewRevisionPayload,
+  VoiceReviewEditSavePayload,
+  VoiceReviewEditCancelPayload,
+} from "./voiceReview.ts";
 import { HostStatusSnapshot } from "./hostStatus.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
@@ -30,11 +39,14 @@ import {
   DpopFailureReason,
   AuthSessionId,
   ThreadId,
+  CommandId,
+  MessageId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
   ClientOrchestrationCommand,
+  OrchestrationCommandObservation,
   DispatchResult,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
@@ -79,6 +91,8 @@ import {
   WorkstreamReceipt,
 } from "./workstreams.ts";
 import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderQueueInventory, ProviderQueueRefreshResult } from "./providerQueue.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -93,6 +107,9 @@ export const EnvironmentRequestInvalidReason = Schema.Literals([
   "invalid_scope",
   "scope_not_granted",
   "invalid_command",
+  "dispatch_guard_rejected",
+  "dispatch_guard_bootstrap_unsupported",
+  "observation_unsupported",
 ]);
 export type EnvironmentRequestInvalidReason = typeof EnvironmentRequestInvalidReason.Type;
 
@@ -606,6 +623,30 @@ const EnvironmentOrchestrationThreadSnapshotQuery = {
   beforeCursor: Schema.optional(TrimmedNonEmptyString),
 };
 
+export const ProviderGoalStateObservation = Schema.Struct({
+  schema: Schema.Literal("t3.provider-goal-state/v1"),
+  threadId: ThreadId,
+  providerInstanceId: ProviderInstanceId,
+  nativeThreadId: Schema.NullOr(TrimmedNonEmptyString),
+  observedAtMs: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  state: Schema.Literals(["active", "inactive", "unknown"]),
+  reasonCode: Schema.Literals([
+    "goal_null",
+    "goal_present",
+    "no_session",
+    "session_stopped",
+    "instance_mismatch",
+    "native_cursor_missing",
+    "unsupported",
+    "timeout",
+    "malformed",
+    "goal_field_omitted",
+    "rpc_error",
+    "context_changed",
+  ]),
+});
+export type ProviderGoalStateObservation = typeof ProviderGoalStateObservation.Type;
+
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
   .add(
     HttpApiEndpoint.get("snapshot", "/api/orchestration/snapshot", {
@@ -629,6 +670,32 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
       success: OrchestrationThreadDetailSnapshot,
       error: EnvironmentOrchestrationThreadSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "commandObservation",
+      "/api/orchestration/threads/:threadId/commands/:commandId",
+      {
+        headers: OptionalBearerHeaders,
+        params: Schema.Struct({ threadId: ThreadId, commandId: CommandId }),
+        payload: { messageId: MessageId },
+        success: OrchestrationCommandObservation,
+        error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "providerGoalState",
+      "/api/orchestration/threads/:threadId/provider-goal-state",
+      {
+        headers: OptionalBearerHeaders,
+        params: EnvironmentOrchestrationThreadSnapshotParams,
+        payload: { expectedInstanceId: ProviderInstanceId },
+        success: ProviderGoalStateObservation,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.post("dispatch", "/api/orchestration/dispatch", {
@@ -829,8 +896,128 @@ export class EnvironmentConversationLibraryHttpApi extends HttpApiGroup.make(
   }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
 
+const VoiceReviewParams = Schema.Struct({
+  id: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
+});
+const VoiceReviewHeaders = OptionalBearerHeaders;
+class EnvironmentVoiceReviewHttpApi extends HttpApiGroup.make("voiceReview")
+  .add(
+    HttpApiEndpoint.get("list", "/api/voice-review/drafts", {
+      headers: VoiceReviewHeaders,
+      query: {
+        scope: Schema.optional(Schema.Literals(["pending", "recent"])),
+        limit: Schema.optional(
+          Schema.FiniteFromString.check(
+            Schema.isInt(),
+            Schema.isBetween({ minimum: 1, maximum: 200 }),
+          ),
+        ),
+      },
+      success: VoiceReviewDraftList,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("get", "/api/voice-review/drafts/:id", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      success: VoiceReviewDraft,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("pause", "/api/voice-review/drafts/:id/pause", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewRevisionPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("play", "/api/voice-review/drafts/:id/play", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewRevisionPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("editBegin", "/api/voice-review/drafts/:id/edit-begin", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewRevisionPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("editSave", "/api/voice-review/drafts/:id/edit-save", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewEditSavePayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("editCancel", "/api/voice-review/drafts/:id/edit-cancel", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewEditCancelPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("sendNow", "/api/voice-review/drafts/:id/send-now", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewRevisionPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("delete", "/api/voice-review/drafts/:id/delete", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewRevisionPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
+export class ProviderQueueHttpApi extends HttpApiGroup.make("providerQueue")
+  .add(
+    HttpApiEndpoint.get("inventory", "/api/provider-queue/inventory", {
+      headers: OptionalBearerHeaders,
+      success: ProviderQueueInventory,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("usage", "/api/provider-queue/instances/:instanceId/usage", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ instanceId: ProviderInstanceId }),
+      success: ProviderQueueRefreshResult,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("refresh", "/api/provider-queue/instances/:instanceId/refresh", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ instanceId: ProviderInstanceId }),
+      success: ProviderQueueRefreshResult,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentHostStatusHttpApi)
+  .add(EnvironmentVoiceReviewHttpApi)
+  .add(ProviderQueueHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)

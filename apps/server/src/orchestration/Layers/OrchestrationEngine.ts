@@ -1,3 +1,8 @@
+import * as NativeCreationRepositoryLayer from "../../persistence/Layers/NativeCreationRepository.ts";
+import {
+  nativeCreationCommandDigest,
+  nativeCreationCanonicalJson,
+} from "../NativeCreationPreparation.ts";
 import type {
   OrchestrationClientOrigin,
   OrchestrationEvent,
@@ -43,6 +48,8 @@ import {
   type OrchestrationDispatchError,
   type OrchestrationProjectorDecodeError,
 } from "../Errors.ts";
+import { makeDispatchGuard } from "../DispatchGuard.ts";
+import { makeCommandObservationQuery } from "../CommandObservation.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
@@ -66,6 +73,7 @@ const isOrchestrationCommandIdConflictError = Schema.is(OrchestrationCommandIdCo
 interface CommandEnvelope {
   command: OrchestrationCommand;
   origin: OrchestrationClientOrigin | undefined;
+  bootstrapEffect: { readonly claimId: string; readonly effectId: string } | undefined;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
 }
@@ -102,6 +110,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const path = yield* Path.Path;
   const worktreeOwnershipLeases = yield* makeWorktreeOwnershipLeaseStore();
   const locallyOwnedWorktrees = new Map<string, WorktreeOwnershipLease>();
+  const validateDispatchGuard = yield* makeDispatchGuard();
+  const nativeCreationRepository = yield* NativeCreationRepositoryLayer.make;
+  const commandObservation = yield* makeCommandObservationQuery();
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
@@ -220,6 +231,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               createdAt,
             },
             origin: undefined,
+            bootstrapEffect: undefined,
             result,
             startedAtMs: nowMs,
           });
@@ -290,6 +302,55 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           "orchestration.aggregate_id": aggregateRef.aggregateId,
         });
 
+        const identity = yield* nativeCreationRepository
+          .getReservedCommandIdentity(envelope.command.commandId)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationCommandInvariantError({
+                  commandType: envelope.command.type,
+                  detail: "native creation identity lookup unavailable",
+                  cause,
+                }),
+            ),
+          );
+        if (
+          Option.isSome(identity) &&
+          (envelope.bootstrapEffect === undefined ||
+            identity.value.claimId !== envelope.bootstrapEffect.claimId ||
+            identity.value.threadId !== aggregateRef.aggregateId)
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: envelope.command.type,
+            detail: "native creation command identity context mismatch",
+          });
+        }
+        const reservation = yield* nativeCreationRepository
+          .getReservedCommand(envelope.command.commandId)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationCommandInvariantError({
+                  commandType: envelope.command.type,
+                  detail: "native creation reservation unavailable",
+                  cause,
+                }),
+            ),
+          );
+        if (Option.isSome(reservation) || envelope.bootstrapEffect !== undefined) {
+          if (
+            Option.isNone(reservation) ||
+            envelope.bootstrapEffect === undefined ||
+            reservation.value.claimId !== envelope.bootstrapEffect.claimId ||
+            reservation.value.commandDigest !== nativeCreationCommandDigest(envelope.command) ||
+            reservation.value.canonicalCommand !== nativeCreationCanonicalJson(envelope.command)
+          ) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: envelope.command.type,
+              detail: "native creation command context mismatch",
+            });
+          }
+        }
         const existingReceipt = yield* commandReceiptRepository.getByCommandId({
           commandId: envelope.command.commandId,
         });
@@ -319,6 +380,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             detail: existingReceipt.value.error ?? "Previously rejected.",
           });
         }
+
+        yield* validateDispatchGuard(envelope.command);
 
         if (
           envelope.command.type === "thread.auto-settle" &&
@@ -436,6 +499,86 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               let nextCommandReadModel = commandReadModel;
               let acquiredLease: WorktreeOwnershipLease | null = null;
 
+              // Guarded cleanup names one creation event. Recheck it inside the
+              // write transaction so cleanup cannot delete a replacement thread.
+              if (
+                envelope.bootstrapEffect !== undefined &&
+                envelope.command.type === "thread.delete"
+              ) {
+                const cleanupCommand = envelope.command;
+                const history = yield* nativeCreationRepository.readHistoryByClaim(
+                  envelope.bootstrapEffect.claimId,
+                );
+                const commandStart = history.effects.find(
+                  (fact) =>
+                    fact.effectId === envelope.bootstrapEffect!.effectId &&
+                    fact.phase === "started",
+                );
+                if (
+                  commandStart?.kind !== "native_command" ||
+                  commandStart.phase !== "started" ||
+                  commandStart.commandType !== cleanupCommand.type ||
+                  commandStart.commandId !== cleanupCommand.commandId ||
+                  commandStart.threadId !== cleanupCommand.threadId ||
+                  history.intent.threadId !== cleanupCommand.threadId
+                ) {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: cleanupCommand.type,
+                    detail: "native creation cleanup command context mismatch",
+                  });
+                }
+                const cleanupStart = history.effects
+                  .filter(
+                    (fact) =>
+                      fact.kind === "cleanup" &&
+                      fact.phase === "started" &&
+                      fact.resource.kind === "thread" &&
+                      fact.resource.threadId === cleanupCommand.threadId &&
+                      fact.ordinal < commandStart.ordinal &&
+                      !history.effects.some(
+                        (completion) =>
+                          completion.effectId === fact.effectId && completion.phase === "completed",
+                      ),
+                  )
+                  .at(-1);
+                if (
+                  cleanupStart?.kind !== "cleanup" ||
+                  cleanupStart.phase !== "started" ||
+                  cleanupStart.resource.kind !== "thread"
+                ) {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: cleanupCommand.type,
+                    detail: "native creation thread cleanup authorization unavailable",
+                  });
+                }
+                const incarnation = cleanupStart.resource.incarnation;
+                const created = history.effects.some(
+                  (fact) =>
+                    fact.kind === "native_command" &&
+                    fact.phase === "completed" &&
+                    fact.commandType === "thread.create" &&
+                    fact.threadId === cleanupCommand.threadId &&
+                    fact.eventId === incarnation.eventId &&
+                    fact.sequence === incarnation.sequence,
+                );
+                const currentRows = yield* sql<{ eventId: string; sequence: number }>`
+                  SELECT event_id AS "eventId", sequence FROM orchestration_events
+                  WHERE aggregate_kind = 'thread' AND stream_id = ${cleanupCommand.threadId} AND event_type = 'thread.created'
+                  ORDER BY sequence DESC LIMIT 1
+                `;
+                const current = currentRows[0];
+                if (
+                  !created ||
+                  current?.eventId !== incarnation.eventId ||
+                  current.sequence !== incarnation.sequence
+                ) {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: cleanupCommand.type,
+                    detail: "native creation cleanup thread incarnation changed",
+                  });
+                }
+              }
+
               if (ownershipTarget !== null) {
                 acquiredLease = yield* acquireOwnershipRecord(ownershipTarget);
               }
@@ -466,6 +609,33 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 error: null,
               });
 
+              if (envelope.bootstrapEffect !== undefined && Option.isSome(reservation)) {
+                const history = yield* nativeCreationRepository.readHistoryByClaim(
+                  envelope.bootstrapEffect.claimId,
+                );
+                const start = history.effects.find(
+                  (fact) =>
+                    fact.effectId === envelope.bootstrapEffect!.effectId &&
+                    fact.phase === "started",
+                );
+                if (
+                  start?.kind !== "native_command" ||
+                  start.commandId !== envelope.command.commandId ||
+                  start.commandDigest !== reservation.value.commandDigest
+                ) {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail: "native creation effect context mismatch",
+                  });
+                }
+                yield* nativeCreationRepository.completeEffect(envelope.bootstrapEffect.claimId, {
+                  ...start,
+                  phase: "completed",
+                  timestamp: lastSavedEvent.occurredAt,
+                  eventId: lastSavedEvent.eventId,
+                  sequence: lastSavedEvent.sequence,
+                });
+              }
               return {
                 committedEvents,
                 attachmentCleanups,
@@ -476,6 +646,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             }),
           )
           .pipe(
+            Effect.catchTag("NativeCreationRepositoryError", (cause) =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: envelope.command.type,
+                  detail: "native creation transaction failed",
+                  cause,
+                }),
+              ),
+            ),
             Effect.catchTag("SqlError", (sqlError) =>
               Effect.fail(
                 toPersistenceSqlError("OrchestrationEngine.processEnvelope:transaction")(sqlError),
@@ -611,6 +790,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       yield* Queue.offer(commandQueue, {
         command,
         origin: options?.origin,
+        bootstrapEffect: options?.bootstrapEffect,
         result,
         startedAtMs: yield* Clock.currentTimeMillis,
       });
@@ -686,6 +866,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     acquireWorktreeOwnership,
     releaseWorktreeOwnership,
     getThreadOwnershipIncarnation: worktreeOwnershipLeases.getThreadIncarnation,
+    observeCommand: commandObservation.observe,
     subscribeDomainEvents: PubSub.subscribe(eventPubSub).pipe(Effect.map(Stream.fromSubscription)),
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (wsServer, ProviderRuntimeIngestion, CheckpointReactor, etc.)
