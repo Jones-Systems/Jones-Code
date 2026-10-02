@@ -1,19 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
-import {
-  closeSync,
-  constants,
-  fstatSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { open } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 
 const markerName = ".jones-performance-root.json";
 const owners = new WeakMap();
@@ -62,18 +50,18 @@ function boundedText(value, name, maxBytes = 512) {
 
 function absolutePath(value, name) {
   boundedText(value, name, 4096);
-  if (!isAbsolute(value) || value.split(sep).includes("..")) {
+  if (!NodePath.isAbsolute(value) || value.split(NodePath.sep).includes("..")) {
     refuse("invalid_path", `${name} must be absolute without parent traversal`);
   }
-  return resolve(value);
+  return NodePath.resolve(value);
 }
 
 function relativePath(value) {
   boundedText(value, "databaseRelativePath", 4096);
   if (
-    isAbsolute(value) ||
+    NodePath.isAbsolute(value) ||
     value.includes("\\") ||
-    value.split(sep).some((part) => part === "" || part === "." || part === "..") ||
+    value.split(NodePath.sep).some((part) => part === "" || part === "." || part === "..") ||
     value === markerName
   ) {
     refuse("invalid_path", "database path must stay below its owned root");
@@ -82,8 +70,11 @@ function relativePath(value) {
 }
 
 function within(candidate, boundary) {
-  const tail = relative(boundary, candidate);
-  return tail === "" || (!isAbsolute(tail) && tail !== ".." && !tail.startsWith(`..${sep}`));
+  const tail = NodePath.relative(boundary, candidate);
+  return (
+    tail === "" ||
+    (!NodePath.isAbsolute(tail) && tail !== ".." && !tail.startsWith(`..${NodePath.sep}`))
+  );
 }
 
 function overlaps(first, second) {
@@ -137,7 +128,7 @@ function checkBoundary(path, policy) {
 
 function stat(path) {
   try {
-    return lstatSync(path, { bigint: true });
+    return NodeFS.lstatSync(path, { bigint: true });
   } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -168,17 +159,17 @@ function inspectAncestry(path) {
   let cursor = path;
   while (true) {
     ancestors.push(cursor);
-    const parent = resolve(cursor, "..");
+    const parent = NodePath.resolve(cursor, "..");
     if (parent === cursor) break;
     cursor = parent;
   }
-  for (const ancestor of ancestors.reverse()) {
+  for (const ancestor of ancestors.toReversed()) {
     const info = stat(ancestor);
     if (!info || info.isSymbolicLink() || !info.isDirectory()) {
       refuse("aliased_path", "parent ancestry must contain only existing directories");
     }
   }
-  if (realpathSync(path) !== path) refuse("aliased_path", "parent path is not canonical");
+  if (NodeFS.realpathSync(path) !== path) refuse("aliased_path", "parent path is not canonical");
   const info = stat(path);
   if (Number(info.uid) !== currentUid())
     refuse("unowned_parent", "parent is not owned by this UID");
@@ -226,10 +217,10 @@ function scanTree(rootPath, rootIdentity, policy) {
   let totalBytes = 0n;
   while (pending.length) {
     const directory = pending.pop();
-    const names = readdirSync(directory).sort();
+    const names = NodeFS.readdirSync(directory).sort();
     for (const name of names) {
       if (++entries > policy.maxFiles) refuse("manifest_limit", "owned tree exceeds entry limit");
-      const path = join(directory, name);
+      const path = NodePath.join(directory, name);
       const info = stat(path);
       if (!info) refuse("changed_identity", "owned entry disappeared during inspection");
       checkEntry(path, info, rootIdentity, policy);
@@ -238,7 +229,7 @@ function scanTree(rootPath, rootIdentity, policy) {
         totalBytes += info.size;
         if (totalBytes > BigInt(policy.maxTotalBytes))
           refuse("manifest_limit", "owned tree exceeds byte limit");
-        files.push({ relativePath: relative(rootPath, path), path, info });
+        files.push({ relativePath: NodePath.relative(rootPath, path), path, info });
       }
     }
   }
@@ -246,7 +237,7 @@ function scanTree(rootPath, rootIdentity, policy) {
 }
 
 function markerBytes(state) {
-  const path = join(state.receipt.canonicalRootPath, markerName);
+  const path = NodePath.join(state.receipt.canonicalRootPath, markerName);
   const info = stat(path);
   if (
     !info ||
@@ -258,8 +249,8 @@ function markerBytes(state) {
   ) {
     refuse("invalid_marker", "creation marker identity changed");
   }
-  const bytes = readFileSync(path);
-  if (createHash("sha256").update(bytes).digest("hex") !== state.receipt.markerSha256) {
+  const bytes = NodeFS.readFileSync(path);
+  if (NodeCrypto.createHash("sha256").update(bytes).digest("hex") !== state.receipt.markerSha256) {
     refuse("invalid_marker", "creation marker bytes changed");
   }
   return bytes;
@@ -273,16 +264,16 @@ export function createOwnedRoot({ parentPath, childName, binding, policy }) {
   if (
     childName === "." ||
     childName === ".." ||
-    childName.includes(sep) ||
+    childName.includes(NodePath.sep) ||
     childName.includes("\\")
   ) {
     refuse("invalid_path", "childName must name one absent direct child");
   }
-  const rootPath = join(parent, childName);
+  const rootPath = NodePath.join(parent, childName);
   checkBoundary(rootPath, checkedPolicy);
   const parentInfo = inspectAncestry(parent);
   if (stat(rootPath)) refuse("existing_destination", "new owned root must not exist");
-  mkdirSync(rootPath, { mode: 0o700, recursive: false });
+  NodeFS.mkdirSync(rootPath, { mode: 0o700, recursive: false });
   const rootInfo = stat(rootPath);
   if (
     !rootInfo ||
@@ -298,24 +289,24 @@ export function createOwnedRoot({ parentPath, childName, binding, policy }) {
     schema: "jones-performance-root-marker/v1",
     provenance: "synthetic-created",
     binding: checkedBinding,
-    rootId: randomUUID(),
+    rootId: NodeCrypto.randomUUID(),
     canonicalParentPath: parent,
     canonicalRootPath: rootPath,
     identity: identity(rootInfo),
   };
   const bytes = Buffer.from(`${JSON.stringify(marker)}\n`);
-  writeFileSync(join(rootPath, markerName), bytes, { flag: "wx", mode: 0o600 });
+  NodeFS.writeFileSync(NodePath.join(rootPath, markerName), bytes, { flag: "wx", mode: 0o600 });
   const receipt = freeze({
     ...marker,
     schema: "jones-performance-root/v1",
-    markerSha256: createHash("sha256").update(bytes).digest("hex"),
+    markerSha256: NodeCrypto.createHash("sha256").update(bytes).digest("hex"),
   });
   const owner = Object.freeze({ creationReceipt: receipt });
   owners.set(owner, {
     receipt,
     policy: checkedPolicy,
     parentIdentity: identity(parentInfo),
-    markerIdentity: identity(stat(join(rootPath, markerName))),
+    markerIdentity: identity(stat(NodePath.join(rootPath, markerName))),
     databases: new Map(),
     children: new Set(),
     disposed: false,
@@ -330,9 +321,9 @@ export function assertOwnedDatabase(owner, { databaseRelativePath, access }) {
     refuse("invalid_access", "access must be create or readwrite");
   markerBytes(state);
   const files = scanTree(state.receipt.canonicalRootPath, state.receipt.identity, state.policy);
-  const path = join(state.receipt.canonicalRootPath, dbRelativePath);
+  const path = NodePath.join(state.receipt.canonicalRootPath, dbRelativePath);
   checkBoundary(path, state.policy);
-  const parent = resolve(path, "..");
+  const parent = NodePath.resolve(path, "..");
   const parentInfo = stat(parent);
   if (!parentInfo || !parentInfo.isDirectory())
     refuse("invalid_path", "database parent must exist below its root");
@@ -345,16 +336,19 @@ export function assertOwnedDatabase(owner, { databaseRelativePath, access }) {
   let registered = state.databases.get(dbRelativePath);
   if (access === "create") {
     if (registered) refuse("existing_destination", "database path already registered");
-    const fd = openSync(
+    const fd = NodeFS.openSync(
       path,
-      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+      NodeFS.constants.O_CREAT |
+        NodeFS.constants.O_EXCL |
+        NodeFS.constants.O_WRONLY |
+        NodeFS.constants.O_NOFOLLOW,
       0o600,
     );
     let info;
     try {
-      info = fstatSync(fd, { bigint: true });
+      info = NodeFS.fstatSync(fd, { bigint: true });
     } finally {
-      closeSync(fd);
+      NodeFS.closeSync(fd);
     }
     checkEntry(path, info, state.receipt.identity, state.policy);
     registered = { identity: identity(info), created: true, sealed: false, closeState: "unproved" };
@@ -409,7 +403,7 @@ function requirePermit(owner, permit) {
 function layout(rootPath, databaseRelativePath) {
   return ["", "-wal", "-shm", "-journal"].map((suffix) => {
     const path = `${databaseRelativePath}${suffix}`;
-    const info = stat(join(rootPath, path));
+    const info = stat(NodePath.join(rootPath, path));
     return info
       ? {
           relativePath: path,
@@ -447,7 +441,7 @@ export async function observeSyntheticClose(owner, { permit, producerStep, resou
       permit,
       producerStep,
       layout: layout(state.receipt.canonicalRootPath, permit.relativePath),
-      closureId: randomUUID(),
+      closureId: NodeCrypto.randomUUID(),
       consumed: false,
     });
     resources.set(resource, "closed");
@@ -469,7 +463,10 @@ function checkSignal(signal) {
 
 async function fileHash(entry, policy, signal) {
   checkSignal(signal);
-  const handle = await open(entry.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await NodeFSP.open(
+    entry.path,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+  );
   let stream;
   try {
     const before = await handle.stat({ bigint: true });
@@ -483,7 +480,7 @@ async function fileHash(entry, policy, signal) {
     ) {
       refuse("changed_identity", "manifest file changed before hashing");
     }
-    const digest = createHash("sha256");
+    const digest = NodeCrypto.createHash("sha256");
     let bytes = 0;
     stream = handle.createReadStream({ autoClose: false, highWaterMark: 64 * 1024, signal });
     for await (const chunk of stream) {
@@ -531,7 +528,7 @@ async function manifestFor(state, signal) {
 }
 
 export function syntheticFixtureReceiptSha256(receipt) {
-  return createHash("sha256")
+  return NodeCrypto.createHash("sha256")
     .update(`${JSON.stringify(receipt)}\n`)
     .digest("hex");
 }
@@ -636,7 +633,7 @@ export async function validateSyntheticFixture({
   if (
     rootPath !== creation.canonicalRootPath ||
     parentPath !== creation.canonicalParentPath ||
-    resolve(rootPath, "..") !== parentPath ||
+    NodePath.resolve(rootPath, "..") !== parentPath ||
     creation.identity?.uid !== currentUid() ||
     creation.identity.mode !== 0o700
   ) {
@@ -656,8 +653,8 @@ export async function validateSyntheticFixture({
   const marker = files.find((entry) => entry.relativePath === markerName);
   if (!marker || marker.info.size > BigInt(checkedPolicy.maxReceiptBytes))
     refuse("invalid_marker", "bounded creation marker is missing");
-  const markerData = readFileSync(marker.path);
-  if (createHash("sha256").update(markerData).digest("hex") !== creation.markerSha256) {
+  const markerData = NodeFS.readFileSync(marker.path);
+  if (NodeCrypto.createHash("sha256").update(markerData).digest("hex") !== creation.markerSha256) {
     refuse("invalid_marker", "creation marker digest differs");
   }
   const expectedMarker = {
@@ -719,7 +716,7 @@ export async function validateSyntheticFixture({
   const validatedReceipt = freeze(JSON.parse(bytes));
   return freeze({
     access: "readonly",
-    canonicalPath: join(rootPath, dbPath),
+    canonicalPath: NodePath.join(rootPath, dbPath),
     receipt: validatedReceipt,
     receiptSha256: expectedReceiptSha256,
     layout: expectedLayout,
@@ -764,7 +761,7 @@ export function disposeOwnedRoot(owner, { childReceipts = [] } = {}) {
     markerBytes(state);
     scanTree(state.receipt.canonicalRootPath, state.receipt.identity, state.policy);
     // The private root and cooperative UID are the custody boundary; this is not hostile-race containment.
-    rmSync(state.receipt.canonicalRootPath, { recursive: true, force: false });
+    NodeFS.rmSync(state.receipt.canonicalRootPath, { recursive: true, force: false });
     const absent = stat(state.receipt.canonicalRootPath) === null;
     if (!absent) refuse("cleanup_unknown", "root removal did not establish absence");
     state.disposed = true;
