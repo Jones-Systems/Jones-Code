@@ -23,7 +23,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "node:crypto";
-import { fileURLToPath } from "node:url";
+import * as NodeURL from "node:url";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import {
@@ -11944,7 +11944,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const querySource = yield* fileSystem.readFileString(
-          fileURLToPath(
+          NodeURL.fileURLToPath(
             new URL("./orchestration/Layers/ProjectionSnapshotQuery.ts", import.meta.url),
           ),
         );
