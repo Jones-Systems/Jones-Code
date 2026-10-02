@@ -923,6 +923,14 @@ interface ResolvedBuildOptions {
   readonly wslRuntime: string | undefined;
 }
 
+const decodeJonesBuildSource = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    repository: Schema.Literal("Jones-Systems/Jones-Code"),
+    sha: Schema.String,
+    tree: Schema.String,
+  }),
+);
+
 interface StagePackageJson {
   readonly name: string;
   readonly version: string;
@@ -3692,13 +3700,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     t3codeCommitHash: commitHash,
     ...("jonesSource" in desktopPackageJson
       ? {
-          jonesSource: Schema.decodeUnknownSync(
-            Schema.Struct({
-              repository: Schema.Literal("Jones-Systems/Jones-Code"),
-              sha: Schema.String,
-              tree: Schema.String,
-            }),
-          )(desktopPackageJson.jonesSource),
+          jonesSource: yield* decodeJonesBuildSource(desktopPackageJson.jonesSource),
         }
       : {}),
     private: true,

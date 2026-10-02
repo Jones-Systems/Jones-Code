@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Build-job source stamping and its isolated Git fixture use native Node adapters.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";

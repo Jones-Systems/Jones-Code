@@ -244,6 +244,7 @@ export const layer = Layer.effect(
         .then((s) => s.trim())
         .catch(() => ""),
     );
+    const environmentId = id.length === 0 ? undefined : EnvironmentId.make(id);
     const supported =
       (platform === "linux" && (architecture === "x64" || architecture === "arm64")) ||
       (platform === "darwin" && architecture === "arm64");
@@ -303,13 +304,13 @@ export const layer = Layer.effect(
         ...(restoreFailure === undefined
           ? {}
           : { phase: "blocked" as const, message: restoreFailure }),
-        environmentId: EnvironmentId.make(id),
+        ...(environmentId === undefined ? {} : { environmentId }),
         currentVersion: packageJson.version,
         capability: {
           check: supported,
           download: supported,
-          install: supported && launcher.qualifiedUpdates === true,
-          ...(supported && launcher.qualifiedUpdates === true
+          install: supported && launcher.qualifiedUpdates === true && environmentId !== undefined,
+          ...(supported && launcher.qualifiedUpdates === true && environmentId !== undefined
             ? {}
             : {
                 reason: supported
