@@ -1205,6 +1205,7 @@ const buildAppUnderTest = (options?: {
             awaitCommandReady: Effect.void,
             markHttpListening: Effect.void,
             markRunningProviderSessionsForContinuation: Effect.succeed([]),
+            markOptedInProviderSessionsForContinuation: Effect.succeed([]),
             clearProviderSessionContinuationMarkers: () => Effect.void,
             enqueueCommand: (effect) => effect,
             ...options?.layers?.serverRuntimeStartup,
@@ -2842,6 +2843,21 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(sessionBody.authenticated, true);
       assert.equal(sessionBody.sessionMethod, "browser-session-cookie");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect.each(["web", "desktop"] as const)(
+    "ordinary Release %s host returns absent Jones state without displacing Release updates",
+    (mode) =>
+      Effect.gen(function* () {
+        yield* buildAppUnderTest({ config: { mode } });
+        const url = yield* getHttpServerUrl("/api/jones-updates");
+        const response = yield* fetchEffect(url, {
+          headers: { cookie: yield* getAuthenticatedSessionCookieHeader() },
+        });
+        assert.equal(response.status, 200);
+        assert.deepEqual(yield* responseJsonEffect(response), null);
+        assert.equal(response.headers["cache-control"], "no-store");
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("migrates a valid legacy remote-web session cookie", () =>
