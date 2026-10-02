@@ -19,6 +19,9 @@ describe("Workstream HTTP response containment", () => {
         expect(yield* limit("POST", "/api/workstreams/thread-placements")).toBe(262_144n);
         expect(yield* limit("POST", "/api/workstreams/thread-placements?extra=x")).toBe(262_144n);
         expect(yield* limit("POST", "/api/workstreams/commands")).toBeUndefined();
+        expect(yield* limit("POST", "/api/workstreams/native/v1/settlements")).toBe(32_768n);
+        expect(yield* limit("POST", "/api/workstreams/native/v1/settlements/lookup")).toBe(32_768n);
+        expect(yield* limit("GET", "/api/workstreams/native/v1/context")).toBe(32_768n);
         expect(yield* limit("GET", "/api/workstreams")).toBeUndefined();
       }),
   );

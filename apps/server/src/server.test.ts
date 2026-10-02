@@ -22,6 +22,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "node:crypto";
+import * as Context from "effect/Context";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import {
@@ -156,6 +157,8 @@ import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionRe
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore.ts";
+import { OrchestrationCommandReceiptRepositoryLive } from "./persistence/Layers/OrchestrationCommandReceipts.ts";
+import { SessionStore, type SessionCredentialInternalError } from "./auth/SessionStore.ts";
 import { OrchestrationEventStore } from "./persistence/Services/OrchestrationEventStore.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
@@ -610,6 +613,9 @@ const buildAppUnderTest = (options?: {
       repository: NativeCreationRepository["Service"],
       sql: SqlClient.SqlClient,
     ) => Effect.Effect<void>;
+    onAuthSessionStore?: (
+      sessions: SessionStore["Service"],
+    ) => Effect.Effect<void, SessionCredentialInternalError>;
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
     threadDeletionReactor?: Partial<ThreadDeletionReactor["Service"]>;
     analyticsService?: Partial<AnalyticsService.AnalyticsService["Service"]>;
@@ -846,9 +852,12 @@ const buildAppUnderTest = (options?: {
     );
 
     const servedRoutesLayer = HttpRouter.serve(
-      // Viewed-file marks for a host that keeps none of its own are rows, so the routes want a
-      // database. Its own, in memory: nothing here shares a table with the auth store.
+      // Route repositories and auth share this in-memory database so enrollment
+      // resolves the same synthetic session records that authentication reads.
       makeRoutesLayer.pipe(
+        Layer.provide(
+          Layer.mergeAll(OrchestrationEventStoreLive, OrchestrationCommandReceiptRepositoryLive),
+        ),
         Layer.provide(Layer.mergeAll(serviceLauncherClientLayer, SqlitePersistenceMemory)),
       ),
       {
@@ -1383,7 +1392,10 @@ const buildAppUnderTest = (options?: {
         Layer.provide(layerConfig),
       );
 
-    yield* Layer.build(appLayer);
+    const appContext = yield* Layer.build(appLayer);
+    if (options?.layers?.onAuthSessionStore !== undefined) {
+      yield* options.layers.onAuthSessionStore(Context.get(appContext, SessionStore));
+    }
     return config;
   });
 
@@ -2302,6 +2314,91 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.status, 200);
       assert.deepEqual(body, testEnvironmentDescriptor);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "mounts native Workstreams routes closed by default and keeps dedicated tokens out of general APIs",
+    () =>
+      Effect.gen(function* () {
+        let bearer = "";
+        const dispatched: OrchestrationCommand[] = [];
+        yield* buildAppUnderTest({
+          layers: {
+            onAuthSessionStore: (sessions) =>
+              sessions
+                .issue({
+                  subject: "workstreams-native:synthetic-unenrolled",
+                  method: "bearer-access-token",
+                  scopes: [
+                    "workstreams:native:context",
+                    "workstreams:native:settlement",
+                    "workstreams:native:reconciliation",
+                  ],
+                })
+                .pipe(
+                  Effect.map((session) => {
+                    bearer = session.token;
+                  }),
+                ),
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatched.push(command);
+                  return { sequence: 1 };
+                }),
+            },
+          },
+        });
+        const cookie = yield* getAuthenticatedSessionCookieHeader();
+        for (const [method, path] of [
+          ["GET", "/api/workstreams/native/v1/context"],
+          ["POST", "/api/workstreams/native/v1/attestations"],
+          ["POST", "/api/workstreams/native/v1/settlements"],
+          ["POST", "/api/workstreams/native/v1/settlements/lookup"],
+        ] as const) {
+          const url = yield* getHttpServerUrl(path);
+          const browser = yield* fetchEffect(url, { method, headers: { cookie } });
+          assert.equal(browser.status, 403);
+          const native = yield* fetchEffect(url, {
+            method,
+            headers: { authorization: `Bearer ${bearer}` },
+          });
+          assert.equal(native.status, 403);
+          assert.deepEqual(yield* responseJsonEffect(native), {
+            protocol: "workstreams-t3-provider/1.0.0",
+            state: "rejected",
+            reason: "forbidden",
+          });
+        }
+        for (const path of [
+          "/api/orchestration/snapshot",
+          `/api/orchestration/threads/${defaultThreadId}`,
+          "/api/workstreams",
+          "/api/workstreams/registration-context",
+        ]) {
+          const result = yield* fetchEffect(yield* getHttpServerUrl(path), {
+            headers: { authorization: `Bearer ${bearer}` },
+          });
+          assert.equal(result.status, 403);
+        }
+        const dispatch = yield* fetchEffect(
+          yield* getHttpServerUrl("/api/orchestration/dispatch"),
+          {
+            method: "POST",
+            headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+            body: jsonRequestBody(makeGuardedQueueTransportCommand("native-denied")),
+          },
+        );
+        assert.equal(dispatch.status, 403);
+        assert.deepEqual(dispatched, []);
+        const registration = yield* fetchEffect(
+          yield* getHttpServerUrl("/api/workstreams/registration-context"),
+          {
+            headers: { cookie },
+          },
+        );
+        assert.equal(registration.status, 500);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect(
