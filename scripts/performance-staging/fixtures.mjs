@@ -15,6 +15,7 @@ const requestLimit = 49 * 1024;
 const envelopeLimit = 49 * 1024;
 const receiptLimit = 24 * 1024;
 const stderrReserve = 8 * 1024;
+const profileNames = ["health-offline-delete", "benchmark-wal"];
 const workerPath = NodeURL.fileURLToPath(new URL("./fixtures-worker.mjs", import.meta.url));
 
 function fail(code, message, evidence) {
@@ -83,6 +84,7 @@ export async function withOpenSyntheticFixture(options, use) {
     capture: produced.capture,
     receipt: produced.receipt,
     receiptSha256: produced.receiptSha256,
+    ...(produced.profile ? { profile: produced.profile } : {}),
     cleanup,
   };
   if (produced.error) raise(produced.error, evidence);
@@ -101,8 +103,8 @@ export async function withOpenSyntheticFixture(options, use) {
 export async function withClosedSyntheticFixture(options, use) {
   if (!options || typeof use !== "function")
     fail("invalid_options", "fixture options and callback required");
-  if (Object.hasOwn(options, "profile"))
-    fail("unsupported_profile", "core fixtures use observed production defaults only");
+  if (options.profile !== undefined && !profileNames.includes(options.profile))
+    fail("unsupported_profile", "profile must be health-offline-delete or benchmark-wal");
   const policy = boundedPolicy(options.policy);
   const owner = createOwnedRoot({ ...options, policy });
   let child;
@@ -122,6 +124,7 @@ export async function withClosedSyntheticFixture(options, use) {
         policy,
         databaseSource: options.databaseSource,
         recipe: options.recipe,
+        ...(options.profile ? { profile: options.profile } : {}),
       },
     };
     const encoded = JSON.stringify(request);
@@ -164,6 +167,8 @@ export async function withClosedSyntheticFixture(options, use) {
           retainReason = "unknown_resource_close";
         else retainReason = envelope.retainReason;
       }
+      if (options.profile)
+        retainReason ??= options.signal?.aborted ? "profile_cancelled" : "profile_producer_failed";
       fail(
         envelope?.code ?? child.stopReason ?? "producer_failed",
         "fixture leaf did not complete production",
@@ -174,7 +179,11 @@ export async function withClosedSyntheticFixture(options, use) {
     if (
       envelope.schema !== "jones-performance-fixture-envelope/v1" ||
       JSON.stringify(envelope.databaseSource) !== JSON.stringify(options.databaseSource) ||
-      JSON.stringify(envelope.capture?.databaseSource) !== JSON.stringify(options.databaseSource)
+      JSON.stringify(envelope.capture?.databaseSource) !== JSON.stringify(options.databaseSource) ||
+      envelope.capture?.runtime?.profile !== (options.profile ?? "observed-production-defaults") ||
+      (options.profile &&
+        (envelope.capture?.profile?.kind !== options.profile ||
+          envelope.capture?.profile?.stage !== "sealed"))
     )
       fail("invalid_transport", "fixture output source or schema differs from the request");
     const receipt = envelope.receipt;
@@ -234,6 +243,8 @@ export async function withClosedSyntheticFixture(options, use) {
     retainReason = outcome.disposition === "release" ? undefined : "consumer_retained";
   } catch (failure) {
     error = failure;
+    if (options.profile)
+      retainReason ??= options.signal?.aborted ? "profile_cancelled" : "profile_failed";
   }
   const childReceipts = child ? [child] : [];
   const cleanup = retainReason
@@ -245,6 +256,20 @@ export async function withClosedSyntheticFixture(options, use) {
     receipt: envelope?.receipt,
     receiptSha256: envelope?.receiptSha256,
     capture: envelope?.capture,
+    ...(options.profile
+      ? {
+          profile:
+            envelope?.schema === "jones-performance-fixture-failure/v1" &&
+            envelope.profile?.kind === options.profile
+              ? envelope.profile
+              : (envelope?.capture?.profile ?? {
+                  kind: options.profile,
+                  stage: "producer-transport",
+                  productionObservations: [],
+                  failure: { code: retainReason ?? "profile_failed" },
+                }),
+        }
+      : {}),
     ...(consumerOutcomeAccepted ? { value } : {}),
     cleanup,
   };
