@@ -1,6 +1,6 @@
-import { randomUUID as nativeCreationRandomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-export const nativeCreationBootId = nativeCreationRandomUUID();
+export const nativeCreationBootId = NodeCrypto.randomUUID();
 import {
   CommandId,
   EventId,

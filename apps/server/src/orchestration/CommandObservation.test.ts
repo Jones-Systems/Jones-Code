@@ -10,7 +10,6 @@ import {
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NativeCreationRepositoryLayer from "../persistence/Layers/NativeCreationRepository.ts";
