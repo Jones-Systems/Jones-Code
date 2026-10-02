@@ -64,3 +64,30 @@ it.effect("reports other missing capabilities with the neutral error", () => {
     expect(scope).toBe(invocation);
   });
 });
+
+it.effect("requires the additive decision snapshot capability", () =>
+  Effect.gen(function* () {
+    const invocation: McpInvocationContext.McpInvocationScope = {
+      environmentId: EnvironmentId.make("env"),
+      threadId: ThreadId.make("thread"),
+      providerSessionId: "session",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      capabilities: new Set(["organization"]),
+      issuedAt: 1,
+    };
+    expect(
+      yield* McpInvocationContext.requireMcpCapability("decision-snapshot").pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.flip,
+      ),
+    ).toMatchObject({ capability: "decision-snapshot" });
+    expect(
+      yield* McpInvocationContext.requireMcpCapability("decision-snapshot").pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, {
+          ...invocation,
+          capabilities: new Set<McpInvocationContext.McpCapability>(["decision-snapshot"]),
+        }),
+      ),
+    ).toMatchObject({ environmentId: "env" });
+  }),
+);

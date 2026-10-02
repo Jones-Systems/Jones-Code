@@ -5363,6 +5363,7 @@ describe("agent browser access", () => {
         Layer.provide(runtimeRepositoryLayer),
       );
       const projectionLayer = Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+        getOperatingCounts: () => Effect.die("unused"),
         getTurnStartMessage: () => Effect.die("unused"),
         getImportedAgentSessionSources: () => Effect.die("unused"),
         getUserInputActivity: () => Effect.die("unused"),
@@ -5468,7 +5469,7 @@ describe("agent browser access", () => {
     });
 
   // The capability on the credential is the observable that matters: a session
-  // always gets a credential for pull requests and organization, and
+  // always gets a credential for pull requests, organization and decision snapshots, and
   // `preview` on it is what actually grants or denies the browser tools.
   it.effect("issues organization independently of browser and device access", () =>
     Effect.gen(function* () {
@@ -5476,7 +5477,9 @@ describe("agent browser access", () => {
 
       const issued = yield* startSessionWith(false, threadId);
 
-      assert.deepEqual(issued, [{ threadId, capabilities: ["organization", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["decision-snapshot", "organization", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5487,7 +5490,10 @@ describe("agent browser access", () => {
       const issued = yield* startSessionWith(true, threadId);
 
       assert.deepEqual(issued, [
-        { threadId, capabilities: ["device", "organization", "preview", "pull-requests"] },
+        {
+          threadId,
+          capabilities: ["decision-snapshot", "device", "organization", "preview", "pull-requests"],
+        },
       ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -5499,7 +5505,10 @@ describe("agent browser access", () => {
       const issued = yield* startSessionWith({ browser: false, device: true }, threadId);
 
       assert.deepEqual(issued, [
-        { threadId, capabilities: ["device", "organization", "pull-requests"] },
+        {
+          threadId,
+          capabilities: ["decision-snapshot", "device", "organization", "pull-requests"],
+        },
       ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -5508,7 +5517,9 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-off");
       const issued = yield* startSessionWith({ browser: true, device: false }, threadId, false);
-      assert.deepEqual(issued, [{ threadId, capabilities: ["organization", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["decision-snapshot", "organization", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5517,7 +5528,10 @@ describe("agent browser access", () => {
       const threadId = asThreadId("thread-project-browser-off-device-on");
       const issued = yield* startSessionWith(true, threadId, false);
       assert.deepEqual(issued, [
-        { threadId, capabilities: ["device", "organization", "pull-requests"] },
+        {
+          threadId,
+          capabilities: ["decision-snapshot", "device", "organization", "pull-requests"],
+        },
       ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -5527,7 +5541,10 @@ describe("agent browser access", () => {
       const threadId = asThreadId("thread-project-browser-on");
       const issued = yield* startSessionWith({ browser: false, device: false }, threadId, true);
       assert.deepEqual(issued, [
-        { threadId, capabilities: ["organization", "preview", "pull-requests"] },
+        {
+          threadId,
+          capabilities: ["decision-snapshot", "organization", "preview", "pull-requests"],
+        },
       ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -5539,7 +5556,10 @@ describe("agent browser access", () => {
         device: true,
       });
       assert.deepEqual(issued, [
-        { threadId, capabilities: ["device", "organization", "pull-requests"] },
+        {
+          threadId,
+          capabilities: ["decision-snapshot", "device", "organization", "pull-requests"],
+        },
       ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -5556,7 +5576,10 @@ describe("agent browser access", () => {
         { withoutOrchestration: true },
       );
       assert.deepEqual(issued, [
-        { threadId, capabilities: ["organization", "preview", "pull-requests"] },
+        {
+          threadId,
+          capabilities: ["decision-snapshot", "organization", "preview", "pull-requests"],
+        },
       ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -5611,6 +5634,7 @@ const configuredEffortCatalogLayer = Layer.succeed(ProviderRegistry.ProviderRegi
 
 function makeConfiguredEffortProjectionLayer(projectDefault: string | null = null) {
   return Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+    getOperatingCounts: () => Effect.die("unused"),
     getTurnStartMessage: () => Effect.die("unused"),
     getImportedAgentSessionSources: () => Effect.die("unused"),
     getUserInputActivity: () => Effect.die("unused"),
