@@ -5,8 +5,21 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as NodeModule from "node:module";
 import * as NodeSqlite from "node:sqlite";
 import type { JonesStagedArtifact } from "@t3tools/shared/jonesActions";
+
+const nodeRequire = NodeModule.createRequire(import.meta.url);
+
+/** Integrity reads raw archives; mirrors the independently packed desktop selector. */
+export function bundleFileSystem(
+  versions: { readonly electron?: string | undefined } = {
+    electron: process.versions["electron"],
+  },
+  load: (id: string) => unknown = nodeRequire,
+): typeof NodeFS {
+  return versions.electron === undefined ? NodeFS : (load("original-fs") as typeof NodeFS);
+}
 
 export const QUALIFIED_UPDATES_PROTOCOL = 1 as const;
 export const QUALIFIED_RUNTIME_RECEIPT = ".jones-runtime-receipt.json";
@@ -266,8 +279,9 @@ export async function qualifiedPayloadDigest(
   directory: string,
   platform: "linux" | "darwin" = "linux",
 ): Promise<string> {
-  const root = await NodeFSP.realpath(directory);
-  const rootStat = await NodeFSP.lstat(directory);
+  const fs = bundleFileSystem().promises;
+  const root = await fs.realpath(directory);
+  const rootStat = await fs.lstat(directory);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
     return blocked("invalid-artifact", "Runtime payload must be a real directory.");
   const digest = NodeCrypto.createHash("sha256");
@@ -275,25 +289,25 @@ export async function qualifiedPayloadDigest(
   let total = 0;
   const visit = async (relative: string): Promise<void> => {
     const absolute = NodePath.join(root, relative);
-    const stat = await NodeFSP.lstat(absolute);
+    const stat = await fs.lstat(absolute);
     if (++count > 100_000)
       return blocked("invalid-artifact", "Runtime payload exceeds the file limit.");
     if (stat.isSymbolicLink()) {
-      const target = await NodeFSP.readlink(absolute);
-      const resolved = await NodeFSP.realpath(absolute);
+      const target = await fs.readlink(absolute);
+      const resolved = await fs.realpath(absolute);
       if (NodePath.isAbsolute(target) || !resolved.startsWith(`${root}${NodePath.sep}`))
         return blocked("invalid-artifact", "Runtime symlink escapes its payload.");
       digest.update(`link\0${relative}\0${target}\0`);
     } else if (stat.isDirectory()) {
       digest.update(`dir\0${relative}\0`);
-      for (const name of (await NodeFSP.readdir(absolute)).sort())
+      for (const name of (await fs.readdir(absolute)).sort())
         await visit(NodePath.join(relative, name));
     } else if (stat.isFile()) {
       total += stat.size;
       if (total > 2 * 1024 * 1024 * 1024)
         return blocked("invalid-artifact", "Runtime payload exceeds the byte limit.");
       const hash = NodeCrypto.createHash("sha256");
-      const handle = await NodeFSP.open(
+      const handle = await fs.open(
         absolute,
         NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
       );
@@ -307,7 +321,7 @@ export async function qualifiedPayloadDigest(
       );
     } else return blocked("invalid-artifact", "Runtime payload contains a special file.");
   };
-  const roots = (await NodeFSP.readdir(root)).sort();
+  const roots = (await fs.readdir(root)).sort();
   for (const name of roots) {
     if (name === QUALIFIED_RUNTIME_RECEIPT || name === ".install-complete") continue;
     if (
@@ -320,7 +334,7 @@ export async function qualifiedPayloadDigest(
       return blocked("invalid-artifact", "Runtime payload has an unexpected root entry.");
     await visit(name);
   }
-  const entry = await NodeFSP.lstat(NodePath.join(root, "t3"));
+  const entry = await fs.lstat(NodePath.join(root, "t3"));
   if (!entry.isFile() || (entry.mode & 0o111) === 0)
     return blocked("invalid-artifact", "Runtime payload has no executable.");
   return digest.digest("hex");
@@ -460,7 +474,7 @@ export async function stageQualifiedRuntime(input: {
       );
       const scratch = NodePath.join(ownedScratch, "payload");
       try {
-        await NodeFSP.cp(payloadDirectory, scratch, {
+        await bundleFileSystem().promises.cp(payloadDirectory, scratch, {
           recursive: true,
           dereference: false,
           verbatimSymlinks: true,
