@@ -4989,318 +4989,6 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     return { engine, ownerThreadId, contenderThreadId, resourcePath, createdAt };
   });
 
-  it.effect("acquires ownership with one atomic database statement", () =>
-    Effect.gen(function* () {
-      const { engine, ownerThreadId } = yield* createOwnershipFixture("atomic-statement");
-      const incarnation = Option.getOrThrow(
-        yield* engine.getThreadOwnershipIncarnation(ownerThreadId),
-      );
-      const counter = makeSqlStatementCounter();
-      const first = yield* engine
-        .acquireWorktreeOwnership(ownerThreadId)
-        .pipe(Effect.withTracer(counter.tracer));
-      assert.equal(counter.count(), 1);
-      assert.equal(first.ownerIncarnation, incarnation);
-      const reacquired = yield* engine
-        .acquireWorktreeOwnership(ownerThreadId)
-        .pipe(Effect.withTracer(counter.tracer));
-      assert.equal(counter.count(), 2);
-      assert.notEqual(reacquired.leaseId, first.leaseId);
-      assert.equal(reacquired.acquiredAtMs, first.acquiredAtMs);
-      assert.equal(reacquired.ownerIncarnation, incarnation);
-    }),
-  );
-
-  it.effect("rolls back ownership and turn state when the command receipt fails", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      for (const alreadyOwned of [false, true]) {
-        yield* Effect.gen(function* () {
-          const suffix = alreadyOwned ? "retained-receipt-rollback" : "new-receipt-rollback";
-          const { engine, ownerThreadId, resourcePath, createdAt } =
-            yield* createOwnershipFixture(suffix);
-          const retained = alreadyOwned
-            ? yield* engine.acquireWorktreeOwnership(ownerThreadId)
-            : null;
-          const commandId = CommandId.make(`lease-turn-${suffix}`);
-          const messageId = MessageId.make(`lease-message-${suffix}`);
-          const command = {
-            type: "thread.turn.start" as const,
-            commandId,
-            threadId: ownerThreadId,
-            message: {
-              messageId,
-              role: "user" as const,
-              text: "atomic ownership",
-              attachments: [],
-            },
-            runtimeMode: "full-access" as const,
-            interactionMode: "default" as const,
-            createdAt,
-          };
-          const leasesForFixture = engine.listWorktreeOwnershipLeases.pipe(
-            Effect.map((leases) => leases.filter((lease) => lease.resourcePath === resourcePath)),
-          );
-          const readCursors = sql`
-            SELECT projector, last_applied_sequence FROM projection_state ORDER BY projector
-          `;
-          const cursorsBefore = yield* readCursors;
-          const lastSequenceBefore = yield* engine.latestSequence;
-          const publicationQueue = yield* Queue.unbounded<OrchestrationEvent>();
-          const subscription = yield* engine.subscribeDomainEvents;
-          yield* Stream.runForEach(subscription, (event) =>
-            Queue.offer(publicationQueue, event),
-          ).pipe(Effect.forkScoped);
-
-          yield* Effect.acquireUseRelease(
-            sql`CREATE TRIGGER fail_lease_turn_receipt
-              BEFORE INSERT ON orchestration_command_receipts
-              WHEN NEW.command_id IN ('lease-turn-new-receipt-rollback', 'lease-turn-retained-receipt-rollback')
-                AND NEW.status = 'accepted'
-              BEGIN SELECT RAISE(FAIL, 'forced ownership receipt failure'); END`,
-            () =>
-              Effect.gen(function* () {
-                const error = yield* engine.dispatch(command).pipe(Effect.flip);
-                assert.equal(error._tag, "PersistenceSqlError");
-                assert.deepEqual(yield* leasesForFixture, retained === null ? [] : [retained]);
-                assert.deepEqual(yield* readCursors, cursorsBefore);
-                assert.equal(yield* engine.latestSequence, lastSequenceBefore);
-                assert.deepEqual(
-                  yield* sql`SELECT sequence FROM orchestration_events WHERE command_id = ${commandId}`,
-                  [],
-                );
-                assert.deepEqual(
-                  yield* sql`SELECT message_id FROM projection_thread_messages WHERE message_id = ${messageId}`,
-                  [],
-                );
-                assert.deepEqual(
-                  yield* sql`SELECT turn_id FROM projection_turns WHERE thread_id = ${ownerThreadId}`,
-                  [],
-                );
-                assert.deepEqual(
-                  yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id = ${commandId}`,
-                  [],
-                );
-              }),
-            () => sql`DROP TRIGGER fail_lease_turn_receipt`.pipe(Effect.orDie),
-          );
-
-          if (retained !== null) {
-            yield* TestClock.adjust(WORKTREE_OWNERSHIP_LEASE_RENEW_INTERVAL_MS);
-            const renewed = (yield* leasesForFixture)[0]!;
-            assert.equal(renewed.leaseId, retained.leaseId);
-            assert.isAbove(renewed.renewedAtMs, retained.renewedAtMs);
-          }
-          const result = yield* engine.dispatch(command);
-          const acceptedLease = (yield* leasesForFixture)[0]!;
-          if (retained !== null) {
-            assert.notEqual(acceptedLease.leaseId, retained.leaseId);
-            assert.equal(acceptedLease.acquiredAtMs, retained.acquiredAtMs);
-          }
-          const published = [
-            yield* Queue.take(publicationQueue),
-            yield* Queue.take(publicationQueue),
-          ];
-          assert.deepEqual(
-            published.map(({ eventId, sequence }) => ({ event_id: eventId, sequence })),
-            yield* sql`SELECT event_id, sequence FROM orchestration_events
-              WHERE command_id = ${commandId} ORDER BY sequence`,
-          );
-          assert.deepEqual(
-            published.map((event) => event.type),
-            ["thread.message-sent", "thread.turn-start-requested"],
-          );
-          assert.deepEqual(yield* engine.dispatch(command), result);
-          assert.deepEqual(yield* leasesForFixture, [acceptedLease]);
-          assert.deepEqual(
-            yield* sql`SELECT status, result_sequence FROM orchestration_command_receipts WHERE command_id = ${commandId}`,
-            [{ status: "accepted", result_sequence: result.sequence }],
-          );
-          assert.deepEqual(
-            yield* sql`SELECT COUNT(*) AS count FROM orchestration_events WHERE command_id = ${commandId}`,
-            [{ count: 2 }],
-          );
-        }).pipe(Effect.scoped);
-      }
-    }),
-  );
-
-  it.effect("rejects a stale conditional turn without changing ownership", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      for (const alreadyOwned of [false, true]) {
-        const suffix = alreadyOwned
-          ? "retained-conditional-rejection"
-          : "new-conditional-rejection";
-        const { engine, ownerThreadId, resourcePath, createdAt } =
-          yield* createOwnershipFixture(suffix);
-        const retained = alreadyOwned
-          ? yield* engine.acquireWorktreeOwnership(ownerThreadId)
-          : null;
-        const observedSnapshotSequence = yield* engine.latestSequence;
-        yield* engine.dispatch({
-          type: "thread.meta.update",
-          commandId: CommandId.make(`lease-meta-${suffix}`),
-          threadId: ownerThreadId,
-          title: "Changed after observation",
-        });
-        const lastSequenceBefore = yield* engine.latestSequence;
-        const cursorsBefore = yield* sql`
-          SELECT projector, last_applied_sequence FROM projection_state ORDER BY projector
-        `;
-        const commandId = CommandId.make(`lease-turn-${suffix}`);
-        const messageId = MessageId.make(`lease-message-${suffix}`);
-        const command = {
-          type: "thread.turn.start" as const,
-          commandId,
-          threadId: ownerThreadId,
-          message: { messageId, role: "user" as const, text: "stale ownership", attachments: [] },
-          runtimeMode: "full-access" as const,
-          interactionMode: "default" as const,
-          createdAt,
-          dispatchGuard: {
-            observedSnapshotSequence,
-            expectedModelSelection: {
-              instanceId: ProviderInstanceId.make("codex"),
-              model: "gpt-5.4",
-            },
-            expectedSessionStatus: null,
-            expectedActiveTurnId: null,
-            expectedLatestTurnId: null,
-            requireIdle: true as const,
-          },
-        };
-        const error = yield* engine.dispatch(command).pipe(Effect.flip);
-        assert.equal(error._tag, "OrchestrationCommandInvariantError");
-        assert.include(error.message, "dispatch_guard_rejected: target changed after observation");
-        assert.equal(yield* engine.latestSequence, lastSequenceBefore);
-        assert.deepEqual(
-          yield* sql`SELECT projector, last_applied_sequence FROM projection_state ORDER BY projector`,
-          cursorsBefore,
-        );
-        assert.deepEqual(
-          yield* sql`SELECT sequence FROM orchestration_events WHERE command_id = ${commandId}`,
-          [],
-        );
-        assert.deepEqual(
-          yield* sql`SELECT message_id FROM projection_thread_messages WHERE message_id = ${messageId}`,
-          [],
-        );
-        assert.deepEqual(
-          yield* sql`SELECT turn_id FROM projection_turns WHERE thread_id = ${ownerThreadId}`,
-          [],
-        );
-        assert.deepEqual(
-          yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id = ${commandId}`,
-          [{ status: "rejected" }],
-        );
-        assert.equal(
-          (yield* engine.dispatch(command).pipe(Effect.flip))._tag,
-          "OrchestrationCommandPreviouslyRejectedError",
-        );
-        assert.deepEqual(
-          (yield* engine.listWorktreeOwnershipLeases).filter(
-            (lease) => lease.resourcePath === resourcePath,
-          ),
-          retained === null ? [] : [retained],
-        );
-      }
-    }),
-  );
-
-  it.effect("preserves missing-creation precedence over an existing ownership conflict", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const { engine, ownerThreadId, contenderThreadId, resourcePath, createdAt } =
-        yield* createOwnershipFixture("missing-creation");
-      const retained = yield* engine.acquireWorktreeOwnership(ownerThreadId);
-      // Keep the projected checkout while removing its authoritative creation fact to test error precedence.
-      yield* sql`DELETE FROM orchestration_events
-        WHERE aggregate_kind = 'thread' AND stream_id = ${contenderThreadId} AND event_type = 'thread.created'`;
-      const directError = yield* engine
-        .acquireWorktreeOwnership(contenderThreadId)
-        .pipe(Effect.flip);
-      assert.equal(directError._tag, "OrchestrationCommandInvariantError");
-      assert.include(directError.message, "has no authoritative creation event");
-      const commandId = CommandId.make("lease-turn-missing-creation");
-      const commandError = yield* engine
-        .dispatch({
-          type: "thread.turn.start",
-          commandId,
-          threadId: contenderThreadId,
-          message: {
-            messageId: MessageId.make("lease-message-missing-creation"),
-            role: "user",
-            text: "must not acquire",
-            attachments: [],
-          },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          createdAt,
-        })
-        .pipe(Effect.flip);
-      assert.equal(commandError._tag, "OrchestrationCommandInvariantError");
-      assert.include(commandError.message, "has no authoritative creation event");
-      assert.deepEqual(
-        (yield* engine.listWorktreeOwnershipLeases).filter(
-          (lease) => lease.resourcePath === resourcePath,
-        ),
-        [retained],
-      );
-      assert.deepEqual(
-        yield* sql`SELECT sequence FROM orchestration_events WHERE command_id = ${commandId}`,
-        [],
-      );
-      assert.deepEqual(
-        yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id = ${commandId}`,
-        [{ status: "rejected" }],
-      );
-    }),
-  );
-
-  it.effect("cancels ownership during path preparation without retaining a lease", () =>
-    Effect.gen(function* () {
-      const { engine, ownerThreadId, resourcePath } = yield* createOwnershipFixture("cancel-path");
-      const barrier = {
-        resourcePath,
-        entered: Deferred.makeUnsafe<void>(),
-        resume: Deferred.makeUnsafe<void>(),
-      };
-      yield* Effect.acquireUseRelease(
-        Effect.sync(() => {
-          ownershipPathBarrier = barrier;
-        }),
-        () =>
-          Effect.gen(function* () {
-            const acquisition = yield* engine
-              .acquireWorktreeOwnership(ownerThreadId)
-              .pipe(Effect.forkScoped);
-            yield* Deferred.await(barrier.entered);
-            yield* Fiber.interrupt(acquisition);
-            const exit = yield* Fiber.await(acquisition);
-            assert.isTrue(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause));
-            assert.isFalse(
-              (yield* engine.listWorktreeOwnershipLeases).some(
-                (lease) => lease.resourcePath === resourcePath,
-              ),
-            );
-          }),
-        () =>
-          Effect.gen(function* () {
-            ownershipPathBarrier = undefined;
-            yield* Deferred.succeed(barrier.resume, undefined);
-          }),
-      );
-      const acquired = yield* engine.acquireWorktreeOwnership(ownerThreadId);
-      yield* engine.releaseWorktreeOwnership(acquired);
-      assert.isFalse(
-        (yield* engine.listWorktreeOwnershipLeases).some(
-          (lease) => lease.resourcePath === resourcePath,
-        ),
-      );
-    }).pipe(Effect.scoped),
-  );
-
   it.effect("projects dispatched engine events immediately", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;
@@ -5907,5 +5595,317 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           leasesAfterRelease.some((lease) => lease.ownerThreadId === contenderThreadId),
         );
       }),
+  );
+
+  it.effect("acquires ownership with one atomic database statement", () =>
+    Effect.gen(function* () {
+      const { engine, ownerThreadId } = yield* createOwnershipFixture("atomic-statement");
+      const incarnation = Option.getOrThrow(
+        yield* engine.getThreadOwnershipIncarnation(ownerThreadId),
+      );
+      const counter = makeSqlStatementCounter();
+      const first = yield* engine
+        .acquireWorktreeOwnership(ownerThreadId)
+        .pipe(Effect.withTracer(counter.tracer));
+      assert.equal(counter.count(), 1);
+      assert.equal(first.ownerIncarnation, incarnation);
+      const reacquired = yield* engine
+        .acquireWorktreeOwnership(ownerThreadId)
+        .pipe(Effect.withTracer(counter.tracer));
+      assert.equal(counter.count(), 2);
+      assert.notEqual(reacquired.leaseId, first.leaseId);
+      assert.equal(reacquired.acquiredAtMs, first.acquiredAtMs);
+      assert.equal(reacquired.ownerIncarnation, incarnation);
+    }),
+  );
+
+  it.effect("rolls back ownership and turn state when the command receipt fails", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      for (const alreadyOwned of [false, true]) {
+        yield* Effect.gen(function* () {
+          const suffix = alreadyOwned ? "retained-receipt-rollback" : "new-receipt-rollback";
+          const { engine, ownerThreadId, resourcePath, createdAt } =
+            yield* createOwnershipFixture(suffix);
+          const retained = alreadyOwned
+            ? yield* engine.acquireWorktreeOwnership(ownerThreadId)
+            : null;
+          const commandId = CommandId.make(`lease-turn-${suffix}`);
+          const messageId = MessageId.make(`lease-message-${suffix}`);
+          const command = {
+            type: "thread.turn.start" as const,
+            commandId,
+            threadId: ownerThreadId,
+            message: {
+              messageId,
+              role: "user" as const,
+              text: "atomic ownership",
+              attachments: [],
+            },
+            runtimeMode: "full-access" as const,
+            interactionMode: "default" as const,
+            createdAt,
+          };
+          const leasesForFixture = engine.listWorktreeOwnershipLeases.pipe(
+            Effect.map((leases) => leases.filter((lease) => lease.resourcePath === resourcePath)),
+          );
+          const readCursors = sql`
+            SELECT projector, last_applied_sequence FROM projection_state ORDER BY projector
+          `;
+          const cursorsBefore = yield* readCursors;
+          const lastSequenceBefore = yield* engine.latestSequence;
+          const publicationQueue = yield* Queue.unbounded<OrchestrationEvent>();
+          const subscription = yield* engine.subscribeDomainEvents;
+          yield* Stream.runForEach(subscription, (event) =>
+            Queue.offer(publicationQueue, event),
+          ).pipe(Effect.forkScoped);
+
+          yield* Effect.acquireUseRelease(
+            sql`CREATE TRIGGER fail_lease_turn_receipt
+              BEFORE INSERT ON orchestration_command_receipts
+              WHEN NEW.command_id IN ('lease-turn-new-receipt-rollback', 'lease-turn-retained-receipt-rollback')
+                AND NEW.status = 'accepted'
+              BEGIN SELECT RAISE(FAIL, 'forced ownership receipt failure'); END`,
+            () =>
+              Effect.gen(function* () {
+                const error = yield* engine.dispatch(command).pipe(Effect.flip);
+                assert.equal(error._tag, "PersistenceSqlError");
+                assert.deepEqual(yield* leasesForFixture, retained === null ? [] : [retained]);
+                assert.deepEqual(yield* readCursors, cursorsBefore);
+                assert.equal(yield* engine.latestSequence, lastSequenceBefore);
+                assert.deepEqual(
+                  yield* sql`SELECT sequence FROM orchestration_events WHERE command_id = ${commandId}`,
+                  [],
+                );
+                assert.deepEqual(
+                  yield* sql`SELECT message_id FROM projection_thread_messages WHERE message_id = ${messageId}`,
+                  [],
+                );
+                assert.deepEqual(
+                  yield* sql`SELECT turn_id FROM projection_turns WHERE thread_id = ${ownerThreadId}`,
+                  [],
+                );
+                assert.deepEqual(
+                  yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id = ${commandId}`,
+                  [],
+                );
+              }),
+            () => sql`DROP TRIGGER fail_lease_turn_receipt`.pipe(Effect.orDie),
+          );
+
+          if (retained !== null) {
+            yield* TestClock.adjust(WORKTREE_OWNERSHIP_LEASE_RENEW_INTERVAL_MS);
+            const renewed = (yield* leasesForFixture)[0]!;
+            assert.equal(renewed.leaseId, retained.leaseId);
+            assert.isAbove(renewed.renewedAtMs, retained.renewedAtMs);
+          }
+          const result = yield* engine.dispatch(command);
+          const acceptedLease = (yield* leasesForFixture)[0]!;
+          if (retained !== null) {
+            assert.notEqual(acceptedLease.leaseId, retained.leaseId);
+            assert.equal(acceptedLease.acquiredAtMs, retained.acquiredAtMs);
+          }
+          const published = [
+            yield* Queue.take(publicationQueue),
+            yield* Queue.take(publicationQueue),
+          ];
+          assert.deepEqual(
+            published.map(({ eventId, sequence }) => ({ event_id: eventId, sequence })),
+            yield* sql`SELECT event_id, sequence FROM orchestration_events
+              WHERE command_id = ${commandId} ORDER BY sequence`,
+          );
+          assert.deepEqual(
+            published.map((event) => event.type),
+            ["thread.message-sent", "thread.turn-start-requested"],
+          );
+          assert.deepEqual(yield* engine.dispatch(command), result);
+          assert.deepEqual(yield* leasesForFixture, [acceptedLease]);
+          assert.deepEqual(
+            yield* sql`SELECT status, result_sequence FROM orchestration_command_receipts WHERE command_id = ${commandId}`,
+            [{ status: "accepted", result_sequence: result.sequence }],
+          );
+          assert.deepEqual(
+            yield* sql`SELECT COUNT(*) AS count FROM orchestration_events WHERE command_id = ${commandId}`,
+            [{ count: 2 }],
+          );
+        }).pipe(Effect.scoped);
+      }
+    }),
+  );
+
+  it.effect("rejects a stale conditional turn without changing ownership", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      for (const alreadyOwned of [false, true]) {
+        const suffix = alreadyOwned
+          ? "retained-conditional-rejection"
+          : "new-conditional-rejection";
+        const { engine, ownerThreadId, resourcePath, createdAt } =
+          yield* createOwnershipFixture(suffix);
+        const retained = alreadyOwned
+          ? yield* engine.acquireWorktreeOwnership(ownerThreadId)
+          : null;
+        const observedSnapshotSequence = yield* engine.latestSequence;
+        yield* engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make(`lease-meta-${suffix}`),
+          threadId: ownerThreadId,
+          title: "Changed after observation",
+        });
+        const lastSequenceBefore = yield* engine.latestSequence;
+        const cursorsBefore = yield* sql`
+          SELECT projector, last_applied_sequence FROM projection_state ORDER BY projector
+        `;
+        const commandId = CommandId.make(`lease-turn-${suffix}`);
+        const messageId = MessageId.make(`lease-message-${suffix}`);
+        const command = {
+          type: "thread.turn.start" as const,
+          commandId,
+          threadId: ownerThreadId,
+          message: { messageId, role: "user" as const, text: "stale ownership", attachments: [] },
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          createdAt,
+          dispatchGuard: {
+            observedSnapshotSequence,
+            expectedModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5.4",
+            },
+            expectedSessionStatus: null,
+            expectedActiveTurnId: null,
+            expectedLatestTurnId: null,
+            requireIdle: true as const,
+          },
+        };
+        const error = yield* engine.dispatch(command).pipe(Effect.flip);
+        assert.equal(error._tag, "OrchestrationCommandInvariantError");
+        assert.include(error.message, "dispatch_guard_rejected: target changed after observation");
+        assert.equal(yield* engine.latestSequence, lastSequenceBefore);
+        assert.deepEqual(
+          yield* sql`SELECT projector, last_applied_sequence FROM projection_state ORDER BY projector`,
+          cursorsBefore,
+        );
+        assert.deepEqual(
+          yield* sql`SELECT sequence FROM orchestration_events WHERE command_id = ${commandId}`,
+          [],
+        );
+        assert.deepEqual(
+          yield* sql`SELECT message_id FROM projection_thread_messages WHERE message_id = ${messageId}`,
+          [],
+        );
+        assert.deepEqual(
+          yield* sql`SELECT turn_id FROM projection_turns WHERE thread_id = ${ownerThreadId}`,
+          [],
+        );
+        assert.deepEqual(
+          yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id = ${commandId}`,
+          [{ status: "rejected" }],
+        );
+        assert.equal(
+          (yield* engine.dispatch(command).pipe(Effect.flip))._tag,
+          "OrchestrationCommandPreviouslyRejectedError",
+        );
+        assert.deepEqual(
+          (yield* engine.listWorktreeOwnershipLeases).filter(
+            (lease) => lease.resourcePath === resourcePath,
+          ),
+          retained === null ? [] : [retained],
+        );
+      }
+    }),
+  );
+
+  it.effect("preserves missing-creation precedence over an existing ownership conflict", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { engine, ownerThreadId, contenderThreadId, resourcePath, createdAt } =
+        yield* createOwnershipFixture("missing-creation");
+      const retained = yield* engine.acquireWorktreeOwnership(ownerThreadId);
+      // Keep the projected checkout while removing its authoritative creation fact to test error precedence.
+      yield* sql`DELETE FROM orchestration_events
+        WHERE aggregate_kind = 'thread' AND stream_id = ${contenderThreadId} AND event_type = 'thread.created'`;
+      const directError = yield* engine
+        .acquireWorktreeOwnership(contenderThreadId)
+        .pipe(Effect.flip);
+      assert.equal(directError._tag, "OrchestrationCommandInvariantError");
+      assert.include(directError.message, "has no authoritative creation event");
+      const commandId = CommandId.make("lease-turn-missing-creation");
+      const commandError = yield* engine
+        .dispatch({
+          type: "thread.turn.start",
+          commandId,
+          threadId: contenderThreadId,
+          message: {
+            messageId: MessageId.make("lease-message-missing-creation"),
+            role: "user",
+            text: "must not acquire",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt,
+        })
+        .pipe(Effect.flip);
+      assert.equal(commandError._tag, "OrchestrationCommandInvariantError");
+      assert.include(commandError.message, "has no authoritative creation event");
+      assert.deepEqual(
+        (yield* engine.listWorktreeOwnershipLeases).filter(
+          (lease) => lease.resourcePath === resourcePath,
+        ),
+        [retained],
+      );
+      assert.deepEqual(
+        yield* sql`SELECT sequence FROM orchestration_events WHERE command_id = ${commandId}`,
+        [],
+      );
+      assert.deepEqual(
+        yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id = ${commandId}`,
+        [{ status: "rejected" }],
+      );
+    }),
+  );
+
+  it.effect("cancels ownership during path preparation without retaining a lease", () =>
+    Effect.gen(function* () {
+      const { engine, ownerThreadId, resourcePath } = yield* createOwnershipFixture("cancel-path");
+      const barrier = {
+        resourcePath,
+        entered: Deferred.makeUnsafe<void>(),
+        resume: Deferred.makeUnsafe<void>(),
+      };
+      yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          ownershipPathBarrier = barrier;
+        }),
+        () =>
+          Effect.gen(function* () {
+            const acquisition = yield* engine
+              .acquireWorktreeOwnership(ownerThreadId)
+              .pipe(Effect.forkScoped);
+            yield* Deferred.await(barrier.entered);
+            yield* Fiber.interrupt(acquisition);
+            const exit = yield* Fiber.await(acquisition);
+            assert.isTrue(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause));
+            assert.isFalse(
+              (yield* engine.listWorktreeOwnershipLeases).some(
+                (lease) => lease.resourcePath === resourcePath,
+              ),
+            );
+          }),
+        () =>
+          Effect.gen(function* () {
+            ownershipPathBarrier = undefined;
+            yield* Deferred.succeed(barrier.resume, undefined);
+          }),
+      );
+      const acquired = yield* engine.acquireWorktreeOwnership(ownerThreadId);
+      yield* engine.releaseWorktreeOwnership(acquired);
+      assert.isFalse(
+        (yield* engine.listWorktreeOwnershipLeases).some(
+          (lease) => lease.resourcePath === resourcePath,
+        ),
+      );
+    }).pipe(Effect.scoped),
   );
 });
