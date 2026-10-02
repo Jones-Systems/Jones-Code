@@ -51,3 +51,9 @@ JONES_RUNTIME_SOURCE_QUALIFICATION=1 JONES_RUNTIME_HARNESS_REVISION=<verified-ca
 ```
 
 Without explicit enabling, the check reports a skipped/unavailable obligation. Missing or changed prerequisites refuse qualification without a download, alternative runner or runtime fallback. The first authorized source attempt ended with SIGSEGV and no worker report; its exact invocation was retained because runner closure was unknown. Worker/adapter runtime identities, import progress, seven-case outcomes and runner closure remain unproved for this route; Node 24 results, source pins and acquisition metadata cannot promote those claims. Source success would still leave compiled containment/behavior and production SQLite 3.53.4/effective durability unverified.
+
+The private `JONES_RUNTIME_NODE24_DIAGNOSTIC=1` selector runs the same seven cases, setup, adapter instrumentation, thread settings and phase journals with the root-pinned Node 24 executable. It requires the exact `evidence/node24-diagnostic-binding.json` receipt and a separate execution grant; the receipt's `24.19.0` is a validation target, not an observed version. The diagnostic records actual invoker/worker versions and existing adapter SQLite fingerprints, uses a fresh owned invocation, and writes separate `evidence/node24-diagnostic-<run-id>.jsonl` evidence. Its report remains explicitly unqualified for Node 26. Enable one runtime mode at a time. This diagnostic route is unexecuted.
+
+```sh
+JONES_RUNTIME_NODE24_DIAGNOSTIC=1 JONES_RUNTIME_HARNESS_REVISION=<verified-candidate-head> /home/malcolmjones/.local/lib/nodejs/node-v24.19.0-linux-x64/bin/node --test --test-concurrency=1 scripts/performance-staging/runtime-qualification.test.mjs
+```

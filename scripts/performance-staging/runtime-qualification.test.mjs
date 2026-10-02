@@ -16,6 +16,10 @@ const workerPath = NodePath.join(directory, "runtime-qualification-worker.mjs");
 const executablePath = NodePath.join(runtimeRoot, "bin/node");
 const sourceRevision = "da5f4aee0035beec471b38598eaa2857d1e5155c";
 const enabled = process.env.JONES_RUNTIME_SOURCE_QUALIFICATION === "1";
+const diagnostic = process.env.JONES_RUNTIME_NODE24_DIAGNOSTIC === "1";
+const diagnosticBindingPath = NodePath.join(runtimeRoot, "evidence/node24-diagnostic-binding.json");
+const diagnosticExecutablePath =
+  "/home/malcolmjones/.local/lib/nodejs/node-v24.19.0-linux-x64/bin/node";
 const phaseJournalLimit = 8 * 1024;
 
 function capturePhaseJournal(root) {
@@ -124,15 +128,57 @@ function checkedAcquisition() {
   return metadata;
 }
 
+function checkedDiagnosticBinding() {
+  NodeAssert.equal(
+    sha256(diagnosticBindingPath, 1024),
+    "0e658b24c1f26fc29b18bbdc312362fe2abc8b9789544c7e4f52a1d0d965e4f9",
+    "unavailable: root Node 24 diagnostic binding changed",
+  );
+  const binding = JSON.parse(NodeFS.readFileSync(diagnosticBindingPath, "utf8"));
+  NodeAssert.equal(binding.schema, "jones-performance-node24-diagnostic-binding/v1");
+  NodeAssert.equal(binding.executable_path, diagnosticExecutablePath);
+  NodeAssert.equal(binding.executable_bytes, 125989464);
+  NodeAssert.equal(binding.expected_node_version, "24.19.0");
+  NodeAssert.equal(
+    binding.executable_sha256,
+    "bc17c508ffeed0ec622934f9b7fa72f8e78da65350e63c3eceb56fa688aa5e12",
+  );
+  NodeAssert.equal(NodeFS.realpathSync(diagnosticExecutablePath), diagnosticExecutablePath);
+  NodeAssert.equal(NodeFS.lstatSync(diagnosticExecutablePath).size, binding.executable_bytes);
+  NodeAssert.equal(
+    sha256(diagnosticExecutablePath, binding.executable_bytes),
+    binding.executable_sha256,
+  );
+  return binding;
+}
+
 NodeTest.test(
-  "Node 26.8.2 source qualification uses the seven unchanged A behavior cases",
+  diagnostic
+    ? "Node 24 diagnostic comparator uses the seven unchanged A behavior cases"
+    : "Node 26.8.2 source qualification uses the seven unchanged A behavior cases",
   {
-    skip: enabled
-      ? false
-      : "unavailable: JONES_RUNTIME_SOURCE_QUALIFICATION=1 and exact runtime grant required",
+    skip:
+      enabled || diagnostic
+        ? false
+        : "unavailable: JONES_RUNTIME_SOURCE_QUALIFICATION=1 and exact runtime grant required",
   },
   async (t) => {
-    const metadata = checkedAcquisition();
+    NodeAssert.ok(!(enabled && diagnostic), "unavailable: choose exactly one runtime mode");
+    const metadata = diagnostic ? checkedDiagnosticBinding() : checkedAcquisition();
+    const actualInvoker = diagnostic
+      ? { execPath: process.execPath, nodeVersion: process.versions.node }
+      : null;
+    if (diagnostic) {
+      t.diagnostic(
+        JSON.stringify({
+          mode: "node24-diagnostic",
+          expectedNodeVersion: metadata.expected_node_version,
+          actualInvoker,
+        }),
+      );
+      NodeAssert.equal(actualInvoker.execPath, diagnosticExecutablePath);
+      NodeAssert.equal(actualInvoker.nodeVersion, metadata.expected_node_version);
+    }
     const runId = NodeCrypto.randomUUID();
     const parentPath = NodePath.join(runtimeRoot, "evidence");
     NodeAssert.equal(NodeFS.realpathSync(parentPath), parentPath);
@@ -177,7 +223,10 @@ NodeTest.test(
     let failure;
     let cleanup;
     let evidencePreserved = false;
-    const evidencePath = NodePath.join(parentPath, `source-qualification-${runId}.jsonl`);
+    const evidencePath = NodePath.join(
+      parentPath,
+      diagnostic ? `node24-diagnostic-${runId}.jsonl` : `source-qualification-${runId}.jsonl`,
+    );
     try {
       for (const relative of ["home", "home/config", "home/data", "tmp", "cache", "node_modules"]) {
         NodeFS.mkdirSync(NodePath.join(root, relative), { mode: 0o700, recursive: true });
@@ -186,11 +235,13 @@ NodeTest.test(
       NodeFS.writeFileSync(
         requestPath,
         `${JSON.stringify({
-          schema: "jones-performance-source-runtime-request/v1",
+          schema: diagnostic
+            ? "jones-performance-node24-diagnostic-request/v1"
+            : "jones-performance-source-runtime-request/v1",
           ownedRootPath: root,
           sourceRevision,
-          executablePath,
-          nodeVersion: "26.8.2",
+          executablePath: diagnostic ? diagnosticExecutablePath : executablePath,
+          nodeVersion: diagnostic ? metadata.expected_node_version : "26.8.2",
         })}\n`,
         { flag: "wx", mode: 0o600 },
       );
@@ -205,7 +256,7 @@ NodeTest.test(
       });
       child = await runOwnedChild({
         owner,
-        executable: executablePath,
+        executable: diagnostic ? diagnosticExecutablePath : executablePath,
         args: ["--no-warnings", workerPath],
         env: {
           HOME: NodePath.join(root, "home"),
@@ -220,6 +271,7 @@ NodeTest.test(
           NODE_ENV: "test",
           NODE_NO_WARNINGS: "1",
           JONES_PERFORMANCE_RUNTIME_REQUEST: requestPath,
+          ...(diagnostic ? { JONES_RUNTIME_NODE24_DIAGNOSTIC: "1" } : {}),
         },
         timeoutMs: 120_000,
         terminateGraceMs: 10_000,
@@ -244,14 +296,25 @@ NodeTest.test(
         ),
       );
       if (reportParseFailure) throw reportParseFailure;
-      NodeAssert.equal(report?.schema, "jones-performance-source-runtime/v1");
+      NodeAssert.equal(
+        report?.schema,
+        diagnostic
+          ? "jones-performance-node24-diagnostic-runtime/v1"
+          : "jones-performance-source-runtime/v1",
+      );
       NodeAssert.equal(
         report?.outcome,
         "passed",
         String(report?.error ?? "qualification report is missing or did not pass").slice(0, 2048),
       );
-      NodeAssert.equal(report?.runtime.execPath, executablePath);
-      NodeAssert.equal(report?.runtime.nodeVersion, "26.8.2");
+      if (diagnostic) {
+        NodeAssert.equal(report?.runtime.execPath, diagnosticExecutablePath);
+        NodeAssert.equal(report?.runtime.nodeVersion, metadata.expected_node_version);
+        NodeAssert.equal(report?.node26Qualification, "unverified");
+      } else {
+        NodeAssert.equal(report?.runtime.execPath, executablePath);
+        NodeAssert.equal(report?.runtime.nodeVersion, "26.8.2");
+      }
       NodeAssert.equal(report?.source.boundRevision, sourceRevision);
       NodeAssert.equal(report?.selectedCases.length, 7);
       NodeAssert.equal(report?.cases.length, 7);
@@ -303,7 +366,9 @@ NodeTest.test(
         }
       }
       const evidence = {
-        schema: "jones-performance-source-runtime-evidence/v1",
+        schema: diagnostic
+          ? "jones-performance-node24-diagnostic-evidence/v1"
+          : "jones-performance-source-runtime-evidence/v1",
         phase: "before-cleanup",
         runId,
         taskRef: owner.creationReceipt.binding.taskRef,
@@ -311,7 +376,9 @@ NodeTest.test(
         declaredHarnessRevision: sourceIdentity,
         harnessFileSha256,
         identityFailure: identityFailure ?? null,
-        acquisition: metadata,
+        ...(diagnostic
+          ? { diagnosticBinding: metadata, actualInvoker, node26Qualification: "unverified" }
+          : { acquisition: metadata }),
         child: childEvidence,
         report,
         phaseJournal,

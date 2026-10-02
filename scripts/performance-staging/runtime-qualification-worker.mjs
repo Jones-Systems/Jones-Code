@@ -10,6 +10,9 @@ const sourceRoot = "/home/malcolmjones/Projects/Jones-Code-performance-worktrees
 const sourceRevision = "da5f4aee0035beec471b38598eaa2857d1e5155c";
 const runtimeRoot = "/home/malcolmjones/Projects/Jones-Code-performance-runtime-20261002";
 const executable = NodePath.join(runtimeRoot, "bin/node");
+const diagnostic = process.env.JONES_RUNTIME_NODE24_DIAGNOSTIC === "1";
+const diagnosticExecutable =
+  "/home/malcolmjones/.local/lib/nodejs/node-v24.19.0-linux-x64/bin/node";
 const sourceFiles = {
   "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts":
     "4ac4c2c68639c2ba5bdf420b0b12c308d857c48cabab12238afac90f3cb16074",
@@ -142,14 +145,25 @@ function readRequest() {
   const path = process.env.JONES_PERFORMANCE_RUNTIME_REQUEST;
   requireCondition(path === NodePath.join(root, "request.json"), "unavailable: request location");
   const input = JSON.parse(readBounded(path, 16 * 1024).toString("utf8"));
-  requireCondition(
-    input.schema === "jones-performance-source-runtime-request/v1" &&
-      input.ownedRootPath === root &&
-      input.sourceRevision === sourceRevision &&
-      input.executablePath === executable &&
-      input.nodeVersion === "26.8.2",
-    "unavailable: request binding",
-  );
+  if (diagnostic) {
+    requireCondition(
+      input.schema === "jones-performance-node24-diagnostic-request/v1" &&
+        input.ownedRootPath === root &&
+        input.sourceRevision === sourceRevision &&
+        input.executablePath === diagnosticExecutable &&
+        input.nodeVersion === "24.19.0",
+      "unavailable: Node 24 diagnostic request binding",
+    );
+  } else {
+    requireCondition(
+      input.schema === "jones-performance-source-runtime-request/v1" &&
+        input.ownedRootPath === root &&
+        input.sourceRevision === sourceRevision &&
+        input.executablePath === executable &&
+        input.nodeVersion === "26.8.2",
+      "unavailable: request binding",
+    );
+  }
   for (const [key, relative] of Object.entries({
     HOME: "home",
     TMPDIR: "tmp",
@@ -164,10 +178,17 @@ function readRequest() {
       `unavailable: ${key} is outside the invocation`,
     );
   }
-  requireCondition(
-    process.execPath === executable && process.versions.node === "26.8.2",
-    "unavailable: actual worker is not the bound Node 26.8.2 executable",
-  );
+  if (diagnostic) {
+    requireCondition(
+      process.execPath === diagnosticExecutable && process.versions.node === "24.19.0",
+      "unavailable: actual worker differs from the Node 24 diagnostic validation target",
+    );
+  } else {
+    requireCondition(
+      process.execPath === executable && process.versions.node === "26.8.2",
+      "unavailable: actual worker is not the bound Node 26.8.2 executable",
+    );
+  }
   return input;
 }
 
@@ -569,8 +590,9 @@ async function runQualification(input) {
     requireCondition(
       fingerprints.every(
         (entry) =>
-          entry.execPath === executable &&
-          entry.nodeVersion === "26.8.2" &&
+          (diagnostic
+            ? entry.execPath === diagnosticExecutable && entry.nodeVersion === "24.19.0"
+            : entry.execPath === executable && entry.nodeVersion === "26.8.2") &&
           entry.pid === process.pid &&
           entry.threadId > 0,
       ),
@@ -590,8 +612,11 @@ async function runQualification(input) {
     primaryError ??= error;
   }
   return {
-    schema: "jones-performance-source-runtime/v1",
-    surface: "node-source-tests",
+    schema: diagnostic
+      ? "jones-performance-node24-diagnostic-runtime/v1"
+      : "jones-performance-source-runtime/v1",
+    surface: diagnostic ? "node-source-diagnostic" : "node-source-tests",
+    ...(diagnostic ? { node26Qualification: "unverified" } : {}),
     outcome: primaryError ? "failed" : "passed",
     source,
     runtime: workerIdentity(),
@@ -643,8 +668,11 @@ if (!NodeWorkerThreads.isMainThread) {
     report = await runQualification(input);
   } catch (error) {
     report = {
-      schema: "jones-performance-source-runtime/v1",
-      surface: "node-source-tests",
+      schema: diagnostic
+        ? "jones-performance-node24-diagnostic-runtime/v1"
+        : "jones-performance-source-runtime/v1",
+      surface: diagnostic ? "node-source-diagnostic" : "node-source-tests",
+      ...(diagnostic ? { node26Qualification: "unverified" } : {}),
       outcome: runnerAttempted ? "unknown" : "unavailable",
       runtime: workerIdentity(),
       runnerAttempted,
