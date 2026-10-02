@@ -1,8 +1,6 @@
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
-import * as NodeFS from "node:fs";
-import * as NodePath from "node:path";
 import { assert, it } from "@effect/vitest";
 import {
   AuthOrchestrationOperateScope,
@@ -18,7 +16,18 @@ import {
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import { ConfigProvider, Deferred, Effect, FileSystem, Layer, Queue, Schema, Stream } from "effect";
+import {
+  ConfigProvider,
+  Data,
+  Deferred,
+  Effect,
+  FileSystem,
+  Layer,
+  Path,
+  Queue,
+  Schema,
+  Stream,
+} from "effect";
 import { HttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 import { RpcSerialization } from "effect/unstable/rpc";
 import * as TestClock from "effect/testing/TestClock";
@@ -110,14 +119,17 @@ const decodeTurnStart = Schema.decodeUnknownEffect(ThreadTurnStartCommand);
 const decodeNativeSuccess = Schema.decodeUnknownSync(nativeSuccessSchema);
 const decodeNativeFailure = Schema.decodeUnknownEffect(nativeFailureSchema);
 const isWorktreeSetupSnapshot = Schema.is(WorktreeSetupSnapshot);
-const fixtureBytes = NodeFS.readFileSync(
-  new URL("./voiceNativeBootstrap.fixtures/python-native-request.json.txt", import.meta.url),
-  "utf8",
+const fixtureUrl = new URL(
+  "./voiceNativeBootstrap.fixtures/python-native-request.json.txt",
+  import.meta.url,
 );
 const nativeWorktreePath = "/voice-fixture/native-worktree";
 const bearer = "synthetic-test-bearer";
 
 const loadRequest = Effect.fnUntraced(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const fixtureBytes = yield* fs.readFileString(yield* path.fromFileUrl(fixtureUrl));
   const serializer = yield* RpcSerialization.RpcSerialization;
   const [request] = serializer.makeUnsafe().decode(fixtureBytes);
   const decoded = yield* decodeNativeRequest(request);
@@ -153,6 +165,7 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
   const setupInputs: Array<Parameters<ProjectSetupScriptRunner["Service"]["runForThread"]>[0]> = [];
   const completed = yield* Deferred.make<void>();
   const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const scratch = yield* fs.makeTempDirectoryScoped({ prefix: "t3-voice-native-bootstrap-" });
   const config = ServerConfig.layerTest(scratch, scratch);
   const tracker = yield* WorktreeSetupTracker.make;
@@ -305,10 +318,10 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
     Layer.mock(ProviderAuthService)({}),
     Layer.mock(ProviderInstanceRegistry)({}),
     Layer.mock(CodexInstallation)({
-      managedDirectory: NodePath.join(scratch, "unused-codex-runtime"),
+      managedDirectory: path.join(scratch, "unused-codex-runtime"),
     }),
     Layer.mock(AntigravityInstallation)({
-      managedDirectory: NodePath.join(scratch, "unused-antigravity-runtime"),
+      managedDirectory: path.join(scratch, "unused-antigravity-runtime"),
     }),
     Layer.mock(ServerSelfUpdate)({}),
     Layer.mock(ServerLifecycleEvents)({}),
@@ -364,8 +377,12 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
   };
 });
 
+class NativeWebSocketError extends Data.TaggedError("NativeWebSocketError")<{
+  readonly cause: unknown;
+}> {}
+
 const openSocket = Effect.fnUntraced(function* (url: string) {
-  const messages = yield* Queue.unbounded<Effect.Effect<string, Error>>();
+  const messages = yield* Queue.unbounded<Effect.Effect<string, NativeWebSocketError>>();
   const socket = yield* Effect.acquireRelease(
     Effect.sync(
       () =>
@@ -379,17 +396,19 @@ const openSocket = Effect.fnUntraced(function* (url: string) {
     Queue.offerUnsafe(messages, Effect.succeed(bytes.toString()));
   });
   socket.on("error", (error) => {
-    Queue.offerUnsafe(messages, Effect.fail(error));
+    Queue.offerUnsafe(messages, Effect.fail(new NativeWebSocketError({ cause: error })));
   });
   socket.on("close", (code, reason) => {
     Queue.offerUnsafe(
       messages,
-      Effect.fail(new Error(`Native WS closed before a response: ${code} ${reason.toString()}`)),
+      Effect.fail(new NativeWebSocketError({ cause: { code, reason: reason.toString() } })),
     );
   });
-  yield* Effect.callback<void, Error>((resume) => {
+  yield* Effect.callback<void, NativeWebSocketError>((resume) => {
     socket.once("open", () => resume(Effect.void));
-    socket.once("error", (error) => resume(Effect.fail(error)));
+    socket.once("error", (error) =>
+      resume(Effect.fail(new NativeWebSocketError({ cause: error }))),
+    );
   });
   return { socket, messages };
 });
@@ -462,15 +481,19 @@ it.layer(Layer.mergeAll(NodeServices.layer, RpcSerialization.layerJson))(
           assertFinalSequence(result.response, request, harness.commands);
           const evidenceDir = process.env.T3_VOICE_BOOTSTRAP_EVIDENCE_DIR;
           if (evidenceDir) {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
             assert.isBelow(Buffer.byteLength(result.responseBytes), 64 * 1024);
-            NodeFS.writeFileSync(
-              NodePath.join(evidenceDir, `native-success-response-${runSetupScript}.json`),
+            yield* fs.writeFileString(
+              path.join(evidenceDir, `native-success-response-${runSetupScript}.json`),
               result.responseBytes,
             );
             assert.isBelow(Buffer.byteLength(result.requestBytes), 64 * 1024);
-            NodeFS.writeFileSync(
-              NodePath.join(evidenceDir, `native-success-request-${runSetupScript}.json`),
-              result.requestBytes,
+            yield* fs.writeFile(
+              path.join(evidenceDir, `native-success-request-${runSetupScript}.json`),
+              typeof result.requestBytes === "string"
+                ? new TextEncoder().encode(result.requestBytes)
+                : result.requestBytes,
             );
           }
           const serializer = yield* RpcSerialization.RpcSerialization;
