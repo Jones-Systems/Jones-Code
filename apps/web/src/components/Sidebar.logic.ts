@@ -24,6 +24,14 @@ import type { SidebarThreadSummary, Thread } from "../types";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 
+export function filterSidebarOperatingThreads<T>(
+  threads: ReadonlyArray<T>,
+  activeOnly: boolean,
+  isOperating: (thread: T) => boolean,
+): ReadonlyArray<T> {
+  return activeOnly ? threads.filter(isOperating) : threads;
+}
+
 export function shouldNavigateAfterThreadPark(input: {
   readonly threadKey: string;
   readonly currentThreadKey: string | null;
