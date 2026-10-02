@@ -153,7 +153,13 @@ export function UsagePage() {
   const [breakdown, setBreakdown] = useState<"model" | "time">("model");
   const [customSinceValue, setCustomSinceValue] = useState("");
   const [customUntilValue, setCustomUntilValue] = useState("");
-  const customWindowValidation = validateCustomUsageWindow(customSinceValue, customUntilValue);
+  const [customOriginalWindow, setCustomOriginalWindow] = useState<UsageSummaryInput>();
+  const customWindowValidation = validateCustomUsageWindow(
+    customSinceValue,
+    customUntilValue,
+    undefined,
+    customOriginalWindow,
+  );
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const { merged, environments, selectedEnvironments, isPending, isPartial, refresh } = useUsage(
@@ -227,6 +233,7 @@ export function UsagePage() {
     saveUsagePagePreferences(nextPreferences);
     setCustomSinceValue("");
     setCustomUntilValue("");
+    setCustomOriginalWindow(undefined);
     setWindowSelection({
       kind: "day",
       days,
@@ -237,13 +244,20 @@ export function UsagePage() {
     const nextWindow = makeRollingUsageWindow(hours);
     setWindowSelection({ kind: "hours", hours, window: nextWindow });
     if (nextWindow.sinceTime !== undefined && nextWindow.untilTime !== undefined) {
+      setCustomOriginalWindow(nextWindow);
       setCustomSinceValue(toLocalDateTimeValue(new Date(nextWindow.sinceTime)));
       setCustomUntilValue(toLocalDateTimeValue(new Date(nextWindow.untilTime)));
     }
   };
   const applyCustomWindow = () => {
-    const validation = validateCustomUsageWindow(customSinceValue, customUntilValue);
+    const validation = validateCustomUsageWindow(
+      customSinceValue,
+      customUntilValue,
+      undefined,
+      customOriginalWindow,
+    );
     if (!validation.ok) return;
+    setCustomOriginalWindow(validation.window);
     setWindowSelection({ kind: "custom", window: validation.window });
   };
   const clearCustomWindow = () => {

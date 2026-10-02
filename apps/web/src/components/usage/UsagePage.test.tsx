@@ -130,6 +130,8 @@ describe("UsagePage Escape navigation", () => {
     container.remove();
     back.mockRestore();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
   });
 
   function escape(properties: { repeat?: boolean; isComposing?: boolean } = {}) {
@@ -235,6 +237,68 @@ describe("UsagePage Escape navigation", () => {
     );
     expect(clear?.disabled).toBe(false);
     await act(() => clear?.click());
+    expect(testState.useUsage.mock.calls.at(-1)?.[0]).not.toHaveProperty("sinceTime");
+  });
+
+  it("preserves repeated-hour bounds when applying an unchanged rolling prefill", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T06:30:00.000Z"));
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Additional usage ranges"]',
+    )!;
+    await act(() => trigger.click());
+    const oneHour = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "1h",
+    )!;
+    await act(() => oneHour.click());
+    const rollingInput = testState.useUsage.mock.calls.at(-1)?.[0];
+    expect(rollingInput).toMatchObject({
+      sinceTime: "2026-11-01T05:30:00.000Z",
+      untilTime: "2026-11-01T06:30:00.000Z",
+    });
+
+    await act(() => trigger.click());
+    for (const label of ["Custom range start", "Custom range end"]) {
+      expect(document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)?.value).toBe(
+        "2026-11-01T01:30",
+      );
+    }
+    const apply = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Apply range",
+    )!;
+    expect(apply.disabled).toBe(false);
+    await act(() => apply.click());
+    expect(testState.useUsage.mock.calls.at(-1)?.[0]).toEqual(rollingInput);
+  });
+
+  it("explains an edited repeated local time instead of applying an arbitrary offset", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T08:00:00.000Z"));
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Additional usage ranges"]',
+    )!;
+    await act(() => trigger.click());
+    const inputs = [
+      ["Custom range start", "2026-11-01T01:30"],
+      ["Custom range end", "2026-11-01T02:30"],
+    ];
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    for (const [label, value] of inputs) {
+      const input = document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
+      await act(() => {
+        valueSetter.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    const apply = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Apply range",
+    )!;
+    expect(apply.disabled).toBe(true);
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      "This local time occurs twice when clocks move back. Choose a time outside the repeated hour or keep the original range time unchanged.",
+    );
     expect(testState.useUsage.mock.calls.at(-1)?.[0]).not.toHaveProperty("sinceTime");
   });
 });
