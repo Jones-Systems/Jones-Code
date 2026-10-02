@@ -71,6 +71,29 @@ const activityIdIndex = new WeakMap<
   Set<OrchestrationThreadActivity["id"]>
 >();
 
+const messagePositionIndexes = new WeakMap<
+  ReadonlyArray<OrchestrationMessage>,
+  ReadonlyMap<MessageId, ReadonlyArray<number>>
+>();
+
+function getMessagePositionIndex(
+  messages: ReadonlyArray<OrchestrationMessage>,
+): ReadonlyMap<MessageId, ReadonlyArray<number>> {
+  const cached = messagePositionIndexes.get(messages);
+  if (cached !== undefined) return cached;
+
+  // Duplicate IDs retain every position. Publish only after construction;
+  // cached indexes must never be mutated because historical branches share them.
+  const index = new Map<MessageId, number[]>();
+  messages.forEach((message, position) => {
+    const positions = index.get(message.id);
+    if (positions === undefined) index.set(message.id, [position]);
+    else positions.push(position);
+  });
+  messagePositionIndexes.set(messages, index);
+  return index;
+}
+
 /**
  * Matches the validity rule in `deriveLatestContextWindowSnapshot` (and the
  * server's snapshot-side `dropStaleContextWindowActivities`): rows without a
@@ -383,25 +406,32 @@ export function applyThreadDetailEvent(
         updatedAt: event.payload.updatedAt,
       };
 
-      let found = false;
-      const messages = thread.messages.map((entry) => {
-        if (entry.id !== message.id) return entry;
-        found = true;
-        return {
-          ...entry,
-          text: message.streaming
-            ? `${entry.text}${message.text}`
-            : message.text.length > 0
-              ? message.text
-              : entry.text,
-          streaming: message.streaming,
-          ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
-          ...(message.streaming ? {} : { updatedAt: message.updatedAt }),
-          ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-          ...(message.context !== undefined ? { context: message.context } : {}),
-        };
-      });
-      if (!found) messages.push(message);
+      const index = getMessagePositionIndex(thread.messages);
+      const positions = index.get(message.id);
+      const messages = thread.messages.slice();
+      if (positions === undefined) {
+        messages.push(message);
+      } else {
+        for (const position of positions) {
+          const entry = thread.messages[position]!;
+          messages[position] = {
+            ...entry,
+            text: message.streaming
+              ? `${entry.text}${message.text}`
+              : message.text.length > 0
+                ? message.text
+                : entry.text,
+            streaming: message.streaming,
+            ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
+            ...(message.streaming ? {} : { updatedAt: message.updatedAt }),
+            ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+            ...(message.context !== undefined ? { context: message.context } : {}),
+          };
+        }
+        // Existing-row updates preserve IDs and order. Appends leave their
+        // successor uncached so a branch never changes a shared index.
+        messagePositionIndexes.set(messages, index);
+      }
       // Assistant messages bind output to a turn, but are not terminal turn
       // evidence: providers may finalize several messages before the turn's
       // attributed lifecycle event arrives.
