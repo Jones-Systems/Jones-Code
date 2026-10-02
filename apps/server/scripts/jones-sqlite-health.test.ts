@@ -12,6 +12,12 @@ import * as NodeURL from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  withClosedSyntheticFixture,
+  type ClosedFixtureConsumerOutcome,
+  type ClosedSyntheticFixture,
+  type SyntheticFixtureError,
+} from "../../../scripts/performance-staging/fixtures.mjs";
+import {
   assertOwnedDatabase,
   createOwnedRoot,
   disposeOwnedRoot,
@@ -24,7 +30,7 @@ import {
   type SyntheticFixtureReceipt,
 } from "../../../scripts/performance-staging/guard.mjs";
 import { runOwnedChild } from "../../../scripts/performance-staging/lifecycle.mjs";
-import { runSqliteHealth } from "./jones-sqlite-health.ts";
+import { runSqliteHealth, sqliteHealthConsumerOutcome } from "./jones-sqlite-health.ts";
 import {
   countTables,
   encodeHealthEnvelope,
@@ -335,6 +341,179 @@ const readyCode =
   "import{writeFileSync,renameSync}from'node:fs';writeFileSync('arming','ready');renameSync('arming','ready');";
 const blockedCode = `${readyCode}process.on('SIGTERM',()=>{});Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);`;
 
+describe("jones-sqlite-health — closed fixture integration", () => {
+  it("preserves the independent pin and report while requiring every closure and cleanup condition", async () => {
+    await withFixture(async (fixture) => {
+      const { report } = await cli(fixture, argumentsFor(fixture), JSON.stringify(fixture.receipt));
+      expect(report.status).toBe("completed");
+      for (const status of ["completed", "failed", "interrupted"] as const) {
+        const value: HealthEnvelope = { ...report, status, fixture: null };
+        const outcome = sqliteHealthConsumerOutcome(fixture.pin, value);
+        expect(outcome).toEqual({
+          schema: "jones-performance-fixture-consumer/v1",
+          fixtureReceiptSha256: fixture.pin,
+          disposition: "release",
+          value,
+        });
+        expect(outcome.value).toBe(value);
+      }
+      const cases: readonly [string, HealthEnvelope][] = [
+        ["unknown child outcome", { ...report, child: { ...report.child, outcome: "unknown" } }],
+        ["unclosed child", { ...report, child: { ...report.child, closed: false } }],
+        ["unreaped child", { ...report, child: { ...report.child, reaped: false } }],
+        ["unknown cleanup", { ...report, cleanup: { ...report.cleanup, status: "unknown" } }],
+        ["retained cleanup", { ...report, cleanup: { ...report.cleanup, status: "retained" } }],
+        [
+          "retained supervisor root despite completed cleanup",
+          { ...report, cleanup: { ...report.cleanup, supervisorRoot: fixture.root } },
+        ],
+        [
+          "not started with unknown cleanup",
+          {
+            ...report,
+            child: { ...report.child, outcome: "not_started", pid: null },
+            cleanup: { ...report.cleanup, status: "unknown" },
+          },
+        ],
+        [
+          "not started with a retained root",
+          {
+            ...report,
+            child: { ...report.child, outcome: "not_started", pid: null },
+            cleanup: { ...report.cleanup, supervisorRoot: fixture.root },
+          },
+        ],
+      ];
+      for (const [name, value] of cases) {
+        const outcome = sqliteHealthConsumerOutcome(fixture.pin, value);
+        expect(outcome.disposition, name).toBe("retain");
+        expect(outcome.fixtureReceiptSha256, name).toBe(fixture.pin);
+        expect(outcome.value, name).toBe(value);
+      }
+    });
+  });
+
+  it("uses the qualified offline DELETE producer with the real adapter and refuses its raw health report", async () => {
+    const binding: PerformanceBinding = {
+      repository: "Jones-Systems/Jones-Code",
+      sourceRevision: "de9728389183c271489844ead3d1297d362f24bf",
+      taskRef: "spec.jones-performance-portfolio#task.e-fixture.001",
+      runId: NodeCrypto.randomUUID(),
+    };
+    const policy = healthPolicy();
+    const owner = createOwnedRoot({
+      parentPath: scriptDirectory,
+      childName: `.health-integration-test-${binding.runId}`,
+      binding,
+      policy,
+    });
+    const root = owner.creationReceipt.canonicalRootPath;
+    const options = {
+      parentPath: root,
+      binding,
+      policy,
+      databaseSource: {
+        repository: "Jones-Systems/Jones-Code" as const,
+        sourceRevision: "414bb8da204c3275cd0b76b2ec4d74dfb09a97e4" as const,
+        worktreePath:
+          "/home/malcolmjones/Projects/Jones-Code-performance-worktrees-20261002/live-baseline",
+      },
+      profile: "health-offline-delete" as const,
+      recipe: { kind: "coherent-v1" as const, historyTurns: 3, payloadBytes: 256 },
+      lifecycle: { timeoutMs: 30_000, terminateGraceMs: 500, reapTimeoutMs: 1_000 },
+    };
+    const readHealth = (context: ClosedSyntheticFixture) =>
+      runSqliteHealth(
+        parseHealthArguments([
+          "--fixture-root",
+          context.receipt.creationReceipt.canonicalRootPath,
+          "--fixture-receipt-sha256",
+          context.receiptSha256,
+          "--fixture-binding-json",
+          JSON.stringify(binding),
+        ]),
+        { receipt: context.receipt, expectedBinding: binding },
+      );
+    const consumerClosed = (report: HealthEnvelope) =>
+      report.child.closed &&
+      report.child.reaped &&
+      report.child.outcome !== "unknown" &&
+      report.cleanup.status === "completed" &&
+      report.cleanup.supervisorRoot === null;
+    let safeToClean = true;
+    let failure: unknown;
+    try {
+      safeToClean = false;
+      const accepted = await withClosedSyntheticFixture(
+        { ...options, childName: "adapted" },
+        async (context) =>
+          sqliteHealthConsumerOutcome(context.receiptSha256, await readHealth(context)),
+      );
+      safeToClean =
+        accepted.cleanup.outcome === "complete" &&
+        accepted.childReceipt.closed &&
+        accepted.childReceipt.reaped &&
+        accepted.childReceipt.outcome !== "unknown" &&
+        consumerClosed(accepted.value);
+      expect(accepted.value.status).toBe("completed");
+      expect(accepted.value.fixture?.receiptSha256).toBe(accepted.receiptSha256);
+      expect(accepted.value.results.readonly.data?.unchanged).toBe(true);
+      expect(accepted.capture.profile?.kind).toBe("health-offline-delete");
+      expect(accepted.capture.profile?.stage).toBe("sealed");
+      expect(accepted.cleanup.outcome).toBe("complete");
+      expect(NodeFS.existsSync(NodePath.join(root, "adapted"))).toBe(false);
+
+      safeToClean = false;
+      const raw: { context?: ClosedSyntheticFixture; report?: HealthEnvelope } = {};
+      const rejected = await withClosedSyntheticFixture(
+        { ...options, childName: "raw" },
+        async (context) => {
+          raw.context = context;
+          raw.report = await readHealth(context);
+          return raw.report as unknown as ClosedFixtureConsumerOutcome<HealthEnvelope>;
+        },
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      if (!(rejected instanceof Error)) throw new Error("raw health report unexpectedly released");
+      const evidence = (rejected as SyntheticFixtureError).evidence;
+      // The original test owner cleans this refusal only after both captured lifetimes closed.
+      safeToClean = Boolean(
+        evidence?.cleanup.outcome === "retained" &&
+        evidence.cleanup.reason === "invalid_consumer_outcome" &&
+        raw.context &&
+        raw.report &&
+        evidence.childReceipt === raw.context.childReceipt &&
+        evidence.receipt === raw.context.receipt &&
+        raw.context.childReceipt.closed &&
+        raw.context.childReceipt.reaped &&
+        raw.context.childReceipt.outcome !== "unknown" &&
+        raw.context.receipt.closure.completed &&
+        consumerClosed(raw.report),
+      );
+      expect((rejected as SyntheticFixtureError).code).toBe("invalid_consumer_outcome");
+      expect(evidence?.cleanup.outcome).toBe("retained");
+      expect(NodeFS.existsSync(NodePath.join(root, "raw"))).toBe(true);
+      expect(raw.report?.status).toBe("completed");
+      expect(raw.report?.results.readonly.data?.unchanged).toBe(true);
+      expect(evidence).not.toHaveProperty("value");
+      expect(safeToClean).toBe(true);
+    } catch (error) {
+      failure = error;
+    } finally {
+      const cleanup = safeToClean ? disposeOwnedRoot(owner) : null;
+      if (!cleanup || cleanup.outcome !== "complete") {
+        const cleanupFailure = new Error(`profile test retained exact root ${root}`);
+        if (failure) console.error(cleanupFailure.message);
+        else failure = cleanupFailure;
+      }
+    }
+    if (failure) throw failure;
+    expect(NodeFS.existsSync(root)).toBe(false);
+  }, 75_000);
+});
+
 describe("jones-sqlite-health — d-readonly", () => {
   it("runs the actual Node CLI with fixed metadata and leaves main/WAL/SHM/journal unchanged", async () => {
     await withFixture(async (fixture) => {
@@ -599,6 +778,9 @@ describe("jones-sqlite-health — d-deadline", () => {
       expect(report.child.outcome).toBe("cancelled");
       expect(report.child.terminated).toBe(true);
       expect(report.child.escalated).toBe(true);
+      const outcome = sqliteHealthConsumerOutcome(fixture.pin, report);
+      expect(outcome.disposition).toBe("release");
+      expect(outcome.value).toBe(report);
     });
   });
 
@@ -632,6 +814,9 @@ describe("jones-sqlite-health — d-deadline", () => {
       expect(report.child.exitCode).toBe(7);
       expect(report.child.outcome).toBe("failed");
       expect(JSON.stringify(report)).not.toContain("private synthetic exception payload");
+      const outcome = sqliteHealthConsumerOutcome(fixture.pin, report);
+      expect(outcome.disposition).toBe("release");
+      expect(outcome.value).toBe(report);
     });
   });
 

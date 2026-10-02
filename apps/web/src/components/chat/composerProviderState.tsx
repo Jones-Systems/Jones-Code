@@ -130,6 +130,20 @@ function resolveComposerDisplayCapabilities(
   );
 }
 
+export function getComposerEffectiveTraitsOptions(input: ComposerProviderStateInput) {
+  const { caps, selections } = resolveComposerOptionSelections(
+    input.models,
+    input.model,
+    input.provider,
+    input.modelOptions,
+    input.planModeEnabled,
+  );
+  return {
+    displayCapabilities: resolveComposerDisplayCapabilities(input, caps, selections),
+    modelOptions: selections,
+  };
+}
+
 export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
   const {
     provider,
@@ -203,7 +217,6 @@ function renderTraitsControl(
     draftId,
     model,
     models,
-    modelOptions,
     prompt,
     onPromptChange,
     planModeEnabled,
@@ -213,14 +226,8 @@ function renderTraitsControl(
     isComposerOwned,
   } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
-  const { caps, selections: resolvedModelOptions } = resolveComposerOptionSelections(
-    models,
-    model,
-    provider,
-    modelOptions,
-    planModeEnabled,
-  );
-  const displayCapabilities = resolveComposerDisplayCapabilities(input, caps, resolvedModelOptions);
+  const { displayCapabilities, modelOptions: resolvedModelOptions } =
+    getComposerEffectiveTraitsOptions(input);
   if (
     !hasTarget ||
     !shouldRenderTraitsControls({
@@ -230,6 +237,7 @@ function renderTraitsControl(
       modelOptions: resolvedModelOptions,
       prompt,
       planModeEnabled,
+      displayCapabilities,
     })
   ) {
     return null;

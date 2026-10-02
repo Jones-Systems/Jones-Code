@@ -5,6 +5,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodePerfHooks from "node:perf_hooks";
 import * as NodeProcess from "node:process";
 
+import type { ClosedFixtureConsumerOutcome } from "../../../scripts/performance-staging/fixtures.mjs";
 import {
   createOwnedRoot,
   disposeOwnedRoot,
@@ -270,6 +271,25 @@ export interface HealthRunOptions {
   readonly signal?: AbortSignal;
   readonly startedAtMs?: number;
   readonly runChild?: typeof runOwnedChild;
+}
+
+// Supply the independently pinned producer digest; report status does not prove resource closure.
+export function sqliteHealthConsumerOutcome(
+  fixtureReceiptSha256: string,
+  report: HealthEnvelope,
+): ClosedFixtureConsumerOutcome<HealthEnvelope> {
+  const release =
+    report.child.closed &&
+    report.child.reaped &&
+    report.child.outcome !== "unknown" &&
+    report.cleanup.status === "completed" &&
+    report.cleanup.supervisorRoot === null;
+  return {
+    schema: "jones-performance-fixture-consumer/v1",
+    fixtureReceiptSha256,
+    disposition: release ? "release" : "retain",
+    value: report,
+  };
 }
 
 export async function runSqliteHealth(

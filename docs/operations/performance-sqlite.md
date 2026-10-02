@@ -60,6 +60,16 @@ The canonical guard verifies identities, hashes and main/WAL/SHM/journal layout
 before and after an accepted SQLite open. A changed or unproved layout is
 unavailable. The supplied fixture and receipt remain owned by their producer.
 
+For a fixture created with `withClosedSyntheticFixture`, select the producer's
+`health-offline-delete` profile and finish the health call inside its consumer
+callback. Return `sqliteHealthConsumerOutcome` with that callback's pinned
+receipt digest and the health report. The adapter releases the fixture only
+when the child has known close/reap and the health supervisor completed cleanup
+without retaining a root. An unknown outcome retains it even if the callback
+fulfilled. Failed or interrupted reports may release only with proven closure.
+The producer's retention error preserves the report at `error.evidence.value`;
+do not treat it as permission to remove a retained path.
+
 Working budgets are 5 seconds for metadata and 60 seconds when any expensive
 operation is selected; `--deadline-ms` accepts 1–300 seconds in milliseconds.
 Final output defaults to 256 KiB (`--max-output-bytes`, 16 KiB–1 MiB). Schema and

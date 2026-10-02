@@ -48,6 +48,7 @@ import { CheckpointDiffQuery } from "./checkpointing/CheckpointDiffQuery.ts";
 import { Keybindings } from "./keybindings.ts";
 import { EnvironmentThemeService } from "./environmentTheme.ts";
 import { UsageLimitSources } from "./usage/UsageLimitSources.ts";
+import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
 import { ExternalLauncher } from "./process/externalLauncher.ts";
 import { RemoteOpenTargets } from "./environment/RemoteOpenTargets.ts";
 import { GitWorkflowService } from "./git/GitWorkflowService.ts";
@@ -346,6 +347,7 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
     Layer.mock(ProcessResourceMonitor)({}),
     Layer.mock(ResourceTelemetry)({}),
     Layer.mock(UsageService)({}),
+    TokenAccountingService.layer,
     Layer.mock(RelayClient.RelayClient)({}),
     Layer.succeed(HostProcessEnvironment, {}),
     Layer.succeed(HostProcessPlatform, "linux"),

@@ -680,7 +680,7 @@ export function createEnvironmentRpcSubscriptionAtomFamily<
   });
 }
 
-export function createEnvironmentRpcCommand<R, ER, TTag extends EnvironmentUnaryRpcTag>(
+export function createEnvironmentRpcCommand<R, ER, TTag extends EnvironmentUnaryRpcTag, E = never>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, ER>,
   options: {
     readonly label: string;
@@ -689,7 +689,7 @@ export function createEnvironmentRpcCommand<R, ER, TTag extends EnvironmentUnary
       input: EnvironmentRpcInput<TTag>,
     ) => Effect.Effect<
       EnvironmentRpcSuccess<TTag>,
-      EnvironmentRpcFailure<TTag> | EnvironmentRpcUnavailableError,
+      EnvironmentRpcFailure<TTag> | EnvironmentRpcUnavailableError | E,
       EnvironmentSupervisor | EnvironmentRegistry
     >;
     readonly scheduler?: AtomCommandScheduler;
