@@ -13,7 +13,7 @@ import { ComposerControl } from "./ComposerControl";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { getProviderStatusMessage } from "./ProviderStatusBanner";
 
-export const PROVIDER_INSTANCE_SHORTCUT_LIMIT = 9;
+const PROVIDER_INSTANCE_SHORTCUT_LIMIT = 9;
 
 export function matchesProviderModelLock(
   entry: Pick<ProviderInstanceEntry, "instanceId" | "driverKind" | "continuationGroupKey">,
@@ -34,7 +34,7 @@ export function matchesProviderModelLock(
   );
 }
 
-export function resolveSupportedShortcutModel(
+function resolveSupportedShortcutModel(
   entry: ProviderInstanceEntry,
   options: ReadonlyArray<AppModelOption>,
   model: string | null | undefined,

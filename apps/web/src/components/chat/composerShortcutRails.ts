@@ -1,8 +1,8 @@
 import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { shouldUseCompactComposerFooter } from "../composerFooterLayout";
 
-export const COMPOSER_SHORTCUT_GROUP_GAP_PX = 16;
-export const COMPOSER_SHORTCUT_CONVERSATION_MIN_PX = 160;
+const COMPOSER_SHORTCUT_GROUP_GAP_PX = 16;
+const COMPOSER_SHORTCUT_CONVERSATION_MIN_PX = 160;
 
 export function resolveComposerShortcutRailsVisibility(input: {
   eligible: boolean;
