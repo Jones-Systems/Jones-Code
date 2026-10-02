@@ -18,8 +18,8 @@ import {
   ClaudeSettings,
   CodexSettings,
   type ProviderInstanceConfig,
-  USAGE_CONTRACT_VERSION,
   ProviderInstanceId,
+  USAGE_CONTRACT_VERSION,
   type ServerSettings as ServerSettingsValue,
   type UsageProviderKind,
   type UsageSource,
@@ -271,10 +271,16 @@ export const make = Effect.gen(function* () {
     for (const driver of ["claudeAgent", "codex", "grok"] as const) {
       // Disabled accounts still have history. Explicit default slots replace
       // the legacy settings, just as they do in the provider registry.
-      const instances: Array<Pick<ProviderInstanceConfig, "config" | "environment">> =
-        Object.values(settings.providerInstances).filter((instance) => instance.driver === driver);
+      const instances: Array<
+        Pick<ProviderInstanceConfig, "config" | "environment"> & { instanceId: ProviderInstanceId }
+      > = Object.entries(settings.providerInstances)
+        .filter(([, instance]) => instance.driver === driver)
+        .map(([id, instance]) => ({ ...instance, instanceId: ProviderInstanceId.make(id) }));
       if (!Object.hasOwn(settings.providerInstances, driver)) {
-        instances.push({ config: settings.providers[driver] });
+        instances.push({
+          config: settings.providers[driver],
+          instanceId: ProviderInstanceId.make(driver),
+        });
       }
       for (const instance of instances) {
         const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
@@ -283,12 +289,15 @@ export const make = Effect.gen(function* () {
         if (driver === "codex") {
           const decoded = decodeCodexSettings(instance.config ?? {});
           if (Option.isNone(decoded)) continue;
-          const config = decoded.value;
+          const codexConfig = decoded.value;
           const environmentHome = environment.CODEX_HOME?.trim();
           const layout = yield* resolveCodexHomeLayout(
-            !config.homePath.trim() && !config.shadowHomePath.trim() && environmentHome
-              ? { ...config, homePath: environmentHome }
-              : config,
+            codexConfig.setupMode !== "managed" &&
+              !codexConfig.homePath.trim() &&
+              !codexConfig.shadowHomePath.trim() &&
+              environmentHome
+              ? { ...codexConfig, homePath: environmentHome }
+              : codexConfig,
           );
           home = layout.sharedHomePath;
         } else if (driver === "claudeAgent") {
@@ -674,8 +683,8 @@ export const make = Effect.gen(function* () {
       });
     }
 
-    let hourlyWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null = null;
-    if (input.resolution === "hour") {
+    let exactWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null = null;
+    if (input.resolution === "hour" || input.resolution === "exactDay") {
       const sinceTime =
         input.sinceTime === undefined ? Option.none() : DateTime.make(input.sinceTime);
       const untilTime =
@@ -683,19 +692,25 @@ export const make = Effect.gen(function* () {
       if (Option.isNone(sinceTime) || Option.isNone(untilTime)) {
         return yield* new UsageReadError({
           reason: "invalidWindow",
-          detail: "Hourly usage requires valid sinceTime and untilTime instants",
+          detail: "An exact usage window requires valid sinceTime and untilTime instants",
         });
       }
       const sinceTimeMs = DateTime.toEpochMillis(sinceTime.value);
       const untilTimeMs = DateTime.toEpochMillis(untilTime.value);
       const durationMs = untilTimeMs - sinceTimeMs;
-      if (durationMs <= 0 || durationMs > MAX_HOURLY_WINDOW_MS) {
+      if (durationMs <= 0) {
         return yield* new UsageReadError({
           reason: "invalidWindow",
-          detail: "Hourly usage window must be greater than zero and at most 24 hours",
+          detail: "An exact usage window must end after it starts",
         });
       }
-      hourlyWindow = { sinceTimeMs, untilTimeMs };
+      if (input.resolution === "hour" && durationMs > MAX_HOURLY_WINDOW_MS) {
+        return yield* new UsageReadError({
+          reason: "invalidWindow",
+          detail: "Hourly usage window must be at most 24 hours",
+        });
+      }
+      exactWindow = { sinceTimeMs, untilTimeMs };
     }
 
     const startedAtMs = yield* Clock.currentTimeMillis;
@@ -710,7 +725,7 @@ export const make = Effect.gen(function* () {
       });
     }
     const windowStartMs =
-      (hourlyWindow?.sinceTimeMs ?? DateTime.toEpochMillis(windowStart.value)) - MTIME_SLACK_MS;
+      (exactWindow?.sinceTimeMs ?? DateTime.toEpochMillis(windowStart.value)) - MTIME_SLACK_MS;
 
     const retentionCutoffMs = startedAtMs - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
@@ -727,7 +742,7 @@ export const make = Effect.gen(function* () {
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
       resolution: input.resolution ?? "day",
-      ...hourlyWindow,
+      ...exactWindow,
       rates,
       priceOverrides: createOverrideRateTable(settings.usagePriceOverrides),
     });

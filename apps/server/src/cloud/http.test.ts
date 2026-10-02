@@ -563,6 +563,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
         targetVersion: "0.0.31",
         dbPath: "/tmp/state.sqlite",
         status: "pending",
+        phase: "accepted",
       });
 
       const released = yield* releaseManagedTunnelOnShutdown();
@@ -625,6 +626,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
         targetVersion: "0.0.31",
         dbPath: "/tmp/state.sqlite",
         status: "pending",
+        phase: "accepted",
       });
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -15,6 +16,8 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 
 import type {
   CodexSettings,
+  QualifiedQuotaMap,
+  ProviderInstanceId,
   CustomModelSetting,
   ServerProvider,
   ServerProviderState,
@@ -23,7 +26,12 @@ import type {
   ServerProviderModel,
   ServerProviderSkill,
 } from "@t3tools/contracts";
-import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/contracts";
+import {
+  PREFERRED_DEFAULT_CODEX_MODELS,
+  ServerSettingsError,
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+} from "@t3tools/contracts";
 
 import {
   codexModelFamily,
@@ -40,6 +48,7 @@ import {
 } from "../providerSnapshot.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { makeUnavailableUsageLimits } from "../providerUsageLimits.ts";
+import { beginQuotaProbe, makeQualifiedQuota } from "../qualifiedQuota.ts";
 import {
   codexRateLimitsFailureMessage,
   codexRateLimitsToLimits,
@@ -53,10 +62,10 @@ const RATE_LIMITS_PROBE_TIMEOUT_MS = 3_000;
 type CodexRateLimitsProbe =
   | {
       readonly snapshot: CodexRateLimitSnapshot;
-      readonly rateLimitsByLimitId?:
-        | Readonly<Record<string, CodexRateLimitSnapshot>>
-        | null
-        | undefined;
+      readonly rateLimitsByLimitId?: QualifiedQuotaMap | null | undefined;
+      readonly quotaReceivedAt?: string | undefined;
+      readonly ordinaryUsageAllowed?: boolean | null | undefined;
+      readonly accountId?: string | null | undefined;
       readonly resetCredits: CodexResetCreditsSummary | null | undefined;
     }
   | { readonly failure: string };
@@ -90,6 +99,11 @@ const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
 
 const DEFAULT_SERVICE_TIER_ID = "default";
 
+/** Shorter copy for tiers whose catalog description wraps in the traits menu. */
+const SERVICE_TIER_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  ultrafast: "Even faster, more expensive",
+};
+
 function reasoningEffortLabel(reasoningEffort: string): string {
   return REASONING_EFFORT_LABELS[reasoningEffort] ?? reasoningEffort;
 }
@@ -115,6 +129,8 @@ export function codexPlanLabel(planType: string | null | undefined): string | un
       return "ChatGPT Pro 20x Subscription";
     case "prolite":
       return "ChatGPT Pro 5x Subscription";
+    case "promax":
+      return "ChatGPT Pro Max Subscription";
     case "team":
       return "ChatGPT Team Subscription";
     case "self_serve_business_prolite":
@@ -145,9 +161,16 @@ function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"])
 export function mapCodexModelCapabilities(
   model: CodexSchema.V2ModelListResponse__Model,
 ): ModelCapabilities {
+  const supportsMedium = model.supportedReasoningEfforts.some(
+    ({ reasoningEffort }) => reasoningEffort === "medium",
+  );
+  const preferredReasoning =
+    supportsMedium &&
+    (codexModelFamily(model.model) === "gpt-6-astra" || model.defaultReasoningEffort === "low")
+      ? "medium"
+      : model.defaultReasoningEffort;
   const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>
-    reasoningEffort ===
-    (codexModelFamily(model.model) === "gpt-6-astra" ? "medium" : model.defaultReasoningEffort)
+    reasoningEffort === preferredReasoning
       ? {
           id: reasoningEffort,
           label: reasoningEffortLabel(reasoningEffort),
@@ -195,12 +218,15 @@ export function mapCodexModelCapabilities(
           label: "Standard",
           ...(defaultServiceTier === DEFAULT_SERVICE_TIER_ID ? { isDefault: true } : {}),
         },
-        ...serviceTiers.map((tier) => ({
-          id: tier.id,
-          label: tier.name,
-          ...(tier.description ? { description: tier.description } : {}),
-          ...(defaultServiceTier === tier.id ? { isDefault: true } : {}),
-        })),
+        ...serviceTiers.map((tier) => {
+          const description = SERVICE_TIER_DESCRIPTIONS[tier.id] ?? tier.description;
+          return {
+            id: tier.id,
+            label: tier.name,
+            ...(description ? { description } : {}),
+            ...(defaultServiceTier === tier.id ? { isDefault: true } : {}),
+          };
+        }),
       ],
       currentValue: defaultServiceTier,
     });
@@ -343,8 +369,8 @@ const requestAllCodexModels = Effect.fn("requestAllCodexModels")(function* (
 export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
   return {
     clientInfo: {
-      name: "t3code_desktop",
-      title: "T3 Code Desktop",
+      name: "T3 Code",
+      title: "T3 Code",
       version: packageJson.version,
     },
     capabilities: {
@@ -416,6 +442,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   readonly cwd: string;
   readonly customModels?: ReadonlyArray<CustomModelSetting>;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly skipNativeUsage?: boolean;
 }) {
   const { client, initialize } = yield* withCodexAppServerClient(input);
 
@@ -441,31 +468,40 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       requestAllCodexModels(client),
       // Usage is an enrichment: a failure or a slow answer degrades to "no
       // usage this probe" rather than costing the account and models.
-      client.request("account/rateLimits/read", null).pipe(
-        Effect.map((response): CodexRateLimitsProbe => ({
-          snapshot: response.rateLimits,
-          rateLimitsByLimitId: response.rateLimitsByLimitId,
-          resetCredits: response.rateLimitResetCredits,
-        })),
-        Effect.timeoutOption(Duration.millis(RATE_LIMITS_PROBE_TIMEOUT_MS)),
-        Effect.map(
-          Option.getOrElse((): CodexRateLimitsProbe => ({
-            failure: "Codex did not answer the usage request.",
-          })),
-        ),
-        Effect.catch((error) =>
-          Effect.logDebug("Codex rate-limit read failed.", { cause: error }).pipe(
-            Effect.as<CodexRateLimitsProbe>({ failure: codexRateLimitsFailureMessage(error) }),
+      input.skipNativeUsage
+        ? Effect.succeed(undefined)
+        : client.request("account/rateLimits/read", null).pipe(
+            Effect.flatMap((response) =>
+              DateTime.now.pipe(
+                Effect.map((receivedAt): CodexRateLimitsProbe => ({
+                  snapshot: response.rateLimits,
+                  rateLimitsByLimitId: response.rateLimitsByLimitId,
+                  resetCredits: response.rateLimitResetCredits,
+                  quotaReceivedAt: DateTime.formatIso(receivedAt),
+                  ordinaryUsageAllowed: response.ordinaryUsageAllowed,
+                  accountId: response.accountId,
+                })),
+              ),
+            ),
+            Effect.timeoutOption(Duration.millis(RATE_LIMITS_PROBE_TIMEOUT_MS)),
+            Effect.map(
+              Option.getOrElse((): CodexRateLimitsProbe => ({
+                failure: "Codex did not answer the usage request.",
+              })),
+            ),
+            Effect.catch((error) =>
+              Effect.logDebug("Codex rate-limit read failed.", { cause: error }).pipe(
+                Effect.as<CodexRateLimitsProbe>({ failure: codexRateLimitsFailureMessage(error) }),
+              ),
+            ),
           ),
-        ),
-      ),
     ],
     { concurrency: "unbounded" },
   );
 
   return {
     account: accountResponse,
-    rateLimits,
+    ...(rateLimits ? { rateLimits } : {}),
     version,
     models: applyPreferredCodexDefaultModel(
       appendCustomCodexModels(models, input.customModels ?? []),
@@ -567,12 +603,15 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     readonly cwd: string;
     readonly customModels: ReadonlyArray<CustomModelSetting>;
     readonly environment?: NodeJS.ProcessEnv;
+    readonly skipNativeUsage?: boolean;
   }) => Effect.Effect<
     CodexAppServerProviderSnapshot,
     CodexErrors.CodexAppServerError,
     ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
   > = probeCodexAppServerProvider,
   environment?: NodeJS.ProcessEnv,
+  managedAuth?: ServerProvider["auth"],
+  instanceId: ProviderInstanceId = defaultInstanceIdForDriver(ProviderDriverKind.make("codex")),
 ): Effect.fn.Return<
   ServerProviderDraft,
   ServerSettingsError,
@@ -581,6 +620,20 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   const resolvedEnvironment = environment ?? process.env;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const emptyModels = emptyCodexModelsFromSettings(codexSettings);
+  const probeId = NodeCrypto.randomUUID();
+  const probeBinding = beginQuotaProbe(instanceId, probeId);
+  const failedQuota = (
+    failureCode: "disabled" | "probe_failed" | "probe_timeout",
+    completedAt: string,
+  ) =>
+    makeQualifiedQuota({
+      instanceId,
+      probeId,
+      probeBinding,
+      attemptedAt: checkedAt,
+      probeCompletedAt: completedAt,
+      failureCode: managedAuth ? "unsupported_account" : failureCode,
+    });
 
   if (!codexSettings.enabled) {
     return buildServerProvider({
@@ -595,6 +648,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         status: "warning",
         auth: { status: "unknown" },
         message: "Codex is disabled in T3 Code settings.",
+        qualifiedQuota: failedQuota("disabled", checkedAt),
       },
     });
   }
@@ -606,6 +660,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     cwd: process.cwd(),
     customModels: codexSettings.customModels,
     environment: resolvedEnvironment,
+    ...(managedAuth ? { skipNativeUsage: true } : {}),
   }).pipe(
     Effect.scoped,
     Effect.timeoutOption(Duration.millis(AUTH_PROBE_TIMEOUT_MS)),
@@ -623,6 +678,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       skills: [],
       probe: {
         installed,
+        qualifiedQuota: failedQuota("probe_failed", DateTime.formatIso(yield* DateTime.now)),
         version: null,
         status: "error",
         auth: { status: "unknown" },
@@ -649,12 +705,15 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         status: "error",
         auth: { status: "unknown" },
         message: "Timed out while checking Codex app-server provider status.",
+        qualifiedQuota: failedQuota("probe_timeout", DateTime.formatIso(yield* DateTime.now)),
       },
     });
   }
 
   const snapshot = probeResult.success.value;
-  const accountStatus = accountProbeStatus(snapshot.account);
+  const accountStatus = managedAuth
+    ? { status: "ready" as const, auth: managedAuth, message: undefined }
+    : accountProbeStatus(snapshot.account);
   const usageLimits =
     snapshot.account.account?.type === "apiKey"
       ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
@@ -691,7 +750,25 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       status: accountStatus.status,
       auth: accountStatus.auth,
       ...(accountStatus.message ? { message: accountStatus.message } : {}),
-      usageLimits,
+      ...(managedAuth ? {} : { usageLimits }),
+      qualifiedQuota: makeQualifiedQuota({
+        instanceId,
+        probeId,
+        probeBinding,
+        attemptedAt: checkedAt,
+        probeCompletedAt: DateTime.formatIso(yield* DateTime.now),
+        models: snapshot.models,
+        ...(managedAuth || snapshot.account.account?.type !== "chatgpt"
+          ? { failureCode: "unsupported_account" as const }
+          : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
+            ? { failureCode: "quota_unavailable" as const }
+            : {
+                rateLimitsByLimitId: snapshot.rateLimits.rateLimitsByLimitId,
+                quotaReceivedAt: snapshot.rateLimits.quotaReceivedAt,
+                ordinaryUsageAllowed: snapshot.rateLimits.ordinaryUsageAllowed,
+                accountId: snapshot.rateLimits.accountId,
+              }),
+      }),
     },
   });
 });

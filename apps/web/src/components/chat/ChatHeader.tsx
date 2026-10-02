@@ -33,6 +33,7 @@ import ProjectScriptsControl, {
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
 import { OpenInPicker } from "./OpenInPicker";
+import { HostStatusIndicators } from "./HostStatusIndicators";
 import { useRemoteOpenState, type RemoteOpenMode } from "../../remoteOpen";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
@@ -402,7 +403,7 @@ export const ChatHeader = memo(function ChatHeader({
     >
       <WorkspaceBreadcrumb
         ariaLabel="Thread breadcrumb"
-        className="flex-1 overflow-clip [overflow-clip-margin:2px]"
+        className="flex-initial overflow-clip [overflow-clip-margin:2px]"
       >
         {/* The project always leads the header: knowing which project a
             thread lives in is priority zero, and the thread title alone
@@ -487,6 +488,7 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
+      <HostStatusIndicators />
       <div
         ref={headerActionsRef}
         data-chat-header-actions

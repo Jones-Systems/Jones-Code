@@ -195,6 +195,8 @@ import {
   shouldUseRestingComposerLayout,
 } from "../composerFooterLayout";
 import { measureRestingComposerControls } from "./restingComposerControlsMeasurement";
+import { ProviderInstanceShortcuts } from "./ProviderInstanceShortcuts";
+import { useComposerShortcutRails } from "./composerShortcutRails";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import {
   ComposerContextActionsContext,
@@ -307,6 +309,7 @@ import {
   getComposerPromptLengthValidationMessage,
   getComposerSubmissionValidationMessage,
   submitComposerDraft,
+  handleComposerEnter,
 } from "./composerSubmission";
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
 import { PierreEntryIcon } from "./PierreEntryIcon";
@@ -1417,6 +1420,8 @@ export interface ChatComposerProps {
   pullRequestProjectId: ProjectId | null;
   pullRequestRepository: string | null;
   restingControlsHost: HTMLDivElement | null;
+  shortcutControlsHost: HTMLDivElement | null;
+  shortcutWorkspaceElement: HTMLDivElement | null;
   restingControlsHaveLeadingContext: boolean;
   onRestingControlsVisibilityChange: (visible: boolean) => void;
   getTimelineScrollableNode: () => HTMLElement | null;
@@ -1442,6 +1447,7 @@ export interface ChatComposerProps {
 
   // Callbacks
   onCompactContext: () => void;
+  onSteerNextQueuedMessage: () => boolean;
   onSend: (e?: { preventDefault: () => void }, intent?: ComposerSubmissionIntent) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -1542,6 +1548,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     pullRequestProjectId,
     pullRequestRepository,
     restingControlsHost,
+    shortcutControlsHost,
+    shortcutWorkspaceElement,
     restingControlsHaveLeadingContext,
     onRestingControlsVisibilityChange,
     getTimelineScrollableNode,
@@ -1559,6 +1567,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPageScrollRelease,
     onCompactContext,
     onSend,
+    onSteerNextQueuedMessage,
     onInterrupt,
     onImplementPlanInNewThread,
     onRespondToApproval,
@@ -2014,6 +2023,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [selectedProviderEntry],
   );
 
+  const configuredDefaultDriverKind = providerInstanceEntries.find(
+    (entry) => entry.instanceId === activeProjectDefaultModelSelection?.instanceId,
+  )?.driverKind;
+
   const composerPromptInjectionState = useMemo(
     () => getComposerPromptInjectionState(prompt),
     [prompt],
@@ -2022,6 +2035,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () =>
       getComposerProviderState({
         provider: selectedProvider,
+        instanceId: selectedInstanceId,
+        defaultModelSelection: activeProjectDefaultModelSelection,
+        defaultDriverKind: configuredDefaultDriverKind,
         model: selectedModel,
         models: selectedProviderModels,
         promptInjectionState: composerPromptInjectionState,
@@ -2029,6 +2045,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         planModeEnabled: settings.planModeEnabled,
       }),
     [
+      activeProjectDefaultModelSelection,
+      configuredDefaultDriverKind,
       composerModelOptions,
       composerPromptInjectionState,
       selectedInstanceId,
@@ -2153,6 +2171,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   });
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
+  const shortcutBandRef = useRef<HTMLDivElement>(null);
+  const accountShortcutGroupRef = useRef<HTMLDivElement>(null);
+  const effortShortcutGroupRef = useRef<HTMLDivElement>(null);
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const providerInputRejectedRef = useRef(false);
   const composerSelectLockRef = useRef(false);
@@ -2635,6 +2656,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const providerTraitsMenuContent = renderProviderTraitsMenuContent({
     provider: selectedProvider,
     instanceId: selectedInstanceId,
+    defaultModelSelection: activeProjectDefaultModelSelection,
+    defaultDriverKind: configuredDefaultDriverKind,
     ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
     ...(routeKind === "draft" && draftId ? { draftId } : {}),
     model: selectedModel,
@@ -2647,6 +2670,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const providerTraitsPickerInput = {
     provider: selectedProvider,
     instanceId: selectedInstanceId,
+    defaultModelSelection: activeProjectDefaultModelSelection,
+    defaultDriverKind: configuredDefaultDriverKind,
     ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
     ...(routeKind === "draft" && draftId ? { draftId } : {}),
     model: selectedModel,
@@ -4024,20 +4049,39 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (key === "ArrowUp" || key === "ArrowDown") {
       return navigatePromptHistory(key === "ArrowUp" ? "backward" : "forward", event);
     }
-    const submissionIntent =
-      key === "Enter"
-        ? composerSubmissionIntentForEnter({
-            isMobileViewport,
-            shiftKey: event.shiftKey,
-            modifierKey: event.metaKey || event.ctrlKey,
-            isDraftThread: routeKind === "draft",
-            isRunning: phase === "running",
-            sendShortcut: settings.sendShortcut,
-            prompt: promptRef.current,
-          })
-        : null;
-    if (submissionIntent) {
-      submitComposer(undefined, submissionIntent);
+    if (
+      key === "Enter" &&
+      handleComposerEnter({
+        event,
+        intent: {
+          isMobileViewport,
+          isDraftThread: routeKind === "draft",
+          isRunning: phase === "running",
+          sendShortcut: settings.sendShortcut,
+          prompt: promptRef.current,
+        },
+        hasDraftContext:
+          composerImagesRef.current.length > 0 ||
+          composerFilesRef.current.length > 0 ||
+          composerTerminalContextsRef.current.length > 0 ||
+          composerPreviewAnnotations.length > 0 ||
+          composerReviewComments.length > 0 ||
+          (pendingImageCompressionsRef.current.get(attachmentTargetKey) ?? 0) > 0 ||
+          pendingDraftWork.has(attachmentTargetKey),
+        queueActionDisabled:
+          noProviderAvailable ||
+          isSendDisabled ||
+          isSendBusy ||
+          isConnecting ||
+          isRevertingCheckpoint ||
+          projectSelectionRequired ||
+          activePendingApproval !== null ||
+          pendingUserInputs.length > 0 ||
+          showPlanFollowUpPrompt,
+        onSteerNextQueuedMessage,
+        onSubmit: (intent) => submitComposer(undefined, intent),
+      })
+    ) {
       return true;
     }
     // Native task splitting preserves marks and chips on both sides of the caret.
@@ -6101,6 +6145,31 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
+  const shortcutRails = useComposerShortcutRails({
+    host: shortcutControlsHost,
+    workspace: shortcutWorkspaceElement,
+    formRef: composerFormRef,
+    bandRef: shortcutBandRef,
+    accountGroupRef: accountShortcutGroupRef,
+    effortGroupRef: effortShortcutGroupRef,
+    contentKey: modelOptionsByInstance,
+    eligible:
+      !isMobileViewport &&
+      !isComposerApprovalState &&
+      pendingUserInputs.length === 0 &&
+      multipleModelSelections === null &&
+      environmentUnavailable === null &&
+      !providerCatalogPending &&
+      !noProviderAvailable &&
+      !isConnecting &&
+      !isSendBusy &&
+      !isPreparingWorktree &&
+      externalSendDisabledReason === null &&
+      !props.isRevertingCheckpoint &&
+      !projectSelectionRequired,
+    hasWideActions: composerFooterHasWideActions,
+  });
+
   // Render
   // ------------------------------------------------------------------
   return (
@@ -6169,6 +6238,42 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       className="mx-auto w-full min-w-0 max-w-(--chat-max-width)"
       data-chat-composer-form="true"
     >
+      {shortcutControlsHost
+        ? createPortal(
+            <div
+              ref={shortcutBandRef}
+              data-chat-composer-shortcut-rails="true"
+              aria-hidden={!shortcutRails.visible || undefined}
+              inert={!shortcutRails.visible || undefined}
+              className="relative w-full"
+              style={{ height: shortcutRails.height }}
+            >
+              <div className="pointer-events-auto absolute bottom-0 left-0">
+                <ProviderInstanceShortcuts
+                  instanceEntries={providerInstanceEntries}
+                  settings={settings}
+                  modelOptionsByInstance={modelOptionsByInstance}
+                  rememberedSelections={composerDraft.modelSelectionByProvider}
+                  activeInstanceId={selectedInstanceId}
+                  model={selectedModelForPickerWithCustomFallback}
+                  lockedProvider={lockedProvider}
+                  lockedContinuationGroupKey={lockedContinuationGroupKey ?? null}
+                  disabled={isSendBusy}
+                  visible={shortcutRails.visible}
+                  groupRef={accountShortcutGroupRef}
+                  getModelDisabledReason={getModelDisabledReason}
+                  onSelect={onProviderModelSelect}
+                />
+              </div>
+              <div
+                ref={effortShortcutGroupRef}
+                data-composer-shortcut-group="effort"
+                className="pointer-events-auto absolute right-0 bottom-0 w-max"
+              />
+            </div>,
+            shortcutControlsHost,
+          )
+        : null}
       {composerControlsInStrip && restingControlsHost
         ? createPortal(
             <div

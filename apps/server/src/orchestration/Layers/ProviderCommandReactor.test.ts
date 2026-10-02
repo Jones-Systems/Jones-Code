@@ -1652,6 +1652,7 @@ describe("ProviderCommandReactor", () => {
       let readModel = yield* Effect.promise(() => harness.readModel());
       let thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       expect(thread?.session?.lastError).toContain("deterministic startup failure");
+      expect(thread?.session?.runtimeIdentity).toBeUndefined();
       expect(harness.sendTurn).not.toHaveBeenCalled();
 
       failStartup = false;
@@ -2761,6 +2762,7 @@ describe("ProviderCommandReactor", () => {
         modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
           { id: "reasoningEffort", value: "high" },
           { id: "fastMode", value: true },
+          { id: "serviceTier", value: "priority" },
         ]),
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
@@ -2774,6 +2776,7 @@ describe("ProviderCommandReactor", () => {
       modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
         { id: "reasoningEffort", value: "high" },
         { id: "fastMode", value: true },
+        { id: "serviceTier", value: "priority" },
       ]),
     });
     expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
@@ -2781,7 +2784,28 @@ describe("ProviderCommandReactor", () => {
       modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
         { id: "reasoningEffort", value: "high" },
         { id: "fastMode", value: true },
+        { id: "serviceTier", value: "priority" },
       ]),
+    });
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session?.runtimeIdentity).toEqual({
+      runtimeGeneration: expect.any(String),
+      requested: {
+        providerInstanceId: "codex",
+        providerDriver: "codex",
+        model: "gpt-5.3-codex",
+        serviceTier: "priority",
+      },
+      observed: {
+        backend: { status: "unknown" },
+        model: { status: "unknown" },
+        account: {
+          status: "unavailable",
+          reason: "No supported provider event safely binds an account to this runtime.",
+        },
+        serviceTier: { status: "unknown" },
+      },
     });
   });
 
@@ -2921,6 +2945,81 @@ describe("ProviderCommandReactor", () => {
       threadId: ThreadId.make("thread-1"),
       interactionMode: "plan",
     });
+  });
+
+  it("keeps runtime correlation while clearing observations for a live model and tier change", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+    const send = async (suffix: string, model: string, serviceTier: string) => {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-live-identity-${suffix}`),
+          threadId,
+          message: {
+            messageId: asMessageId(`message-live-identity-${suffix}`),
+            role: "user",
+            text: suffix,
+            attachments: [],
+          },
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), model, [
+            { id: "serviceTier", value: serviceTier },
+          ]),
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+    };
+    await send("first", "gpt-5-codex", "priority");
+    const first = (await harness.readModel()).threads.find(
+      (entry) => entry.id === threadId,
+    )?.session;
+    expect(first?.runtimeIdentity?.runtimeGeneration).toEqual(expect.any(String));
+    if (!first?.runtimeIdentity) throw new Error("Expected launched runtime identity");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-live-identity-observation"),
+        threadId,
+        session: {
+          ...first,
+          runtimeIdentity: {
+            ...first.runtimeIdentity,
+            observed: {
+              ...first.runtimeIdentity.observed,
+              model: {
+                status: "observed",
+                value: "old-native-model",
+                sourceEvent: "codex.thread/open",
+              },
+              serviceTier: {
+                status: "observed",
+                value: "priority",
+                sourceEvent: "codex.thread/open",
+              },
+            },
+          },
+        },
+        createdAt: now,
+      }),
+    );
+    await send("second", "gpt-5.6-sol", "flex");
+    const second = (await harness.readModel()).threads.find(
+      (entry) => entry.id === threadId,
+    )?.session;
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(second?.runtimeIdentity?.runtimeGeneration).toBe(
+      first.runtimeIdentity.runtimeGeneration,
+    );
+    expect(second?.runtimeIdentity?.requested).toMatchObject({
+      model: "gpt-5.6-sol",
+      serviceTier: "flex",
+    });
+    expect(second?.runtimeIdentity?.observed.model).toEqual({ status: "unknown" });
+    expect(second?.runtimeIdentity?.observed.serviceTier).toEqual({ status: "unknown" });
   });
 
   it("preserves the active session model when in-session model switching is unsupported", async () => {
@@ -3091,6 +3190,12 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.providerName).toBe("claudeAgent");
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent"));
+    expect(thread?.session?.runtimeIdentity?.requested).toEqual({
+      providerInstanceId: "claudeAgent",
+      providerDriver: "claudeAgent",
+      model: "claude-opus-4-6",
+      serviceTier: null,
+    });
     expect(
       thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
     ).toBeUndefined();
@@ -3306,6 +3411,43 @@ describe("ProviderCommandReactor", () => {
       cwd: "/tmp/provider-project",
     });
 
+    const firstSnapshot = await harness.readModel();
+    const firstSession = firstSnapshot.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    )?.session;
+    expect(firstSession).toBeDefined();
+    if (!firstSession) return;
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-observed-identity-before-workspace-restart"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          ...firstSession,
+          runtimeIdentity: {
+            runtimeGeneration: "runtime-before-workspace-restart",
+            requested: {
+              providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+              providerDriver: "claudeAgent",
+              model: "claude-sonnet-4-6",
+              serviceTier: null,
+            },
+            observed: {
+              backend: { status: "unknown" },
+              model: {
+                status: "observed",
+                value: "claude-sonnet-4-6-20260901",
+                sourceEvent: "claude.system:init",
+              },
+              account: { status: "unavailable", reason: "not reported" },
+              serviceTier: { status: "unavailable", reason: "not reported" },
+            },
+          },
+        },
+        createdAt: now,
+      }),
+    );
+
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.meta.update",
@@ -3344,6 +3486,12 @@ describe("ProviderCommandReactor", () => {
         model: "claude-sonnet-4-6",
       },
       runtimeMode: "approval-required",
+    });
+    const restartedThread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(restartedThread?.session?.runtimeIdentity?.observed.model).toEqual({
+      status: "unknown",
     });
   });
 
@@ -3582,6 +3730,41 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
 
+    const activeSnapshot = await harness.readModel();
+    const activeSession = activeSnapshot.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    )?.session;
+    expect(activeSession).toBeDefined();
+    if (!activeSession) return;
+    const observedIdentity = {
+      runtimeGeneration: "runtime-before-failed-restart",
+      requested: activeSession.runtimeIdentity?.requested ?? {
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerDriver: "codex",
+        model: "gpt-5-codex",
+        serviceTier: null,
+      },
+      observed: {
+        backend: { status: "observed" as const, value: "openai", sourceEvent: "thread/opened" },
+        model: {
+          status: "observed" as const,
+          value: "gpt-5-codex-runtime",
+          sourceEvent: "thread/opened",
+        },
+        account: { status: "unavailable" as const, reason: "not reported" },
+        serviceTier: { status: "unavailable" as const, reason: "not reported" },
+      },
+    };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-observed-before-failed-restart"),
+        threadId: ThreadId.make("thread-1"),
+        session: { ...activeSession, runtimeIdentity: observedIdentity },
+        createdAt: now,
+      }),
+    );
+
     harness.startSession.mockImplementationOnce(
       (_: unknown, __: unknown) => Effect.fail("simulated restart failure") as never,
     );
@@ -3611,6 +3794,7 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("full-access");
+    expect(thread?.session?.runtimeIdentity).toEqual(observedIdentity);
   });
 
   it("rejects provider changes after a thread is already bound to a session provider", async () => {
@@ -4321,7 +4505,7 @@ describe("ProviderCommandReactor", () => {
       ),
     );
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.session.set",
         commandId: CommandId.make("cmd-session-set-for-user-input-error"),
@@ -4339,7 +4523,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.activity.append",
         commandId: CommandId.make("cmd-user-input-requested"),
@@ -4372,7 +4556,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.user-input.respond",
         commandId: CommandId.make("cmd-user-input-respond-stale"),

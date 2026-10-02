@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import type {
   ProviderApprovalDecision,
   ProviderRuntimeEvent,
+  ServerProvider,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderTurnStartResult,
@@ -20,6 +21,7 @@ import {
   EventId,
   MessageId,
   OrchestrationThreadShell,
+  OrchestrationProjectShell,
   ProjectId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProviderDriverKind,
@@ -63,6 +65,8 @@ import {
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
+import * as ProviderRegistry from "../Services/ProviderRegistry.ts";
+import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
 import { makeProviderServiceLive } from "./ProviderService.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
@@ -139,34 +143,36 @@ type LegacyProviderRuntimeEvent = {
 function makeFakeCodexAdapter(
   provider: ProviderDriverKind = CODEX_DRIVER,
   supportsConversationRollback?: boolean,
+  getProviderGoalState?: ProviderAdapterShape<ProviderAdapterError>["getProviderGoalState"],
 ) {
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
-  const startSession = vi.fn((input: ProviderSessionStartInput) =>
-    Effect.sync(() => {
-      const now = "2026-01-01T00:00:00.000Z";
-      const session: ProviderSession = {
-        provider,
-        ...(input.providerInstanceId !== undefined
-          ? { providerInstanceId: input.providerInstanceId }
-          : {}),
-        status: "ready",
-        runtimeMode: input.runtimeMode,
-        threadId: input.threadId,
-        resumeCursor: input.resumeCursor ?? {
-          opaque: `resume-${String(input.threadId)}`,
-        },
-        cwd: input.cwd ?? process.cwd(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      sessions.set(session.threadId, session);
-      return session;
-    }),
+  const startSession = vi.fn(
+    (input: ProviderSessionStartInput): Effect.Effect<ProviderSession, ProviderAdapterError> =>
+      Effect.sync(() => {
+        const now = "2026-01-01T00:00:00.000Z";
+        const session: ProviderSession = {
+          provider,
+          ...(input.providerInstanceId !== undefined
+            ? { providerInstanceId: input.providerInstanceId }
+            : {}),
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          threadId: input.threadId,
+          resumeCursor: input.resumeCursor ?? {
+            opaque: `resume-${String(input.threadId)}`,
+          },
+          cwd: input.cwd ?? process.cwd(),
+          createdAt: now,
+          updatedAt: now,
+        };
+        sessions.set(session.threadId, session);
+        return session;
+      }),
   );
 
-  const sendTurn = vi.fn(
+  const sendTurn = vi.fn<ProviderAdapterShape<ProviderAdapterError>["sendTurn"]>(
     (
       input: ProviderSendTurnInput,
     ): Effect.Effect<ProviderTurnStartResult, ProviderAdapterError> => {
@@ -253,6 +259,7 @@ function makeFakeCodexAdapter(
     (
       threadId: ThreadId,
       _numTurns: number,
+      _runtimeGeneration?: string,
     ): Effect.Effect<{ threadId: ThreadId; turns: readonly [] }, ProviderAdapterError> =>
       Effect.succeed({ threadId, turns: [] }),
   );
@@ -292,6 +299,7 @@ function makeFakeCodexAdapter(
     stopSession,
     listSessions,
     hasSession,
+    ...(getProviderGoalState ? { getProviderGoalState } : {}),
     readThread,
     rollbackThread,
     ...(provider === CODEX_DRIVER ? { uploadFeedback } : {}),
@@ -417,11 +425,20 @@ function makeProviderServiceLayer(
   input: {
     readonly directory?: ProviderSessionDirectory.ProviderSessionDirectory["Service"];
     readonly supportsConversationRollback?: boolean;
+    readonly getProviderGoalState?: ProviderAdapterShape<ProviderAdapterError>["getProviderGoalState"];
     readonly analyticsLayer?: Layer.Layer<AnalyticsService.AnalyticsService>;
+    readonly settingsLayer?: typeof defaultServerSettingsLayer;
+    readonly catalogLayer?: Layer.Layer<ProviderRegistry.ProviderRegistry>;
+    readonly instanceLayer?: Layer.Layer<ProviderInstanceRegistry.ProviderInstanceRegistry>;
+    readonly projectionLayer?: Layer.Layer<ProjectionSnapshotQuery.ProjectionSnapshotQuery>;
     readonly registry?: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"];
   } = {},
 ) {
-  const codex = makeFakeCodexAdapter(CODEX_DRIVER, input.supportsConversationRollback);
+  const codex = makeFakeCodexAdapter(
+    CODEX_DRIVER,
+    input.supportsConversationRollback,
+    input.getProviderGoalState,
+  );
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
   const registry =
@@ -450,7 +467,10 @@ function makeProviderServiceLayer(
         Layer.provide(NodeServices.layer),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
-        Layer.provide(defaultServerSettingsLayer),
+        Layer.provideMerge(input.settingsLayer ?? defaultServerSettingsLayer),
+        Layer.provide(input.catalogLayer ?? Layer.empty),
+        Layer.provide(input.instanceLayer ?? Layer.empty),
+        Layer.provide(input.projectionLayer ?? Layer.empty),
         Layer.provide(serverConfigTestLayer),
         Layer.provideMerge(input.analyticsLayer ?? AnalyticsService.layerTest),
         Layer.provide(
@@ -1813,6 +1833,174 @@ routing.layer("ProviderServiceLive routing", (it) => {
       routing.claude.stopSession.mockClear();
     }),
   );
+
+  for (const operation of ["recovery", "rollback", "managed-rotation"] as const) {
+    for (const outcome of ["success", "failure", "interruption"] as const) {
+      it.effect(
+        `orders ${operation} identity and discards unsuccessful launch events (${outcome})`,
+        () =>
+          Effect.gen(function* () {
+            const provider = yield* ProviderService.ProviderService;
+            const threadId = asThreadId(`thread-identity-${operation}-${outcome}`);
+            const driver = operation === "rollback" ? CLAUDE_AGENT_DRIVER : CODEX_DRIVER;
+            const instanceId = operation === "rollback" ? claudeAgentInstanceId : codexInstanceId;
+            const adapter = operation === "rollback" ? routing.claude : routing.codex;
+            yield* provider.startSession(threadId, {
+              provider: driver,
+              providerInstanceId: instanceId,
+              threadId,
+              runtimeMode: "full-access",
+              runtimeGeneration: "prior-runtime",
+            });
+            if (operation === "recovery") yield* provider.stopSession({ threadId });
+            const release = yield* Deferred.make<void>();
+            const configured = (
+              eventId: string,
+              runtimeGeneration?: string,
+            ): ProviderRuntimeEvent => ({
+              type: "session.configured",
+              eventId: asEventId(eventId),
+              provider: driver,
+              providerInstanceId: instanceId,
+              threadId,
+              ...(runtimeGeneration !== undefined ? { runtimeGeneration } : {}),
+              createdAt: "2026-01-01T00:00:00.000Z",
+              payload: {
+                config: {},
+                identity: {
+                  backend: {
+                    status: "observed",
+                    value: "native-backend",
+                    sourceEvent: "codex.thread/open",
+                  },
+                  model: {
+                    status: "observed",
+                    value: "native-replacement-model",
+                    sourceEvent: "codex.thread/open",
+                  },
+                  serviceTier: { status: "unavailable", reason: "not reported" },
+                  account: { status: "unavailable", reason: "not reported" },
+                },
+              },
+            });
+            const collectThrough = (id: string) =>
+              provider.streamEvents.pipe(
+                Stream.filter((event) => event.threadId === threadId),
+                Stream.takeUntil((event) => event.eventId === id),
+                Stream.runCollect,
+                Effect.forkChild({ startImmediately: true }),
+              );
+            const before = yield* collectThrough("identity-before-marker");
+            let generation: string | undefined;
+            const duringLaunch = (nextGeneration: string | undefined) =>
+              Effect.gen(function* () {
+                generation = nextGeneration;
+                adapter.emit(configured("identity-buffered", generation));
+                adapter.emit(configured("identity-before-marker"));
+                yield* Deferred.await(release);
+                if (outcome === "failure")
+                  return yield* new ProviderAdapterRequestError({
+                    provider: driver,
+                    method: operation,
+                    detail: "identity test failure",
+                  });
+              });
+            if (operation === "recovery") {
+              const originalStart = adapter.startSession.getMockImplementation()!;
+              adapter.startSession.mockImplementationOnce((input) =>
+                duringLaunch(input.runtimeGeneration).pipe(Effect.andThen(originalStart(input))),
+              );
+            } else if (operation === "rollback") {
+              adapter.rollbackThread.mockImplementationOnce((threadId, _turns, nextGeneration) =>
+                duringLaunch(nextGeneration).pipe(Effect.as({ threadId, turns: [] as const })),
+              );
+            } else {
+              const originalSend = adapter.sendTurn.getMockImplementation()!;
+              adapter.sendTurn.mockImplementationOnce((input, runtimeContext) =>
+                Effect.gen(function* () {
+                  if (!runtimeContext)
+                    return yield* new ProviderAdapterRequestError({
+                      provider: driver,
+                      method: operation,
+                      detail: "Missing replacement lifecycle context",
+                    });
+                  const previous = (yield* adapter.listSessions()).find(
+                    (session) => session.threadId === threadId,
+                  )!;
+                  yield* runtimeContext.withRuntimeReplacement((nextGeneration) =>
+                    duringLaunch(nextGeneration).pipe(
+                      Effect.as({
+                        ...previous,
+                        resumeCursor: { threadId: "rotated-native-thread" },
+                      }),
+                    ),
+                  );
+                  return yield* originalSend(input);
+                }),
+              );
+            }
+            const recovery = yield* (
+              operation !== "rollback"
+                ? provider
+                    .sendTurn({ threadId, input: "resume", attachments: [] })
+                    .pipe(Effect.asVoid)
+                : provider.rollbackConversation({ threadId, numTurns: 1 })
+            ).pipe(Effect.exit, Effect.forkChild);
+            const beforeEvents = Array.from(yield* Fiber.join(before));
+            assert.deepEqual(
+              beforeEvents.map((event) => event.eventId),
+              ["identity-before-marker"],
+            );
+            assert.equal(typeof generation, "string");
+            assert.notEqual(generation, "prior-runtime");
+            const after = yield* collectThrough("identity-after-marker");
+            if (outcome === "interruption") {
+              yield* Fiber.interrupt(recovery);
+            } else {
+              yield* Deferred.succeed(release, undefined);
+              const result = yield* Fiber.join(recovery);
+              assert.equal(Exit.isSuccess(result), outcome === "success");
+            }
+            adapter.emit(configured("identity-late", generation));
+            adapter.emit(configured("identity-prior", "prior-runtime"));
+            adapter.emit(configured("identity-after-marker"));
+            const afterEvents = Array.from(yield* Fiber.join(after));
+            if (outcome === "success") {
+              assert.equal(afterEvents[0]?.raw?.source, "t3.provider-service.recovery");
+              assert.equal(afterEvents[0]?.runtimeGeneration, generation);
+              const observation = afterEvents[1];
+              assert.equal(observation?.type, "session.configured");
+              if (observation?.type === "session.configured") {
+                assert.deepEqual(observation.payload.identity?.model, {
+                  status: "observed",
+                  value: "native-replacement-model",
+                  sourceEvent: "codex.thread/open",
+                });
+              }
+              if (operation === "managed-rotation") {
+                const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+                const binding = Option.getOrThrow(yield* directory.getBinding(threadId));
+                assert.deepEqual(binding.resumeCursor, { threadId: "rotated-native-thread" });
+              }
+              assert.deepEqual(
+                afterEvents.slice(1).map((event) => event.eventId),
+                ["identity-buffered", "identity-late", "identity-after-marker"],
+              );
+            } else {
+              assert.deepEqual(
+                afterEvents.map((event) => event.eventId),
+                ["identity-prior", "identity-after-marker"],
+              );
+            }
+            yield* provider.stopSession({ threadId });
+            adapter.startSession.mockClear();
+            adapter.sendTurn.mockClear();
+            adapter.rollbackThread.mockClear();
+            adapter.stopSession.mockClear();
+          }),
+      );
+    }
+  }
 
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {
@@ -5280,15 +5468,15 @@ describe("agent browser access", () => {
     });
 
   // The capability on the credential is the observable that matters: a session
-  // always gets a credential (the pull request toolkit is never withheld), and
+  // always gets a credential for pull requests and organization, and
   // `preview` on it is what actually grants or denies the browser tools.
-  it.effect("issues a credential without preview when agent browser access is off", () =>
+  it.effect("issues organization independently of browser and device access", () =>
     Effect.gen(function* () {
       const threadId = asThreadId("thread-browser-off");
 
       const issued = yield* startSessionWith(false, threadId);
 
-      assert.deepEqual(issued, [{ threadId, capabilities: ["pull-requests"] }]);
+      assert.deepEqual(issued, [{ threadId, capabilities: ["organization", "pull-requests"] }]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5299,7 +5487,7 @@ describe("agent browser access", () => {
       const issued = yield* startSessionWith(true, threadId);
 
       assert.deepEqual(issued, [
-        { threadId, capabilities: ["device", "preview", "pull-requests"] },
+        { threadId, capabilities: ["device", "organization", "preview", "pull-requests"] },
       ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -5310,7 +5498,9 @@ describe("agent browser access", () => {
 
       const issued = yield* startSessionWith({ browser: false, device: true }, threadId);
 
-      assert.deepEqual(issued, [{ threadId, capabilities: ["device", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["device", "organization", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5318,7 +5508,7 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-off");
       const issued = yield* startSessionWith({ browser: true, device: false }, threadId, false);
-      assert.deepEqual(issued, [{ threadId, capabilities: ["pull-requests"] }]);
+      assert.deepEqual(issued, [{ threadId, capabilities: ["organization", "pull-requests"] }]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5326,7 +5516,9 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-off-device-on");
       const issued = yield* startSessionWith(true, threadId, false);
-      assert.deepEqual(issued, [{ threadId, capabilities: ["device", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["device", "organization", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5334,7 +5526,9 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-on");
       const issued = yield* startSessionWith({ browser: false, device: false }, threadId, true);
-      assert.deepEqual(issued, [{ threadId, capabilities: ["preview", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["organization", "preview", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5344,7 +5538,9 @@ describe("agent browser access", () => {
       const issued = yield* startSessionWith({ browser: false, device: false }, threadId, {
         device: true,
       });
-      assert.deepEqual(issued, [{ threadId, capabilities: ["device", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["device", "organization", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5359,7 +5555,503 @@ describe("agent browser access", () => {
         { device: false },
         { withoutOrchestration: true },
       );
-      assert.deepEqual(issued, [{ threadId, capabilities: ["preview", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["organization", "preview", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+});
+
+const configuredEffortAccountId = ProviderInstanceId.make("codex_effort_account");
+const configuredEffortProjectId = ProjectId.make("project-configured-effort");
+const configuredEffortSelection = (effort: string) =>
+  createModelSelection(codexInstanceId, "gpt-5.4", [{ id: "reasoningEffort", value: effort }]);
+const configuredEffortSnapshot = {
+  instanceId: configuredEffortAccountId,
+  driver: CODEX_DRIVER,
+  enabled: true,
+  installed: true,
+  version: null,
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-01-01T00:00:00.000Z",
+  models: [
+    {
+      slug: "gpt-5.4",
+      name: "GPT-5.4",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Reasoning effort",
+            type: "select",
+            options: [
+              { id: "low", label: "Low" },
+              { id: "high", label: "High", isDefault: true },
+              { id: "xhigh", label: "Extra high" },
+            ],
+          },
+        ],
+      },
+    },
+  ],
+  slashCommands: [],
+  skills: [],
+} satisfies ServerProvider;
+const configuredEffortCatalogLayer = Layer.succeed(ProviderRegistry.ProviderRegistry, {
+  getProviders: Effect.succeed([configuredEffortSnapshot]),
+  refresh: () => Effect.die("dispatch must not refresh provider snapshots"),
+  refreshInstance: () => Effect.die("dispatch must not refresh an instance"),
+  refreshWorkspaceSnapshot: () => Effect.die("dispatch must not refresh workspace snapshots"),
+  getProviderMaintenanceCapabilitiesForInstance: () => Effect.die("unused"),
+  setProviderMaintenanceActionState: () => Effect.die("unused"),
+  streamChanges: Stream.empty,
+});
+
+function makeConfiguredEffortProjectionLayer(projectDefault: string | null = null) {
+  return Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+    getTurnStartMessage: () => Effect.die("unused"),
+    getImportedAgentSessionSources: () => Effect.die("unused"),
+    getUserInputActivity: () => Effect.die("unused"),
+    listActivitiesByKind: () => Effect.die("unused"),
+    getCommandReadModel: () => Effect.die("unused"),
+    getSnapshot: () => Effect.die("must not read thread history"),
+    getShellSnapshot: () => Effect.die("unused"),
+    getDeletedWorktreeThreads: () => Effect.die("unused"),
+    listThreadsWithPullRequests: () => Effect.die("unused"),
+    getArchivedShellSnapshot: () => Effect.die("unused"),
+    getSnapshotSequence: () => Effect.die("unused"),
+    getCounts: () => Effect.die("unused"),
+    getEventReplayStats: () => Effect.die("unused"),
+    getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
+    getProjectShells: () => Effect.die("unused"),
+    getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
+    getThreadCheckpointContext: () => Effect.die("unused"),
+    getFullThreadDiffContext: () => Effect.die("unused"),
+    getThreadRuntimeContext: () => Effect.die("unused"),
+    getThreadDetailById: () => Effect.die("must not read thread history"),
+    getThreadDetailSnapshot: () => Effect.die("must not read thread history"),
+    searchThreads: () => Effect.die("unused"),
+    getThreadShellById: (threadId) =>
+      Schema.decodeUnknownEffect(OrchestrationThreadShell)({
+        id: threadId,
+        projectId: configuredEffortProjectId,
+        title: "Configured effort",
+        modelSelection: createModelSelection(configuredEffortAccountId, "gpt-5.4"),
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        latestTurn: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        session: null,
+        latestUserMessageAt: null,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        hasActionableProposedPlan: false,
+      }).pipe(Effect.map(Option.some), Effect.orDie),
+    getProjectShellById: (projectId) =>
+      Schema.decodeUnknownEffect(OrchestrationProjectShell)({
+        id: projectId,
+        title: "Configured effort project",
+        workspaceRoot: process.cwd(),
+        defaultModelSelection:
+          projectDefault === null ? null : configuredEffortSelection(projectDefault),
+        scripts: [],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }).pipe(Effect.map(Option.some), Effect.orDie),
+  });
+}
+
+for (const setupMode of ["existing", "managed"] as const) {
+  const adapter = makeFakeCodexAdapter();
+  const configuredEffort = makeProviderServiceLayer({
+    registry: makeStaticInstanceRegistry([[configuredEffortAccountId, adapter.adapter]]),
+    catalogLayer: configuredEffortCatalogLayer,
+    settingsLayer: ServerSettings.ServerSettingsService.layerTest({
+      defaultModelSelection: configuredEffortSelection("xhigh"),
+      providerInstances: {
+        [codexInstanceId]: { driver: CODEX_DRIVER, config: { setupMode } },
+        [configuredEffortAccountId]: { driver: CODEX_DRIVER, config: { setupMode } },
+      },
+    }),
+  });
+  configuredEffort.layer(`configured reasoning effort dispatch (${setupMode})`, (it) => {
+    it.effect("uses the current cross-account default without persisting inherited effort", () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        const threadId = asThreadId(`configured-effort-${setupMode}`);
+        const selection = createModelSelection(configuredEffortAccountId, "gpt-5.4", [
+          { id: "fastMode", value: true },
+        ]);
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: configuredEffortAccountId,
+          threadId,
+          runtimeMode: "full-access",
+          modelSelection: selection,
+        });
+        adapter.sendTurn.mockClear();
+        yield* provider.sendTurn({ threadId, input: "first", modelSelection: selection });
+        assert.deepEqual(adapter.sendTurn.mock.calls[0]?.[0].modelSelection, {
+          ...selection,
+          options: [...(selection.options ?? []), { id: "reasoningEffort", value: "xhigh" }],
+        });
+        let binding = yield* directory.getBinding(threadId);
+        assert.isTrue(Option.isSome(binding));
+        if (Option.isSome(binding))
+          assert.deepEqual(
+            (binding.value.runtimePayload as { modelSelection?: unknown } | null)?.modelSelection,
+            selection,
+          );
+
+        yield* settings.updateSettings({ defaultModelSelection: configuredEffortSelection("low") });
+        yield* provider.sendTurn({ threadId, input: "second", modelSelection: selection });
+        assert.deepEqual(adapter.sendTurn.mock.calls[1]?.[0].modelSelection, {
+          ...selection,
+          options: [...(selection.options ?? []), { id: "reasoningEffort", value: "low" }],
+        });
+        binding = yield* directory.getBinding(threadId);
+        if (Option.isSome(binding))
+          assert.deepEqual(
+            (binding.value.runtimePayload as { modelSelection?: unknown } | null)?.modelSelection,
+            selection,
+          );
+
+        const explicit = createModelSelection(configuredEffortAccountId, "gpt-5.4", [
+          { id: "reasoningEffort", value: "high" },
+        ]);
+        yield* provider.sendTurn({ threadId, input: "explicit", modelSelection: explicit });
+        assert.deepEqual(adapter.sendTurn.mock.calls[2]?.[0].modelSelection, explicit);
+        yield* provider.sendTurn({ threadId, input: "without selection" });
+        assert.isUndefined(adapter.sendTurn.mock.calls[3]?.[0].modelSelection);
+      }),
+    );
+  });
+}
+
+const snapshotEffortAdapter = makeFakeCodexAdapter();
+const snapshotEffortGetInstance = vi.fn((instanceId: ProviderInstanceId) => {
+  assert.equal(instanceId, configuredEffortAccountId);
+  return Effect.succeed({
+    instanceId,
+    driverKind: CODEX_DRIVER,
+    enabled: true,
+    displayName: undefined,
+    continuationIdentity: { driverKind: CODEX_DRIVER, continuationKey: "effort-snapshot" },
+    adapter: snapshotEffortAdapter.adapter,
+    snapshot: {
+      getSnapshot: Effect.succeed(configuredEffortSnapshot),
+      refresh: Effect.die("dispatch must not refresh"),
+      resolveMaintenance: () => Effect.die("unused"),
+      streamChanges: Stream.empty,
+      applyUsageLimits: () => Effect.die("unused"),
+    },
+    textGeneration: {
+      generateCommitMessage: () => Effect.die("unused"),
+      generatePrContent: () => Effect.die("unused"),
+      generateBranchName: () => Effect.die("unused"),
+      generateThreadTitle: () => Effect.die("unused"),
+    },
+  });
+});
+const snapshotEffort = makeProviderServiceLayer({
+  registry: makeStaticInstanceRegistry([
+    [configuredEffortAccountId, snapshotEffortAdapter.adapter],
+  ]),
+  instanceLayer: Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+    getInstance: snapshotEffortGetInstance,
+    listInstances: Effect.die("dispatch must not scan instances"),
+    listUnavailable: Effect.die("unused"),
+    streamChanges: Stream.empty,
+    subscribeChanges: Effect.die("unused"),
+  }),
+  settingsLayer: ServerSettings.ServerSettingsService.layerTest({
+    defaultModelSelection: configuredEffortSelection("xhigh"),
+    providerInstances: {
+      [codexInstanceId]: { driver: CODEX_DRIVER, config: {} },
+      [configuredEffortAccountId]: { driver: CODEX_DRIVER, config: {} },
+    },
+  }),
+});
+snapshotEffort.layer("configured reasoning effort from instance snapshot", (it) => {
+  it.effect("keeps the original selection in runtime replacement and turn bindings", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("configured-effort-runtime-replacement");
+      const selection = createModelSelection(configuredEffortAccountId, "openai.gpt-5.4");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: configuredEffortAccountId,
+        threadId,
+        runtimeMode: "full-access",
+        modelSelection: selection,
+      });
+      snapshotEffortGetInstance.mockClear();
+      snapshotEffortAdapter.sendTurn.mockImplementationOnce((input, runtime) =>
+        Effect.gen(function* () {
+          assert.deepEqual(input.modelSelection, {
+            ...selection,
+            options: [{ id: "reasoningEffort", value: "xhigh" }],
+          });
+          if (runtime === undefined) return yield* Effect.die("missing replacement context");
+          yield* runtime.withRuntimeReplacement(() => Effect.succeed(session));
+          const replacement = yield* directory.getBinding(threadId).pipe(Effect.orDie);
+          assert.isTrue(Option.isSome(replacement));
+          if (Option.isSome(replacement)) {
+            assert.deepEqual(
+              (replacement.value.runtimePayload as { modelSelection?: unknown } | null)
+                ?.modelSelection,
+              selection,
+            );
+          }
+          return { threadId, turnId: asTurnId("configured-effort-replaced") };
+        }),
+      );
+      yield* provider.sendTurn({ threadId, input: "replace runtime", modelSelection: selection });
+      assert.deepEqual(snapshotEffortGetInstance.mock.calls, [[configuredEffortAccountId]]);
+      const binding = yield* directory.getBinding(threadId);
+      assert.isTrue(Option.isSome(binding));
+      if (Option.isSome(binding)) {
+        assert.deepEqual(
+          (binding.value.runtimePayload as { modelSelection?: unknown } | null)?.modelSelection,
+          selection,
+        );
+      }
+    }),
+  );
+});
+
+for (const source of ["override", "project-shell"] as const) {
+  const adapter = makeFakeCodexAdapter();
+  const configuredProjectEffort = makeProviderServiceLayer({
+    registry: makeStaticInstanceRegistry([[configuredEffortAccountId, adapter.adapter]]),
+    catalogLayer: configuredEffortCatalogLayer,
+    projectionLayer: makeConfiguredEffortProjectionLayer(source === "project-shell" ? "low" : null),
+    settingsLayer: ServerSettings.ServerSettingsService.layerTest({
+      defaultModelSelection: configuredEffortSelection("xhigh"),
+      providerInstances: {
+        [codexInstanceId]: { driver: CODEX_DRIVER, config: {} },
+        [configuredEffortAccountId]: { driver: CODEX_DRIVER, config: {} },
+      },
+      ...(source === "override"
+        ? {
+            projectSettingsOverrides: {
+              [configuredEffortProjectId]: {
+                defaultModelSelection: configuredEffortSelection("low"),
+              },
+            },
+          }
+        : {}),
+    }),
+  });
+  configuredProjectEffort.layer(`configured reasoning effort from ${source}`, (it) => {
+    it.effect("uses the project default before the environment default", () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const threadId = asThreadId(`configured-effort-project-${source}`);
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: configuredEffortAccountId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+        yield* provider.sendTurn({
+          threadId,
+          input: "project default",
+          modelSelection: createModelSelection(configuredEffortAccountId, "gpt-5.4"),
+        });
+        assert.deepEqual(adapter.sendTurn.mock.calls[0]?.[0].modelSelection?.options, [
+          { id: "reasoningEffort", value: "low" },
+        ]);
+      }),
+    );
+  });
+}
+
+const chatGptAnalytics = makeRecordingAnalytics();
+const chatGptAdapter = makeFakeCodexAdapter();
+const chatGptTelemetry = makeProviderServiceLayer({
+  analyticsLayer: chatGptAnalytics.layer,
+  settingsLayer: ServerSettings.ServerSettingsService.layerTest({
+    providerInstances: {
+      [secondaryCodexInstanceId]: { driver: CODEX_DRIVER, config: { setupMode: "managed" } },
+    },
+  }),
+  registry: makeStaticInstanceRegistry([[secondaryCodexInstanceId, chatGptAdapter.adapter]]),
+});
+chatGptTelemetry.layer("ChatGPT connector turn analytics", (it) => {
+  it.effect("tags attempts, sends, and one terminal outcome without recording the prompt", () =>
+    Effect.gen(function* () {
+      chatGptAnalytics.reset();
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("chatgpt-analytics-success");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: secondaryCodexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* provider.sendTurn({ threadId, input: "private test prompt" });
+      const drain = yield* Stream.take(provider.streamEvents, 2).pipe(
+        Stream.runDrain,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const completion: LegacyProviderRuntimeEvent = {
+        type: "turn.completed",
+        eventId: asEventId("chatgpt-completed"),
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        turnId: turn.turnId,
+        payload: { state: "completed" },
+      };
+      chatGptAdapter.emit(completion);
+      chatGptAdapter.emit({ ...completion, eventId: asEventId("chatgpt-completed-duplicate") });
+      yield* Fiber.join(drain);
+      for (const event of [
+        "provider.turn.attempted",
+        "provider.turn.sent",
+        "provider.turn.completed",
+      ]) {
+        const events = chatGptAnalytics.eventsByName(event);
+        assert.equal(events.length, 1);
+        assert.equal(events[0]?.properties?.subscriptionSharing, true);
+        assert.notProperty(events[0]?.properties ?? {}, "input");
+        assert.notProperty(events[0]?.properties ?? {}, "threadId");
+        assert.notProperty(events[0]?.properties ?? {}, "providerInstanceId");
+      }
+    }),
+  );
+  it.effect("records rejected sends as failures without an accepted-turn event", () =>
+    Effect.gen(function* () {
+      chatGptAnalytics.reset();
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("chatgpt-analytics-rejection");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: secondaryCodexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      chatGptAdapter.sendTurn.mockImplementationOnce(() =>
+        Effect.fail(new ProviderAdapterSessionNotFoundError({ provider: CODEX_DRIVER, threadId })),
+      );
+      const result = yield* provider
+        .sendTurn({ threadId, input: "private rejected prompt" })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      assert.equal(chatGptAnalytics.eventsByName("provider.turn.attempted").length, 1);
+      assert.equal(chatGptAnalytics.eventsByName("provider.turn.sent").length, 0);
+      const rejected = chatGptAnalytics.eventsByName("provider.turn.rejected");
+      assert.equal(rejected.length, 1);
+      assert.deepStrictEqual(rejected[0]?.properties, {
+        provider: CODEX_DRIVER,
+        subscriptionSharing: true,
+        errorType: "ProviderAdapterSessionNotFoundError",
+      });
+    }),
+  );
+});
+
+describe("read-only native provider goal", () => {
+  for (const condition of [
+    "missing",
+    "mismatch",
+    "stopped",
+    "missing-cursor",
+    "closed",
+    "unsupported",
+    "current",
+    "changed",
+  ] as const) {
+    const threadId = asThreadId(`goal-${condition}`);
+    const nativeThreadId = `native-${condition}`;
+    let duringRead: Effect.Effect<void> = Effect.void;
+    const read = vi.fn(() =>
+      duringRead.pipe(
+        Effect.as({
+          nativeThreadId,
+          state: "inactive" as const,
+          reasonCode: "goal_null" as const,
+          objective: "private objective must never leave the adapter",
+        }),
+      ),
+    );
+    const { codex, layer } = makeProviderServiceLayer({
+      ...(condition === "unsupported" ? {} : { getProviderGoalState: read }),
+    });
+    layer(`native goal ${condition}`, (it) => {
+      it.effect(`holds ${condition} without starting or recovering a provider`, () =>
+        Effect.gen(function* () {
+          const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+          const provider = yield* ProviderService.ProviderService;
+          if (condition !== "missing") {
+            yield* directory.upsert({
+              threadId,
+              provider: CODEX_DRIVER,
+              providerInstanceId:
+                condition === "mismatch" ? claudeAgentInstanceId : codexInstanceId,
+              status: condition === "stopped" ? "stopped" : "running",
+              ...(condition === "missing-cursor"
+                ? {}
+                : { resumeCursor: { threadId: nativeThreadId } }),
+            });
+          }
+          if (!["missing", "closed"].includes(condition)) {
+            yield* codex.startSession({
+              threadId,
+              provider: CODEX_DRIVER,
+              providerInstanceId: codexInstanceId,
+              runtimeMode: "full-access",
+              resumeCursor: { threadId: nativeThreadId },
+            });
+          }
+          codex.startSession.mockClear();
+          if (condition === "changed") {
+            duringRead = directory
+              .upsert({
+                threadId,
+                provider: CODEX_DRIVER,
+                providerInstanceId: codexInstanceId,
+                status: "running",
+                resumeCursor: { threadId: "replaced-native-thread" },
+              })
+              .pipe(Effect.orDie);
+          }
+          assert(provider.getProviderGoalState !== undefined);
+          const result = yield* provider.getProviderGoalState({
+            threadId,
+            expectedInstanceId: codexInstanceId,
+          });
+          const reasons = {
+            missing: "no_session",
+            mismatch: "instance_mismatch",
+            stopped: "session_stopped",
+            "missing-cursor": "native_cursor_missing",
+            closed: "session_stopped",
+            unsupported: "unsupported",
+            current: "goal_null",
+            changed: "context_changed",
+          } as const;
+          assert.equal(result.reasonCode, reasons[condition]);
+          assert.equal(result.state, condition === "current" ? "inactive" : "unknown");
+          assert.equal(result.threadId, threadId);
+          assert.equal(result.providerInstanceId, codexInstanceId);
+          assert.notProperty(result, "objective");
+          assert.equal(codex.startSession.mock.calls.length, 0);
+          assert.equal(
+            read.mock.calls.length,
+            condition === "current" || condition === "changed" ? 1 : 0,
+          );
+        }),
+      );
+    });
+  }
 });

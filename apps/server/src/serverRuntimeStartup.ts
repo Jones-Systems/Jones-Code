@@ -1,15 +1,20 @@
+import packageJson from "../package.json" with { type: "json" };
+import { awaitJonesTrialCommit } from "./jonesUpdates/trialGate.ts";
+import * as NodeCrypto from "node:crypto";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+export const nativeCreationBootId = NodeCrypto.randomUUID();
 import {
   CommandId,
   EventId,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_SERVER_SETTINGS,
-  type ServerSettings as ServerSettingsValue,
   type ModelSelection,
   type OrchestrationProjectShell,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type ServerSettings as ServerSettingsValue,
   TurnId,
   WORKTREE_SETUP_ACTIVITY_KIND,
   WorktreeSetupSnapshot,
@@ -77,6 +82,10 @@ export class ServerRuntimeStartup extends Context.Service<
     readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
     readonly markHttpListening: Effect.Effect<void>;
     readonly markRunningProviderSessionsForContinuation: Effect.Effect<
+      ReadonlyArray<ThreadId>,
+      ServerUpdateThreadContinuationError
+    >;
+    readonly markOptedInProviderSessionsForContinuation: Effect.Effect<
       ReadonlyArray<ThreadId>,
       ServerUpdateThreadContinuationError
     >;
@@ -402,48 +411,62 @@ const toServerUpdateThreadContinuationError = (cause: unknown) =>
     ? cause
     : new ServerUpdateThreadContinuationError({ cause });
 
-export const markRunningProviderSessionsForContinuation = Effect.gen(function* () {
-  const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
-  const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
-  const { threads } = yield* query.getCommandReadModel();
-  const running = threads.filter(
-    (thread) =>
-      thread.archivedAt === null &&
-      thread.deletedAt === null &&
-      thread.session?.status === "running" &&
-      thread.session.activeTurnId !== null,
-  );
+const markProviderSessionsForContinuation = (settings?: ServerSettingsValue) =>
+  Effect.gen(function* () {
+    const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+    const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+    const { threads } = yield* query.getCommandReadModel();
+    const running = threads.filter(
+      (thread) =>
+        (settings === undefined ||
+          resolveProjectSettings(settings, thread.projectId).settings
+            .continueThreadsAfterServerUpdate) &&
+        thread.archivedAt === null &&
+        thread.deletedAt === null &&
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId !== null,
+    );
 
-  const marked: ThreadId[] = [];
-  return yield* Effect.gen(function* () {
-    for (const thread of running) {
-      const activeTurnId = thread.session?.activeTurnId;
-      if (activeTurnId === null || activeTurnId === undefined) {
-        continue;
+    const marked: ThreadId[] = [];
+    return yield* Effect.gen(function* () {
+      for (const thread of running) {
+        const activeTurnId = thread.session?.activeTurnId;
+        if (activeTurnId === null || activeTurnId === undefined) {
+          continue;
+        }
+        const binding = yield* directory.getBinding(thread.id);
+        if (Option.isNone(binding)) {
+          continue;
+        }
+        if (binding.value.resumeCursor === null || binding.value.resumeCursor === undefined) {
+          continue;
+        }
+        yield* directory.upsert({
+          ...binding.value,
+          runtimePayload: {
+            ...readRuntimePayload(binding.value.runtimePayload),
+            [SERVER_UPDATE_CONTINUATION_KEY]: activeTurnId,
+            continueAfterServerUpdatePrepared: null,
+          },
+        });
+        marked.push(thread.id);
       }
-      const binding = yield* directory.getBinding(thread.id);
-      if (Option.isNone(binding)) {
-        continue;
-      }
-      if (binding.value.resumeCursor === null || binding.value.resumeCursor === undefined) {
-        continue;
-      }
-      yield* directory.upsert({
-        ...binding.value,
-        runtimePayload: {
-          ...readRuntimePayload(binding.value.runtimePayload),
-          [SERVER_UPDATE_CONTINUATION_KEY]: activeTurnId,
-          continueAfterServerUpdatePrepared: null,
-        },
-      });
-      marked.push(thread.id);
-    }
-    return marked;
-  }).pipe(
-    Effect.catchCause((cause) =>
-      clearProviderSessionContinuationMarkers(marked).pipe(Effect.andThen(Effect.failCause(cause))),
-    ),
-  );
+      return marked;
+    }).pipe(
+      Effect.catchCause((cause) =>
+        clearProviderSessionContinuationMarkers(marked).pipe(
+          Effect.andThen(Effect.failCause(cause)),
+        ),
+      ),
+    );
+  }).pipe(Effect.mapError(toServerUpdateThreadContinuationError));
+
+export const markRunningProviderSessionsForContinuation = markProviderSessionsForContinuation();
+
+// Desktop preparation is mandatory; explicit resume markers require each project's consent.
+export const markOptedInProviderSessionsForContinuation = Effect.gen(function* () {
+  const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
+  return yield* markProviderSessionsForContinuation(settings);
 }).pipe(Effect.mapError(toServerUpdateThreadContinuationError));
 
 const clearContinuationMarkers = (
@@ -806,7 +829,7 @@ const decodeWorktreeSetupSnapshot = Schema.decodeUnknownOption(WorktreeSetupSnap
 
 /**
  * A worktree bootstrap records its setup snapshot on the thread while it runs
- * and settles it when it finishes. The bootstrap itself lives only in memory,
+ * and settles it when it finishes. Legacy bootstrap execution lives only in memory,
  * so a process exit mid-setup leaves a `running` record with nobody to finish
  * it. Before the turn started that also strands the persisted user message, so
  * the setup is marked failed and the user is told to send again. After the
@@ -820,6 +843,8 @@ export const reconcileWorktreeSetups = Effect.gen(function* () {
   // The command read model carries no activity bodies; read the setup
   // records directly, live threads only.
   const recordedSetups = yield* query.listActivitiesByKind(WORKTREE_SETUP_ACTIVITY_KIND);
+  const nativeSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  if (Option.isNone(nativeSql)) return;
   const interruptedAt = DateTime.formatIso(yield* DateTime.now);
 
   for (const recorded of recordedSetups) {
@@ -827,6 +852,10 @@ export const reconcileWorktreeSetups = Effect.gen(function* () {
     if (Option.isNone(snapshot) || snapshot.value.phase !== "running") continue;
     if (recorded.id !== worktreeSetupActivityId(snapshot.value.threadId)) continue;
     const threadId = snapshot.value.threadId;
+    const claims =
+      yield* nativeSql.value`SELECT claim_id FROM native_creation_intents WHERE thread_id = ${threadId}`;
+    // Claimed creation remains historical evidence; restart cannot settle it or invite replay.
+    if (claims.length > 0) continue;
 
     const turnStarted = snapshot.value.stages.some(
       (stage) => stage.id === "agent" && stage.status === "done",
@@ -1104,6 +1133,27 @@ export const make = (options?: StartupOptions) =>
       // This is the prepared boundary. Every dependency has been acquired and
       // every runtime root has confirmed that it is parked before this request.
       const updateOutcome = yield* launcher.prepareTrial;
+      yield* Effect.tryPromise({
+        try: (signal) =>
+          awaitJonesTrialCommit({
+            descriptorPath: process.env.T3CODE_JONES_TRIAL_DESCRIPTOR,
+            home: serverConfig.baseDir,
+            databasePath: serverConfig.dbPath,
+            profile: process.env.T3CODE_DESKTOP_USER_DATA_DIR,
+            environmentId: environment.environmentId,
+            version: packageJson.version,
+            buildMetadata: packageJson,
+            listener: `http://${formatHostForUrl(serverConfig.host ?? "127.0.0.1")}:${serverConfig.port}`,
+            signal,
+          }),
+        catch: (cause) =>
+          new ServerRuntimeStartupError({
+            mode: serverConfig.mode,
+            host: serverConfig.host ?? null,
+            port: serverConfig.port,
+            cause,
+          }),
+      });
       yield* runStartupPhase(
         "welcome.publish",
         lifecycleEvents.publish({
@@ -1167,6 +1217,17 @@ export const make = (options?: StartupOptions) =>
       awaitCommandReady: commandGate.awaitCommandReady,
       markHttpListening: Deferred.succeed(httpListening, undefined),
       markRunningProviderSessionsForContinuation: markRunningProviderSessionsForContinuation.pipe(
+        Effect.provideService(
+          ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+          projectionSnapshotQuery,
+        ),
+        Effect.provideService(
+          ProviderSessionDirectory.ProviderSessionDirectory,
+          providerSessionDirectory,
+        ),
+      ),
+      markOptedInProviderSessionsForContinuation: markOptedInProviderSessionsForContinuation.pipe(
+        Effect.provideService(ServerSettings.ServerSettingsService, serverSettings),
         Effect.provideService(
           ProjectionSnapshotQuery.ProjectionSnapshotQuery,
           projectionSnapshotQuery,

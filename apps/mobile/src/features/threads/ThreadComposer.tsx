@@ -1,3 +1,4 @@
+import { ChatGptUsageLimitNotice } from "./ChatGptUsageLimitNotice";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useAtomValue } from "@effect/atom-react";
@@ -59,6 +60,7 @@ import {
 import type { ComposerDocumentAttachment } from "../../lib/composerContext";
 import { useProject } from "../../state/entities";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
@@ -519,9 +521,21 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   ]);
 
   // ── Model menu ───────────────────────────────────────────
+  const configuredDefaultModelSelection = useMemo(
+    () =>
+      props.serverConfig?.settings
+        ? resolveProjectSettings(
+            props.serverConfig.settings,
+            props.selectedThread.projectId,
+            project,
+          ).settings.defaultModelSelection
+        : null,
+    [props.serverConfig?.settings, props.selectedThread.projectId, project],
+  );
   const modelOptions = useMemo(
-    () => buildModelOptions(props.serverConfig, currentModelSelection),
-    [props.serverConfig, currentModelSelection],
+    () =>
+      buildModelOptions(props.serverConfig, currentModelSelection, configuredDefaultModelSelection),
+    [props.serverConfig, currentModelSelection, configuredDefaultModelSelection],
   );
   const providerGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);
   // An existing thread is bound to its harness: sessions can't move between
@@ -637,6 +651,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         className="relative w-full self-center"
         style={{ maxWidth: props.contentMaxWidth }}
       >
+        <ChatGptUsageLimitNotice
+          environmentId={props.environmentId}
+          thread={props.selectedThread}
+        />
         {!voiceInput.isBusy &&
         composerMenu.trigger &&
         (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (

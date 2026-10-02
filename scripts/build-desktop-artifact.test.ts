@@ -25,6 +25,7 @@ import {
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
+  JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE,
   LINUX_CAPTURE_EXTRA_RESOURCES,
   LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
   LINUX_FILE_EXCLUSIONS,
@@ -286,44 +287,50 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopWebAssetBrand("0.0.17-nightly.20260413.42"), "nightly");
   });
 
-  it.effect("resolves GitHub desktop publish config from Effect config", () =>
+  it.effect("defaults desktop updates to Jones despite an ambient upstream repository", () =>
     Effect.gen(function* () {
-      const latestConfig = yield* resolveGitHubPublishConfig("latest").pipe(
+      const config = yield* resolveGitHubPublishConfig("nightly").pipe(
         Effect.provide(
           ConfigProvider.layer(
-            ConfigProvider.fromEnv({
-              env: {
-                T3CODE_DESKTOP_UPDATE_REPOSITORY: "pingdotgg/t3code",
-              },
-            }),
+            ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
           ),
         ),
       );
-      const nightlyConfig = yield* resolveGitHubPublishConfig("nightly").pipe(
+      assert.deepStrictEqual(config, {
+        provider: "github",
+        owner: "Jones-Systems",
+        repo: "Jones-Code",
+        releaseType: "prerelease",
+        channel: "nightly",
+      });
+      const override = yield* resolveGitHubPublishConfig("latest").pipe(
         Effect.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                T3CODE_DESKTOP_UPDATE_REPOSITORY: "owner/explicit-feed",
                 GITHUB_REPOSITORY: "pingdotgg/t3code",
               },
             }),
           ),
         ),
       );
-
-      assert.deepStrictEqual(latestConfig, {
+      assert.deepStrictEqual(override, {
         provider: "github",
-        owner: "pingdotgg",
-        repo: "t3code",
+        owner: "owner",
+        repo: "explicit-feed",
         releaseType: "release",
       });
-      assert.deepStrictEqual(nightlyConfig, {
-        provider: "github",
-        owner: "pingdotgg",
-        repo: "t3code",
-        releaseType: "prerelease",
-        channel: "nightly",
-      });
+      const invalid = yield* resolveGitHubPublishConfig("latest").pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: { T3CODE_DESKTOP_UPDATE_REPOSITORY: "invalid/repo/path" },
+            }),
+          ),
+        ),
+      );
+      assert.isUndefined(invalid);
     }),
   );
 
@@ -351,7 +358,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const previewChannel = yield* createBuildConfig(
         "mac",
         "dmg",
-        "0.0.41-preview.20260912.1589",
+        "0.0.41-preview.20260912.1589.2",
         false,
         false,
         undefined,
@@ -360,11 +367,20 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       assert.notProperty(preview, "publish");
       assert.notProperty(previewChannel, "publish");
+      assert.includeDeepMembers(previewChannel.extraResources as unknown[], [
+        JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE,
+      ]);
+      assert.notIncludeDeepMembers(release.extraResources as unknown[], [
+        JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE,
+      ]);
+      assert.notIncludeDeepMembers(preview.extraResources as unknown[], [
+        JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE,
+      ]);
       assert.deepStrictEqual(release.publish, [
         {
           provider: "github",
-          owner: "pingdotgg",
-          repo: "t3code",
+          owner: "Jones-Systems",
+          repo: "Jones-Code",
           releaseType: "release",
         },
       ]);
@@ -550,6 +566,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     for (const resource of [
       ...WSL_RUNTIME_EXTRA_RESOURCES,
       ...LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
+      JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE,
     ]) {
       assert.include(
         DESKTOP_FILE_EXCLUSIONS,
@@ -570,6 +587,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "!apps/desktop/prod-resources/windows-server/**/*",
       "!apps/desktop/prod-resources/wsl-runtime.tar.gz",
       "!apps/desktop/prod-resources/wsl-runtime.tar.gz.sha256",
+      "!apps/desktop/prod-resources/jones-update-helper.py",
       "!apps/desktop/gnome-extension",
       "!apps/desktop/gnome-extension/**/*",
     ]);

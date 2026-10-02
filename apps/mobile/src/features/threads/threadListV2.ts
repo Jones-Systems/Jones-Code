@@ -1,3 +1,10 @@
+import { nativeWorkstreamThreadKey } from "@t3tools/client-runtime/state/workstreams";
+import {
+  mobileThreadOrderSection,
+  sameMobileThreadOrderScope,
+  type MobileThreadOrderScope,
+  type MobileThreadOrderSnapshot,
+} from "../../lib/threadOrderScope";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import {
   canSnooze,
@@ -156,8 +163,10 @@ export function sortThreadsForListV2<
   return sortActiveThreadsByOrderKey(threads);
 }
 
-/** Canonical card section for Move up/down, independent of search or scope. */
+/** Canonical move population, independent of display filters. */
 export function getThreadListV2OrderedSection(input: {
+  readonly scope?: MobileThreadOrderScope;
+  readonly snapshot?: MobileThreadOrderSnapshot | null;
   readonly threads: readonly EnvironmentThreadShell[];
   readonly section: "pinned" | "active";
   readonly pendingOrder?: PendingThreadOrder | null;
@@ -166,6 +175,9 @@ export function getThreadListV2OrderedSection(input: {
   readonly snoozeEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly queuedThreadKeys?: ReadonlySet<string>;
 }): EnvironmentThreadShell[] {
+  const scope = input.scope ?? { kind: "shelf", section: input.section };
+  const section = mobileThreadOrderSection(scope);
+  const grouping = input.snapshot?.enabled === true;
   const threads = input.threads.filter((thread) => {
     if (thread.archivedAt !== null) return false;
     if (
@@ -181,17 +193,31 @@ export function getThreadListV2OrderedSection(input: {
     ) {
       return false;
     }
-    return (thread.pinnedAt != null) === (input.section === "pinned");
+    const groupKey = input.snapshot?.primaryGroupByThreadKey.get(
+      nativeWorkstreamThreadKey(thread.environmentId, thread.id),
+    );
+    if (grouping) {
+      if (scope.kind === "workstream")
+        return scope.groupKey === null
+          ? groupKey === undefined && thread.pinnedAt == null
+          : groupKey === scope.groupKey;
+      if (groupKey !== undefined) return false;
+    }
+    return (thread.pinnedAt != null) === (section === "pinned");
   });
   const ordered =
-    input.section === "pinned"
+    section === "pinned"
       ? sortPinnedThreadsByOrderKey(threads)
       : sortActiveThreadsByOrderKey(threads);
   const pending =
-    input.pendingOrder?.section === input.section
+    input.pendingOrder?.section === section &&
+    (input.pendingOrder.scope === undefined ||
+      sameMobileThreadOrderScope(input.pendingOrder.scope, scope)) &&
+    (input.pendingOrder.sourceRevision === undefined ||
+      input.pendingOrder.sourceRevision === input.snapshot?.revision)
       ? reconcilePendingThreadOrder(input.pendingOrder, ordered)
       : null;
-  return applyPendingThreadOrder(ordered, input.section, pending);
+  return applyPendingThreadOrder(ordered, section, pending);
 }
 
 export interface ThreadListV2Item {
@@ -199,7 +225,7 @@ export interface ThreadListV2Item {
   readonly variant: "card" | "slim";
   /** Snoozed-shelf row: shows the wake countdown and offers Wake. */
   readonly snoozed: boolean;
-  /** Pinned-block row: renders the pin glyph and offers Unpin. */
+  /** Pin state: renders the pin glyph and offers Unpin, including in workstreams. */
   readonly pinned: boolean;
   readonly isLast: boolean;
 }
@@ -251,6 +277,7 @@ export interface ThreadListV2ThreadListItem {
       availability without changing any shell. */
   readonly canMoveUp: boolean;
   readonly canMoveDown: boolean;
+  readonly secondaryWorkstreamLabel?: string;
 }
 
 export interface ThreadListV2PendingListItem {
@@ -285,7 +312,18 @@ export interface ThreadListV2SettledShelfListItem {
   readonly disabled: boolean;
 }
 
+export interface ThreadListV2WorkstreamListItem {
+  readonly type: "v2-workstream";
+  readonly key: string;
+  readonly groupKey: string;
+  readonly name: string;
+  readonly color: string;
+  readonly count: number;
+  readonly expanded: boolean;
+}
+
 export type ThreadListV2ListItem =
+  | ThreadListV2WorkstreamListItem
   | ThreadListV2ThreadListItem
   | ThreadListV2PendingListItem
   | ThreadListV2SnoozedShelfListItem
@@ -297,6 +335,7 @@ export function isThreadListV2ListItem(value: {
   readonly type: string;
 }): value is ThreadListV2ListItem {
   return (
+    value.type === "v2-workstream" ||
     value.type === "v2-thread" ||
     value.type === "v2-pending" ||
     value.type === "v2-snoozed-shelf" ||
@@ -316,6 +355,16 @@ export function threadListV2ListItemsAreEqual(
   item: ThreadListV2ListItem,
 ): boolean {
   switch (item.type) {
+    case "v2-workstream":
+      return (
+        previous.type === "v2-workstream" &&
+        previous.key === item.key &&
+        previous.groupKey === item.groupKey &&
+        previous.name === item.name &&
+        previous.color === item.color &&
+        previous.count === item.count &&
+        previous.expanded === item.expanded
+      );
     case "v2-thread":
       return (
         previous.type === "v2-thread" &&
@@ -330,7 +379,8 @@ export function threadListV2ListItemsAreEqual(
         previous.showTrailingDivider === item.showTrailingDivider &&
         previous.hasQueuedMessages === item.hasQueuedMessages &&
         previous.canMoveUp === item.canMoveUp &&
-        previous.canMoveDown === item.canMoveDown
+        previous.canMoveDown === item.canMoveDown &&
+        previous.secondaryWorkstreamLabel === item.secondaryWorkstreamLabel
       );
     case "v2-pending":
       return (
@@ -495,6 +545,7 @@ export function buildThreadListV2ListItems(input: {
  * the settled recency tail, matching the web v2 list.
  */
 export function buildThreadListV2Items(input: {
+  readonly snapshot?: MobileThreadOrderSnapshot | null;
   readonly pendingOrder?: PendingThreadOrder | null;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
   readonly environmentId: EnvironmentId | null;
@@ -529,13 +580,16 @@ export function buildThreadListV2Items(input: {
 }): ThreadListV2Layout {
   const now = input.now;
   const pending =
-    input.pendingOrder == null
+    input.pendingOrder == null ||
+    (input.pendingOrder.sourceRevision !== undefined &&
+      input.pendingOrder.sourceRevision !== input.snapshot?.revision)
       ? null
       : reconcilePendingThreadOrder(
           input.pendingOrder,
           getThreadListV2OrderedSection({
             ...input,
             section: input.pendingOrder.section,
+            scope: input.pendingOrder.scope,
             pendingOrder: null,
           }),
         );
@@ -588,7 +642,15 @@ export function buildThreadListV2Items(input: {
       input.queuedThreadKeys?.has(`${thread.environmentId}:${thread.id}`) === true;
     if (supportsSettlement && thread.settledOverride === "settled" && !hasQueuedMessages) {
       settled.push(thread);
-    } else if (thread.pinnedAt != null) {
+    } else if (
+      thread.pinnedAt != null &&
+      !(
+        input.snapshot?.enabled &&
+        input.snapshot.primaryGroupByThreadKey.has(
+          nativeWorkstreamThreadKey(thread.environmentId, thread.id),
+        )
+      )
+    ) {
       pinned.push(thread);
     } else {
       active.push(thread);
@@ -641,7 +703,7 @@ export function buildThreadListV2Items(input: {
       thread,
       variant: "card",
       snoozed: false,
-      pinned: false,
+      pinned: thread.pinnedAt != null,
       isLast: false,
     });
   }

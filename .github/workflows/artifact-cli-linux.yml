@@ -1,6 +1,8 @@
 name: Linux CLI artifacts
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
   pull_request:
     paths:
@@ -9,6 +11,9 @@ on:
       - scripts/smoke-cli-archive.ts
       - scripts/update-release-package-versions.ts
       - scripts/lib/cli-external-packages.ts
+      - scripts/lib/public-config.ts
+      - packages/shared/src/cliRelease.ts
+      - .env.example
       - apps/server/scripts/cli.ts
       - apps/server/vite.config.ts
       - native/resource-monitor/**
@@ -23,6 +28,7 @@ concurrency:
 jobs:
   build:
     name: Linux CLI (${{ matrix.arch }})
+    if: github.repository == 'Jones-Systems/Jones-Code'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     strategy:
@@ -68,11 +74,18 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
+      - name: Configure public T3 Connect build identifiers
+        run: cp .env.example .env
+
       - name: Set preview version
         run: |
-          version="0.0.0-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}"
+          base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
+          version="${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           node scripts/update-release-package-versions.ts "$version"
           echo "ARTIFACT_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Bind Jones source identity
+        run: node scripts/stamp-jones-build.ts
 
       - name: Build server and web client
         run: vp run --filter t3 build
@@ -107,12 +120,28 @@ jobs:
         run: |
           (cd release-cli && sha256sum *.tar.gz > SHA256SUMS)
           git rev-parse HEAD > release-cli/SOURCE_COMMIT
+          ARTIFACT_ARCH="${{ matrix.arch }}" node --input-type=module -e '
+            import fs from "node:fs";
+            const artifact = `t3-${process.env.ARTIFACT_VERSION}-linux-${process.env.ARTIFACT_ARCH}.tar.gz`;
+            fs.writeFileSync("release-cli/ARTIFACT.json", JSON.stringify({
+              repository: "Jones-Systems/Jones-Code", source: fs.readFileSync("release-cli/SOURCE_COMMIT", "utf8").trim(),
+              version: process.env.ARTIFACT_VERSION, platform: "linux", architecture: process.env.ARTIFACT_ARCH, artifact,
+              sha256: fs.readFileSync("release-cli/SHA256SUMS", "utf8").split(/\s+/)[0],
+              publicConfigSource: ".env.example", signed: false,
+              releaseRepository: "Jones-Systems/Jones-Code", publishedRelease: false,
+              connectLogin: "untested", peerConnection: "untested",
+              schema: 1, tree: process.env.JONES_SOURCE_TREE,
+              workflow: process.env.GITHUB_WORKFLOW_REF.split("@")[0].replace(`${process.env.GITHUB_REPOSITORY}/`, ""),
+              event: process.env.GITHUB_EVENT_NAME, ref: process.env.GITHUB_REF,
+              runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT
+            }, null, 2) + "\n");
+          '
           printf 'Version: %s\nSource: %s\n' "$ARTIFACT_VERSION" "$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload CLI archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: jones-code-cli-linux-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: jones-code-cli-linux-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}--${{ env.ARTIFACT_VERSION }}
           path: release-cli/*
           if-no-files-found: error
           retention-days: 7

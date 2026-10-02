@@ -29,6 +29,7 @@ import {
   createEnvironmentQueryAtomFamily,
   createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
+  createEnvironmentSubscriptionAtomFamily,
   createRuntimeCommand,
   scheduleAtomCommandEffect,
 } from "./runtime.ts";
@@ -54,6 +55,15 @@ import {
 
 // Exported server state includes this type in its inferred public return type.
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
+
+export class JonesUpdateQualificationRequiredError extends Schema.TaggedError<JonesUpdateQualificationRequiredError>()(
+  "JonesUpdateQualificationRequiredError",
+  {},
+) {
+  override get message() {
+    return "Jones previews require a qualified Download and a separate explicit Install action.";
+  }
+}
 
 export type ServerUpdateStage = "downloading" | "installing" | "resuming";
 
@@ -695,6 +705,8 @@ export function createServerEnvironmentAtoms<R, E>(
       let fromVersion =
         atomRegistry.get(configValueAtom(target.environmentId))?.environment.serverVersion ??
         targetVersion;
+      if (fromVersion.includes("-preview.") || targetVersion.includes("-preview."))
+        return Effect.fail(new JonesUpdateQualificationRequiredError({}));
       let currentStage: ServerUpdateStage = "downloading";
       let desktopCommitLostTransport = false;
       atomRegistry.set(stateAtom, {
@@ -993,6 +1005,27 @@ export function createServerEnvironmentAtoms<R, E>(
     completeProviderAuth: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:provider:auth-complete",
       tag: WS_METHODS.providerAuthComplete,
+    }),
+    chatGptReconnectProfile: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:chatgpt:reconnect-profile",
+      tag: WS_METHODS.chatGptReconnectProfile,
+    }),
+    chatGptImportProfile: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:chatgpt:import-profile",
+      tag: WS_METHODS.chatGptImportProfile,
+    }),
+    chatGptHandoffState: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: "environment-data:chatgpt:handoff",
+      sensitiveInput: true,
+      // OAuth must not be replayed when the connection recovers.
+      subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.chatGptHandoffSubscribe>) =>
+        runStream(WS_METHODS.chatGptHandoffSubscribe, input),
+      idleTtlMs: 0,
+    }),
+    codexAuthCallbackState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:codex:auth-callback",
+      tag: WS_METHODS.codexAuthCallbackSubscribe,
+      idleTtlMs: 0,
     }),
     cancelProviderAuth: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:provider:auth-cancel",

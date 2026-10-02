@@ -11,6 +11,9 @@
  * @module OrchestrationEngineService
  */
 import type {
+  CommandId,
+  MessageId,
+  OrchestrationCommandObservation,
   OrchestrationClientOrigin,
   OrchestrationCommand,
   OrchestrationEvent,
@@ -26,6 +29,7 @@ import type { OrchestrationDispatchError } from "../Errors.ts";
 import type {
   OrchestrationEventStoreError,
   PersistenceSqlError,
+  ProjectionRepositoryError,
 } from "../../persistence/Errors.ts";
 import type { OrchestrationAggregateReplayStats } from "../../persistence/Services/OrchestrationEventStore.ts";
 import type { WorktreeOwnershipLease } from "../WorktreeOwnershipLease.ts";
@@ -40,6 +44,13 @@ export interface OrchestrationThreadReplayRange {
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
  */
 export interface OrchestrationEngineShape {
+  /** Observe a command and its historical turn from one consistent persistence snapshot. */
+  readonly observeCommand?: (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+    readonly messageId: MessageId;
+  }) => Effect.Effect<OrchestrationCommandObservation, ProjectionRepositoryError>;
+
   /**
    * Replay persisted orchestration events from an exclusive sequence cursor.
    *
@@ -68,8 +79,8 @@ export interface OrchestrationEngineShape {
    * Dispatch a validated orchestration command.
    *
    * @param command - Valid orchestration command.
-   * @param options - Optional client origin (surface/app version) stamped into
-   *   the metadata of every event the command produces.
+   * @param options - Optional client origin stamped into event metadata, plus
+   *   a server-only bootstrap effect context for reserved creation commands.
    * @returns Effect containing the sequence of the persisted event.
    *
    * Dispatch is serialized through an internal queue and deduplicated via
@@ -77,7 +88,10 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
-    options?: { readonly origin?: OrchestrationClientOrigin },
+    options?: {
+      readonly origin?: OrchestrationClientOrigin;
+      readonly bootstrapEffect?: { readonly claimId: string; readonly effectId: string };
+    },
   ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
 
   /** Acquire or recover this thread's exclusive mutation lease. */

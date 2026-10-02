@@ -145,6 +145,60 @@ const withIdentity = <A, E, R>(
 };
 
 describe("DesktopAppIdentity", () => {
+  it.effect("uses an explicit client profile independently of the server home", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        assert.equal(yield* identity.resolveUserDataPath, "/isolated/client-profile");
+        assert.equal(environment.baseDir, "/isolated/server-home");
+      }),
+      {
+        legacyPathExists: true,
+        environment: {
+          env: {
+            T3CODE_HOME: "/isolated/server-home",
+            T3CODE_DESKTOP_USER_DATA_DIR: "/isolated/client-profile",
+          },
+        },
+      },
+    ),
+  );
+
+  it.effect("keeps a process runtime identity with only the full embedded commit", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        const first = yield* identity.previewAutomationRuntimeIdentity;
+        const second = yield* identity.previewAutomationRuntimeIdentity;
+        assert.deepEqual(second, first);
+        assert.match(first.runtimeInstanceId, /^[0-9a-f-]{36}$/i);
+        assert.deepEqual(first, {
+          schemaVersion: 1,
+          runtimeKind: "electron",
+          runtimeInstanceId: first.runtimeInstanceId,
+          appVersion: "1.2.3",
+          buildCommit: "abcdef1234567890abcdef1234567890abcdef12",
+        });
+      }),
+      {
+        packageJson: '{"t3codeCommitHash":"ABCDEF1234567890ABCDEF1234567890ABCDEF12"}',
+        environment: { env: { T3CODE_COMMIT_HASH: "0123456789abcdef" } },
+      },
+    ),
+  );
+
+  it.effect("reports no build commit when embedded metadata is abbreviated", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        const runtime = yield* identity.previewAutomationRuntimeIdentity;
+        assert.equal(runtime.buildCommit, null);
+      }),
+      { packageJson: '{"t3codeCommitHash":"abcdef123456"}' },
+    ),
+  );
+
   it.effect("keeps using the legacy userData path when it already exists", () =>
     withIdentity(
       Effect.gen(function* () {

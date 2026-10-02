@@ -1,3 +1,4 @@
+import { JonesUpdateControls } from "../JonesUpdateControls";
 import {
   ChevronsLeftRightEllipsisIcon,
   EllipsisIcon,
@@ -1590,11 +1591,14 @@ function SavedBackendListRow({
         </Tooltip>
       }
       below={
-        serverUpdateState.status !== "idle" ? (
-          <div className="mt-1 max-w-md">
-            <ServerUpdateProgress state={serverUpdateState} />
-          </div>
-        ) : null
+        <>
+          {isConnected && enabled ? <JonesUpdateControls environmentId={environmentId} /> : null}
+          {serverUpdateState.status !== "idle" ? (
+            <div className="mt-1 max-w-md">
+              <ServerUpdateProgress state={serverUpdateState} />
+            </div>
+          ) : null}
+        </>
       }
     >
       {showUpdateAction ? (
@@ -3326,6 +3330,9 @@ export function ConnectionsSettings() {
             }
           >
             <LocalEnvironmentSetting />
+            {primaryEnvironmentId !== null ? (
+              <JonesUpdateControls environmentId={primaryEnvironmentId} />
+            ) : null}
             {canManageLocalBackend ? (
               <SettingsRow
                 title="Version"

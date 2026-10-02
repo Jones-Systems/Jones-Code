@@ -5,10 +5,9 @@ import type { ServerProviderDraft } from "../providerSnapshot.ts";
 
 /**
  * Stamp instance identity onto a `ServerProvider` snapshot produced by the
- * driver-kind-only snapshot helpers. Every driver builds its snapshot without
- * knowing its own instance, so it pipes the draft through this stamper before
- * publishing. Once `buildServerProvider` in `providerSnapshot.ts` is widened to
- * accept `instanceId`/`driver`, this wrapper disappears.
+ * snapshot helpers. Drivers pipe drafts through this stamper before publishing.
+ * Already-bound quota retains its object identity and private probe proof.
+ * Once `buildServerProvider` accepts `instanceId`/`driver`, this wrapper disappears.
  */
 export const withInstanceIdentity =
   (input: {
@@ -20,6 +19,9 @@ export const withInstanceIdentity =
   }) =>
   (snapshot: ServerProviderDraft): ServerProvider => ({
     ...snapshot,
+    ...(snapshot.qualifiedQuota && snapshot.qualifiedQuota.instanceId !== input.instanceId
+      ? { qualifiedQuota: { ...snapshot.qualifiedQuota, instanceId: input.instanceId } }
+      : {}),
     instanceId: input.instanceId,
     driver: input.driverKind,
     ...(input.displayName ? { displayName: input.displayName } : {}),
