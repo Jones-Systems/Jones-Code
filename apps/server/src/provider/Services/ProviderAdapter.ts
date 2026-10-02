@@ -25,6 +25,8 @@ import type {
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
+import type { ProviderGoalReadResult } from "../providerGoal.ts";
+
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 
 /**
@@ -72,6 +74,9 @@ export interface ProviderSendTurnRuntime<TError> {
 }
 
 export interface ProviderAdapterShape<TError> {
+  /** Read only an existing provider session; omitted means unsupported. */
+  readonly getProviderGoalState?: (threadId: ThreadId) => Effect.Effect<ProviderGoalReadResult>;
+
   /**
    * Provider kind implemented by this adapter.
    */

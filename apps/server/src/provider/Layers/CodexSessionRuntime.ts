@@ -37,6 +37,12 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
+import {
+  classifyProviderGoal,
+  unknownProviderGoal,
+  type ProviderGoalReadResult,
+} from "../providerGoal.ts";
+
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
@@ -235,6 +241,7 @@ export interface CodexThreadSnapshot {
 export interface CodexSessionRuntimeShape {
   readonly start: () => Effect.Effect<ProviderSession, CodexSessionRuntimeError>;
   readonly getSession: Effect.Effect<ProviderSession>;
+  readonly getProviderGoalState: Effect.Effect<ProviderGoalReadResult>;
   readonly sendTurn: (
     input: CodexSessionRuntimeSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
@@ -1333,6 +1340,38 @@ export const rollbackCodexThread = Effect.fn("rollbackCodexThread")(function* (
   }
   return { threadId, turns: snapshot.turns.slice(0, retainedCount) };
 });
+
+export const readCodexGoalState = (
+  client: { readonly raw: Pick<CodexClient.CodexAppServerClient["Service"]["raw"], "request"> },
+  context: Effect.Effect<{ readonly nativeThreadId: string | null; readonly stopped: boolean }>,
+): Effect.Effect<ProviderGoalReadResult> =>
+  Effect.gen(function* () {
+    const before = yield* context;
+    if (before.stopped) return unknownProviderGoal("session_stopped", before.nativeThreadId);
+    if (!before.nativeThreadId) return unknownProviderGoal("native_cursor_missing");
+    const nativeThreadId = before.nativeThreadId;
+    const result = yield* client.raw.request("thread/goal/get", { threadId: nativeThreadId }).pipe(
+      Effect.map((response) => classifyProviderGoal(response, nativeThreadId)),
+      Effect.timeout("3 seconds"),
+      Effect.catch((error) =>
+        Effect.succeed(
+          unknownProviderGoal(
+            error._tag === "TimeoutError"
+              ? "timeout"
+              : error._tag === "CodexAppServerRequestError" && error.code === -32601
+                ? "unsupported"
+                : "rpc_error",
+            nativeThreadId,
+          ),
+        ),
+      ),
+    );
+    const after = yield* context;
+    if (after.stopped || after.nativeThreadId !== nativeThreadId) {
+      return unknownProviderGoal("context_changed", after.nativeThreadId);
+    }
+    return result;
+  });
 
 export const makeCodexSessionRuntime = (
   options: CodexSessionRuntimeOptions,
@@ -2624,6 +2663,16 @@ export const makeCodexSessionRuntime = (
       getSession: Ref.get(sessionRef),
       pauseActiveGoal,
       interruptChildTurns,
+      getProviderGoalState: readCodexGoalState(
+        client,
+        Effect.gen(function* () {
+          const session = yield* Ref.get(sessionRef);
+          return {
+            nativeThreadId: currentProviderThreadId(session) ?? null,
+            stopped: yield* Ref.get(closedRef),
+          };
+        }),
+      ),
       compactThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
         yield* client.request("thread/compact/start", { threadId: providerThreadId });

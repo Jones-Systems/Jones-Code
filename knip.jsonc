@@ -21,6 +21,7 @@
         "setup-worktree.ts",
         // Retained CLI archive verifier for the deferred release workflow.
         "smoke-cli-archive.ts",
+        "runtime-adoption-qualification/run.mjs",
       ],
     },
     "apps/server": {

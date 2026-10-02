@@ -43,6 +43,8 @@ import {
   type OrchestrationDispatchError,
   type OrchestrationProjectorDecodeError,
 } from "../Errors.ts";
+import { makeDispatchGuard } from "../DispatchGuard.ts";
+import { makeCommandObservationQuery } from "../CommandObservation.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
@@ -102,6 +104,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const path = yield* Path.Path;
   const worktreeOwnershipLeases = yield* makeWorktreeOwnershipLeaseStore();
   const locallyOwnedWorktrees = new Map<string, WorktreeOwnershipLease>();
+  const validateDispatchGuard = yield* makeDispatchGuard();
+  const commandObservation = yield* makeCommandObservationQuery();
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
@@ -319,6 +323,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             detail: existingReceipt.value.error ?? "Previously rejected.",
           });
         }
+
+        yield* validateDispatchGuard(envelope.command);
 
         if (
           envelope.command.type === "thread.auto-settle" &&
@@ -686,6 +692,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     acquireWorktreeOwnership,
     releaseWorktreeOwnership,
     getThreadOwnershipIncarnation: worktreeOwnershipLeases.getThreadIncarnation,
+    observeCommand: commandObservation.observe,
     subscribeDomainEvents: PubSub.subscribe(eventPubSub).pipe(Effect.map(Stream.fromSubscription)),
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (wsServer, ProviderRuntimeIngestion, CheckpointReactor, etc.)
