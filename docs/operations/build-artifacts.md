@@ -110,7 +110,7 @@ Electron uses its fixed platform default, including supported legacy-folder reus
 Enroll the qualified launcher/helper with the existing home and profile, and use
 that launcher for every version. Opening an app copy without custom overrides can
 select different state. Keep provider stores on their original host; do not copy
-credentials during bootstrap or recovery.
+provider credentials to enroll another host.
 
 Check and Download may write runtime caches, staging and selection receipts under
 `<home>/runtime`; those updater operations do not change userdata, the profile or
