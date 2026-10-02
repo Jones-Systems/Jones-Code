@@ -12,6 +12,7 @@
  * @module ProviderService
  */
 import type {
+  ProviderGoalStateObservation,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
@@ -101,6 +102,12 @@ export interface ProviderServiceShape {
   readonly getCapabilities: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ProviderAdapterCapabilities, ProviderServiceError>;
+
+  /** Read the native goal only from the currently bound live session. */
+  readonly getProviderGoalState?: (input: {
+    readonly threadId: ThreadId;
+    readonly expectedInstanceId: ProviderInstanceId;
+  }) => Effect.Effect<ProviderGoalStateObservation>;
 
   readonly getInstanceInfo: (
     instanceId: ProviderInstanceId,

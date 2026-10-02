@@ -14,7 +14,7 @@ const hidden = { ...stationary, scaleY: 0 };
 type ThreadItem = Extract<SidebarListItem, { kind: "thread" }>;
 type Layout = Parameters<SortingStrategy>[0];
 
-/** Keep the lifted card below the Pins label, including when Pins is empty.
+/** Keep the lifted card below the supplied label boundary, including empty shelves.
  * The container rect follows scrolling; the offset is measured once at pickup. */
 export function restrictBelowSidebarLabel(
   { transform, containerNodeRect, draggingNodeRect }: Parameters<Modifier>[0],
@@ -176,10 +176,17 @@ export function createSidebarSortingStrategy(input: {
       if (groups[name].length > 0) projected.push(...groups[name]);
       else marker(`${name}-placeholder`);
     };
-    marker("pinned-header");
-    projected.push(...groups.pinned);
-    marker("pinned-divider");
-    section("active");
+    if (items[0]?.kind === "marker" && items[0].marker === "active-placeholder") {
+      section("active");
+      marker("pinned-header");
+      projected.push(...groups.pinned);
+      marker("pinned-divider");
+    } else {
+      marker("pinned-header");
+      projected.push(...groups.pinned);
+      marker("pinned-divider");
+      section("active");
+    }
     if (
       groups.snoozed.length > 0 ||
       ((active.section !== "snoozed" || (input.snoozedThreadCount ?? 0) > 1) &&

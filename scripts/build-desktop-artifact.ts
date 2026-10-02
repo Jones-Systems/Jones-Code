@@ -34,6 +34,7 @@ import {
   selectCliRuntimeExternalDependencies,
 } from "./lib/cli-external-packages.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
+import { CLI_RELEASE_REPOSITORY } from "@t3tools/shared/cliRelease";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
@@ -825,7 +826,7 @@ const spawnAndCollectOutput = Effect.fn("spawnAndCollectOutput")(function* (
 
 const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRoot: string) {
   const result = yield* spawnAndCollectOutput(
-    ChildProcess.make("git", ["rev-parse", "--short=12", "HEAD"], {
+    ChildProcess.make("git", ["rev-parse", "HEAD"], {
       cwd: repoRoot,
     }),
   ).pipe(
@@ -840,7 +841,7 @@ const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRo
     return "unknown";
   }
   const hash = result.stdout.trim();
-  if (!/^[0-9a-f]{7,40}$/i.test(hash)) {
+  if (!/^[0-9a-f]{40}$/i.test(hash)) {
     return "unknown";
   }
   return hash.toLowerCase();
@@ -2540,12 +2541,9 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
 ) {
   const env = yield* Config.all({
     updateRepository: Config.String("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
-    githubRepository: Config.String("GITHUB_REPOSITORY").pipe(Config.option),
   });
   const rawRepo = (
-    Option.getOrUndefined(env.updateRepository)?.trim() ||
-    Option.getOrUndefined(env.githubRepository)?.trim() ||
-    ""
+    Option.getOrUndefined(env.updateRepository)?.trim() || CLI_RELEASE_REPOSITORY
   ).trim();
   if (!rawRepo) return undefined;
 

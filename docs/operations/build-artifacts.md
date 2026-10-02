@@ -62,10 +62,16 @@ remove only that exact directory after stopping the trial. Do not copy credentia
 or real user state into this first smoke trial.
 
 Versions use `0.0.0-preview.YYYYMMDD.RUN_ID`, which the existing CLI recognizes as
-the preview channel. The archive still carries upstream T3 branding and upstream
-update endpoints. Do not run `t3 update`, install a service, or use an upstream
-installer to manage these builds: an explicit update can replace the fork with an
-upstream preview. Download a new successful workflow artifact for subsequent trials.
+the preview channel. The archive retains T3 branding. CLI discovery, archive downloads and the tracked
+installers default to `Jones-Systems/Jones-Code`; desktop release feeds use the
+same repository unless `T3CODE_DESKTOP_UPDATE_REPOSITORY` explicitly overrides it.
+`T3CODE_RELEASE_BASE_URL` remains an explicit archive-mirror override. A missing
+Jones release fails explicitly and never falls back to upstream. Actions trial
+outputs do not populate that release channel: download another successful
+workflow artifact for subsequent trials. Use a distinct Jones preview version;
+server runtime caches still require separate provenance qualification before
+an installed transition. Shell and SSH installers reject existing caches with
+missing or different `.install-source` origin instead of replacing them.
 
 Publishing this workflow does not authorize a VPS service restart, installation,
 replacement of an active binary, or use of the real T3 home. Those steps need a
@@ -73,13 +79,11 @@ separate decision covering the target, state backup, rollback, and verification.
 
 ## Mac desktop artifact
 
-The companion **Mac Desktop Artifact** workflow proposed in
-[PR #5](https://github.com/Jones-Systems/Jones-Code/pull/5) builds an Apple Silicon
-DMG on `macos-15`. Use it when that workflow is available on the selected ref; its
-publication as a PR does not mean it has merged. It follows the same seven-day
+The companion **Mac Desktop Artifact** workflow builds an Apple Silicon
+DMG on `macos-15`. It follows the same seven-day
 Actions download process, with artifact name
 `desktop-mac-arm64-RUN_ID-RUN_ATTEMPT`. Confirm the source revision in its run
-summary. After downloading into an empty directory on a Mac, verify:
+summary and downloaded `SOURCE_COMMIT`/`ARTIFACT.json`. After downloading into an empty directory on a Mac, verify:
 
 ```bash
 shasum -a 256 -c T3-Code-VERSION-arm64.dmg.sha256
@@ -92,3 +96,31 @@ launch. Its preview version has no automatic desktop update feed. Installation,
 Gatekeeper changes, application launch against a real T3 home, and replacing an
 existing Mac installation require a separate approved trial plan. Download and
 verification alone do not perform those steps.
+
+## Public Connect configuration and provenance
+
+Both trial workflows copy the tracked `.env.example` before compiling. It contains
+public production Clerk and relay identifiers documented in
+[Connect setup](connect-setup.md#public-application-configuration); no credential
+or signing material is supplied. Process variables still override those public
+inputs. The web client and bundled server embed them; the desktop main process
+also embeds the publishable key. An existing bundle reused with `--skip-build`
+requires separately recorded public-configuration provenance.
+
+Each workflow uploads `ARTIFACT.json` with repository, built source commit,
+version, platform, architecture, artifact filename, SHA-256, run/attempt and
+public configuration source. CLI jobs upload `SHA256SUMS` and `SOURCE_COMMIT`;
+Mac jobs upload the DMG checksum and `SOURCE_COMMIT`. Compare all three identities
+before using an artifact. Public build configuration, unsigned container
+verification, authentic binary login and peer connection are separate checks;
+these workflows leave login and peer connection explicitly untested. An M2 Pro
+requires arm64. Determine the Mini's architecture before selecting its package.
+
+A future Jones release needs an approved exact source/tag, distinct version,
+per-platform archives, `SHA256SUMS`, source descriptors and desktop update assets
+(including ZIP/update metadata where required). Trial artifacts expire and do not
+constitute a release feed. Installing or updating each host separately requires
+an approved binary/state/service envelope, a consistent state snapshot and a
+retained compatible prior binary plus prior state. Preserve desktop profile and
+encrypted connection catalog separately from server state. Repointing a launcher
+alone does not prove a compatible state rollback.

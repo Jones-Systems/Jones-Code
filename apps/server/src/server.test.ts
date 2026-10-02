@@ -1,3 +1,23 @@
+import * as NativeCreationRepositoryLayer from "./persistence/Layers/NativeCreationRepository.ts";
+import { NativeCreationRepository } from "./persistence/Services/NativeCreationRepository.ts";
+import {
+  NativeCreationAuthorityLive,
+  NativeCreationAuthorityError,
+  NativeCreationGrantResolver,
+  NativeCreationBindingResolver,
+  NativeCreationGrantResolverUnavailable,
+  NativeCreationBindingResolverUnavailable,
+} from "./orchestration/NativeCreationAuthority.ts";
+import * as AuthSessions from "./persistence/AuthSessions.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import {
+  NativePreparationBinding,
+  nativePreparationCommand,
+  nativeCreationCanonicalJson,
+  nativeCreationSha256,
+} from "./orchestration/NativeCreationPreparation.ts";
+import { NativeCreationHistoricalBinding } from "@t3tools/contracts";
+import { nativeWorktreePath } from "./vcs/worktreePath.ts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -11,6 +31,9 @@ import {
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
   CommandId,
+  NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES,
+  NativeBootstrapSubmission,
+  ClientOrchestrationCommand,
   DEFAULT_SERVER_SETTINGS,
   type DpopFailureReason,
   EnvironmentId,
@@ -27,6 +50,7 @@ import {
   type OrchestrationThreadShell,
   TerminalNotRunningError,
   type OrchestrationCommand,
+  type OrchestrationCommandObservation,
   type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
   type PreviewEvent,
@@ -34,6 +58,9 @@ import {
   type ProviderAuthState,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderQueueRefreshResult,
+  type ProviderQueueInventory,
+  type ServerProvider,
   type ProviderInstallState,
   ProviderSetupError,
   ResolvedKeybindingRule,
@@ -140,6 +167,7 @@ import {
   AntigravityInstallation,
   AntigravityInstallationError,
 } from "./provider/AntigravityInstallation.ts";
+import { CodexInstallation } from "./provider/CodexInstallation.ts";
 import type { ProviderInstance } from "./provider/ProviderDriver.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import { ProviderAdapterRequestError } from "./provider/Errors.ts";
@@ -189,6 +217,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClient.ts";
+import * as ProcessAttribution from "./resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
@@ -399,6 +428,32 @@ const makeDefaultOrchestrationThreadShell = (
   };
 };
 
+const makeGuardedQueueTransportCommand = (
+  suffix: string,
+): Extract<OrchestrationCommand, { type: "thread.turn.start" }> => ({
+  type: "thread.turn.start",
+  commandId: CommandId.make(`cmd-queue-${suffix}`),
+  threadId: defaultThreadId,
+  message: {
+    messageId: MessageId.make(`msg-queue-${suffix}`),
+    role: "user",
+    text: "Synthetic queue request",
+    attachments: [],
+  },
+  modelSelection: defaultModelSelection,
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  dispatchGuard: {
+    observedSnapshotSequence: 0,
+    expectedModelSelection: defaultModelSelection,
+    expectedSessionStatus: null,
+    expectedActiveTurnId: null,
+    expectedLatestTurnId: null,
+    requireIdle: true,
+  },
+  createdAt: "2026-01-01T00:00:00.000Z",
+});
+
 const browserOtlpTracingLayer = Layer.mergeAll(
   FetchHttpClient.layer,
   OtlpSerialization.layerJson,
@@ -529,6 +584,7 @@ const buildAppUnderTest = (options?: {
     providerAuth?: Partial<ProviderAuthService["Service"]>;
     providerInstanceRegistry?: Partial<ProviderInstanceRegistry["Service"]>;
     antigravityInstallation?: Partial<AntigravityInstallation["Service"]>;
+    codexInstallation?: Partial<CodexInstallation["Service"]>;
     serverSettings?: Partial<ServerSettings.ServerSettingsService["Service"]>;
     externalLauncher?: Partial<ExternalLauncher.ExternalLauncher["Service"]>;
     vcsDriver?: Partial<VcsDriver.VcsDriver["Service"]>;
@@ -547,6 +603,13 @@ const buildAppUnderTest = (options?: {
       ProviderSessionDirectory.ProviderSessionDirectory["Service"]
     >;
     terminalManager?: Partial<TerminalManager.TerminalManager["Service"]>;
+    nativeCreationGrantResolver?: NativeCreationGrantResolver["Service"];
+    nativeCreationBindingResolver?: NativeCreationBindingResolver["Service"];
+    onWorkspaceNormalization?: () => void;
+    onNativeCreationServices?: (
+      repository: NativeCreationRepository["Service"],
+      sql: SqlClient.SqlClient,
+    ) => Effect.Effect<void>;
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
     threadDeletionReactor?: Partial<ThreadDeletionReactor["Service"]>;
     analyticsService?: Partial<AnalyticsService.AnalyticsService["Service"]>;
@@ -712,19 +775,37 @@ const buildAppUnderTest = (options?: {
     const gitManagerLayer = Layer.mock(GitManager.GitManager)({
       ...options?.layers?.gitManager,
     });
+    const workspacePathsLayer =
+      options?.layers?.onWorkspaceNormalization === undefined
+        ? WorkspacePaths.layer
+        : Layer.effect(
+            WorkspacePaths.WorkspacePaths,
+            WorkspacePaths.make.pipe(
+              Effect.map((paths) => {
+                const normalizeWorkspaceRoot: WorkspacePaths.WorkspacePaths["Service"]["normalizeWorkspaceRoot"] =
+                  (workspaceRoot, normalizationOptions) =>
+                    Effect.sync(() => options.layers?.onWorkspaceNormalization?.()).pipe(
+                      Effect.andThen(
+                        paths.normalizeWorkspaceRoot(workspaceRoot, normalizationOptions),
+                      ),
+                    );
+                return { ...paths, normalizeWorkspaceRoot };
+              }),
+            ),
+          );
     const workspaceEntriesLayer = WorkspaceEntries.layer.pipe(
-      Layer.provide(WorkspacePaths.layer),
+      Layer.provide(workspacePathsLayer),
       Layer.provideMerge(vcsDriverRegistryLayer),
     );
     const workspaceAndProjectServicesLayer = Layer.mergeAll(
-      WorkspacePaths.layer,
+      workspacePathsLayer,
       workspaceEntriesLayer,
       WorkspaceFileSystem.layer.pipe(
-        Layer.provide(WorkspacePaths.layer),
+        Layer.provide(workspacePathsLayer),
         Layer.provide(workspaceEntriesLayer),
       ),
       ProjectFaviconResolver.layer.pipe(
-        Layer.provide(WorkspacePaths.layer),
+        Layer.provide(workspacePathsLayer),
         Layer.provide(T3ProjectFileLoader.layer),
       ),
       NativeAppIconResolver.layer,
@@ -755,6 +836,7 @@ const buildAppUnderTest = (options?: {
         Layer.mergeAll(
           NativeTelemetryClient.layerTest(options?.layers?.nativeTelemetryClient),
           DesktopTelemetryReceiver.layerTest(options?.layers?.desktopTelemetryReceiver),
+          ProcessAttribution.layer,
           ResourceAttribution.layer,
         ),
       ),
@@ -827,6 +909,10 @@ const buildAppUnderTest = (options?: {
             getInstance: () => Effect.undefined,
             listInstances: Effect.succeed([]),
             ...options?.layers?.providerInstanceRegistry,
+          }),
+          Layer.mock(CodexInstallation)({
+            managedDirectory: "unused-test-codex-runtime",
+            ...options?.layers?.codexInstallation,
           }),
           Layer.mock(AntigravityInstallation)({
             managedDirectory: "unused-test-antigravity-runtime",
@@ -1088,68 +1174,48 @@ const buildAppUnderTest = (options?: {
       ),
     );
 
-    const appLayer = servedRoutesLayer.pipe(
-      Layer.provide(resourceTelemetryLayer),
-      Layer.provide(UsageService.layerTest),
-      Layer.provide(
-        Layer.mock(AnalyticsService.AnalyticsService)({
-          record: () => Effect.void,
-          flush: Effect.void,
-          ...options?.layers?.analyticsService,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(BrowserTraceCollector.BrowserTraceCollector)({
-          record: () => Effect.void,
-          ...options?.layers?.browserTraceCollector,
-        }),
-      ),
-      Layer.provide(otlpSerializationLayer(config.otlpTracesExport.protocol)),
-      Layer.provide(
-        Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
-          publish: (event) => Effect.succeed({ ...(event as any), sequence: 1 }),
-          snapshot: Effect.succeed({ sequence: 0, events: [] }),
-          stream: Stream.empty,
-          ...options?.layers?.serverLifecycleEvents,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ServerRuntimeStartup.ServerRuntimeStartup)({
-          awaitCommandReady: Effect.void,
-          markHttpListening: Effect.void,
-          markRunningProviderSessionsForContinuation: Effect.succeed([]),
-          clearProviderSessionContinuationMarkers: () => Effect.void,
-          enqueueCommand: (effect) => effect,
-          ...options?.layers?.serverRuntimeStartup,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(BackgroundPolicy.BackgroundPolicy)({
-          reportClientActivity: () => Effect.void,
-          removeRpcClient: () => Effect.void,
-          reportHostPowerState: () => Effect.void,
-          snapshot: Effect.succeed({
-            hostPower: {
-              source: "unknown",
-              idle: "unknown",
-              idleSeconds: null,
-              locked: "unknown",
-              suspended: false,
-              onBattery: "unknown",
-              lowPowerMode: "unknown",
-              thermalState: "unknown",
-              stale: true,
-              updatedAt: TEST_EPOCH,
-            },
-            leases: [],
-            activeForegroundLeaseCount: 0,
-            activeScopeKeys: [],
-            shouldRunOpportunisticWork: false,
-            updatedAt: TEST_EPOCH,
+    const appLayer = servedRoutesLayer
+      .pipe(
+        Layer.provide(resourceTelemetryLayer),
+        Layer.provide(UsageService.layerTest),
+        Layer.provide(
+          Layer.mock(AnalyticsService.AnalyticsService)({
+            record: () => Effect.void,
+            flush: Effect.void,
+            ...options?.layers?.analyticsService,
           }),
-          streamChanges: Stream.empty,
-          subscribe: Effect.succeed({
-            latest: {
+        ),
+        Layer.provide(
+          Layer.mock(BrowserTraceCollector.BrowserTraceCollector)({
+            record: () => Effect.void,
+            ...options?.layers?.browserTraceCollector,
+          }),
+        ),
+        Layer.provide(otlpSerializationLayer(config.otlpTracesExport.protocol)),
+        Layer.provide(
+          Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
+            publish: (event) => Effect.succeed({ ...(event as any), sequence: 1 }),
+            snapshot: Effect.succeed({ sequence: 0, events: [] }),
+            stream: Stream.empty,
+            ...options?.layers?.serverLifecycleEvents,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ServerRuntimeStartup.ServerRuntimeStartup)({
+            awaitCommandReady: Effect.void,
+            markHttpListening: Effect.void,
+            markRunningProviderSessionsForContinuation: Effect.succeed([]),
+            clearProviderSessionContinuationMarkers: () => Effect.void,
+            enqueueCommand: (effect) => effect,
+            ...options?.layers?.serverRuntimeStartup,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+            reportClientActivity: () => Effect.void,
+            removeRpcClient: () => Effect.void,
+            reportHostPowerState: () => Effect.void,
+            snapshot: Effect.succeed({
               hostPower: {
                 source: "unknown",
                 idle: "unknown",
@@ -1167,97 +1233,154 @@ const buildAppUnderTest = (options?: {
               activeScopeKeys: [],
               shouldRunOpportunisticWork: false,
               updatedAt: TEST_EPOCH,
-            },
-            changes: Stream.empty,
+            }),
+            streamChanges: Stream.empty,
+            subscribe: Effect.succeed({
+              latest: {
+                hostPower: {
+                  source: "unknown",
+                  idle: "unknown",
+                  idleSeconds: null,
+                  locked: "unknown",
+                  suspended: false,
+                  onBattery: "unknown",
+                  lowPowerMode: "unknown",
+                  thermalState: "unknown",
+                  stale: true,
+                  updatedAt: TEST_EPOCH,
+                },
+                leases: [],
+                activeForegroundLeaseCount: 0,
+                activeScopeKeys: [],
+                shouldRunOpportunisticWork: false,
+                updatedAt: TEST_EPOCH,
+              },
+              changes: Stream.empty,
+            }),
+            hasDemand: () => Effect.succeed(false),
+            shouldRunScopeWork: () => Effect.succeed(false),
+            shouldRunOpportunisticWork: Effect.succeed(false),
           }),
-          hasDemand: () => Effect.succeed(false),
-          shouldRunScopeWork: () => Effect.succeed(false),
-          shouldRunOpportunisticWork: Effect.succeed(false),
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ServerEnvironment.ServerEnvironment)({
-          getEnvironmentId: Effect.succeed(testEnvironmentDescriptor.environmentId),
-          getDescriptor: Effect.succeed(testEnvironmentDescriptor),
-          ...options?.layers?.serverEnvironment,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-          resolve: () => Effect.succeed(null),
-          ...options?.layers?.repositoryIdentityResolver,
-        }),
-      ),
-      Layer.provide(
-        Layer.mergeAll(
+        ),
+        Layer.provide(
+          Layer.mock(ServerEnvironment.ServerEnvironment)({
+            getEnvironmentId: Effect.succeed(testEnvironmentDescriptor.environmentId),
+            getDescriptor: Effect.succeed(testEnvironmentDescriptor),
+            ...options?.layers?.serverEnvironment,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+            resolve: () => Effect.succeed(null),
+            ...options?.layers?.repositoryIdentityResolver,
+          }),
+        ),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(
+              CloudManagedEndpointRuntime.CloudManagedEndpointRuntime,
+              CloudManagedEndpointRuntime.CloudManagedEndpointRuntime.of({
+                applyConfig: () => Effect.succeed({ status: "disabled" }),
+                recoveryRequests: Stream.empty,
+                requestRecovery: () => Effect.void,
+                withLinkStateLock: (effect) => effect,
+                ...options?.layers?.cloudManagedEndpointRuntime,
+              }),
+            ),
+            Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({
+              requestCatchUp: () => Effect.void,
+              ...options?.layers?.agentAwarenessRelay,
+            }),
+          ),
+        ),
+        Layer.provide(
           Layer.succeed(
-            CloudManagedEndpointRuntime.CloudManagedEndpointRuntime,
-            CloudManagedEndpointRuntime.CloudManagedEndpointRuntime.of({
-              applyConfig: () => Effect.succeed({ status: "disabled" }),
-              recoveryRequests: Stream.empty,
-              requestRecovery: () => Effect.void,
-              withLinkStateLock: (effect) => effect,
-              ...options?.layers?.cloudManagedEndpointRuntime,
+            RelayClient.RelayClient,
+            RelayClient.RelayClient.of({
+              resolve: Effect.succeed({
+                status: "missing",
+                version: RelayClient.CLOUDFLARED_VERSION,
+              }),
+              install: Effect.die("unused relay-client install"),
+              installWithProgress: () => Effect.die("unused relay-client install"),
+              ...options?.layers?.relayClient,
             }),
           ),
-          Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({
-            requestCatchUp: () => Effect.void,
-            ...options?.layers?.agentAwarenessRelay,
+        ),
+        Layer.provide(
+          Layer.mock(CloudCliTokenManager.CloudCliTokenManager)({
+            get: Effect.die(new Error("Unexpected T3 Connect CLI authorization request.")),
+            getExisting: Effect.succeedNone,
+            hasCredential: Effect.succeed(false),
+            clear: Effect.void,
+            ...options?.layers?.cloudCliTokenManager,
           }),
         ),
-      ),
-      Layer.provide(
-        Layer.succeed(
-          RelayClient.RelayClient,
-          RelayClient.RelayClient.of({
-            resolve: Effect.succeed({
-              status: "missing",
-              version: RelayClient.CLOUDFLARED_VERSION,
-            }),
-            install: Effect.die("unused relay-client install"),
-            installWithProgress: () => Effect.die("unused relay-client install"),
-            ...options?.layers?.relayClient,
-          }),
-        ),
-      ),
-      Layer.provide(
-        Layer.mock(CloudCliTokenManager.CloudCliTokenManager)({
-          get: Effect.die(new Error("Unexpected T3 Connect CLI authorization request.")),
-          getExisting: Effect.succeedNone,
-          hasCredential: Effect.succeed(false),
-          clear: Effect.void,
-          ...options?.layers?.cloudCliTokenManager,
+        Layer.updateService(PairingGrantStore.PairingGrantStore, (grants) => {
+          const subscribed = options?.onPairingChangesSubscribed;
+          if (!subscribed) return grants;
+          return {
+            ...grants,
+            streamChanges: Stream.unwrap(
+              Effect.gen(function* () {
+                const changes =
+                  yield* Queue.unbounded<PairingGrantStore.BootstrapCredentialChange>();
+                yield* grants.streamChanges.pipe(
+                  Stream.runForEach((change) => Queue.offer(changes, change)),
+                  Effect.forkScoped({ startImmediately: true }),
+                );
+                yield* subscribed;
+                return Stream.fromQueue(changes);
+              }),
+            ),
+          };
         }),
-      ),
-      Layer.updateService(PairingGrantStore.PairingGrantStore, (grants) => {
-        const subscribed = options?.onPairingChangesSubscribed;
-        if (!subscribed) return grants;
-        return {
-          ...grants,
-          streamChanges: Stream.unwrap(
-            Effect.gen(function* () {
-              const changes = yield* Queue.unbounded<PairingGrantStore.BootstrapCredentialChange>();
-              yield* grants.streamChanges.pipe(
-                Stream.runForEach((change) => Queue.offer(changes, change)),
-                Effect.forkScoped({ startImmediately: true }),
-              );
-              yield* subscribed;
-              return Stream.fromQueue(changes);
-            }),
+      )
+      .pipe(
+        Layer.provideMerge(
+          NativeCreationAuthorityLive.pipe(
+            Layer.provide(
+              options?.layers?.nativeCreationGrantResolver === undefined
+                ? NativeCreationGrantResolverUnavailable
+                : Layer.succeed(
+                    NativeCreationGrantResolver,
+                    options.layers.nativeCreationGrantResolver,
+                  ),
+            ),
+            Layer.provide(
+              options?.layers?.nativeCreationBindingResolver === undefined
+                ? NativeCreationBindingResolverUnavailable
+                : Layer.succeed(
+                    NativeCreationBindingResolver,
+                    options.layers.nativeCreationBindingResolver,
+                  ),
+            ),
+            Layer.provide(AuthSessions.layer),
+            Layer.provideMerge(
+              Layer.effect(
+                NativeCreationRepository,
+                Effect.gen(function* () {
+                  const repository = yield* NativeCreationRepositoryLayer.make;
+                  const sql = yield* SqlClient.SqlClient;
+                  if (options?.layers?.onNativeCreationServices !== undefined)
+                    yield* options.layers.onNativeCreationServices(repository, sql);
+                  return repository;
+                }),
+              ),
+            ),
           ),
-        };
-      }),
-      Layer.provideMerge(makeAuthTestLayer()),
-      Layer.provideMerge(ServerSecretStore.layer),
-      Layer.provide(workspaceAndProjectServicesLayer),
-      Layer.provideMerge(
-        options?.layers?.httpClient === undefined
-          ? FetchHttpClient.layer
-          : Layer.succeed(HttpClient.HttpClient, options.layers.httpClient),
-      ),
-      Layer.provide(GitHubCli.layer.pipe(Layer.provideMerge(VcsProcess.layer))),
-      Layer.provide(layerConfig),
-    );
+        ),
+        Layer.provideMerge(makeAuthTestLayer()),
+        Layer.provideMerge(ServerSecretStore.layer),
+        Layer.provide(workspaceAndProjectServicesLayer),
+        Layer.provideMerge(
+          options?.layers?.httpClient === undefined
+            ? FetchHttpClient.layer
+            : Layer.succeed(HttpClient.HttpClient, options.layers.httpClient),
+        ),
+        Layer.provide(GitHubCli.layer.pipe(Layer.provideMerge(VcsProcess.layer))),
+        Layer.provide(layerConfig),
+      );
 
     yield* Layer.build(appLayer);
     return config;
@@ -2178,6 +2301,401 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.status, 200);
       assert.deepEqual(body, testEnvironmentDescriptor);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "mounts queue compatibility routes with closed responses and scoped provider access",
+    () =>
+      Effect.gen(function* () {
+        const instanceId = defaultModelSelection.instanceId;
+        const providers: ReadonlyArray<ServerProvider> = [
+          {
+            instanceId,
+            driver: ProviderDriverKind.make("codex"),
+            displayName: "Synthetic Codex",
+            enabled: true,
+            installed: true,
+            version: null,
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: "2026-01-01T00:00:00.000Z",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          },
+        ];
+        const refreshes: ProviderInstanceId[] = [];
+        const goalReads: unknown[] = [];
+        const observationReads: unknown[] = [];
+        const command = makeGuardedQueueTransportCommand("routes");
+        const observation: OrchestrationCommandObservation = {
+          threadId: command.threadId,
+          commandId: command.commandId,
+          messageId: command.message.messageId,
+          snapshotSequence: 0,
+          commandStatus: "not_found",
+          acceptedSequence: null,
+          correlation: "missing",
+          turn: null,
+          target: null,
+        };
+        const goal = {
+          schema: "t3.provider-goal-state/v1" as const,
+          threadId: defaultThreadId,
+          providerInstanceId: instanceId,
+          nativeThreadId: "synthetic-native-thread",
+          observedAtMs: 1000,
+          state: "active" as const,
+          reasonCode: "goal_present" as const,
+        };
+        yield* buildAppUnderTest({
+          layers: {
+            providerRegistry: {
+              getProviders: Effect.succeed(providers),
+              refreshInstance: (requested) =>
+                Effect.sync(() => {
+                  refreshes.push(requested);
+                  return providers;
+                }),
+            },
+            providerService: {
+              getProviderGoalState: (input) =>
+                Effect.sync(() => {
+                  goalReads.push(input);
+                  return { ...goal, objective: "private synthetic objective" };
+                }),
+            },
+            projectionSnapshotQuery: {
+              getThreadShellById: () =>
+                Effect.succeedSome(
+                  makeDefaultOrchestrationThreadShell({
+                    session: {
+                      threadId: defaultThreadId,
+                      status: "ready",
+                      providerName: "codex",
+                      providerInstanceId: instanceId,
+                      runtimeMode: "full-access",
+                      activeTurnId: null,
+                      lastError: null,
+                      updatedAt: "2026-01-01T00:00:00.000Z",
+                    },
+                  }),
+                ),
+            },
+            orchestrationEngine: {
+              observeCommand: (input) =>
+                Effect.sync(() => {
+                  observationReads.push(input);
+                  return observation;
+                }),
+            },
+          },
+        });
+        const operateToken = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:operate",
+        });
+        assert.equal(operateToken.response.status, 200);
+        const queuePath = `/api/provider-queue/instances/${instanceId}`;
+        const goalPath = `/api/orchestration/threads/${defaultThreadId}/provider-goal-state?expectedInstanceId=${instanceId}`;
+        const observationPath = `/api/orchestration/threads/${defaultThreadId}/commands/${command.commandId}?messageId=${command.message.messageId}`;
+        for (const path of [
+          "/api/provider-queue/inventory",
+          `${queuePath}/usage`,
+          goalPath,
+          observationPath,
+        ]) {
+          const response = yield* fetchEffect(yield* getHttpServerUrl(path), {
+            headers: { authorization: `Bearer ${operateToken.body.access_token}` },
+          });
+          assert.equal(response.status, 403);
+        }
+        const readToken = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:read",
+        });
+        assert.equal(readToken.response.status, 200);
+        const readHeaders = { authorization: `Bearer ${readToken.body.access_token}` };
+        const forbiddenRefresh = yield* fetchEffect(
+          yield* getHttpServerUrl(`${queuePath}/refresh`),
+          {
+            method: "POST",
+            headers: readHeaders,
+          },
+        );
+        assert.equal(forbiddenRefresh.status, 403);
+        assert.deepEqual(refreshes, []);
+        assert.deepEqual(goalReads, []);
+        assert.deepEqual(observationReads, []);
+
+        const inventoryResponse = yield* fetchEffect(
+          yield* getHttpServerUrl("/api/provider-queue/inventory"),
+          { headers: readHeaders },
+        );
+        assert.equal(inventoryResponse.status, 200);
+        const inventory = yield* responseJsonEffect<ProviderQueueInventory>(inventoryResponse);
+        const instances: ProviderQueueInventory["instances"] = [
+          {
+            instanceId,
+            displayName: "Synthetic Codex",
+            driver: "codex",
+            enabled: true,
+            capabilityRefs: [],
+          },
+        ];
+        assert.deepEqual(inventory, {
+          schemaVersion: "t3.provider-queue-inventory/v1",
+          inventoryRevision: NodeCrypto.createHash("sha256")
+            .update(encodeTestJson(instances))
+            .digest("hex"),
+          observedAt: inventory.observedAt,
+          evidence: "configured-provider-registry",
+          instances,
+        });
+        assertTrue(Number.isFinite(Date.parse(inventory.observedAt)));
+        const usageResponse = yield* fetchEffect(yield* getHttpServerUrl(`${queuePath}/usage`), {
+          headers: readHeaders,
+        });
+        assert.equal(usageResponse.status, 200);
+        assert.deepEqual(yield* responseJsonEffect(usageResponse), {
+          instanceId,
+          status: "cached",
+          nextRefreshAt: null,
+          quota: null,
+        });
+        const goalResponse = yield* fetchEffect(yield* getHttpServerUrl(goalPath), {
+          headers: readHeaders,
+        });
+        assert.equal(goalResponse.status, 200);
+        assert.deepEqual(yield* responseJsonEffect(goalResponse), goal);
+        const observationResponse = yield* fetchEffect(yield* getHttpServerUrl(observationPath), {
+          headers: readHeaders,
+        });
+        assert.equal(observationResponse.status, 200);
+        assert.deepEqual(yield* responseJsonEffect(observationResponse), observation);
+        assert.deepEqual(goalReads, [
+          { threadId: defaultThreadId, expectedInstanceId: instanceId },
+        ]);
+        assert.deepEqual(observationReads, [
+          {
+            threadId: defaultThreadId,
+            commandId: command.commandId,
+            messageId: command.message.messageId,
+          },
+        ]);
+        assert.deepEqual(refreshes, []);
+
+        const adminToken = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:read access:write",
+        });
+        assert.equal(adminToken.response.status, 200);
+        const adminHeaders = { authorization: `Bearer ${adminToken.body.access_token}` };
+        const refreshResponse = yield* fetchEffect(
+          yield* getHttpServerUrl(`${queuePath}/refresh`),
+          {
+            method: "POST",
+            headers: adminHeaders,
+          },
+        );
+        assert.equal(refreshResponse.status, 200);
+        const refreshed = yield* responseJsonEffect<ProviderQueueRefreshResult>(refreshResponse);
+        assertTrue(Schema.is(ProviderQueueRefreshResult)(refreshed));
+        assert.isNotNull(refreshed.quota);
+        const quota = refreshed.quota!;
+        assert.deepEqual(refreshed, {
+          instanceId,
+          status: "refreshed",
+          nextRefreshAt: refreshed.nextRefreshAt,
+          quota: {
+            schemaVersion: "codex.t3-qualified-quota/v1",
+            instanceId,
+            probeId: quota.probeId,
+            status: "failed",
+            attemptedAt: quota.attemptedAt,
+            quotaReceivedAt: null,
+            probeCompletedAt: quota.probeCompletedAt,
+            complete: false,
+            rateLimitsByLimitId: null,
+            windowProvenance: [],
+            capabilityRefs: [],
+            failureCode: "refresh_not_observed",
+          },
+        });
+        assert.equal(Date.parse(refreshed.nextRefreshAt!) - Date.parse(quota.attemptedAt), 300_000);
+        const cachedResponse = yield* fetchEffect(yield* getHttpServerUrl(`${queuePath}/usage`), {
+          headers: adminHeaders,
+        });
+        assert.equal(cachedResponse.status, 200);
+        assert.deepEqual(yield* responseJsonEffect(cachedResponse), {
+          ...refreshed,
+          status: "cached",
+        });
+        assert.deepEqual(refreshes, [instanceId]);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("preserves guarded WebSocket command IDs through HTTP command observation", () =>
+    Effect.gen(function* () {
+      const command = makeGuardedQueueTransportCommand("observation");
+      const dispatched: OrchestrationCommand[] = [];
+      const observed: unknown[] = [];
+      const observation: OrchestrationCommandObservation = {
+        threadId: command.threadId,
+        commandId: command.commandId,
+        messageId: command.message.messageId,
+        snapshotSequence: 17,
+        commandStatus: "accepted",
+        acceptedSequence: 17,
+        correlation: "pending",
+        turn: null,
+        target: null,
+      };
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (input) =>
+              Effect.sync(() => {
+                dispatched.push(input);
+                return { sequence: 17 };
+              }),
+            observeCommand: (input) =>
+              Effect.sync(() => {
+                assert.equal(dispatched.length, 1);
+                observed.push(input);
+                return observation;
+              }),
+          },
+        },
+      });
+      const receipt = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand](command),
+        ),
+      );
+      assert.deepEqual(receipt, { sequence: 17 });
+      const dispatchedCommand = dispatched[0];
+      assertTrue(dispatchedCommand?.type === "thread.turn.start");
+      if (dispatchedCommand?.type === "thread.turn.start") {
+        assertTrue(Number.isFinite(Date.parse(dispatchedCommand.createdAt)));
+        assert.deepEqual(dispatched, [{ ...command, createdAt: dispatchedCommand.createdAt }]);
+      }
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "orchestration:read",
+      });
+      assert.equal(token.response.status, 200);
+      const response = yield* fetchEffect(
+        yield* getHttpServerUrl(
+          `/api/orchestration/threads/${command.threadId}/commands/${command.commandId}?messageId=${command.message.messageId}`,
+        ),
+        { headers: { authorization: `Bearer ${token.body.access_token}` } },
+      );
+      assert.equal(response.status, 200);
+      assert.deepEqual(yield* responseJsonEffect(response), observation);
+      assert.deepEqual(observed, [
+        {
+          threadId: command.threadId,
+          commandId: command.commandId,
+          messageId: command.message.messageId,
+        },
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "rejects guarded HTTP bootstrap while WebSocket prepares before final guarded dispatch",
+    () =>
+      Effect.gen(function* () {
+        const baseCommand = makeGuardedQueueTransportCommand("bootstrap");
+        const command = {
+          ...baseCommand,
+          bootstrap: {
+            createThread: {
+              projectId: defaultProjectId,
+              title: "Synthetic bootstrap",
+              modelSelection: defaultModelSelection,
+              runtimeMode: "full-access" as const,
+              interactionMode: "default" as const,
+              branch: null,
+              worktreePath: null,
+              createdAt: baseCommand.createdAt,
+            },
+          },
+        };
+        const dispatched: OrchestrationCommand[] = [];
+        const drains: unknown[] = [];
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              dispatch: (input) =>
+                Effect.sync(() => {
+                  dispatched.push(input);
+                  return { sequence: dispatched.length };
+                }),
+            },
+            threadDeletionReactor: {
+              drainThrough: (sequence, threadId) =>
+                Effect.sync(() => {
+                  drains.push({ sequence, threadId });
+                }),
+            },
+          },
+        });
+        const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:operate",
+        });
+        assert.equal(token.response.status, 200);
+        const rejected = yield* fetchEffect(
+          yield* getHttpServerUrl("/api/orchestration/dispatch"),
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token.body.access_token}`,
+              "content-type": "application/json",
+            },
+            body: jsonRequestBody(command),
+          },
+        );
+        assert.equal(rejected.status, 400);
+        const failure = yield* responseJsonEffect<{ reason: string }>(rejected);
+        assert.equal(failure.reason, "dispatch_guard_bootstrap_unsupported");
+        assert.deepEqual(dispatched, []);
+        assert.deepEqual(drains, []);
+        const receipt = yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand](command),
+          ),
+        );
+        assert.deepEqual(receipt, { sequence: 3 });
+        assert.deepEqual(
+          dispatched.map((input) => input.type),
+          ["thread.create", "thread.message.user.append", "thread.turn.start"],
+        );
+        assert.deepEqual(drains, [{ sequence: 1, threadId: command.threadId }]);
+        const finalCommand = dispatched[2];
+        assertTrue(finalCommand?.type === "thread.turn.start");
+        if (finalCommand?.type !== "thread.turn.start") return;
+        assertTrue(Number.isFinite(Date.parse(finalCommand.createdAt)));
+        assert.deepEqual(dispatched[0], {
+          type: "thread.create",
+          commandId: dispatched[0]!.commandId,
+          threadId: command.threadId,
+          ...command.bootstrap.createThread,
+          createdAt: finalCommand.createdAt,
+        });
+        assert.deepEqual(dispatched[1], {
+          type: "thread.message.user.append",
+          commandId: dispatched[1]!.commandId,
+          threadId: command.threadId,
+          message: {
+            messageId: command.message.messageId,
+            text: command.message.text,
+            attachments: [],
+          },
+          createdAt: finalCommand.createdAt,
+        });
+        assert.notEqual(dispatched[0]!.commandId, command.commandId);
+        assert.notEqual(dispatched[1]!.commandId, command.commandId);
+        assert.notEqual(dispatched[0]!.commandId, dispatched[1]!.commandId);
+        assert.deepEqual(finalCommand, { ...baseCommand, createdAt: finalCommand.createdAt });
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("serves snapshots for MCP handoff thread IDs above the router default", () =>
@@ -13214,4 +13732,441 @@ it.live(
       assert.deepEqual(transferBudgetViolations(runs), []);
     }).pipe(Effect.provide(NodeServices.layer)),
   120_000,
+);
+
+const nativeCreationWsFixture = (runSetupScript = false) => {
+  const binding = Schema.decodeUnknownSync(NativePreparationBinding)({
+    backend_instance: "synthetic-backend",
+    environment_id: "synthetic-env",
+    project_id: defaultProjectId,
+    project_cwd: "/synthetic/project",
+    account_ref: "synthetic-account",
+    runtime_mode: "full-access",
+    interaction_mode: "default",
+    base_branch: "main",
+    start_from_origin: false,
+    run_setup_script: runSetupScript,
+    provider_model_selection: { instanceId: "codex", model: "synthetic-model" },
+  });
+  const command = nativePreparationCommand(
+    "synthetic-native-ws",
+    binding,
+    "Synthetic native WS text",
+    "Synthetic thread",
+    "2026-10-02T12:00:00Z",
+  );
+  const preparation = nativeCreationCanonicalJson({
+    schema: "voice.t3-bootstrap-preparation/v1",
+    operation_id: "synthetic-native-ws",
+    preparation_id: command.commandId.replace("voice-command-", "voice-bootstrap-"),
+    binding,
+    command,
+    binding_digest: nativeCreationSha256(nativeCreationCanonicalJson(binding)),
+    prompt_digest: nativeCreationSha256(command.message.text),
+    command_digest: nativeCreationSha256(nativeCreationCanonicalJson(command)),
+  });
+  const historical = Schema.decodeUnknownSync(NativeCreationHistoricalBinding)({
+    backendInstance: binding.backend_instance,
+    environmentId: binding.environment_id,
+    projectId: binding.project_id,
+    projectCwd: binding.project_cwd,
+    accountRef: binding.account_ref,
+    accountBindingId: "synthetic-account-binding",
+    accountBindingRevision: 1,
+    providerModelSelection: binding.provider_model_selection,
+    runtimeMode: binding.runtime_mode,
+    interactionMode: binding.interaction_mode,
+    baseBranch: binding.base_branch,
+    startFromOrigin: false,
+    runSetupScript,
+    requestedBranch: command.bootstrap.prepareWorktree.branch,
+  });
+  return {
+    binding,
+    command,
+    preparation,
+    historical,
+    submission: {
+      schema: "t3.native-bootstrap-submission/v1" as const,
+      preparationBase64: Buffer.from(preparation).toString("base64"),
+      creationGuard: {
+        schema: "t3.native-creation-guard/v1" as const,
+        grantId: "synthetic-native-grant",
+        grantRevision: 1,
+      },
+    },
+  };
+};
+const nativeWsFixture = nativeCreationWsFixture();
+it.effect(
+  "actual guarded WS capability and unavailable authority produce zero bootstrap commands",
+  () =>
+    Effect.gen(function* () {
+      let dispatches = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.sync(() => {
+                dispatches++;
+                return { sequence: 1 };
+              }),
+          },
+        },
+      });
+      const url = yield* getWsServerUrl("/ws");
+      yield* withWsRpcClient(url, (client) =>
+        Effect.gen(function* () {
+          const config = yield* client[WS_METHODS.serverGetConfig]({});
+          assert.deepEqual(config.environment.capabilities.nativeBootstrapCreation, {
+            submissionSchema: "t3.native-bootstrap-submission/v1",
+            preparationSchema: "voice.t3-bootstrap-preparation/v1",
+            observationSchema: "t3.native-creation-observation/v1",
+            guardRequired: true,
+          });
+          const result = yield* client[ORCHESTRATION_WS_METHODS.dispatchBootstrap](
+            nativeWsFixture.submission,
+          ).pipe(Effect.result);
+          assert.equal(result._tag, "Failure");
+          assert.equal(dispatches, 0);
+        }),
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
+);
+
+it.effect(
+  "real permanent marker denies actual legacy WS even with unavailable creation grants",
+  () =>
+    Effect.gen(function* () {
+      let capturedSql: SqlClient.SqlClient | undefined;
+      let dispatches = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          onNativeCreationServices: (_repository, sql) =>
+            Effect.sync(() => {
+              capturedSql = sql;
+            }),
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.sync(() => {
+                dispatches++;
+                return { sequence: 1 };
+              }),
+          },
+        },
+      });
+      const url = yield* getWsServerUrl("/ws");
+      const sql = capturedSql!;
+      const sessions = yield* sql<{
+        sessionId: string;
+      }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
+      assert.equal(sessions.length, 1);
+      yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessions[0]!.sessionId}, '2026-10-02T12:00:00Z')`;
+      yield* withWsRpcClient(url, (client) =>
+        Effect.gen(function* () {
+          const legacy = yield* Schema.decodeUnknownEffect(ClientOrchestrationCommand)(
+            nativeWsFixture.command,
+          );
+          const result = yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](legacy).pipe(
+            Effect.result,
+          );
+          assert.equal(result._tag, "Failure");
+          assert.equal(dispatches, 0);
+        }),
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
+);
+
+it.effect(
+  "qualified synthetic ports drive actual guarded WS only after immutable SQL claim and identities",
+  () =>
+    Effect.gen(function* () {
+      const nativeWsFixture = nativeCreationWsFixture(true);
+      let capturedSql: SqlClient.SqlClient | undefined;
+      let capturedRepository: NativeCreationRepository["Service"] | undefined;
+      let nativeConfig: ServerConfig.ServerConfig["Service"] | undefined;
+      let nativeCommands = 0;
+      const grantResolver: NativeCreationGrantResolver["Service"] = {
+        resolveCurrent: ({ actorSessionId, guard }) =>
+          Effect.succeed({
+            enrolledSessionId: actorSessionId,
+            trustedIssuerId: "synthetic-issuer",
+            grant: {
+              grantId: guard.grantId,
+              revision: guard.grantRevision,
+              actorSessionId,
+              issuerId: "synthetic-issuer",
+              expiresAt: DateTime.makeUnsafe("2099-01-01T00:00:00Z"),
+              revoked: false,
+              operationId: "synthetic-native-ws",
+              preparationId: nativeWsFixture.command.commandId.replace(
+                "voice-command-",
+                "voice-bootstrap-",
+              ),
+              preparationSha256: nativeCreationSha256(nativeWsFixture.preparation),
+              bindingDigest: nativeCreationSha256(
+                nativeCreationCanonicalJson(nativeWsFixture.binding),
+              ),
+              binding: nativeWsFixture.historical,
+              resources: {
+                projectCwd: "/synthetic/project",
+                branch: nativeWsFixture.historical.requestedBranch,
+                worktreePath: nativeWorktreePath({
+                  worktreesDir: nativeConfig!.worktreesDir,
+                  cwd: "/synthetic/project",
+                  branch: nativeWsFixture.historical.requestedBranch,
+                }),
+              },
+              allowedStages: [
+                "claim",
+                "normalization",
+                "tracker_registration",
+                "bootstrap_detachment",
+                "fetch",
+                "worktree",
+                "worktree_ownership",
+                "native_command",
+                "setup",
+                "setup_detachment",
+                "setup_completion_detachment",
+                "cleanup",
+                "deletion_drain",
+                "git_status_refresh",
+              ],
+              recoveryScopes: [],
+            },
+          }),
+      };
+      nativeConfig = yield* buildAppUnderTest({
+        layers: {
+          onNativeCreationServices: (repository, sql) =>
+            Effect.sync(() => {
+              capturedSql = sql;
+              capturedRepository = repository;
+            }),
+          nativeCreationGrantResolver: grantResolver,
+          nativeCreationBindingResolver: {
+            resolveCurrent: () => Effect.succeed(nativeWsFixture.historical),
+          },
+          projectSetupScriptRunner: {
+            runForThread: ({ worktreePath }) =>
+              Effect.succeed({
+                status: "started",
+                scriptId: "synthetic-setup",
+                scriptName: "Synthetic setup",
+                scriptCommand: "synthetic",
+                terminalId: "synthetic-setup-terminal",
+                cwd: worktreePath,
+                async: false,
+                completion: Effect.succeed({ exitCode: 0, durationMs: 1 }),
+              }),
+          },
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+          gitVcsDriver: {
+            execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
+            createWorktree: () =>
+              Effect.gen(function* () {
+                const identities =
+                  yield* capturedSql!`SELECT command_id FROM native_creation_reserved_command_identities`;
+                assert.equal(identities.length, 14);
+                return {
+                  worktree: {
+                    refName: nativeWsFixture.historical.requestedBranch,
+                    path: nativeWorktreePath({
+                      worktreesDir: nativeConfig!.worktreesDir,
+                      cwd: "/synthetic/project",
+                      branch: nativeWsFixture.historical.requestedBranch,
+                    }),
+                  },
+                };
+              }).pipe(
+                Effect.mapError(
+                  () =>
+                    new GitCommandError({
+                      operation: "createWorktree",
+                      command: "synthetic SQL reservation assertion",
+                      cwd: "/synthetic/project",
+                      detail: "Synthetic reservation lookup failed",
+                    }),
+                ),
+              ),
+          },
+          orchestrationEngine: {
+            dispatch: (command, options) =>
+              Effect.gen(function* () {
+                assert.isDefined(options?.bootstrapEffect);
+                const reservation = yield* capturedRepository!.getReservedCommand(
+                  command.commandId,
+                );
+                assert.isTrue(Option.isSome(reservation));
+                const history = yield* capturedRepository!.readHistoryByClaim(
+                  options!.bootstrapEffect!.claimId,
+                );
+                assert.isTrue(
+                  history.effects.some(
+                    (fact) =>
+                      fact.effectId === options!.bootstrapEffect!.effectId &&
+                      fact.phase === "started",
+                  ),
+                );
+                nativeCommands++;
+                return { sequence: nativeCommands };
+              }).pipe(Effect.orDie),
+          },
+        },
+      });
+      const url = yield* getWsServerUrl("/ws");
+      const sql = capturedSql!;
+      const sessions = yield* sql<{
+        sessionId: string;
+      }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
+      assert.equal(sessions.length, 1);
+      yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessions[0]!.sessionId}, '2026-10-02T12:00:00Z')`;
+      yield* withWsRpcClient(url, (client) =>
+        Effect.gen(function* () {
+          const accepted = yield* client[ORCHESTRATION_WS_METHODS.dispatchBootstrap](
+            nativeWsFixture.submission,
+          );
+          assert.isAbove(accepted.sequence, 0);
+          const effectsBeforeDuplicate = nativeCommands;
+          const duplicate = yield* client[ORCHESTRATION_WS_METHODS.dispatchBootstrap](
+            nativeWsFixture.submission,
+          ).pipe(Effect.result);
+          assert.equal(duplicate._tag, "Failure");
+          assert.equal(nativeCommands, effectsBeforeDuplicate);
+          const history = yield* capturedRepository!.readHistory(nativeWsFixture.command.commandId);
+          assert.isTrue(Option.isSome(history));
+          if (Option.isSome(history)) {
+            assert.isNotNull(history.value.normalizedCommandDigest);
+            assert.isAbove(history.value.effects.length, 0);
+            assert.isTrue(
+              history.value.effects.some(
+                (fact) =>
+                  fact.kind === "setup" &&
+                  fact.phase === "completed" &&
+                  fact.terminalId === "synthetic-setup-terminal" &&
+                  fact.exitCode === 0,
+              ),
+            );
+          }
+        }),
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
+);
+
+it.effect(
+  "actual oversized bootstrap batch closes 1009 before any sibling or creation effect",
+  () =>
+    Effect.gen(function* () {
+      let capturedSql: SqlClient.SqlClient | undefined;
+      let nativeHandlerCalls = 0;
+      let normalizations = 0;
+      let commands = 0;
+      let worktrees = 0;
+      const config = yield* buildAppUnderTest({
+        layers: {
+          onNativeCreationServices: (_repository, sql) =>
+            Effect.sync(() => {
+              capturedSql = sql;
+            }),
+          onWorkspaceNormalization: () => {
+            normalizations++;
+          },
+          nativeCreationGrantResolver: {
+            resolveCurrent: () =>
+              Effect.sync(() => {
+                nativeHandlerCalls++;
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new NativeCreationAuthorityError({
+                      code: "unsupported_authority",
+                      message: "Synthetic unavailable grant",
+                    }),
+                  ),
+                ),
+              ),
+          },
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.sync(() => {
+                commands++;
+                return { sequence: commands };
+              }),
+          },
+          gitVcsDriver: {
+            createWorktree: () =>
+              Effect.sync(() => {
+                worktrees++;
+                return { worktree: { path: "/synthetic/worktree", refName: "synthetic" } };
+              }),
+          },
+        },
+      });
+      const { cookie, url } = parseSessionCookieFromWsUrl(yield* getWsServerUrl("/ws"));
+      const sql = capturedSql!;
+      const sessions = yield* sql<{
+        sessionId: string;
+      }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
+      assert.equal(sessions.length, 1);
+      yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessions[0]!.sessionId}, '2026-10-02T12:00:00Z')`;
+      const sibling = {
+        _tag: "Request",
+        id: "101",
+        tag: ORCHESTRATION_WS_METHODS.dispatchCommand,
+        payload: {
+          type: "project.create",
+          commandId: "oversize-sibling-command",
+          projectId: "oversize-sibling-project",
+          title: "Synthetic sibling",
+          workspaceRoot: config.cwd,
+          createdAt: "2026-10-02T12:00:00Z",
+        },
+        headers: [],
+      };
+      const guarded = {
+        _tag: "Request",
+        id: "102",
+        tag: ORCHESTRATION_WS_METHODS.dispatchBootstrap,
+        payload: nativeWsFixture.submission,
+        headers: [],
+      };
+      yield* Schema.decodeUnknownEffect(ClientOrchestrationCommand)(sibling.payload);
+      yield* Schema.decodeUnknownEffect(NativeBootstrapSubmission)(guarded.payload);
+      const encodedBatch = yield* Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+        [sibling, guarded],
+      );
+      const wire = " ".repeat(NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES) + encodedBatch;
+      assert.isAbove(Buffer.byteLength(wire), NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES);
+      assert.isBelow(Buffer.byteLength(wire), 3 * 1024 * 1024);
+      const before = normalizations;
+      const socket = yield* Effect.acquireRelease(
+        Effect.sync(
+          () => new NodeSocket.NodeWS.WebSocket(url, cookie ? { headers: { cookie } } : {}),
+        ),
+        (socket) => Effect.sync(() => socket.terminate()),
+      );
+      const closeCode = yield* Effect.callback<number, Error>((resume) => {
+        socket.once("close", (code) => resume(Effect.succeed(code)));
+        socket.once("error", (error) => resume(Effect.fail(error)));
+        socket.once("open", () => socket.send(wire));
+      }).pipe(Effect.timeout("5 seconds"));
+      assert.equal(closeCode, 1009);
+      assert.equal(nativeHandlerCalls, 0);
+      assert.equal(normalizations - before, 0);
+      assert.equal(commands, 0);
+      assert.equal(worktrees, 0);
+      for (const table of [
+        "native_creation_intents",
+        "native_creation_reserved_command_identities",
+        "native_creation_reserved_commands",
+        "native_creation_effect_facts",
+      ]) {
+        const rows = yield* sql.unsafe<{ count: number }>(`SELECT COUNT(*) AS count FROM ${table}`);
+        assert.equal(rows[0]?.count, 0);
+      }
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer)),
+      TestClock.withLive,
+    ),
 );

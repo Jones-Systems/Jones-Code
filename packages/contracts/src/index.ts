@@ -18,6 +18,7 @@ export * from "./providerInstance.ts";
 export * from "./providerSetup.ts";
 export * from "./providerRuntime.ts";
 export * from "./providerUsageLimits.ts";
+export * from "./providerQueue.ts";
 export * from "./usageLimitSourceId.ts";
 export * from "./model.ts";
 export * from "./keybindings.ts";
@@ -45,3 +46,9 @@ export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
+
+export * from "./workstreams.ts";
+export * from "./workstreamPlacements.ts";
+export * from "./hostStatus.ts";
+
+export * from "./voiceReview.ts";

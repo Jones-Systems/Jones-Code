@@ -102,7 +102,6 @@ it.layer(NodeServices.layer)("active thread ordering", (it) => {
   for (const [label, overrides] of [
     ["archived", { archivedAt: NOW }],
     ["deleted", { deletedAt: NOW }],
-    ["pinned", { pinnedAt: NOW }],
     ["settled", { settledOverride: "settled", settledAt: NOW }],
   ] satisfies ReadonlyArray<readonly [string, Partial<OrchestrationThread>]>) {
     it.effect(`rejects reordering a ${label} thread`, () =>
@@ -112,6 +111,36 @@ it.layer(NodeServices.layer)("active thread ordering", (it) => {
           readModel: makeReadModel(overrides),
         }).pipe(Effect.flip);
         expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      }),
+    );
+  }
+
+  for (const [label, overrides] of [
+    ["pinned", {}],
+    ["pinned snoozed", { snoozedAt: SNOOZED_AT, snoozedUntil: FUTURE_WAKE }],
+  ] satisfies ReadonlyArray<readonly [string, Partial<OrchestrationThread>]>) {
+    it.effect(`reorders a ${label} thread independently of its pin placement`, () =>
+      Effect.gen(function* () {
+        const readModel = makeReadModel({
+          activeOrderKey: "g",
+          pinnedAt: BEFORE_NOW,
+          pinOrderKey: "s",
+          unsettledAt: BEFORE_NOW,
+          ...overrides,
+        });
+        const decided = yield* decideOrchestrationCommand({ command: reorderCommand, readModel });
+        const events = Array.isArray(decided) ? decided : [decided];
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+          type: "thread.meta-updated",
+          payload: { threadId: THREAD_ID, activeOrderKey: "m", updatedAt: NOW },
+        });
+        expect(events[0]!.payload).not.toHaveProperty("pinnedAt");
+        expect(events[0]!.payload).not.toHaveProperty("pinOrderKey");
+        for (const event of events) {
+          const projected = yield* projectEvent(readModel, { ...event, sequence: 1 });
+          expect(projected.threads[0]).toEqual({ ...readModel.threads[0], activeOrderKey: "m" });
+        }
       }),
     );
   }

@@ -25,6 +25,8 @@ import type {
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
+import type { ProviderGoalReadResult } from "../providerGoal.ts";
+
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 
 /**
@@ -64,7 +66,17 @@ export interface ProviderThreadSnapshot {
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
 }
 
+/** Internal lifecycle boundary for an adapter that must replace its runtime during a turn. */
+export interface ProviderSendTurnRuntime<TError> {
+  readonly withRuntimeReplacement: (
+    restart: (runtimeGeneration: string) => Effect.Effect<ProviderSession, TError>,
+  ) => Effect.Effect<ProviderSession, TError>;
+}
+
 export interface ProviderAdapterShape<TError> {
+  /** Read only an existing provider session; omitted means unsupported. */
+  readonly getProviderGoalState?: (threadId: ThreadId) => Effect.Effect<ProviderGoalReadResult>;
+
   /**
    * Provider kind implemented by this adapter.
    */
@@ -83,6 +95,7 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly sendTurn: (
     input: ProviderSendTurnInput,
+    runtime?: ProviderSendTurnRuntime<TError>,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
   /** Omitted when this adapter does not support manual context compaction. */
@@ -132,11 +145,13 @@ export interface ProviderAdapterShape<TError> {
   readonly readThread: (threadId: ThreadId) => Effect.Effect<ProviderThreadSnapshot, TError>;
 
   /**
-   * Roll back a provider thread by N turns.
+   * Roll back a provider thread by N turns. Replacement runtimes carry the
+   * supplied generation on events emitted by that runtime.
    */
   readonly rollbackThread: (
     threadId: ThreadId,
     numTurns: number,
+    runtimeGeneration?: string,
   ) => Effect.Effect<ProviderThreadSnapshot, TError>;
 
   /**

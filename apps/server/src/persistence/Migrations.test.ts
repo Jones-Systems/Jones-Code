@@ -110,6 +110,9 @@ it.effect("runs fork migration 1 after completing historical upstream replay", (
     assert.deepEqual(yield* runMigrations(), []);
     assert.deepEqual(yield* sql`SELECT migration_id, name FROM jones_sql_migrations`, [
       { migration_id: 1, name: "WorktreeOwnershipLeases" },
+      { migration_id: 2, name: "ProjectionThreadRuntimeIdentity" },
+      { migration_id: 3, name: "NativeCreationIntents" },
+      { migration_id: 4, name: "NativeCreationCommandIdentities" },
     ]);
     assert.deepEqual(
       yield* sql`SELECT name FROM sqlite_master WHERE name = 'worktree_ownership_leases'`,

@@ -219,6 +219,43 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
   return <ThreadListV2ShelfHeader {...props} kind="settled" />;
 });
 
+export const ThreadListV2WorkstreamHeader = memo(function ThreadListV2WorkstreamHeader(props: {
+  readonly name: string;
+  readonly color: string;
+  readonly count: number;
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
+  readonly onOpen: () => void;
+}) {
+  return (
+    <View className="flex-row items-center px-3 py-1">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${props.name}, ${props.count} threads`}
+        accessibilityState={{ expanded: props.expanded }}
+        onPress={props.onToggle}
+        className="min-h-[44px] flex-1 flex-row items-center gap-2 px-2"
+      >
+        <View style={{ backgroundColor: props.color, width: 8, height: 8, borderRadius: 4 }} />
+        <Text className="flex-1 text-sm font-t3-medium" numberOfLines={1}>
+          {props.name}
+        </Text>
+        <Text className="text-sm">
+          {props.count} {props.expanded ? "⌄" : "›"}
+        </Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Manage ${props.name}`}
+        onPress={props.onOpen}
+        className="min-h-[44px] min-w-[44px] items-center justify-center"
+      >
+        <Text>•••</Text>
+      </Pressable>
+    </View>
+  );
+});
+
 export const ThreadListV2ShowMoreRow = memo(function ThreadListV2ShowMoreRow(props: {
   readonly pane?: "screen" | "sidebar";
   readonly hiddenCount: number;
@@ -438,6 +475,8 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
 });
 
 export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
+  readonly secondaryWorkstreamLabel?: string;
+  readonly onOpenWorkstreams?: (thread: EnvironmentThreadShell) => void;
   readonly thread: EnvironmentThreadShell;
   readonly variant: "card" | "slim";
   /** A message for this thread is waiting in the outbox. */
@@ -771,6 +810,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
+      if (nativeEvent.event === "workstreams") props.onOpenWorkstreams?.(thread);
       if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
       if (nativeEvent.event === "settle") handleSettle();
       if (nativeEvent.event === "unsettle") handleUnsettle();
@@ -806,6 +846,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     },
     [
       onNewThreadOnBranch,
+      props.onOpenWorkstreams,
       thread,
       handleArchive,
       handleDelete,
@@ -944,6 +985,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       >
         {thread.title}
       </Text>
+      {props.secondaryWorkstreamLabel ? (
+        <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+          Linked: {props.secondaryWorkstreamLabel}
+        </Text>
+      ) : null}
       {props.searchMatch ? (
         <View className="mt-1">
           <ThreadSearchMatchExcerpt
@@ -1204,6 +1250,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         {(close) => (
           <ControlPillMenu
             actions={[
+              ...(props.onOpenWorkstreams
+                ? [{ id: "workstreams", title: "Workstreams", image: "folder" }]
+                : []),
               ...(thread.branch
                 ? [
                     {

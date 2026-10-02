@@ -42,6 +42,9 @@ import {
   DeviceStandardToolkit,
 } from "./toolkits/device/tools.ts";
 
+import { OrganizationToolkit } from "./toolkits/organization/tools.ts";
+import { OrganizationToolkitHandlersLive } from "./toolkits/organization/handlers.ts";
+
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
     error: "invalid_mcp_credential",
@@ -660,6 +663,10 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
   DeviceScreenshotRegistrationLive,
 );
 
+const OrganizationToolkitRegistrationLive = McpServer.toolkit(OrganizationToolkit).pipe(
+  Layer.provide(OrganizationToolkitHandlersLive),
+);
+
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -671,4 +678,5 @@ export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
+  OrganizationToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

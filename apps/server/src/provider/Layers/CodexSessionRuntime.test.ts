@@ -1,8 +1,13 @@
 import * as NodeAssert from "node:assert/strict";
 
-import { it } from "@effect/vitest";
+import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import { describe } from "vite-plus/test";
 import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -22,10 +27,37 @@ import {
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
   readCodexThread,
+  registerCodexAppServerProcess,
+  readCodexGoalState,
   rollbackCodexThread,
   toMcpElicitationResponse,
 } from "./CodexSessionRuntime.ts";
+import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+
+describe("registerCodexAppServerProcess", () => {
+  it.effect("registers the spawned PID until the runtime scope closes", () =>
+    Effect.gen(function* () {
+      const attribution = yield* ProcessAttribution.make();
+      const runtimeScope = yield* Scope.make();
+
+      yield* registerCodexAppServerProcess({
+        pid: 4_242,
+        threadId: ThreadId.make("thread-1"),
+        processAttribution: attribution,
+      }).pipe(Effect.provideService(Scope.Scope, runtimeScope));
+
+      expect((yield* attribution.snapshot).get(4_242)?.owner).toEqual({
+        kind: "provider",
+        threadId: "thread-1",
+        provider: "codex",
+      });
+
+      yield* Scope.close(runtimeScope, Exit.void);
+      expect((yield* attribution.snapshot).has(4_242)).toBe(false);
+    }),
+  );
+});
 
 describe("Codex thread history", () => {
   for (const numTurns of [1, 2, 3, 5]) {
@@ -901,6 +933,37 @@ describe("isRecoverableThreadResumeError", () => {
 });
 
 describe("openCodexThread", () => {
+  for (const resumeThreadId of [undefined, "saved-thread"]) {
+    for (const serviceTier of [undefined, null, "priority"] as const) {
+      it.effect(
+        `preserves native identity on ${resumeThreadId ? "resume" : "start"} with tier ${serviceTier}`,
+        () =>
+          Effect.gen(function* () {
+            const response = {
+              ...makeThreadOpenResponse("native-thread"),
+              model: "native-model",
+              modelProvider: "native-backend",
+              ...(serviceTier !== undefined ? { serviceTier } : {}),
+            };
+            const opened = yield* openCodexThread({
+              client: {
+                request: () => Effect.succeed(response),
+                raw: { request: () => Effect.succeed(response) },
+              },
+              threadId: ThreadId.make("thread-identity"),
+              runtimeMode: "full-access",
+              cwd: "/tmp/project",
+              requestedModel: "requested-model",
+              serviceTier: "fast",
+              resumeThreadId,
+            });
+            NodeAssert.equal(opened.model, "native-model");
+            NodeAssert.equal(opened.modelProvider, "native-backend");
+            NodeAssert.equal(opened.serviceTier, serviceTier);
+          }),
+      );
+    }
+  }
   it.effect("resumes metadata when historical turns contain unknown error values", () =>
     Effect.gen(function* () {
       const response = makeThreadOpenResponse("saved-thread");
@@ -942,6 +1005,7 @@ describe("openCodexThread", () => {
       NodeAssert.deepStrictEqual(opened, {
         cwd: response.cwd,
         model: response.model,
+        modelProvider: response.modelProvider,
         thread: { id: "saved-thread" },
       });
       NodeAssert.deepStrictEqual(calls, [
@@ -1101,6 +1165,131 @@ describe("openCodexThread", () => {
       NodeAssert.ok(isCodexAppServerRequestError(error));
       NodeAssert.equal(error.errorMessage, "thread not found");
       NodeAssert.equal(freshStarts, 0);
+    }),
+  );
+});
+
+describe("existing Codex provider goal read", () => {
+  const cursor = "native-goal-thread";
+  const context = Effect.succeed({ nativeThreadId: cursor, stopped: false });
+  const goal = {
+    threadId: cursor,
+    objective: "private objective",
+    status: "complete",
+    createdAt: 1,
+    updatedAt: 2,
+    timeUsedSeconds: 0,
+    tokensUsed: 1,
+  };
+  for (const [response, state, reasonCode] of [
+    [{ goal: null }, "inactive", "goal_null"],
+    [{ goal }, "active", "goal_present"],
+    [{ goal: { ...goal, status: "paused" } }, "active", "goal_present"],
+    [{ goal: { ...goal, status: "active" } }, "active", "goal_present"],
+    [{}, "unknown", "goal_field_omitted"],
+    [{ goal: undefined }, "unknown", "malformed"],
+    [{ goal: {} }, "unknown", "malformed"],
+    [null, "unknown", "malformed"],
+    [{ goal: { ...goal, threadId: "other" } }, "unknown", "context_changed"],
+  ] as const) {
+    it.effect(`classifies goal response ${reasonCode} ${JSON.stringify(response)}`, () =>
+      Effect.gen(function* () {
+        const result = yield* readCodexGoalState(
+          {
+            raw: {
+              request: (method, params) => {
+                NodeAssert.equal(method, "thread/goal/get");
+                NodeAssert.deepEqual(params, { threadId: cursor });
+                return Effect.succeed(response);
+              },
+            },
+          },
+          context,
+        );
+        NodeAssert.deepEqual(result, { nativeThreadId: cursor, state, reasonCode });
+        const serialized = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+          result,
+        );
+        NodeAssert.equal(serialized.includes("private objective"), false);
+      }),
+    );
+  }
+  for (const [nativeThreadId, stopped, reasonCode] of [
+    [null, false, "native_cursor_missing"],
+    [cursor, true, "session_stopped"],
+  ] as const) {
+    it.effect(`does not send RPC for ${reasonCode}`, () =>
+      Effect.gen(function* () {
+        const result = yield* readCodexGoalState(
+          { raw: { request: () => Effect.die("must not request") } },
+          Effect.succeed({ nativeThreadId, stopped }),
+        );
+        NodeAssert.equal(result.reasonCode, reasonCode);
+      }),
+    );
+  }
+  for (const code of [-32601, -32000]) {
+    it.effect(`redacts RPC error ${code}`, () =>
+      Effect.gen(function* () {
+        const result = yield* readCodexGoalState(
+          {
+            raw: {
+              request: () =>
+                Effect.fail(
+                  new CodexErrors.CodexAppServerRequestError({
+                    code,
+                    errorMessage: "private error",
+                  }),
+                ),
+            },
+          },
+          context,
+        );
+        NodeAssert.equal(result.reasonCode, code === -32601 ? "unsupported" : "rpc_error");
+        const serialized = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+          result,
+        );
+        NodeAssert.equal(serialized.includes("private error"), false);
+      }),
+    );
+  }
+  it.effect("invalidates a changed cursor after the RPC", () =>
+    Effect.gen(function* () {
+      let nativeThreadId = cursor;
+      const result = yield* readCodexGoalState(
+        {
+          raw: {
+            request: () =>
+              Effect.sync(() => {
+                nativeThreadId = "replacement";
+                return { goal: null };
+              }),
+          },
+        },
+        Effect.sync(() => ({ nativeThreadId, stopped: false })),
+      );
+      NodeAssert.equal(result.reasonCode, "context_changed");
+    }),
+  );
+  it.effect("times out in three seconds and interrupts the pending request", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      let interrupted = false;
+      const pending = Deferred.succeed(started, undefined).pipe(
+        Effect.andThen(Effect.never),
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            interrupted = true;
+          }),
+        ),
+      );
+      const fiber = yield* readCodexGoalState({ raw: { request: () => pending } }, context).pipe(
+        Effect.forkChild,
+      );
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("3 seconds");
+      NodeAssert.equal((yield* Fiber.join(fiber)).reasonCode, "timeout");
+      NodeAssert.equal(interrupted, true);
     }),
   );
 });

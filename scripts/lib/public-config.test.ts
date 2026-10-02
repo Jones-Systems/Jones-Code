@@ -15,6 +15,22 @@ afterEach(() => {
 });
 
 describe("loadRepoEnv", () => {
+  it("projects the documented production public identifiers without signing inputs", () => {
+    const repoRoot = makeTemporaryDirectory();
+    NodeFS.copyFileSync(
+      new URL("../../.env.example", import.meta.url),
+      NodePath.join(repoRoot, ".env"),
+    );
+    const env = loadRepoEnv({ baseEnv: {}, repoRoot });
+    expect(env.VITE_CLERK_PUBLISHABLE_KEY).toMatch(/^pk_live_/);
+    expect(env.T3CODE_CLERK_CLI_OAUTH_CLIENT_ID).toBeTruthy();
+    expect(env.VITE_CLERK_JWT_TEMPLATE).toBe("t3-relay");
+    expect(env.VITE_T3CODE_RELAY_URL).toBe("https://relay.t3.codes");
+    expect(env.CLERK_SECRET_KEY).toBeUndefined();
+    expect(env.APPLE_TEAM_ID).toBeUndefined();
+    expect(env.T3CODE_APPLE_TEAM_ID).toBeUndefined();
+  });
+
   it("does not project cloud configuration for an unconfigured clone", () => {
     const env = loadRepoEnv({ baseEnv: {}, repoRoot: makeTemporaryDirectory() });
 

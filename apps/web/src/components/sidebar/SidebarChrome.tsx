@@ -1,4 +1,10 @@
-import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  BookOpenIcon,
+  ChartNoAxesColumnIcon,
+  MicIcon,
+  SettingsIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -104,10 +110,12 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
 function SidebarUtilityItem({
   icon,
   label,
+  tooltip = label,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
+  tooltip?: string;
   onClick: () => void;
 }) {
   return (
@@ -120,7 +128,7 @@ function SidebarUtilityItem({
             </SidebarMenuButton>
           }
         />
-        <TooltipPopup side="top">{label}</TooltipPopup>
+        <TooltipPopup side="top">{tooltip}</TooltipPopup>
       </Tooltip>
     </SidebarMenuItem>
   );
@@ -151,6 +159,10 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       search: readPullRequestListPreferences(),
     });
   }, [closeMobileSidebar, navigate]);
+  const handleConversationsClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/conversations" });
+  }, [closeMobileSidebar, navigate]);
   const handleSettingsClick = useCallback(() => {
     closeMobileSidebar();
     void navigate({ to: "/settings" });
@@ -167,6 +179,11 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     closeMobileSidebar();
     void navigateToMainApp();
   }, [closeMobileSidebar, navigateToMainApp]);
+
+  const handleVoiceReviewClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/voice-review" });
+  }, [closeMobileSidebar, navigate]);
 
   return (
     <SidebarMenu className="flex-row items-center">
@@ -192,9 +209,20 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             />
           ) : null}
           <SidebarUtilityItem
+            icon={<BookOpenIcon />}
+            label="Conversation Library"
+            onClick={handleConversationsClick}
+          />
+          <SidebarUtilityItem
             icon={<ChartNoAxesColumnIcon />}
             label="Usage"
             onClick={handleUsageClick}
+          />
+          <SidebarUtilityItem
+            icon={<MicIcon />}
+            label="Voice review"
+            tooltip="Review, edit, and pause voice prompts"
+            onClick={handleVoiceReviewClick}
           />
         </>
       )}

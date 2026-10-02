@@ -17,6 +17,7 @@ import { isEntrypoint } from "./entrypoint.ts";
 import { projectCommand } from "./cli/project.ts";
 import { runServerCommand, serveCommand, startCommand } from "./cli/server.ts";
 import { serviceCommand } from "./cli/service.ts";
+import { workstreamCommand } from "./cli/workstream.ts";
 import { uninstallCommand } from "./cli/uninstall.ts";
 import { updateCommand } from "./cli/update.ts";
 import { claudeHistoryCommand } from "./cli/claudeHistory.ts";
@@ -65,6 +66,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       authCommand,
       projectCommand,
       serviceCommand,
+      workstreamCommand,
       updateCommand,
       uninstallCommand,
       serviceLauncherCommand,

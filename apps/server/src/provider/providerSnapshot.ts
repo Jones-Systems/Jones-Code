@@ -1,6 +1,7 @@
 import type {
   CustomModelSetting,
   ProviderDriverKind,
+  QualifiedQuota,
   ModelCapabilities,
   ServerProvider,
   ServerProviderAuth,
@@ -58,6 +59,7 @@ export interface ProviderProbeResult {
   readonly auth: ServerProviderAuth;
   readonly message?: string;
   readonly usageLimits?: ServerProviderUsageLimits;
+  readonly qualifiedQuota?: QualifiedQuota;
 }
 
 export interface ServerProviderPresentation {
@@ -240,6 +242,7 @@ export function buildServerProvider(input: {
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],
     ...(input.probe.usageLimits ? { usageLimits: input.probe.usageLimits } : {}),
+    ...(input.probe.qualifiedQuota ? { qualifiedQuota: input.probe.qualifiedQuota } : {}),
     ...(versionAdvisory ? { versionAdvisory } : {}),
   };
 }
