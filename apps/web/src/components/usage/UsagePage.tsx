@@ -17,7 +17,7 @@ import {
   InfoIcon,
   SlidersHorizontalIcon,
 } from "lucide-react";
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import {
   cursorKeychainAccessEnvironments,
   refreshUsageLimits,
@@ -81,7 +81,12 @@ import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
-import { sortModelsByTokens } from "./usageBreakdown";
+import { selectUsageBreakdown, sortModelsByTokens } from "./usageBreakdown";
+import {
+  UsageProviderDetails,
+  UsageTokenDetails,
+  USAGE_PROVIDER_DETAILS_ID,
+} from "./UsageProviderDetails";
 import {
   METRIC_OPTIONS,
   WINDOW_OPTIONS,
@@ -151,6 +156,9 @@ export function UsagePage() {
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const refreshingRef = useRef(false);
   const [breakdown, setBreakdown] = useState<"model" | "time">("model");
+  const [selectedProvider, setSelectedProvider] = useState<UsageProviderKind | null>(null);
+  const [expandedModelKey, setExpandedModelKey] = useState<string | null>(null);
+  const providerTriggers = useRef(new Map<UsageProviderKind, HTMLButtonElement>());
   const [customSinceValue, setCustomSinceValue] = useState("");
   const [customUntilValue, setCustomUntilValue] = useState("");
   const [customOriginalWindow, setCustomOriginalWindow] = useState<UsageSummaryInput>();
@@ -199,20 +207,36 @@ export function UsagePage() {
         : enumerateHourStarts(window.sinceTime, window.untilTime),
     [isHourly, window.sinceTime, window.untilTime],
   );
+  const detailBreakdown = useMemo(
+    () => selectUsageBreakdown(merged, selectedProvider),
+    [merged, selectedProvider],
+  );
+  const focusedProvider = detailBreakdown.providerTotals?.provider ?? null;
   // Newest first: the window can run 90 days, so the interesting end
   // belongs at the top of the table.
   const breakdownPeriods = useMemo<readonly (DailyTotals | HourlyTotals)[]>(
-    () => (isHourly ? merged.hourly : merged.daily).toReversed(),
-    [isHourly, merged.daily, merged.hourly],
+    () => (isHourly ? detailBreakdown.hourly : detailBreakdown.daily).toReversed(),
+    [isHourly, detailBreakdown.daily, detailBreakdown.hourly],
   );
   const breakdownModels = useMemo(
     () =>
       breakdown === "model" && metric === "tokens"
-        ? sortModelsByTokens(merged.models)
-        : merged.models,
-    [breakdown, merged.models, metric],
+        ? sortModelsByTokens(detailBreakdown.models)
+        : detailBreakdown.models,
+    [breakdown, detailBreakdown.models, metric],
   );
   const activeProviders = useMemo(() => providersWithUsage(merged.providers), [merged.providers]);
+  const breakdownProviders = focusedProvider === null ? activeProviders : [focusedProvider];
+  useEffect(() => {
+    if (!isPending && selectedProvider !== null && !activeProviders.includes(selectedProvider)) {
+      setSelectedProvider(null);
+      setExpandedModelKey(null);
+    }
+  }, [activeProviders, isPending, selectedProvider]);
+  const selectProvider = (provider: UsageProviderKind | null) => {
+    setSelectedProvider(provider);
+    setExpandedModelKey(null);
+  };
   const summaryRows: Array<
     | { readonly kind: "usage"; readonly provider: UsageProviderKind }
     | { readonly kind: "enable"; readonly environment: EnvironmentUsageStatus }
@@ -224,7 +248,7 @@ export function UsagePage() {
     0,
     ...cursorAccessEnvironments.map((environment) => ({ kind: "enable" as const, environment })),
   );
-  const timeValueColumnWidth = `${60 / (activeProviders.length + 2)}%`;
+  const timeValueColumnWidth = `${60 / (breakdownProviders.length + 2)}%`;
 
   const selectWindow = (days: number) => {
     if (!isUsageWindowDays(days)) return;
@@ -402,7 +426,10 @@ export function UsagePage() {
             environments={environments}
             selectedEnvironments={selectedEnvironments}
             selectedEnvironmentIds={selectedEnvironmentIds}
-            onSelectionChange={setSelectedEnvironmentIds}
+            onSelectionChange={(ids) => {
+              setSelectedEnvironmentIds(ids);
+              selectProvider(null);
+            }}
             showUsageStatus={!showingLimits}
             isPartial={isPartial}
             duplicateSources={merged.duplicateSources}
@@ -652,8 +679,27 @@ export function UsagePage() {
                         providerSessions === 1 ? "session" : "sessions"
                       }`;
                       return (
-                        <div key={provider} className="flex flex-col gap-1">
-                          <div className="flex items-baseline justify-between gap-4">
+                        <button
+                          key={provider}
+                          type="button"
+                          ref={(element) => {
+                            if (element) providerTriggers.current.set(provider, element);
+                            else providerTriggers.current.delete(provider);
+                          }}
+                          aria-label={`${PROVIDER_PRESENTATION[provider].label} usage details`}
+                          aria-expanded={focusedProvider === provider}
+                          aria-controls={
+                            focusedProvider === provider ? USAGE_PROVIDER_DETAILS_ID : undefined
+                          }
+                          onClick={() =>
+                            selectProvider(focusedProvider === provider ? null : provider)
+                          }
+                          className={cn(
+                            "flex flex-col gap-1 rounded-md text-left outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring",
+                            focusedProvider === provider && "bg-muted/50",
+                          )}
+                        >
+                          <span className="flex items-baseline justify-between gap-4">
                             <span className="flex min-w-0 items-center gap-2 text-sm text-foreground">
                               <span
                                 aria-hidden
@@ -667,6 +713,13 @@ export function UsagePage() {
                                 <span className="truncate">
                                   {PROVIDER_PRESENTATION[provider].label}
                                 </span>
+                                <ChevronDownIcon
+                                  className={cn(
+                                    "size-3 shrink-0 text-muted-foreground",
+                                    focusedProvider === provider && "rotate-180",
+                                  )}
+                                  aria-hidden
+                                />
                                 <span className="shrink-0 whitespace-nowrap text-2xs text-muted-foreground tabular-nums">
                                   {sessionLabel}
                                 </span>
@@ -677,13 +730,13 @@ export function UsagePage() {
                                 ? formatUsd(totals?.costUsd ?? 0)
                                 : formatTokens(totals?.totalTokens ?? 0)}
                             </span>
-                          </div>
+                          </span>
                           <span className="text-xs text-muted-foreground">
                             {metric === "cost"
                               ? `${formatPercent(share)} of cost · ${formatTokens(totals?.totalTokens ?? 0)} tokens`
                               : `${formatPercent(share)} of tokens · ${formatUsd(totals?.costUsd ?? 0)}`}
                           </span>
-                        </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -707,26 +760,50 @@ export function UsagePage() {
                   </div>
                 </section>
 
-                <section className="flex flex-col gap-2">
-                  <h2 className="text-sm font-medium text-foreground">Totals</h2>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
-                    <Metric label="Processed tokens" value={formatTokens(merged.totalTokens)} />
-                    <Metric label="Cached input" value={formatTokens(merged.cachedInputTokens)} />
-                    <Metric
-                      label="Uncached input"
-                      value={formatTokens(merged.uncachedInputTokens)}
-                    />
-                    <Metric label="Output" value={formatTokens(merged.outputTokens)} />
-                    <Metric
-                      label="Cache savings"
-                      value={formatUsd(merged.costQuality.cacheSavingsUsd)}
-                    />
-                  </div>
-                </section>
+                {detailBreakdown.providerTotals !== null ? (
+                  <UsageProviderDetails
+                    provider={detailBreakdown.providerTotals}
+                    onClose={() => {
+                      selectProvider(null);
+                      if (focusedProvider !== null)
+                        providerTriggers.current.get(focusedProvider)?.focus();
+                    }}
+                  />
+                ) : (
+                  <section className="flex flex-col gap-2">
+                    <h2 className="text-sm font-medium text-foreground">Totals</h2>
+                    <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
+                      <Metric label="Processed tokens" value={formatTokens(merged.totalTokens)} />
+                      <Metric label="Cached input" value={formatTokens(merged.cachedInputTokens)} />
+                      <Metric
+                        label="Uncached input"
+                        value={formatTokens(merged.uncachedInputTokens)}
+                      />
+                      <Metric label="Output" value={formatTokens(merged.outputTokens)} />
+                      <Metric
+                        label="Cache savings"
+                        value={formatUsd(merged.costQuality.cacheSavingsUsd)}
+                      />
+                    </div>
+                  </section>
+                )}
 
                 <section className="flex flex-col gap-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <h2 className="text-sm font-medium text-foreground">Breakdown</h2>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex min-w-0 flex-wrap items-center gap-3">
+                      <h2 className="text-sm font-medium text-foreground">
+                        {focusedProvider === null
+                          ? "Breakdown"
+                          : `${PROVIDER_PRESENTATION[focusedProvider].label} breakdown`}
+                      </h2>
+                      <InlineButton
+                        tone="muted"
+                        disabled={focusedProvider === null}
+                        onClick={() => selectProvider(null)}
+                      >
+                        All providers
+                      </InlineButton>
+                    </div>
                     <ToggleGroup
                       aria-label="Usage breakdown"
                       variant="segmented"
@@ -748,6 +825,11 @@ export function UsagePage() {
                       ))}
                     </ToggleGroup>
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    {focusedProvider === null
+                      ? "Shares are of all providers' API estimates."
+                      : `Shares are within ${PROVIDER_PRESENTATION[focusedProvider].label}'s API estimate. The summary and chart include all providers.`}
+                  </p>
 
                   {breakdown === "model" ? (
                     <table className="w-full table-fixed text-sm">
@@ -773,32 +855,70 @@ export function UsagePage() {
                             </td>
                           </tr>
                         ) : (
-                          breakdownModels.map((model) => (
-                            <tr
-                              key={`${model.provider}:${model.model}`}
-                              className="border-b border-border/50 transition-colors hover:bg-muted/50"
-                            >
-                              <td className="py-2 text-foreground">
-                                <span className="flex items-center gap-2">
-                                  <ProviderMark provider={model.provider} className="size-3.5" />
-                                  {model.model}
-                                </span>
-                              </td>
-                              <td className="py-2 text-right text-foreground tabular-nums">
-                                {isModelCostUnknown(model) ? (
-                                  <span className="text-muted-foreground">Unpriced</span>
-                                ) : (
-                                  formatUsd(model.costUsd)
-                                )}
-                              </td>
-                              <td className="py-2 text-right text-muted-foreground tabular-nums">
-                                {isModelCostUnknown(model) ? "—" : formatPercent(model.costShare)}
-                              </td>
-                              <td className="py-2 text-right text-muted-foreground tabular-nums">
-                                {formatTokens(model.totalTokens)}
-                              </td>
-                            </tr>
-                          ))
+                          breakdownModels.map((model) => {
+                            const modelKey = `${model.provider}:${model.model}`;
+                            const detailId = `usage-model-${encodeURIComponent(modelKey)}`;
+                            const expanded = expandedModelKey === modelKey;
+                            return (
+                              <Fragment key={modelKey}>
+                                <tr className="border-b border-border/50 transition-colors hover:bg-muted/50">
+                                  <td className="py-2 text-foreground">
+                                    <button
+                                      type="button"
+                                      aria-label={`${model.model} token details`}
+                                      aria-expanded={expanded}
+                                      aria-controls={expanded ? detailId : undefined}
+                                      onClick={() =>
+                                        setExpandedModelKey(expanded ? null : modelKey)
+                                      }
+                                      className="flex min-w-0 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                    >
+                                      <ProviderMark
+                                        provider={model.provider}
+                                        className="size-3.5"
+                                      />
+                                      <span className="min-w-0 break-words">{model.model}</span>
+                                      <ChevronDownIcon
+                                        className={cn(
+                                          "size-3 shrink-0 text-muted-foreground",
+                                          expanded && "rotate-180",
+                                        )}
+                                        aria-hidden
+                                      />
+                                    </button>
+                                  </td>
+                                  <td className="py-2 text-right text-foreground tabular-nums">
+                                    {isModelCostUnknown(model) ? (
+                                      <span className="text-muted-foreground">Unpriced</span>
+                                    ) : (
+                                      formatUsd(model.costUsd)
+                                    )}
+                                  </td>
+                                  <td className="py-2 text-right text-muted-foreground tabular-nums">
+                                    {isModelCostUnknown(model)
+                                      ? "—"
+                                      : formatPercent(model.costShare)}
+                                  </td>
+                                  <td className="py-2 text-right text-muted-foreground tabular-nums">
+                                    {formatTokens(model.totalTokens)}
+                                  </td>
+                                </tr>
+                                {expanded ? (
+                                  <tr>
+                                    <td colSpan={4} className="border-b border-border/50 py-4">
+                                      <div
+                                        id={detailId}
+                                        role="region"
+                                        aria-label={`${model.model} token details`}
+                                      >
+                                        <UsageTokenDetails detail={model} />
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ) : null}
+                              </Fragment>
+                            );
+                          })
                         )}
                       </tbody>
                     </table>
@@ -806,7 +926,7 @@ export function UsagePage() {
                     <table className="w-full table-fixed text-sm">
                       <colgroup>
                         <col className="w-2/5" />
-                        {activeProviders.map((provider) => (
+                        {breakdownProviders.map((provider) => (
                           <col key={provider} style={{ width: timeValueColumnWidth }} />
                         ))}
                         <col style={{ width: timeValueColumnWidth }} />
@@ -815,7 +935,7 @@ export function UsagePage() {
                       <thead>
                         <tr className="border-b border-border text-left text-xs text-muted-foreground">
                           <th className="py-2 font-normal">{isHourly ? "Hour" : "Day"}</th>
-                          {activeProviders.map((provider) => (
+                          {breakdownProviders.map((provider) => (
                             <th key={provider} className="py-2 text-right font-normal">
                               {PROVIDER_PRESENTATION[provider].label}
                             </th>
@@ -828,7 +948,7 @@ export function UsagePage() {
                         {breakdownPeriods.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={activeProviders.length + 3}
+                              colSpan={breakdownProviders.length + 3}
                               className="py-6 text-center text-muted-foreground"
                             >
                               No activity in this window.
@@ -845,7 +965,7 @@ export function UsagePage() {
                                   ? formatHourShort(period.hourStart, window.timeZone)
                                   : formatDayShort(period.day)}
                               </td>
-                              {activeProviders.map((provider) => (
+                              {breakdownProviders.map((provider) => (
                                 <td
                                   key={provider}
                                   className="py-2 text-right text-muted-foreground tabular-nums"
