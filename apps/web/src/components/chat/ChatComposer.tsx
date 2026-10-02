@@ -6257,6 +6257,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   model={selectedModelForPickerWithCustomFallback}
                   lockedProvider={lockedProvider}
                   lockedContinuationGroupKey={lockedContinuationGroupKey ?? null}
+                  lockedInstanceId={
+                    activeThread?.session?.providerInstanceId ??
+                    activeThreadModelSelection?.instanceId ??
+                    null
+                  }
                   disabled={isSendBusy}
                   visible={shortcutRails.visible}
                   groupRef={accountShortcutGroupRef}

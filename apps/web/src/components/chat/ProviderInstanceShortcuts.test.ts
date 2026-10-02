@@ -186,4 +186,49 @@ describe("provider account model resolution", () => {
         .model?.slug,
     ).toBe("default");
   });
+
+  it("keeps an Antigravity lock without continuation metadata on the exact session account", () => {
+    const driver = ProviderDriverKind.make("antigravity");
+    const activeId = ProviderInstanceId.make("antigravity_work");
+    const googleEntry = { ...entry, driverKind: driver, instanceId: activeId };
+    const locked = {
+      ...base,
+      entry: googleEntry,
+      currentDriver: driver,
+      lockedProvider: driver,
+      lockedInstanceId: activeId,
+      lockedContinuationGroupKey: null,
+    };
+    expect(resolveProviderInstanceShortcut(locked).disabledReason).toBeNull();
+    expect(
+      resolveProviderInstanceShortcut({
+        ...locked,
+        entry: { ...googleEntry, instanceId: ProviderInstanceId.make("antigravity_personal") },
+      }).disabledReason,
+    ).toBe("Start a new thread to use this provider.");
+  });
+
+  it("permits Antigravity sibling accounts only with the same supplied continuation group", () => {
+    const driver = ProviderDriverKind.make("antigravity");
+    const input = {
+      ...base,
+      entry: {
+        ...entry,
+        driverKind: driver,
+        instanceId: ProviderInstanceId.make("antigravity_personal"),
+        continuationGroupKey: "shared-google-profile",
+      },
+      currentDriver: driver,
+      lockedProvider: driver,
+      lockedInstanceId: ProviderInstanceId.make("antigravity_work"),
+      lockedContinuationGroupKey: "shared-google-profile",
+    };
+    expect(resolveProviderInstanceShortcut(input).disabledReason).toBeNull();
+    expect(
+      resolveProviderInstanceShortcut({
+        ...input,
+        entry: { ...input.entry, continuationGroupKey: "different-google-profile" },
+      }).disabledReason,
+    ).toBe("Start a new thread to use this provider.");
+  });
 });

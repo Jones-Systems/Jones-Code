@@ -16,14 +16,21 @@ import { getProviderStatusMessage } from "./ProviderStatusBanner";
 export const PROVIDER_INSTANCE_SHORTCUT_LIMIT = 9;
 
 export function matchesProviderModelLock(
-  entry: Pick<ProviderInstanceEntry, "driverKind" | "continuationGroupKey">,
+  entry: Pick<ProviderInstanceEntry, "instanceId" | "driverKind" | "continuationGroupKey">,
   lockedProvider: ProviderDriverKind | null,
   lockedContinuationGroupKey: string | null | undefined,
+  lockedInstanceId?: ProviderInstanceId | null,
 ): boolean {
+  // Missing continuation metadata must keep Antigravity history on its session account.
+  const requiresExactInstance =
+    lockedProvider === "antigravity" &&
+    lockedInstanceId != null &&
+    lockedContinuationGroupKey == null;
   return (
     lockedProvider === null ||
     (entry.driverKind === lockedProvider &&
-      (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey))
+      (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey) &&
+      (!requiresExactInstance || entry.instanceId === lockedInstanceId))
   );
 }
 
@@ -49,6 +56,7 @@ export function resolveProviderInstanceShortcut(input: {
   currentModel: string;
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey: string | null | undefined;
+  lockedInstanceId?: ProviderInstanceId | null;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
 }): { model: AppModelOption | undefined; disabledReason: string | null } {
   const { entry, options } = input;
@@ -65,7 +73,14 @@ export function resolveProviderInstanceShortcut(input: {
   if (!isProviderInstancePickerReady(entry)) {
     return { model: defaultModel, disabledReason: getProviderStatusMessage(entry.snapshot) };
   }
-  if (!matchesProviderModelLock(entry, input.lockedProvider, input.lockedContinuationGroupKey)) {
+  if (
+    !matchesProviderModelLock(
+      entry,
+      input.lockedProvider,
+      input.lockedContinuationGroupKey,
+      input.lockedInstanceId,
+    )
+  ) {
     return { model: defaultModel, disabledReason: "Start a new thread to use this provider." };
   }
   const candidates = [
@@ -102,6 +117,7 @@ export function ProviderInstanceShortcuts(props: {
   selectedModels?: ReadonlyArray<ModelSelection> | null;
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey: string | null;
+  lockedInstanceId?: ProviderInstanceId | null;
   disabled: boolean;
   visible?: boolean;
   groupRef?: Ref<HTMLDivElement>;
@@ -125,6 +141,7 @@ export function ProviderInstanceShortcuts(props: {
       currentModel: props.model,
       lockedProvider: props.lockedProvider,
       lockedContinuationGroupKey: props.lockedContinuationGroupKey,
+      lockedInstanceId: props.lockedInstanceId ?? props.activeInstanceId,
       getModelDisabledReason: props.getModelDisabledReason,
     });
 

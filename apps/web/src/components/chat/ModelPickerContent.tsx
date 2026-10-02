@@ -303,14 +303,17 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     [instanceEntries],
   );
   const matchesLockedProvider = useCallback(
-    (entry: Pick<ProviderInstanceEntry, "driverKind" | "continuationGroupKey">): boolean => {
+    (
+      entry: Pick<ProviderInstanceEntry, "instanceId" | "driverKind" | "continuationGroupKey">,
+    ): boolean => {
       return matchesProviderModelLock(
         entry,
         props.lockedProvider,
         props.lockedContinuationGroupKey,
+        props.activeInstanceId,
       );
     },
-    [props.lockedContinuationGroupKey, props.lockedProvider],
+    [props.activeInstanceId, props.lockedContinuationGroupKey, props.lockedProvider],
   );
 
   const selectableUnavailableInstanceIds = useMemo(() => {
