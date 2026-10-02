@@ -11555,7 +11555,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 const { clientIndex, items } = yield* Queue.take(completed);
                 assert.deepEqual(items[0], {
                   kind: "snapshot",
-                  snapshot: fixture.snapshots[index],
+                  snapshot: fixture.snapshots[index]!,
                 });
                 assert.deepEqual(
                   items.map((item) => item.kind),
