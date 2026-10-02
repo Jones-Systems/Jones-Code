@@ -224,6 +224,7 @@ import * as ProcessAttribution from "./resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as Data from "effect/Data";
 
@@ -583,6 +584,7 @@ const buildAppUnderTest = (options?: {
     providerRegistry?: Partial<ProviderRegistry.ProviderRegistry["Service"]>;
     modelManifest?: Partial<ModelManifest.ModelManifest["Service"]>;
     usageLimitSources?: Partial<UsageLimitSources.UsageLimitSources["Service"]>;
+    tokenAccounting?: TokenAccountingService.TokenAccountingService["Service"];
     providerService?: Partial<ProviderService.ProviderService["Service"]>;
     providerAuth?: Partial<ProviderAuthService["Service"]>;
     providerInstanceRegistry?: Partial<ProviderInstanceRegistry["Service"]>;
@@ -1187,6 +1189,14 @@ const buildAppUnderTest = (options?: {
       .pipe(
         Layer.provide(resourceTelemetryLayer),
         Layer.provide(UsageService.layerTest),
+        Layer.provide(
+          options?.layers?.tokenAccounting
+            ? Layer.succeed(
+                TokenAccountingService.TokenAccountingService,
+                options.layers.tokenAccounting,
+              )
+            : TokenAccountingService.layer,
+        ),
         Layer.provide(
           Layer.mock(AnalyticsService.AnalyticsService)({
             record: () => Effect.void,
@@ -5236,6 +5246,64 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       if (rpcError._tag === "EnvironmentAuthorizationError") {
         assert.equal(rpcError.requiredScope, "orchestration:read");
       }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("returns local unconfigured saved accounting without advertising a reader", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* withWsRpcClient(wsUrl, (client) =>
+        Effect.gen(function* () {
+          const config = yield* client[WS_METHODS.serverGetConfig]({});
+          assert.isUndefined(config.environment.capabilities.savedTokenAccounting);
+          const result = yield* client[WS_METHODS.serverReadTokenAccounting]({});
+          assert.equal(result.state, "unavailable");
+          if (result.state === "unavailable") {
+            assert.equal(result.status, "unconfigured");
+            assert.equal(result.reason, "reader_unconfigured");
+            assert.isNull(result.configuredReportId);
+          }
+        }),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("denies saved accounting without read scope before reader dispatch", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          tokenAccounting: {
+            isAvailable: Effect.succeed(true),
+            read: Effect.sync(() => {
+              reads += 1;
+              return {
+                state: "unavailable" as const,
+                status: "unconfigured" as const,
+                reason: "reader_unconfigured" as const,
+                configuredReportId: null,
+                readAt: "2026-10-02T12:00:00Z",
+              };
+            }),
+          },
+        },
+      });
+      const { body: tokenBody } = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "access:write",
+      });
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: { authorization: `Bearer ${tokenBody.access_token ?? ""}` },
+      });
+      const ticket = (yield* ticketResponse.json) as { readonly ticket: string };
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket.ticket)}`;
+      const denied = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverReadTokenAccounting]({})),
+        ),
+      );
+      assert.equal(denied._tag, "EnvironmentAuthorizationError");
+      assert.equal(reads, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

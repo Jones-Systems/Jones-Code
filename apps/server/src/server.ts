@@ -182,6 +182,8 @@ import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinar
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
+import { makeRuntimeReader } from "./tokenAccounting/RuntimeReader.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
   clearPersistedServerRuntimeState,
@@ -609,6 +611,9 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
   Layer.provideMerge(ProcessAttributionLayerLive),
   Layer.provideMerge(UsageLayerLive),
+  Layer.provideMerge(
+    Layer.suspend(() => TokenAccountingService.layerWithReader(makeRuntimeReader(process.env))),
+  ),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
   Layer.provideMerge(ExternalLauncher.layer),
