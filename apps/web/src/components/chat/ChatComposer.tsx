@@ -306,6 +306,7 @@ import {
   getComposerPromptLengthValidationMessage,
   getComposerSubmissionValidationMessage,
   submitComposerDraft,
+  handleComposerEnter,
 } from "./composerSubmission";
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
 import { PierreEntryIcon } from "./PierreEntryIcon";
@@ -1441,6 +1442,7 @@ export interface ChatComposerProps {
 
   // Callbacks
   onCompactContext: () => void;
+  onSteerNextQueuedMessage: () => boolean;
   onSend: (e?: { preventDefault: () => void }, intent?: ComposerSubmissionIntent) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -1558,6 +1560,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPageScrollRelease,
     onCompactContext,
     onSend,
+    onSteerNextQueuedMessage,
     onInterrupt,
     onImplementPlanInNewThread,
     onRespondToApproval,
@@ -4036,20 +4039,39 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (key === "ArrowUp" || key === "ArrowDown") {
       return navigatePromptHistory(key === "ArrowUp" ? "backward" : "forward", event);
     }
-    const submissionIntent =
-      key === "Enter"
-        ? composerSubmissionIntentForEnter({
-            isMobileViewport,
-            shiftKey: event.shiftKey,
-            modifierKey: event.metaKey || event.ctrlKey,
-            isDraftThread: routeKind === "draft",
-            isRunning: phase === "running",
-            sendShortcut: settings.sendShortcut,
-            prompt: promptRef.current,
-          })
-        : null;
-    if (submissionIntent) {
-      submitComposer(undefined, submissionIntent);
+    if (
+      key === "Enter" &&
+      handleComposerEnter({
+        event,
+        intent: {
+          isMobileViewport,
+          isDraftThread: routeKind === "draft",
+          isRunning: phase === "running",
+          sendShortcut: settings.sendShortcut,
+          prompt: promptRef.current,
+        },
+        hasDraftContext:
+          composerImagesRef.current.length > 0 ||
+          composerFilesRef.current.length > 0 ||
+          composerTerminalContextsRef.current.length > 0 ||
+          composerPreviewAnnotations.length > 0 ||
+          composerReviewComments.length > 0 ||
+          (pendingImageCompressionsRef.current.get(attachmentTargetKey) ?? 0) > 0 ||
+          pendingDraftWork.has(attachmentTargetKey),
+        queueActionDisabled:
+          noProviderAvailable ||
+          isSendDisabled ||
+          isSendBusy ||
+          isConnecting ||
+          isRevertingCheckpoint ||
+          projectSelectionRequired ||
+          activePendingApproval !== null ||
+          pendingUserInputs.length > 0 ||
+          showPlanFollowUpPrompt,
+        onSteerNextQueuedMessage,
+        onSubmit: (intent) => submitComposer(undefined, intent),
+      })
+    ) {
       return true;
     }
     // Native task splitting preserves marks and chips on both sides of the caret.

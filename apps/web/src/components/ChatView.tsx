@@ -8619,6 +8619,14 @@ export default function ChatView(props: ChatViewProps) {
   const onSteerQueuedMessage = useCallback((id: string) => {
     queuedMessageActionsRef.current.steer(id);
   }, []);
+  const onSteerNextQueuedMessage = useCallback(() => {
+    const message = activeThreadKey
+      ? useQueuedMessageStore.getState().queuesByThreadKey[activeThreadKey]?.[0]
+      : undefined;
+    if (!message) return false;
+    queuedMessageActionsRef.current.steer(message.id);
+    return true;
+  }, [activeThreadKey]);
   const onRemoveQueuedMessage = useCallback((id: string) => {
     queuedMessageActionsRef.current.remove(id);
   }, []);
@@ -10114,6 +10122,7 @@ export default function ChatView(props: ChatViewProps) {
                             onPageScrollKeyUp={onComposerPageScrollKeyUp}
                             onPageScrollRelease={onComposerPageScrollRelease}
                             onCompactContext={onCompactContext}
+                            onSteerNextQueuedMessage={onSteerNextQueuedMessage}
                             onSend={onSend}
                             onInterrupt={onInterrupt}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
