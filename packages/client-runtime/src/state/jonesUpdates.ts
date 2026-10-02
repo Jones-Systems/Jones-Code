@@ -70,15 +70,18 @@ const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
 /** Wait for a prepared connection; an initial disconnected mount must not end observation. */
 export function observeJonesUpdateState<A, E, R>(
   connections: Stream.Stream<Option.Option<A>>,
-  read: (after?: number) => Effect.Effect<JonesUpdateState, E, R>,
+  read: (after?: number) => Effect.Effect<JonesUpdateState | null, E, R>,
 ) {
   return connections.pipe(
     Stream.switchMap((connection) =>
       Option.isNone(connection)
         ? Stream.succeed(null)
         : Stream.unfold(undefined as number | undefined, (after) =>
-            read(after).pipe(Effect.map((state) => [state, state.revision] as const)),
-          ).pipe(Stream.catch(() => Stream.succeed(null))),
+            read(after).pipe(Effect.map((state) => [state, state?.revision] as const)),
+          ).pipe(
+            Stream.takeUntil((state) => state === null),
+            Stream.catch(() => Stream.succeed(null)),
+          ),
     ),
   );
 }

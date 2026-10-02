@@ -22,6 +22,7 @@ import * as NodeCrypto from "node:crypto";
 import packageJson from "../../package.json" with { type: "json" };
 import { retainStagedSelection, restoreStagedSelection } from "./stagedSelection.ts";
 import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
+import { isJonesRuntime, isPreviewRuntime } from "./qualification.ts";
 import { JonesUpdater } from "./JonesUpdater.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import * as ServerConfig from "../config.ts";
@@ -33,7 +34,7 @@ import * as DesktopReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.
 export class JonesUpdates extends Context.Service<
   JonesUpdates,
   {
-    readonly state: (after?: number) => Effect.Effect<JonesUpdateState>;
+    readonly state: (after?: number) => Effect.Effect<JonesUpdateState | null>;
     readonly check: Effect.Effect<JonesUpdateState>;
     readonly prepareNative: (input: JonesUpdateInstallInput) => Effect.Effect<JonesUpdateState>;
     readonly download: (input: JonesUpdateDownloadInput) => Effect.Effect<JonesUpdateState>;
@@ -60,6 +61,28 @@ export const layer = Layer.effect(
     const startup = yield* Startup.ServerRuntimeStartup;
     const context = yield* Effect.context<never>();
     const run = Effect.runPromiseWith(context);
+    const version = launcher.currentVersion ?? packageJson.version;
+    const nativeReceipt = isPreviewRuntime(version)
+      ? yield* Effect.tryPromise(() =>
+          readQualifiedRuntimeReceipt(config.baseDir, version, { platform, architecture }),
+        ).pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }))
+      : false;
+    if (
+      !isJonesRuntime({
+        version,
+        buildMetadata: packageJson,
+        qualifiedRuntimeReceipt: nativeReceipt,
+      })
+    ) {
+      const unavailable = Effect.succeed(blocked("This host uses Release updates."));
+      return JonesUpdates.of({
+        state: () => Effect.succeed(null),
+        check: unavailable,
+        prepareNative: () => unavailable,
+        download: () => unavailable,
+        install: () => unavailable,
+      });
+    }
     const qualifiedSelfUpdate = yield* SelfUpdate.withRunningThreadContinuation({
       mode: config.mode,
       selfUpdate,
@@ -149,7 +172,7 @@ export const layer = Layer.effect(
                 environmentId: input.environmentId,
                 version: input.currentVersion,
                 handle: input.stagedHandle,
-                prepare: () => run(startup.markRunningProviderSessionsForContinuation),
+                prepare: () => run(startup.markOptedInProviderSessionsForContinuation),
                 clear: (ids) =>
                   run(
                     startup.clearProviderSessionContinuationMarkers(

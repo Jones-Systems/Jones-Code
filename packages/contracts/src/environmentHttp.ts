@@ -895,7 +895,7 @@ class EnvironmentJonesUpdatesHttpApi extends HttpApiGroup.make("jonesUpdates")
     HttpApiEndpoint.get("state", "/api/jones-updates", {
       query: Schema.Struct({ after: Schema.optionalKey(Schema.NumberFromString) }),
       headers: OptionalBearerHeaders,
-      success: JonesUpdateState,
+      success: Schema.NullOr(JonesUpdateState),
       error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
     }).middleware(EnvironmentAuthenticatedAuth),
   )

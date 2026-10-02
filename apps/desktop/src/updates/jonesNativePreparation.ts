@@ -78,7 +78,6 @@ export async function prepareJonesNativeInstall(input: {
       stagedHandle: input.stagedHandle,
       environmentId: input.active.environmentId,
       currentVersion: input.active.version,
-      continueRunningThreads: true,
     }),
     token.access_token,
   );

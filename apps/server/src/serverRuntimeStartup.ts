@@ -9,12 +9,12 @@ import {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_SERVER_SETTINGS,
-  type ServerSettings as ServerSettingsValue,
   type ModelSelection,
   type OrchestrationProjectShell,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type ServerSettings as ServerSettingsValue,
   TurnId,
   WORKTREE_SETUP_ACTIVITY_KIND,
   WorktreeSetupSnapshot,
@@ -82,6 +82,10 @@ export class ServerRuntimeStartup extends Context.Service<
     readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
     readonly markHttpListening: Effect.Effect<void>;
     readonly markRunningProviderSessionsForContinuation: Effect.Effect<
+      ReadonlyArray<ThreadId>,
+      ServerUpdateThreadContinuationError
+    >;
+    readonly markOptedInProviderSessionsForContinuation: Effect.Effect<
       ReadonlyArray<ThreadId>,
       ServerUpdateThreadContinuationError
     >;
@@ -407,48 +411,62 @@ const toServerUpdateThreadContinuationError = (cause: unknown) =>
     ? cause
     : new ServerUpdateThreadContinuationError({ cause });
 
-export const markRunningProviderSessionsForContinuation = Effect.gen(function* () {
-  const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
-  const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
-  const { threads } = yield* query.getCommandReadModel();
-  const running = threads.filter(
-    (thread) =>
-      thread.archivedAt === null &&
-      thread.deletedAt === null &&
-      thread.session?.status === "running" &&
-      thread.session.activeTurnId !== null,
-  );
+const markProviderSessionsForContinuation = (settings?: ServerSettingsValue) =>
+  Effect.gen(function* () {
+    const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+    const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+    const { threads } = yield* query.getCommandReadModel();
+    const running = threads.filter(
+      (thread) =>
+        (settings === undefined ||
+          resolveProjectSettings(settings, thread.projectId).settings
+            .continueThreadsAfterServerUpdate) &&
+        thread.archivedAt === null &&
+        thread.deletedAt === null &&
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId !== null,
+    );
 
-  const marked: ThreadId[] = [];
-  return yield* Effect.gen(function* () {
-    for (const thread of running) {
-      const activeTurnId = thread.session?.activeTurnId;
-      if (activeTurnId === null || activeTurnId === undefined) {
-        continue;
+    const marked: ThreadId[] = [];
+    return yield* Effect.gen(function* () {
+      for (const thread of running) {
+        const activeTurnId = thread.session?.activeTurnId;
+        if (activeTurnId === null || activeTurnId === undefined) {
+          continue;
+        }
+        const binding = yield* directory.getBinding(thread.id);
+        if (Option.isNone(binding)) {
+          continue;
+        }
+        if (binding.value.resumeCursor === null || binding.value.resumeCursor === undefined) {
+          continue;
+        }
+        yield* directory.upsert({
+          ...binding.value,
+          runtimePayload: {
+            ...readRuntimePayload(binding.value.runtimePayload),
+            [SERVER_UPDATE_CONTINUATION_KEY]: activeTurnId,
+            continueAfterServerUpdatePrepared: null,
+          },
+        });
+        marked.push(thread.id);
       }
-      const binding = yield* directory.getBinding(thread.id);
-      if (Option.isNone(binding)) {
-        continue;
-      }
-      if (binding.value.resumeCursor === null || binding.value.resumeCursor === undefined) {
-        continue;
-      }
-      yield* directory.upsert({
-        ...binding.value,
-        runtimePayload: {
-          ...readRuntimePayload(binding.value.runtimePayload),
-          [SERVER_UPDATE_CONTINUATION_KEY]: activeTurnId,
-          continueAfterServerUpdatePrepared: null,
-        },
-      });
-      marked.push(thread.id);
-    }
-    return marked;
-  }).pipe(
-    Effect.catchCause((cause) =>
-      clearProviderSessionContinuationMarkers(marked).pipe(Effect.andThen(Effect.failCause(cause))),
-    ),
-  );
+      return marked;
+    }).pipe(
+      Effect.catchCause((cause) =>
+        clearProviderSessionContinuationMarkers(marked).pipe(
+          Effect.andThen(Effect.failCause(cause)),
+        ),
+      ),
+    );
+  }).pipe(Effect.mapError(toServerUpdateThreadContinuationError));
+
+export const markRunningProviderSessionsForContinuation = markProviderSessionsForContinuation();
+
+// Desktop preparation is mandatory; explicit resume markers require each project's consent.
+export const markOptedInProviderSessionsForContinuation = Effect.gen(function* () {
+  const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
+  return yield* markProviderSessionsForContinuation(settings);
 }).pipe(Effect.mapError(toServerUpdateThreadContinuationError));
 
 const clearContinuationMarkers = (
@@ -1199,6 +1217,17 @@ export const make = (options?: StartupOptions) =>
       awaitCommandReady: commandGate.awaitCommandReady,
       markHttpListening: Deferred.succeed(httpListening, undefined),
       markRunningProviderSessionsForContinuation: markRunningProviderSessionsForContinuation.pipe(
+        Effect.provideService(
+          ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+          projectionSnapshotQuery,
+        ),
+        Effect.provideService(
+          ProviderSessionDirectory.ProviderSessionDirectory,
+          providerSessionDirectory,
+        ),
+      ),
+      markOptedInProviderSessionsForContinuation: markOptedInProviderSessionsForContinuation.pipe(
+        Effect.provideService(ServerSettings.ServerSettingsService, serverSettings),
         Effect.provideService(
           ProjectionSnapshotQuery.ProjectionSnapshotQuery,
           projectionSnapshotQuery,

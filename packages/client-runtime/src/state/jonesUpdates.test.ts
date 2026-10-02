@@ -53,3 +53,17 @@ it.effect("hides Jones controls when an older host has no updater endpoint", () 
     expect(state).toEqual(Option.some(null));
   }),
 );
+
+it.effect("an ordinary Release host leaves Jones absent and ends HTTP observation", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    const states = yield* observeJonesUpdateState(Stream.succeed(Option.some("release-host")), () =>
+      Effect.sync(() => {
+        reads++;
+        return null;
+      }),
+    ).pipe(Stream.runCollect);
+    expect(states).toEqual([null]);
+    expect(reads).toBe(1);
+  }),
+);
