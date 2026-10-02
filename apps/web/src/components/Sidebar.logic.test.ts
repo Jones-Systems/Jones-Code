@@ -12,6 +12,7 @@ import {
   createThreadJumpHintVisibilityController,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
+  filterSidebarOperatingThreads,
   getSidebarThreadIdsToPrewarm,
   resolveAdjacentThreadId,
   reduceSidebarProjectScopeMenuState,
@@ -54,10 +55,12 @@ import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-searc
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
 import {
   EnvironmentId,
+  isOperatingThread,
   OrchestrationLatestTurn,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 
 import {
@@ -69,6 +72,64 @@ import {
 } from "../types";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("filterSidebarOperatingThreads", () => {
+  const runningSession = {
+    threadId: ThreadId.make("thread-running"),
+    status: "running" as const,
+    providerName: "Codex",
+    runtimeMode: DEFAULT_RUNTIME_MODE,
+    activeTurnId: TurnId.make("turn-running"),
+    lastError: null,
+    updatedAt: "2026-10-02T12:00:00Z",
+  };
+  const base = {
+    archivedAt: null,
+    interactionMode: DEFAULT_INTERACTION_MODE,
+    latestTurn: null,
+    session: null,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    hasActionableProposedPlan: false,
+    backgroundLiveness: null,
+  };
+  const threads = [
+    { ...base, id: "pinned", session: runningSession },
+    { ...base, id: "idle" },
+    { ...base, id: "settled-background", backgroundLiveness: "working" as const },
+    { ...base, id: "snoozed-monitor", backgroundLiveness: "monitoring" as const },
+    { ...base, id: "approval", session: runningSession, hasPendingApprovals: true },
+    {
+      ...base,
+      id: "approval-with-fleet",
+      hasPendingApprovals: true,
+      backgroundLiveness: "working" as const,
+    },
+    {
+      ...base,
+      id: "archived-running",
+      archivedAt: "2026-10-02T12:00:00Z",
+      session: runningSession,
+    },
+  ];
+
+  it("keeps operating rows in original order across shelves and foreground waits", () => {
+    expect(
+      filterSidebarOperatingThreads(threads, true, isOperatingThread).map((thread) => thread.id),
+    ).toEqual(["pinned", "settled-background", "snoozed-monitor", "approval-with-fleet"]);
+  });
+
+  it("restores the unchanged collection when the filter is cleared", () => {
+    expect(filterSidebarOperatingThreads(threads, false, isOperatingThread)).toBe(threads);
+    expect(threads).toHaveLength(7);
+  });
+
+  it("has no rows when none of the threads are operating", () => {
+    expect(
+      filterSidebarOperatingThreads([threads[1]!, threads[4]!], true, isOperatingThread),
+    ).toEqual([]);
+  });
+});
 
 describe("resolveSidebarRowAccessibility", () => {
   it.each([
