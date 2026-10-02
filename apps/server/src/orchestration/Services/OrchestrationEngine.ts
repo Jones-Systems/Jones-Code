@@ -79,8 +79,8 @@ export interface OrchestrationEngineShape {
    * Dispatch a validated orchestration command.
    *
    * @param command - Valid orchestration command.
-   * @param options - Optional client origin (surface/app version) stamped into
-   *   the metadata of every event the command produces.
+   * @param options - Optional client origin stamped into event metadata, plus
+   *   a server-only bootstrap effect context for reserved creation commands.
    * @returns Effect containing the sequence of the persisted event.
    *
    * Dispatch is serialized through an internal queue and deduplicated via
@@ -88,7 +88,10 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
-    options?: { readonly origin?: OrchestrationClientOrigin },
+    options?: {
+      readonly origin?: OrchestrationClientOrigin;
+      readonly bootstrapEffect?: { readonly claimId: string; readonly effectId: string };
+    },
   ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
 
   /** Acquire or recover this thread's exclusive mutation lease. */

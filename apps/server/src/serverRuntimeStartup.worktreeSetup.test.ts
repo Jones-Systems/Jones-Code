@@ -1,3 +1,7 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as Layer from "effect/Layer";
+import nativeCreationMigration from "./persistence/Migrations/003_JonesNativeCreationIntents.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EventId,
@@ -78,9 +82,16 @@ const recordedSetup = (id: string, phase: WorktreeSetupPhase, agentStatus?: "pen
   };
 };
 
-const run = (activities: ReadonlyArray<ReturnType<typeof recordedSetup>>) =>
+const run = (
+  activities: ReadonlyArray<ReturnType<typeof recordedSetup>>,
+  claimedThreadId?: string,
+) =>
   Effect.gen(function* () {
     const dispatched: Array<OrchestrationCommand> = [];
+    const sql = yield* SqlClient.SqlClient;
+    yield* nativeCreationMigration;
+    if (claimedThreadId !== undefined)
+      yield* sql`INSERT INTO native_creation_intents (claim_id, operation_id, preparation_id, command_id, thread_id, message_id, project_cwd, branch, worktree_path, canonical_preparation, intent_json) VALUES ('synthetic-claim', 'synthetic-operation', 'synthetic-preparation', 'synthetic-command', ${claimedThreadId}, 'synthetic-message', '/synthetic/project', 'synthetic-branch', '/synthetic/worktree', '{}', '{}')`;
     yield* ServerRuntimeStartup.reconcileWorktreeSetups.pipe(
       Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
         listActivitiesByKind: (kind: string) =>
@@ -106,7 +117,7 @@ const run = (activities: ReadonlyArray<ReturnType<typeof recordedSetup>>) =>
       Effect.provide(NodeServices.layer),
     );
     return dispatched;
-  });
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 it.effect("marks setups still recorded as running failed after a restart", () =>
   Effect.gen(function* () {
@@ -156,5 +167,17 @@ it.effect(
         payload.stages.map((stage) => stage.status),
         ["done", "failed", "done"],
       );
+    }),
+);
+
+it.effect(
+  "restart preserves claimed creation setup without command replay or forced readiness",
+  () =>
+    Effect.gen(function* () {
+      const dispatched = yield* run(
+        [recordedSetup("synthetic-claimed", "running", "done")],
+        "synthetic-claimed",
+      );
+      assert.deepEqual(dispatched, []);
     }),
 );

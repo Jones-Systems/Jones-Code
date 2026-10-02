@@ -4,6 +4,7 @@ import {
   OrchestrationCommand,
   ThreadId,
   AuthSessionId,
+  EventId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
@@ -20,14 +21,22 @@ import {
   validateNativeCreationPreparation,
 } from "../../orchestration/NativeCreationPreparation.ts";
 import migration from "../Migrations/003_JonesNativeCreationIntents.ts";
+import identityMigration from "../Migrations/004_JonesNativeCreationCommandIdentities.ts";
+import receiptMigration from "../Migrations/002_OrchestrationCommandReceipts.ts";
 import {
   NativeCreationRepository,
   type NativeCreationClaimInput,
 } from "../Services/NativeCreationRepository.ts";
-import { layer } from "./NativeCreationRepository.ts";
+import { layer, make } from "./NativeCreationRepository.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
-const database = Layer.effectDiscard(migration).pipe(Layer.provideMerge(memory));
+const database = Layer.effectDiscard(
+  Effect.gen(function* () {
+    yield* migration;
+    yield* receiptMigration;
+    yield* identityMigration;
+  }),
+).pipe(Layer.provideMerge(memory));
 const repositoryLayer = layer.pipe(Layer.provideMerge(database));
 const timestamp = "2026-10-02T12:34:56Z";
 const decodeFixtureBinding = Schema.decodeUnknownSync(NativePreparationBinding);
@@ -278,6 +287,7 @@ it.effect("keeps original digest separate and reserves immutable native commands
       ...value.preparation.command,
       modelSelection: value.preparation.binding.provider_model_selection,
     });
+    yield* repository.reserveCommandIdentities(value.input.claimId, [command.commandId]);
     yield* repository.recordNormalizedCommand(value.input.claimId, command);
     yield* repository.recordNormalizedCommand(value.input.claimId, command);
     const history = Option.getOrThrow(
@@ -319,14 +329,25 @@ it.effect("keeps original digest separate and reserves immutable native commands
       "Synthetic prompt",
       "/fixture/future-worktree",
     );
-    yield* repository.reserveCommand(value.input.claimId, {
-      ...command,
-      commandId: decodeFixtureCommand(future.preparation.command).commandId,
-    });
     assert.strictEqual(
-      (yield* repository.claim(future.input, future.authorize).pipe(Effect.flip)).code,
+      (yield* repository
+        .reserveCommand(value.input.claimId, {
+          ...command,
+          commandId: decodeFixtureCommand(future.preparation.command).commandId,
+        })
+        .pipe(Effect.flip)).code,
       "conflict",
     );
+    assert.strictEqual(
+      (yield* repository
+        .reserveCommandIdentities(value.input.claimId, [
+          command.commandId,
+          future.preparation.command.commandId,
+        ])
+        .pipe(Effect.flip)).code,
+      "conflict",
+    );
+    assert.strictEqual((yield* repository.claim(future.input, future.authorize)).status, "claimed");
   }).pipe(Effect.provide(repositoryLayer)),
 );
 
@@ -511,6 +532,355 @@ it.effect("assigns distinct fact ordinals when asynchronous completions arrive c
         yield* repository.readHistory(value.preparation.command.commandId),
       ).effects.map((fact) => fact.ordinal),
       [0, 1, 2, 3],
+    );
+  }).pipe(Effect.provide(repositoryLayer)),
+);
+
+const identityInventory = (commandId: string) => [
+  commandId,
+  ...[
+    "bootstrap-thread-create",
+    "bootstrap-thread-message",
+    "bootstrap-thread-preparing",
+    "bootstrap-thread-meta-update",
+    "bootstrap-thread-preparing-failed",
+    "bootstrap-thread-delete",
+    "setup-script-requested",
+    "setup-script-started",
+    "setup-script-failed",
+    "worktree-setup-running",
+    "worktree-setup-done",
+    "worktree-setup-failed",
+    "worktree-setup-cancelled",
+  ].map((suffix) => `${commandId}:${suffix}`),
+];
+
+it.effect(
+  "reserves the whole closed inventory without inventing bodies and binds real bodies later",
+  () =>
+    Effect.gen(function* () {
+      const repository = yield* NativeCreationRepository;
+      const value = yield* fixture();
+      yield* repository.claim(value.input, value.authorize);
+      const ids = identityInventory(value.preparation.command.commandId);
+      yield* repository.reserveCommandIdentities(value.input.claimId, ids);
+      yield* repository.reserveCommandIdentities(value.input.claimId, [...ids].reverse());
+      for (const commandId of ids) {
+        assert.deepEqual(
+          Option.getOrThrow(yield* repository.getReservedCommandIdentity(commandId)),
+          {
+            claimId: value.input.claimId,
+            commandId,
+            threadId: value.preparation.command.threadId,
+          },
+        );
+        assert.isTrue(Option.isNone(yield* repository.getReservedCommand(commandId)));
+      }
+      const command = decodeFixtureCommand({
+        ...value.preparation.command,
+        modelSelection: value.preparation.binding.provider_model_selection,
+        createdAt: "2026-10-02T12:35:00Z",
+      });
+      yield* repository.recordNormalizedCommand(value.input.claimId, command);
+      const body = Option.getOrThrow(yield* repository.getReservedCommand(command.commandId));
+      assert.strictEqual(body.canonicalCommand, nativeCreationCanonicalJson(command));
+      const history = yield* repository.readHistoryByClaim(value.input.claimId);
+      assert.deepEqual(
+        history,
+        Option.getOrThrow(yield* repository.readHistory(command.commandId)),
+      );
+      assert.strictEqual(history.normalizedCommandDigest, body.commandDigest);
+    }).pipe(Effect.provide(repositoryLayer)),
+);
+
+it.effect("invalid inventories and unowned bodies reject without reserving any IDs", () =>
+  Effect.gen(function* () {
+    const repository = yield* NativeCreationRepository;
+    const sql = yield* SqlClient.SqlClient;
+    const value = yield* fixture();
+    yield* repository.claim(value.input, value.authorize);
+    const id = value.preparation.command.commandId;
+    for (const ids of [
+      [],
+      [id, id],
+      [id, ""],
+      [id, " padded "],
+      [id, `${id}:bootstrap-arbitrary`],
+      [`${id}:bootstrap-thread-create`],
+    ])
+      assert.strictEqual(
+        (yield* repository.reserveCommandIdentities(value.input.claimId, ids).pipe(Effect.result))
+          ._tag,
+        "Failure",
+      );
+    assert.strictEqual(
+      (yield* repository
+        .reserveCommand(
+          value.input.claimId,
+          yield* Schema.decodeEffect(OrchestrationCommand)(value.preparation.command),
+        )
+        .pipe(Effect.flip)).code,
+      "conflict",
+    );
+    assert.deepEqual(
+      yield* sql`SELECT command_id FROM native_creation_reserved_command_identities`,
+      [],
+    );
+    assert.deepEqual(yield* sql`SELECT command_id FROM native_creation_reserved_commands`, []);
+  }).pipe(Effect.provide(repositoryLayer)),
+);
+
+it.effect("native receipts collide before whole-inventory reservation or claim insertion", () =>
+  Effect.gen(function* () {
+    const repository = yield* NativeCreationRepository;
+    const sql = yield* SqlClient.SqlClient;
+    const value = yield* fixture();
+    yield* repository.claim(value.input, value.authorize);
+    const ids = identityInventory(value.preparation.command.commandId);
+    yield* sql`INSERT INTO orchestration_command_receipts
+      (command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status)
+      VALUES (${ids[ids.length - 1]!}, 'thread', ${value.preparation.command.threadId}, ${timestamp}, 1, 'accepted')`;
+    assert.strictEqual(
+      (yield* repository.reserveCommandIdentities(value.input.claimId, ids).pipe(Effect.flip)).code,
+      "conflict",
+    );
+    assert.deepEqual(
+      yield* sql`SELECT command_id FROM native_creation_reserved_command_identities`,
+      [],
+    );
+    const other = yield* fixture(
+      "receipt-operation",
+      "Synthetic prompt",
+      "/fixture/receipt-worktree",
+    );
+    yield* sql`INSERT INTO orchestration_command_receipts
+      (command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status)
+      VALUES (${other.preparation.command.commandId}, 'thread', ${other.preparation.command.threadId}, ${timestamp}, 2, 'accepted')`;
+    assert.strictEqual(
+      (yield* repository.claim(other.input, other.authorize).pipe(Effect.flip)).code,
+      "conflict",
+    );
+    assert.isTrue(
+      Option.isNone(yield* repository.readHistory(other.preparation.command.commandId)),
+    );
+  }).pipe(Effect.provide(repositoryLayer)),
+);
+
+it.effect("different claims cannot bind or reserve another owner's commands", () =>
+  Effect.gen(function* () {
+    const repository = yield* NativeCreationRepository;
+    const sql = yield* SqlClient.SqlClient;
+    const first = yield* fixture();
+    const second = yield* fixture(
+      "second-operation",
+      "Synthetic prompt",
+      "/fixture/second-worktree",
+    );
+    yield* repository.claim(first.input, first.authorize);
+    yield* repository.claim(second.input, second.authorize);
+    const ids = identityInventory(first.preparation.command.commandId);
+    yield* repository.reserveCommandIdentities(first.input.claimId, ids);
+    assert.strictEqual(
+      (yield* repository
+        .reserveCommandIdentities(second.input.claimId, [
+          second.preparation.command.commandId,
+          ids[1]!,
+        ])
+        .pipe(Effect.flip)).code,
+      "conflict",
+    );
+    assert.strictEqual(
+      (yield* repository
+        .reserveCommand(
+          second.input.claimId,
+          decodeFixtureCommand({
+            ...first.preparation.command,
+            threadId: second.preparation.command.threadId,
+          }),
+        )
+        .pipe(Effect.flip)).code,
+      "conflict",
+    );
+    assert.deepEqual(
+      yield* sql`SELECT COUNT(*) AS count FROM native_creation_reserved_command_identities`,
+      [{ count: ids.length }],
+    );
+  }).pipe(Effect.provide(repositoryLayer)),
+);
+
+it.effect(
+  "a new repository instance preserves identity ownership and cannot extend partial reservations",
+  () =>
+    Effect.gen(function* () {
+      const repository = yield* NativeCreationRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const value = yield* fixture();
+      const claimed = yield* repository.claim(value.input, value.authorize);
+      const ids = identityInventory(value.preparation.command.commandId);
+      yield* sql`INSERT INTO native_creation_reserved_command_identities (command_id, claim_id, thread_id)
+      VALUES (${ids[0]!}, ${value.input.claimId}, ${value.preparation.command.threadId})`;
+      const restarted = yield* make;
+      assert.strictEqual(
+        (yield* restarted.reserveCommandIdentities(value.input.claimId, ids).pipe(Effect.flip))
+          .code,
+        "unresolved_claim",
+      );
+      const duplicate = yield* restarted.claim(
+        { ...value.input, claimId: "takeover-claim", claimedBootId: "later-boot" },
+        value.authorize,
+      );
+      assert.strictEqual(duplicate.status, "duplicate");
+      assert.deepEqual(duplicate.history.intent, claimed.history.intent);
+      assert.deepEqual(
+        yield* sql`SELECT claim_id FROM native_creation_reserved_command_identities`,
+        [{ claim_id: value.input.claimId }],
+      );
+    }).pipe(Effect.provide(repositoryLayer)),
+);
+
+it.effect(
+  "missing or malformed identity lookup remains unresolved, while a valid absence is empty",
+  () =>
+    Effect.gen(function* () {
+      const repository = yield* NativeCreationRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const value = yield* fixture();
+      yield* repository.claim(value.input, value.authorize);
+      const id = value.preparation.command.commandId;
+      assert.isTrue(Option.isNone(yield* repository.getReservedCommandIdentity(id)));
+      yield* sql`INSERT INTO native_creation_reserved_command_identities (command_id, claim_id, thread_id)
+      VALUES (${id}, ${value.input.claimId}, 'wrong-thread')`;
+      assert.strictEqual(
+        (yield* repository.getReservedCommandIdentity(id).pipe(Effect.flip)).code,
+        "unresolved_claim",
+      );
+      assert.strictEqual(
+        (yield* repository.readHistoryByClaim("missing-claim").pipe(Effect.flip)).code,
+        "unresolved_claim",
+      );
+    }).pipe(Effect.provide(repositoryLayer)),
+);
+
+it.effect("an unavailable identity table fails closed", () =>
+  Effect.gen(function* () {
+    const repository = yield* NativeCreationRepository;
+    assert.strictEqual(
+      (yield* repository.getReservedCommandIdentity("fixture-command").pipe(Effect.flip)).code,
+      "unresolved_claim",
+    );
+  }).pipe(Effect.provide(layer.pipe(Layer.provide(memory)))),
+);
+
+it.effect(
+  "activity command facts bind actual immutable bodies and preserve repeated fact rejection",
+  () =>
+    Effect.gen(function* () {
+      const repository = yield* NativeCreationRepository;
+      const value = yield* fixture();
+      yield* repository.claim(value.input, value.authorize);
+      yield* repository.reserveCommandIdentities(
+        value.input.claimId,
+        identityInventory(value.preparation.command.commandId),
+      );
+      const command = decodeFixtureCommand({
+        type: "thread.activity.append",
+        commandId: `${value.preparation.command.commandId}:worktree-setup-done`,
+        threadId: ThreadId.make(value.preparation.command.threadId),
+        activity: {
+          id: "fixture-native-activity",
+          tone: "info",
+          kind: "worktree.setup.done",
+          summary: "Setup completed",
+          payload: { exitCode: 0, terminalId: "real-fixture-terminal" },
+          turnId: null,
+          createdAt: "2026-10-02T12:36:00Z",
+        },
+        createdAt: "2026-10-02T12:36:00Z",
+      });
+      yield* repository.reserveCommand(value.input.claimId, command);
+      const reserved = Option.getOrThrow(yield* repository.getReservedCommand(command.commandId));
+      const start = {
+        kind: "native_command" as const,
+        phase: "started" as const,
+        effectId: "fixture-activity-command",
+        timestamp: "2026-10-02T12:36:01Z",
+        commandId: command.commandId,
+        threadId: ThreadId.make(value.preparation.command.threadId),
+        commandType: "thread.activity.append" as const,
+        commandDigest: reserved.commandDigest,
+      };
+      yield* repository.startEffect(value.input.claimId, start, value.authorize);
+      assert.strictEqual(
+        (yield* repository
+          .startEffect(value.input.claimId, start, value.authorize)
+          .pipe(Effect.flip)).code,
+        "conflict",
+      );
+      const completed = {
+        ...start,
+        phase: "completed" as const,
+        timestamp: "2026-10-02T12:36:02Z",
+        eventId: EventId.make("fixture-native-event"),
+        sequence: 5,
+      };
+      assert.strictEqual(
+        (yield* repository
+          .completeEffect(value.input.claimId, { ...completed, commandDigest: "0".repeat(64) })
+          .pipe(Effect.flip)).code,
+        "conflict",
+      );
+      yield* repository.completeEffect(value.input.claimId, completed);
+      assert.strictEqual(
+        (yield* repository.completeEffect(value.input.claimId, completed).pipe(Effect.flip)).code,
+        "conflict",
+      );
+      assert.strictEqual(
+        (yield* repository
+          .reserveCommand(
+            value.input.claimId,
+            decodeFixtureCommand({ ...command, createdAt: "2026-10-02T12:37:00Z" }),
+          )
+          .pipe(Effect.flip)).code,
+        "conflict",
+      );
+      const history = yield* repository.readHistoryByClaim(value.input.claimId);
+      assert.strictEqual(history.effects.length, 2);
+      assert.deepEqual(
+        yield* Schema.decodeEffect(Schema.fromJsonString(OrchestrationCommand))(
+          reserved.canonicalCommand,
+        ),
+        command,
+      );
+    }).pipe(Effect.provide(repositoryLayer)),
+);
+
+it.effect("a receipt appearing after identity reservation prevents later body binding", () =>
+  Effect.gen(function* () {
+    const repository = yield* NativeCreationRepository;
+    const sql = yield* SqlClient.SqlClient;
+    const value = yield* fixture();
+    yield* repository.claim(value.input, value.authorize);
+    yield* repository.reserveCommandIdentities(
+      value.input.claimId,
+      identityInventory(value.preparation.command.commandId),
+    );
+    yield* sql`INSERT INTO orchestration_command_receipts
+      (command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status)
+      VALUES (${value.preparation.command.commandId}, 'thread', ${value.preparation.command.threadId}, ${timestamp}, 1, 'accepted')`;
+    assert.strictEqual(
+      (yield* repository
+        .recordNormalizedCommand(
+          value.input.claimId,
+          yield* Schema.decodeEffect(OrchestrationCommand)(value.preparation.command),
+        )
+        .pipe(Effect.flip)).code,
+      "conflict",
+    );
+    assert.isTrue(
+      Option.isNone(yield* repository.getReservedCommand(value.preparation.command.commandId)),
+    );
+    assert.isNull(
+      (yield* repository.readHistoryByClaim(value.input.claimId)).normalizedCommandDigest,
     );
   }).pipe(Effect.provide(repositoryLayer)),
 );

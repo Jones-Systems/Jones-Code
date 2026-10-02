@@ -1,4 +1,10 @@
-import { AuthSessionId, NativeCreationEffect, OrchestrationCommand } from "@t3tools/contracts";
+import {
+  AuthSessionId,
+  CommandId,
+  ThreadId,
+  NativeCreationEffect,
+  OrchestrationCommand,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -16,9 +22,31 @@ import {
   NativeCreationStoredIntent,
   type NativeCreationHistory,
   type NativeCreationReservedCommand,
+  type NativeCreationReservedCommandIdentity,
 } from "../Services/NativeCreationRepository.ts";
 
 const fail = (message: string) => new NativeCreationRepositoryError({ code: "conflict", message });
+const unresolved = (message: string) =>
+  new NativeCreationRepositoryError({ code: "unresolved_claim", message });
+const mapIdentityError = (cause: unknown) =>
+  isRepositoryError(cause)
+    ? cause
+    : unresolved("Native creation command identity is unavailable or malformed");
+const commandIdentitySuffixes = [
+  "bootstrap-thread-create",
+  "bootstrap-thread-message",
+  "bootstrap-thread-preparing",
+  "bootstrap-thread-meta-update",
+  "bootstrap-thread-preparing-failed",
+  "bootstrap-thread-delete",
+  "setup-script-requested",
+  "setup-script-started",
+  "setup-script-failed",
+  "worktree-setup-running",
+  "worktree-setup-done",
+  "worktree-setup-failed",
+  "worktree-setup-cancelled",
+] as const;
 const isRepositoryError = Schema.is(NativeCreationRepositoryError);
 const isAuthorityError = Schema.is(NativeCreationAuthorityError);
 const mapError = (cause: unknown) =>
@@ -32,6 +60,10 @@ const decodeIntentJson = Schema.decodeUnknownEffect(
 );
 const decodeEffectJson = Schema.decodeUnknownEffect(Schema.fromJsonString(NativeCreationEffect));
 const decodeIntent = Schema.decodeUnknownEffect(NativeCreationStoredIntent);
+const decodeCommandId = Schema.decodeUnknownEffect(CommandId);
+const decodeCommandIdentity = Schema.decodeUnknownEffect(
+  Schema.Struct({ claimId: Schema.NonEmptyString, commandId: CommandId, threadId: ThreadId }),
+);
 const decodeCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeEffect = Schema.decodeUnknownEffect(NativeCreationEffect);
 const decodeEnrollmentSessionId = Schema.decodeUnknownEffect(AuthSessionId);
@@ -70,13 +102,31 @@ export const make = Effect.gen(function* () {
     );
   const readByClaim = Effect.fnUntraced(function* (claimId: string) {
     const rows = yield* sql<{
+      claim_id: string;
+      command_id: string;
+      thread_id: string;
       intent_json: string;
-    }>`SELECT intent_json FROM native_creation_intents WHERE claim_id = ${claimId}`;
-    if (rows.length !== 1) return yield* fail("Native creation claim is missing");
+    }>`SELECT claim_id, command_id, thread_id, intent_json FROM native_creation_intents WHERE claim_id = ${claimId}`;
+    if (rows.length !== 1)
+      return yield* unresolved("Native creation claim is missing or inconsistent");
     const intent = yield* decodeIntentJson(rows[0]!.intent_json);
+    if (
+      intent.claimId !== claimId ||
+      intent.claimId !== rows[0]!.claim_id ||
+      intent.commandId !== rows[0]!.command_id ||
+      intent.threadId !== rows[0]!.thread_id
+    )
+      return yield* unresolved("Stored creation claim identity disagrees");
     const normalized = yield* sql<{
       command_digest: string;
     }>`SELECT command_digest FROM native_creation_normalized_commands WHERE claim_id = ${claimId}`;
+    if (
+      normalized.length > 1 ||
+      (normalized.length === 1 &&
+        (typeof normalized[0]!.command_digest !== "string" ||
+          !/^[a-f0-9]{64}$/.test(normalized[0]!.command_digest)))
+    )
+      return yield* unresolved("Stored normalized creation digest is malformed");
     const facts = yield* sql<{
       fact_json: string;
     }>`SELECT fact_json FROM native_creation_effect_facts WHERE claim_id = ${claimId} ORDER BY ordinal`;
@@ -86,7 +136,7 @@ export const make = Effect.gen(function* () {
       normalizedCommandDigest: normalized[0]?.command_digest ?? null,
       effects,
     } satisfies NativeCreationHistory;
-  });
+  }, Effect.mapError(mapIdentityError));
 
   const claim: NativeCreationRepository["Service"]["claim"] = (input, authorize) =>
     sql
@@ -147,6 +197,12 @@ export const make = Effect.gen(function* () {
             }
             return { status: "duplicate" as const, history };
           }
+          const identity = yield* getIdentity(preparation.command.commandId);
+          if (Option.isSome(identity))
+            return yield* fail(
+              "Native creation command identity is already reserved by another intent",
+            );
+          yield* rejectReceipt(preparation.command.commandId);
           const reservations =
             yield* sql`SELECT command_id FROM native_creation_reserved_commands WHERE command_id = ${preparation.command.commandId}`;
           if (reservations.length !== 0)
@@ -208,17 +264,123 @@ export const make = Effect.gen(function* () {
     }>`SELECT claim_id, command_id, thread_id, command_type, command_digest, canonical_command
        FROM native_creation_reserved_commands WHERE command_id = ${commandId}`;
     const row = rows[0];
-    return row === undefined
-      ? Option.none()
-      : Option.some({
-          claimId: row.claim_id,
-          commandId: row.command_id,
-          threadId: row.thread_id,
-          commandType: row.command_type,
-          commandDigest: row.command_digest,
-          canonicalCommand: row.canonical_command,
-        });
-  });
+    if (row === undefined) return Option.none<NativeCreationReservedCommand>();
+    if (rows.length !== 1) return yield* unresolved("Reserved command body is inconsistent");
+    const identity = yield* decodeCommandIdentity({
+      claimId: row.claim_id,
+      commandId: row.command_id,
+      threadId: row.thread_id,
+    });
+    const command = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationCommand))(
+      row.canonical_command,
+    );
+    if (
+      identity.commandId !== commandId ||
+      command.commandId !== commandId ||
+      !("threadId" in command) ||
+      command.threadId !== identity.threadId ||
+      command.type !== row.command_type ||
+      nativeCreationSha256(row.canonical_command) !== row.command_digest ||
+      nativeCreationCanonicalJson(command) !== row.canonical_command
+    )
+      return yield* unresolved("Reserved command body disagrees with its identity or digest");
+    return Option.some({
+      ...identity,
+      commandType: row.command_type,
+      commandDigest: row.command_digest,
+      canonicalCommand: row.canonical_command,
+    });
+  }, Effect.mapError(mapIdentityError));
+
+  const rejectReceipt = Effect.fnUntraced(function* (commandId: string) {
+    const rows =
+      yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id = ${commandId}`;
+    if (rows.length !== 0)
+      return yield* fail("Native creation command already has a native receipt");
+  }, Effect.mapError(mapIdentityError));
+
+  const getIdentity = Effect.fnUntraced(function* (commandId: string) {
+    const id = yield* decodeCommandId(commandId);
+    const rows = yield* sql<{ claimId: string; commandId: string; threadId: string }>`
+      SELECT claim_id AS "claimId", command_id AS "commandId", thread_id AS "threadId"
+      FROM native_creation_reserved_command_identities WHERE command_id = ${id}`;
+    if (rows.length === 0) return Option.none<NativeCreationReservedCommandIdentity>();
+    if (rows.length !== 1) return yield* unresolved("Reserved command identity is inconsistent");
+    const identity = yield* decodeCommandIdentity(rows[0]);
+    const { intent } = yield* readByClaim(identity.claimId);
+    if (
+      identity.commandId !== id ||
+      identity.threadId !== intent.threadId ||
+      ![
+        intent.commandId,
+        ...commandIdentitySuffixes.map((suffix) => `${intent.commandId}:${suffix}`),
+      ].includes(id)
+    )
+      return yield* unresolved("Reserved command identity disagrees with its claim");
+    return Option.some(identity);
+  }, Effect.mapError(mapIdentityError));
+
+  const reserveCommandIdentities: NativeCreationRepository["Service"]["reserveCommandIdentities"] =
+    (claimId, commandIds) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const { intent } = yield* readByClaim(claimId);
+            if (commandIds.length === 0 || new Set(commandIds).size !== commandIds.length)
+              return yield* fail("Creation command identities must be nonempty and unique");
+            const ids = yield* Effect.forEach(commandIds, (id) => decodeCommandId(id));
+            if (
+              new Set(ids).size !== ids.length ||
+              ids.some((id, index) => id !== commandIds[index])
+            )
+              return yield* fail(
+                "Creation command identities must retain their exact input values",
+              );
+            const allowed = new Set([
+              intent.commandId,
+              ...commandIdentitySuffixes.map((suffix) => `${intent.commandId}:${suffix}`),
+            ]);
+            if (!ids.includes(intent.commandId as CommandId) || ids.some((id) => !allowed.has(id)))
+              return yield* fail(
+                "Creation command identity does not belong to the claimed inventory",
+              );
+            const owned = yield* sql<{ commandId: string }>`SELECT command_id AS "commandId"
+        FROM native_creation_reserved_command_identities WHERE claim_id = ${claimId}`;
+            if (
+              owned.length > 0 &&
+              (owned.length !== ids.length ||
+                owned.some((row) => !ids.includes(row.commandId as CommandId)))
+            )
+              return yield* unresolved(
+                "Creation claim has an incomplete or different reserved identity inventory",
+              );
+            for (const id of ids) {
+              const identity = yield* getIdentity(id);
+              if (Option.isSome(identity)) {
+                if (
+                  identity.value.claimId !== claimId ||
+                  identity.value.threadId !== intent.threadId
+                )
+                  return yield* fail("Creation command identity belongs to another claim");
+              } else {
+                const owners = yield* sql<{
+                  claim_id: string;
+                }>`SELECT claim_id FROM native_creation_intents WHERE command_id = ${id}`;
+                if (owners.some((row) => row.claim_id !== claimId))
+                  return yield* fail("Creation command identity is claimed by another intent");
+                if (Option.isSome(yield* getReserved(id)))
+                  return yield* fail("Creation command body predates its reserved identity");
+                yield* rejectReceipt(id);
+              }
+            }
+            for (const id of ids) {
+              if (owned.length === 0)
+                yield* sql`INSERT INTO native_creation_reserved_command_identities (command_id, claim_id, thread_id)
+          VALUES (${id}, ${claimId}, ${intent.threadId})`;
+            }
+          }),
+        )
+        .pipe(Effect.mapError(mapIdentityError));
 
   const reserve = Effect.fnUntraced(function* (claimId: string, input: OrchestrationCommand) {
     const command = yield* decodeCommand(input, {
@@ -233,6 +395,7 @@ export const make = Effect.gen(function* () {
         "thread.meta.update",
         "thread.message.user.append",
         "thread.session.set",
+        "thread.activity.append",
         "thread.turn.start",
         "thread.delete",
       ].includes(command.type)
@@ -244,6 +407,13 @@ export const make = Effect.gen(function* () {
     }>`SELECT claim_id FROM native_creation_intents WHERE command_id = ${command.commandId}`;
     if (owners.some((row) => row.claim_id !== claimId))
       return yield* fail("Creation command is claimed by another intent");
+    const identity = yield* getIdentity(command.commandId);
+    if (
+      Option.isNone(identity) ||
+      identity.value.claimId !== claimId ||
+      identity.value.threadId !== command.threadId
+    )
+      return yield* fail("Creation command body has no matching reserved identity");
     const canonicalCommand = nativeCreationCanonicalJson(command);
     const existing = yield* getReserved(command.commandId);
     if (Option.isSome(existing)) {
@@ -254,6 +424,7 @@ export const make = Effect.gen(function* () {
         return yield* fail("Reserved creation command is immutable");
       return;
     }
+    yield* rejectReceipt(command.commandId);
     yield* sql`INSERT INTO native_creation_reserved_commands (command_id, claim_id, thread_id, command_type, command_digest, canonical_command)
       VALUES (${command.commandId}, ${claimId}, ${command.threadId}, ${command.type}, ${nativeCreationSha256(canonicalCommand)}, ${canonicalCommand})`;
   });
@@ -308,8 +479,12 @@ export const make = Effect.gen(function* () {
     )
       return yield* fail("Creation effect addresses unclaimed resources");
     if (fact.kind === "native_command") {
+      const identity = yield* getIdentity(fact.commandId);
       const reserved = yield* getReserved(fact.commandId);
       if (
+        Option.isNone(identity) ||
+        identity.value.claimId !== claimId ||
+        identity.value.threadId !== fact.threadId ||
         Option.isNone(reserved) ||
         reserved.value.claimId !== claimId ||
         reserved.value.commandDigest !== fact.commandDigest ||
@@ -406,6 +581,9 @@ export const make = Effect.gen(function* () {
     hasAutomationEnrollment,
     claim,
     readHistory,
+    readHistoryByClaim: (claimId) => readByClaim(claimId).pipe(Effect.mapError(mapIdentityError)),
+    reserveCommandIdentities,
+    getReservedCommandIdentity: getIdentity,
     reserveCommand,
     recordNormalizedCommand,
     getReservedCommand: (commandId) =>

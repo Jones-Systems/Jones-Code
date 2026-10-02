@@ -1,3 +1,8 @@
+import * as NativeCreationRepositoryLayer from "../../persistence/Layers/NativeCreationRepository.ts";
+import {
+  nativeCreationCommandDigest,
+  nativeCreationCanonicalJson,
+} from "../NativeCreationPreparation.ts";
 import type {
   OrchestrationClientOrigin,
   OrchestrationEvent,
@@ -68,6 +73,7 @@ const isOrchestrationCommandIdConflictError = Schema.is(OrchestrationCommandIdCo
 interface CommandEnvelope {
   command: OrchestrationCommand;
   origin: OrchestrationClientOrigin | undefined;
+  bootstrapEffect: { readonly claimId: string; readonly effectId: string } | undefined;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
 }
@@ -105,6 +111,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const worktreeOwnershipLeases = yield* makeWorktreeOwnershipLeaseStore();
   const locallyOwnedWorktrees = new Map<string, WorktreeOwnershipLease>();
   const validateDispatchGuard = yield* makeDispatchGuard();
+  const nativeCreationRepository = yield* NativeCreationRepositoryLayer.make;
   const commandObservation = yield* makeCommandObservationQuery();
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -224,6 +231,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               createdAt,
             },
             origin: undefined,
+            bootstrapEffect: undefined,
             result,
             startedAtMs: nowMs,
           });
@@ -294,6 +302,55 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           "orchestration.aggregate_id": aggregateRef.aggregateId,
         });
 
+        const identity = yield* nativeCreationRepository
+          .getReservedCommandIdentity(envelope.command.commandId)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationCommandInvariantError({
+                  commandType: envelope.command.type,
+                  detail: "native creation identity lookup unavailable",
+                  cause,
+                }),
+            ),
+          );
+        if (
+          Option.isSome(identity) &&
+          (envelope.bootstrapEffect === undefined ||
+            identity.value.claimId !== envelope.bootstrapEffect.claimId ||
+            identity.value.threadId !== aggregateRef.aggregateId)
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: envelope.command.type,
+            detail: "native creation command identity context mismatch",
+          });
+        }
+        const reservation = yield* nativeCreationRepository
+          .getReservedCommand(envelope.command.commandId)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationCommandInvariantError({
+                  commandType: envelope.command.type,
+                  detail: "native creation reservation unavailable",
+                  cause,
+                }),
+            ),
+          );
+        if (Option.isSome(reservation) || envelope.bootstrapEffect !== undefined) {
+          if (
+            Option.isNone(reservation) ||
+            envelope.bootstrapEffect === undefined ||
+            reservation.value.claimId !== envelope.bootstrapEffect.claimId ||
+            reservation.value.commandDigest !== nativeCreationCommandDigest(envelope.command) ||
+            reservation.value.canonicalCommand !== nativeCreationCanonicalJson(envelope.command)
+          ) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: envelope.command.type,
+              detail: "native creation command context mismatch",
+            });
+          }
+        }
         const existingReceipt = yield* commandReceiptRepository.getByCommandId({
           commandId: envelope.command.commandId,
         });
@@ -472,6 +529,33 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 error: null,
               });
 
+              if (envelope.bootstrapEffect !== undefined && Option.isSome(reservation)) {
+                const history = yield* nativeCreationRepository.readHistoryByClaim(
+                  envelope.bootstrapEffect.claimId,
+                );
+                const start = history.effects.find(
+                  (fact) =>
+                    fact.effectId === envelope.bootstrapEffect!.effectId &&
+                    fact.phase === "started",
+                );
+                if (
+                  start?.kind !== "native_command" ||
+                  start.commandId !== envelope.command.commandId ||
+                  start.commandDigest !== reservation.value.commandDigest
+                ) {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail: "native creation effect context mismatch",
+                  });
+                }
+                yield* nativeCreationRepository.completeEffect(envelope.bootstrapEffect.claimId, {
+                  ...start,
+                  phase: "completed",
+                  timestamp: lastSavedEvent.occurredAt,
+                  eventId: lastSavedEvent.eventId,
+                  sequence: lastSavedEvent.sequence,
+                });
+              }
               return {
                 committedEvents,
                 attachmentCleanups,
@@ -482,6 +566,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             }),
           )
           .pipe(
+            Effect.catchTag("NativeCreationRepositoryError", (cause) =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: envelope.command.type,
+                  detail: "native creation transaction failed",
+                  cause,
+                }),
+              ),
+            ),
             Effect.catchTag("SqlError", (sqlError) =>
               Effect.fail(
                 toPersistenceSqlError("OrchestrationEngine.processEnvelope:transaction")(sqlError),
@@ -617,6 +710,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       yield* Queue.offer(commandQueue, {
         command,
         origin: options?.origin,
+        bootstrapEffect: options?.bootstrapEffect,
         result,
         startedAtMs: yield* Clock.currentTimeMillis,
       });

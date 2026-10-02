@@ -1,3 +1,6 @@
+import { assertLegacyBootstrapAllowed } from "../auth/RpcAuthorization.ts";
+import { EnvironmentAuthenticatedPrincipal } from "@t3tools/contracts";
+import { NativeCreationRepository } from "../persistence/Services/NativeCreationRepository.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -33,6 +36,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const orchestrationEngine = yield* OrchestrationEngineService;
     const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
+    const nativeCreationRepository = yield* Effect.serviceOption(NativeCreationRepository);
     const providerService = yield* Effect.serviceOption(ProviderService);
 
     return handlers
@@ -181,6 +185,16 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.dispatch")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          if (args.payload.type === "thread.turn.start" && args.payload.bootstrap !== undefined) {
+            const principal = yield* EnvironmentAuthenticatedPrincipal;
+            if (Option.isNone(nativeCreationRepository))
+              return yield* failEnvironmentInvalidRequest("invalid_command");
+            yield* assertLegacyBootstrapAllowed({
+              actorSessionId: principal.sessionId,
+              command: args.payload,
+              hasAutomationEnrollment: nativeCreationRepository.value.hasAutomationEnrollment,
+            }).pipe(Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")));
+          }
           yield* ProjectCloneTracker.rejectCommandsDuringClone(
             projectCloneTracker,
             args.payload,

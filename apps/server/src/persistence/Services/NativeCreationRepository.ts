@@ -62,6 +62,12 @@ export interface NativeCreationClaimInput {
   readonly grantRevision: number;
 }
 
+export interface NativeCreationReservedCommandIdentity {
+  readonly claimId: string;
+  readonly commandId: string;
+  readonly threadId: string;
+}
+
 export interface NativeCreationReservedCommand {
   readonly claimId: string;
   readonly commandId: string;
@@ -94,6 +100,19 @@ export class NativeCreationRepository extends Context.Service<
     readonly readHistory: (
       commandId: string,
     ) => Effect.Effect<Option.Option<NativeCreationHistory>, NativeCreationRepositoryError>;
+    readonly readHistoryByClaim: (
+      claimId: string,
+    ) => Effect.Effect<NativeCreationHistory, NativeCreationRepositoryError>;
+    readonly reserveCommandIdentities: (
+      claimId: string,
+      commandIds: ReadonlyArray<string>,
+    ) => Effect.Effect<void, NativeCreationRepositoryError>;
+    readonly getReservedCommandIdentity: (
+      commandId: string,
+    ) => Effect.Effect<
+      Option.Option<NativeCreationReservedCommandIdentity>,
+      NativeCreationRepositoryError
+    >;
     readonly recordNormalizedCommand: (
       claimId: string,
       command: OrchestrationCommand,

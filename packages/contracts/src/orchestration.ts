@@ -34,6 +34,7 @@ import {
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
+  dispatchBootstrap: "orchestration.dispatchBootstrap",
   getWorkflowScript: "orchestration.getWorkflowScript",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
@@ -1524,6 +1525,7 @@ const NativeCreationCommandDetails = {
     "thread.meta.update",
     "thread.message.user.append",
     "thread.session.set",
+    "thread.activity.append",
     "thread.turn.start",
     "thread.delete",
   ]),

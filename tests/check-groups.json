@@ -141,14 +141,15 @@
     },
     {
       "group_id": "jones-creation-store",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration/NativeCreationPreparation.test.ts apps/server/src/orchestration/NativeCreationAuthority.test.ts apps/server/src/persistence/Layers/NativeCreationRepository.test.ts apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.test.ts apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.test.ts apps/server/src/persistence/Migrations.test.ts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration/NativeCreationPreparation.test.ts apps/server/src/orchestration/NativeCreationAuthority.test.ts apps/server/src/persistence/Layers/NativeCreationRepository.test.ts apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.test.ts apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.test.ts apps/server/src/persistence/Migrations.test.ts apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.test.ts",
       "modules": [
         "apps/server/src/orchestration/NativeCreationPreparation.test.ts",
         "apps/server/src/orchestration/NativeCreationAuthority.test.ts",
         "apps/server/src/persistence/Layers/NativeCreationRepository.test.ts",
         "apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.test.ts",
         "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.test.ts",
-        "apps/server/src/persistence/Migrations.test.ts"
+        "apps/server/src/persistence/Migrations.test.ts",
+        "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.test.ts"
       ],
       "scope": [
         "apps/server/src/orchestration/NativeCreationPreparation.ts",
@@ -162,7 +163,47 @@
         "apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.test.ts",
         "apps/server/src/persistence/Migrations.ts",
         "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.test.ts",
-        "apps/server/src/persistence/Migrations.test.ts"
+        "apps/server/src/persistence/Migrations.test.ts",
+        "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.ts",
+        "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.test.ts"
+      ]
+    },
+    {
+      "group_id": "jones-creation-execution",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/nativeCreation.test.ts apps/server/src/orchestration/CommandObservation.test.ts apps/server/src/orchestration/http.test.ts apps/server/src/vcs/worktreePath.test.ts apps/server/src/vcs/GitVcsDriverCore.test.ts apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts apps/server/src/serverRuntimeStartup.worktreeSetup.test.ts apps/server/src/server.test.ts apps/server/src/voiceNativeBootstrap.test.ts",
+      "modules": [
+        "apps/server/src/nativeCreation.test.ts",
+        "apps/server/src/orchestration/CommandObservation.test.ts",
+        "apps/server/src/orchestration/http.test.ts",
+        "apps/server/src/vcs/worktreePath.test.ts",
+        "apps/server/src/vcs/GitVcsDriverCore.test.ts",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts",
+        "apps/server/src/serverRuntimeStartup.worktreeSetup.test.ts",
+        "apps/server/src/server.test.ts",
+        "apps/server/src/voiceNativeBootstrap.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/ws.ts",
+        "apps/server/src/auth/RpcAuthorization.ts",
+        "apps/server/src/orchestration/CommandObservation.ts",
+        "apps/server/src/orchestration/http.ts",
+        "apps/server/src/orchestration/Services/OrchestrationEngine.ts",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.ts",
+        "apps/server/src/vcs/GitVcsDriverCore.ts",
+        "apps/server/src/vcs/worktreePath.ts",
+        "apps/server/src/server.ts",
+        "apps/server/src/serverRuntimeStartup.ts",
+        "packages/contracts/src/rpc.ts",
+        "packages/contracts/src/orchestration.ts",
+        "apps/server/src/nativeCreation.test.ts",
+        "apps/server/src/orchestration/CommandObservation.test.ts",
+        "apps/server/src/orchestration/http.test.ts",
+        "apps/server/src/vcs/worktreePath.test.ts",
+        "apps/server/src/vcs/GitVcsDriverCore.test.ts",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts",
+        "apps/server/src/serverRuntimeStartup.worktreeSetup.test.ts",
+        "apps/server/src/server.test.ts",
+        "apps/server/src/voiceNativeBootstrap.test.ts"
       ]
     }
   ]

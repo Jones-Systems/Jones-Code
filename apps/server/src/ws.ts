@@ -1,3 +1,24 @@
+import { assertLegacyBootstrapAllowed } from "./auth/RpcAuthorization.ts";
+import { OrchestrationCommandInvariantError } from "./orchestration/Errors.ts";
+import {
+  NativeCreationAuthority,
+  type NativeCreationAuthorityInput,
+} from "./orchestration/NativeCreationAuthority.ts";
+import {
+  NativeCreationRepository,
+  type NativeCreationStartedFact,
+} from "./persistence/Services/NativeCreationRepository.ts";
+import {
+  decodeNativeBootstrapSubmission,
+  nativeCreationCommandDigest,
+  type ValidatedNativeCreationPreparation,
+} from "./orchestration/NativeCreationPreparation.ts";
+import { nativeWorktreePath } from "./vcs/worktreePath.ts";
+import {
+  NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES,
+  type NativeCreationGuard,
+  type NativeCreationEffect,
+} from "@t3tools/contracts";
 import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -36,7 +57,7 @@ import {
   type EditorId,
   type FileManagerRevealKind,
   type OrchestrationClientOrigin,
-  type OrchestrationCommand,
+  OrchestrationCommand,
   type GitActionProgressEvent,
   type GitManagerServiceError,
   OrchestrationDispatchCommandError,
@@ -497,6 +518,214 @@ function readClientAnalyticsProps(request: HttpServerRequest.HttpServerRequest) 
   };
 }
 
+export const nativeBootstrapCommandIds = (commandId: string): ReadonlyArray<string> => [
+  commandId,
+  ...[
+    "bootstrap-thread-create",
+    "bootstrap-thread-message",
+    "bootstrap-thread-preparing",
+    "bootstrap-thread-meta-update",
+    "bootstrap-thread-preparing-failed",
+    "bootstrap-thread-delete",
+    "setup-script-requested",
+    "setup-script-started",
+    "setup-script-failed",
+    "worktree-setup-running",
+    "worktree-setup-done",
+    "worktree-setup-failed",
+    "worktree-setup-cancelled",
+  ].map((suffix) => `${commandId}:${suffix}`),
+];
+
+export const nativeBootstrapRpcSerialization: RpcSerialization.RpcSerialization["Service"] = {
+  ...RpcSerialization.json,
+  makeUnsafe: () => {
+    const parser = RpcSerialization.json.makeUnsafe();
+    return {
+      encode: parser.encode,
+      decode: (data) => {
+        const requests = parser.decode(data);
+        const byteLength =
+          typeof data === "string" ? new TextEncoder().encode(data).byteLength : data.byteLength;
+        if (
+          byteLength > NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES &&
+          requests.some(
+            (request) =>
+              typeof request === "object" &&
+              request !== null &&
+              "_tag" in request &&
+              request._tag === "Request" &&
+              "tag" in request &&
+              request.tag === ORCHESTRATION_WS_METHODS.dispatchBootstrap,
+          )
+        ) {
+          throw new RpcSerialization.MaxBufferSizeExceeded({
+            maxBufferSize: NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES,
+          });
+        }
+        return requests;
+      },
+    };
+  },
+};
+
+type NativeStartedInput<T = NativeCreationStartedFact> = T extends NativeCreationStartedFact
+  ? Omit<T, "ordinal" | "timestamp" | "effectId">
+  : never;
+
+interface NativeBootstrapInvocation {
+  readonly claimId: string;
+  readonly preparation: ValidatedNativeCreationPreparation;
+  readonly guard: NativeCreationGuard;
+  readonly resources: NativeCreationAuthorityInput["resources"];
+}
+
+export const makeNativeBootstrapDispatcher =
+  (input: {
+    readonly actorSessionId: AuthSessionId;
+    readonly worktreesDir: string;
+    readonly bootId: string;
+    readonly repository: NativeCreationRepository["Service"];
+    readonly authority: NativeCreationAuthority["Service"];
+    readonly newId: Effect.Effect<string, OrchestrationDispatchCommandError>;
+    readonly now: Effect.Effect<string>;
+    readonly normalize: (
+      command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
+    ) => Effect.Effect<OrchestrationCommand, OrchestrationDispatchCommandError>;
+    readonly dispatch: (
+      command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
+      creation: NativeBootstrapInvocation,
+    ) => Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError>;
+  }) =>
+  (
+    submission: unknown,
+  ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
+    Effect.gen(function* () {
+      const { preparation, guard } = yield* decodeNativeBootstrapSubmission(submission);
+      const resources = {
+        projectCwd: preparation.binding.project_cwd,
+        branch: preparation.command.bootstrap.prepareWorktree.branch,
+        worktreePath: nativeWorktreePath({
+          worktreesDir: input.worktreesDir,
+          cwd: preparation.binding.project_cwd,
+          branch: preparation.command.bootstrap.prepareWorktree.branch,
+        }),
+      };
+      const claimed = yield* input.repository.claim(
+        {
+          preparation,
+          resources,
+          claimId: yield* input.newId,
+          claimedBootId: input.bootId,
+          claimedAt: yield* input.now,
+          actorSessionId: input.actorSessionId,
+          grantId: guard.grantId,
+          grantRevision: guard.grantRevision,
+        },
+        input.authority.authorize({
+          actorSessionId: input.actorSessionId,
+          preparation,
+          guard,
+          resources,
+          stage: "claim",
+        }),
+      );
+      if (claimed.status === "duplicate")
+        return yield* new OrchestrationDispatchCommandError({
+          message: "Existing native creation claim requires observation",
+          creationRejectionCode: "unresolved_claim",
+        });
+      const creation = { claimId: claimed.history.intent.claimId, preparation, guard, resources };
+      yield* input.repository.reserveCommandIdentities(
+        creation.claimId,
+        nativeBootstrapCommandIds(preparation.command.commandId),
+      );
+      const normalizationStart = yield* input.repository.startEffect(
+        creation.claimId,
+        {
+          effectId: yield* input.newId,
+          timestamp: yield* input.now,
+          kind: "lifecycle",
+          phase: "started",
+          threadId: ThreadId.make(preparation.command.threadId),
+          action: "normalization",
+        },
+        input.authority.authorize({
+          actorSessionId: input.actorSessionId,
+          ...creation,
+          stage: "normalization",
+        }),
+      );
+      const decodedCommand = yield* Schema.decodeUnknownEffect(OrchestrationCommand)(
+        preparation.command,
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestrationDispatchCommandError({
+              message: "Canonical native command is invalid",
+              cause,
+              creationRejectionCode: "invalid_preparation",
+            }),
+        ),
+      );
+      if (decodedCommand.type !== "thread.turn.start")
+        return yield* new OrchestrationDispatchCommandError({
+          message: "Canonical native command type is invalid",
+          creationRejectionCode: "invalid_preparation",
+        });
+      const normalized = yield* input.normalize(decodedCommand);
+      if (normalized.type !== "thread.turn.start" || normalized.bootstrap === undefined)
+        return yield* new OrchestrationDispatchCommandError({
+          message: "Normalized bootstrap differs",
+          creationRejectionCode: "binding_mismatch",
+        });
+      const comparableNormalized = {
+        ...normalized,
+        createdAt: preparation.command.createdAt,
+        bootstrap: {
+          ...normalized.bootstrap,
+          ...(normalized.bootstrap.createThread === undefined
+            ? {}
+            : {
+                createThread: {
+                  ...normalized.bootstrap.createThread,
+                  createdAt: preparation.command.bootstrap.createThread.createdAt,
+                },
+              }),
+        },
+      };
+      if (nativeCreationCommandDigest(comparableNormalized) !== preparation.commandDigest)
+        return yield* new OrchestrationDispatchCommandError({
+          message: "Normalized bootstrap changed the immutable binding",
+          creationRejectionCode: "binding_mismatch",
+        });
+      const { bootstrap: _creationBootstrap, ...normalizedFinalCommand } = normalized;
+      yield* input.repository.recordNormalizedCommand(creation.claimId, normalizedFinalCommand);
+      if (normalizationStart.kind !== "lifecycle")
+        return yield* new OrchestrationDispatchCommandError({
+          message: "Normalization effect mismatch",
+          creationRejectionCode: "unresolved_claim",
+        });
+      yield* input.repository.completeEffect(creation.claimId, {
+        ...normalizationStart,
+        phase: "completed",
+        timestamp: yield* input.now,
+        result: "succeeded",
+      });
+      return yield* input.dispatch(normalized, creation);
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new OrchestrationDispatchCommandError({
+            message: "Native bootstrap rejected",
+            cause,
+            creationRejectionCode: Schema.is(OrchestrationDispatchCommandError)(cause)
+              ? (cause.creationRejectionCode ?? "unresolved_claim")
+              : cause.code,
+          }),
+      ),
+    );
+
 const makeWsRpcLayer = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
   clientOrigin: OrchestrationClientOrigin,
@@ -506,6 +735,8 @@ const makeWsRpcLayer = (
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const nativeCreationRepository = yield* NativeCreationRepository;
+      const nativeCreationAuthority = yield* NativeCreationAuthority;
       const crypto = yield* Crypto.Crypto;
       const sql = yield* SqlClient.SqlClient;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
@@ -755,20 +986,29 @@ const makeWsRpcLayer = (
           ),
         );
 
-      const appendSetupScriptActivity = (input: {
-        readonly threadId: ThreadId;
-        readonly kind: "setup-script.requested" | "setup-script.started" | "setup-script.failed";
-        readonly summary: string;
-        readonly createdAt: string;
-        readonly payload: Record<string, unknown>;
-        readonly tone: "info" | "error";
-      }) =>
+      const appendSetupScriptActivity = (
+        input: {
+          readonly threadId: ThreadId;
+          readonly kind: "setup-script.requested" | "setup-script.started" | "setup-script.failed";
+          readonly summary: string;
+          readonly createdAt: string;
+          readonly payload: Record<string, unknown>;
+          readonly tone: "info" | "error";
+        },
+        guarded?: {
+          readonly commandId: CommandId;
+          readonly dispatch: OrchestrationEngine.OrchestrationEngineShape["dispatch"];
+        },
+      ) =>
         Effect.all({
-          commandId: serverCommandId("setup-script-activity"),
+          commandId:
+            guarded === undefined
+              ? serverCommandId("setup-script-activity")
+              : Effect.succeed(guarded.commandId),
           activityId: serverEventId,
         }).pipe(
           Effect.flatMap(({ commandId, activityId }) =>
-            dispatchFromClient({
+            (guarded?.dispatch ?? dispatchFromClient)({
               type: "thread.activity.append",
               commandId,
               threadId: input.threadId,
@@ -791,10 +1031,19 @@ const makeWsRpcLayer = (
       // progress keeps streaming from the tracker; this is what a reload or
       // another client reads. Best effort: the thread may already be gone
       // after a failed bootstrap.
-      const recordWorktreeSetup = (snapshot: WorktreeSetupSnapshot) =>
-        serverCommandId("worktree-setup-activity").pipe(
+      const recordWorktreeSetup = (
+        snapshot: WorktreeSetupSnapshot,
+        guarded?: {
+          readonly commandId: CommandId;
+          readonly dispatch: OrchestrationEngine.OrchestrationEngineShape["dispatch"];
+        },
+      ) =>
+        (guarded === undefined
+          ? serverCommandId("worktree-setup-activity")
+          : Effect.succeed(guarded.commandId)
+        ).pipe(
           Effect.flatMap((commandId) =>
-            dispatchFromClient({
+            (guarded?.dispatch ?? dispatchFromClient)({
               type: "thread.activity.append",
               commandId,
               threadId: snapshot.threadId,
@@ -1079,8 +1328,213 @@ const makeWsRpcLayer = (
 
       const dispatchBootstrapTurnStart = (
         command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
+        creation?: NativeBootstrapInvocation,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
         Effect.gen(function* () {
+          const startNativeEffect = (
+            fact: NativeStartedInput,
+            stage: NativeCreationAuthorityInput["stage"],
+          ) =>
+            Effect.gen(function* () {
+              if (creation === undefined) return undefined;
+              const effectId = yield* randomUUID;
+              return yield* nativeCreationRepository.startEffect(
+                creation.claimId,
+                { ...fact, effectId, timestamp: yield* nowIso } as Parameters<
+                  NativeCreationRepository["Service"]["startEffect"]
+                >[1],
+                nativeCreationAuthority.authorize({
+                  actorSessionId: currentSessionId,
+                  ...creation,
+                  stage,
+                }),
+              );
+            });
+          const nativeLifecycle = <A, E>(
+            action: Extract<NativeCreationEffect, { kind: "lifecycle" }>["action"],
+            effect: Effect.Effect<A, E>,
+          ): Effect.Effect<A, E | OrchestrationDispatchCommandError> =>
+            Effect.gen(function* () {
+              const start = yield* startNativeEffect(
+                { kind: "lifecycle", phase: "started", threadId: command.threadId, action },
+                action,
+              );
+              const result = yield* effect;
+              if (creation !== undefined && start?.kind === "lifecycle")
+                yield* nativeCreationRepository.completeEffect(creation.claimId, {
+                  ...start,
+                  phase: "completed",
+                  timestamp: yield* nowIso,
+                  result: "succeeded",
+                });
+              return result;
+            }).pipe(
+              Effect.mapError((cause) =>
+                toDispatchCommandError(cause, "Native creation lifecycle failed"),
+              ),
+            );
+          const dispatchBootstrapCommand: OrchestrationEngine.OrchestrationEngineShape["dispatch"] =
+            (nativeCommand) => {
+              if (creation === undefined) return dispatchFromClient(nativeCommand);
+              return Effect.gen(function* () {
+                yield* nativeCreationRepository.reserveCommand(creation.claimId, nativeCommand);
+                const start = yield* nativeCreationRepository.startEffect(
+                  creation.claimId,
+                  {
+                    effectId: yield* randomUUID,
+                    timestamp: yield* nowIso,
+                    kind: "native_command",
+                    phase: "started",
+                    commandId: nativeCommand.commandId,
+                    threadId: command.threadId,
+                    commandType: nativeCommand.type as Extract<
+                      NativeCreationEffect,
+                      { kind: "native_command" }
+                    >["commandType"],
+                    commandDigest: nativeCreationCommandDigest(nativeCommand),
+                  },
+                  nativeCreationAuthority.authorize({
+                    actorSessionId: currentSessionId,
+                    ...creation,
+                    stage: "native_command",
+                  }),
+                );
+                return yield* orchestrationEngine.dispatch(nativeCommand, {
+                  ...(hasClientOrigin ? { origin: clientOrigin } : {}),
+                  bootstrapEffect: { claimId: creation.claimId, effectId: start.effectId },
+                });
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationCommandInvariantError({
+                      commandType: nativeCommand.type,
+                      detail: "Native creation command authorization failed",
+                      cause,
+                    }),
+                ),
+              );
+            };
+          const bootstrapCommandId = (tag: string) =>
+            creation === undefined
+              ? serverCommandId(tag)
+              : Effect.succeed(CommandId.make(`${creation.preparation.command.commandId}:${tag}`));
+          const appendBootstrapSetupActivity = (
+            input: Parameters<typeof appendSetupScriptActivity>[0],
+          ) =>
+            appendSetupScriptActivity(
+              input,
+              creation === undefined
+                ? undefined
+                : {
+                    commandId: CommandId.make(
+                      `${creation.preparation.command.commandId}:${input.kind.replace(".", "-")}`,
+                    ),
+                    dispatch: dispatchBootstrapCommand,
+                  },
+            );
+          const recordBootstrapWorktreeSetup = (snapshot: WorktreeSetupSnapshot) =>
+            recordWorktreeSetup(
+              snapshot,
+              creation === undefined
+                ? undefined
+                : {
+                    commandId: CommandId.make(
+                      `${creation.preparation.command.commandId}:worktree-setup-${snapshot.phase}`,
+                    ),
+                    dispatch: dispatchBootstrapCommand,
+                  },
+            );
+          const nativeExternal = <A, E>(
+            fact: Extract<NativeStartedInput, { kind: "fetch" | "worktree" }>,
+            stage: "fetch" | "worktree",
+            effect: Effect.Effect<A, E>,
+          ): Effect.Effect<A, E | OrchestrationDispatchCommandError> =>
+            Effect.gen(function* () {
+              const start = yield* startNativeEffect(fact, stage);
+              const result = yield* effect;
+              if (
+                creation !== undefined &&
+                start !== undefined &&
+                (start.kind === "fetch" || start.kind === "worktree")
+              ) {
+                if (start.kind === "worktree") {
+                  if (
+                    typeof result !== "object" ||
+                    result === null ||
+                    !("worktree" in result) ||
+                    typeof result.worktree !== "object" ||
+                    result.worktree === null ||
+                    !("path" in result.worktree) ||
+                    result.worktree.path !== creation.resources.worktreePath ||
+                    !("refName" in result.worktree) ||
+                    result.worktree.refName !== creation.resources.branch
+                  ) {
+                    return yield* new OrchestrationDispatchCommandError({
+                      message: "Created native worktree differs from claimed resources",
+                      creationRejectionCode: "binding_mismatch",
+                    });
+                  }
+                  yield* nativeCreationRepository.completeEffect(creation.claimId, {
+                    ...start,
+                    ownership: "created",
+                    phase: "completed",
+                    timestamp: yield* nowIso,
+                    result: "succeeded",
+                  });
+                } else {
+                  yield* nativeCreationRepository.completeEffect(creation.claimId, {
+                    ...start,
+                    phase: "completed",
+                    timestamp: yield* nowIso,
+                    result: "succeeded",
+                  });
+                }
+              }
+              return result;
+            }).pipe(
+              Effect.mapError((cause) =>
+                toDispatchCommandError(cause, "Native creation external effect unresolved"),
+              ),
+            );
+          const nativeCleanup = <A, E>(
+            resource: NonNullable<NativeCreationAuthorityInput["recoveryResource"]>,
+            effect: Effect.Effect<A, E>,
+          ) =>
+            Effect.gen(function* () {
+              if (creation === undefined) return yield* effect;
+              const recoveryScopeId = `${creation.preparation.operationId}:cleanup:${resource.kind}`;
+              const start = yield* nativeCreationRepository.startEffect(
+                creation.claimId,
+                {
+                  kind: "cleanup",
+                  phase: "started",
+                  effectId: yield* randomUUID,
+                  timestamp: yield* nowIso,
+                  resource,
+                  recoveryScopeId,
+                },
+                nativeCreationAuthority.authorize({
+                  actorSessionId: currentSessionId,
+                  ...creation,
+                  stage: "cleanup",
+                  recoveryScopeId,
+                  recoveryResource: resource,
+                }),
+              );
+              const result = yield* effect;
+              if (start.kind === "cleanup")
+                yield* nativeCreationRepository.completeEffect(creation.claimId, {
+                  ...start,
+                  phase: "completed",
+                  timestamp: yield* nowIso,
+                  result: "succeeded",
+                });
+              return result;
+            }).pipe(
+              Effect.mapError((cause) =>
+                toDispatchCommandError(cause, "Native creation cleanup unresolved"),
+              ),
+            );
           const bootstrap = command.bootstrap;
           const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
           let createdThread = false;
@@ -1096,9 +1550,9 @@ const makeWsRpcLayer = (
           const markPreparingSessionFailed = (detail: string) =>
             Effect.gen(function* () {
               const failedAt = yield* nowIso;
-              yield* dispatchFromClient({
+              yield* dispatchBootstrapCommand({
                 type: "thread.session.set",
-                commandId: yield* serverCommandId("bootstrap-thread-preparing-failed"),
+                commandId: yield* bootstrapCommandId("bootstrap-thread-preparing-failed"),
                 threadId,
                 session: {
                   threadId,
@@ -1117,16 +1571,41 @@ const makeWsRpcLayer = (
             });
           const cleanupCreatedThread = () =>
             createdThread
-              ? serverCommandId("bootstrap-thread-delete").pipe(
-                  Effect.flatMap((commandId) =>
-                    dispatchFromClient({
-                      type: "thread.delete",
-                      commandId,
+              ? Effect.gen(function* () {
+                  const deleteEffect = bootstrapCommandId("bootstrap-thread-delete").pipe(
+                    Effect.flatMap((commandId) =>
+                      dispatchBootstrapCommand({
+                        type: "thread.delete",
+                        commandId,
+                        threadId: command.threadId,
+                      }),
+                    ),
+                    Effect.as(true),
+                  );
+                  if (creation === undefined) return yield* deleteEffect;
+                  const history = yield* nativeCreationRepository.readHistoryByClaim(
+                    creation.claimId,
+                  );
+                  const created = history.effects.find(
+                    (fact) =>
+                      fact.kind === "native_command" &&
+                      fact.phase === "completed" &&
+                      fact.commandType === "thread.create",
+                  );
+                  if (created?.kind !== "native_command" || created.phase !== "completed")
+                    return yield* new OrchestrationDispatchCommandError({
+                      message: "Creation incarnation unavailable",
+                      creationRejectionCode: "unresolved_claim",
+                    });
+                  return yield* nativeCleanup(
+                    {
+                      kind: "thread",
                       threadId: command.threadId,
-                    }),
-                  ),
-                  Effect.as(true),
-                )
+                      incarnation: { eventId: created.eventId, sequence: created.sequence },
+                    },
+                    deleteEffect,
+                  );
+                })
               : Effect.succeed(false);
 
           const recordSetupScriptLaunchFailure = (input: {
@@ -1135,7 +1614,7 @@ const makeWsRpcLayer = (
             readonly worktreePath: string;
           }) => {
             const detail = projectSetupScriptCompatibilityDetail(input.error);
-            return appendSetupScriptActivity({
+            return appendBootstrapSetupActivity({
               threadId: command.threadId,
               kind: "setup-script.failed",
               summary: "Setup script failed to start",
@@ -1173,7 +1652,7 @@ const makeWsRpcLayer = (
                 worktreePath: input.worktreePath,
               };
               yield* Effect.all([
-                appendSetupScriptActivity({
+                appendBootstrapSetupActivity({
                   threadId: command.threadId,
                   kind: "setup-script.requested",
                   summary: "Starting setup script",
@@ -1181,7 +1660,7 @@ const makeWsRpcLayer = (
                   payload,
                   tone: "info",
                 }),
-                appendSetupScriptActivity({
+                appendBootstrapSetupActivity({
                   threadId: command.threadId,
                   kind: "setup-script.started",
                   summary: "Setup script started",
@@ -1224,77 +1703,95 @@ const makeWsRpcLayer = (
               const worktreePath = targetWorktreePath;
               const requestedAt = yield* nowIso;
               yield* track(worktreeSetupTracker.stageStatus(threadId, "setup-script", "running"));
-              const setupResult = yield* projectSetupScriptRunner
-                .runForThread({
-                  threadId,
-                  ...(targetProjectId ? { projectId: targetProjectId } : {}),
-                  ...(targetProjectCwd ? { projectCwd: targetProjectCwd } : {}),
-                  worktreePath,
-                  ...(tracked
-                    ? {
-                        observeCompletion: {
-                          onOutputLine: (line) =>
-                            worktreeSetupTracker.appendTail(threadId, "setup-script", line),
-                        },
-                      }
-                    : {}),
-                })
-                .pipe(
-                  Effect.matchEffect({
-                    onFailure: (error) =>
-                      recordSetupScriptLaunchFailure({
-                        error,
-                        requestedAt,
-                        worktreePath,
-                      }).pipe(
-                        Effect.andThen(
-                          track(
-                            worktreeSetupTracker.stageStatus(
-                              threadId,
-                              "setup-script",
-                              "failed",
-                              "failed to start",
+              const setupStart = yield* startNativeEffect(
+                { kind: "setup", phase: "started", worktreePath, terminalId: null },
+                "setup",
+              );
+              const setupResult = yield* nativeLifecycle(
+                "setup_detachment",
+                projectSetupScriptRunner
+                  .runForThread({
+                    threadId,
+                    ...(targetProjectId ? { projectId: targetProjectId } : {}),
+                    ...(targetProjectCwd ? { projectCwd: targetProjectCwd } : {}),
+                    worktreePath,
+                    ...(tracked
+                      ? {
+                          observeCompletion: {
+                            onOutputLine: (line) =>
+                              worktreeSetupTracker.appendTail(threadId, "setup-script", line),
+                          },
+                        }
+                      : {}),
+                  })
+                  .pipe(
+                    Effect.matchEffect({
+                      onFailure: (error) =>
+                        recordSetupScriptLaunchFailure({
+                          error,
+                          requestedAt,
+                          worktreePath,
+                        }).pipe(
+                          Effect.andThen(
+                            track(
+                              worktreeSetupTracker.stageStatus(
+                                threadId,
+                                "setup-script",
+                                "failed",
+                                "failed to start",
+                              ),
                             ),
                           ),
+                          Effect.as(null),
                         ),
-                        Effect.as(null),
-                      ),
-                    onSuccess: (setupResult) => {
-                      if (setupResult.status !== "started") {
-                        return track(
-                          worktreeSetupTracker.stageStatus(
-                            threadId,
-                            "setup-script",
-                            "skipped",
-                            "no setup script",
+                      onSuccess: (setupResult) => {
+                        if (setupResult.status !== "started") {
+                          return Effect.gen(function* () {
+                            if (creation !== undefined && setupStart?.kind === "setup")
+                              yield* nativeCreationRepository.completeEffect(creation.claimId, {
+                                ...setupStart,
+                                phase: "completed",
+                                timestamp: yield* nowIso,
+                                terminalId: null,
+                                exitCode: 0,
+                                result: "succeeded",
+                              });
+                            return yield* track(
+                              worktreeSetupTracker.stageStatus(
+                                threadId,
+                                "setup-script",
+                                "skipped",
+                                "no setup script",
+                              ),
+                            ).pipe(Effect.as(null));
+                          });
+                        }
+                        setupTerminalId = setupResult.terminalId;
+                        return recordSetupScriptStarted({
+                          requestedAt,
+                          worktreePath,
+                          scriptId: setupResult.scriptId,
+                          scriptName: setupResult.scriptName,
+                          terminalId: setupResult.terminalId,
+                        }).pipe(
+                          Effect.andThen(
+                            track(
+                              worktreeSetupTracker.update(threadId, (snapshot) => ({
+                                ...snapshot,
+                                setupScript: {
+                                  name: setupResult.scriptName,
+                                  command: setupResult.scriptCommand,
+                                  terminalId: setupResult.terminalId,
+                                },
+                              })),
+                            ),
                           ),
-                        ).pipe(Effect.as(null));
-                      }
-                      setupTerminalId = setupResult.terminalId;
-                      return recordSetupScriptStarted({
-                        requestedAt,
-                        worktreePath,
-                        scriptId: setupResult.scriptId,
-                        scriptName: setupResult.scriptName,
-                        terminalId: setupResult.terminalId,
-                      }).pipe(
-                        Effect.andThen(
-                          track(
-                            worktreeSetupTracker.update(threadId, (snapshot) => ({
-                              ...snapshot,
-                              setupScript: {
-                                name: setupResult.scriptName,
-                                command: setupResult.scriptCommand,
-                                terminalId: setupResult.terminalId,
-                              },
-                            })),
-                          ),
-                        ),
-                        Effect.as(setupResult),
-                      );
-                    },
-                  }),
-                );
+                          Effect.as(setupResult),
+                        );
+                      },
+                    }),
+                  ),
+              );
               if (!tracked || !setupResult?.completion) {
                 return null;
               }
@@ -1305,23 +1802,45 @@ const makeWsRpcLayer = (
               // is always consumed, even when the turn dispatch fails before
               // anyone would otherwise wait on it. The tracker update is a
               // no-op once the snapshot has been dropped.
-              const completionFiber = yield* setupResult.completion.pipe(
-                Effect.flatMap((completion) => {
-                  if (completion.exitCode === 0) {
-                    return worktreeSetupTracker.stageStatus(threadId, "setup-script", "done");
-                  }
-                  const detail =
-                    completion.exitCode === null
-                      ? "terminal closed before the script finished"
-                      : `exit ${completion.exitCode}`;
-                  return worktreeSetupTracker.stageStatus(
-                    threadId,
-                    "setup-script",
-                    "failed",
-                    detail,
-                  );
-                }),
-                Effect.forkDetach,
+              const completionFiber = yield* nativeLifecycle(
+                "setup_completion_detachment",
+                setupResult.completion.pipe(
+                  Effect.tap((completion) =>
+                    Effect.gen(function* () {
+                      if (creation !== undefined && setupStart?.kind === "setup") {
+                        yield* nativeCreationAuthority.authorize({
+                          actorSessionId: currentSessionId,
+                          ...creation,
+                          stage: "setup",
+                        });
+                        yield* nativeCreationRepository.completeEffect(creation.claimId, {
+                          ...setupStart,
+                          phase: "completed",
+                          timestamp: yield* nowIso,
+                          terminalId: setupResult.terminalId,
+                          exitCode: completion.exitCode,
+                          result: completion.exitCode === 0 ? "succeeded" : "unknown",
+                        });
+                      }
+                    }),
+                  ),
+                  Effect.flatMap((completion) => {
+                    if (completion.exitCode === 0) {
+                      return worktreeSetupTracker.stageStatus(threadId, "setup-script", "done");
+                    }
+                    const detail =
+                      completion.exitCode === null
+                        ? "terminal closed before the script finished"
+                        : `exit ${completion.exitCode}`;
+                    return worktreeSetupTracker.stageStatus(
+                      threadId,
+                      "setup-script",
+                      "failed",
+                      detail,
+                    );
+                  }),
+                  Effect.forkDetach,
+                ),
               );
               if (!setupResult.async) {
                 yield* Fiber.join(completionFiber);
@@ -1348,11 +1867,20 @@ const makeWsRpcLayer = (
                 }));
               if (startFromOrigin) {
                 yield* track(worktreeSetupTracker.stageStatus(threadId, "fetch", "running"));
-                yield* gitWorkflow.fetchRemote({
-                  cwd: prepareWorktree.projectCwd,
-                  remoteName: "origin",
-                  refName: prepareWorktree.baseBranch,
-                });
+                yield* nativeExternal(
+                  {
+                    kind: "fetch",
+                    phase: "started",
+                    projectCwd: prepareWorktree.projectCwd,
+                    baseRef: prepareWorktree.baseBranch,
+                  },
+                  "fetch",
+                  gitWorkflow.fetchRemote({
+                    cwd: prepareWorktree.projectCwd,
+                    remoteName: "origin",
+                    refName: prepareWorktree.baseBranch,
+                  }),
+                );
                 const remoteBaseExists = yield* gitWorkflow.remoteBranchExists({
                   cwd: prepareWorktree.projectCwd,
                   refName: prepareWorktree.baseBranch,
@@ -1423,9 +1951,9 @@ const makeWsRpcLayer = (
             }
 
             if (bootstrap?.createThread) {
-              const created = yield* dispatchFromClient({
+              const created = yield* dispatchBootstrapCommand({
                 type: "thread.create",
-                commandId: yield* serverCommandId("bootstrap-thread-create"),
+                commandId: yield* bootstrapCommandId("bootstrap-thread-create"),
                 threadId: command.threadId,
                 projectId: bootstrap.createThread.projectId,
                 title: bootstrap.createThread.title,
@@ -1441,14 +1969,17 @@ const makeWsRpcLayer = (
               // Drain through that event before setup or turn start can own
               // terminals and provider sessions under the reused thread id.
               createdThread = true;
-              yield* threadDeletionReactor.drainThrough(created.sequence, command.threadId);
+              yield* nativeLifecycle(
+                "deletion_drain",
+                threadDeletionReactor.drainThrough(created.sequence, command.threadId),
+              );
               // Persist the send now rather than with the turn: the thread is
               // real from here on, so any client (or a reload) sees the message
               // while the worktree is still being prepared. The turn start
               // later references this id instead of re-sending the text.
-              yield* dispatchFromClient({
+              yield* dispatchBootstrapCommand({
                 type: "thread.message.user.append",
-                commandId: yield* serverCommandId("bootstrap-thread-message"),
+                commandId: yield* bootstrapCommandId("bootstrap-thread-message"),
                 threadId: command.threadId,
                 message: {
                   messageId: command.message.messageId,
@@ -1462,7 +1993,7 @@ const makeWsRpcLayer = (
               });
               if (tracked) {
                 const running = yield* worktreeSetupTracker.get(threadId);
-                if (running) yield* recordWorktreeSetup(running);
+                if (running) yield* recordBootstrapWorktreeSetup(running);
               }
             }
 
@@ -1475,9 +2006,9 @@ const makeWsRpcLayer = (
                 // knows to follow the setup stream. A failed or cancelled setup
                 // deletes the thread, so nothing lingers.
                 const preparingAt = yield* nowIso;
-                yield* dispatchFromClient({
+                yield* dispatchBootstrapCommand({
                   type: "thread.session.set",
-                  commandId: yield* serverCommandId("bootstrap-thread-preparing"),
+                  commandId: yield* bootstrapCommandId("bootstrap-thread-preparing"),
                   threadId,
                   session: {
                     threadId,
@@ -1499,69 +2030,88 @@ const makeWsRpcLayer = (
                 threadId,
                 projectId: targetProjectId ?? null,
               });
-              const worktree = yield* gitWorkflow.createWorktree(
+              const worktree = yield* nativeExternal(
                 {
-                  cwd: prepareWorktree.projectCwd,
-                  refName: worktreeBaseRef,
-                  newRefName: prepareWorktree.branch,
-                  baseRefName: prepareWorktree.baseBranch,
-                  path: null,
+                  kind: "worktree",
+                  phase: "started",
+                  projectCwd: prepareWorktree.projectCwd,
+                  worktreePath:
+                    creation?.resources.worktreePath ??
+                    targetWorktreePath ??
+                    nativeWorktreePath({
+                      worktreesDir: config.worktreesDir,
+                      cwd: prepareWorktree.projectCwd,
+                      branch: prepareWorktree.branch!,
+                    }),
+                  branch: prepareWorktree.branch!,
+                  baseRef: worktreeBaseRef!,
+                  ownership: "unknown",
                 },
-                {
-                  submodules,
-                  progress: {
-                    // Git has registered the directory at this point, so a
-                    // cancel during the submodule step can still remove it.
-                    onWorktreeClaimed: (path) =>
-                      Effect.sync(() => {
-                        targetWorktreePath = path;
-                      }),
-                    onCheckoutProgress: ({ percent, completed, total }) => {
-                      checkoutTotal = total;
-                      return worktreeSetupTracker.stage(threadId, "checkout", {
-                        percent,
-                        detail: `${completed.toLocaleString("en-US")} / ${total.toLocaleString("en-US")} files`,
-                      });
-                    },
-                    onSubmodulesStarted: () =>
-                      worktreeSetupTracker
-                        .stageStatus(
-                          threadId,
-                          "checkout",
-                          "done",
-                          checkoutTotal === null
-                            ? null
-                            : `${checkoutTotal.toLocaleString("en-US")} files`,
-                        )
-                        .pipe(
-                          Effect.andThen(
-                            worktreeSetupTracker.stageStatus(threadId, "submodules", "running"),
-                          ),
-                        ),
-                    onSubmodulesDisabled: ({ source }) =>
-                      worktreeSetupTracker.stageStatus(
-                        threadId,
-                        "submodules",
-                        "skipped",
-                        `disabled in ${source}`,
-                      ),
-                    onSubmoduleLine: (line) => {
-                      const submodulePath = /Submodule path '([^']+)'/.exec(line)?.[1];
-                      return submodulePath === undefined
-                        ? Effect.void
-                        : worktreeSetupTracker.stage(threadId, "submodules", {
-                            detail: submodulePath,
-                          });
-                    },
-                    onSubmodulesFinished: ({ ok, detail }) =>
-                      worktreeSetupTracker.stageStatus(
-                        threadId,
-                        "submodules",
-                        ok ? "done" : "warning",
-                        ok ? undefined : (detail ?? "submodule checkout failed"),
-                      ),
+                "worktree",
+                gitWorkflow.createWorktree(
+                  {
+                    cwd: prepareWorktree.projectCwd,
+                    refName: worktreeBaseRef,
+                    newRefName: prepareWorktree.branch,
+                    baseRefName: prepareWorktree.baseBranch,
+                    path: null,
                   },
-                },
+                  {
+                    submodules,
+                    progress: {
+                      // Git has registered the directory at this point, so a
+                      // cancel during the submodule step can still remove it.
+                      onWorktreeClaimed: (path) =>
+                        Effect.sync(() => {
+                          targetWorktreePath = path;
+                        }),
+                      onCheckoutProgress: ({ percent, completed, total }) => {
+                        checkoutTotal = total;
+                        return worktreeSetupTracker.stage(threadId, "checkout", {
+                          percent,
+                          detail: `${completed.toLocaleString("en-US")} / ${total.toLocaleString("en-US")} files`,
+                        });
+                      },
+                      onSubmodulesStarted: () =>
+                        worktreeSetupTracker
+                          .stageStatus(
+                            threadId,
+                            "checkout",
+                            "done",
+                            checkoutTotal === null
+                              ? null
+                              : `${checkoutTotal.toLocaleString("en-US")} files`,
+                          )
+                          .pipe(
+                            Effect.andThen(
+                              worktreeSetupTracker.stageStatus(threadId, "submodules", "running"),
+                            ),
+                          ),
+                      onSubmodulesDisabled: ({ source }) =>
+                        worktreeSetupTracker.stageStatus(
+                          threadId,
+                          "submodules",
+                          "skipped",
+                          `disabled in ${source}`,
+                        ),
+                      onSubmoduleLine: (line) => {
+                        const submodulePath = /Submodule path '([^']+)'/.exec(line)?.[1];
+                        return submodulePath === undefined
+                          ? Effect.void
+                          : worktreeSetupTracker.stage(threadId, "submodules", {
+                              detail: submodulePath,
+                            });
+                      },
+                      onSubmodulesFinished: ({ ok, detail }) =>
+                        worktreeSetupTracker.stageStatus(
+                          threadId,
+                          "submodules",
+                          ok ? "done" : "warning",
+                          ok ? undefined : (detail ?? "submodule checkout failed"),
+                        ),
+                    },
+                  },
+                ),
               );
               const checkoutEndedAt = yield* nowIso;
               yield* worktreeSetupTracker.update(threadId, (snapshot) => ({
@@ -1587,18 +2137,21 @@ const makeWsRpcLayer = (
                 }),
               }));
               targetWorktreePath = worktree.worktree.path;
-              yield* dispatchFromClient({
+              yield* dispatchBootstrapCommand({
                 type: "thread.meta.update",
-                commandId: yield* serverCommandId("bootstrap-thread-meta-update"),
+                commandId: yield* bootstrapCommandId("bootstrap-thread-meta-update"),
                 threadId,
                 branch: worktree.worktree.refName,
                 worktreePath: targetWorktreePath,
               });
-              yield* refreshGitStatus(targetWorktreePath);
+              yield* nativeLifecycle("git_status_refresh", refreshGitStatus(targetWorktreePath));
             }
 
             if (bootstrap?.runSetupScript && targetWorktreePath) {
-              yield* orchestrationEngine.acquireWorktreeOwnership(command.threadId);
+              yield* nativeLifecycle(
+                "worktree_ownership",
+                orchestrationEngine.acquireWorktreeOwnership(command.threadId),
+              );
             }
             const pendingSetupScript = yield* runSetupProgram();
 
@@ -1607,7 +2160,7 @@ const makeWsRpcLayer = (
             // started. Drop the cancel handle and make the handoff atomic.
             yield* track(worktreeSetupTracker.markUncancellable(threadId));
             const started = yield* Effect.uninterruptible(
-              dispatchFromClient(finalTurnStartCommand),
+              dispatchBootstrapCommand(finalTurnStartCommand),
             );
             yield* track(worktreeSetupTracker.stageStatus(threadId, "agent", "done"));
             // An async setup script outlives the handoff: the snapshot stays
@@ -1619,7 +2172,7 @@ const makeWsRpcLayer = (
                   .finish(threadId, "done")
                   .pipe(
                     Effect.flatMap((snapshot) =>
-                      snapshot ? recordWorktreeSetup(snapshot) : Effect.void,
+                      snapshot ? recordBootstrapWorktreeSetup(snapshot) : Effect.void,
                     ),
                   )
               : Effect.void;
@@ -1688,26 +2241,41 @@ const makeWsRpcLayer = (
                 // the worktree while git removes it. Closing kills the
                 // process asynchronously, so the removal retries briefly.
                 const closeSetupTerminal = setupTerminalId
-                  ? terminalManager.close({
-                      threadId,
-                      terminalId: setupTerminalId,
-                      deleteHistory: true,
-                    })
+                  ? nativeCleanup(
+                      {
+                        kind: "setup_terminal",
+                        terminalId: setupTerminalId,
+                        worktreePath: targetWorktreePath!,
+                      },
+                      terminalManager.close({
+                        threadId,
+                        terminalId: setupTerminalId,
+                        deleteHistory: true,
+                      }),
+                    )
                   : Effect.void;
                 const removeCreatedWorktree =
                   tracked && targetWorktreePath && bootstrap?.prepareWorktree
                     ? closeSetupTerminal.pipe(
                         Effect.ignoreCause({ log: true }),
                         Effect.andThen(
-                          gitWorkflow
-                            .removeWorktree({
+                          nativeCleanup(
+                            {
+                              kind: "worktree",
+                              projectCwd: bootstrap.prepareWorktree.projectCwd,
+                              worktreePath: targetWorktreePath,
+                              branch: bootstrap.prepareWorktree.branch!,
+                              baseRef: bootstrap.prepareWorktree.baseBranch,
+                              ownership: "unknown",
+                            },
+                            gitWorkflow.removeWorktree({
                               cwd: bootstrap.prepareWorktree.projectCwd,
                               path: targetWorktreePath,
                               force: true,
-                            })
-                            .pipe(
-                              Effect.retry({ times: 4, schedule: Schedule.spaced("500 millis") }),
-                            ),
+                            }),
+                          ).pipe(
+                            Effect.retry({ times: 4, schedule: Schedule.spaced("500 millis") }),
+                          ),
                         ),
                         Effect.ignoreCause({ log: true }),
                         Effect.uninterruptible,
@@ -1718,7 +2286,7 @@ const makeWsRpcLayer = (
                     .finish(threadId, "cancelled")
                     .pipe(
                       Effect.flatMap((snapshot) =>
-                        snapshot ? recordWorktreeSetup(snapshot) : Effect.void,
+                        snapshot ? recordBootstrapWorktreeSetup(snapshot) : Effect.void,
                       ),
                     ),
                 ).pipe(
@@ -1740,7 +2308,7 @@ const makeWsRpcLayer = (
                   .finish(threadId, "failed", dispatchError.message)
                   .pipe(
                     Effect.flatMap((snapshot) =>
-                      snapshot ? recordWorktreeSetup(snapshot) : Effect.void,
+                      snapshot ? recordBootstrapWorktreeSetup(snapshot) : Effect.void,
                     ),
                   ),
               ).pipe(Effect.andThen(cleanupAndFail(cause, dispatchError)));
@@ -1761,6 +2329,24 @@ const makeWsRpcLayer = (
                 // the tracker entry that cancel and the stage updates key on.
                 const fiber = yield* Effect.uninterruptible(
                   Effect.gen(function* () {
+                    const detachStart = yield* startNativeEffect(
+                      {
+                        kind: "lifecycle",
+                        phase: "started",
+                        threadId,
+                        action: "bootstrap_detachment",
+                      },
+                      "bootstrap_detachment",
+                    );
+                    const trackerStart = yield* startNativeEffect(
+                      {
+                        kind: "lifecycle",
+                        phase: "started",
+                        threadId,
+                        action: "tracker_registration",
+                      },
+                      "tracker_registration",
+                    );
                     const fiber = yield* Effect.forkDetach(settledBootstrapProgram);
                     yield* worktreeSetupTracker.begin({
                       threadId,
@@ -1769,6 +2355,17 @@ const makeWsRpcLayer = (
                       stages: ["fetch", "checkout", "submodules", "setup-script", "agent"],
                       fiber,
                     });
+                    if (creation !== undefined) {
+                      for (const start of [detachStart, trackerStart]) {
+                        if (start?.kind === "lifecycle")
+                          yield* nativeCreationRepository.completeEffect(creation.claimId, {
+                            ...start,
+                            phase: "completed",
+                            timestamp: yield* nowIso,
+                            result: "succeeded",
+                          });
+                      }
+                    }
                     return fiber;
                   }),
                 );
@@ -1777,7 +2374,11 @@ const makeWsRpcLayer = (
             : settledBootstrapProgram;
 
           return yield* runBootstrap;
-        });
+        }).pipe(
+          Effect.mapError((cause) =>
+            toDispatchCommandError(cause, "Native bootstrap invocation unresolved"),
+          ),
+        );
 
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
@@ -1858,7 +2459,18 @@ const makeWsRpcLayer = (
             : undefined;
 
           return {
-            environment,
+            environment: {
+              ...environment,
+              capabilities: {
+                ...environment.capabilities,
+                nativeBootstrapCreation: {
+                  submissionSchema: "t3.native-bootstrap-submission/v1",
+                  preparationSchema: "voice.t3-bootstrap-preparation/v1",
+                  observationSchema: "t3.native-creation-observation/v1",
+                  guardRequired: true,
+                } as const,
+              },
+            },
             auth,
             cwd: config.cwd,
             keybindingsConfigPath: config.keybindingsConfigPath,
@@ -1905,10 +2517,38 @@ const makeWsRpcLayer = (
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
       return WsRpcGroup.of({
+        [ORCHESTRATION_WS_METHODS.dispatchBootstrap]: (submission) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.dispatchBootstrap,
+            makeNativeBootstrapDispatcher({
+              actorSessionId: currentSessionId,
+              worktreesDir: config.worktreesDir,
+              bootId: ServerRuntimeStartup.nativeCreationBootId,
+              repository: nativeCreationRepository,
+              authority: nativeCreationAuthority,
+              newId: randomUUID,
+              now: nowIso,
+              normalize: (command) =>
+                normalizeDispatchCommand(command).pipe(Effect.provide(normalizerContext)),
+              dispatch: (command, creation) =>
+                startup
+                  .enqueueCommand(dispatchBootstrapTurnStart(command, creation))
+                  .pipe(
+                    Effect.mapError((cause) =>
+                      toDispatchCommandError(cause, "Native bootstrap startup failed"),
+                    ),
+                  ),
+            })(submission),
+          ),
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
             Effect.gen(function* () {
+              yield* assertLegacyBootstrapAllowed({
+                actorSessionId: currentSessionId,
+                command,
+                hasAutomationEnrollment: nativeCreationAuthority.isAutomationEnrolled,
+              });
               yield* ProjectCloneTracker.rejectCommandsDuringClone(projectCloneTracker, command);
               const normalizedCommand = yield* normalizeDispatchCommand(command);
               // Archive removes the thread from the client, so this transport
@@ -3912,7 +4552,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
             ).pipe(
-              Layer.provideMerge(RpcSerialization.layerJson),
+              Layer.provideMerge(
+                Layer.succeed(RpcSerialization.RpcSerialization, nativeBootstrapRpcSerialization),
+              ),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),

@@ -1,3 +1,9 @@
+import * as Effect from "effect/Effect";
+import {
+  OrchestrationDispatchCommandError,
+  type AuthSessionId,
+  type ClientOrchestrationCommand,
+} from "@t3tools/contracts";
 import {
   type DeviceListInput,
   AuthAccessReadScope,
@@ -22,6 +28,7 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * runtime failure.
  */
 export const RPC_REQUIRED_SCOPES = {
+  [ORCHESTRATION_WS_METHODS.dispatchBootstrap]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_WS_METHODS.getWorkflowScript]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getTurnDiff]: AuthOrchestrationReadScope,
@@ -192,3 +199,29 @@ export const requiredScopeForDeviceList = (input: DeviceListInput): AuthEnvironm
   input.retryHostId || input.updateTool
     ? AuthOrchestrationOperateScope
     : AuthOrchestrationReadScope;
+
+export const assertLegacyBootstrapAllowed = <E>(input: {
+  readonly actorSessionId: AuthSessionId;
+  readonly command: ClientOrchestrationCommand;
+  readonly hasAutomationEnrollment: (sessionId: AuthSessionId) => Effect.Effect<boolean, E>;
+}): Effect.Effect<void, OrchestrationDispatchCommandError> =>
+  Effect.gen(function* () {
+    if (input.command.type !== "thread.turn.start" || input.command.bootstrap === undefined) return;
+    const enrolled = yield* input
+      .hasAutomationEnrollment(input.actorSessionId)
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestrationDispatchCommandError({
+              message: "Native enrollment lookup unavailable",
+              cause,
+              creationRejectionCode: "unsupported_authority",
+            }),
+        ),
+      );
+    if (enrolled)
+      return yield* new OrchestrationDispatchCommandError({
+        message: "Automation sessions require guarded bootstrap",
+        creationRejectionCode: "stale_grant",
+      });
+  });
