@@ -2957,7 +2957,11 @@ export default function Sidebar() {
   );
   const membershipBusyRef = useRef(false);
   const moveWorkstreamThreads = useCallback(
-    async (selected: readonly EnvironmentThreadShell[], destination: string | null) => {
+    async (
+      selected: readonly EnvironmentThreadShell[],
+      destination: string | null,
+      intent?: { readonly prepareReferences?: boolean },
+    ) => {
       if (membershipBusyRef.current)
         throw new Error("A Workstream movement is already in progress.");
       const data = workstreamController.data;
@@ -2975,6 +2979,7 @@ export default function Sidebar() {
             destination,
             commandId: workstreamCommandId,
             now: Date.now(),
+            ...(intent ? { intent } : {}),
           });
           useThreadSelectionStore.getState().removeFromSelection(selected.map(key));
           return;
@@ -3019,6 +3024,7 @@ export default function Sidebar() {
           destination,
           commandId: workstreamCommandId,
           now: Date.now(),
+          ...(intent ? { intent } : {}),
         });
         try {
           await runSelectedThreadSteps({
