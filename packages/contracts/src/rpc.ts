@@ -684,7 +684,7 @@ const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
   error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
 });
 
-export const WsServerReadTokenAccountingRpc = Rpc.make(WS_METHODS.serverReadTokenAccounting, {
+const WsServerReadTokenAccountingRpc = Rpc.make(WS_METHODS.serverReadTokenAccounting, {
   payload: TokenAccountingReadInput,
   success: TokenAccountingReadResult,
   error: EnvironmentAuthorizationError,
