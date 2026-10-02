@@ -4,6 +4,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Statement from "effect/unstable/sql/Statement";
 
@@ -13,6 +14,27 @@ import migrate from "./005_JonesThreadCreationLookupIndex.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const indexName = "idx_orch_events_thread_creation_lookup";
+const LookupSampleStatistics = Schema.Struct({
+  sampleCount: Schema.Number,
+  minMs: Schema.Number,
+  medianMs: Schema.Number,
+  p95Ms: Schema.Number,
+  maxMs: Schema.Number,
+  meanMs: Schema.Number,
+  standardDeviationMs: Schema.Number,
+});
+const encodeLookupSamples = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      schema: Schema.Literal("jones-thread-creation-lookup-samples/v1"),
+      historyEvents: Schema.Number,
+      baseline: LookupSampleStatistics,
+      indexed: LookupSampleStatistics,
+      lookupPlan: Schema.Array(Schema.String),
+      acquisitionPlan: Schema.Array(Schema.String),
+    }),
+  ),
+);
 
 const withQueryPlan = Effect.fnUntraced(function* <A, E, R>(query: Effect.Effect<A, E, R>) {
   const sql = yield* SqlClient.SqlClient;
@@ -163,7 +185,7 @@ it.live("uses a covering creation lookup as unrelated thread history grows", () 
         ),
       );
       yield* Console.info(
-        JSON.stringify({
+        encodeLookupSamples({
           schema: "jones-thread-creation-lookup-samples/v1",
           historyEvents,
           baseline,
