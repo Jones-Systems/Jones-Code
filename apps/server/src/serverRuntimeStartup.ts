@@ -1,3 +1,6 @@
+import * as NodeCrypto from "node:crypto";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+export const nativeCreationBootId = NodeCrypto.randomUUID();
 import {
   CommandId,
   EventId,
@@ -806,7 +809,7 @@ const decodeWorktreeSetupSnapshot = Schema.decodeUnknownOption(WorktreeSetupSnap
 
 /**
  * A worktree bootstrap records its setup snapshot on the thread while it runs
- * and settles it when it finishes. The bootstrap itself lives only in memory,
+ * and settles it when it finishes. Legacy bootstrap execution lives only in memory,
  * so a process exit mid-setup leaves a `running` record with nobody to finish
  * it. Before the turn started that also strands the persisted user message, so
  * the setup is marked failed and the user is told to send again. After the
@@ -820,6 +823,8 @@ export const reconcileWorktreeSetups = Effect.gen(function* () {
   // The command read model carries no activity bodies; read the setup
   // records directly, live threads only.
   const recordedSetups = yield* query.listActivitiesByKind(WORKTREE_SETUP_ACTIVITY_KIND);
+  const nativeSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  if (Option.isNone(nativeSql)) return;
   const interruptedAt = DateTime.formatIso(yield* DateTime.now);
 
   for (const recorded of recordedSetups) {
@@ -827,6 +832,10 @@ export const reconcileWorktreeSetups = Effect.gen(function* () {
     if (Option.isNone(snapshot) || snapshot.value.phase !== "running") continue;
     if (recorded.id !== worktreeSetupActivityId(snapshot.value.threadId)) continue;
     const threadId = snapshot.value.threadId;
+    const claims =
+      yield* nativeSql.value`SELECT claim_id FROM native_creation_intents WHERE thread_id = ${threadId}`;
+    // Claimed creation remains historical evidence; restart cannot settle it or invite replay.
+    if (claims.length > 0) continue;
 
     const turnStarted = snapshot.value.stages.some(
       (stage) => stage.id === "agent" && stage.status === "done",

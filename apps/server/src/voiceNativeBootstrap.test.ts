@@ -15,7 +15,10 @@ import {
 } from "@t3tools/contracts";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as RelayClient from "@t3tools/shared/relayClient";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import * as NativeCreationRepositoryLayer from "./persistence/Layers/NativeCreationRepository.ts";
+import { NativeCreationAuthorityUnavailable } from "./orchestration/NativeCreationAuthority.ts";
+import * as AuthSessions from "./persistence/AuthSessions.ts";
 import {
   ConfigProvider,
   Data,
@@ -357,7 +360,13 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
     }).pipe(
       Layer.provide(seams),
       Layer.provide(config),
-      Layer.provide(NodeSqliteClient.layer({ filename: ":memory:" })),
+      Layer.provide(
+        NativeCreationAuthorityUnavailable.pipe(
+          Layer.provide(AuthSessions.layer),
+          Layer.provideMerge(NativeCreationRepositoryLayer.layer),
+        ),
+      ),
+      Layer.provide(SqlitePersistenceMemory),
       Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
       Layer.provide(NodeServices.layer),
     ),

@@ -1,3 +1,5 @@
+import * as NativeCreationRepositoryLayer from "../persistence/Layers/NativeCreationRepository.ts";
+import type { NativeCreationObservation } from "@t3tools/contracts";
 import {
   CommandId,
   MessageId,
@@ -35,6 +37,7 @@ const CommandEvent = Schema.Struct({
 
 export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuery")(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const nativeCreationRepository = yield* NativeCreationRepositoryLayer.make;
   const snapshots = yield* ProjectionSnapshotQuery;
   const readTarget = Effect.fn("CommandObservation.readTarget")(function* (threadId: ThreadId) {
     const { snapshotSequence } = yield* snapshots.getSnapshotSequence();
@@ -135,7 +138,142 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
               correlation = "pending";
             }
           }
+          const history = yield* nativeCreationRepository.readHistory(input.commandId);
+          let creation: NativeCreationObservation | undefined;
+          if (Option.isSome(history) && history.value.normalizedCommandDigest !== null) {
+            const { intent, effects, normalizedCommandDigest } = history.value;
+            const created = effects.find(
+              (fact) =>
+                fact.kind === "native_command" &&
+                fact.phase === "completed" &&
+                fact.commandType === "thread.create",
+            );
+            const incarnation =
+              created?.kind === "native_command" && created.phase === "completed"
+                ? { eventId: created.eventId, sequence: created.sequence }
+                : null;
+            const unresolvedEffects = effects
+              .filter(
+                (fact) =>
+                  fact.phase === "started" &&
+                  !effects.some(
+                    (end) =>
+                      end.effectId === fact.effectId &&
+                      end.phase === "completed" &&
+                      (!("result" in end) || end.result === "succeeded"),
+                  ),
+              )
+              .map((fact) => fact.effectId);
+            const finalAccepted = effects.some(
+              (fact) =>
+                fact.kind === "native_command" &&
+                fact.phase === "completed" &&
+                fact.commandType === "thread.turn.start" &&
+                fact.commandId === intent.commandId,
+            );
+            const requiredCommandTypes = [
+              "thread.create",
+              "thread.message.user.append",
+              "thread.meta.update",
+              "thread.turn.start",
+            ] as const;
+            const commandChain = requiredCommandTypes.every((type) =>
+              effects.some(
+                (fact) =>
+                  fact.kind === "native_command" &&
+                  fact.phase === "completed" &&
+                  fact.commandType === type,
+              ),
+            );
+            const requiredLifecycle = [
+              "normalization",
+              "tracker_registration",
+              "bootstrap_detachment",
+            ] as const;
+            const lifecycleChain = requiredLifecycle.every((action) =>
+              effects.some(
+                (fact) =>
+                  fact.kind === "lifecycle" &&
+                  fact.phase === "completed" &&
+                  fact.action === action &&
+                  fact.result === "succeeded",
+              ),
+            );
+            const checkoutComplete = effects.some(
+              (fact) =>
+                fact.kind === "worktree" &&
+                fact.phase === "completed" &&
+                fact.result === "succeeded",
+            );
+            const cleanupOccurred = effects.some((fact) => fact.kind === "cleanup");
+            const setupComplete =
+              !intent.binding.runSetupScript ||
+              effects.some(
+                (fact) =>
+                  fact.kind === "setup" &&
+                  fact.phase === "completed" &&
+                  fact.result === "succeeded",
+              );
+            const exact =
+              intent.threadId === input.threadId && intent.messageId === input.messageId;
+            const currentIncarnations = yield* sql<{
+              eventId: string;
+              sequence: number;
+            }>`SELECT event_id AS "eventId", sequence FROM orchestration_events WHERE stream_id = ${input.threadId} AND event_type = 'thread.created' ORDER BY sequence DESC LIMIT 1`;
+            const current = currentIncarnations[0];
+            let commandFactsConsistent = true;
+            for (const fact of effects) {
+              if (fact.kind !== "native_command" || fact.phase !== "completed") continue;
+              const attested = yield* sql`SELECT e.event_id FROM orchestration_events e
+                JOIN orchestration_command_receipts r ON r.command_id = e.command_id
+                WHERE e.event_id = ${fact.eventId} AND e.sequence = ${fact.sequence}
+                  AND e.command_id = ${fact.commandId} AND e.stream_id = ${fact.threadId}
+                  AND r.status = 'accepted' AND r.result_sequence = ${fact.sequence}`;
+              if (attested.length !== 1) commandFactsConsistent = false;
+            }
+            const inconsistent =
+              !commandFactsConsistent ||
+              !exact ||
+              (incarnation !== null &&
+                (current?.eventId !== incarnation.eventId ||
+                  current.sequence !== incarnation.sequence));
+            creation = {
+              schema: "t3.native-creation-observation/v1",
+              preparationId: intent.preparationId,
+              operationId: intent.operationId,
+              preparationSha256: intent.preparationSha256,
+              bindingDigest: intent.bindingDigest,
+              promptDigest: intent.promptDigest,
+              commandDigest: intent.commandDigest,
+              normalizedCommandDigest,
+              claimId: intent.claimId,
+              claimedBootId: intent.claimedBootId,
+              claimedAt: intent.claimedAt,
+              actorSessionId: intent.actorSessionId,
+              grantId: intent.grantId,
+              grantRevision: intent.grantRevision,
+              binding: intent.binding,
+              incarnation,
+              effects,
+              unresolvedEffects,
+              outcome:
+                inconsistent || unresolvedEffects.length > 0
+                  ? "unknown"
+                  : incarnation !== null &&
+                      finalAccepted &&
+                      commandChain &&
+                      lifecycleChain &&
+                      checkoutComplete &&
+                      setupComplete &&
+                      !cleanupOccurred
+                    ? "complete"
+                    : cleanupOccurred
+                      ? "incomplete"
+                      : "in_progress",
+            };
+          }
           return {
+            ...(creation === undefined ? {} : { creation }),
             ...input,
             snapshotSequence,
             commandStatus: receipt?.status ?? "not_found",

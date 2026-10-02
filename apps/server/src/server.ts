@@ -1,3 +1,6 @@
+import * as NativeCreationRepositoryLayer from "./persistence/Layers/NativeCreationRepository.ts";
+import { NativeCreationAuthorityUnavailable } from "./orchestration/NativeCreationAuthority.ts";
+import * as AuthSessions from "./persistence/AuthSessions.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
@@ -301,7 +304,15 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
 );
 
-const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
+const PersistenceLayerLive = Layer.empty.pipe(
+  Layer.provideMerge(
+    NativeCreationAuthorityUnavailable.pipe(
+      Layer.provide(AuthSessions.layer),
+      Layer.provideMerge(NativeCreationRepositoryLayer.layer),
+    ),
+  ),
+  Layer.provideMerge(SqlitePersistenceLayerLive),
+);
 
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
