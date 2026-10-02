@@ -1,8 +1,12 @@
-import { strict as assert } from "node:assert";
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { performance } from "node:perf_hooks";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeCrypto from "node:crypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Collection reads SQL before runtimes exist.
+import * as NodeFS from "node:fs";
+import * as NodePerfHooks from "node:perf_hooks";
 import { ChatAttachment, OrchestrationMessageContext, ThreadId } from "@t3tools/contracts";
+import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as Console from "effect/Console";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -22,19 +26,22 @@ import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQu
 // Read the unchanged SQL from its owner so an experiment cannot silently weaken
 // the baseline. These anonymous databases run the real Node driver and migrations;
 // both message variants share one unchanged schema and fixture, with no added indexes.
-const source = readFileSync(new URL("./ProjectionSnapshotQuery.ts", import.meta.url), "utf8");
-const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+const source = NodeFS.readFileSync(
+  new URL("./ProjectionSnapshotQuery.ts", import.meta.url),
+  "utf8",
+);
+const sha256 = (value: string) => NodeCrypto.createHash("sha256").update(value).digest("hex");
 const sourceSql = (name: string) => {
   const start = source.indexOf(`const ${name} = SqlSchema.findAll({`);
-  assert.ok(start >= 0, `Missing production query: ${name}`);
+  NodeAssert.ok(start >= 0, `Missing production query: ${name}`);
   const opening = source.indexOf("sql`", start);
   const closing = source.indexOf("`", opening + 4);
-  assert.ok(opening >= 0 && closing > opening, `Missing SQL template: ${name}`);
+  NodeAssert.ok(opening >= 0 && closing > opening, `Missing SQL template: ${name}`);
   return source.slice(opening + 4, closing).trim();
 };
 const sourceLimit = (name: string) => {
   const match = source.match(new RegExp(`const ${name} = (\\d+);`));
-  assert.ok(match, `Missing production limit: ${name}`);
+  NodeAssert.ok(match, `Missing production limit: ${name}`);
   return Number(match[1]);
 };
 const limits = {
@@ -42,7 +49,7 @@ const limits = {
   payloadBatch: sourceLimit("THREAD_DETAIL_ACTIVITY_PAYLOAD_BATCH_SIZE"),
   rawTurns: sourceLimit("THREAD_DETAIL_MAX_RAW_TURNS_PER_PAGE"),
 };
-assert.deepEqual(limits, { activities: 500, payloadBatch: 25, rawTurns: 150 });
+NodeAssert.deepEqual(limits, { activities: 500, payloadBatch: 25, rawTurns: 150 });
 
 type Bounds = {
   minAnchorAt: string;
@@ -55,7 +62,7 @@ const bind = (template: string, bindings: Bindings) => {
   const values: Array<string | number> = [];
   const text = template.replace(/\$\{([^}]+)\}/g, (_match, key: string) => {
     const value = bindings[key];
-    assert.notEqual(value, undefined, `Unexpected SQL interpolation: ${key}`);
+    NodeAssert.notEqual(value, undefined, `Unexpected SQL interpolation: ${key}`);
     values.push(value!);
     return "?";
   });
@@ -116,8 +123,8 @@ const mapMessages = (rows: unknown) =>
 
 const threadId = ThreadId.make("history-bench");
 const pinnedIds = ["pinned-approval", "pinned-input"];
-const epoch = Date.parse("2026-01-01T00:00:00.000Z");
-const at = (milliseconds: number) => new Date(epoch + milliseconds).toISOString();
+const epoch = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"));
+const at = (milliseconds: number) => DateTime.formatIso(DateTime.makeUnsafe(epoch + milliseconds));
 const key = (index: number) => String(index).padStart(6, "0");
 const attachmentJson = JSON.stringify([
   { type: "file", id: "notes", name: "notes.txt", mimeType: "text/plain", sizeBytes: 8 },
@@ -317,9 +324,9 @@ const seed = Effect.fnUntraced(
 );
 
 const timed = async <T>(operation: () => Promise<T>) => {
-  const start = performance.now();
+  const start = NodePerfHooks.performance.now();
   const value = await operation();
-  return { value, ms: performance.now() - start };
+  return { value, ms: NodePerfHooks.performance.now() - start };
 };
 const statistics = (samples: number[]) => {
   const sorted = samples.toSorted((left, right) => left - right);
@@ -334,7 +341,8 @@ const statistics = (samples: number[]) => {
     sdMs: Math.sqrt(samples.reduce((sum, value) => sum + (value - mean) ** 2, 0) / samples.length),
   };
 };
-const report = (kind: string, values: object) => console.log(JSON.stringify({ kind, ...values }));
+const report = (kind: string, values: object) =>
+  Effect.runSync(Console.log(JSON.stringify({ kind, ...values })));
 const turnWindowTemplate = sourceSql("listTurnWindowRows");
 const decodeTurnWindow = Schema.decodeUnknownSync(
   Schema.Array(
@@ -442,8 +450,8 @@ for (const turnCount of [10_000]) {
             activities: fixture.activities.length,
           },
           node: process.version,
-          platform: process.platform,
-          arch: process.arch,
+          platform: await base.runtime.runPromise(HostProcessPlatform),
+          arch: await base.runtime.runPromise(HostProcessArchitecture),
           sqlite: await base.runtime.runPromise(base.sql`SELECT sqlite_version() AS version`),
           journalMode: await base.runtime.runPromise(base.sql`PRAGMA journal_mode`),
           synchronous: await base.runtime.runPromise(base.sql`PRAGMA synchronous`),
@@ -488,7 +496,7 @@ for (const turnCount of [10_000]) {
         });
         if (failures.length > 0) {
           const cleanupError = new AggregateError(failures, "History benchmark disposal failed");
-          if (failed) console.error(cleanupError);
+          if (failed) Effect.runSync(Console.error(cleanupError));
           else throw cleanupError;
         }
       }
@@ -506,12 +514,12 @@ for (const turnCount of [10_000]) {
         async () => {
           await withVariants(async (variants) => {
             const resolved = await resolvePage(variants[0]!.runtime, fixture, page);
-            assert.deepEqual(await resolvePage(variants[1]!.runtime, fixture, page), resolved);
+            NodeAssert.deepEqual(await resolvePage(variants[1]!.runtime, fixture, page), resolved);
             if (page.name === "subagent-ceiling")
-              assert.equal(resolved.rawTurnCount, limits.rawTurns);
+              NodeAssert.equal(resolved.rawTurnCount, limits.rawTurns);
             const expected = oracle(fixture, resolved.bounds);
             if (page.name === "oldest-imported") {
-              assert.equal(
+              NodeAssert.equal(
                 expected.messages.filter((row) => row.messageId.startsWith("import:")).length,
                 2,
               );
@@ -537,12 +545,12 @@ for (const turnCount of [10_000]) {
                 const first = await timed(() =>
                   variant.runtime.runPromise(execute(variant.sql, statement)),
                 );
-                assert.deepEqual(
+                NodeAssert.deepEqual(
                   plainRows(first.value),
                   expected[kind],
                   `${variant.name}/${kind}: complete ordered rows`,
                 );
-                assert.deepEqual(mapMessages(first.value), mapMessages(expected[kind]));
+                NodeAssert.deepEqual(mapMessages(first.value), mapMessages(expected[kind]));
                 plans.push({
                   variant: variant.name,
                   sql: statement.text,
@@ -562,9 +570,9 @@ for (const turnCount of [10_000]) {
                   const measured = await timed(() =>
                     variant.runtime.runPromise(execute(variant.sql, statements[index]!)),
                   );
-                  const decodeStart = performance.now();
+                  const decodeStart = NodePerfHooks.performance.now();
                   mapMessages(measured.value);
-                  const decodeMs = performance.now() - decodeStart;
+                  const decodeMs = NodePerfHooks.performance.now() - decodeStart;
                   if (round >= 0) {
                     samples[index]!.sql.push(measured.ms);
                     samples[index]!.decodeMap.push(decodeMs);

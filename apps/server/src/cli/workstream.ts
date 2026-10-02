@@ -8,6 +8,7 @@ import {
   NativeStoreAuthorityPersistenceError,
 } from "../environment/nativeStoreAuthorityPersistence.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
+import { workstreamProviderCommand } from "./workstreamProvider.ts";
 
 const authorityEnrollCommand = Command.make("enroll", projectLocationFlags).pipe(
   Command.withDescription(
@@ -42,5 +43,5 @@ const authorityCommand = Command.make("authority").pipe(
 
 export const workstreamCommand = Command.make("workstream").pipe(
   Command.withDescription("Manage cross-system workstream integration."),
-  Command.withSubcommands([authorityCommand]),
+  Command.withSubcommands([authorityCommand, workstreamProviderCommand]),
 );
