@@ -219,6 +219,43 @@
         "scripts/runtime-adoption-qualification/adoption.test.mjs",
         "scripts/runtime-adoption-qualification/launcher.test.mjs"
       ]
+    },
+    {
+      "group_id": "jones-voice-review",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/voiceReview/bridge.test.ts apps/server/src/voiceReview/http.test.ts apps/web/src/components/sidebar/mainAppLocation.test.ts apps/web/src/components/voiceReview/voiceReviewActions.test.ts packages/client-runtime/src/voice-review.test.ts packages/contracts/src/voiceReview.test.ts",
+      "modules": [
+        "apps/server/src/voiceReview/bridge.test.ts",
+        "apps/server/src/voiceReview/http.test.ts",
+        "apps/web/src/components/sidebar/mainAppLocation.test.ts",
+        "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
+        "packages/client-runtime/src/voice-review.test.ts",
+        "packages/contracts/src/voiceReview.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/server.ts",
+        "apps/server/src/voiceReview/bridge.test.ts",
+        "apps/server/src/voiceReview/bridge.ts",
+        "apps/server/src/voiceReview/config.ts",
+        "apps/server/src/voiceReview/http.test.ts",
+        "apps/server/src/voiceReview/http.ts",
+        "apps/web/src/components/sidebar/SidebarChrome.tsx",
+        "apps/web/src/components/sidebar/mainAppLocation.test.ts",
+        "apps/web/src/components/sidebar/mainAppLocation.ts",
+        "apps/web/src/components/voiceReview/VoiceReviewPage.tsx",
+        "apps/web/src/components/voiceReview/useVoiceReview.ts",
+        "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
+        "apps/web/src/components/voiceReview/voiceReviewActions.ts",
+        "apps/web/src/routeTree.gen.ts",
+        "apps/web/src/routes/voice-review.tsx",
+        "docs/user/composer.md",
+        "packages/client-runtime/package.json",
+        "packages/client-runtime/src/voice-review.test.ts",
+        "packages/client-runtime/src/voice-review.ts",
+        "packages/contracts/src/environmentHttp.ts",
+        "packages/contracts/src/index.ts",
+        "packages/contracts/src/voiceReview.test.ts",
+        "packages/contracts/src/voiceReview.ts"
+      ]
     }
   ]
 }
