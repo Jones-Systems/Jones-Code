@@ -125,10 +125,14 @@ export function buildTraitsOptionSelections(
   selections: ProviderOptions | null | undefined,
   change: ProviderOptionSelection,
 ): ProviderOptions | undefined {
-  return buildExplicitProviderOptionSelectionsFromDescriptors(
+  const descriptorIds = new Set(descriptors.map((descriptor) => descriptor.id));
+  const normalized = buildExplicitProviderOptionSelectionsFromDescriptors(
     replaceDescriptorCurrentValue(descriptors, change.id, change.value),
     [...(selections ?? []), change],
   );
+  const preserved = (selections ?? []).filter((selection) => !descriptorIds.has(selection.id));
+  const next = [...(normalized ?? []), ...preserved];
+  return next.length > 0 ? next : undefined;
 }
 
 function getDescriptorStringValue(
@@ -277,6 +281,7 @@ export function shouldRenderTraitsControls(input: {
   modelOptions: ProviderOptions | null | undefined;
   allowPromptInjectedEffort?: boolean;
   planModeEnabled: boolean;
+  displayCapabilities?: ModelCapabilities | undefined;
 }): boolean {
   return getTraitsSectionVisibility(input).hasAnyControls;
 }
@@ -341,15 +346,33 @@ export function useTraitsSelection({
   const { descriptors, primarySelectDescriptor, ultrathinkPromptControlled, ultrathinkInBodyText } =
     selected;
   const updateOption = (change: ProviderOptionSelection) => {
-    updateModelOptions(buildTraitsOptionSelections(descriptors, modelOptions, change));
+    const selections = planModeEnabled
+      ? modelOptions
+      : modelOptions?.filter((option) => option.id !== "agent" || option.value !== "plan");
+    updateModelOptions(buildTraitsOptionSelections(descriptors, selections, change));
+  };
+
+  const isSelectChangeDisabled = (
+    descriptor: Extract<ProviderOptionDescriptor, { type: "select" }>,
+    value: string,
+  ) => {
+    const current = selected.selectDescriptors.find((candidate) => candidate.id === descriptor.id);
+    return (
+      selected.modelIsUnavailable ||
+      !current?.options.some((option) => option.id === value) ||
+      (ultrathinkInBodyText && current.id === primarySelectDescriptor?.id) ||
+      (!allowPromptInjectedEffort && !!current.promptInjectedValues?.includes(value))
+    );
   };
 
   const handleSelectChange = (
     descriptor: Extract<ProviderOptionDescriptor, { type: "select" }>,
     value: string,
   ) => {
-    if (!value) return;
-    if (descriptor.promptInjectedValues?.includes(value)) {
+    if (!value || isSelectChangeDisabled(descriptor, value)) return;
+    const current = selected.selectDescriptors.find((candidate) => candidate.id === descriptor.id);
+    if (!current) return;
+    if (current.promptInjectedValues?.includes(value)) {
       const nextPrompt =
         prompt.trim().length === 0
           ? ULTRATHINK_PROMPT_PREFIX
@@ -357,15 +380,14 @@ export function useTraitsSelection({
       onPromptChange(nextPrompt);
       return;
     }
-    if (ultrathinkInBodyText && descriptor.id === primarySelectDescriptor?.id) return;
-    if (ultrathinkPromptControlled && descriptor.id === primarySelectDescriptor?.id) {
+    if (ultrathinkPromptControlled && current.id === primarySelectDescriptor?.id) {
       const stripped = prompt.replace(/^Ultrathink:\s*/i, "");
       onPromptChange(stripped);
     }
-    updateOption({ id: descriptor.id, value });
+    updateOption({ id: current.id, value });
   };
 
-  return { ...selected, updateOption, handleSelectChange };
+  return { ...selected, updateOption, handleSelectChange, isSelectChangeDisabled };
 }
 
 export const TraitsMenuContent = memo(function TraitsMenuContentImpl(
@@ -382,6 +404,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl(
     modelIsUnavailable,
     updateOption,
     handleSelectChange,
+    isSelectChangeDisabled,
   } = useTraitsSelection(props);
 
   if (!hasAnyControls) {
@@ -443,7 +466,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl(
                     // Base UI keeps radio menus open by default. Close on pick so
                     // the traits menu behaves like the model picker.
                     closeOnClick
-                    disabled={ultrathinkInBodyText && descriptor.id === primarySelectDescriptor?.id}
+                    disabled={isSelectChangeDisabled(descriptor, option.id)}
                   >
                     <span className="flex w-full min-w-0 flex-col">
                       <span className="flex w-full min-w-0 items-center justify-between gap-3">
@@ -603,6 +626,7 @@ export const TraitsPicker = memo(function TraitsPicker({
       modelOptions,
       allowPromptInjectedEffort,
       planModeEnabled,
+      displayCapabilities,
     })
   ) {
     return null;

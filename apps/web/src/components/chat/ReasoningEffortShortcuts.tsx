@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import type { Ref } from "react";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
 import { ComposerControl } from "./ComposerControl";
 import {
@@ -7,73 +7,67 @@ import {
   useTraitsSelection,
 } from "./TraitsPicker";
 
-export function ReasoningEffortShortcuts(props: TraitsMenuContentProps & TraitsPersistence) {
+const EFFORT_SHORT_LABELS = new Map([
+  ["none", "Off"],
+  ["minimal", "Min"],
+  ["low", "Low"],
+  ["medium", "Med"],
+  ["high", "High"],
+  ["xhigh", "XH"],
+  ["max", "Max"],
+  ["ultrathink", "Ultra"],
+]);
+
+export function ReasoningEffortShortcuts(
+  props: TraitsMenuContentProps &
+    TraitsPersistence & { groupRef?: Ref<HTMLDivElement>; visible: boolean },
+) {
   const traits = useTraitsSelection(props);
   const descriptor = traits.selectDescriptors.find(
     ({ id }) =>
       id === "reasoningEffort" || id === "effort" || id === "variant" || id === "reasoning",
   );
-  const groupRef = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState(0);
-  const options = traits.modelIsUnavailable ? undefined : descriptor?.options;
-
-  useLayoutEffect(() => {
-    const group = groupRef.current;
-    if (!group || !options?.length) return;
-    const measure = () => {
-      const rows = new Set(Array.from(group.children, (child) => (child as HTMLElement).offsetTop));
-      setHeight(
-        rows.size > 0 && rows.size <= 2 && group.scrollWidth <= group.clientWidth
-          ? group.offsetHeight
-          : 0,
-      );
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(group);
-    return () => observer.disconnect();
-  }, [options]);
-
-  if (!descriptor || !options?.length) return null;
+  if (traits.modelIsUnavailable || !descriptor?.options.length) return null;
   const promptControlled =
     descriptor.id === traits.primarySelectDescriptor?.id && traits.ultrathinkPromptControlled;
-  const disabled =
+  const bodyTextLocked =
     descriptor.id === traits.primarySelectDescriptor?.id && traits.ultrathinkInBodyText;
   const selectedValue = promptControlled ? "ultrathink" : getProviderOptionCurrentValue(descriptor);
 
   return (
-    <div className="relative min-w-0 flex-1" style={{ height }}>
-      {/* Retain the available width while hidden so the measurement cannot oscillate. */}
-      <div
-        ref={groupRef}
-        role="group"
-        aria-label={descriptor.label}
-        aria-hidden={height === 0}
-        inert={height === 0}
-        className="absolute inset-x-0 top-0 flex flex-wrap justify-end gap-1"
-        style={{ visibility: height === 0 ? "hidden" : "visible" }}
-      >
-        {options.map((option) => (
-          <ComposerControl
-            key={option.id}
-            size="xs"
-            aria-pressed={selectedValue === option.id}
-            disabled={
-              disabled ||
-              (props.allowPromptInjectedEffort === false &&
-                !!descriptor.promptInjectedValues?.includes(option.id))
-            }
-            title={
-              disabled
-                ? 'Your prompt contains "ultrathink" in the text. Remove it to change this option.'
-                : option.description
-            }
-            onClick={() => traits.handleSelectChange(descriptor, option.id)}
-          >
-            {option.label}
-          </ComposerControl>
-        ))}
-      </div>
+    <div
+      ref={props.groupRef}
+      data-composer-shortcut-group="effort"
+      role="group"
+      aria-label={descriptor.label}
+      aria-hidden={!props.visible || undefined}
+      inert={!props.visible || undefined}
+      className="grid w-max grid-cols-[repeat(3,minmax(max-content,1fr))] gap-1 rounded-(--control-radius) bg-background/50"
+      style={{ visibility: props.visible ? "visible" : "hidden" }}
+    >
+      {descriptor.options.map((option) => (
+        <ComposerControl
+          key={option.id}
+          size="xs"
+          aria-label={`${descriptor.label}: ${option.label}`}
+          aria-pressed={selectedValue === option.id}
+          disabled={!props.visible || traits.isSelectChangeDisabled(descriptor, option.id)}
+          tabIndex={props.visible ? undefined : -1}
+          title={
+            bodyTextLocked
+              ? 'Your prompt contains "ultrathink" in the text. Remove it to change this option.'
+              : option.description
+                ? `${option.label}. ${option.description}`
+                : option.label
+          }
+          onClick={() => {
+            if (!props.visible) return;
+            traits.handleSelectChange(descriptor, option.id);
+          }}
+        >
+          {EFFORT_SHORT_LABELS.get(option.id) ?? option.label}
+        </ComposerControl>
+      ))}
     </div>
   );
 }

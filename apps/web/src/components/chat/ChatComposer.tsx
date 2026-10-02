@@ -274,6 +274,7 @@ import {
 } from "./composerSlashCommandSearch";
 import {
   getComposerPromptInjectionState,
+  getComposerEffectiveTraitsOptions,
   getComposerProviderState,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
@@ -2683,6 +2684,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isComposerOwned: true,
   } satisfies Parameters<typeof renderProviderTraitsPicker>[0];
   const providerTraitsPicker = renderProviderTraitsPicker(providerTraitsPickerInput);
+  const effectiveTraitsOptions = useMemo(
+    () =>
+      getComposerEffectiveTraitsOptions({
+        provider: selectedProvider,
+        instanceId: selectedInstanceId,
+        defaultModelSelection: activeProjectDefaultModelSelection,
+        defaultDriverKind: configuredDefaultDriverKind,
+        model: selectedModel,
+        models: selectedProviderModels,
+        modelOptions: composerModelOptions?.[selectedInstanceId],
+        planModeEnabled: settings.planModeEnabled,
+      }),
+    [
+      selectedProvider,
+      selectedInstanceId,
+      activeProjectDefaultModelSelection,
+      configuredDefaultDriverKind,
+      selectedModel,
+      selectedProviderModels,
+      composerModelOptions,
+      settings.planModeEnabled,
+    ],
+  );
   const {
     controlsRef: restingComposerControlsRef,
     attachControls: attachRestingComposerControls,
@@ -6145,6 +6169,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
+  const shortcutRailsContentKey = useMemo(
+    () => [modelOptionsByInstance, selectedInstanceId, selectedModel, effectiveTraitsOptions],
+    [modelOptionsByInstance, selectedInstanceId, selectedModel, effectiveTraitsOptions],
+  );
   const shortcutRails = useComposerShortcutRails({
     host: shortcutControlsHost,
     workspace: shortcutWorkspaceElement,
@@ -6152,7 +6180,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     bandRef: shortcutBandRef,
     accountGroupRef: accountShortcutGroupRef,
     effortGroupRef: effortShortcutGroupRef,
-    contentKey: modelOptionsByInstance,
+    contentKey: shortcutRailsContentKey,
     eligible:
       !isMobileViewport &&
       !isComposerApprovalState &&
@@ -6265,11 +6293,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   onSelect={onProviderModelSelect}
                 />
               </div>
-              <div
-                ref={effortShortcutGroupRef}
-                data-composer-shortcut-group="effort"
-                className="pointer-events-auto absolute right-0 bottom-0 w-max"
-              />
+              <div className="pointer-events-auto absolute right-0 bottom-0 w-max">
+                {providerTraitsPicker ? (
+                  <ReasoningEffortShortcuts
+                    {...providerTraitsPickerInput}
+                    {...effectiveTraitsOptions}
+                    groupRef={effortShortcutGroupRef}
+                    visible={shortcutRails.visible}
+                  />
+                ) : null}
+              </div>
             </div>,
             shortcutControlsHost,
           )
@@ -7071,13 +7104,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 >
                   {composerControlsInStrip ? null : composerControls}
                 </div>
-
-                {!isComposerResting && providerTraitsPicker ? (
-                  <ReasoningEffortShortcuts
-                    {...providerTraitsPickerInput}
-                    modelOptions={selectedModelOptionsForDispatch}
-                  />
-                ) : null}
 
                 {/* Right side: send / stop button */}
                 <div
