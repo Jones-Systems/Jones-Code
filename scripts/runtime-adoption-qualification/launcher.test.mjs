@@ -135,6 +135,7 @@ function assertCurrentSchema(snapshot) {
     { migration_id: 1, name: "WorktreeOwnershipLeases" },
     { migration_id: 2, name: "ProjectionThreadRuntimeIdentity" },
     { migration_id: 3, name: "NativeCreationIntents" },
+    { migration_id: 4, name: "NativeCreationCommandIdentities" },
   ]);
   for (const row of snapshot.tables.projection_threads)
     NodeAssert.ok(Object.hasOwn(row, "auto_settle_disabled_at"));
