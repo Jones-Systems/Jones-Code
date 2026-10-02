@@ -204,6 +204,19 @@ const legacyTask: ScheduledTask = {
 };
 
 describe("editing scheduled task branch settings", () => {
+  it("opens an automatic worktree base as an empty editable field", () => {
+    const task = {
+      ...legacyTask,
+      workspaceStrategy: { type: "worktree" as const, startFromOrigin: true },
+    };
+    const draft = editDraft(task);
+
+    expect(draft.baseRef).toBe("");
+    expect(draft.startFromOrigin).toBe(true);
+    expect(draft.task?.workspaceStrategy).not.toHaveProperty("baseRef");
+    expect(hasScheduledTaskDraftChanges(draft, editDraft(task))).toBe(false);
+  });
+
   it("keeps an omitted origin flag on the local base branch", () => {
     const draft = editDraft(legacyTask);
     expect(draft.baseRef).toBe("release");

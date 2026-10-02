@@ -3409,6 +3409,32 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return { commitSha, remoteRefName };
     });
 
+  const resolveRemoteTrackingCommitIfExists: GitVcsDriver.GitVcsDriver["Service"]["resolveRemoteTrackingCommitIfExists"] =
+    Effect.fn("resolveRemoteTrackingCommitIfExists")(function* (input) {
+      const remoteRefName = `${input.remoteName}/${input.branchName}`;
+      const args = ["rev-parse", "--verify", "--quiet", `refs/remotes/${remoteRefName}^{commit}`];
+      const result = yield* executeGit(
+        "GitVcsDriver.resolveRemoteTrackingCommitIfExists",
+        input.cwd,
+        args,
+        {
+          allowNonZeroExit: true,
+        },
+      );
+      if (result.exitCode === 1 && result.stderr.trim().length === 0) {
+        return null;
+      }
+      if (result.exitCode !== 0) {
+        return yield* new GitCommandError({
+          operation: "GitVcsDriver.resolveRemoteTrackingCommitIfExists",
+          command: `git ${args.join(" ")}`,
+          cwd: input.cwd,
+          detail: result.stderr.trim() || "Could not resolve the remote worktree base.",
+        });
+      }
+      return { commitSha: result.stdout.trim(), remoteRefName };
+    });
+
   const fetchRemoteBranch: GitVcsDriver.GitVcsDriver["Service"]["fetchRemoteBranch"] = Effect.fn(
     "fetchRemoteBranch",
   )(function* (input) {
@@ -3727,6 +3753,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     remoteExists,
     remoteBranchExists,
     resolveRemoteTrackingCommit,
+    resolveRemoteTrackingCommitIfExists,
     fetchRemoteBranch: (input) => withListRefsInvalidation(input.cwd, fetchRemoteBranch(input)),
     fetchRemoteTrackingBranch: (input) =>
       withListRefsInvalidation(input.cwd, fetchRemoteTrackingBranch(input)),

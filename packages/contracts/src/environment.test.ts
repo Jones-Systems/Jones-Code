@@ -14,6 +14,16 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("preserves automatic worktree base capability while accepting older servers", () => {
+    expect(decodeDescriptor(descriptor).capabilities.worktreeDefaultBase).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, worktreeDefaultBase: true },
+      }).capabilities.worktreeDefaultBase,
+    ).toBe(true);
+  });
+
   const nativeBootstrapCreation = {
     submissionSchema: "t3.native-bootstrap-submission/v1",
     preparationSchema: "voice.t3-bootstrap-preparation/v1",
@@ -26,10 +36,12 @@ describe("ExecutionEnvironmentDescriptor", () => {
     expect(decoded.capabilities.nativeBootstrapCreation).toBeUndefined();
     expect(Object.hasOwn(decoded.capabilities, "nativeBootstrapCreation")).toBe(false);
     expect(Schema.encodeSync(ExecutionEnvironmentDescriptor)(decoded)).toEqual(descriptor);
-    expect(() => decodeDescriptor({
-      ...descriptor,
-      capabilities: { ...descriptor.capabilities, nativeBootstrapCreation: null },
-    })).toThrow();
+    expect(() =>
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, nativeBootstrapCreation: null },
+      }),
+    ).toThrow();
   });
 
   it("round-trips the actual V2 observation advertisement while preserving V1 submission and preparation", () => {
@@ -50,11 +62,19 @@ describe("ExecutionEnvironmentDescriptor", () => {
       { observationSchema: "t3.native-creation-observation/v3" },
       { submissionSchema: "t3.native-bootstrap-submission/v2" },
       { preparationSchema: "voice.t3-bootstrap-preparation/v2" },
-      { guardRequired: false }, { grantId: "caller-grant" }, { actorSessionId: "caller" },
-    ]) expect(() => decodeDescriptor({
-      ...descriptor,
-      capabilities: { ...descriptor.capabilities, nativeBootstrapCreation: { ...nativeBootstrapCreation, ...extra } },
-    })).toThrow();
+      { guardRequired: false },
+      { grantId: "caller-grant" },
+      { actorSessionId: "caller" },
+    ])
+      expect(() =>
+        decodeDescriptor({
+          ...descriptor,
+          capabilities: {
+            ...descriptor.capabilities,
+            nativeBootstrapCreation: { ...nativeBootstrapCreation, ...extra },
+          },
+        }),
+      ).toThrow();
   });
 
   it("omits saved accounting on older servers and preserves explicit support", () => {

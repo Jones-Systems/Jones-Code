@@ -85,6 +85,66 @@ const makeTmpDir = (
     return yield* fileSystem.makeTempDirectoryScoped({ prefix });
   });
 
+describe("resolveRemoteTrackingCommitIfExists", () => {
+  it.effect.each([
+    { name: "present", exitCode: 0, stderr: "", expected: "commit" },
+    { name: "absent", exitCode: 1, stderr: "", expected: "missing" },
+    {
+      name: "repository failure",
+      exitCode: 128,
+      stderr: "fatal: invalid repository",
+      expected: "error",
+    },
+    { name: "invalid object", exitCode: 1, stderr: "error: invalid object", expected: "error" },
+  ])("resolves an exact remote ref once: $name", ({ exitCode, stderr, expected }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const commands: Array<ReadonlyArray<string>> = [];
+        const commitSha = "0123456789abcdef0123456789abcdef01234567";
+        const spawner = ChildProcessSpawner.make((command) => {
+          if (!ChildProcess.isStandardCommand(command)) {
+            return Effect.die("expected a standard Git command");
+          }
+          commands.push(command.args);
+          return Effect.succeed(
+            ChildProcessSpawner.makeHandle({
+              ...makeSuccessfulHandle(exitCode === 0 ? `${commitSha}\n` : ""),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
+              stderr: Stream.encodeText(Stream.make(stderr)),
+            }),
+          );
+        });
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+        const lookup = driver.resolveRemoteTrackingCommitIfExists({
+          cwd: "/repo",
+          remoteName: "origin",
+          branchName: "release/stable",
+        });
+        if (expected === "error") {
+          const error = yield* lookup.pipe(Effect.flip);
+          assert.instanceOf(error, GitCommandError);
+          assert.equal(error.detail, stderr);
+        } else {
+          assert.deepEqual(
+            yield* lookup,
+            expected === "missing"
+              ? null
+              : {
+                  commitSha,
+                  remoteRefName: "origin/release/stable",
+                },
+          );
+        }
+        assert.deepEqual(commands, [
+          ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/release/stable^{commit}"],
+        ]);
+      }),
+    ).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
+  );
+});
+
 const writeTextFile = (
   cwd: string,
   relativePath: string,
@@ -3065,6 +3125,22 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           remoteRefName: `origin/${initialBranch}`,
         });
         assert.deepEqual(explicitlyResolvedBase, resolvedBase);
+        assert.deepEqual(
+          yield* driver.resolveRemoteTrackingCommitIfExists({
+            cwd,
+            remoteName: "origin",
+            branchName: initialBranch,
+          }),
+          resolvedBase,
+        );
+        assert.equal(
+          yield* driver.resolveRemoteTrackingCommitIfExists({
+            cwd,
+            remoteName: "origin",
+            branchName: "missing/local-only",
+          }),
+          null,
+        );
         assert.equal(yield* git(cwd, ["rev-parse", initialBranch]), beforeFetch);
 
         const pathService = yield* Path.Path;

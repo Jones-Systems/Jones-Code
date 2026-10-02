@@ -220,6 +220,7 @@ export const make = Effect.gen(function* () {
       threadCorpus: THREAD_CORPUS_CAPABILITY,
       repositoryIdentity: true,
       connectionProbe: true,
+      worktreeDefaultBase: true,
       attachmentUploads: true,
       questionAttachments: true,
       fileAttachments: { maxUploadBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES },

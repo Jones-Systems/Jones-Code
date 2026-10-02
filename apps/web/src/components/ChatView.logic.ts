@@ -1,4 +1,5 @@
 import * as Option from "effect/Option";
+import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
@@ -825,6 +826,25 @@ export function readFileAsDataUrl(file: File): Promise<string> {
     });
     reader.readAsDataURL(file);
   });
+}
+
+// Preserve New worktree intent while automatic base selection is still loading.
+export function resolveFirstSendWorktreePreparation(input: {
+  isFirstMessage: boolean;
+  sendEnvMode: DraftThreadEnvMode;
+  worktreePath: string | null;
+  projectCwd: string;
+  baseBranch: string | null;
+  startFromOrigin: boolean;
+}): NonNullable<StartThreadTurnInput["bootstrap"]>["prepareWorktree"] {
+  if (!input.isFirstMessage || input.sendEnvMode !== "worktree" || input.worktreePath !== null) {
+    return undefined;
+  }
+  return {
+    projectCwd: input.projectCwd,
+    ...(input.baseBranch !== null ? { baseBranch: input.baseBranch } : {}),
+    ...(input.startFromOrigin ? { startFromOrigin: true } : {}),
+  };
 }
 
 export function resolveSendEnvMode(input: {
