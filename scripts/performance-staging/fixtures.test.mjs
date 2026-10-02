@@ -1170,7 +1170,7 @@ for (const defect of ["header", "sidecar"]) {
       });
       const stages = [];
       test.mock.method(NodeSqlite.DatabaseSync.prototype, "prepare", function (sql) {
-        if (/^PRAGMA journal_mode\s*=\s*WAL$/i.test(sql.trim())) stages.push("production-wal");
+        if (/^PRAGMA journal_mode\s*=\s*WAL;?$/i.test(sql.trim())) stages.push("production-wal");
         if (/^PRAGMA wal_checkpoint\(TRUNCATE\)$/i.test(sql.trim()))
           stages.push(`checkpoint-after-${closes}-closes`);
         if (/^PRAGMA journal_mode\s*=\s*DELETE$/i.test(sql.trim()))
