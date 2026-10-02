@@ -33,6 +33,11 @@
         "scripts/evaluate-thread-titles.ts",
         "scripts/measure-pr-preview.ts",
         "src/provider/testFixtures/*.mjs",
+        // Staged native creation ports are consumed by the dependent execution slice.
+        // Analyzer entries preserve their source API without enabling runtime authority.
+        "src/orchestration/NativeCreationPreparation.ts",
+        "src/orchestration/NativeCreationAuthority.ts",
+        "src/persistence/Layers/NativeCreationRepository.ts",
       ],
       // Keep the transitive Effect runtime pinned for standalone npm installs.
       // The Vite+ web build prerequisite.

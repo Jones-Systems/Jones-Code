@@ -134,6 +134,7 @@ function assertCurrentSchema(snapshot) {
   NodeAssert.deepEqual(snapshot.ledgers.fork, [
     { migration_id: 1, name: "WorktreeOwnershipLeases" },
     { migration_id: 2, name: "ProjectionThreadRuntimeIdentity" },
+    { migration_id: 3, name: "NativeCreationIntents" },
   ]);
   for (const row of snapshot.tables.projection_threads)
     NodeAssert.ok(Object.hasOwn(row, "auto_settle_disabled_at"));
