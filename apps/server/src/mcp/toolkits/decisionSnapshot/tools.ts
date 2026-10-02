@@ -48,7 +48,7 @@ export const DecisionSnapshot = Schema.Struct({
   }),
 });
 export type DecisionSnapshot = typeof DecisionSnapshot.Type;
-export const DecisionSnapshotTool = Tool.make("decision_snapshot", {
+const DecisionSnapshotTool = Tool.make("decision_snapshot", {
   description:
     "Collect one bounded decision snapshot using the explicitly bound collector release and native thread/registry counts. Missing runtime or source capabilities remain unavailable; display facts do not grant admission authority.",
   parameters: Schema.Struct({

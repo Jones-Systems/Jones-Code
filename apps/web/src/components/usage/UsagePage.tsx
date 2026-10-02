@@ -1,4 +1,5 @@
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
+import { SavedTokenAccounting } from "./SavedTokenAccounting";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
@@ -988,6 +989,7 @@ export function UsagePage() {
                 </section>
               </>
             )}
+            {!showingLimits ? <SavedTokenAccounting /> : null}
           </WorkspacePageContainer>
         </ScrollArea>
       </div>

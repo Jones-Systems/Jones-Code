@@ -76,7 +76,7 @@ export interface VerifiedRelease {
   readonly entrypoint: string;
   readonly fingerprint: string;
 }
-export class ReleaseMismatch extends Error {}
+class ReleaseMismatch extends Error {}
 
 async function readBounded(path: string, maximum: number): Promise<Buffer> {
   const file = await NodeFSP.open(

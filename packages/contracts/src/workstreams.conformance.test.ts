@@ -6,7 +6,6 @@ import conformanceRaw from "./workstreams-fixtures/conformance.json.fixture?raw"
 import negativesRaw from "./workstreams-fixtures/negative-cases.json.fixture?raw";
 import semanticRaw from "./workstreams-fixtures/semantic-cases.json.fixture?raw";
 import {
-  WorkstreamRegistryCounts,
   Workstream,
   WorkstreamCapabilities,
   WorkstreamCommand,
@@ -58,7 +57,6 @@ interface FixtureCorpus {
   }>;
 }
 const supported = new Map<string, (value: unknown) => unknown>([
-  ["RegistryCounts", (value) => Schema.decodeUnknownSync(WorkstreamRegistryCounts)(value, options)],
   ["Command", (value) => Schema.decodeUnknownSync(WorkstreamCommand)(value, options)],
   ["Workstream", (value) => Schema.decodeUnknownSync(Workstream)(value, options)],
   ["NativeReference", (value) => Schema.decodeUnknownSync(NativeReference)(value, options)],
