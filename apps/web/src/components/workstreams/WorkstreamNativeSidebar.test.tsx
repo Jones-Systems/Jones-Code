@@ -53,6 +53,16 @@ beforeEach(() => {
   controller = {
     data,
     placements,
+    references: { context: detail.detail.context, items: [reference], next_cursor: null },
+    registrationContext: null,
+    loadActionSnapshot: vi.fn(async () => ({
+      data: controller.data!,
+      references: controller.references!,
+      placements: controller.placements,
+      registrationContext: controller.registrationContext,
+    })),
+    observeCommand: vi.fn(),
+    retry: vi.fn(async () => {}),
     placementInventory: {
       coverage: "complete",
       identities: threads.map((item) => ({
@@ -185,8 +195,42 @@ describe("native Workstream sidebar interactions", () => {
     let batchCompletion: Promise<unknown> | null = null;
     controller = {
       ...controller,
+      references: {
+        context: detail.detail.context,
+        items: [reference, secondReference],
+        next_cursor: null,
+      },
+      loadActionSnapshot: vi.fn(async () => {
+        const progressed = vi.mocked(controller.submit).mock.calls.length > 0;
+        return {
+          data: progressed
+            ? {
+                ...data,
+                binding: { ...data.binding, registryVersion: 12 },
+                items: data.items.map((item) => ({ ...item, version: 4 })),
+              }
+            : data,
+          references: {
+            context: { ...detail.detail.context, registry_version: progressed ? 12 : 11 },
+            items: [reference, secondReference],
+            next_cursor: null,
+          },
+          placements: {
+            ...controller.placements!,
+            context: { ...placements.context, registry_version: progressed ? 12 : 11 },
+          },
+          registrationContext: null,
+        };
+      }),
       loadDetail: vi.fn(async () => ({
         ...detail,
+        detail: {
+          ...detail.detail,
+          context: {
+            ...detail.detail.context,
+            registry_version: vi.mocked(controller.submit).mock.calls.length ? 12 : 11,
+          },
+        },
         references: { ...detail.references, items: [reference, secondReference] },
       })),
       runBindingOperation: (operation) => {
@@ -294,6 +338,22 @@ describe("native Workstream sidebar interactions", () => {
   it("shows the insertion edge and reorders native rows without changing membership", async () => {
     controller = {
       ...controller,
+      references: {
+        context: detail.detail.context,
+        next_cursor: null,
+        items: [
+          reference,
+          {
+            ...reference,
+            native_reference_id: "reference-two",
+            identity: { ...reference.identity, native_id: "unassigned" },
+            registration: {
+              ...reference.registration,
+              evidence: { ...reference.registration.evidence!, native_id: "unassigned" },
+            },
+          },
+        ],
+      },
       placements: {
         ...placements,
         items: [
@@ -393,7 +453,7 @@ describe("native Workstream sidebar interactions", () => {
     expect(container.textContent).toContain("Thread assignments are unavailable");
     await clickLabel("Workstream actions for First native conversation");
     const assignment = [...document.querySelectorAll('[role="menuitem"]')].find(
-      (entry) => entry.textContent === "Assign to beta",
+      (entry) => entry.textContent === "Re-verify reference and assign to beta",
     );
     expect(assignment?.getAttribute("aria-disabled")).toBe("true");
     expect(controller.submit).not.toHaveBeenCalled();
@@ -623,9 +683,14 @@ describe("Workstream toolbar creation", () => {
         .click(),
     );
     await vi.waitFor(() =>
-      expect(container.querySelector('[role="alert"]')?.textContent).toBe("Connection failed"),
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "The effect is unknown",
+      ),
     );
     expect(nameInput()?.value).toBe("Release prep");
+    expect(container.querySelector('[role="alert"]')?.textContent).not.toContain(
+      "Connection failed",
+    );
   });
 
   it("blocks duplicate pending creates even after dismissal and respects loading and authority", async () => {

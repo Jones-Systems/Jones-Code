@@ -45,9 +45,15 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import {
   workstreamGatewayLayerLive,
+  workstreamRegistrationContextLayerLive,
   workstreamHttpApiLayer,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
+import {
+  nativeWorkstreamsHttpApiLayer,
+  nativeWorkstreamsRuntimeLayer,
+} from "./workstreams/runtimeIntegration/native.ts";
+import * as NativeStoreAuthority from "./environment/NativeStoreAuthority.ts";
 import { jonesUpdatesHttpApiLayer } from "./jonesUpdates/http.ts";
 import * as JonesUpdates from "./jonesUpdates/service.ts";
 import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./voiceReview/http.ts";
@@ -634,6 +640,7 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(workstreamHttpApiLayer),
+      Layer.provide(nativeWorkstreamsHttpApiLayer),
       Layer.provide(hostStatusHttpApiLayer),
       Layer.provide(jonesUpdatesHttpApiLayer),
       Layer.provide(voiceReviewHttpApiLayer),
@@ -655,6 +662,17 @@ export const makeRoutesLayer = Layer.mergeAll(
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
   Layer.provide(workstreamGatewayLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer))),
+  Layer.provide(
+    workstreamRegistrationContextLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer)),
+  ),
+  Layer.provide(
+    nativeWorkstreamsRuntimeLayer.pipe(
+      Layer.provide(
+        NativeStoreAuthority.layer.pipe(Layer.provide(ServerEnvironment.identityLayer)),
+      ),
+      Layer.provide(AuthSessions.layer),
+    ),
+  ),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(JonesUpdates.layer.pipe(Layer.provide(DesktopTelemetryReceiverLayerLive))),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),

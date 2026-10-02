@@ -6,7 +6,19 @@ import type {
   WorkstreamReceipt,
 } from "@t3tools/contracts";
 import { sortActiveThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
-import type { WorkstreamListView } from "../../state/workstreams";
+import {
+  assertWorkstreamReadContext,
+  WorkstreamActionError,
+  workstreamFailureMessage,
+  type WorkstreamListView,
+} from "../../state/workstreams";
+import {
+  committedWorkstreamReceipt,
+  createSnapshotSequence,
+  exactThreadReferences,
+  qualifiedRegistrationSource,
+  threadReferenceState,
+} from "./workstreamReferenceActions";
 import {
   currentT3Placement,
   type LiveT3Placements,
@@ -177,9 +189,12 @@ export class ThreadMovementError extends Error {
     readonly stoppedKey: string,
     readonly unprocessedKeys: readonly string[],
     readonly commandId: string | null,
+    readonly preparedKeys: readonly string[] = [],
+    readonly stoppedTitle: string = stoppedKey,
+    readonly phase: "register" | "verify" | "reload" | "assign" = "assign",
   ) {
     super(
-      `${reason}. Completed: ${completedKeys.join(", ") || "none"}. Stopped: ${stoppedKey} (${commandId ?? "not submitted"}). Unprocessed: ${unprocessedKeys.join(", ") || "none"}. Refresh before retrying.`,
+      `${reason} Assigned ${completedKeys.length}. References prepared but not assigned ${preparedKeys.filter((key) => !completedKeys.includes(key)).length}. Stopped: ${stoppedTitle} (${phase}; ${commandId ?? "not submitted"}). Not processed ${unprocessedKeys.length}. Retry checks existing commands only.`,
     );
     this.name = "ThreadMovementError";
   }
@@ -241,20 +256,23 @@ export async function submitNativeMembershipBatch(input: {
   return completed;
 }
 
+export interface NativeMembershipIntent {
+  readonly prepareReferences?: boolean;
+}
+
 export async function moveNativeMembershipThreads(input: {
   readonly controller: WorkstreamListView;
-  readonly threads: readonly WorkstreamThreadLike[];
+  readonly threads: readonly (WorkstreamThreadLike & { readonly title?: string })[];
   readonly destination: string | null;
   readonly commandId: () => Promise<WorkstreamCommand["command_id"]>;
   readonly now: number;
   readonly signal?: AbortSignal;
+  readonly intent?: NativeMembershipIntent;
 }): Promise<readonly string[]> {
   input.signal?.throwIfAborted();
   const { controller, threads, destination } = input;
-  const data = controller.data;
-  const placements = controller.placements;
-  if (!data || !placements || !canEditWorkstreams(data) || controller.loading)
-    throw new Error("Refresh thread placements with write access before changing membership.");
+  if (!controller.data || !canEditWorkstreams(controller.data) || controller.loading)
+    throw new WorkstreamActionError("denied");
   const inventory = new Set(
     controller.placementInventory.identities.map((item) =>
       nativeWorkstreamThreadKey(item.source_instance_id, item.native_thread_id),
@@ -268,56 +286,131 @@ export async function moveNativeMembershipThreads(input: {
     throw new Error(
       "A selected environment has no verified placement inventory. No threads were moved.",
     );
-  const details = new Map<string, Awaited<ReturnType<typeof controller.loadDetail>>>();
-  const steps: { key: string; action: NativeMembershipAction }[] = [];
-  for (const thread of threads) {
-    const current =
-      placements.items.find(
-        (item) =>
-          item.kind === "primary" &&
-          item.source_instance_id === thread.environmentId &&
-          item.native_thread_id === thread.id,
-      )?.workstream_id ?? null;
-    const detailId = destination ?? current;
-    if (detailId === null) continue;
-    let detail = details.get(detailId);
-    if (!detail) {
-      detail = await controller.loadDetail(
-        detailId,
-        input.signal === undefined ? {} : { signal: input.signal },
-      );
-      input.signal?.throwIfAborted();
-      details.set(detailId, detail);
+  return controller.runBindingOperation(async (submit) => {
+    const options = input.signal === undefined ? {} : { signal: input.signal };
+    const sequence = createSnapshotSequence(controller, options);
+    let snapshot = await sequence.load();
+    if (!snapshot.placements || snapshot.placements.readiness !== "ready")
+      throw new WorkstreamActionError("stale");
+    // Preflight every identity and required source before the first registration effect.
+    for (const thread of threads) {
+      const state = threadReferenceState(snapshot, thread, input.now);
+      if (state === "ambiguous") throw new WorkstreamActionError("ambiguous");
+      if (state !== "verified") {
+        if (!input.intent?.prepareReferences || destination === null)
+          throw new WorkstreamActionError("stale");
+        qualifiedRegistrationSource(snapshot, "t3", thread);
+      }
     }
-    if (
-      detail.detail.context.registry_version !== data.binding.registryVersion ||
-      detail.detail.context.server_generation !== data.binding.serverGeneration ||
-      detail.detail.context.owner_id !== data.binding.ownerId
-    )
-      throw new Error("Workstreams changed. Refresh before moving the selection.");
-    const action = planNativeMembership({
-      data,
-      placements,
-      references: detail.references.items,
-      destinationMemberships: detail.memberships.items,
-      thread,
-      destination,
-      now: input.now,
-    });
-    if (action)
-      steps.push({ key: nativeWorkstreamThreadKey(thread.environmentId, thread.id), action });
-  }
-  input.signal?.throwIfAborted();
-  if (steps.length)
-    await controller.runBindingOperation((submit) =>
-      submitNativeMembershipBatch({
-        data,
-        steps,
-        commandId: input.commandId,
-        submit,
-      }),
-    );
-  return threads.map((thread) => nativeWorkstreamThreadKey(thread.environmentId, thread.id));
+    const completed: string[] = [];
+    const prepared = new Set<string>();
+    for (const [index, thread] of threads.entries()) {
+      const key = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
+      let attemptedCommandId: string | null = null;
+      let phase: ThreadMovementError["phase"] = "reload";
+      const send = async (action: WorkstreamCommand["action"]) => {
+        attemptedCommandId = await input.commandId();
+        input.signal?.throwIfAborted();
+        return sequence.accept(
+          await submit({
+            command_id: attemptedCommandId,
+            expected_server_generation: snapshot.data.binding.serverGeneration,
+            expected_registry_version: snapshot.data.binding.registryVersion,
+            action,
+          }),
+        );
+      };
+      try {
+        if (index > 0) snapshot = await sequence.load();
+        let state = threadReferenceState(snapshot, thread, input.now);
+        if (state === "ambiguous") throw new WorkstreamActionError("ambiguous");
+        if (state !== "verified") {
+          if (!input.intent?.prepareReferences || destination === null)
+            throw new WorkstreamActionError("stale");
+          const source = qualifiedRegistrationSource(snapshot, "t3", thread);
+          let reference = exactThreadReferences(snapshot, thread)[0];
+          if (!reference) {
+            phase = "register";
+            const receipt = await send({
+              operation: "register_reference",
+              identity: {
+                provider: "t3",
+                source_instance_id: source.source_instance_id,
+                resource_kind: "thread",
+                id_kind: "internal",
+                native_id: thread.id,
+                account_provenance: { kind: "not_account_scoped" },
+              },
+              pr_locator: null,
+            });
+            prepared.add(key);
+            phase = "reload";
+            snapshot = await sequence.load();
+            state = threadReferenceState(snapshot, thread, input.now);
+            if (state === "ambiguous") throw new WorkstreamActionError("ambiguous");
+            reference = exactThreadReferences(snapshot, thread)[0];
+            if (!reference || reference.native_reference_id !== receipt.effects.native_reference_id)
+              throw new WorkstreamActionError("unknown");
+          }
+          qualifiedRegistrationSource(snapshot, "t3", thread);
+          phase = "verify";
+          await send({
+            operation: "verify_reference",
+            native_reference_id: reference.native_reference_id,
+            expected_attestation_version: reference.registration.attestation_version,
+          });
+          prepared.add(key);
+          phase = "reload";
+          snapshot = await sequence.load();
+          const refreshed = await controller.loadReference(reference.native_reference_id, options);
+          assertWorkstreamReadContext(snapshot.data, refreshed.context);
+          if (
+            refreshed.reference.native_reference_id !==
+              exactThreadReferences(snapshot, thread)[0]?.native_reference_id ||
+            threadReferenceState(snapshot, thread, input.now) !== "verified"
+          )
+            throw new WorkstreamActionError("stale");
+        }
+        const current =
+          snapshot.placements?.items.find(
+            (item) =>
+              item.kind === "primary" &&
+              item.source_instance_id === thread.environmentId &&
+              item.native_thread_id === thread.id,
+          )?.workstream_id ?? null;
+        const detailId = destination ?? current;
+        const detail = detailId === null ? null : await controller.loadDetail(detailId, options);
+        if (detail) assertWorkstreamReadContext(snapshot.data, detail.detail.context);
+        if (!snapshot.placements) throw new WorkstreamActionError("stale");
+        phase = "assign";
+        const action = planNativeMembership({
+          data: snapshot.data,
+          placements: snapshot.placements,
+          references: snapshot.references.items,
+          ...(detail ? { destinationMemberships: detail.memberships.items } : {}),
+          thread,
+          destination,
+          now: input.now,
+        });
+        if (action) committedWorkstreamReceipt(await send(action));
+        completed.push(key);
+      } catch (cause) {
+        throw new ThreadMovementError(
+          workstreamFailureMessage(cause),
+          completed,
+          key,
+          threads
+            .slice(index + 1)
+            .map((item) => nativeWorkstreamThreadKey(item.environmentId, item.id)),
+          attemptedCommandId,
+          [...prepared],
+          thread.title ?? key,
+          phase,
+        );
+      }
+    }
+    return completed;
+  });
 }
 
 export function projectWorkstreamShelves<

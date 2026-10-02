@@ -1,0 +1,24 @@
+{
+  "contract_family": "workstreams-t3-provider",
+  "contract_version": "1.0.0",
+  "digest_algorithm": "sha256",
+  "manifest_sha256": "08abb3a7753e22e5511ba440a2ac70006a4710a0644f29dd7e3eb1a9b321ff61",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "51dd46dc02a71b126a91454d8346f5fe7fd8deffb4f70c5706fbd81644443819"
+    },
+    {
+      "path": "fixtures/conformance.json",
+      "sha256": "44c21769e151de554ae0e5356ec3e13ebebe9ad9759beb5d0a06ac21089c6352"
+    },
+    {
+      "path": "fixtures/negative-cases.json",
+      "sha256": "c04518935e1656db82e3e7e9fccd34928a6f11970af0dc68436e1d4614951b7c"
+    },
+    {
+      "path": "schemas/provider.schema.json",
+      "sha256": "403142b86ac382a58a19b8403a3f95b9d0cea673e26268bb3ce4e884acd69721"
+    }
+  ]
+}
