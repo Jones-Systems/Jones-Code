@@ -162,7 +162,8 @@
         "apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.test.ts",
         "apps/server/src/persistence/Migrations.ts",
         "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.test.ts",
-        "apps/server/src/persistence/Migrations.test.ts"
+        "apps/server/src/persistence/Migrations.test.ts",
+        "knip.jsonc"
       ]
     }
   ]
