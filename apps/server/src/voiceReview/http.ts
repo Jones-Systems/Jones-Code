@@ -52,7 +52,7 @@ export const voiceReviewResponseHeadersLayer = HttpRouter.middleware(
 );
 
 const isReviewError = Schema.is(VoiceReviewError);
-export const makeVoiceReviewHttpApiLayer = (
+const makeVoiceReviewHttpApiLayer = (
   native?: VoiceReviewNativeReadPort,
   compositionFactory: VoiceReviewCompositionFactory = () => Effect.succeed(undefined),
 ) =>

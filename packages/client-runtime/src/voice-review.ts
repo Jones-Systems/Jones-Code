@@ -1,6 +1,5 @@
 import {
   ThreadRegistryAssociationPayload,
-  ThreadRegistryLabelPayload,
   VoiceReviewError,
   type VoiceReviewAction,
   type VoiceReviewMutationPayload,
@@ -182,25 +181,6 @@ export const fetchThreadRegistryWorkstreams = Effect.fn(
   );
 });
 
-export const fetchThreadRegistryEvents = Effect.fn("clientRuntime.voiceReview.registryEvents")(
-  function* (
-    input: VoiceReviewClientOptions & { readonly after?: number; readonly limit?: number },
-  ) {
-    const query = { after: input.after ?? 0, limit: input.limit ?? 50 };
-    return yield* unwrapReviewError(
-      executeAuthenticatedEnvironmentHttpRequest({
-        ...input,
-        remoteAuthorization: yield* authorization(input),
-        group: "voiceReview",
-        method: "GET",
-        timeoutMs: input.timeoutMs ?? 15_000,
-        url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.registryEvents({ query }),
-        request: ({ client, headers }) => client.registryEvents({ query, headers }),
-      }),
-    );
-  },
-);
-
 export const fetchVoiceReviewDiagnostics = Effect.fn("clientRuntime.voiceReview.diagnostics")(
   function* (input: VoiceReviewClientOptions & { readonly id: string }) {
     const params = { id: input.id };
@@ -240,22 +220,3 @@ export const correctThreadRegistryAssociation = Effect.fn(
     }),
   );
 });
-
-export const correctThreadRegistryLabel = Effect.fn("clientRuntime.voiceReview.correctLabel")(
-  function* (
-    input: VoiceReviewClientOptions & { readonly payload: typeof ThreadRegistryLabelPayload.Type },
-  ) {
-    const payload = yield* Schema.decodeUnknownEffect(ThreadRegistryLabelPayload)(input.payload);
-    return yield* unwrapReviewError(
-      executeAuthenticatedEnvironmentHttpRequest({
-        ...input,
-        remoteAuthorization: yield* authorization(input),
-        group: "voiceReview",
-        method: "POST",
-        timeoutMs: input.timeoutMs ?? 15_000,
-        url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.correctLabel(),
-        request: ({ client, headers }) => client.correctLabel({ payload, headers }),
-      }),
-    );
-  },
-);
