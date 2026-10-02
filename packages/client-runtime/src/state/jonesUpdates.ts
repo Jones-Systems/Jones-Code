@@ -67,6 +67,22 @@ const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
   });
 });
 
+/** Wait for a prepared connection; an initial disconnected mount must not end observation. */
+export function observeJonesUpdateState<A, E, R>(
+  connections: Stream.Stream<Option.Option<A>>,
+  read: (after?: number) => Effect.Effect<JonesUpdateState, E, R>,
+) {
+  return connections.pipe(
+    Stream.switchMap((connection) =>
+      Option.isNone(connection)
+        ? Stream.succeed(null)
+        : Stream.unfold(undefined as number | undefined, (after) =>
+            read(after).pipe(Effect.map((state) => [state, state.revision] as const)),
+          ).pipe(Stream.catch(() => Stream.succeed(null))),
+    ),
+  );
+}
+
 /** Observe host-owned state; mounting another client never starts another GitHub checker. */
 export function createJonesUpdateAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | HttpClient.HttpClient | R, E>,
@@ -74,11 +90,15 @@ export function createJonesUpdateAtoms<R, E>(
   const subscription = createEnvironmentSubscriptionAtomFamily(runtime, {
     label: "environment:jones-updates",
     subscribe: () =>
-      Stream.unfold(undefined as number | undefined, (after) =>
-        request({ action: "state", ...(after === undefined ? {} : { after }) }).pipe(
-          Effect.map((state) => [state, state.revision] as const),
+      Stream.unwrap(
+        EnvironmentSupervisor.pipe(
+          Effect.map((supervisor) =>
+            observeJonesUpdateState(SubscriptionRef.changes(supervisor.prepared), (after) =>
+              request({ action: "state", ...(after === undefined ? {} : { after }) }),
+            ),
+          ),
         ),
-      ).pipe(Stream.catch(() => Stream.empty)),
+      ),
   });
   const value = Atom.family((environmentId: import("@t3tools/contracts").EnvironmentId) =>
     Atom.make((get): JonesUpdateState | null =>
