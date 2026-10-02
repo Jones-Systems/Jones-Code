@@ -16,6 +16,56 @@ const workerPath = NodePath.join(directory, "runtime-qualification-worker.mjs");
 const executablePath = NodePath.join(runtimeRoot, "bin/node");
 const sourceRevision = "da5f4aee0035beec471b38598eaa2857d1e5155c";
 const enabled = process.env.JONES_RUNTIME_SOURCE_QUALIFICATION === "1";
+const phaseJournalLimit = 8 * 1024;
+
+function capturePhaseJournal(root) {
+  let complete = true;
+  const journals = Object.fromEntries(
+    ["main", "setup"].map((role) => {
+      const path = NodePath.join(root, `phases-${role}.jsonl`);
+      const info = NodeFS.lstatSync(path);
+      NodeAssert.ok(
+        info.isFile() &&
+          !info.isSymbolicLink() &&
+          info.nlink === 1 &&
+          info.size <= phaseJournalLimit,
+        "unavailable: unsupported or oversized phase journal",
+      );
+      const bytes = NodeFS.readFileSync(path);
+      NodeAssert.ok(bytes.length <= phaseJournalLimit, "phase journal exceeded its bound");
+      const lines = bytes.toString("utf8").split("\n");
+      const tail = lines.pop();
+      if (tail) complete = false;
+      const records = lines.map((line) => {
+        const record = JSON.parse(line);
+        NodeAssert.deepEqual(Object.keys(record).sort(), ["phase", "pid", "threadId"]);
+        NodeAssert.match(record.phase, /^[a-z][a-z-]{0,63}$/);
+        NodeAssert.ok(
+          Number.isSafeInteger(record.pid) &&
+            record.pid > 0 &&
+            Number.isSafeInteger(record.threadId) &&
+            record.threadId >= 0,
+          "invalid phase journal identity",
+        );
+        return record;
+      });
+      return [
+        role,
+        {
+          byteLength: bytes.length,
+          sha256: NodeCrypto.createHash("sha256").update(bytes).digest("hex"),
+          records,
+          partialTrailingBytes: Buffer.byteLength(tail ?? ""),
+        },
+      ];
+    }),
+  );
+  return {
+    schema: "jones-performance-runtime-phase-journal/v1",
+    outcome: complete ? "captured" : "partial",
+    journals,
+  };
+}
 
 function sha256(path, maximum = 4 * 1024 * 1024) {
   const info = NodeFS.lstatSync(path);
@@ -144,6 +194,15 @@ NodeTest.test(
         })}\n`,
         { flag: "wx", mode: 0o600 },
       );
+      NodeFS.writeFileSync(
+        NodePath.join(root, "phases-main.jsonl"),
+        `${JSON.stringify({ phase: "leaf-start-requested", pid: process.pid, threadId: 0 })}\n`,
+        { flag: "wx", mode: 0o600 },
+      );
+      NodeFS.writeFileSync(NodePath.join(root, "phases-setup.jsonl"), "", {
+        flag: "wx",
+        mode: 0o600,
+      });
       child = await runOwnedChild({
         owner,
         executable: executablePath,
@@ -168,12 +227,29 @@ NodeTest.test(
         maxOutputBytes: 56 * 1024,
         signal: AbortSignal.any([cancellation.signal, t.signal]),
       });
-      if (!child.truncated && child.stdout.trim()) report = JSON.parse(child.stdout);
+      let reportParseFailure;
+      try {
+        if (!child.truncated && child.stdout.trim()) report = JSON.parse(child.stdout);
+      } catch (error) {
+        reportParseFailure = error;
+      }
       NodeAssert.equal(child.closed, true, "unknown: qualification leaf did not close");
       NodeAssert.equal(child.reaped, true, "unknown: qualification leaf was not reaped");
-      NodeAssert.equal(child.outcome, "success", child.stderr || child.stopReason || report?.error);
+      NodeAssert.equal(
+        child.outcome,
+        "success",
+        `qualification leaf outcome=${child.outcome}; exitCode=${child.exitCode}; signal=${child.signal ?? "none"}; stopReason=${child.stopReason ?? "none"}; ${report?.error ?? child.stderr ?? ""}`.slice(
+          0,
+          2048,
+        ),
+      );
+      if (reportParseFailure) throw reportParseFailure;
       NodeAssert.equal(report?.schema, "jones-performance-source-runtime/v1");
-      NodeAssert.equal(report?.outcome, "passed", report?.error);
+      NodeAssert.equal(
+        report?.outcome,
+        "passed",
+        String(report?.error ?? "qualification report is missing or did not pass").slice(0, 2048),
+      );
       NodeAssert.equal(report?.runtime.execPath, executablePath);
       NodeAssert.equal(report?.runtime.nodeVersion, "26.8.2");
       NodeAssert.equal(report?.source.boundRevision, sourceRevision);
@@ -210,6 +286,22 @@ NodeTest.test(
         failure ??= error;
         identityFailure = String(error.stack ?? error).slice(0, 4096);
       }
+      let phaseJournal = {
+        schema: "jones-performance-runtime-phase-journal/v1",
+        outcome: "unknown",
+        reason: "captured_leaf_closure_unknown",
+      };
+      if (!child || (child.closed && child.reaped)) {
+        try {
+          phaseJournal = capturePhaseJournal(root);
+          if (phaseJournal.outcome !== "captured") {
+            failure ??= new Error("phase journal has an incomplete trailing record");
+          }
+        } catch (error) {
+          failure ??= error;
+          phaseJournal.reason = "phase_journal_capture_failed";
+        }
+      }
       const evidence = {
         schema: "jones-performance-source-runtime-evidence/v1",
         phase: "before-cleanup",
@@ -222,13 +314,14 @@ NodeTest.test(
         acquisition: metadata,
         child: childEvidence,
         report,
+        phaseJournal,
         originalError: failure ? String(failure.stack ?? failure).slice(0, 4096) : null,
       };
       try {
         const bytes = `${JSON.stringify(evidence)}\n`;
         NodeAssert.ok(Buffer.byteLength(bytes) <= 64 * 1024, "evidence output limit");
         NodeFS.writeFileSync(evidencePath, bytes, { flag: "wx", mode: 0o600 });
-        evidencePreserved = !identityFailure;
+        evidencePreserved = !identityFailure && phaseJournal.outcome === "captured";
       } catch (error) {
         failure ??= error;
       }

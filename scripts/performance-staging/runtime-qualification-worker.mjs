@@ -53,10 +53,52 @@ const cases = [
 ];
 const modules = [engineModule, leaseModule, indexModule];
 const limit = 48 * 1024;
+const phaseJournalLimit = 8 * 1024;
 let runnerAttempted = false;
 
 function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function recordPhase(phase) {
+  const root = NodeFS.realpathSync(process.cwd());
+  requireCondition(
+    root === process.cwd() &&
+      NodePath.dirname(root) === NodePath.join(runtimeRoot, "evidence") &&
+      /^source-qualification-[a-f0-9-]{36}$/.test(NodePath.basename(root)) &&
+      process.env.JONES_PERFORMANCE_RUNTIME_REQUEST === NodePath.join(root, "request.json"),
+    "unavailable: phase journal is outside the invocation",
+  );
+  requireCondition(/^[a-z][a-z-]{0,63}$/.test(phase), "invalid phase journal label");
+  const path = NodePath.join(
+    root,
+    NodeWorkerThreads.isMainThread ? "phases-main.jsonl" : "phases-setup.jsonl",
+  );
+  const line = `${JSON.stringify({ phase, pid: process.pid, threadId: NodeWorkerThreads.threadId })}\n`;
+  const size = Buffer.byteLength(line);
+  requireCondition(size <= 256, "phase journal record limit");
+  const info = NodeFS.lstatSync(path);
+  requireCondition(
+    info.isFile() && !info.isSymbolicLink() && info.nlink === 1,
+    "unavailable: unsupported phase journal",
+  );
+  const fd = NodeFS.openSync(
+    path,
+    NodeFS.constants.O_WRONLY | NodeFS.constants.O_APPEND | NodeFS.constants.O_NOFOLLOW,
+  );
+  try {
+    const opened = NodeFS.fstatSync(fd);
+    requireCondition(
+      opened.dev === info.dev &&
+        opened.ino === info.ino &&
+        opened.nlink === 1 &&
+        opened.size + size <= phaseJournalLimit,
+      "unavailable: phase journal changed or exceeded its bound",
+    );
+    requireCondition(NodeFS.writeSync(fd, line) === size, "incomplete phase journal write");
+  } finally {
+    NodeFS.closeSync(fd);
+  }
 }
 
 function readBounded(path, maximum = 4 * 1024 * 1024) {
@@ -140,15 +182,21 @@ function workerIdentity() {
 }
 
 async function installObservationSetup(input) {
+  recordPhase("setup-source-check-before");
   checkSource();
+  recordPhase("setup-source-check-after");
   const require = NodeModule.createRequire(NodePath.join(sourceRoot, "apps/server/package.json"));
   const apiPath = NodePath.join(sourceRoot, "node_modules/vite-plus/dist/test/index.js");
+  recordPhase("setup-api-import-before");
   const { vi, expect } = await import(NodeURL.pathToFileURL(apiPath).href);
+  recordPhase("setup-api-import-after");
+  recordPhase("setup-effect-imports-before");
   const [Effect, Layer, SqlClient] = await Promise.all(
     ["effect/Effect", "effect/Layer", "effect/unstable/sql/SqlClient"].map((specifier) =>
       vi.importActual(require.resolve(specifier)),
     ),
   );
+  recordPhase("setup-effect-imports-after");
   const identities = new WeakMap();
   const observationPath = NodePath.join(input.ownedRootPath, "observations.jsonl");
 
@@ -163,6 +211,13 @@ async function installObservationSetup(input) {
             connectionId = NodeCrypto.randomUUID();
             identities.set(sql, connectionId);
           }
+          yield* Effect.sync(() =>
+            recordPhase(
+              phase === "adapter-acquired"
+                ? "adapter-fingerprint-before"
+                : "persistence-fingerprint-before",
+            ),
+          );
           const engine = yield* sql.unsafe(
             "SELECT sqlite_version() AS version, sqlite_source_id() AS source_id",
           );
@@ -178,6 +233,11 @@ async function installObservationSetup(input) {
             pragmas[name] = yield* sql.unsafe(`PRAGMA ${name}`);
           }
           yield* Effect.sync(() => {
+            recordPhase(
+              phase === "adapter-acquired"
+                ? "adapter-fingerprint-after"
+                : "persistence-fingerprint-after",
+            );
             const state = expect.getState();
             const module = NodePath.relative(sourceRoot, state.testPath ?? "");
             requireCondition(modules.includes(module), "unavailable: adapter test-module identity");
@@ -209,7 +269,9 @@ async function installObservationSetup(input) {
 
   const adapterPath = NodePath.join(sourceRoot, "packages/shared/src/nodeSqliteClient.ts");
   vi.doMock(adapterPath, async () => {
+    recordPhase("adapter-module-import-before");
     const actual = await vi.importActual(adapterPath);
+    recordPhase("adapter-module-import-after");
     return {
       ...actual,
       layer: (config) => {
@@ -219,13 +281,18 @@ async function installObservationSetup(input) {
               config.filename.startsWith(`${input.ownedRootPath}${NodePath.sep}`)),
           "unavailable: adapter database is outside the fresh invocation",
         );
-        return observe(actual.layer(config), "adapter-acquired", config.filename);
+        recordPhase("adapter-layer-requested");
+        const original = actual.layer(config);
+        recordPhase("adapter-layer-built");
+        return observe(original, "adapter-acquired", config.filename);
       },
     };
   });
   const persistencePath = NodePath.join(sourceRoot, "apps/server/src/persistence/Layers/Sqlite.ts");
   vi.doMock(persistencePath, async () => {
+    recordPhase("persistence-module-import-before");
     const actual = await vi.importActual(persistencePath);
+    recordPhase("persistence-module-import-after");
     return {
       ...actual,
       makeSqlitePersistenceLive: (path) =>
@@ -242,7 +309,9 @@ async function installObservationSetup(input) {
     "apps/server/src/project/RepositoryIdentityResolver.ts",
   );
   vi.doMock(resolverPath, async () => {
+    recordPhase("resolver-module-import-before");
     const actual = await vi.importActual(resolverPath);
+    recordPhase("resolver-module-import-after");
     return {
       ...actual,
       layer: Layer.succeed(actual.RepositoryIdentityResolver, {
@@ -250,10 +319,13 @@ async function installObservationSetup(input) {
       }),
     };
   });
+  recordPhase("setup-delegations-registered");
 }
 
 async function runQualification(input) {
+  recordPhase("source-check-before");
   const source = checkSource();
+  recordPhase("source-check-after");
   const apiPath = NodePath.join(sourceRoot, "node_modules/vite-plus/dist/test/node.js");
   requireCondition(
     sha256(readBounded(apiPath)) ===
@@ -284,7 +356,10 @@ async function runQualification(input) {
       "c36767bdbb4e0ca1d51c6954e6892ef9afc4ea2ecba111f9c8466f5d3126f5fd",
     "unavailable: inspected Vite environment/listener implementation changed",
   );
+  recordPhase("runner-pins-checked");
+  recordPhase("runner-import-before");
   const { startVitest } = await import(NodeURL.pathToFileURL(apiPath).href);
+  recordPhase("runner-import-after");
   requireCondition(typeof startVitest === "function", "unavailable: supported source runner API");
   const results = [];
   const logs = [];
@@ -326,15 +401,27 @@ async function runQualification(input) {
   const reporter = {
     onInit(context) {
       runner = context;
+      recordPhase("runner-initialized");
       if (cancelled) cancel();
     },
     onUserConsoleLog(log) {
       recordLog(log.type === "stderr" ? "stderr" : "console", log.content);
     },
+    onTestCaseReady(test) {
+      if (
+        cases.some(
+          ([file, name]) =>
+            file === NodePath.relative(sourceRoot, test.module.moduleId) && name === test.name,
+        )
+      ) {
+        recordPhase("selected-case-ready");
+      }
+    },
     onTestCaseResult(test) {
       const module = NodePath.relative(sourceRoot, test.module.moduleId);
       const result = test.result();
       if (cases.some(([file, name]) => file === module && name === test.name)) {
+        recordPhase("selected-case-result");
         results.push({
           module,
           name: test.name,
@@ -347,6 +434,7 @@ async function runQualification(input) {
       }
     },
     onTestRunEnd(testModules, errors, reason) {
+      recordPhase("test-run-ended");
       runReason = reason;
       unhandledErrors = errors.map(text);
       for (const module of testModules) {
@@ -398,6 +486,7 @@ async function runQualification(input) {
     cache: { dir: NodePath.join(input.ownedRootPath, "cache/vitest") },
   };
   try {
+    recordPhase("runner-start-before");
     runnerAttempted = true;
     runner = await startVitest(
       "test",
@@ -411,12 +500,25 @@ async function runQualification(input) {
       },
       { stdout: stream("stdout"), stderr: stream("stderr") },
     );
+    recordPhase("runner-start-returned");
   } catch (error) {
     primaryError ??= error;
   } finally {
     try {
       await cancellation;
-      if (runner) await runner.close();
+      if (runner) {
+        try {
+          recordPhase("runner-close-before");
+        } catch (error) {
+          primaryError ??= error;
+        }
+        await runner.close();
+        try {
+          recordPhase("runner-close-after");
+        } catch (error) {
+          primaryError ??= error;
+        }
+      }
       runnerClosed = !!runner && !closeErrors && !logsLimited && !cancellationFailure;
     } catch (error) {
       primaryError ??= error;
@@ -528,12 +630,16 @@ async function runQualification(input) {
   };
 }
 
+recordPhase("module-entry");
 if (!NodeWorkerThreads.isMainThread) {
-  await installObservationSetup(readRequest());
+  const input = readRequest();
+  recordPhase("request-validated");
+  await installObservationSetup(input);
 } else {
   let report;
   try {
     const input = readRequest();
+    recordPhase("request-validated");
     report = await runQualification(input);
   } catch (error) {
     report = {
@@ -547,6 +653,12 @@ if (!NodeWorkerThreads.isMainThread) {
       compiledQualification: "unknown/held",
       productionSQLiteQualification: "unverified",
     };
+  }
+  try {
+    recordPhase("report-before");
+  } catch (error) {
+    report.outcome = "failed";
+    report.error ??= String(error?.stack ?? error).slice(0, 4096);
   }
   const bytes = `${JSON.stringify(report)}\n`;
   if (Buffer.byteLength(bytes) > limit) {
