@@ -60,6 +60,7 @@ import {
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
 import {
+  isOperatingThread,
   resolveEnvironmentMachineKind,
   type EnvironmentMachineKind,
   type ProjectIconOverride,
@@ -185,6 +186,7 @@ import {
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
+  filterSidebarOperatingThreads,
   formatWorkingDurationLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
@@ -2495,6 +2497,26 @@ export default function Sidebar() {
           ),
     [scopedProjectGroup],
   );
+  const [activeOnly, setActiveOnly] = useState(false);
+  const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
+  const scopedThreads = useMemo(
+    () =>
+      threads.filter(
+        (thread) =>
+          thread.archivedAt === null &&
+          (scopedProjectKeys === null ||
+            scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
+      ),
+    [threads, scopedProjectKeys],
+  );
+  const activeThreadCount = useMemo(
+    () => scopedThreads.filter(isOperatingThread).length,
+    [scopedThreads],
+  );
+  const filteredThreads = useMemo(
+    () => filterSidebarOperatingThreads(scopedThreads, activeOnly, isOperatingThread),
+    [scopedThreads, activeOnly],
+  );
   // A persisted scope whose project is gone falls back to all projects, but
   // only after every catalog environment has a live project snapshot. Cached
   // or disconnected environments cannot establish that the project is gone.
@@ -2512,6 +2534,7 @@ export default function Sidebar() {
   // an open never-left draft, which only softens the empty state.
   const routeDraftIdForRows = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
   const visibleDraftSessionCount = useComposerDraftStore((store) => {
+    if (activeOnly) return 0;
     let count = 0;
     for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
       if (session.promotedTo != null) {
@@ -2534,7 +2557,7 @@ export default function Sidebar() {
   // hidden now, and bulk actions must never count or touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, projectScopeKey]);
+  }, [activeOnly, clearSelection, projectScopeKey]);
 
   const openProjectSettings = useCallback(
     (projectGroup: SidebarProjectSnapshot) => {
@@ -2600,12 +2623,7 @@ export default function Sidebar() {
     // memo exactly at the next wake boundary.
     void snoozeWakeTick;
     const preciseNow = new Date().toISOString();
-    const visible = threads.filter(
-      (thread) =>
-        thread.archivedAt === null &&
-        (scopedProjectKeys === null ||
-          scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
-    );
+    const visible = filteredThreads;
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
     const snoozed: EnvironmentThreadShell[] = [];
@@ -2690,7 +2708,7 @@ export default function Sidebar() {
       settledThreads: sortSettledThreads(settled),
       snoozeNow: preciseNow,
     };
-  }, [nowMinute, optimisticDrop, scopedProjectKeys, serverConfigs, snoozeWakeTick, threads]);
+  }, [filteredThreads, nowMinute, optimisticDrop, serverConfigs, snoozeWakeTick]);
 
   const workstreamController = useWorkstreams(true, threads);
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
@@ -2727,7 +2745,7 @@ export default function Sidebar() {
       groupNativeThreadsByWorkstream({
         workstreams: workstreamController.data?.items ?? [],
         placements: workstreamController.placements?.items ?? [],
-        threads,
+        threads: activeOnly ? filteredThreads : threads,
         trustedNow: snoozeNow,
         trustedEnvironments: new Map(
           (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
@@ -2736,7 +2754,14 @@ export default function Sidebar() {
           ]),
         ),
       }),
-    [threads, snoozeNow, workstreamController.data?.items, workstreamController.placements],
+    [
+      activeOnly,
+      filteredThreads,
+      threads,
+      snoozeNow,
+      workstreamController.data?.items,
+      workstreamController.placements,
+    ],
   );
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
@@ -2957,7 +2982,11 @@ export default function Sidebar() {
   );
   const membershipBusyRef = useRef(false);
   const moveWorkstreamThreads = useCallback(
-    async (selected: readonly EnvironmentThreadShell[], destination: string | null) => {
+    async (
+      selected: readonly EnvironmentThreadShell[],
+      destination: string | null,
+      intent?: { readonly prepareReferences?: boolean },
+    ) => {
       if (membershipBusyRef.current)
         throw new Error("A Workstream movement is already in progress.");
       const data = workstreamController.data;
@@ -2975,6 +3004,7 @@ export default function Sidebar() {
             destination,
             commandId: workstreamCommandId,
             now: Date.now(),
+            ...(intent ? { intent } : {}),
           });
           useThreadSelectionStore.getState().removeFromSelection(selected.map(key));
           return;
@@ -3019,6 +3049,7 @@ export default function Sidebar() {
           destination,
           commandId: workstreamCommandId,
           now: Date.now(),
+          ...(intent ? { intent } : {}),
         });
         try {
           await runSelectedThreadSteps({
@@ -5000,7 +5031,12 @@ export default function Sidebar() {
   const newThreadInProjectShortcutLabel = shortcutLabelForCommand(keybindings, "chat.newLocal");
   return (
     <>
-      <SidebarChromeHeader isElectron={isElectron} />
+      <SidebarChromeHeader
+        isElectron={isElectron}
+        activeThreadCount={activeThreadCount}
+        activeOnly={activeOnly}
+        onToggleActiveOnly={toggleActiveOnly}
+      />
       <SidebarContent
         className="min-h-full"
         fixedHeader={
@@ -5434,14 +5470,16 @@ export default function Sidebar() {
                       };
                       const from = dragState?.activeSection ?? null;
                       const items: ReactNode[] = [
-                        <SidebarDraftBlock
-                          key="draft-sessions"
-                          projectByKey={projectByKey}
-                          projectDisplayNameByKey={projectDisplayNameByKey}
-                          scopedProjectKeys={scopedProjectKeys}
-                          routeDraftId={routeDraftIdForRows}
-                          onNavigateToDraft={navigateToDraft}
-                        />,
+                        !activeOnly ? (
+                          <SidebarDraftBlock
+                            key="draft-sessions"
+                            projectByKey={projectByKey}
+                            projectDisplayNameByKey={projectDisplayNameByKey}
+                            scopedProjectKeys={scopedProjectKeys}
+                            routeDraftId={routeDraftIdForRows}
+                            onNavigateToDraft={navigateToDraft}
+                          />
+                        ) : null,
                       ];
                       if (workstreamController.data !== null) {
                         items.unshift(

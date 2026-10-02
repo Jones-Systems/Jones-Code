@@ -102,9 +102,92 @@ it.effect("reads project shells without loading threads or resolving excluded pr
   }).pipe(Effect.provide(layer));
 });
 
+it.effect("counts scoped native activity without decoding history or shell payloads", () =>
+  Effect.gen(function* () {
+    const query = yield* ProjectionSnapshotQuery;
+    const sql = yield* SqlClient.SqlClient;
+    const background = yield* ThreadBackgroundLiveness.ThreadBackgroundLivenessService;
+    yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+      VALUES ('counts-p1', 'Counts', '/counts', '[]', '2026-10-02T00:00:00Z', '2026-10-02T00:00:00Z'),
+        ('counts-p2', 'Other', '/other', '[]', '2026-10-02T00:00:00Z', '2026-10-02T00:00:00Z')`;
+    for (const [id, project, status, approval, input, archived, deleted] of [
+      ["counts-running", "counts-p1", "running", 0, 0, null, null],
+      ["counts-starting", "counts-p1", "starting", 0, 0, null, null],
+      ["counts-wait", "counts-p1", "running", 1, 0, null, null],
+      ["counts-input", "counts-p1", "running", 0, 1, null, null],
+      ["counts-background", "counts-p1", "ready", 0, 0, null, null],
+      ["counts-plan", "counts-p1", "ready", 0, 0, null, null],
+      ["counts-archived", "counts-p1", "running", 0, 0, "2026-10-02T00:00:00Z", null],
+      ["counts-deleted", "counts-p1", "running", 0, 0, null, "2026-10-02T00:00:00Z"],
+      ["counts-other", "counts-p2", "running", 0, 0, null, null],
+    ] as const) {
+      yield* sql`INSERT INTO projection_threads
+        (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+         pending_approval_count, pending_user_input_count, archived_at, deleted_at, created_at, updated_at)
+        VALUES (${id}, ${project}, 'Counts', 'invalid-json', 'full-access', 'default',
+          ${approval}, ${input}, ${archived}, ${deleted}, '2026-10-02T00:00:00Z', '2026-10-02T00:00:00Z')`;
+      yield* sql`INSERT INTO projection_thread_sessions (thread_id, status, runtime_mode, updated_at)
+        VALUES (${id}, ${status}, 'full-access', '2026-10-02T00:00:00Z')`;
+    }
+    for (const threadId of [
+      "counts-wait",
+      "counts-background",
+      "counts-running",
+      "counts-archived",
+      "counts-deleted",
+      "absent",
+    ]) {
+      background.recordTaskLiveness({
+        threadId,
+        taskId: threadId,
+        taskType: "monitor",
+        status: "running",
+        kind: "started",
+      });
+    }
+    yield* sql`UPDATE projection_threads SET interaction_mode = 'plan', has_actionable_proposed_plan = 1, latest_turn_id = 'counts-turn'
+      WHERE thread_id = 'counts-plan'`;
+    yield* sql`UPDATE projection_threads SET interaction_mode = 'plan', has_actionable_proposed_plan = 1 WHERE thread_id = 'counts-running'`;
+    yield* sql`INSERT INTO projection_turns (thread_id, turn_id, state, requested_at, started_at, completed_at, checkpoint_files_json)
+      VALUES ('counts-plan', 'counts-turn', 'completed', '2026-10-02T00:00:00Z', '2026-10-02T00:00:00Z', '2026-10-02T00:01:00Z', 'invalid-json')`;
+    const counts = yield* query.getOperatingCounts({ projectId: asProjectId("counts-p1") });
+    assert.strictEqual(counts.total, 6);
+    assert.strictEqual(counts.operating, 4);
+    assert.strictEqual(counts.foregroundWaitingApproval, 1);
+    assert.strictEqual(counts.foregroundWaitingInput, 1);
+    assert.strictEqual(counts.foregroundWaitingPlan, 1);
+    assert.strictEqual(counts.backgroundOperating, 3);
+    assert.ok(counts.observedAt >= counts.backgroundSampledAt);
+    yield* sql`UPDATE projection_turns SET state = 'running' WHERE thread_id = 'counts-plan'`;
+    assert.strictEqual(
+      (yield* query.getOperatingCounts({ projectId: asProjectId("counts-p1") }))
+        .foregroundWaitingPlan,
+      0,
+    );
+    assert.strictEqual(
+      (yield* query.getOperatingCounts({ projectId: asProjectId("counts-p2") })).operating,
+      1,
+    );
+    assert.strictEqual(
+      (yield* query.getOperatingCounts({ projectId: asProjectId("absent-project") })).total,
+      0,
+    );
+  }).pipe(
+    Effect.provide(
+      OrchestrationProjectionSnapshotQueryLive.pipe(
+        Layer.provideMerge(ThreadBackgroundLiveness.layer),
+        Layer.provide(ThreadPlanProgress.layer),
+        Layer.provideMerge(RepositoryIdentityResolver.layer),
+        Layer.provideMerge(SqlitePersistenceMemory),
+        Layer.provideMerge(NodeServices.layer),
+      ),
+    ),
+  ),
+);
+
 const projectionSnapshotLayer = it.layer(
   OrchestrationProjectionSnapshotQueryLive.pipe(
-    Layer.provide(ThreadBackgroundLiveness.layer),
+    Layer.provideMerge(ThreadBackgroundLiveness.layer),
     Layer.provide(ThreadPlanProgress.layer),
     Layer.provideMerge(RepositoryIdentityResolver.layer),
     Layer.provideMerge(SqlitePersistenceMemory),

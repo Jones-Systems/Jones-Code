@@ -20,6 +20,8 @@ it.effect("records additive fork migration 4 once without changing upstream hist
         { migration_id: 2, name: "ProjectionThreadRuntimeIdentity" },
         { migration_id: 3, name: "NativeCreationIntents" },
         { migration_id: 4, name: "NativeCreationCommandIdentities" },
+        { migration_id: 5, name: "WorkstreamsNativeAttempts" },
+        { migration_id: 6, name: "WorkstreamsProviderEnrollments" },
       ],
     );
     assert.deepEqual(

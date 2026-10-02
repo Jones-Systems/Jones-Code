@@ -106,6 +106,14 @@ import {
   WorkstreamReceipt,
 } from "./workstreams.ts";
 import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
+import {
+  WorkstreamsNativeContextResponse,
+  WorkstreamsNativeAttestationRequest,
+  WorkstreamsNativeAttestationResponse,
+  WorkstreamsNativeSettlementRequest,
+  WorkstreamsNativeSettlementResponse,
+} from "./workstreamsNativeProvider.ts";
+import { WorkstreamsRegistrationContextResponse } from "./workstreamsRegistrationContext.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { ProviderQueueInventory, ProviderQueueRefreshResult } from "./providerQueue.ts";
 
@@ -739,6 +747,13 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
 
 class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
   .add(
+    HttpApiEndpoint.get("registrationContext", "/api/workstreams/registration-context", {
+      headers: OptionalBearerHeaders,
+      success: WorkstreamsRegistrationContextResponse,
+      error: [...EnvironmentWorkstreamSnapshotErrors, EnvironmentHttpBadRequestError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
     HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
       headers: OptionalBearerHeaders,
       payload: T3PlacementLoadRequest,
@@ -828,6 +843,39 @@ class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
       payload: T3WorkstreamCommandRequest,
       success: WorkstreamReceipt,
       error: EnvironmentOrchestrationDispatchErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
+class EnvironmentWorkstreamsNativeHttpApi extends HttpApiGroup.make("workstreamsNative")
+  .add(
+    HttpApiEndpoint.get("context", "/api/workstreams/native/v1/context", {
+      headers: OptionalBearerHeaders,
+      success: WorkstreamsNativeContextResponse,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("attestations", "/api/workstreams/native/v1/attestations", {
+      headers: OptionalBearerHeaders,
+      payload: WorkstreamsNativeAttestationRequest,
+      success: WorkstreamsNativeAttestationResponse,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("settlements", "/api/workstreams/native/v1/settlements", {
+      headers: OptionalBearerHeaders,
+      payload: WorkstreamsNativeSettlementRequest,
+      success: WorkstreamsNativeSettlementResponse,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("settlementLookup", "/api/workstreams/native/v1/settlements/lookup", {
+      headers: OptionalBearerHeaders,
+      payload: WorkstreamsNativeSettlementRequest,
+      success: WorkstreamsNativeSettlementResponse,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
@@ -1146,5 +1194,6 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentWorkstreamsHttpApi)
+  .add(EnvironmentWorkstreamsNativeHttpApi)
   .add(EnvironmentConnectHttpApi)
   .add(EnvironmentConversationLibraryHttpApi) {}

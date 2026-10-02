@@ -12,7 +12,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { useEnvironments } from "../../state/environments";
-import { T3Wordmark } from "../T3Wordmark";
+import { SidebarActiveThreadsPill } from "./SidebarActiveThreadsPill";
 import {
   resolveEnvironmentIdentificationPillLabel,
   resolveSidebarStageBackdropVariant,
@@ -38,8 +38,14 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
+  activeThreadCount,
+  activeOnly,
+  onToggleActiveOnly,
 }: {
   isElectron: boolean;
+  activeThreadCount?: number;
+  activeOnly?: boolean;
+  onToggleActiveOnly?: () => void;
 }) {
   const stageLabel = useEnvironmentStageLabel();
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
@@ -67,6 +73,13 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
         className="relative top-auto z-10 translate-y-0 md:hidden"
       />
       <SidebarBrand onBackdrop={backdropVariant !== null} />
+      {onToggleActiveOnly ? (
+        <SidebarActiveThreadsPill
+          count={activeThreadCount ?? 0}
+          activeOnly={activeOnly ?? false}
+          onToggle={onToggleActiveOnly}
+        />
+      ) : null}
       {pillLabel ? (
         <Badge
           className="relative z-10 ml-1 hidden @[15rem]/sidebar-header:inline-flex"
@@ -93,10 +106,10 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
     >
       {/* Center the visible capitals, without the font's ascender/descender space. */}
       <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
-        <T3Wordmark aria-label="T3" className="h-[1cap] w-auto shrink-0" />
+        <span className="[text-box:trim-both_cap_alphabetic]">Jones</span>
         <span
           className={cn(
-            "truncate [text-box:trim-both_cap_alphabetic]",
+            "truncate font-bold [text-box:trim-both_cap_alphabetic]",
             onBackdrop ? "text-white/70" : "text-muted-foreground",
           )}
         >

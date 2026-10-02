@@ -64,6 +64,8 @@ export class ThreadBackgroundLivenessService extends Context.Service<
     /** Session death orphans all of a thread's background work. */
     readonly clearThreadLiveness: (threadId: string) => void;
 
+    readonly listLiveThreadIds: () => ReadonlyArray<string>;
+
     /**
      * Two-state vocabulary by design: any live agent work is "working";
      * "monitoring" only when watch loops are the ONLY live work.
@@ -152,6 +154,8 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
     clearThreadLiveness: (threadId) => {
       stateByThreadId.delete(threadId);
     },
+
+    listLiveThreadIds: () => Array.from(stateByThreadId.keys()),
 
     getThreadBackgroundLiveness: (threadId) => {
       const state = stateByThreadId.get(threadId);

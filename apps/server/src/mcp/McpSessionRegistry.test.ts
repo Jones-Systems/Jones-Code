@@ -79,6 +79,11 @@ it.effect("always grants pull-requests and gates browser and device access indep
       providerInstanceId: ProviderInstanceId.make("codex"),
       capabilities: new Set(["organization"]),
     });
+    const withSnapshot = yield* registry.issue({
+      threadId: ThreadId.make("thread-snapshot"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      capabilities: new Set(["decision-snapshot"]),
+    });
     const capabilitiesOf = (issued: typeof withPreview) =>
       registry
         .resolve(issued.config.authorizationHeader.replace(/^Bearer\s+/, ""))
@@ -88,6 +93,7 @@ it.effect("always grants pull-requests and gates browser and device access indep
     expect(yield* capabilitiesOf(withoutPreview)).toEqual(["pull-requests"]);
     expect(yield* capabilitiesOf(withDevice)).toEqual(["device", "pull-requests"]);
     expect(yield* capabilitiesOf(withOrganization)).toEqual(["organization", "pull-requests"]);
+    expect(yield* capabilitiesOf(withSnapshot)).toEqual(["decision-snapshot", "pull-requests"]);
   }),
 );
 

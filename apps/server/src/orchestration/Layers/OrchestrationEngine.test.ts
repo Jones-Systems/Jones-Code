@@ -348,6 +348,7 @@ describe("OrchestrationEngine", () => {
   it("bootstraps command handling from persisted projections without reading the full snapshot", async () => {
     let nextSequence = 8;
     const eventStore: OrchestrationEventStoreShape = {
+      readMetadataByCommandId: () => Effect.die("unused command metadata lookup"),
       append: (event) =>
         Effect.sync(() => {
           const savedEvent = {
@@ -432,6 +433,7 @@ describe("OrchestrationEngine", () => {
     const layer = OrchestrationEngineLive.pipe(
       Layer.provide(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getOperatingCounts: () => Effect.die("unused"),
           getUserInputActivity: () => Effect.die("unused"),
           listActivitiesByKind: () => Effect.die("unused"),
           getCommandReadModel: () => Effect.succeed(commandReadModel),
@@ -1491,6 +1493,7 @@ describe("OrchestrationEngine", () => {
     let shouldFailFirstAppend = true;
 
     const flakyStore: OrchestrationEventStoreShape = {
+      readMetadataByCommandId: () => Effect.die("unused command metadata lookup"),
       append(event) {
         if (shouldFailFirstAppend && event.commandId === CommandId.make("cmd-flaky-1")) {
           shouldFailFirstAppend = false;
@@ -1740,6 +1743,7 @@ describe("OrchestrationEngine", () => {
     let nextSequence = 1;
 
     const nonTransactionalStore: OrchestrationEventStoreShape = {
+      readMetadataByCommandId: () => Effect.die("unused command metadata lookup"),
       append(event) {
         const savedEvent = {
           ...event,

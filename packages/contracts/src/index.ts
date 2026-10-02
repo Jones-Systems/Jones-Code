@@ -58,3 +58,7 @@ export * from "./threadRegistry.ts";
 export * from "./queueProtocol.ts";
 
 export * from "./threadCorpusProtocol.ts";
+export * from "./tokenAccounting.ts";
+export * from "./threadActivity.ts";
+export * from "./workstreamsNativeProvider.ts";
+export * from "./workstreamsRegistrationContext.ts";
