@@ -733,6 +733,27 @@ describe("applyThreadDetailEvent", () => {
         expect(revisited.messages[2]).toBe(messages[2]);
       });
 
+      it("keeps append branches independent when their successors and predecessor are revisited", () => {
+        const predecessor = send(
+          { ...baseThread, messages: Object.freeze([message("existing", "existing")]) },
+          "existing",
+        );
+        const left = send(predecessor, "added", { text: "left" });
+        const right = send(predecessor, "added", { text: "right" });
+        const leftNext = send(left, "added", { text: " L" });
+        const rightNext = send(right, "added", { text: " R" });
+        const revisited = send(predecessor, "added", { text: "revisited" });
+        expect(leftNext.messages.map((entry) => entry.text)).toEqual(["existing+", "left L"]);
+        expect(rightNext.messages.map((entry) => entry.text)).toEqual(["existing+", "right R"]);
+        expect(revisited.messages.map((entry) => entry.text)).toEqual(["existing+", "revisited"]);
+        expect(revisited.messages[1]?.id).toBe("added");
+        expect(left.messages.map((entry) => entry.text)).toEqual(["existing+", "left"]);
+        expect(right.messages.map((entry) => entry.text)).toEqual(["existing+", "right"]);
+        expect(predecessor.messages.map((entry) => entry.text)).toEqual(["existing+"]);
+        expect(leftNext.messages[0]).toBe(predecessor.messages[0]);
+        expect(rightNext.messages[0]).toBe(predecessor.messages[0]);
+      });
+
       it("uses positions from replaced snapshots and prepended message arrays", () => {
         const original = send(
           { ...baseThread, messages: [message("first", "first"), message("target", "target")] },
