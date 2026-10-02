@@ -47,7 +47,7 @@ async function withInvocation<Value>(
 ) {
   const owner = createOwnedRoot({
     parentPath: NodePath.dirname(scriptPath),
-    // @effect-diagnostics-next-line cryptoRandomUUID:off -- One exclusive creator-owned invocation root is captured and disposed after all genuine child receipts are closed.
+    // One exclusive creator-owned invocation root is captured and disposed after all genuine child receipts are closed.
     childName: `.benchmark-test-${NodeCrypto.randomUUID()}`,
     binding,
     policy,

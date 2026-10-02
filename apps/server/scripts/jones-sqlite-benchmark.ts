@@ -893,7 +893,7 @@ export async function runSqliteBenchmark(
   const policy = Schema.decodeUnknownSync(Policy)(options.policy ?? benchmarkPolicy());
   const owner = createOwnedRoot({
     parentPath: request.parentPath,
-    // @effect-diagnostics-next-line cryptoRandomUUID:off -- The guard receives one fresh exclusive supervisor name; this is not an Effect program.
+    // The guard receives one fresh exclusive supervisor name; this is not an Effect program.
     childName: `benchmark-${NodeCrypto.randomUUID()}`,
     binding: request.binding,
     policy,
