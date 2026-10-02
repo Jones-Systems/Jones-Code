@@ -1,5 +1,6 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodeCrypto from "node:crypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Collection reads SQL before runtimes exist.
 import * as NodeFS from "node:fs";
 import * as NodePerfHooks from "node:perf_hooks";
 import {
@@ -9,6 +10,8 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as Console from "effect/Console";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -185,8 +188,8 @@ const decodeAndMap = (kind: QueryClass, rows: unknown) =>
 
 const threadId = ThreadId.make("history-bench");
 const pinnedIds = ["pinned-approval", "pinned-input"];
-const epoch = Date.parse("2026-01-01T00:00:00.000Z");
-const at = (milliseconds: number) => new Date(epoch + milliseconds).toISOString();
+const epoch = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"));
+const at = (milliseconds: number) => DateTime.formatIso(DateTime.makeUnsafe(epoch + milliseconds));
 const key = (index: number) => String(index).padStart(6, "0");
 const attachmentJson = JSON.stringify([
   { type: "file", id: "notes", name: "notes.txt", mimeType: "text/plain", sizeBytes: 8 },
@@ -426,7 +429,8 @@ const statistics = (samples: number[]) => {
     sdMs: Math.sqrt(samples.reduce((sum, value) => sum + (value - mean) ** 2, 0) / samples.length),
   };
 };
-const report = (kind: string, values: object) => console.log(JSON.stringify({ kind, ...values }));
+const report = (kind: string, values: object) =>
+  Effect.runSync(Console.log(JSON.stringify({ kind, ...values })));
 const turnWindowTemplate = sourceSql("listTurnWindowRows");
 const decodeTurnWindow = Schema.decodeUnknownSync(
   Schema.Array(
@@ -679,7 +683,7 @@ for (const turnCount of [1_000, 10_000]) {
         });
         if (failures.length > 0) {
           const cleanupError = new AggregateError(failures, "History benchmark disposal failed");
-          if (failed) console.error(cleanupError);
+          if (failed) Effect.runSync(Console.error(cleanupError));
           else throw cleanupError;
         }
       }
