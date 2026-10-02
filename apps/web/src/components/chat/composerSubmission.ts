@@ -1,6 +1,11 @@
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 
+import {
+  composerSubmissionIntentForEnter,
+  type ComposerSubmissionIntent,
+} from "../../composer-logic";
+
 type ComposerSubmitEvent = { preventDefault: () => void };
 
 type ComposerSubmissionInput = {
@@ -47,4 +52,40 @@ export function submitComposerDraft(
     return { validationMessage: null, didDispatch: false };
   }
   return { validationMessage: null, didDispatch: true };
+}
+
+export function handleComposerEnter(options: {
+  event: Pick<
+    KeyboardEvent,
+    "shiftKey" | "altKey" | "metaKey" | "ctrlKey" | "isComposing" | "keyCode" | "repeat"
+  >;
+  intent: Omit<Parameters<typeof composerSubmissionIntentForEnter>[0], "shiftKey" | "modifierKey">;
+  hasDraftContext: boolean;
+  queueActionDisabled: boolean;
+  onSteerNextQueuedMessage: () => boolean;
+  onSubmit: (intent: ComposerSubmissionIntent) => void;
+}): boolean {
+  const { event } = options;
+  if (event.isComposing || event.keyCode === 229) return false;
+  if (
+    !event.shiftKey &&
+    !event.altKey &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    options.intent.prompt === "" &&
+    !options.hasDraftContext &&
+    !options.queueActionDisabled
+  ) {
+    // Held Enter must not drain the queue after a completed send. The queue's
+    // existing send lock also covers an arrow click racing a fresh key press.
+    if (event.repeat || options.onSteerNextQueuedMessage()) return true;
+  }
+  const intent = composerSubmissionIntentForEnter({
+    ...options.intent,
+    shiftKey: event.shiftKey,
+    modifierKey: event.metaKey || event.ctrlKey,
+  });
+  if (!intent) return false;
+  options.onSubmit(intent);
+  return true;
 }
