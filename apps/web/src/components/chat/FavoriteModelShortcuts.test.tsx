@@ -37,9 +37,6 @@ const entries = deriveProviderInstanceEntries([
 
 let container: HTMLDivElement;
 let root: Root;
-let resize: () => void;
-let rows: number;
-let disconnect: ReturnType<typeof vi.fn>;
 let onSelect = vi.fn<(instanceId: ProviderInstanceId, model: string) => void>();
 
 function render(overrides: Partial<ComponentProps<typeof FavoriteModelShortcuts>> = {}) {
@@ -64,27 +61,8 @@ function render(overrides: Partial<ComponentProps<typeof FavoriteModelShortcuts>
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  rows = 1;
-  disconnect = vi.fn();
   onSelect = vi.fn();
   client.favorites = ["first", "second", "third"].map((model) => ({ provider: instanceId, model }));
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      constructor(callback: () => void) {
-        resize = callback;
-      }
-      observe() {}
-      disconnect = disconnect;
-    },
-  );
-  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(() => rows * 32);
-  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (
-    this: HTMLElement,
-  ) {
-    const index = Array.from(this.parentElement?.children ?? []).indexOf(this);
-    return Math.min(index, rows - 1) * 32;
-  });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -97,16 +75,22 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("favorite model shortcuts", () => {
-  it("switches the exact provider instance and updates the selected model", () => {
+describe("provider account shortcuts", () => {
+  it("keeps an enabled provider account reachable without favorite models", () => {
+    client.favorites = [];
     render();
-    const buttons = container.querySelectorAll("button");
-    expect(buttons[0]?.getAttribute("aria-pressed")).toBe("true");
-    act(() => buttons[1]?.click());
-    expect(onSelect).toHaveBeenCalledWith(instanceId, "second");
-    render({ model: "second" });
-    expect(buttons[0]?.getAttribute("aria-pressed")).toBe("false");
-    expect(buttons[1]?.getAttribute("aria-pressed")).toBe("true");
+    const button = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Work: First model"]',
+    );
+    expect(button).not.toBeNull();
+    act(() => button?.click());
+    expect(onSelect).toHaveBeenCalledWith(instanceId, "first");
+  });
+  it("shows one cell per account rather than one per favorite model", () => {
+    render();
+    expect(container.querySelectorAll("button")).toHaveLength(1);
+    expect(container.querySelector("button")?.getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector("button")?.textContent).toBe("WO");
   });
 
   it.each([
@@ -114,59 +98,77 @@ describe("favorite model shortcuts", () => {
     { lockedProvider: ProviderDriverKind.make("claudeAgent") },
     { lockedProvider: driver, lockedContinuationGroupKey: "other-account" },
     { getModelDisabledReason: () => "Start a new thread." },
-    { instanceEntries: entries.map((entry) => ({ ...entry, enabled: false })) },
+    { instanceEntries: entries.map((entry) => ({ ...entry, status: "error" as const })) },
   ])("prevents selection when restricted: %j", (overrides) => {
     render(overrides);
-    const buttons = Array.from(container.querySelectorAll("button"));
-    expect(buttons.every((button) => button.disabled)).toBe(true);
-    act(() => buttons.forEach((button) => button.click()));
+    const button = container.querySelector<HTMLButtonElement>("button")!;
+    expect(button.disabled).toBe(true);
+    act(() => button.click());
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("renders no group without favorites or when stored favorites no longer resolve", () => {
-    client.favorites = [];
-    render();
-    expect(container.childElementCount).toBe(0);
-    client.favorites = [{ provider: "removed-instance", model: "first" }];
-    render();
-    expect(container.childElementCount).toBe(0);
-    client.favorites = [{ provider: instanceId, model: "removed-model" }];
-    render();
+  it("omits settings-disabled accounts and retains unavailable accounts with an explanation", () => {
+    const disabled = { ...entries[0]!, enabled: false };
+    const unavailable = {
+      ...entries[0]!,
+      instanceId: ProviderInstanceId.make("codex_offline"),
+      isAvailable: false,
+    };
+    render({ instanceEntries: [disabled, unavailable] });
+    const buttons = container.querySelectorAll<HTMLButtonElement>("button");
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]?.disabled).toBe(true);
+    expect(buttons[0]?.title).toContain("Work");
+    expect(buttons[0]?.title).toContain("No models are available");
+  });
+
+  it("keeps nine accounts and hides the entire group above the cap", () => {
+    const many = Array.from({ length: 10 }, (_, index) => ({
+      ...entries[0]!,
+      instanceId: ProviderInstanceId.make(`codex_${index}`),
+      displayName: `Account ${index}`,
+    }));
+    render({ instanceEntries: many.slice(0, 9) });
+    expect(container.querySelectorAll("button")).toHaveLength(9);
+    render({ instanceEntries: many });
     expect(container.childElementCount).toBe(0);
   });
 
-  it("keeps two rows visible, hides three rows without oscillation, and restores on resize", () => {
-    rows = 2;
-    render();
+  it("keeps hidden measurements inert and refuses clicks until restored", () => {
+    render({ visible: false });
     const group = container.querySelector<HTMLElement>('[role="group"]')!;
-    expect(group.style.visibility).toBe("visible");
-    expect(group.parentElement?.style.height).toBe("64px");
-    rows = 3;
-    act(() => resize());
-    expect(group.style.visibility).toBe("hidden");
+    const button = container.querySelector<HTMLButtonElement>("button")!;
     expect(group.hasAttribute("inert")).toBe(true);
-    expect(group.parentElement?.style.height).toBe("0px");
-    act(() => resize());
-    expect(group.style.visibility).toBe("hidden");
-    expect(group.children).toHaveLength(3);
-    rows = 1;
-    act(() => resize());
-    expect(group.style.visibility).toBe("visible");
-    expect(group.hasAttribute("inert")).toBe(false);
-    expect(group.parentElement?.style.height).toBe("32px");
+    expect(button.tabIndex).toBe(-1);
+    act(() => button.click());
+    expect(onSelect).not.toHaveBeenCalled();
+    render({ visible: true });
+    act(() => button.click());
+    expect(onSelect).toHaveBeenCalledWith(instanceId, "first");
   });
 
-  it("observes favorites added after mount and disconnects observation when removed", () => {
-    client.favorites = [];
-    render();
-    client.favorites = [{ provider: instanceId, model: "first" }];
-    render();
-    expect(container.querySelector<HTMLElement>('[role="group"]')?.style.visibility).toBe(
-      "visible",
+  it("hides measurements and selection in multiple-model mode", () => {
+    render({ selectedModels: [{ instanceId, model: "first" }] });
+    expect(container.querySelector<HTMLElement>('[role="group"]')?.hasAttribute("inert")).toBe(
+      true,
     );
-    client.favorites = [];
-    render();
-    expect(disconnect).toHaveBeenCalledOnce();
-    expect(container.childElementCount).toBe(0);
+    act(() => container.querySelector<HTMLButtonElement>("button")?.click());
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("uses the existing exact-instance draft memory and updates account selection on rerender", () => {
+    const otherId = ProviderInstanceId.make("codex_personal");
+    const other = { ...entries[0]!, instanceId: otherId, displayName: "Personal" };
+    render({
+      instanceEntries: [...entries, other],
+      rememberedSelections: { [otherId]: { instanceId: otherId, model: "second" } },
+    });
+    const button = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Personal: Second model"]',
+    )!;
+    act(() => button.click());
+    expect(onSelect).toHaveBeenCalledWith(otherId, "second");
+    render({ instanceEntries: [...entries, other], activeInstanceId: otherId, model: "second" });
+    expect(button.getAttribute("aria-pressed")).toBe("true");
   });
 });
