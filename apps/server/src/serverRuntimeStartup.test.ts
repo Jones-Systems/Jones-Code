@@ -5,12 +5,14 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
@@ -19,6 +21,7 @@ import * as Stream from "effect/Stream";
 import * as ServerConfig from "./config.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
@@ -538,4 +541,128 @@ it.effect("completeAutoBootstrapWelcome settles an empty bootstrap result", () =
 
     assert.deepStrictEqual(completion, { bootstrapStatus: "complete" });
   }),
+);
+
+it.effect.each([false, true])(
+  "desktop preparation marks only effectively opted-in projects when environment continuation is %s",
+  (environmentOptIn) =>
+    Effect.gen(function* () {
+      const ids = ["inherited", "enabled", "disabled"];
+      const bindings = new Map(
+        ids.map((id) => [
+          ThreadId.make(id),
+          {
+            threadId: ThreadId.make(id),
+            provider: "codex" as const,
+            resumeCursor: { threadId: id },
+            runtimePayload: { retained: id },
+          } as ProviderSessionDirectory.ProviderRuntimeBinding,
+        ]),
+      );
+      const writes: ProviderSessionDirectory.ProviderRuntimeBinding[] = [];
+      const marked = yield* ServerRuntimeStartup.markOptedInProviderSessionsForContinuation.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            ServerSettings.layerTest({
+              continueThreadsAfterServerUpdate: environmentOptIn,
+              projectSettingsOverrides: {
+                [ProjectId.make("enabled")]: { continueThreadsAfterServerUpdate: true },
+                [ProjectId.make("disabled")]: { continueThreadsAfterServerUpdate: false },
+              },
+            }),
+            Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+              getCommandReadModel: () =>
+                Effect.succeed({
+                  threads: ids.map((id) => ({
+                    id: ThreadId.make(id),
+                    projectId: ProjectId.make(id),
+                    archivedAt: null,
+                    deletedAt: null,
+                    session: { status: "running", activeTurnId: TurnId.make(`turn-${id}`) },
+                  })),
+                } as never),
+            }),
+            Layer.mock(ProviderSessionDirectory.ProviderSessionDirectory)({
+              getBinding: (id) => Effect.succeed(Option.fromUndefinedOr(bindings.get(id))),
+              upsert: (binding) =>
+                Effect.sync(() => {
+                  writes.push(binding);
+                }),
+            }),
+          ),
+        ),
+      );
+      const expected = environmentOptIn ? ["inherited", "enabled"] : ["enabled"];
+      assert.deepStrictEqual(
+        marked,
+        expected.map((id) => ThreadId.make(id)),
+      );
+      assert.deepStrictEqual(
+        writes.map((binding) => binding.threadId),
+        marked,
+      );
+      for (const binding of writes) {
+        assert.deepStrictEqual(binding.runtimePayload, {
+          retained: binding.threadId,
+          continueAfterServerUpdate: `turn-${binding.threadId}`,
+          continueAfterServerUpdatePrepared: null,
+        });
+      }
+    }),
+);
+
+it.effect("desktop preparation with default-off continuation writes no resume markers", () =>
+  Effect.gen(function* () {
+    const result = yield* ServerRuntimeStartup.markOptedInProviderSessionsForContinuation.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ServerSettings.layerTest(),
+          Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+            getCommandReadModel: () =>
+              Effect.succeed({
+                threads: [
+                  {
+                    id: ThreadId.make("running"),
+                    projectId: ProjectId.make("project"),
+                    archivedAt: null,
+                    deletedAt: null,
+                    session: { status: "running", activeTurnId: TurnId.make("turn") },
+                  },
+                ],
+              } as never),
+          }),
+          Layer.mock(ProviderSessionDirectory.ProviderSessionDirectory)({
+            getBinding: () => Effect.die("opted-out thread must not be marked"),
+            upsert: () => Effect.die("opted-out thread must not be written"),
+          }),
+        ),
+      ),
+    );
+    assert.deepStrictEqual(result, []);
+  }),
+);
+
+it.effect(
+  "desktop preparation refuses unreadable continuation preferences before touching sessions",
+  () =>
+    Effect.gen(function* () {
+      const result = yield* ServerRuntimeStartup.markOptedInProviderSessionsForContinuation.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(ServerSettings.ServerSettingsService)({
+              getSettings: Effect.fail(new Error("settings unavailable") as never),
+            }),
+            Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+              getCommandReadModel: () => Effect.die("must read preferences first"),
+            }),
+            Layer.mock(ProviderSessionDirectory.ProviderSessionDirectory)({
+              getBinding: () => Effect.die("must not mark after settings failure"),
+              upsert: () => Effect.die("must not write after settings failure"),
+            }),
+          ),
+        ),
+        Effect.exit,
+      );
+      assert.equal(result._tag, "Failure");
+    }),
 );

@@ -295,6 +295,7 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
     Layer.mock(ServerRuntimeStartup)({
       enqueueCommand: (effect) => effect,
       markRunningProviderSessionsForContinuation: Effect.succeed([]),
+      markOptedInProviderSessionsForContinuation: Effect.succeed([]),
       clearProviderSessionContinuationMarkers: () => Effect.void,
     }),
     Layer.mock(ServerSettingsService)({ getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS) }),
