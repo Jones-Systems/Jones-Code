@@ -4,7 +4,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-export const MAX_DECISION_SNAPSHOT_BYTES = 65_536;
+const MAX_DECISION_SNAPSHOT_BYTES = 65_536;
 export const monotonicSeconds = () => Number(process.hrtime.bigint()) / 1e9;
 import {
   verifyRelease,
@@ -30,10 +30,12 @@ export class CollectorFailure extends Error {
 export async function runBoundCollector(
   binding: CollectorBinding | null,
   purpose: "admission" | "display",
-  nativeCounts: string,
+  nativeCounts: string | Promise<string>,
   deadlineMonotonic: number,
   signal: AbortSignal,
 ): Promise<string> {
+  const packet = Promise.resolve(nativeCounts);
+  void packet.catch(() => {});
   if (binding === null) throw new CollectorFailure("runtime_unavailable");
   const composerDeadline = deadlineMonotonic - 5;
   if (
@@ -169,7 +171,19 @@ export async function runBoundCollector(
         }
       }
     });
-    child.stdin.end(nativeCounts);
+    void packet.then(
+      (packet) => {
+        if (settled || failure !== null) return;
+        if (Buffer.byteLength(packet) > MAX_DECISION_SNAPSHOT_BYTES) {
+          stop("collector_failed");
+          return;
+        }
+        child.stdin.end(packet);
+      },
+      () => {
+        if (!settled && failure === null) child.stdin.end();
+      },
+    );
   });
   let completionTimer: ReturnType<typeof setTimeout> | undefined;
   const after = await Promise.race([
@@ -194,7 +208,7 @@ export class DecisionSnapshotCollector extends Context.Service<
   {
     readonly collect: (
       purpose: "admission" | "display",
-      nativeCounts: string,
+      nativeCounts: Effect.Effect<string, CollectorFailure>,
       deadlineMonotonic: number,
     ) => Effect.Effect<string, CollectorFailure>;
   }
@@ -206,13 +220,21 @@ export function makeCollector(
   return {
     collect: (purpose, nativeCounts, deadlineMonotonic) =>
       Effect.callback<string, CollectorFailure>((resume, signal) => {
+        const inputCancellation = new AbortController();
+        const cancelInput = () => inputCancellation.abort();
+        signal.addEventListener("abort", cancelInput, { once: true });
+        const packet = Effect.runPromise(nativeCounts, { signal: inputCancellation.signal });
+        void packet.catch(() => {});
         const running = runBoundCollector(
           binding,
           purpose,
-          nativeCounts,
+          packet,
           deadlineMonotonic,
           signal,
-        );
+        ).finally(() => {
+          cancelInput();
+          signal.removeEventListener("abort", cancelInput);
+        });
         running.then(
           (output) => resume(Effect.succeed(output)),
           (cause) =>
@@ -224,12 +246,10 @@ export function makeCollector(
               ),
             ),
         );
-        return Effect.promise(() =>
-          running.then(
-            () => undefined,
-            () => undefined,
-          ),
-        );
+        return Effect.promise(() => {
+          cancelInput();
+          return Promise.allSettled([running, packet]).then(() => undefined);
+        });
       }),
   };
 }

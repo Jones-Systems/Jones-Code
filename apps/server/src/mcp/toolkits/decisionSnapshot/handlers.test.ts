@@ -46,13 +46,14 @@ const harness = Effect.fnUntraced(function* (invalidOutput = false) {
         ),
     }),
     Layer.succeed(DecisionSnapshotCollector, {
-      collect: (_purpose, input) => {
-        launches++;
-        envelope = input;
-        return invalidOutput
-          ? Effect.succeed("{}")
-          : Effect.fail(new CollectorFailure("runtime_unavailable"));
-      },
+      collect: (_purpose, input) =>
+        Effect.gen(function* () {
+          launches++;
+          envelope = yield* input;
+          return yield* invalidOutput
+            ? Effect.succeed("{}")
+            : Effect.fail(new CollectorFailure("runtime_unavailable"));
+        }),
     }),
   );
   const toolkit = yield* DecisionSnapshotToolkit.pipe(

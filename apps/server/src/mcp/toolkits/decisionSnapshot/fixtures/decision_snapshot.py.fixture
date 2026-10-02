@@ -470,34 +470,56 @@ def project(name, raw, received, purpose, release='source_tree'):
 
 
 async def compose(bindings, *, purpose='display', sources=None, native=None, overall=OVERALL_SECONDS, runner=collect,
-                  unbound_reason='source_not_bound', deadline=None):
+                  unbound_reason='source_not_bound', deadline=None, native_reader=None):
     """Budgets include cleanup; cancellation returns completed sources and typed gaps."""
     selected = tuple(dict.fromkeys(sources or SOURCE_SECONDS))
     if purpose not in ('display', 'admission') or not selected or set(selected) - SOURCE_SECONDS.keys():
         raise Invalid('invalid_arguments')
     if native is not None:
         native_envelope(native)
+    if native is not None and native_reader is not None:
+        raise Invalid('duplicate_native_input')
     if any(item.provenance not in ('local_collector', 'fixture') for item in bindings.values()):
         raise Invalid('invalid_collector_provenance')
     results = {}
     deadline = min(time.monotonic() + max(0, overall), deadline if deadline is not None else math.inf)
+    reader = asyncio.ensure_future(native_reader) if native_reader is not None else None
+    async def finish_reader():
+        if reader is not None:
+            if not reader.done():
+                reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
     async def worker(name):
         binding = bindings.get(name)
         received = now()
         if name in ('threads', 'workstreams'):
-            entry = (native or {}).get('sources', {}).get(name)
+            packet = native
+            if reader is not None:
+                try:
+                    packet = native_envelope(await asyncio.shield(reader))
+                except SourceFailure as error:
+                    results[name] = _failure(name, error.reason, error.status)
+                    return
+                except (Invalid, KeyError, TypeError, ValueError, OverflowError):
+                    results[name] = _failure(name, 'native_packet_invalid')
+                    return
+                except asyncio.CancelledError:
+                    results[name] = _failure(name, 'cancelled')
+                    raise
+                received = now()
+            entry = (packet or {}).get('sources', {}).get(name)
             if entry is None:
                 results[name] = _failure(name, 'native_source_unavailable')
             elif entry['observed_at'] is not None:
                 try:
                     results[name] = _entry(name, entry['observed_at'], received, entry['values'], NATIVE_SCHEMA,
-                                          entry['timestamp_basis'], purpose, kind=native['provenance'],
+                                          entry['timestamp_basis'], purpose, kind=packet['provenance'],
                                           scope=entry['scope'], status=entry['status'], reason=entry['reason'])
                 except Invalid:
                     results[name] = _failure(name, 'invalid_native_output')
             else:
                 results[name] = _failure(name, entry['reason'] or 'native_source_unavailable', entry['status'])
-                results[name]['provenance']['kind'] = native['provenance']
+                results[name]['provenance']['kind'] = packet['provenance']
                 results[name]['scope'] = entry['scope']
             return
         if binding is None:
@@ -528,13 +550,18 @@ async def compose(bindings, *, purpose='display', sources=None, native=None, ove
     try:
         async with asyncio.timeout(max(0, deadline - time.monotonic())):
             await asyncio.gather(*tasks)
+            await finish_reader()
             if 'host' in selected:
                 await worker('host')
     except (asyncio.CancelledError, TimeoutError) as error:
         cancelled = isinstance(error, asyncio.CancelledError)
         for task in tasks:
-            task.cancel()
+            # gather may return after a sibling cancels while another worker still cleans up.
+            if not task.done() and not task.cancelling():
+                task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        await finish_reader()
     for name in selected:
         results.setdefault(name, _failure(name, 'cancelled' if cancelled else 'snapshot_deadline',
                                          'unavailable' if cancelled else 'timeout'))
@@ -549,27 +576,40 @@ async def compose(bindings, *, purpose='display', sources=None, native=None, ove
 
 
 async def _stdin(deadline):
-    if stat.S_ISREG(os.fstat(sys.stdin.fileno()).st_mode):
-        return native_envelope(loads(sys.stdin.buffer.read(NATIVE_MAX_BYTES + 1), NATIVE_MAX_BYTES))
-    loop = asyncio.get_running_loop()
-    stream = asyncio.StreamReader(limit=NATIVE_MAX_BYTES + 1)
-    protocol = asyncio.StreamReaderProtocol(stream)
-    transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+    transport = None
     try:
+        if time.monotonic() >= deadline:
+            raise SourceFailure('native_packet_timeout', 'timeout')
         async with asyncio.timeout(max(0, deadline - time.monotonic())):
-            chunks, size = [], 0
-            while True:
-                block = await stream.read(8192)
-                if not block:
-                    break
-                size += len(block)
-                if size > NATIVE_MAX_BYTES:
-                    raise Invalid('input_limit')
-                chunks.append(block)
-            raw = b''.join(chunks)
+            if stat.S_ISREG(os.fstat(sys.stdin.fileno()).st_mode):
+                raw = sys.stdin.buffer.read(NATIVE_MAX_BYTES + 1)
+            else:
+                loop = asyncio.get_running_loop()
+                stream = asyncio.StreamReader(limit=NATIVE_MAX_BYTES + 1)
+                protocol = asyncio.StreamReaderProtocol(stream)
+                transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+                chunks, size = [], 0
+                while True:
+                    block = await stream.read(8192)
+                    if not block:
+                        break
+                    size += len(block)
+                    if size > NATIVE_MAX_BYTES:
+                        raise Invalid('input_limit')
+                    chunks.append(block)
+                raw = b''.join(chunks)
+        if not raw:
+            raise SourceFailure('native_packet_eof')
         return native_envelope(loads(raw, NATIVE_MAX_BYTES))
+    except TimeoutError as error:
+        raise SourceFailure('native_packet_timeout', 'timeout') from error
+    except Invalid as error:
+        raise SourceFailure('native_packet_invalid') from error
+    except (OSError, ValueError) as error:
+        raise SourceFailure('native_packet_unavailable') from error
     finally:
-        transport.close()
+        if transport is not None:
+            transport.close()
 
 
 async def _main(args):
@@ -578,17 +618,22 @@ async def _main(args):
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, task.cancel)
+    reader = None
     try:
         deadline = min(started + args.budget_seconds, args.deadline_monotonic if args.deadline_monotonic is not None else math.inf)
-        native = await _stdin(deadline - NONHOST_RESERVE_SECONDS) if args.native_counts_stdin else None
+        reader = asyncio.create_task(_stdin(deadline - NONHOST_RESERVE_SECONDS)) if args.native_counts_stdin else None
         unbound_reason = 'source_not_bound'
         try:
             bindings = release_bindings(ROOT, args.purpose)
         except (Invalid, OSError):
             bindings, unbound_reason = local_bindings(ROOT), 'invalid_release_binding'
-        return await compose(bindings, purpose=args.purpose, sources=args.source, native=native,
+        return await compose(bindings, purpose=args.purpose, sources=args.source, native_reader=reader,
                              deadline=deadline, unbound_reason=unbound_reason)
     finally:
+        if reader is not None:
+            if not reader.done():
+                reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.remove_signal_handler(sig)
 

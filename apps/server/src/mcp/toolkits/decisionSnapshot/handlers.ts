@@ -1,5 +1,6 @@
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import { requireMcpCapability } from "../../McpInvocationContext.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -121,19 +122,21 @@ export const DecisionSnapshotToolkitHandlersLive = DecisionSnapshotToolkit.toLay
               Effect.succeed(absentEntry("registry_counts_timeout", registryScope, "timeout")),
           }),
         );
-        const [threadEntry, workstreamEntry] = yield* Effect.all([threads, registry], {
-          concurrency: 2,
-        });
-        const native = {
-          schema: "codex.decision-snapshot-native/v1",
-          authority_effect: "none",
-          provenance: "native_observed",
-          sources: { threads: threadEntry, workstreams: workstreamEntry },
-        };
-        const output = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
-          native,
-        ).pipe(
-          Effect.flatMap((nativeJson) => collector.collect(purpose, nativeJson, deadlineMonotonic)),
+        const nativeCounts = yield* Effect.forkChild(
+          Effect.all([threads, registry], { concurrency: 2 }),
+        );
+        const nativePacket = Fiber.join(nativeCounts).pipe(
+          Effect.flatMap(([threadEntry, workstreamEntry]) =>
+            Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+              schema: "codex.decision-snapshot-native/v1",
+              authority_effect: "none",
+              provenance: "native_observed",
+              sources: { threads: threadEntry, workstreams: workstreamEntry },
+            }),
+          ),
+          Effect.mapError(() => new CollectorFailure("collector_failed")),
+        );
+        const output = yield* collector.collect(purpose, nativePacket, deadlineMonotonic).pipe(
           Effect.flatMap((text) =>
             Schema.decodeUnknownEffect(Schema.fromJsonString(DecisionSnapshot))(text, {
               onExcessProperty: "error",
@@ -153,6 +156,7 @@ export const DecisionSnapshotToolkitHandlersLive = DecisionSnapshotToolkit.toLay
           ),
         );
         if (output.value !== null) return output.value;
+        const [threadEntry, workstreamEntry] = yield* Fiber.join(nativeCounts);
         const collected_at = yield* isoNow;
         const wrap = ({ timestamp_basis, ...entry }: NativeCountEntry, name: string) => ({
           ...entry,
