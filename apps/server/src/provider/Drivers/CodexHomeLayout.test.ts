@@ -86,6 +86,36 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
   describe("materializeCodexShadowHome", () => {
     it.effect.skipIf(!symlinksSupported)(
+      "preserves existing account-local SQLite maintenance locks",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowHome = yield* makeTempDir("t3code-codex-shadow-");
+          const lockName = ".sqlite-maintenance.lock";
+          yield* writeTextFile(path.join(sharedHome, lockName), "shared-lock");
+          yield* writeTextFile(path.join(shadowHome, lockName), "account-lock");
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+          );
+
+          yield* materializeCodexShadowHome(layout);
+          yield* materializeCodexShadowHome(layout);
+
+          expect(yield* fileSystem.readFileString(path.join(shadowHome, lockName))).toBe(
+            "account-lock",
+          );
+          expect(yield* fileSystem.readFileString(path.join(sharedHome, lockName))).toBe(
+            "shared-lock",
+          );
+          expect(yield* fileSystem.readLink(path.join(shadowHome, "sessions"))).toBe(
+            path.join(sharedHome, "sessions"),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
       "materializes a shadow home with shared state links and private auth",
       () =>
         Effect.gen(function* () {
