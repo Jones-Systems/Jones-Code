@@ -1,3 +1,4 @@
+import { ZoomableImage } from "~/components/chat/ZoomableImage";
 import { Spinner } from "~/components/ui/spinner";
 import type {
   ChatFileAttachment,
@@ -158,14 +159,17 @@ function WorkspaceImagePreview(props: {
   }
 
   return assetUrl._tag === "Success" && imageUrl !== null ? (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden p-4">
       <MediaActions source={actionsSource}>
-        <img
-          className="max-h-full max-w-full object-contain"
-          src={imageUrl}
-          alt={props.alt}
-          onError={() => setFailedUrl(imageUrl)}
-        />
+        <div className="flex min-h-0 min-w-0 flex-1">
+          <ZoomableImage
+            key={`${props.alt}:${imageUrl}`}
+            layout="panel"
+            src={imageUrl}
+            name={props.alt}
+            onError={() => setFailedUrl(imageUrl)}
+          />
+        </div>
       </MediaActions>
     </div>
   ) : (

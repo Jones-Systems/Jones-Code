@@ -4,6 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeModule from "node:module";
 import type { JonesStagedArtifact } from "@t3tools/shared/jonesActions";
 import { validateJonesStagedArtifact } from "@t3tools/shared/jonesActions";
 import * as Schema from "effect/Schema";
@@ -67,18 +68,29 @@ export function runNativeCommand(command: string, args: readonly string[]): Prom
   });
 }
 
+const nodeRequire = NodeModule.createRequire(import.meta.url);
+
+/** Bundle integrity reads raw archives; Electron's patched filesystem presents them as directories. */
+export function bundleFileSystem(
+  versions: { readonly electron?: string | undefined } = process.versions,
+  load: (id: string) => unknown = nodeRequire,
+): typeof NodeFS {
+  return versions.electron === undefined ? NodeFS : (load("original-fs") as typeof NodeFS);
+}
+
 export async function hashMacFile(file: string): Promise<string> {
   const hash = NodeCrypto.createHash("sha256");
-  for await (const block of NodeFS.createReadStream(file)) hash.update(block);
+  for await (const block of bundleFileSystem().createReadStream(file)) hash.update(block);
   return hash.digest("hex");
 }
 
 /** Hash the complete app layout, file modes, contents, and internal symlink targets. */
 export async function hashMacApp(directory: string): Promise<string> {
-  const root = await NodeFSP.realpath(directory);
+  const fs = bundleFileSystem().promises;
+  const root = await fs.realpath(directory);
   const entries: string[] = [];
   const collect = async (current: string): Promise<void> => {
-    for (const entry of await NodeFSP.readdir(current, { withFileTypes: true })) {
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
       const file = NodePath.join(current, entry.name);
       entries.push(file);
       if (entries.length > 200000) throw new Error("The native app exceeds its file-count bound.");
@@ -96,14 +108,14 @@ export async function hashMacApp(directory: string): Promise<string> {
   let totalBytes = 0;
   for (const file of entries) {
     const relative = NodePath.relative(root, file).split(NodePath.sep).join("/");
-    const stat = await NodeFSP.lstat(file);
+    const stat = await fs.lstat(file);
     let record: readonly (string | number)[];
     if (stat.isSymbolicLink()) {
-      const target = await NodeFSP.realpath(file);
+      const target = await fs.realpath(file);
       const relation = NodePath.relative(root, target);
       if (relation.startsWith("..") || NodePath.isAbsolute(relation))
         throw new Error("App symlink escapes the staged app.");
-      record = ["link", relative, await NodeFSP.readlink(file)];
+      record = ["link", relative, await fs.readlink(file)];
     } else if (stat.isFile()) {
       totalBytes += stat.size;
       if (totalBytes > 8 * 1024 * 1024 * 1024)
