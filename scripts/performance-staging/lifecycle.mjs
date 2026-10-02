@@ -1,6 +1,8 @@
-import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
+import { HostProcessPlatform } from "../../packages/shared/src/hostProcess.ts";
 
 import { ownedChildCustody } from "./guard.mjs";
 
@@ -20,7 +22,7 @@ function validOptions(options) {
   }
   if (
     typeof options.executable !== "string" ||
-    !isAbsolute(options.executable) ||
+    !NodePath.isAbsolute(options.executable) ||
     options.executable.includes("\0")
   )
     return false;
@@ -57,9 +59,9 @@ function validOptions(options) {
 }
 
 function processStartIdentity(pid) {
-  if (process.platform !== "linux" || !Number.isInteger(pid)) return null;
+  if (HostProcessPlatform.defaultValue() !== "linux" || !Number.isInteger(pid)) return null;
   try {
-    const text = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const text = NodeFS.readFileSync(`/proc/${pid}/stat`, "utf8");
     const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
     return { platform: "linux", startTicks: fields[19] };
   } catch {
@@ -240,7 +242,7 @@ export async function runOwnedChild(options) {
     };
     const cancel = () => stop("cancelled");
     try {
-      child = spawn(options.executable, options.args, {
+      child = NodeChildProcess.spawn(options.executable, options.args, {
         cwd: custody.rootPath,
         env: { ...options.env },
         shell: false,
