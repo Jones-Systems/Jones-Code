@@ -11,6 +11,7 @@ import type { PreviewAutomationRuntimeIdentity } from "@t3tools/contracts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopAssets from "./DesktopAssets.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import { resolveDesktopUserDataOverride } from "./DesktopUserDataOverride.ts";
 
 const COMMIT_HASH_PATTERN = /^[0-9a-f]{7,40}$/i;
 const FULL_COMMIT_HASH_PATTERN = /^[0-9a-f]{40}$/i;
@@ -52,6 +53,11 @@ const normalizeCommitHash = (value: string): Option.Option<string> => {
 
 export const resolveUserDataPath = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const override = resolveDesktopUserDataOverride(
+    Option.getOrUndefined(environment.userDataDirectoryOverride),
+    environment.path,
+  );
+  if (override !== null) return override;
   const fileSystem = yield* FileSystem.FileSystem;
   const legacyPath = environment.path.join(
     environment.appDataDirectory,
