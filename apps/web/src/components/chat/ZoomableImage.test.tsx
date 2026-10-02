@@ -12,6 +12,7 @@ describe("image zoom interactions", () => {
   const handle = createRef<ZoomableImageHandle>();
   const region = () => container.querySelector<HTMLElement>('[role="region"]')!;
   const input = () => container.querySelector<HTMLInputElement>("input")!;
+  const percent = () => container.querySelector('[aria-live="polite"]')!.textContent;
   const image = () => container.querySelector<HTMLImageElement>("img")!;
   const dispatch = async (target: Element, event: Event) =>
     act(() => {
@@ -85,37 +86,38 @@ describe("image zoom interactions", () => {
   });
 
   it("counts rapid clicks, changes cursor, cycles with Enter and space, and resets on a new image", async () => {
-    await render();
+    await render("panel");
     for (const [index, percent] of [110, 120, 130, 140, 150, 100].entries()) {
       await click(image(), index + 1);
-      expect(input().value).toBe(String(percent));
+      expect(container.querySelector('[aria-live="polite"]')!.textContent).toBe(`${percent}% zoom`);
       expect(region().style.cursor).toBe(percent >= 150 ? "zoom-out" : "zoom-in");
     }
     await key(region(), "Enter");
     await key(region(), " ");
     expect(input().value).toBe("120");
     await render("dialog", "next.png");
-    expect(input().value).toBe("100");
+    expect(percent()).toBe("100% zoom");
+    expect(input()).toBeNull();
   });
 
   it("commits valid percentages, restores invalid entries, steps by ten points and resets", async () => {
-    await render();
+    await render("panel");
     await edit("245");
     expect(input().value).toBe("245");
-    await edit("10", "blur");
-    expect(input().value).toBe("10");
-    for (const value of ["", "bad", "9", "801"]) {
+    await edit("60", "blur");
+    expect(input().value).toBe("60");
+    for (const value of ["", "bad", "59", "801"]) {
       await edit(value);
-      expect(input().value).toBe("10");
+      expect(input().value).toBe("60");
     }
     await click(container.querySelector('[aria-label="Zoom out"]')!);
-    expect(input().value).toBe("10");
+    expect(input().value).toBe("60");
     await click(container.querySelector('[aria-label="Zoom in"]')!);
-    expect(input().value).toBe("20");
+    expect(input().value).toBe("70");
     await key(region(), "+");
-    expect(input().value).toBe("30");
+    expect(input().value).toBe("80");
     await key(region(), "-");
-    expect(input().value).toBe("20");
+    expect(input().value).toBe("70");
     await key(region(), "0");
     expect(input().value).toBe("100");
     await edit("800");
@@ -126,6 +128,44 @@ describe("image zoom interactions", () => {
     gallery.mockClear();
     await key(input(), "ArrowRight");
     expect(gallery).not.toHaveBeenCalled();
+  });
+
+  it("hides dialog controls while wheel zoom stops at sixty percent and can zoom back in", async () => {
+    await render("dialog");
+    const fittedWidth = Number.parseFloat(image().style.width);
+    expect(container.querySelector('[role="toolbar"]')).toBeNull();
+    await dispatch(
+      region(),
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaY: 10000,
+        clientX: 100,
+        clientY: 50,
+      }),
+    );
+    expect(percent()).toBe("60% zoom");
+    expect(Number.parseFloat(image().style.width)).toBeCloseTo(fittedWidth * 0.6);
+    await dispatch(
+      region(),
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaY: 10000,
+      }),
+    );
+    expect(percent()).toBe("60% zoom");
+    await dispatch(
+      region(),
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaY: -100,
+      }),
+    );
+    expect(Number.parseFloat(image().style.width)).toBeGreaterThan(fittedWidth * 0.6);
+    await key(region(), "0");
+    expect(percent()).toBe("100% zoom");
   });
 
   it("fits the constrained panel, refits on resize, and keeps pointer-anchored wheel zoom and keyboard pan", async () => {
@@ -157,7 +197,7 @@ describe("image zoom interactions", () => {
   });
 
   it("suppresses the release click after a drag and shows grabbing only after movement", async () => {
-    await render();
+    await render("panel");
     await edit("150");
     region().setPointerCapture = vi.fn();
     region().hasPointerCapture = () => true;
