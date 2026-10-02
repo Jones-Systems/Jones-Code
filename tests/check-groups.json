@@ -125,6 +125,19 @@
         "scripts/runtime-adoption-qualification/artifact-binding.test.mjs"
       ],
       "scope": ["scripts/runtime-adoption-qualification/**"]
+    },
+    {
+      "group_id": "t3-native-creation-contracts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/contracts/src/nativeCreation.test.ts packages/contracts/src/environment.test.ts",
+      "modules": [
+        "packages/contracts/src/nativeCreation.test.ts",
+        "packages/contracts/src/environment.test.ts"
+      ],
+      "scope": [
+        "packages/contracts/src/orchestration.ts",
+        "packages/contracts/src/environment.ts",
+        "packages/contracts/src/nativeCreation.test.ts"
+      ]
     }
   ]
 }
