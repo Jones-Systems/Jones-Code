@@ -70,7 +70,9 @@ import JonesMigration0002 from "./Migrations/002_JonesProjectionThreadRuntimeIde
 import JonesMigration0001 from "./Migrations/001_JonesWorktreeOwnershipLeases.ts";
 import JonesMigration0003 from "./Migrations/003_JonesNativeCreationIntents.ts";
 import JonesMigration0004 from "./Migrations/004_JonesNativeCreationCommandIdentities.ts";
-import JonesMigration0005 from "./Migrations/005_JonesThreadCreationLookupIndex.ts";
+import JonesMigration0005 from "./Migrations/005_JonesWorkstreamsNativeAttempts.ts";
+import JonesMigration0006 from "./Migrations/006_JonesWorkstreamsProviderEnrollments.ts";
+import JonesMigration0007 from "./Migrations/007_JonesThreadCreationLookupIndex.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -157,7 +159,9 @@ const makeForkMigrationLoader = () =>
     "2_ProjectionThreadRuntimeIdentity": JonesMigration0002,
     "3_NativeCreationIntents": JonesMigration0003,
     "4_NativeCreationCommandIdentities": JonesMigration0004,
-    "5_ThreadCreationLookupIndex": JonesMigration0005,
+    "5_WorkstreamsNativeAttempts": JonesMigration0005,
+    "6_WorkstreamsProviderEnrollments": JonesMigration0006,
+    "7_ThreadCreationLookupIndex": JonesMigration0007,
   });
 
 /**

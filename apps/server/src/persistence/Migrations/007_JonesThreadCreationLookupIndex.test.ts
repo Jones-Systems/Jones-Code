@@ -5,15 +5,33 @@ import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Migrator from "effect/unstable/sql/Migrator";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Statement from "effect/unstable/sql/Statement";
 
 import { makeWorktreeOwnershipLeaseStore } from "../../orchestration/WorktreeOwnershipLease.ts";
 import { migrationManifest, runMigrations } from "../Migrations.ts";
-import migrate from "./005_JonesThreadCreationLookupIndex.ts";
+import mainMigration0001 from "./001_JonesWorktreeOwnershipLeases.ts";
+import mainMigration0002 from "./002_JonesProjectionThreadRuntimeIdentity.ts";
+import mainMigration0003 from "./003_JonesNativeCreationIntents.ts";
+import mainMigration0004 from "./004_JonesNativeCreationCommandIdentities.ts";
+import mainMigration0005 from "./005_JonesWorkstreamsNativeAttempts.ts";
+import mainMigration0006 from "./006_JonesWorkstreamsProviderEnrollments.ts";
+import migrate from "./007_JonesThreadCreationLookupIndex.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const indexName = "idx_orch_events_thread_creation_lookup";
+// The native migrator creates the baseline schema and ledger from migration effects 1–6.
+const mainForkMigrationLoader = Migrator.fromRecord({
+  "1_WorktreeOwnershipLeases": mainMigration0001,
+  "2_ProjectionThreadRuntimeIdentity": mainMigration0002,
+  "3_NativeCreationIntents": mainMigration0003,
+  "4_NativeCreationCommandIdentities": mainMigration0004,
+  "5_WorkstreamsNativeAttempts": mainMigration0005,
+  "6_WorkstreamsProviderEnrollments": mainMigration0006,
+});
+const runMainForkMigrations = Migrator.make({});
+
 const LookupSampleStatistics = Schema.Struct({
   sampleCount: Schema.Number,
   minMs: Schema.Number,
@@ -56,7 +74,7 @@ const withQueryPlan = Effect.fnUntraced(function* <A, E, R>(query: Effect.Effect
 });
 
 it.effect(
-  "adds the covering partial creation index without changing event or migration history",
+  "adds migration 7 covering partial creation index without changing event or migration history",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -104,10 +122,105 @@ it.effect(
         yield* sql`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`,
         migrationManifest.map(([migration_id, name]) => ({ migration_id, name })),
       );
-      assert.deepEqual(yield* sql`SELECT name FROM jones_sql_migrations WHERE migration_id = 5`, [
+      assert.deepEqual(yield* sql`SELECT name FROM jones_sql_migrations WHERE migration_id = 7`, [
         { name: "ThreadCreationLookupIndex" },
       ]);
       assert.deepEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(memory)),
+);
+
+it.effect(
+  "appends migration 7 to a populated fork-6 database without changing existing state",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepEqual(yield* runMigrations({ toMigrationInclusive: 54 }), migrationManifest);
+      assert.deepEqual(
+        yield* runMainForkMigrations({
+          loader: mainForkMigrationLoader,
+          table: "jones_sql_migrations",
+        }),
+        [
+          [1, "WorktreeOwnershipLeases"],
+          [2, "ProjectionThreadRuntimeIdentity"],
+          [3, "NativeCreationIntents"],
+          [4, "NativeCreationCommandIdentities"],
+          [5, "WorkstreamsNativeAttempts"],
+          [6, "WorkstreamsProviderEnrollments"],
+        ],
+      );
+      assert.deepEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ${indexName}`,
+        [],
+      );
+      yield* sql`INSERT INTO orchestration_events
+      (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json)
+      VALUES ('upgrade-created', 'thread', 'upgrade-thread', 1, 'thread.created', '2026-01-01T00:00:00.000Z', 'user', '{}', '{}')`;
+      const store = yield* makeWorktreeOwnershipLeaseStore();
+      const lease = yield* store.acquire({
+        resourcePath: "/fixture/index-upgrade",
+        leaseId: "upgrade-lease",
+        ownerThreadId: ThreadId.make("upgrade-thread"),
+        branch: "upgrade-branch",
+        nowMs: 10,
+        expiresAtMs: 1_000,
+      });
+      assert.isTrue(Option.isSome(lease));
+      yield* sql`INSERT INTO auth_sessions
+      (session_id, subject, role, method, issued_at, expires_at)
+      VALUES ('upgrade-session', 'upgrade-owner', 'admin', 'pairing', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`;
+      const digest = "a".repeat(64);
+      yield* sql`INSERT INTO workstreams_native_attempts
+      (owner_id, principal_id, command_id, request_json, request_bytes_sha256, enrollment_sha256, enrollment_json, native_command_id, created_at)
+      VALUES ('upgrade-owner', 'upgrade-principal', 'upgrade-command', '{}', ${digest}, ${digest}, '{}', 'upgrade-native-command', '2026-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO workstreams_native_enrollments
+      (enrollment_id, session_id, request_sha256, request_json, binding_json)
+      VALUES ('upgrade-enrollment', 'upgrade-session', ${digest}, '{}', '{}')`;
+
+      const upstreamBefore = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+      const forkBefore = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
+      const eventsBefore = yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`;
+      const leaseBefore = yield* sql`SELECT * FROM worktree_ownership_leases`;
+      const attemptsBefore = yield* sql`SELECT * FROM workstreams_native_attempts`;
+      const enrollmentsBefore = yield* sql`SELECT * FROM workstreams_native_enrollments`;
+      const schemaBefore = yield* sql`SELECT name, type, sql FROM sqlite_master
+      WHERE tbl_name IN ('worktree_ownership_leases', 'workstreams_native_attempts', 'workstreams_native_enrollments') ORDER BY name`;
+
+      assert.deepEqual(yield* runMigrations(), []);
+      const forkAfter = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
+      assert.equal(forkAfter.length, 7);
+      assert.deepEqual(forkAfter.slice(0, 6), forkBefore);
+      assert.deepEqual(
+        forkAfter.slice(6).map(({ migration_id, name }) => ({ migration_id, name })),
+        [{ migration_id: 7, name: "ThreadCreationLookupIndex" }],
+      );
+      assert.deepEqual(
+        yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        upstreamBefore,
+      );
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`,
+        eventsBefore,
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM worktree_ownership_leases`, leaseBefore);
+      assert.deepEqual(yield* sql`SELECT * FROM workstreams_native_attempts`, attemptsBefore);
+      assert.deepEqual(yield* sql`SELECT * FROM workstreams_native_enrollments`, enrollmentsBefore);
+      assert.deepEqual(
+        yield* sql`SELECT name, type, sql FROM sqlite_master
+        WHERE tbl_name IN ('worktree_ownership_leases', 'workstreams_native_attempts', 'workstreams_native_enrollments') ORDER BY name`,
+        schemaBefore,
+      );
+      assert.deepEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ${indexName}`,
+        [{ name: indexName }],
+      );
+      assert.deepEqual(yield* sql`PRAGMA integrity_check`, [{ integrity_check: "ok" }]);
+      assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
+      assert.deepEqual(yield* runMigrations(), []);
+      assert.deepEqual(
+        yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`,
+        forkAfter,
+      );
     }).pipe(Effect.provide(memory)),
 );
 

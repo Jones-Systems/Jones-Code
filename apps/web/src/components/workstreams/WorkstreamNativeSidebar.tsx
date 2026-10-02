@@ -2,11 +2,21 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/model
 import { workstreamBindingKey } from "@t3tools/client-runtime/state/workstreams";
 import { GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode, type DragEvent } from "react";
-import type { WorkstreamListView } from "../../state/workstreams";
+import {
+  workstreamFailureMessage,
+  type WorkstreamActionSnapshot,
+  type WorkstreamListView,
+} from "../../state/workstreams";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { WorkstreamSidebarSection, workstreamCommandId } from "./WorkstreamSidebarSection";
-import { canEditWorkstreams, moveNativeMembershipThreads } from "./nativeWorkstreamActions";
+import {
+  canEditWorkstreams,
+  moveNativeMembershipThreads,
+  ThreadMovementError,
+  type NativeMembershipIntent,
+} from "./nativeWorkstreamActions";
+import { qualifiedRegistrationSource, threadReferenceState } from "./workstreamReferenceActions";
 import {
   nativeWorkstreamThreadKey,
   secondaryNativeWorkstreamLabels,
@@ -27,6 +37,7 @@ export function WorkstreamNativeSidebar(props: {
   readonly moveThreads?: (
     threads: readonly EnvironmentThreadShell[],
     destination: string | null,
+    intent?: NativeMembershipIntent,
   ) => Promise<void>;
   readonly reorderSelection?: (
     threads: readonly EnvironmentThreadShell[],
@@ -57,7 +68,9 @@ export function WorkstreamNativeSidebar(props: {
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
-  const binding = controller.data ? workstreamBindingKey(controller.data.binding) : null;
+  const binding = controller.data
+    ? workstreamBindingKey({ ...controller.data.binding, registryVersion: 0 })
+    : null;
   const bindingRef = useRef(binding);
   useLayoutEffect(() => {
     bindingRef.current = binding;
@@ -76,9 +89,35 @@ export function WorkstreamNativeSidebar(props: {
       nativeWorkstreamThreadKey(item.source_instance_id, item.native_thread_id),
     ),
   );
+  const snapshot: WorkstreamActionSnapshot | null =
+    controller.data && controller.references
+      ? {
+          data: controller.data,
+          references: controller.references,
+          placements: controller.placements,
+          registrationContext: controller.registrationContext,
+        }
+      : null;
+  const referenceState = (thread: EnvironmentThreadShell) =>
+    snapshot ? threadReferenceState(snapshot, thread, Date.now()) : null;
+  const canPrepare = (thread: EnvironmentThreadShell) => {
+    if (
+      !canWrite ||
+      !snapshot ||
+      !inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id))
+    )
+      return false;
+    try {
+      qualifiedRegistrationSource(snapshot, "t3", thread);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const canMove = (thread: EnvironmentThreadShell) =>
     canWrite &&
     controller.placements !== null &&
+    referenceState(thread) === "verified" &&
     inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id));
   const run = (operation: () => Promise<void>) => {
     if (busyRef.current) return;
@@ -90,7 +129,9 @@ export function WorkstreamNativeSidebar(props: {
       .catch((cause: unknown) => {
         props.onMovementError?.(cause);
         if (bindingRef.current === startedBinding)
-          setError(cause instanceof Error ? cause.message : "Workstream action failed.");
+          setError(
+            cause instanceof ThreadMovementError ? cause.message : workstreamFailureMessage(cause),
+          );
       })
       .finally(() => {
         if (bindingRef.current === startedBinding) {
@@ -102,8 +143,9 @@ export function WorkstreamNativeSidebar(props: {
   const moveThreads = async (
     threads: readonly EnvironmentThreadShell[],
     destination: string | null,
+    intent?: NativeMembershipIntent,
   ) => {
-    if (props.moveThreads) return props.moveThreads(threads, destination);
+    if (props.moveThreads) return props.moveThreads(threads, destination, intent);
     request.current?.abort();
     const abort = new AbortController();
     request.current = abort;
@@ -114,10 +156,14 @@ export function WorkstreamNativeSidebar(props: {
       commandId: workstreamCommandId,
       now: Date.now(),
       signal: abort.signal,
+      ...(intent ? { intent } : {}),
     });
   };
-  const move = (thread: EnvironmentThreadShell, destination: string | null) =>
-    moveThreads([thread], destination);
+  const move = (
+    thread: EnvironmentThreadShell,
+    destination: string | null,
+    intent?: NativeMembershipIntent,
+  ) => moveThreads([thread], destination, intent);
   const currentWorkstream = (thread: EnvironmentThreadShell) =>
     grouping.groups.find((group) => group.threads.includes(thread))?.workstream.workstreamId ??
     null;
@@ -268,12 +314,43 @@ export function WorkstreamNativeSidebar(props: {
                     {(menuThread === key ? (controller.data?.items ?? []) : []).map((item) => (
                       <MenuItem
                         key={item.workstreamId}
-                        disabled={!canMove(thread) || item.workstreamId === workstreamId}
-                        onClick={() => run(() => move(thread, item.workstreamId))}
+                        disabled={
+                          !(referenceState(thread) === "verified"
+                            ? canMove(thread)
+                            : referenceState(thread) !== "ambiguous" &&
+                              referenceState(thread) !== null &&
+                              canPrepare(thread)) || item.workstreamId === workstreamId
+                        }
+                        onClick={() =>
+                          run(() =>
+                            move(
+                              thread,
+                              item.workstreamId,
+                              referenceState(thread) === "verified"
+                                ? undefined
+                                : { prepareReferences: true },
+                            ),
+                          )
+                        }
                       >
-                        {workstreamId === null ? "Assign to" : "Move to"} {item.name}
+                        {referenceState(thread) === "missing"
+                          ? "Register and assign to"
+                          : referenceState(thread) === "verify"
+                            ? "Verify reference and assign to"
+                            : referenceState(thread) === "reverify"
+                              ? "Re-verify reference and assign to"
+                              : workstreamId === null
+                                ? "Assign to"
+                                : "Move to"}{" "}
+                        {item.name}
                       </MenuItem>
                     ))}
+                    {referenceState(thread) === "ambiguous" ? (
+                      <MenuItem disabled>Conflicting references require resolution</MenuItem>
+                    ) : null}
+                    {referenceState(thread) !== "verified" && !canPrepare(thread) ? (
+                      <MenuItem disabled>Reference preparation unavailable</MenuItem>
+                    ) : null}
                     <MenuItem
                       disabled={!canMove(thread) || workstreamId === null}
                       onClick={() => run(() => move(thread, null))}
@@ -319,8 +396,8 @@ export function WorkstreamNativeSidebar(props: {
       {error ? (
         <p role="alert" className="px-2 py-1 text-xs text-destructive">
           {error}{" "}
-          <button type="button" onClick={controller.refresh}>
-            Refresh
+          <button type="button" disabled={busy} onClick={() => run(() => controller.retry())}>
+            Retry
           </button>
         </p>
       ) : null}
