@@ -44,6 +44,7 @@ export * from "./preview.ts";
 export * from "./previewAutomation.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
+export * from "./tokenAccounting.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
 
@@ -53,3 +54,5 @@ export * from "./hostStatus.ts";
 
 export * from "./jonesUpdates.ts";
 export * from "./voiceReview.ts";
+export * from "./workstreamsNativeProvider.ts";
+export * from "./workstreamsRegistrationContext.ts";

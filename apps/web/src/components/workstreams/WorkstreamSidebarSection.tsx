@@ -21,7 +21,9 @@ import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { canEditWorkstreams, workstreamTint } from "./nativeWorkstreamActions";
 
 import { runtime } from "../../lib/runtime";
-import type { WorkstreamListView } from "../../state/workstreams";
+import { workstreamFailureMessage, type WorkstreamListView } from "../../state/workstreams";
+import { WorkstreamAddPrDialog } from "./WorkstreamAddPrDialog";
+import { refreshWorkstreamPr, workstreamPrObservationLabel } from "./workstreamReferenceActions";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -149,7 +151,7 @@ export function WorkstreamCreateForm({
         })()
           .catch((cause: unknown) => {
             if (sessionRef.current === startedSession && bindingRef.current === startedBinding)
-              setError(cause instanceof Error ? cause.message : "Workstream creation failed.");
+              setError(workstreamFailureMessage(cause));
           })
           .finally(() => {
             pendingRef.current = false;
@@ -207,6 +209,9 @@ export function WorkstreamSidebarSection(props: {
     null,
   );
   const [selected, setSelected] = useState<string | null>(null);
+  const [addPrOpen, setAddPrOpen] = useState(false);
+  const [prBusy, setPrBusy] = useState(false);
+  const prBusyRef = useRef(false);
   const [targetId, setTargetId] = useState("");
   const [declarationText, setDeclarationText] = useState("");
   const [receipt, setReceipt] = useState<WorkstreamReceipt | null>(null);
@@ -226,13 +231,20 @@ export function WorkstreamSidebarSection(props: {
   }, [items, collapsed, props.onVisibleGroupsChange]);
   const bindingKey = data ? workstreamBindingKey(data.binding) : null;
   const bindingKeyRef = useRef(bindingKey);
+  const actionBindingKey = data
+    ? workstreamBindingKey({ ...data.binding, registryVersion: 0 })
+    : null;
+  const actionBindingRef = useRef(actionBindingKey);
+  actionBindingRef.current = actionBindingKey;
 
   useLayoutEffect(() => {
     bindingKeyRef.current = bindingKey;
     detailRequest.current?.abort();
     detailRequest.current = null;
-    manualRefreshRequest.current?.abort();
-    manualRefreshRequest.current = null;
+    if (!prBusyRef.current) {
+      manualRefreshRequest.current?.abort();
+      manualRefreshRequest.current = null;
+    }
     setDetail(null);
     setPullRequestStatus({});
     setReceipt(null);
@@ -246,12 +258,23 @@ export function WorkstreamSidebarSection(props: {
     return () => {
       detailRequest.current?.abort();
       detailRequest.current = null;
-      manualRefreshRequest.current?.abort();
-      manualRefreshRequest.current = null;
+      if (!prBusyRef.current) {
+        manualRefreshRequest.current?.abort();
+        manualRefreshRequest.current = null;
+      }
     };
   }, [bindingKey]);
+  useLayoutEffect(() => {
+    manualRefreshRequest.current?.abort();
+    manualRefreshRequest.current = null;
+    prBusyRef.current = false;
+    setPrBusy(false);
+    setAddPrOpen(false);
+    return () => manualRefreshRequest.current?.abort();
+  }, [actionBindingKey]);
   if (!data) return null;
-  const canWrite = canEditWorkstreams(data) && !props.controller.loading && !props.threadActionBusy;
+  const canWrite =
+    canEditWorkstreams(data) && !props.controller.loading && !props.threadActionBusy && !prBusy;
 
   const showDetail = (workstreamId: string) => {
     detailRequest.current?.abort();
@@ -273,10 +296,9 @@ export function WorkstreamSidebarSection(props: {
               if (controller.signal.aborted || bindingKeyRef.current !== startedBindingKey) return;
               setPullRequestStatus((current) => ({
                 ...current,
-                [reference.native_reference_id]:
-                  result.latest_observation?.last_success?.state ??
-                  result.latest_observation?.outcome ??
-                  "not refreshed",
+                [reference.native_reference_id]: workstreamPrObservationLabel(
+                  result.latest_observation,
+                ),
               }));
             },
             () => undefined,
@@ -313,7 +335,7 @@ export function WorkstreamSidebarSection(props: {
     const startedBindingKey = bindingKey;
     void run(action, undefined, startedBindingKey).catch((cause: unknown) => {
       if (cause === bindingSuperseded || bindingKeyRef.current !== startedBindingKey) return;
-      setCommandError(cause instanceof Error ? cause.message : "Workstream command failed.");
+      setCommandError(workstreamFailureMessage(cause));
     });
   };
   const update = (
@@ -370,7 +392,7 @@ export function WorkstreamSidebarSection(props: {
       })
       .catch((cause: unknown) => {
         if (cause === bindingSuperseded || bindingKeyRef.current !== startedBindingKey) return;
-        setCommandError(cause instanceof Error ? cause.message : "Workstream reorder failed.");
+        setCommandError(workstreamFailureMessage(cause));
       });
   };
 
@@ -396,7 +418,35 @@ export function WorkstreamSidebarSection(props: {
           {placementInventory.totalIdentities.toLocaleString()} identities selected).
         </p>
       ) : null}
-      {commandError ? <p className="px-1 pb-1 text-xs text-destructive">{commandError}</p> : null}
+      {commandError ? (
+        <p role="alert" className="px-1 pb-1 text-xs text-destructive">
+          {commandError}{" "}
+          <button
+            type="button"
+            disabled={prBusy}
+            onClick={() => {
+              if (prBusyRef.current) return;
+              prBusyRef.current = true;
+              setPrBusy(true);
+              void props.controller
+                .retry()
+                .then(() => setCommandError(null))
+                .catch((cause: unknown) => setCommandError(workstreamFailureMessage(cause)))
+                .finally(() => {
+                  prBusyRef.current = false;
+                  setPrBusy(false);
+                });
+            }}
+          >
+            Retry
+          </button>
+        </p>
+      ) : null}
+      {prBusy ? (
+        <p role="status" className="px-1 text-xs text-muted-foreground">
+          Refreshing PR metadata…
+        </p>
+      ) : null}
       <ul className="space-y-0.5">
         {items.map((item, index) => (
           <li
@@ -625,6 +675,11 @@ export function WorkstreamSidebarSection(props: {
               )}
             </select>
           </div>
+          {canWrite ? (
+            <Button size="xs" variant="ghost" onClick={() => setAddPrOpen(true)}>
+              Add PR reference
+            </Button>
+          ) : null}
           {completionAuthority ? (
             <div
               aria-label="Workstream completion authority"
@@ -824,63 +879,56 @@ export function WorkstreamSidebarSection(props: {
                         <Button
                           size="xs"
                           variant="ghost"
+                          disabled={prBusy}
                           onClick={() => {
-                            manualRefreshRequest.current?.abort();
-                            const controller = new AbortController();
-                            manualRefreshRequest.current = controller;
-                            const startedBindingKey = bindingKey;
-                            void (async () => {
-                              const value = await loadReference(reference.native_reference_id, {
-                                signal: controller.signal,
-                              });
-                              if (
-                                controller.signal.aborted ||
-                                bindingKeyRef.current !== startedBindingKey
-                              )
-                                return;
-                              if (!value.latest_observation) return;
-                              await run(
-                                {
-                                  operation: "refresh_linked_pr",
-                                  workstream_id: workstream.workstream_id,
-                                  expected_version: workstream.version,
-                                  membership_id: membership.membership_id,
-                                  expected_observation_version:
-                                    value.latest_observation.observation_version,
-                                },
-                                undefined,
-                                startedBindingKey,
-                              );
-                              const refreshed = await loadReference(reference.native_reference_id, {
-                                signal: controller.signal,
-                              });
-                              if (
-                                controller.signal.aborted ||
-                                bindingKeyRef.current !== startedBindingKey
-                              )
-                                return;
-                              setPullRequestStatus((current) => ({
-                                ...current,
-                                [reference.native_reference_id]:
-                                  refreshed.latest_observation?.last_success?.state ??
-                                  refreshed.latest_observation?.outcome ??
-                                  "unknown",
-                              }));
-                            })()
-                              .catch((cause: unknown) => {
+                            if (prBusyRef.current) return;
+                            prBusyRef.current = true;
+                            setPrBusy(true);
+                            const abort = new AbortController();
+                            manualRefreshRequest.current = abort;
+                            const startedBinding = actionBindingKey;
+                            void refreshWorkstreamPr({
+                              controller: props.controller,
+                              workstreamId: workstream.workstream_id,
+                              membershipId: membership.membership_id,
+                              referenceId: reference.native_reference_id,
+                              commandId: workstreamCommandId,
+                              signal: abort.signal,
+                            })
+                              .then(async (observation) => {
                                 if (
-                                  cause === bindingSuperseded ||
-                                  controller.signal.aborted ||
-                                  bindingKeyRef.current !== startedBindingKey
+                                  abort.signal.aborted ||
+                                  actionBindingRef.current !== startedBinding
                                 )
                                   return;
-                                setCommandError(
-                                  cause instanceof Error ? cause.message : "PR refresh failed.",
-                                );
+                                setPullRequestStatus((current) => ({
+                                  ...current,
+                                  [reference.native_reference_id]:
+                                    workstreamPrObservationLabel(observation),
+                                }));
+                                const updated = await loadDetail(workstream.workstream_id, {
+                                  signal: abort.signal,
+                                });
+                                if (
+                                  !abort.signal.aborted &&
+                                  actionBindingRef.current === startedBinding
+                                )
+                                  setDetail(updated);
+                              })
+                              .catch((cause: unknown) => {
+                                if (
+                                  !abort.signal.aborted &&
+                                  actionBindingRef.current === startedBinding
+                                )
+                                  setCommandError(workstreamFailureMessage(cause));
                               })
                               .finally(() => {
-                                if (manualRefreshRequest.current === controller)
+                                if (manualRefreshRequest.current === abort)
                                   manualRefreshRequest.current = null;
+                                if (actionBindingRef.current === startedBinding) {
+                                  prBusyRef.current = false;
+                                  setPrBusy(false);
+                                }
                               });
                           }}
                         >
@@ -1003,6 +1051,16 @@ export function WorkstreamSidebarSection(props: {
             </div>
           ) : null}
         </div>
+      ) : null}
+      {selected ? (
+        <WorkstreamAddPrDialog
+          controller={props.controller}
+          workstreamId={selected}
+          open={addPrOpen}
+          onOpenChange={setAddPrOpen}
+          commandId={workstreamCommandId}
+          onLinked={() => showDetail(selected)}
+        />
       ) : null}
     </section>
   );
