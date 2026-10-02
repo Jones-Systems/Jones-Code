@@ -48,6 +48,7 @@ import {
   workstreamHttpApiLayer,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
+import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./voiceReview/http.ts";
 import { hostStatusHttpApiLayer } from "./hostStatus/http.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
@@ -627,6 +628,7 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(workstreamHttpApiLayer),
       Layer.provide(hostStatusHttpApiLayer),
+      Layer.provide(voiceReviewHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),
     ),
@@ -649,6 +651,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),
   Layer.provide(workstreamResponseHeadersLayer),
+  Layer.provide(voiceReviewResponseHeadersLayer),
   Layer.provide(browserApiCorsLayer),
   Layer.provide(httpCompressionLayer),
 );
