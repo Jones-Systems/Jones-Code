@@ -1,8 +1,11 @@
 import { EnvironmentId, UsageDay, USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
 import { act } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+import { saveUsagePagePreferences } from "./usagePagePreferences";
 
 const testState = vi.hoisted(() => ({
   useUsage: vi.fn(),
@@ -25,7 +28,32 @@ vi.mock("../ui/select", () => ({
   SelectValue: "div",
 }));
 vi.mock("../ui/sidebar", () => ({ SidebarInset: "div" }));
-vi.mock("../ui/toggle-group", () => ({ Toggle: "button", ToggleGroup: "div" }));
+vi.mock("../ui/toggle-group", async () => {
+  const React = await import("react");
+  return {
+    Toggle: "button",
+    ToggleGroup: ({
+      children,
+      onValueChange,
+      ...props
+    }: {
+      readonly children?: ReactNode;
+      readonly onValueChange?: (value: readonly string[]) => void;
+      readonly [key: string]: unknown;
+    }) =>
+      React.createElement(
+        "div",
+        props,
+        React.Children.map(children, (child) => {
+          if (!React.isValidElement<{ value: string }>(child)) return child;
+          const toggle = child as ReactElement<{ value: string; onClick?: () => void }>;
+          return React.cloneElement(toggle, {
+            onClick: () => onValueChange?.([toggle.props.value]),
+          });
+        }),
+      ),
+  };
+});
 vi.mock("../WorkspaceBreadcrumb", () => ({
   WorkspaceBreadcrumb: "div",
   WorkspaceBreadcrumbItem: "div",
@@ -84,6 +112,7 @@ describe("UsagePage Escape navigation", () => {
   let back: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
+    saveUsagePagePreferences({ metric: "tokens", windowDays: 30 });
     back = vi.spyOn(window.history, "back").mockImplementation(() => {});
     testState.navigate.mockClear();
     testState.canGoBack = true;
@@ -101,6 +130,8 @@ describe("UsagePage Escape navigation", () => {
     container.remove();
     back.mockRestore();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
   });
 
   function escape(properties: { repeat?: boolean; isComposing?: boolean } = {}) {
@@ -146,6 +177,129 @@ describe("UsagePage Escape navigation", () => {
     document.body.dispatchEvent(escape(properties));
     expect(back).not.toHaveBeenCalled();
     expect(testState.navigate).not.toHaveBeenCalled();
+  });
+
+  it("selects an exact three-hour range from the overflow panel", async () => {
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Additional usage ranges"]',
+    );
+    expect(trigger).not.toBeNull();
+
+    await act(() => trigger?.click());
+    const threeHours = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "3h",
+    );
+    expect(threeHours).toBeDefined();
+    await act(() => threeHours?.click());
+
+    const input = testState.useUsage.mock.calls.at(-1)?.[0];
+    expect(input).toMatchObject({ resolution: "hour", timeZone: expect.any(String) });
+    expect(Date.parse(input.untilTime) - Date.parse(input.sinceTime)).toBe(3 * 60 * 60 * 1000);
+  });
+
+  it("applies and clears an exact multi-day custom range", async () => {
+    vi.stubEnv("TZ", "UTC");
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Additional usage ranges"]',
+    );
+    expect(trigger).not.toBeNull();
+    await act(() => trigger?.click());
+
+    const setInputValue = (label: string, value: string) => {
+      const input = document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`);
+      expect(input).not.toBeNull();
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      if (!input || !valueSetter) throw new Error("The custom range input is unavailable.");
+      valueSetter.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    await act(() => setInputValue("Custom range start", "2026-09-15T10:30"));
+    await act(() => setInputValue("Custom range end", "2026-09-18T12:37"));
+    const apply = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Apply range",
+    );
+    expect(apply?.disabled).toBe(false);
+    await act(() => apply?.click());
+
+    const customInput = testState.useUsage.mock.calls.at(-1)?.[0];
+    expect(customInput).toMatchObject({
+      sinceDay: "2026-09-15",
+      untilDay: "2026-09-18",
+      timeZone: "UTC",
+      resolution: "exactDay",
+      sinceTime: "2026-09-15T10:30:00.000Z",
+      untilTime: "2026-09-18T12:37:00.000Z",
+    });
+
+    await act(() => trigger?.click());
+    const clear = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Clear custom selection",
+    );
+    expect(clear?.disabled).toBe(false);
+    await act(() => clear?.click());
+    expect(testState.useUsage.mock.calls.at(-1)?.[0]).not.toHaveProperty("sinceTime");
+  });
+
+  it("preserves repeated-hour bounds when applying an unchanged rolling prefill", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T06:30:00.000Z"));
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Additional usage ranges"]',
+    )!;
+    await act(() => trigger.click());
+    const oneHour = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "1h",
+    )!;
+    await act(() => oneHour.click());
+    const rollingInput = testState.useUsage.mock.calls.at(-1)?.[0];
+    expect(rollingInput).toMatchObject({
+      sinceTime: "2026-11-01T05:30:00.000Z",
+      untilTime: "2026-11-01T06:30:00.000Z",
+    });
+
+    await act(() => trigger.click());
+    for (const label of ["Custom range start", "Custom range end"]) {
+      expect(document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)?.value).toBe(
+        "2026-11-01T01:30",
+      );
+    }
+    const apply = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Apply range",
+    )!;
+    expect(apply.disabled).toBe(false);
+    await act(() => apply.click());
+    expect(testState.useUsage.mock.calls.at(-1)?.[0]).toEqual(rollingInput);
+  });
+
+  it("explains an edited repeated local time instead of applying an arbitrary offset", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T08:00:00.000Z"));
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Additional usage ranges"]',
+    )!;
+    await act(() => trigger.click());
+    const inputs = [
+      ["Custom range start", "2026-11-01T01:30"],
+      ["Custom range end", "2026-11-01T02:30"],
+    ];
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    for (const [label, value] of inputs) {
+      const input = document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
+      await act(() => {
+        valueSetter.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    const apply = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Apply range",
+    )!;
+    expect(apply.disabled).toBe(true);
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      "This local time occurs twice when clocks move back. Choose a time outside the repeated hour or keep the original range time unchanged.",
+    );
+    expect(testState.useUsage.mock.calls.at(-1)?.[0]).not.toHaveProperty("sinceTime");
   });
 });
 
