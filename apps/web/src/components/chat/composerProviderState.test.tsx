@@ -15,6 +15,7 @@ import { getProviderModelCapabilities } from "../../providerModels";
 import {
   getComposerPromptInjectionState,
   getComposerProviderState,
+  getComposerEffectiveTraitsOptions,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
   withImplicitFastModeDefault,
@@ -539,6 +540,55 @@ describe("withImplicitFastModeDefault", () => {
 });
 
 describe("trait controls fastMode display", () => {
+  it("uses effective display defaults without dropping unknown stored keys or inheriting stale model metadata", () => {
+    const models = modelWith([
+      selectDescriptor("reasoningEffort", [
+        { id: "low", label: "Low", isDefault: true },
+        { id: "high", label: "High" },
+      ]),
+      booleanDescriptor("fastMode", true),
+    ]);
+    const options = selections(["futureTrait", "saved"]);
+    const input = {
+      provider: PROVIDER,
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      model: MODEL,
+      models,
+      modelOptions: options,
+      defaultModelSelection: {
+        instanceId: ProviderInstanceId.make("codex_work"),
+        model: MODEL,
+        options: selections(["reasoningEffort", "high"]),
+      },
+      defaultDriverKind: PROVIDER,
+      planModeEnabled: true,
+    };
+    const effective = getComposerEffectiveTraitsOptions(input);
+    expect(effective.modelOptions).toEqual(
+      selections(["futureTrait", "saved"], ["fastMode", false]),
+    );
+    const descriptors = getProviderOptionDescriptors({
+      caps: effective.displayCapabilities,
+      selections: effective.modelOptions,
+    });
+    expect(
+      descriptors.find((descriptor) => descriptor.id === "reasoningEffort")?.currentValue,
+    ).toBe("high");
+    expect(
+      buildTraitsOptionSelections(descriptors, effective.modelOptions, {
+        id: "reasoningEffort",
+        value: "low",
+      }),
+    ).toEqual(
+      selections(["reasoningEffort", "low"], ["fastMode", false], ["futureTrait", "saved"]),
+    );
+    expect(options).toEqual(selections(["futureTrait", "saved"]));
+    expect(
+      getComposerEffectiveTraitsOptions({ ...input, model: "missing-model" }).displayCapabilities
+        .optionDescriptors,
+    ).toEqual([]);
+  });
+
   it("resolves traits fastMode to Normal when the provider defaults to true without a user selection", () => {
     const models = modelWith([booleanDescriptor("fastMode", true)]);
     const provider = ProviderDriverKind.make("cursor");
@@ -555,6 +605,30 @@ describe("trait controls fastMode display", () => {
 });
 
 describe("traits option persistence", () => {
+  it("preserves unknown saved options when an effort selection changes", () => {
+    const descriptors = getProviderOptionDescriptors({
+      caps: {
+        optionDescriptors: [
+          selectDescriptor("reasoningEffort", [
+            { id: "low", label: "Low" },
+            { id: "high", label: "High", isDefault: true },
+          ]),
+          booleanDescriptor("fastMode", false),
+        ],
+      },
+      selections: selections(["fastMode", true], ["futureTrait", "preserved"]),
+    });
+    expect(
+      buildTraitsOptionSelections(
+        descriptors,
+        selections(["fastMode", true], ["futureTrait", "preserved"]),
+        { id: "reasoningEffort", value: "low" },
+      ),
+    ).toEqual(
+      selections(["reasoningEffort", "low"], ["fastMode", true], ["futureTrait", "preserved"]),
+    );
+  });
+
   it("keeps configured effort inherited after changing an unrelated trait", () => {
     const caps = modelWith([
       selectDescriptor("reasoningEffort", [
