@@ -171,4 +171,104 @@ describe("provider account shortcuts", () => {
     render({ instanceEntries: [...entries, other], activeInstanceId: otherId, model: "second" });
     expect(button.getAttribute("aria-pressed")).toBe("true");
   });
+
+  it("keeps Antigravity selection on the session account without continuation metadata", () => {
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const activeId = ProviderInstanceId.make("antigravity_work");
+    const siblingId = ProviderInstanceId.make("antigravity_personal");
+    const accountEntries = deriveProviderInstanceEntries([
+      { ...entries[0]!.snapshot, driver: antigravity, instanceId: activeId, displayName: "Work" },
+      {
+        ...entries[0]!.snapshot,
+        driver: antigravity,
+        instanceId: siblingId,
+        displayName: "Personal",
+      },
+    ]);
+    const overrides = {
+      instanceEntries: accountEntries,
+      activeInstanceId: activeId,
+      lockedProvider: antigravity,
+      lockedInstanceId: activeId,
+      lockedContinuationGroupKey: null,
+    };
+    render(overrides);
+    const active = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Work: First model"]',
+    )!;
+    const sibling = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Personal: First model"]',
+    )!;
+    expect(active.disabled).toBe(false);
+    expect(sibling.disabled).toBe(true);
+    act(() => sibling.click());
+    expect(onSelect).not.toHaveBeenCalled();
+    act(() => active.click());
+    expect(onSelect).toHaveBeenCalledWith(activeId, "first");
+  });
+
+  it("uses the session account lock even when draft selection points at a sibling", () => {
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const sessionId = ProviderInstanceId.make("antigravity_work");
+    const siblingId = ProviderInstanceId.make("antigravity_personal");
+    render({
+      instanceEntries: deriveProviderInstanceEntries([
+        {
+          ...entries[0]!.snapshot,
+          driver: antigravity,
+          instanceId: sessionId,
+          displayName: "Work",
+        },
+        {
+          ...entries[0]!.snapshot,
+          driver: antigravity,
+          instanceId: siblingId,
+          displayName: "Personal",
+        },
+      ]),
+      activeInstanceId: siblingId,
+      lockedProvider: antigravity,
+      lockedInstanceId: sessionId,
+    });
+    const session = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Work: First model"]',
+    )!;
+    const sibling = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Personal: First model"]',
+    )!;
+    expect(session.disabled).toBe(false);
+    expect(sibling.disabled).toBe(true);
+    act(() => sibling.click());
+    expect(onSelect).not.toHaveBeenCalled();
+    act(() => session.click());
+    expect(onSelect).toHaveBeenCalledWith(sessionId, "first");
+  });
+
+  it("allows Antigravity accounts in the shared continuation group", () => {
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const activeId = ProviderInstanceId.make("antigravity_work");
+    const siblingId = ProviderInstanceId.make("antigravity_personal");
+    const accountEntries = deriveProviderInstanceEntries([
+      { ...entries[0]!.snapshot, driver: antigravity, instanceId: activeId, displayName: "Work" },
+      {
+        ...entries[0]!.snapshot,
+        driver: antigravity,
+        instanceId: siblingId,
+        displayName: "Personal",
+      },
+    ]).map((entry) => ({ ...entry, continuationGroupKey: "shared-google-profile" }));
+    render({
+      instanceEntries: accountEntries,
+      activeInstanceId: activeId,
+      lockedProvider: antigravity,
+      lockedInstanceId: activeId,
+      lockedContinuationGroupKey: "shared-google-profile",
+    });
+    const sibling = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Personal: First model"]',
+    )!;
+    expect(sibling.disabled).toBe(false);
+    act(() => sibling.click());
+    expect(onSelect).toHaveBeenCalledWith(siblingId, "first");
+  });
 });

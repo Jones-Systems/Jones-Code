@@ -9257,7 +9257,14 @@ export default function ChatView(props: ChatViewProps) {
         if (options?.focusComposer !== false) scheduleComposerFocus();
         return;
       }
-      if (!matchesProviderModelLock(configuredEntry, lockedProvider, lockedContinuationGroupKey)) {
+      if (
+        !matchesProviderModelLock(
+          configuredEntry,
+          lockedProvider,
+          lockedContinuationGroupKey,
+          activeThread.session?.providerInstanceId ?? activeThread.modelSelection.instanceId,
+        )
+      ) {
         if (options?.focusComposer !== false) scheduleComposerFocus();
         return;
       }
