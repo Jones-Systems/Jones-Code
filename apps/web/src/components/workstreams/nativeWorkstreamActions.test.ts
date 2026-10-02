@@ -406,6 +406,74 @@ describe("selected thread movement", () => {
       ["a", "unsnooze"],
     ]);
   });
+  it("moves selected threads into the Working inbox without manual order capability or keys", () => {
+    const steps = planSelectedShelfDrop({
+      ...shelfInput,
+      threads: [
+        shelfThread("c", "pinned"),
+        shelfThread("a", "settled"),
+        shelfThread("z", "snoozed"),
+      ],
+      target: { section: "active", activeOrder: [], pinnedOrder: [] },
+      reorderableKeys: new Set(),
+      activeTimeOrdered: true,
+    });
+    expect(steps).toEqual([
+      { key: "c", operation: "unpin" },
+      { key: "a", operation: "unsettle" },
+      { key: "z", operation: "unsnooze" },
+    ]);
+  });
+  it("does not manually reorder threads already in the Working inbox", () => {
+    expect(
+      planSelectedShelfDrop({
+        ...shelfInput,
+        target: { section: "active", activeOrder: ["a", "c"], pinnedOrder: [] },
+        reorderableKeys: new Set(),
+        activeTimeOrdered: true,
+      }),
+    ).toEqual([]);
+  });
+  it.each([
+    { section: "pinned" as const, supportsPinning: false },
+    { section: "settled" as const, supportsSettlement: false },
+    { section: "snoozed" as const, supportsSnooze: false },
+  ])("still validates lifecycle capability for $section in the Working inbox", (override) => {
+    expect(() =>
+      planSelectedShelfDrop({
+        ...shelfInput,
+        threads: [
+          shelfThread("c", "active"),
+          { ...shelfThread("a", override.section), ...override },
+        ],
+        target: { section: "active", activeOrder: [], pinnedOrder: [] },
+        reorderableKeys: new Set(),
+        activeTimeOrdered: true,
+      }),
+    ).toThrow("No threads were moved");
+  });
+  it.each([false, undefined])(
+    "retains ordinary selected Active ordering when beta is %s",
+    (flag) => {
+      const steps = planSelectedShelfDrop({
+        ...shelfInput,
+        threads: [shelfThread("c", "pinned"), shelfThread("a", "snoozed")],
+        target: { section: "active", activeOrder: ["x", "c", "y"], pinnedOrder: [] },
+        ...(flag === undefined ? {} : { activeTimeOrdered: flag }),
+      });
+      expect(
+        steps.filter((step) => step.operation === "order-active").map((step) => step.key),
+      ).toEqual(["x", "c", "a", "y"]);
+      expect(
+        steps.filter((step) => step.operation === "order-active").every((step) => step.orderKey),
+      ).toBe(true);
+    },
+  );
+  it("keeps selected pin ordering when the Working inbox is enabled", () => {
+    expect(planSelectedShelfDrop({ ...shelfInput, activeTimeOrdered: true })).toEqual(
+      planSelectedShelfDrop(shelfInput),
+    );
+  });
   it("rejects unsupported selected targets and neighboring key writes before effects", () => {
     expect(() =>
       planSelectedShelfDrop({

@@ -626,7 +626,7 @@ describe("Workstream toolbar creation", () => {
     const actions = [...container.querySelectorAll("button[aria-label]")].map((button) =>
       button.getAttribute("aria-label"),
     );
-    expect(actions).toEqual(["New project", "New Workstream", "New thread"]);
+    expect(actions).toEqual(["Add project", "New Workstream", "New thread"]);
     await clickLabel("New Workstream");
     expect(document.activeElement).toBe(nameInput());
     await enterName("Discard me");
