@@ -136,6 +136,7 @@ const encodeTestJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unk
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import { DeviceDirectGrants } from "./device/DeviceDirectGrants.ts";
 import { HTTP_ROUTER_CONFIG, makeRoutesLayer } from "./server.ts";
 import {
   isThreadDetailEvent,
@@ -924,6 +925,10 @@ const buildAppUnderTest = (options?: {
             listThreadIds: () => Effect.succeed([]),
             listBindings: () => Effect.succeed([]),
             ...options?.layers?.providerSessionDirectory,
+          }),
+          Layer.mock(DeviceDirectGrants)({
+            issue: () => Effect.succeed(null),
+            admit: () => Effect.succeed({ _tag: "Denied" as const }),
           }),
           Layer.mock(DeviceService.DeviceService)({
             state: Effect.succeed(EMPTY_DEVICE_STATE),
