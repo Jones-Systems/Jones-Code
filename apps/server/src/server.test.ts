@@ -10,6 +10,7 @@ import {
 } from "./orchestration/NativeCreationAuthority.ts";
 import * as AuthSessions from "./persistence/AuthSessions.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlStatement from "effect/unstable/sql/Statement";
 import {
   NativePreparationBinding,
   nativePreparationCommand,
@@ -22,6 +23,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import {
@@ -66,6 +68,7 @@ import {
   ResolvedKeybindingRule,
   type ServerLifecycleStreamEvent,
   ThreadId,
+  ThreadPullRequestLinkSource,
   TurnId,
   UsageLimitSourceId,
   WS_METHODS,
@@ -84,7 +87,9 @@ import * as RelayClient from "@t3tools/shared/relayClient";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import * as Clock from "effect/Clock";
+import * as Console from "effect/Console";
 import * as Config from "effect/Config";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -100,6 +105,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as TestConsole from "effect/testing/TestConsole";
 import * as Tracer from "effect/Tracer";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import {
@@ -152,6 +158,9 @@ import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationThreadSettleBlockedError } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { OrchestrationProjectionSnapshotQueryLive } from "./orchestration/Layers/ProjectionSnapshotQuery.ts";
+import * as ThreadBackgroundLiveness from "./orchestration/ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "./orchestration/ThreadPlanProgress.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
@@ -614,6 +623,11 @@ const buildAppUnderTest = (options?: {
     threadDeletionReactor?: Partial<ThreadDeletionReactor["Service"]>;
     analyticsService?: Partial<AnalyticsService.AnalyticsService["Service"]>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
+    projectionSnapshotQueryLayer?: Layer.Layer<
+      ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+      never,
+      SqlClient.SqlClient
+    >;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
     serverLifecycleEvents?: Partial<ServerLifecycleEvents.ServerLifecycleEvents["Service"]>;
@@ -1116,42 +1130,43 @@ const buildAppUnderTest = (options?: {
         ),
       ),
       Layer.provide(
-        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
-          getUserInputActivity: () => Effect.die("unused"),
-          getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
-            }),
-          getArchivedShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
-            }),
-          searchThreads: () => Effect.succeed({ matches: [] }),
-          getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
-          getProjectShellById: () => Effect.succeedNone,
-          getThreadShellById: () => Effect.succeedNone,
-          getThreadDetailById: () => Effect.succeedNone,
-          getThreadDetailSnapshot: () => Effect.succeedNone,
-          getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
-          getEventReplayStats: ({ fromSequenceExclusive, toSequenceInclusive }) =>
-            Effect.succeed({
-              eventCount: Math.max(0, toSequenceInclusive - fromSequenceExclusive),
-              payloadBytes: 0,
-            }),
-          getActiveProjectByWorkspaceRoot: () => Effect.succeedNone,
-          getFirstActiveThreadIdByProjectId: () => Effect.succeedNone,
-          getImportedAgentSessionSources: () => Effect.succeed([]),
-          getThreadCheckpointContext: () => Effect.succeedNone,
-          ...options?.layers?.projectionSnapshotQuery,
-        }),
+        options?.layers?.projectionSnapshotQueryLayer ??
+          Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+            getUserInputActivity: () => Effect.die("unused"),
+            getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: "1970-01-01T00:00:00.000Z",
+              }),
+            getArchivedShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: "1970-01-01T00:00:00.000Z",
+              }),
+            searchThreads: () => Effect.succeed({ matches: [] }),
+            getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
+            getProjectShellById: () => Effect.succeedNone,
+            getThreadShellById: () => Effect.succeedNone,
+            getThreadDetailById: () => Effect.succeedNone,
+            getThreadDetailSnapshot: () => Effect.succeedNone,
+            getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
+            getEventReplayStats: ({ fromSequenceExclusive, toSequenceInclusive }) =>
+              Effect.succeed({
+                eventCount: Math.max(0, toSequenceInclusive - fromSequenceExclusive),
+                payloadBytes: 0,
+              }),
+            getActiveProjectByWorkspaceRoot: () => Effect.succeedNone,
+            getFirstActiveThreadIdByProjectId: () => Effect.succeedNone,
+            getImportedAgentSessionSources: () => Effect.succeed([]),
+            getThreadCheckpointContext: () => Effect.succeedNone,
+            ...options?.layers?.projectionSnapshotQuery,
+          }),
       ),
       Layer.provide(
         Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
@@ -11086,6 +11101,1016 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(shellFetches.filter((id) => id === busyThreadId).length, 1);
       assert.equal(replayLimit, 50);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  const makeShellFanoutCharacterizationFixture = Effect.fnUntraced(function* (clientCount: number) {
+    const busyThreadId = ThreadId.make("thread-characterization-busy");
+    const newThreadId = ThreadId.make("thread-characterization-new");
+    const now = "2026-01-01T00:00:00.000Z";
+    const busyThread = Object.freeze(makeDefaultOrchestrationThreadShell({ id: busyThreadId }));
+    const newThread = Object.freeze(makeDefaultOrchestrationThreadShell({ id: newThreadId }));
+    const batch: ReadonlyArray<OrchestrationEvent> = Object.freeze([
+      ...Array.from({ length: 20 }, (_, index) =>
+        Object.freeze({
+          sequence: index + 1,
+          eventId: EventId.make(`event-characterization-${index + 1}`),
+          aggregateKind: "thread",
+          aggregateId: busyThreadId,
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: Object.freeze({}),
+          type: "thread.message-sent",
+          payload: Object.freeze({
+            threadId: busyThreadId,
+            messageId: MessageId.make(`message-characterization-${index + 1}`),
+            role: "assistant",
+            text: "Synthetic shell update",
+            turnId: null,
+            streaming: true,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>),
+      ),
+      Object.freeze({
+        sequence: 21,
+        eventId: EventId.make("event-characterization-created"),
+        aggregateKind: "thread",
+        aggregateId: newThreadId,
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: Object.freeze({}),
+        type: "thread.created",
+        payload: Object.freeze({
+          threadId: newThreadId,
+          projectId: newThread.projectId,
+          title: newThread.title,
+          modelSelection: newThread.modelSelection,
+          runtimeMode: newThread.runtimeMode,
+          interactionMode: newThread.interactionMode,
+          branch: newThread.branch,
+          worktreePath: newThread.worktreePath,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      } satisfies Extract<OrchestrationEvent, { type: "thread.created" }>),
+    ]);
+    const indices = Array.from({ length: clientCount }, (_, index) => index);
+    const attached = yield* Effect.forEach(indices, () => Deferred.make<void>());
+    const retained = yield* Effect.forEach(indices, () => Deferred.make<void>());
+    const snapshotStarted = yield* Effect.forEach(indices, () => Deferred.make<void>());
+    const releaseSnapshot = yield* Effect.forEach(indices, () => Deferred.make<void>());
+    const releaseBatch = yield* Deferred.make<void>();
+    const detached = yield* Queue.unbounded<number>();
+    const snapshotFinished = yield* Queue.unbounded<number>();
+    yield* Effect.addFinalizer(() => Queue.shutdown(detached));
+    yield* Effect.addFinalizer(() => Queue.shutdown(snapshotFinished));
+    // Unique timestamps identify the private snapshot query released by each gate.
+    const snapshots = indices.map((index) =>
+      Object.freeze({
+        snapshotSequence: 0,
+        projects: [],
+        threads: [],
+        updatedAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+      } satisfies OrchestrationShellSnapshot),
+    );
+    const refetches: Array<ThreadId> = [];
+    const refetchDurationMs: Array<number> = [];
+    const state = {
+      sourcesOpened: 0,
+      sourcesClosed: 0,
+      activeSources: 0,
+      retainedBatches: 0,
+      snapshotCalls: 0,
+      activeSnapshots: 0,
+      refetches,
+      refetchDurationMs,
+    };
+    const config = yield* buildAppUnderTest({
+      layers: {
+        orchestrationEngine: {
+          streamDomainEvents: Stream.unwrap(
+            Effect.gen(function* () {
+              const index = yield* Effect.acquireRelease(
+                Effect.sync(() => {
+                  const next = state.sourcesOpened++;
+                  assert.isBelow(next, clientCount);
+                  state.activeSources += 1;
+                  return next;
+                }),
+                (sourceIndex) =>
+                  Effect.sync(() => {
+                    state.activeSources -= 1;
+                    state.sourcesClosed += 1;
+                  }).pipe(Effect.andThen(Queue.offer(detached, sourceIndex))),
+              );
+              yield* Deferred.succeed(attached[index]!, undefined);
+              return Stream.fromEffect(Deferred.await(releaseBatch)).pipe(
+                Stream.drain,
+                Stream.concat(Stream.fromIterable(batch)),
+                // The next pull runs after the server has retained and offered the entire batch.
+                Stream.concat(
+                  Stream.fromEffect(
+                    Effect.sync(() => {
+                      state.retainedBatches += 1;
+                    }).pipe(Effect.andThen(Deferred.succeed(retained[index]!, undefined))),
+                  ).pipe(Stream.drain),
+                ),
+                Stream.concat(Stream.never),
+              );
+            }),
+          ),
+        },
+        projectionSnapshotQuery: {
+          getShellSnapshot: Effect.fnUntraced(function* () {
+            const index = yield* Effect.acquireRelease(
+              Effect.sync(() => {
+                const next = state.snapshotCalls++;
+                assert.isBelow(next, clientCount);
+                state.activeSnapshots += 1;
+                return next;
+              }),
+              (snapshotIndex) =>
+                Effect.sync(() => {
+                  state.activeSnapshots -= 1;
+                }).pipe(Effect.andThen(Queue.offer(snapshotFinished, snapshotIndex))),
+            );
+            yield* Deferred.succeed(snapshotStarted[index]!, undefined);
+            yield* Deferred.await(releaseSnapshot[index]!);
+            return snapshots[index]!;
+          }, Effect.scoped),
+          getThreadShellById: (threadId) =>
+            Effect.sync(() => {
+              // This measures the synthetic override and its recorder; it does not execute SQL.
+              const startedAtMs = performance.now();
+              refetches.push(threadId);
+              const thread =
+                threadId === busyThreadId
+                  ? Option.some(busyThread)
+                  : threadId === newThreadId
+                    ? Option.some(newThread)
+                    : Option.none();
+              refetchDurationMs.push(performance.now() - startedAtMs);
+              return thread;
+            }),
+        },
+      },
+    });
+    return {
+      indices,
+      busyThreadId,
+      newThreadId,
+      snapshots,
+      attached,
+      retained,
+      snapshotStarted,
+      releaseSnapshot,
+      releaseBatch,
+      detached,
+      snapshotFinished,
+      state,
+      baseDir: config.baseDir,
+      wsUrl: yield* getWsServerUrl("/ws"),
+    };
+  });
+
+  const summarizeShellFanoutDurations = (values: ReadonlyArray<number>) => {
+    if (values.length === 0) return null;
+    const sorted = Array.from(values).sort((left, right) => left - right);
+    const round = (value: number) => Number(value.toFixed(6));
+    return {
+      samples: values.length,
+      total: round(values.reduce((total, value) => total + value, 0)),
+      min: round(sorted[0]!),
+      p50: round(sorted[Math.ceil(sorted.length * 0.5) - 1]!),
+      p95: round(sorted[Math.ceil(sorted.length * 0.95) - 1]!),
+      max: round(sorted.at(-1)!),
+    };
+  };
+
+  const reportShellFanoutMetrics = Effect.fnUntraced(function* (metrics: unknown) {
+    const captured = yield* TestConsole.make;
+    yield* Console.log(encodeTestJson(metrics)).pipe(
+      Effect.provideService(Console.Console, captured),
+    );
+    // Native console emission leaves the fixture's frozen clock unchanged.
+    yield* Effect.forEach(
+      yield* captured.logLines,
+      (line) =>
+        Console.log(line).pipe(
+          Effect.provideService(Console.Console, Console.Console.defaultValue()),
+        ),
+      { discard: true },
+    );
+  });
+
+  for (const clientCount of [1, 2, 8, 32]) {
+    it.effect(
+      `subscribeShell characterization measures buffered startup for ${clientCount} independent RPC sessions`,
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const result = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const fixture = yield* makeShellFanoutCharacterizationFixture(clientCount);
+              const completed = yield* Queue.unbounded<{
+                readonly clientIndex: number;
+                readonly items: Array<OrchestrationShellStreamItem>;
+              }>();
+              yield* Effect.addFinalizer(() => Queue.shutdown(completed));
+              const received = fixture.indices.map(() => [] as Array<OrchestrationShellStreamItem>);
+              const frames = fixture.indices.map(() => ({ count: 0, bytes: 0 }));
+              const snapshotReleasedAtMs: Array<number> = [];
+              const releaseToFirstUpdateMs: Array<number> = [];
+              const releaseToSynchronizedMs: Array<number> = [];
+              const clients = yield* Effect.forEach(fixture.indices, (clientIndex) => {
+                let snapshotIndex: number | undefined;
+                let sawUpdate = false;
+                return Effect.scoped(
+                  withWsRpcClient(
+                    fixture.wsUrl,
+                    (client) =>
+                      client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+                        requestCompletionMarker: true,
+                      }).pipe(
+                        Stream.tap((item) =>
+                          Effect.sync(() => {
+                            received[clientIndex]!.push(item);
+                            if (item.kind === "snapshot") {
+                              snapshotIndex = fixture.snapshots.findIndex(
+                                (snapshot) => snapshot.updatedAt === item.snapshot.updatedAt,
+                              );
+                            } else if (snapshotIndex !== undefined) {
+                              const elapsedMs =
+                                performance.now() - snapshotReleasedAtMs[snapshotIndex]!;
+                              if (item.kind === "thread-upserted" && !sawUpdate) {
+                                sawUpdate = true;
+                                releaseToFirstUpdateMs.push(elapsedMs);
+                              } else if (item.kind === "synchronized") {
+                                releaseToSynchronizedMs.push(elapsedMs);
+                              }
+                            }
+                          }),
+                        ),
+                        Stream.takeUntil((item) => item.kind === "synchronized"),
+                        Stream.runCollect,
+                      ),
+                    (message) => {
+                      // Received UTF-8 RPC frame bytes exclude compression and network framing.
+                      frames[clientIndex]!.count += 1;
+                      frames[clientIndex]!.bytes += Buffer.byteLength(message, "utf8");
+                    },
+                  ),
+                ).pipe(
+                  Effect.tap((items) => Queue.offer(completed, { clientIndex, items })),
+                  Effect.forkScoped,
+                );
+              });
+              yield* Effect.forEach(fixture.attached, Deferred.await, { discard: true });
+              yield* Effect.forEach(fixture.snapshotStarted, Deferred.await, { discard: true });
+              assert.equal(fixture.state.activeSources, clientCount);
+              assert.equal(fixture.state.activeSnapshots, clientCount);
+              assert.equal(fixture.state.refetches.length, 0);
+
+              yield* Deferred.succeed(fixture.releaseBatch, undefined);
+              yield* Effect.forEach(fixture.retained, Deferred.await, { discard: true });
+              assert.equal(fixture.state.retainedBatches, clientCount);
+              assert.deepEqual(
+                received.map((items) => items.length),
+                fixture.indices.map(() => 0),
+              );
+
+              const closedSources = new Set<number>();
+              for (const index of fixture.indices) {
+                snapshotReleasedAtMs[index] = performance.now();
+                yield* Deferred.succeed(fixture.releaseSnapshot[index]!, undefined);
+                const { clientIndex, items } = yield* Queue.take(completed);
+                assert.deepEqual(items[0], {
+                  kind: "snapshot",
+                  snapshot: fixture.snapshots[index],
+                });
+                assert.deepEqual(
+                  items.map((item) => item.kind),
+                  ["snapshot", "thread-upserted", "thread-upserted", "synchronized"],
+                );
+                assert.deepEqual(
+                  items
+                    .slice(1, 3)
+                    .map((item) =>
+                      item.kind === "thread-upserted" ? [item.sequence, item.thread.id] : null,
+                    ),
+                  [
+                    [20, fixture.busyThreadId],
+                    [21, fixture.newThreadId],
+                  ],
+                );
+                assert.deepEqual(items.at(-1), { kind: "synchronized" });
+                assert.equal(yield* Queue.take(fixture.snapshotFinished), index);
+                closedSources.add(yield* Queue.take(fixture.detached));
+                assert.equal(closedSources.size, index + 1);
+                assert.equal(fixture.state.activeSources, clientCount - index - 1);
+                assert.equal(fixture.state.activeSnapshots, clientCount - index - 1);
+                assert.equal(
+                  received.filter((clientItems) => clientItems.length > 0).length,
+                  index + 1,
+                );
+                assert.isAbove(frames[clientIndex]!.bytes, 0);
+                assert.equal(fixture.state.refetches.length, 2 * (index + 1));
+              }
+              yield* Effect.forEach(clients, Fiber.join, { discard: true });
+              assert.equal(fixture.state.snapshotCalls, clientCount);
+              assert.equal(fixture.state.sourcesOpened, clientCount);
+              assert.equal(fixture.state.sourcesClosed, clientCount);
+              assert.equal(
+                fixture.state.refetches.filter((id) => id === fixture.busyThreadId).length,
+                clientCount,
+              );
+              assert.equal(
+                fixture.state.refetches.filter((id) => id === fixture.newThreadId).length,
+                clientCount,
+              );
+              return {
+                baseDir: fixture.baseDir,
+                metrics: {
+                  phase: "synthetic-buffered-startup",
+                  clients: clientCount,
+                  inputEventsPerSource: 21,
+                  snapshotCalls: fixture.state.snapshotCalls,
+                  aggregateRefetchCalls: fixture.state.refetches.length,
+                  syntheticRefetchDurationMs: summarizeShellFanoutDurations(
+                    fixture.state.refetchDurationMs,
+                  ),
+                  snapshotReleaseToFirstUpdateMs:
+                    summarizeShellFanoutDurations(releaseToFirstUpdateMs),
+                  snapshotReleaseToSynchronizedMs:
+                    summarizeShellFanoutDurations(releaseToSynchronizedMs),
+                  receivedRpcFrames: frames.reduce((total, frame) => total + frame.count, 0),
+                  receivedRpcFrameUtf8Bytes: {
+                    total: frames.reduce((total, frame) => total + frame.bytes, 0),
+                    minPerClient: Math.min(...frames.map((frame) => frame.bytes)),
+                    maxPerClient: Math.max(...frames.map((frame) => frame.bytes)),
+                  },
+                  activeSourcesAfterClientsClose: fixture.state.activeSources,
+                  activeSnapshotQueriesAfterClientsClose: fixture.state.activeSnapshots,
+                },
+              };
+            }),
+          );
+          assert.isFalse(yield* fileSystem.exists(result.baseDir));
+          yield* Effect.logInfo("shell fanout characterization", result.metrics);
+          yield* reportShellFanoutMetrics(result.metrics);
+        }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+    );
+  }
+
+  for (const ending of ["cancellation", "failure"] as const) {
+    it.effect(`subscribeShell characterization cleans up a blocked client after ${ending}`, () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const baseDir = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fixture = yield* makeShellFanoutCharacterizationFixture(1);
+            const result = yield* Effect.scoped(
+              Effect.gen(function* () {
+                const client = yield* withWsRpcClient(fixture.wsUrl, (rpc) =>
+                  rpc[ORCHESTRATION_WS_METHODS.subscribeShell]({
+                    requestCompletionMarker: true,
+                  }).pipe(Stream.runDrain),
+                ).pipe(Effect.forkScoped);
+                yield* Deferred.await(fixture.attached[0]!);
+                yield* Deferred.await(fixture.snapshotStarted[0]!);
+                if (ending === "failure") {
+                  return yield* Effect.fail("deliberate-client-scope-failure");
+                }
+                yield* Fiber.interrupt(client);
+              }),
+            ).pipe(Effect.result);
+            if (ending === "failure") assertFailure(result, "deliberate-client-scope-failure");
+            else assert.equal(result._tag, "Success");
+            assert.equal(yield* Queue.take(fixture.detached), 0);
+            assert.equal(yield* Queue.take(fixture.snapshotFinished), 0);
+            assert.equal(fixture.state.activeSources, 0);
+            assert.equal(fixture.state.activeSnapshots, 0);
+            assert.equal(fixture.state.sourcesClosed, 1);
+            assert.equal(fixture.state.retainedBatches, 0);
+            assert.equal(fixture.state.refetches.length, 0);
+            return fixture.baseDir;
+          }),
+        );
+        assert.isFalse(yield* fileSystem.exists(baseDir));
+      }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+    );
+  }
+
+  for (const clientCount of [1, 2, 8, 32]) {
+    it.effect(
+      `subscribeShell characterization measures post-marker SQL reads for ${clientCount} independent RPC sessions`,
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const result = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const indices = Array.from({ length: clientCount }, (_, index) => index);
+              const newThreadId = ThreadId.make("thread-live-characterization-new");
+              const now = "2026-01-01T00:00:00.000Z";
+              const updatedAt = "2026-01-01T00:00:01.000Z";
+              const attached = yield* Effect.forEach(indices, () => Deferred.make<void>());
+              const retained = yield* Effect.forEach(indices, () => Deferred.make<void>());
+              const synchronized = yield* Effect.forEach(indices, () => Deferred.make<void>());
+              const delivered = yield* Effect.forEach(indices, () => Deferred.make<void>());
+              const detached = yield* Queue.unbounded<number>();
+              yield* Effect.addFinalizer(() => Queue.shutdown(detached));
+              const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+              const persistence = yield* Deferred.make<SqlClient.SqlClient>();
+              const sqlCounter = makeSqlStatementCounter();
+              const refetches: Array<ThreadId> = [];
+              const queryDurationMs: Array<number> = [];
+              let activeQueries = 0;
+              let sourcesOpened = 0;
+              let activeSources = 0;
+              const queryLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
+                Layer.provide(ThreadBackgroundLiveness.layer),
+                Layer.provide(ThreadPlanProgress.layer),
+                Layer.provide(
+                  Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+                    resolve: () => Effect.succeed(null),
+                  }),
+                ),
+                Layer.flatMap((context) =>
+                  Layer.effect(
+                    ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+                    Effect.gen(function* () {
+                      const original = Context.get(
+                        context,
+                        ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+                      );
+                      const sql = yield* SqlClient.SqlClient;
+                      yield* Deferred.succeed(persistence, sql);
+                      return {
+                        ...original,
+                        getThreadShellById: (threadId) =>
+                          Effect.acquireUseRelease(
+                            Effect.sync(() => {
+                              refetches.push(threadId);
+                              activeQueries += 1;
+                              return performance.now();
+                            }),
+                            () =>
+                              original
+                                .getThreadShellById(threadId)
+                                .pipe(Effect.withTracer(sqlCounter.tracer)),
+                            (startedAtMs) =>
+                              Effect.sync(() => {
+                                queryDurationMs.push(performance.now() - startedAtMs);
+                                activeQueries -= 1;
+                              }),
+                          ),
+                      } satisfies ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"];
+                    }),
+                  ),
+                ),
+              );
+              // A full size batch flushes with the clock frozen, without a timer-registration receipt.
+              const batch: ReadonlyArray<OrchestrationEvent> = Object.freeze([
+                ...Array.from({ length: 511 }, (_, index) =>
+                  Object.freeze(makeLiveToolActivityEvent(index + 1, "tool.updated")),
+                ),
+                Object.freeze({
+                  ...makeLiveToolActivityEvent(512, "tool.completed"),
+                  eventId: EventId.make("event-live-characterization-created"),
+                  aggregateId: newThreadId,
+                  type: "thread.created",
+                  payload: Object.freeze({
+                    threadId: newThreadId,
+                    projectId: defaultProjectId,
+                    title: "Live created",
+                    modelSelection: defaultModelSelection,
+                    runtimeMode: "full-access",
+                    interactionMode: "default",
+                    branch: null,
+                    worktreePath: null,
+                    createdAt: updatedAt,
+                    updatedAt,
+                  }),
+                } satisfies Extract<OrchestrationEvent, { type: "thread.created" }>),
+              ]);
+              const config = yield* buildAppUnderTest({
+                layers: {
+                  projectionSnapshotQueryLayer: queryLayer,
+                  orchestrationEngine: {
+                    streamDomainEvents: Stream.unwrap(
+                      Effect.gen(function* () {
+                        const index = yield* Effect.acquireRelease(
+                          Effect.sync(() => {
+                            const next = sourcesOpened++;
+                            assert.isBelow(next, clientCount);
+                            activeSources += 1;
+                            return next;
+                          }),
+                          (sourceIndex) =>
+                            Effect.sync(() => {
+                              activeSources -= 1;
+                            }).pipe(Effect.andThen(Queue.offer(detached, sourceIndex))),
+                        );
+                        const subscription = yield* PubSub.subscribe(liveEvents);
+                        yield* Deferred.succeed(attached[index]!, undefined);
+                        return Stream.fromSubscription(subscription).pipe(
+                          Stream.take(batch.length),
+                          Stream.concat(
+                            Stream.fromEffect(Deferred.succeed(retained[index]!, undefined)).pipe(
+                              Stream.drain,
+                            ),
+                          ),
+                          Stream.concat(Stream.never),
+                        );
+                      }),
+                    ),
+                  },
+                },
+              });
+              const sql = yield* Deferred.await(persistence);
+              yield* sql`INSERT INTO projection_projects
+                (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+                VALUES (${defaultProjectId}, 'Synthetic project', '/synthetic/shell-characterization', '[]', ${now}, ${now})`;
+              yield* sql`INSERT INTO projection_threads
+                (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, created_at, updated_at)
+                VALUES (${defaultThreadId}, ${defaultProjectId}, 'Initial busy', ${encodeTestJson(defaultModelSelection)}, 'full-access', 'default', ${now}, ${now})`;
+              const wsUrl = yield* getWsServerUrl("/ws");
+              const received = indices.map(() => [] as Array<OrchestrationShellStreamItem>);
+              const frames = indices.map(() => ({ count: 0, bytes: 0 }));
+              const firstUpdateMs: Array<number> = [];
+              const finalUpdateMs: Array<number> = [];
+              let publishedAtMs = 0;
+              const clients = yield* Effect.forEach(indices, (index) =>
+                Effect.scoped(
+                  withWsRpcClient(
+                    wsUrl,
+                    (client) =>
+                      client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+                        requestCompletionMarker: true,
+                      }).pipe(
+                        Stream.tap((item) =>
+                          Effect.gen(function* () {
+                            received[index]!.push(item);
+                            if (item.kind === "synchronized") {
+                              yield* Deferred.succeed(synchronized[index]!, undefined);
+                            } else if (item.kind === "thread-upserted") {
+                              const elapsedMs = performance.now() - publishedAtMs;
+                              if (item.sequence === 511) firstUpdateMs.push(elapsedMs);
+                              if (item.sequence === 512) {
+                                finalUpdateMs.push(elapsedMs);
+                                yield* Deferred.succeed(delivered[index]!, undefined);
+                              }
+                            }
+                          }),
+                        ),
+                        Stream.runDrain,
+                      ),
+                    (message) => {
+                      frames[index]!.count += 1;
+                      frames[index]!.bytes += Buffer.byteLength(message, "utf8");
+                    },
+                  ),
+                ).pipe(Effect.forkScoped),
+              );
+              yield* Effect.forEach(attached, Deferred.await, { discard: true });
+              yield* Effect.forEach(synchronized, Deferred.await, { discard: true });
+              for (const items of received) {
+                assert.deepEqual(
+                  items.map((item) => item.kind),
+                  ["snapshot", "synchronized"],
+                );
+                const snapshot = items[0];
+                assertTrue(snapshot?.kind === "snapshot");
+                assert.deepEqual(
+                  snapshot.snapshot.threads.map((thread) => [thread.id, thread.title]),
+                  [[defaultThreadId, "Initial busy"]],
+                );
+              }
+              assert.equal(activeSources, clientCount);
+              assert.equal(refetches.length, 0);
+              yield* sql.withTransaction(
+                Effect.gen(function* () {
+                  yield* sql`UPDATE projection_threads
+                    SET title = 'Live busy', updated_at = ${updatedAt}
+                    WHERE thread_id = ${defaultThreadId}`;
+                  yield* sql`INSERT INTO projection_threads
+                    (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, created_at, updated_at)
+                    VALUES (${newThreadId}, ${defaultProjectId}, 'Live created', ${encodeTestJson(defaultModelSelection)}, 'full-access', 'default', ${updatedAt}, ${updatedAt})`;
+                }),
+              );
+              frames.forEach((frame) => {
+                frame.count = 0;
+                frame.bytes = 0;
+              });
+              const statementsBefore = sqlCounter.count();
+              publishedAtMs = performance.now();
+              yield* PubSub.publishAll(liveEvents, batch);
+              yield* Effect.forEach(retained, Deferred.await, { discard: true });
+              yield* Effect.forEach(delivered, Deferred.await, { discard: true });
+              const liveFrames = frames.map((frame) => ({ ...frame }));
+              for (const items of received) {
+                assert.deepEqual(
+                  items.map((item) => item.kind),
+                  ["snapshot", "synchronized", "thread-upserted", "thread-upserted"],
+                );
+                assert.deepEqual(
+                  items
+                    .slice(2)
+                    .map((item) =>
+                      item.kind === "thread-upserted"
+                        ? [item.sequence, item.thread.id, item.thread.title]
+                        : null,
+                    ),
+                  [
+                    [511, defaultThreadId, "Live busy"],
+                    [512, newThreadId, "Live created"],
+                  ],
+                );
+              }
+              assert.equal(refetches.filter((id) => id === defaultThreadId).length, clientCount);
+              assert.equal(refetches.filter((id) => id === newThreadId).length, clientCount);
+              assert.equal(refetches.length, 2 * clientCount);
+              assert.equal(queryDurationMs.length, refetches.length);
+              assertTrue(liveFrames.every((frame) => frame.bytes > 0));
+              const sqlExecuteSpans = sqlCounter.count() - statementsBefore;
+              assert.isAbove(sqlExecuteSpans, 0);
+              yield* Effect.forEach(clients, Fiber.interrupt, { discard: true });
+              const closed = yield* Effect.forEach(indices, () => Queue.take(detached));
+              assert.equal(new Set(closed).size, clientCount);
+              assert.equal(activeSources, 0);
+              assert.equal(activeQueries, 0);
+              assert.equal(yield* PubSub.size(liveEvents), 0);
+              return {
+                baseDir: config.baseDir,
+                metrics: {
+                  phase: "synthetic-post-marker-size-flush",
+                  clients: clientCount,
+                  inputEvents: batch.length,
+                  aggregateRefetchCalls: refetches.length,
+                  sqlExecuteSpans,
+                  originalQueryEffectDurationMs: summarizeShellFanoutDurations(queryDurationMs),
+                  publishToFirstUpdateMs: summarizeShellFanoutDurations(firstUpdateMs),
+                  publishToFinalUpdateMs: summarizeShellFanoutDurations(finalUpdateMs),
+                  receivedRpcFrames: liveFrames.reduce((total, frame) => total + frame.count, 0),
+                  receivedRpcFrameUtf8Bytes: {
+                    total: liveFrames.reduce((total, frame) => total + frame.bytes, 0),
+                    minPerClient: Math.min(...liveFrames.map((frame) => frame.bytes)),
+                    maxPerClient: Math.max(...liveFrames.map((frame) => frame.bytes)),
+                  },
+                  activeSourcesAfterClientsClose: activeSources,
+                  activeQueriesAfterClientsClose: activeQueries,
+                },
+              };
+            }),
+          );
+          assert.isFalse(yield* fileSystem.exists(result.baseDir));
+          yield* reportShellFanoutMetrics(result.metrics);
+        }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+  }
+
+  it.effect.skipIf(HostProcessEnvironment.defaultValue().JONES_SHELL_HISTORY_PROBE !== "1")(
+    "subscribeShell characterization inspects one 10000-turn shell refetch",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const querySource = yield* fileSystem.readFileString(
+          fileURLToPath(
+            new URL("./orchestration/Layers/ProjectionSnapshotQuery.ts", import.meta.url),
+          ),
+        );
+        const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
+        const normalizeSql = (text: string) => text.trim().replace(/\s+/g, " ");
+        const threadId = ThreadId.make("history-bench");
+        const projectId = ProjectId.make("history-project");
+        const epoch = Date.parse("2026-01-01T00:00:00.000Z");
+        const at = (milliseconds: number) =>
+          DateTime.formatIso(DateTime.makeUnsafe(epoch + milliseconds));
+        const key = (index: number) => String(index).padStart(6, "0");
+        const attachmentJson = encodeTestJson([
+          { type: "file", id: "notes", name: "notes.txt", mimeType: "text/plain", sizeBytes: 8 },
+        ]);
+        const contextJson = encodeTestJson({
+          version: 1,
+          records: [
+            {
+              version: 1,
+              contextId: "notes-context",
+              kind: "file",
+              label: "notes.txt",
+              attachmentId: "notes",
+              name: "notes.txt",
+              mimeType: "text/plain",
+              sizeBytes: 8,
+            },
+          ],
+        });
+        const message = (
+          id: string,
+          turn: string | null,
+          createdAt: string,
+          role = "assistant",
+        ) => ({
+          message_id: id,
+          thread_id: threadId,
+          turn_id: turn,
+          role,
+          text: `${id}: ${"message text. ".repeat(20)}`,
+          is_streaming: id.endsWith("000999") ? 1 : 0,
+          attachments_json: turn === null ? null : attachmentJson,
+          context_json: turn === null ? null : contextJson,
+          created_at: createdAt,
+          updated_at: createdAt,
+        });
+        const activity = (
+          id: string,
+          turn: string | null,
+          createdAt: string,
+          sequence: number | null,
+        ) => ({
+          activity_id: id,
+          thread_id: threadId,
+          turn_id: turn,
+          tone: "tool",
+          kind: "tool.completed",
+          summary: id,
+          payload_json: encodeTestJson({
+            itemType: "command_execution",
+            status: "completed",
+            data: {
+              item: { command: "synthetic", aggregatedOutput: `line one\n${"x".repeat(256)}` },
+            },
+          }),
+          sequence,
+          created_at: createdAt,
+        });
+        // Copy only the synthetic recipe from B's immutable 8d767f4428e42be9448b6f11eb9009ab8d9cb844.
+        // Its source SHA256 is e3b7e96803451c511b0aa9c46e7666caaff6bbee1e63466756133d2939ac40e8.
+        const turnCount = 10_000;
+        const fanoutStart = Math.floor(turnCount / 2) + 64;
+        const turns = Array.from({ length: turnCount }, (_, index) => ({
+          thread_id: threadId,
+          turn_id: `turn-${key(index)}`,
+          pending_message_id:
+            index % 4 === 0 && !(index >= fanoutStart && index < fanoutStart + 200)
+              ? `user-${key(index)}`
+              : null,
+          state: "completed",
+          requested_at: at(Math.floor(index / 2) * 60_000),
+          checkpoint_files_json: "[]",
+        }));
+        const messages = [
+          message("import:codex:synthetic:000000", null, at(-120_000), "user"),
+          message("import:codex:synthetic:000001", null, at(-60_000)),
+        ];
+        const activities: Array<ReturnType<typeof activity>> = [];
+        let sequence = 0;
+        for (const [index, turn] of turns.entries()) {
+          if (turn.pending_message_id !== null) {
+            messages.push(message(turn.pending_message_id, null, turn.requested_at, "user"));
+          }
+          messages.push(
+            message(
+              `reply-${key(index)}`,
+              turn.turn_id,
+              index % 17 === 0 ? at(-30_000) : turn.requested_at,
+            ),
+          );
+          if (index % 13 === 0) {
+            messages.push(message(`straggler-${key(index)}`, null, turn.requested_at, "user"));
+          }
+          const dense = index >= turnCount - 150;
+          const linkedCount = dense ? 17 : 2;
+          const nullCount = dense ? 9 : 1;
+          for (let offset = 0; offset < linkedCount + nullCount; offset += 1) {
+            sequence += 1;
+            activities.push(
+              activity(
+                `activity-${key(index)}-${key(offset)}`,
+                offset < linkedCount ? turn.turn_id : null,
+                turn.requested_at,
+                sequence % 29 === 0 ? null : Math.floor(sequence / 2),
+              ),
+            );
+          }
+        }
+        for (const [index, id] of ["pinned-approval", "pinned-input"].entries()) {
+          activities.push({
+            ...activity(id, null, at(-180_000 + index), null),
+            tone: "approval",
+            kind: index === 0 ? "approval.requested" : "user-input.requested",
+            payload_json: encodeTestJson({
+              requestId: index === 0 ? "approval-request" : "input-request",
+            }),
+          });
+        }
+        messages.push({
+          ...message("other-thread-message", "turn-000000", at(0)),
+          thread_id: ThreadId.make("other"),
+        });
+        activities.push({
+          ...activity("other-thread-activity", "turn-000000", at(0), 999_999),
+          thread_id: ThreadId.make("other"),
+        });
+        const fixture = { turns, messages, activities, fanoutStart };
+        const lastTurn = turns.at(-1)!;
+        const owners = [
+          "getActiveThreadRowById",
+          "getLatestTurnRowByThread",
+          "getThreadSessionRowByThread",
+          "listThreadPullRequestRowsByThread",
+          "getActiveProjectRowById",
+        ];
+        const sourceStatements = owners.map((owner) => {
+          const declaration = querySource.indexOf(`const ${owner} = SqlSchema.`);
+          assert.isAtLeast(declaration, 0, `Missing production query: ${owner}`);
+          const opening = querySource.indexOf("sql`", declaration);
+          const closing = querySource.indexOf("`", opening + 4);
+          assertTrue(opening >= 0 && closing > opening, `Missing production SQL: ${owner}`);
+          const template = querySource.slice(opening + 4, closing);
+          const text = template.replaceAll("${threadId}", "?").replaceAll("${projectId}", "?");
+          assert.isFalse(text.includes("${"), `Unexpected production binding: ${owner}`);
+          return {
+            owner,
+            text: normalizeSql(text),
+            parameters: [owner === "getActiveProjectRowById" ? projectId : threadId],
+          };
+        });
+        let resolverCalls = 0;
+        const queryLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
+          Layer.provide(ThreadBackgroundLiveness.layer),
+          Layer.provide(ThreadPlanProgress.layer),
+          Layer.provide(
+            Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+              resolve: (workspaceRoot) =>
+                Effect.sync(() => {
+                  assert.equal(workspaceRoot, "/synthetic-history");
+                  resolverCalls += 1;
+                  return {
+                    canonicalKey: "github.com/synthetic/history",
+                    rootPath: workspaceRoot,
+                    locator: {
+                      source: "git-remote" as const,
+                      remoteName: "origin",
+                      remoteUrl: "https://github.com/synthetic/history.git",
+                    },
+                  };
+                }),
+            }),
+          ),
+          Layer.provideMerge(SqlitePersistenceMemory),
+        );
+        const metrics = yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`INSERT INTO projection_projects
+                (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+                VALUES (${projectId}, 'Synthetic history', '/synthetic-history', '[]', ${at(0)}, ${at(0)})`;
+              yield* sql`INSERT INTO projection_threads
+                (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+                  pending_approval_count, pending_user_input_count, created_at, updated_at)
+                VALUES (${threadId}, ${projectId}, 'Synthetic history',
+                  '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default', 1, 1, ${at(0)}, ${at(0)})`;
+              for (let offset = 0; offset < turns.length; offset += 256) {
+                yield* sql`INSERT INTO projection_turns ${sql.insert(turns.slice(offset, offset + 256))}`;
+              }
+              for (let offset = 0; offset < messages.length; offset += 256) {
+                yield* sql`INSERT INTO projection_thread_messages ${sql.insert(messages.slice(offset, offset + 256))}`;
+              }
+              for (let offset = 0; offset < activities.length; offset += 256) {
+                yield* sql`INSERT INTO projection_thread_activities ${sql.insert(activities.slice(offset, offset + 256))}`;
+              }
+              yield* sql`INSERT INTO projection_pending_approvals
+                (request_id, thread_id, status, created_at)
+                VALUES ('approval-request', ${threadId}, 'pending', ${at(-180_000)})`;
+              yield* sql`UPDATE projection_threads
+                SET latest_turn_id = ${lastTurn.turn_id} WHERE thread_id = ${threadId}`;
+              yield* sql`INSERT INTO projection_thread_sessions
+                (thread_id, status, provider_name, runtime_mode, updated_at)
+                VALUES (${threadId}, 'ready', 'codex', 'full-access', ${lastTurn.requested_at})`;
+              yield* sql`INSERT INTO projection_thread_pull_requests
+                (thread_id, host, repository, number, url, source, linked_at)
+                VALUES (${threadId}, 'github.com', 'synthetic/history', 1,
+                  'https://github.com/synthetic/history/pull/1', ${ThreadPullRequestLinkSource.literals[0]}, ${lastTurn.requested_at})`;
+            }),
+          );
+          const captured: Array<{ text: string; parameters: ReadonlyArray<unknown> }> = [];
+          const observe: SqlStatement.Transformer = (statement) =>
+            Effect.sync(() => {
+              const [text, parameters] = statement.compile();
+              captured.push({ text, parameters: Array.from(parameters) });
+              // Observation returns the original statement without rewriting its SQL or execution.
+              return statement;
+            });
+          const sqlCounter = makeSqlStatementCounter();
+          const startedAtMs = performance.now();
+          const shell = yield* query
+            .getThreadShellById(threadId)
+            .pipe(
+              Effect.provideService(SqlStatement.CurrentTransformer, observe),
+              Effect.withTracer(sqlCounter.tracer),
+            );
+          // One effect elapsed time includes observation and projection; it is not CPU time.
+          const refetchEffectElapsedMs = performance.now() - startedAtMs;
+          const sqlExecuteSpans = sqlCounter.count();
+          assertTrue(Option.isSome(shell));
+          assert.equal(shell.value.id, threadId);
+          assert.equal(shell.value.latestTurn?.turnId, lastTurn.turn_id);
+          assert.equal(shell.value.session?.status, "ready");
+          assert.equal(shell.value.pullRequests.length, 1);
+          assert.equal(resolverCalls, 1);
+          assert.equal(sqlExecuteSpans, captured.length);
+          // Plan and result-cardinality replays are outside the measured service call.
+          const statements = yield* Effect.forEach(captured, (statement) =>
+            Effect.gen(function* () {
+              const source = sourceStatements.find(
+                (entry) => entry.text === normalizeSql(statement.text),
+              );
+              assertTrue(source !== undefined, "Executed SQL must match a production owner");
+              assert.deepEqual(statement.parameters, source.parameters);
+              const plan = yield* sql.unsafe<{ id: number; parent: number; detail: string }>(
+                `EXPLAIN QUERY PLAN ${statement.text}`,
+                statement.parameters,
+              );
+              const rows = yield* sql.unsafe(statement.text, statement.parameters);
+              assert.equal(rows.length, 1, source.owner);
+              return {
+                owner: source.owner,
+                compiledSql: normalizeSql(statement.text),
+                compiledSqlSha256: hash(normalizeSql(statement.text)),
+                bindingCount: statement.parameters.length,
+                resultRows: rows.length,
+                plan: plan.map(({ id, parent, detail }) => ({ id, parent, detail })),
+              };
+            }),
+          );
+          assert.deepEqual(
+            statements.map((statement) => statement.owner).sort(),
+            Array.from(owners).sort(),
+          );
+          const cardinalities = yield* sql<{
+            projects: number;
+            threads: number;
+            turns: number;
+            messages: number;
+            activities: number;
+            targetMessages: number;
+            targetActivities: number;
+            sessions: number;
+            pullRequests: number;
+            pendingApprovals: number;
+          }>`SELECT
+            (SELECT COUNT(*) FROM projection_projects) AS projects,
+            (SELECT COUNT(*) FROM projection_threads) AS threads,
+            (SELECT COUNT(*) FROM projection_turns) AS turns,
+            (SELECT COUNT(*) FROM projection_thread_messages) AS messages,
+            (SELECT COUNT(*) FROM projection_thread_activities) AS activities,
+            (SELECT COUNT(*) FROM projection_thread_messages WHERE thread_id = ${threadId}) AS "targetMessages",
+            (SELECT COUNT(*) FROM projection_thread_activities WHERE thread_id = ${threadId}) AS "targetActivities",
+            (SELECT COUNT(*) FROM projection_thread_sessions) AS sessions,
+            (SELECT COUNT(*) FROM projection_thread_pull_requests) AS "pullRequests",
+            (SELECT COUNT(*) FROM projection_pending_approvals) AS "pendingApprovals"`;
+          assert.deepEqual(
+            cardinalities.map((row) => ({ ...row })),
+            [
+              {
+                projects: 1,
+                threads: 1,
+                turns: 10_000,
+                messages: 13_223,
+                activities: 33_453,
+                targetMessages: 13_222,
+                targetActivities: 33_452,
+                sessions: 1,
+                pullRequests: 1,
+                pendingApprovals: 1,
+              },
+            ],
+          );
+          return {
+            phase: "synthetic-one-shell-refetch-10000-turn-history",
+            recipeCommit: "8d767f4428e42be9448b6f11eb9009ab8d9cb844",
+            recipeSourceSha256: "e3b7e96803451c511b0aa9c46e7666caaff6bbee1e63466756133d2939ac40e8",
+            fixtureSha256: hash(encodeTestJson(fixture)),
+            productionQuerySourceSha256: hash(querySource),
+            cardinalities: cardinalities[0],
+            refetchCalls: 1,
+            refetchEffectElapsedMs,
+            sqlExecuteSpans,
+            syntheticResolverCalls: resolverCalls,
+            sqliteVersion: yield* sql`SELECT sqlite_version() AS version`,
+            statements,
+          };
+        }).pipe(Effect.provide(queryLayer), Effect.scoped);
+        yield* reportShellFanoutMetrics(metrics);
+      }),
   );
 
   it.effect("subscribeShell coalesces live bursts after the synchronization marker", () =>
