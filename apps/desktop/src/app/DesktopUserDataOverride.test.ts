@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - Bootstrap tests exercise POSIX and Windows path rules before an Effect runtime.
 import * as NodePath from "node:path";
 import { assert, describe, it } from "vite-plus/test";
 import {
