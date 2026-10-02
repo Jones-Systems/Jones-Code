@@ -308,6 +308,15 @@
         "apps/web/src/components/JonesUpdateControls.tsx",
         "apps/mobile/src/features/settings/JonesUpdateControls.tsx"
       ]
+    },
+    {
+      "group_id": "jones-performance-staging",
+      "command": "node --test --test-concurrency=1 scripts/performance-staging/guard.test.mjs scripts/performance-staging/lifecycle.test.mjs",
+      "modules": [
+        "scripts/performance-staging/guard.test.mjs",
+        "scripts/performance-staging/lifecycle.test.mjs"
+      ],
+      "scope": ["scripts/performance-staging/**", "docs/operations/performance-staging.md"]
     }
   ]
 }
