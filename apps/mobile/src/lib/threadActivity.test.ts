@@ -291,6 +291,117 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
+  it("keeps equal-time message order ahead of sequence-ordered activities", () => {
+    const createdAt = "2026-04-01T00:00:01.000Z";
+    const messages = ["message-z", "message-a"].map((id) => ({
+      id: MessageId.make(id),
+      role: "assistant" as const,
+      text: id,
+      turnId: null,
+      streaming: false,
+      createdAt,
+      updatedAt: createdAt,
+    }));
+    const activities = [
+      makeActivity({
+        id: EventId.make("activity-z"),
+        kind: "runtime.warning",
+        summary: "Second sequence",
+        turnId: TurnId.make("turn-z"),
+        sequence: 2,
+        createdAt,
+      }),
+      makeActivity({
+        id: EventId.make("activity-a"),
+        kind: "runtime.warning",
+        summary: "First sequence",
+        turnId: TurnId.make("turn-a"),
+        sequence: 1,
+        createdAt,
+      }),
+    ];
+    const expected = ["message-z", "message-a", "activity-a", "activity-z"];
+    const first = buildThreadFeed({ messages, activities });
+    const copied = buildThreadFeed({ messages: [...messages], activities: [...activities] });
+    const replaced = buildThreadFeed({
+      messages: [{ ...messages[0]!, text: "Streamed replacement" }, messages[1]!],
+      activities,
+    });
+
+    expect(first.map((row) => row.id)).toEqual(expected);
+    expect(copied.map((row) => row.id)).toEqual(expected);
+    expect(replaced.map((row) => row.id)).toEqual(expected);
+    expect(first[0]).toMatchObject({ message: { text: "message-z" } });
+  });
+
+  it("suppresses async answer messages only while their activity is in the loaded window", () => {
+    const turnId = TurnId.make("answer-window-turn");
+    const requestId = ApprovalRequestId.make("answer-window-request");
+    const messages = [
+      {
+        id: MessageId.make("answer-window-opening"),
+        role: "user" as const,
+        text: "Choose a name",
+        turnId,
+        streaming: false,
+        createdAt: "2026-04-01T00:00:00.000Z",
+        updatedAt: "2026-04-01T00:00:00.000Z",
+      },
+      {
+        id: MessageId.make(`async-answer:${requestId}`),
+        role: "user" as const,
+        text: "Example",
+        turnId,
+        streaming: false,
+        createdAt: "2026-04-01T00:00:03.000Z",
+        updatedAt: "2026-04-01T00:00:03.000Z",
+      },
+      {
+        id: MessageId.make("answer-window-response"),
+        role: "assistant" as const,
+        text: "Named Example",
+        turnId,
+        streaming: false,
+        createdAt: "2026-04-01T00:00:04.000Z",
+        updatedAt: "2026-04-01T00:00:04.000Z",
+      },
+    ];
+    const activity = makeActivity({
+      id: EventId.make("answer-window-submitted"),
+      kind: "user-input.answer-submitted",
+      summary: "Answered question",
+      createdAt: messages[1]!.createdAt,
+      turnId,
+      payload: {
+        requestId,
+        answers: { name: "Example" },
+        questionTextById: { name: "What should it be named?" },
+        attachmentsByQuestionId: {},
+      },
+    });
+    const thread = { messages, activities: [activity] };
+    const fullIds = ["answer-window-opening", "answer-window-submitted", "answer-window-response"];
+    const original = buildThreadFeed(thread);
+    expect(original.map((row) => row.id)).toEqual(fullIds);
+    const recent = buildThreadFeed(thread, {
+      loadedMessages: [messages[2]!],
+      localMessages: [messages[1]!],
+    });
+    expect(recent.map((row) => row.id)).toEqual([messages[1]!.id, messages[2]!.id]);
+    const prepended = buildThreadFeed(thread, {
+      loadedMessages: [messages[0]!, messages[2]!],
+      localMessages: [messages[1]!],
+    });
+    expect(prepended.map((row) => row.id)).toEqual(fullIds);
+    const emptyWindow = buildThreadFeed(thread, { loadedMessages: [] });
+    expect(emptyWindow.map((row) => row.id)).toEqual([activity.id]);
+    const reverted = buildThreadFeed({ ...thread, activities: [] });
+    expect(reverted.map((row) => row.id)).toEqual(messages.map((message) => message.id));
+    expect(buildThreadFeed(thread).map((row) => row.id)).toEqual(fullIds);
+    expect(original.map((row) => row.id)).toEqual(fullIds);
+    expect(messages[1]!.text).toBe("Example");
+  });
+
   it("reuses unchanged feed and presentation rows during an assistant text update", () => {
     const completedTurnId = TurnId.make("completed-turn");
     const activeTurnId = TurnId.make("active-turn");
