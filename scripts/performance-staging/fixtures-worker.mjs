@@ -486,20 +486,20 @@ async function populate(state) {
       },
       createdAt: state.now(),
     });
+    const completedAt = state.now();
     await dispatch({
       type: "thread.turn.diff.complete",
       commandId: `fixture-checkpoint-${index}`,
       threadId: "fixture-history",
       turnId,
-      completedAt: state.now(),
+      completedAt,
       checkpointRef: `refs/t3/checkpoints/fixture-history/turn/${index}`,
       status: "ready",
       files: [{ path: "fixture.txt", kind: "modified", additions: 1, deletions: 0 }],
       assistantMessageId: assistantId,
       checkpointTurnCount: index,
-      createdAt: state.now(),
+      createdAt: completedAt,
     });
-    const completedAt = state.now();
     await dispatch({
       type: "thread.session.set",
       commandId: `fixture-turn-complete-${index}`,
@@ -682,11 +682,17 @@ async function tableSummary(state, table) {
 function publicModel(model) {
   return {
     snapshotSequence: model.snapshotSequence,
-    projects: [...model.projects].sort((left, right) => left.id.localeCompare(right.id)),
+    projects: [...model.projects]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((project) => ({ ...project, repositoryIdentity: project.repositoryIdentity ?? null })),
     threads: [...model.threads]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((thread) => ({
         ...thread,
+        pinnedAt: thread.pinnedAt ?? null,
+        pinOrderKey: thread.pinOrderKey ?? null,
+        titleRegeneration: thread.titleRegeneration ?? null,
+        titleState: thread.titleState ?? null,
         messages: [...thread.messages].sort((left, right) => left.id.localeCompare(right.id)),
         activities: [...thread.activities].sort((left, right) => left.id.localeCompare(right.id)),
         checkpoints: [...thread.checkpoints].sort(
@@ -694,6 +700,60 @@ function publicModel(model) {
         ),
       })),
   };
+}
+
+function structuralModelDifferences(snapshot, replay) {
+  const differences = [];
+  const valueType = (value) =>
+    value === null
+      ? "null"
+      : Array.isArray(value)
+        ? "array"
+        : value instanceof Uint8Array
+          ? "bytes"
+          : typeof value;
+  const describe = (value, present) => ({
+    present,
+    type: present ? valueType(value) : "absent",
+    sha256: digest(value),
+    ...(Array.isArray(value) ? { length: value.length } : {}),
+  });
+  const visit = (left, right, path, leftPresent = true, rightPresent = true) => {
+    if (differences.length === 8 || (leftPresent === rightPresent && Object.is(left, right)))
+      return;
+    const type = valueType(left);
+    if (
+      leftPresent &&
+      rightPresent &&
+      type === valueType(right) &&
+      (type === "object" || type === "array")
+    ) {
+      if (type !== "array" || left.length === right.length) {
+        const keys =
+          type === "array"
+            ? Array.from({ length: left.length }, (_, index) => String(index))
+            : [...new Set([...Object.keys(left), ...Object.keys(right)])].sort();
+        for (const key of keys) {
+          const segment = key.replaceAll("~", "~0").replaceAll("/", "~1");
+          visit(
+            left[key],
+            right[key],
+            `${path}/${segment}`,
+            Object.hasOwn(left, key),
+            Object.hasOwn(right, key),
+          );
+          if (differences.length === 8) return;
+        }
+        return;
+      }
+    }
+    const leftSummary = describe(left, leftPresent);
+    const rightSummary = describe(right, rightPresent);
+    if (leftPresent !== rightPresent || leftSummary.sha256 !== rightSummary.sha256)
+      differences.push({ path, snapshot: leftSummary, replay: rightSummary });
+  };
+  visit(snapshot, replay, "");
+  return differences;
 }
 
 export async function captureFixture(context) {
@@ -714,8 +774,10 @@ export async function captureFixture(context) {
     }
     if (events.length < 128) break;
   }
-  const snapshotDigest = digest(publicModel(snapshot));
-  const replayDigest = digest(publicModel(replay));
+  const snapshotModel = publicModel(snapshot);
+  const replayModel = publicModel(replay);
+  const snapshotDigest = digest(snapshotModel);
+  const replayDigest = digest(replayModel);
   const recent = some(
     modules,
     await state.run(
@@ -748,7 +810,7 @@ export async function captureFixture(context) {
       (e.sequence IS NULL OR e.command_id IS NOT r.command_id OR e.aggregate_kind IS NOT r.aggregate_kind OR e.stream_id IS NOT r.aggregate_id)) AS missing_receipt_events,
     (SELECT COUNT(*) FROM projection_threads t LEFT JOIN projection_projects p ON p.project_id=t.project_id WHERE p.project_id IS NULL) AS missing_thread_projects,
     (SELECT COUNT(*) FROM projection_thread_messages m LEFT JOIN projection_threads t ON t.thread_id=m.thread_id WHERE t.thread_id IS NULL) AS missing_message_threads,
-    (SELECT COUNT(*) FROM (SELECT aggregate_kind,stream_id,COUNT(*) AS n,MAX(stream_version) AS v,MIN(stream_version) AS first FROM orchestration_events GROUP BY aggregate_kind,stream_id) WHERE n<>v OR first<>1) AS noncontiguous_streams`,
+    (SELECT COUNT(*) FROM (SELECT aggregate_kind,stream_id,COUNT(*) AS n,MAX(stream_version) AS v,MIN(stream_version) AS first FROM orchestration_events GROUP BY aggregate_kind,stream_id) WHERE first<>0 OR n<>v+1) AS noncontiguous_streams`,
   );
   const coupling = Object.fromEntries(
     Object.entries(links[0]).map(([key, value]) => [key, Number(value)]),
@@ -762,6 +824,12 @@ export async function captureFixture(context) {
       "SELECT projector,last_applied_sequence FROM projection_state ORDER BY projector",
     )
   ).map((row) => ({ projector: row.projector, sequence: Number(row.last_applied_sequence) }));
+  const liveProjectorNames = new Set(Object.values(modules.Pipeline.ORCHESTRATION_PROJECTOR_NAMES));
+  const liveCursors = projectionCursors.filter((row) => liveProjectorNames.has(row.projector));
+  // Attachment cleanup advances at bootstrap; normal traffic advances the nine exported projectors.
+  const bootstrapCursors = projectionCursors.filter(
+    (row) => row.projector === "projection.attachment-cleanup",
+  );
   const pragmas = {};
   for (const name of [
     "journal_mode",
@@ -903,22 +971,53 @@ export async function captureFixture(context) {
     integrity: { results: integrity, ok: integrity.length === 1 && integrity[0] === "ok" },
     foreignKeys: { violations: foreignKeys.length, sha256: digest(foreignKeys) },
   };
-  if (
-    !capture.readModel.equivalent ||
-    overlap ||
-    !capture.integrity.ok ||
-    foreignKeys.length ||
-    Object.values(coupling).some((value) => value !== 0) ||
-    snapshot.snapshotSequence !== maxSequence ||
-    projectionCursors.some((row) => row.sequence !== maxSequence) ||
-    (state.native &&
-      (!native.normalizedCommandDigest || !native.effectPhases.includes("completed")))
-  )
-    refuse(
-      "incoherent_fixture",
-      "production state failed replay, cursor, coupling or integrity checks",
-      freeze(capture),
-    );
+  const failedPredicates = {
+    readModel: !capture.readModel.equivalent,
+    pageOverlap: overlap !== 0,
+    integrity: !capture.integrity.ok,
+    foreignKeys: foreignKeys.length !== 0,
+    coupling: Object.values(coupling).some((value) => value !== 0),
+    snapshotCursor: snapshot.snapshotSequence !== maxSequence,
+    liveProjectorSet:
+      liveProjectorNames.size !== 9 ||
+      liveCursors.length !== 9 ||
+      new Set(liveCursors.map((row) => row.projector)).size !== 9,
+    liveProjectorCursor: liveCursors.some(
+      (row) => !Number.isSafeInteger(row.sequence) || row.sequence !== maxSequence,
+    ),
+    bootstrapCursor:
+      bootstrapCursors.length !== 1 ||
+      bootstrapCursors.some(
+        (row) =>
+          !Number.isSafeInteger(row.sequence) || row.sequence < 0 || row.sequence > maxSequence,
+      ),
+    unknownProjector: projectionCursors.some(
+      (row) =>
+        !liveProjectorNames.has(row.projector) && row.projector !== "projection.attachment-cleanup",
+    ),
+    native: Boolean(
+      state.native &&
+      (!native.normalizedCommandDigest || !native.effectPhases.includes("completed")),
+    ),
+  };
+  if (Object.values(failedPredicates).some(Boolean)) {
+    const message = "production state failed replay, cursor, coupling or integrity checks";
+    const diagnostic = JSON.stringify({
+      failedPredicates,
+      structuralDifferencesLimit: 8,
+      structuralDifferences: failedPredicates.readModel
+        ? structuralModelDifferences(snapshotModel, replayModel)
+        : [],
+    });
+    const boundedDiagnostic =
+      Buffer.byteLength(message) + 1 + Buffer.byteLength(diagnostic) <= 4 * 1024
+        ? diagnostic
+        : JSON.stringify({
+            failedPredicates,
+            structuralDifferencesOmitted: "4 KiB message budget",
+          });
+    refuse("incoherent_fixture", `${message}\n${boundedDiagnostic}`, freeze(capture));
+  }
   return freeze(capture);
 }
 

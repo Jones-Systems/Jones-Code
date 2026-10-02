@@ -37,6 +37,17 @@ const producerBinding = {
   taskRef: "spec.jones-performance-portfolio#task.e-fixture.001",
   runId: "fixture-tests",
 };
+const liveProjectorNames = [
+  "projection.projects",
+  "projection.threads",
+  "projection.thread-messages",
+  "projection.thread-proposed-plans",
+  "projection.thread-activities",
+  "projection.thread-sessions",
+  "projection.thread-turns",
+  "projection.checkpoints",
+  "projection.pending-approvals",
+];
 
 async function withInvocation(body) {
   const outer = await NodeFSP.mkdtemp(NodePath.join(directory, ".fixture-test-"));
@@ -262,12 +273,22 @@ function assertCoherent(capture, source) {
   NodeAssert.equal(capture.coupling.missing_message_threads, 0);
   NodeAssert.equal(capture.coupling.noncontiguous_streams, 0);
   NodeAssert.equal(capture.coupling.snapshotSequence, capture.coupling.maxSequence);
-  NodeAssert.equal(capture.coupling.projectionCursors.length, 9);
-  NodeAssert.ok(
-    capture.coupling.projectionCursors.every(
-      (row) => row.sequence === capture.coupling.maxSequence,
-    ),
+  NodeAssert.equal(capture.coupling.projectionCursors.length, 10);
+  NodeAssert.equal(capture.tables.projection_state.count, 10);
+  const liveCursors = capture.coupling.projectionCursors.filter((row) =>
+    liveProjectorNames.includes(row.projector),
   );
+  NodeAssert.deepEqual(
+    liveCursors.map((row) => row.projector).toSorted(),
+    liveProjectorNames.toSorted(),
+  );
+  NodeAssert.ok(liveCursors.every((row) => row.sequence === capture.coupling.maxSequence));
+  const bootstrapCursors = capture.coupling.projectionCursors.filter(
+    (row) => row.projector === "projection.attachment-cleanup",
+  );
+  NodeAssert.equal(bootstrapCursors.length, 1);
+  NodeAssert.equal(bootstrapCursors[0].sequence, 0);
+  NodeAssert.ok(capture.coupling.maxSequence > bootstrapCursors[0].sequence);
   NodeAssert.equal(capture.readModel.projectCount, 1);
   NodeAssert.equal(capture.readModel.threadCount, source === oldSource ? 4 : 3);
   NodeAssert.equal(capture.readModel.historyMessages, 6);
@@ -313,24 +334,68 @@ NodeTest.test(
   async () => {
     await withInvocation(async (scope) => {
       let originalContext;
-      const result = await scope.open(scope.options(), async (context) => {
-        originalContext = context;
-        const capture = await captureSyntheticFixture(context);
-        assertCoherent(capture, oldSource);
-        const empty = await context.run(context.snapshotQuery.getThreadDetailById("fixture-empty"));
-        NodeAssert.equal(empty._tag, "Some");
-        NodeAssert.equal(empty.value.messages.length, 0);
-        NodeAssert.equal(empty.value.activities.length, 0);
-        NodeAssert.equal(capture.native.status, "present");
-        NodeAssert.deepEqual(capture.native.effectPhases, ["started", "completed"]);
-        NodeAssert.match(capture.native.normalizedCommandDigest, /^[a-f0-9]{64}$/);
-        NodeAssert.equal(capture.tables.native_creation_intents.count, 1);
-        NodeAssert.equal(capture.tables.native_creation_reserved_command_identities.count, 2);
-        NodeAssert.equal(capture.tables.native_creation_reserved_commands.count, 2);
-        NodeAssert.equal(capture.tables.native_creation_normalized_commands.count, 1);
-        NodeAssert.equal(capture.tables.native_creation_effect_facts.count, 2);
-        return "open-result";
-      });
+      const result = await scope
+        .open(scope.options(), async (context) => {
+          originalContext = context;
+          const capture = await captureSyntheticFixture(context);
+          assertCoherent(capture, oldSource);
+          const empty = await context.run(
+            context.snapshotQuery.getThreadDetailById("fixture-empty"),
+          );
+          NodeAssert.equal(empty._tag, "Some");
+          NodeAssert.equal(empty.value.messages.length, 0);
+          NodeAssert.equal(empty.value.activities.length, 0);
+          NodeAssert.equal(capture.native.status, "present");
+          NodeAssert.deepEqual(capture.native.effectPhases, ["started", "completed"]);
+          NodeAssert.match(capture.native.normalizedCommandDigest, /^[a-f0-9]{64}$/);
+          NodeAssert.equal(capture.tables.native_creation_intents.count, 1);
+          NodeAssert.equal(capture.tables.native_creation_reserved_command_identities.count, 2);
+          NodeAssert.equal(capture.tables.native_creation_reserved_commands.count, 2);
+          NodeAssert.equal(capture.tables.native_creation_normalized_commands.count, 1);
+          NodeAssert.equal(capture.tables.native_creation_effect_facts.count, 2);
+          return "open-result";
+        })
+        .catch((error) => {
+          const capture = error?.evidence?.primaryEvidence;
+          if (error instanceof Error && capture?.schema === "jones-performance-capture/v1") {
+            const diagnostic = JSON.stringify({
+              sourceRevision: capture.databaseSource.sourceRevision,
+              counts: {
+                events: capture.tables.orchestration_events.count,
+                receipts: capture.tables.orchestration_command_receipts.count,
+                projects: capture.readModel.projectCount,
+                threads: capture.readModel.threadCount,
+                historyMessages: capture.readModel.historyMessages,
+                cursors: capture.coupling.projectionCursors.length,
+              },
+              coupling: {
+                ...capture.coupling,
+                projectionCursors: capture.coupling.projectionCursors.slice(0, 10),
+              },
+              readModel: capture.readModel,
+              pages: {
+                overlap: capture.pages.overlap,
+                recentCount: capture.pages.recentMessageIds.length,
+                olderCount: capture.pages.olderMessageIds.length,
+              },
+              integrity: {
+                ok: capture.integrity.ok,
+                resultCount: capture.integrity.results.length,
+              },
+              foreignKeyViolations: capture.foreignKeys.violations,
+              native: {
+                status: capture.native.status,
+                effectPhases: capture.native.effectPhases?.slice(0, 4),
+              },
+            });
+            const suffix =
+              Buffer.byteLength(diagnostic) <= 4 * 1024
+                ? `\nfixture capture: ${diagnostic}`
+                : "\nfixture capture: 4 KiB diagnostic budget exceeded";
+            if (Buffer.byteLength(error.message + suffix) <= 8 * 1024) error.message += suffix;
+          }
+          throw error;
+        });
       NodeAssert.equal(result.value, "open-result");
       NodeAssert.equal(result.cleanup.outcome, "complete");
       NodeAssert.equal(result.cleanup.absent, true);
