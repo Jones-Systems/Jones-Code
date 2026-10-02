@@ -334,6 +334,107 @@
         "apps/web/src/components/JonesUpdateControls.tsx",
         "apps/mobile/src/features/settings/JonesUpdateControls.tsx"
       ]
+    },
+    {
+      "group_id": "jones-workstreams-native-provider",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/contracts/src/workstreamsNativeProvider.test.ts apps/server/src/workstreams/nativeProvider/service.test.ts apps/server/src/workstreams/nativeProvider/http.test.ts apps/server/src/workstreams/nativeProvider/attemptRepository.test.ts apps/server/src/workstreams/nativeProvider/nativePolicy.test.ts apps/server/src/workstreams/runtimeIntegration/native.test.ts apps/server/src/persistence/Layers/OrchestrationEventStore.test.ts apps/server/src/auth/http.test.ts apps/server/src/auth/RpcAuthorization.test.ts packages/contracts/src/environmentHttp.test.ts apps/server/src/server.test.ts",
+      "modules": [
+        "packages/contracts/src/workstreamsNativeProvider.test.ts",
+        "apps/server/src/workstreams/nativeProvider/service.test.ts",
+        "apps/server/src/workstreams/nativeProvider/http.test.ts",
+        "apps/server/src/workstreams/nativeProvider/attemptRepository.test.ts",
+        "apps/server/src/workstreams/nativeProvider/nativePolicy.test.ts",
+        "apps/server/src/workstreams/runtimeIntegration/native.test.ts",
+        "apps/server/src/persistence/Layers/OrchestrationEventStore.test.ts",
+        "apps/server/src/auth/http.test.ts",
+        "apps/server/src/auth/RpcAuthorization.test.ts",
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/server/src/server.test.ts"
+      ],
+      "scope": [
+        "packages/contracts/src/workstreamsNativeProvider.ts",
+        "packages/contracts/src/index.ts",
+        "packages/contracts/src/auth.ts",
+        "packages/contracts/src/environmentHttp.ts",
+        "apps/server/src/workstreams/nativeProvider/**",
+        "apps/server/src/workstreams/runtimeIntegration/**",
+        "apps/server/src/workstreams/http.ts",
+        "apps/server/src/server.ts",
+        "apps/server/src/persistence/Services/OrchestrationEventStore.ts",
+        "apps/server/src/persistence/Layers/OrchestrationEventStore.ts",
+        "apps/server/src/persistence/Migrations/005_JonesWorkstreamsNativeAttempts.ts"
+      ]
+    },
+    {
+      "group_id": "jones-workstreams-native-enrollment",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/workstreams/enrollment/request.test.ts apps/server/src/workstreams/enrollment/service.test.ts apps/server/src/workstreams/enrollment/credentialFile.test.ts apps/server/src/workstreams/enrollment/secretStore.test.ts apps/server/src/workstreams/enrollment/operations.test.ts apps/server/src/auth/SessionStore.test.ts apps/server/src/persistence/Migrations.test.ts apps/server/src/workstreams/enrollment/trustedCliContext.test.ts apps/server/src/cli/workstreamProvider.test.ts apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts apps/server/src/workstreams/enrollment/sqliteConnection.test.ts",
+      "modules": [
+        "apps/server/src/workstreams/enrollment/request.test.ts",
+        "apps/server/src/workstreams/enrollment/service.test.ts",
+        "apps/server/src/workstreams/enrollment/credentialFile.test.ts",
+        "apps/server/src/workstreams/enrollment/secretStore.test.ts",
+        "apps/server/src/workstreams/enrollment/operations.test.ts",
+        "apps/server/src/auth/SessionStore.test.ts",
+        "apps/server/src/persistence/Migrations.test.ts",
+        "apps/server/src/workstreams/enrollment/trustedCliContext.test.ts",
+        "apps/server/src/cli/workstreamProvider.test.ts",
+        "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts",
+        "apps/server/src/workstreams/enrollment/sqliteConnection.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/workstreams/enrollment/**",
+        "apps/server/src/auth/SessionStore.ts",
+        "apps/server/src/auth/SessionStore.test.ts",
+        "packages/contracts/src/auth.ts",
+        "apps/server/src/persistence/Migrations.ts",
+        "apps/server/src/persistence/Migrations.test.ts",
+        "apps/server/src/persistence/Migrations/006_JonesWorkstreamsProviderEnrollments.ts",
+        "apps/server/src/cli/workstream.ts",
+        "apps/server/src/cli/workstreamProvider.ts",
+        "apps/server/src/environment/nativeStoreAuthorityPersistence.ts"
+      ]
+    },
+    {
+      "group_id": "jones-workstreams-registration-context",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/contracts/src/workstreamsRegistrationContext.test.ts apps/server/src/workstreams/registrationContext/service.test.ts apps/server/src/workstreams/registrationContext/http.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/http.test.ts packages/contracts/src/environmentHttp.test.ts apps/server/src/server.test.ts",
+      "modules": [
+        "packages/contracts/src/workstreamsRegistrationContext.test.ts",
+        "apps/server/src/workstreams/registrationContext/service.test.ts",
+        "apps/server/src/workstreams/registrationContext/http.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/workstreams/WorkstreamPlacements.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/server/src/server.test.ts"
+      ],
+      "scope": [
+        "packages/contracts/src/workstreamsRegistrationContext.ts",
+        "packages/contracts/src/index.ts",
+        "packages/contracts/src/environmentHttp.ts",
+        "apps/server/src/workstreams/registrationContext/**",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.ts",
+        "apps/server/src/workstreams/http.ts",
+        "apps/server/src/server.ts"
+      ]
+    },
+    {
+      "group_id": "jones-workstreams-registration-ui",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/web/src/components/workstreams/workstreamReferenceActions.test.ts apps/web/src/components/workstreams/WorkstreamAddPrDialog.test.tsx apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/state/workstreams.test.ts",
+      "modules": [
+        "apps/web/src/components/workstreams/workstreamReferenceActions.test.ts",
+        "apps/web/src/components/workstreams/WorkstreamAddPrDialog.test.tsx",
+        "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/state/workstreams.test.ts"
+      ],
+      "scope": [
+        "apps/web/src/components/workstreams/**",
+        "apps/web/src/state/workstreams.ts",
+        "apps/web/src/components/Sidebar.tsx"
+      ]
     }
   ]
 }
