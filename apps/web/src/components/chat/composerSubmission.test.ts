@@ -2,6 +2,7 @@ import {
   ASSISTANT_CITATION_MAX_TEXT_LENGTH,
   EnvironmentId,
   MessageId,
+  ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ThreadId,
 } from "@t3tools/contracts";
@@ -11,7 +12,8 @@ import {
 } from "@t3tools/shared/assistantCitations";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { submitComposerDraft } from "./composerSubmission";
+import { useQueuedMessageStore } from "../../queuedMessageStore";
+import { handleComposerEnter, submitComposerDraft } from "./composerSubmission";
 
 const assistantCitation = {
   version: 1 as const,
@@ -290,5 +292,148 @@ describe("submitComposerDraft", () => {
 
     expect(result).toEqual({ validationMessage: null, didDispatch: true });
     expect(onSend).toHaveBeenCalledOnce();
+  });
+});
+
+const bareEnter = {
+  shiftKey: false,
+  altKey: false,
+  metaKey: false,
+  ctrlKey: false,
+  isComposing: false,
+  keyCode: 13,
+  repeat: false,
+};
+
+function enterScenario(overrides: Partial<Parameters<typeof handleComposerEnter>[0]> = {}) {
+  const onSubmit = vi.fn();
+  const onSteerNextQueuedMessage = vi.fn(() => true);
+  const options = {
+    event: bareEnter,
+    intent: { isMobileViewport: false, isDraftThread: false, isRunning: true, prompt: "" },
+    hasDraftContext: false,
+    queueActionDisabled: false,
+    onSubmit,
+    onSteerNextQueuedMessage,
+    ...overrides,
+  };
+  return { handled: handleComposerEnter(options), onSubmit, onSteerNextQueuedMessage };
+}
+
+describe("composer Enter actions", () => {
+  it("uses the queue action instead of submitting an empty draft", () => {
+    const result = enterScenario();
+    expect(result.handled).toBe(true);
+    expect(result.onSteerNextQueuedMessage).toHaveBeenCalledOnce();
+    expect(result.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("does not drain the next message on a held Enter key", () => {
+    const result = enterScenario({ event: { ...bareEnter, repeat: true } });
+    expect(result.handled).toBe(true);
+    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+    expect(result.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("retains normal submission when no message is queued", () => {
+    const result = enterScenario({ onSteerNextQueuedMessage: vi.fn(() => false) });
+    expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith("foreground");
+  });
+
+  it.each(["hello", " ", "\n"])("retains the draft send path for %j", (prompt) => {
+    const result = enterScenario({
+      intent: { isMobileViewport: false, isDraftThread: false, prompt },
+    });
+    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+    expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith("foreground");
+  });
+
+  it.each(["hasDraftContext", "queueActionDisabled"] as const)("preserves %s guards", (guard) => {
+    const result = enterScenario({ [guard]: true });
+    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+    expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith("foreground");
+  });
+
+  it.each(["shiftKey", "altKey", "metaKey", "ctrlKey"] as const)(
+    "does not steer with %s",
+    (modifier) => {
+      const result = enterScenario({ event: { ...bareEnter, [modifier]: true } });
+      expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+      if (modifier === "shiftKey") {
+        expect(result.handled).toBe(false);
+        expect(result.onSubmit).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([{ isComposing: true }, { keyCode: 229 }])("ignores IME Enter %j", (event) => {
+    const result = enterScenario({ event: { ...bareEnter, ...event } });
+    expect(result.handled).toBe(false);
+    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+    expect(result.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("allows bare queue Enter without changing the configured draft shortcut", () => {
+    const intent = {
+      isMobileViewport: false,
+      isDraftThread: false,
+      sendShortcut: "mod-enter" as const,
+      prompt: "",
+    };
+    const empty = enterScenario({ intent });
+    expect(empty.onSteerNextQueuedMessage).toHaveBeenCalledOnce();
+    const draft = enterScenario({ intent: { ...intent, prompt: "hello" } });
+    expect(draft.handled).toBe(false);
+    expect(draft.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("uses one queue item in order and shares the send lock with the arrow action", () => {
+    const threadKey = "queued-enter-fixture";
+    const queue = useQueuedMessageStore.getState();
+    const message = (prompt: string) => ({
+      prompt,
+      images: [],
+      files: [],
+      terminalContexts: [],
+      previewAnnotations: [],
+      reviewComments: [],
+      sendSettings: {
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        promptEffort: null,
+      },
+      queuedAfterToolActivityId: null,
+      createdAt: "2026-10-02T00:00:00.000Z",
+    });
+    const first = queue.enqueue(threadKey, message("first"));
+    const second = queue.enqueue(threadKey, message("second"));
+    const dispatched: string[] = [];
+    const steer = (id: string) => {
+      const entry = queue.beginSend(threadKey, id, null);
+      if (entry) dispatched.push(entry.prompt);
+    };
+    const next = () => {
+      const entry = useQueuedMessageStore.getState().queuesByThreadKey[threadKey]?.[0];
+      if (!entry) return false;
+      steer(entry.id);
+      return true;
+    };
+    try {
+      enterScenario({ onSteerNextQueuedMessage: next });
+      expect(dispatched).toEqual(["first"]);
+      steer(first.id);
+      enterScenario({ onSteerNextQueuedMessage: next });
+      expect(dispatched).toEqual(["first"]);
+      queue.finishSend(threadKey, first.id);
+      enterScenario({ event: { ...bareEnter, repeat: true }, onSteerNextQueuedMessage: next });
+      expect(dispatched).toEqual(["first"]);
+      enterScenario({ onSteerNextQueuedMessage: next });
+      expect(dispatched).toEqual(["first", "second"]);
+      queue.finishSend(threadKey, second.id);
+    } finally {
+      queue.remove(threadKey, first.id);
+      queue.remove(threadKey, second.id);
+    }
   });
 });
