@@ -54,5 +54,6 @@ export * from "./hostStatus.ts";
 
 export * from "./jonesUpdates.ts";
 export * from "./voiceReview.ts";
+export * from "./threadActivity.ts";
 export * from "./workstreamsNativeProvider.ts";
 export * from "./workstreamsRegistrationContext.ts";

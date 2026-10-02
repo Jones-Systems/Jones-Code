@@ -39,6 +39,7 @@ import {
 } from "@t3tools/contracts";
 import { legacyLinkedPullRequestOf } from "@t3tools/shared/threadPullRequests";
 import * as Arr from "effect/Array";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -1094,6 +1095,51 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           (SELECT COUNT(*) FROM projection_projects) AS "projectCount",
           (SELECT COUNT(*) FROM projection_threads) AS "threadCount"
       `,
+  });
+
+  const readOperatingCounts = SqlSchema.findOne({
+    Request: Schema.Struct({
+      projectId: Schema.optional(ProjectId),
+      backgroundIds: Schema.Array(Schema.String),
+    }),
+    Result: Schema.Struct({
+      total: NonNegativeInt,
+      operating: NonNegativeInt,
+      foregroundWaitingApproval: NonNegativeInt,
+      foregroundWaitingInput: NonNegativeInt,
+      foregroundWaitingPlan: NonNegativeInt,
+      backgroundOperating: NonNegativeInt,
+    }),
+    execute: ({ projectId, backgroundIds }) => sql`
+      WITH activity AS (
+        SELECT
+          CASE WHEN threads.pending_approval_count > 0 THEN 1 ELSE 0 END AS approval_wait,
+          CASE WHEN threads.pending_approval_count = 0 AND threads.pending_user_input_count > 0 THEN 1 ELSE 0 END AS input_wait,
+          CASE WHEN threads.pending_approval_count = 0 AND threads.pending_user_input_count = 0
+            AND COALESCE(sessions.status, '') NOT IN ('starting', 'running')
+            AND threads.interaction_mode = 'plan' AND turns.started_at IS NOT NULL
+            AND turns.state <> 'running' AND turns.completed_at IS NOT NULL AND threads.has_actionable_proposed_plan > 0
+            THEN 1 ELSE 0 END AS plan_wait,
+          CASE WHEN sessions.status IN ('starting', 'running')
+            AND threads.pending_approval_count = 0 AND threads.pending_user_input_count = 0
+            THEN 1 ELSE 0 END AS foreground_active,
+          CASE WHEN threads.thread_id IN (SELECT value FROM json_each(${JSON.stringify(backgroundIds)}))
+            THEN 1 ELSE 0 END AS background_active
+        FROM projection_threads threads
+        JOIN projection_projects projects ON projects.project_id = threads.project_id
+        LEFT JOIN projection_thread_sessions sessions ON sessions.thread_id = threads.thread_id
+        LEFT JOIN projection_turns turns ON turns.thread_id = threads.thread_id AND turns.turn_id = threads.latest_turn_id
+        WHERE threads.deleted_at IS NULL AND threads.archived_at IS NULL AND projects.deleted_at IS NULL
+          ${projectId === undefined ? sql`` : sql`AND threads.project_id = ${projectId}`}
+      )
+      SELECT COUNT(*) AS total,
+        COALESCE(SUM(CASE WHEN foreground_active = 1 OR background_active = 1 THEN 1 ELSE 0 END), 0) AS operating,
+        COALESCE(SUM(approval_wait), 0) AS "foregroundWaitingApproval",
+        COALESCE(SUM(input_wait), 0) AS "foregroundWaitingInput",
+        COALESCE(SUM(plan_wait), 0) AS "foregroundWaitingPlan",
+        COALESCE(SUM(background_active), 0) AS "backgroundOperating"
+      FROM activity
+    `,
   });
 
   const readEventReplayStats = SqlSchema.findOne({
@@ -3036,6 +3082,26 @@ pending_approval_requests AS (
       })),
     );
 
+  const getOperatingCounts: ProjectionSnapshotQueryShape["getOperatingCounts"] = (input) =>
+    Effect.gen(function* () {
+      const backgroundSampledAt = DateTime.formatIso(yield* DateTime.now);
+      const backgroundIds = threadBackgroundLiveness.listLiveThreadIds();
+      const result = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const counts = yield* readOperatingCounts({ ...input, backgroundIds });
+            const { snapshotSequence } = yield* getSnapshotSequence();
+            return { ...counts, snapshotSequence };
+          }),
+        )
+        .pipe(Effect.mapError(toPersistenceSqlError("ProjectionSnapshotQuery.getOperatingCounts")));
+      return {
+        ...result,
+        backgroundSampledAt,
+        observedAt: DateTime.formatIso(yield* DateTime.now),
+      };
+    });
+
   const getCounts: ProjectionSnapshotQueryShape["getCounts"] = () =>
     readProjectionCounts(undefined).pipe(
       Effect.mapError(
@@ -3860,6 +3926,7 @@ pending_approval_requests AS (
     searchThreads,
     getSnapshotSequence,
     getCounts,
+    getOperatingCounts,
     getEventReplayStats,
     getActiveProjectByWorkspaceRoot,
     getProjectShellById,

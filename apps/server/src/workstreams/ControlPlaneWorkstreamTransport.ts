@@ -1,6 +1,9 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
+  WORKSTREAM_COUNTS_MANIFEST_SHA256,
+  WORKSTREAM_COUNTS_ROUTE,
+  WorkstreamRegistryCounts,
   WORKSTREAM_CONTRACT_MANIFEST_SHA256,
   WORKSTREAM_CONTRACT_HEADER_VERSION,
   WORKSTREAM_CONTRACT_VERSION,
@@ -254,6 +257,7 @@ async function performRequest(input: {
   readonly sentAt: string;
   readonly idempotencyKey?: string;
   readonly signal: AbortSignal;
+  readonly countsContract?: boolean;
 }): Promise<string> {
   const placement =
     input.target === T3_PLACEMENT_ROUTE || input.target.startsWith(`${T3_PLACEMENT_ROUTE}?`);
@@ -313,7 +317,9 @@ async function performRequest(input: {
         ? WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256
         : placement
           ? T3_PLACEMENT_MANIFEST_SHA256
-          : WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+          : input.countsContract
+            ? WORKSTREAM_COUNTS_MANIFEST_SHA256
+            : WORKSTREAM_CONTRACT_MANIFEST_SHA256,
       "x-control-request-id": requestId,
       "x-control-timestamp": input.sentAt,
       "x-control-nonce": nonce,
@@ -325,6 +331,14 @@ async function performRequest(input: {
     },
     ...(input.body === "" ? {} : { body: input.body }),
   });
+  if (
+    input.countsContract &&
+    (response.headers.get("x-control-contract-version") !== WORKSTREAM_CONTRACT_HEADER_VERSION ||
+      response.headers.get("x-control-contract-manifest") !== WORKSTREAM_COUNTS_MANIFEST_SHA256)
+  ) {
+    await response.body?.cancel();
+    throw new BoundedTransportFailure("http_error");
+  }
   if (
     (placement || registration) &&
     (response.headers.get("x-control-contract-version") !==
@@ -385,6 +399,7 @@ export function makeControlPlaneWorkstreamTransport(
     schema: S,
     body = "",
     idempotencyKey?: string,
+    countsContract = false,
   ): Effect.Effect<S["Type"], WorkstreamTransportError, S["DecodingServices"]> =>
     Effect.gen(function* () {
       const sentAt = DateTime.formatIso(yield* DateTime.now);
@@ -399,6 +414,7 @@ export function makeControlPlaneWorkstreamTransport(
             sentAt,
             ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
             signal,
+            countsContract,
           }),
         catch: (cause) =>
           new WorkstreamTransportError({
@@ -491,6 +507,26 @@ export function makeControlPlaneWorkstreamTransport(
       authorizationRevision: config.authorizationRevision,
     },
     transport: {
+      getCountsCapabilities: () =>
+        request(
+          "counts_capabilities",
+          "GET",
+          "/workstreams/v1/capabilities",
+          WorkstreamCapabilities,
+          "",
+          undefined,
+          true,
+        ),
+      getRegistryCounts: () =>
+        request(
+          "registry_counts",
+          "GET",
+          WORKSTREAM_COUNTS_ROUTE,
+          WorkstreamRegistryCounts,
+          "",
+          undefined,
+          true,
+        ),
       listThreadPlacements: (input) =>
         Schema.encodeEffect(Schema.fromJsonString(T3PlacementRequest))(input, {
           onExcessProperty: "error",

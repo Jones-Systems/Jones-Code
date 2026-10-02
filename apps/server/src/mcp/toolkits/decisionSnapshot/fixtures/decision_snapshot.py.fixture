@@ -1,0 +1,677 @@
+"""One-shot read-only composition; source observations never acquire authority.
+
+Release bindings are read only from the fixed file beside the collector tool.
+Neither CLI arguments nor native stdin can select executable paths or endpoints.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
+import math
+import os
+from pathlib import Path
+import re
+import signal
+import stat
+import sys
+import time
+from urllib.parse import urlsplit
+
+SCHEMA = 'codex.decision-snapshot/v1'
+NATIVE_SCHEMA = 'codex.decision-snapshot-native/v1'
+CONFIG_SCHEMA = 'codex.decision-snapshot-sources/v1'
+MAX_BYTES = 65536
+NATIVE_MAX_BYTES = 16384
+OVERALL_SECONDS = 40.0
+NONHOST_RESERVE_SECONDS = 5.0
+SOURCE_CLEANUP_SECONDS = 3.0
+HOST_PHASE_SECONDS = 1.5
+HOST_CLEANUP_SECONDS = .2
+RETURN_SECONDS = .5
+SOURCE_SECONDS = {'host': 3.0, 'queue': 5.0, 'workspaces': 10.0,
+                  'account_malcolm': 35.0, 'account_jace': 35.0,
+                  'threads': 10.0, 'workstreams': 10.0}
+ROOT = Path(__file__).resolve().parents[2]
+CODE = re.compile(r'[a-z][a-z0-9_]{0,63}')
+IDENTIFIER = re.compile(r'[A-Za-z0-9_.:-]{1,128}')
+ACCOUNT_REASONS = frozenset({'cancelled', 'invalid_arguments', 'native_observation_unavailable',
+                             'probe_in_progress', 'retry_not_before', 'unsafe_or_invalid_state',
+                             'native_cleanup_unconfirmed'})
+
+
+class Invalid(ValueError):
+    pass
+
+
+class SourceFailure(Exception):
+    def __init__(self, reason, status='unavailable'):
+        self.reason, self.status = reason, status
+
+
+def utc(value):
+    if type(value) is not str or len(value) > 64:
+        raise Invalid('invalid_timestamp')
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None or parsed.utcoffset().total_seconds() != 0:
+            raise Invalid('invalid_timestamp')
+        return parsed
+    except (ValueError, OverflowError) as error:
+        raise Invalid('invalid_timestamp') from error
+
+
+def stamp(value):
+    return value.isoformat().replace('+00:00', 'Z')
+
+
+def now():
+    return datetime.now(timezone.utc)
+
+
+def _object(pairs):
+    output = {}
+    for key, value in pairs:
+        if key in output:
+            raise Invalid('duplicate_key')
+        output[key] = value
+    return output
+
+
+def loads(raw, limit=MAX_BYTES):
+    if len(raw) > limit:
+        raise Invalid('output_limit')
+    try:
+        return json.loads(raw, object_pairs_hook=_object,
+                          parse_constant=lambda _: (_ for _ in ()).throw(Invalid('nonfinite_number')))
+    except (ValueError, UnicodeError, RecursionError) as error:
+        raise Invalid('invalid_json') from error
+
+
+def exact(value, keys):
+    if type(value) is not dict or set(value) != set(keys):
+        raise Invalid('invalid_schema')
+
+
+def count(value):
+    if type(value) is not int or not 0 <= value <= 2**53 - 1:
+        raise Invalid('invalid_count')
+    return value
+
+
+def number(value, maximum=None):
+    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        raise Invalid('invalid_number')
+    if maximum is not None and value > maximum:
+        raise Invalid('invalid_number')
+    return value
+
+
+def counts(value):
+    if type(value) is not dict or len(value) > 32:
+        raise Invalid('invalid_counts')
+    for key, item in value.items():
+        if type(key) is not str or not CODE.fullmatch(key):
+            raise Invalid('invalid_counts')
+        count(item)
+    return value
+
+
+def native_envelope(value):
+    exact(value, ('schema', 'authority_effect', 'provenance', 'sources'))
+    if (value['schema'] != NATIVE_SCHEMA or value['authority_effect'] != 'none' or
+            value['provenance'] not in ('native_observed', 'caller_supplied', 'fixture')):
+        raise Invalid('invalid_native_envelope')
+    sources = value['sources']
+    if type(sources) is not dict or set(sources) - {'threads', 'workstreams'}:
+        raise Invalid('invalid_native_sources')
+    for name, entry in sources.items():
+        exact(entry, ('status', 'observed_at', 'timestamp_basis', 'scope', 'values', 'reason'))
+        if entry['status'] not in ('observed', 'partial', 'unavailable', 'timeout'):
+            raise Invalid('invalid_native_status')
+        if entry['timestamp_basis'] not in ('native_observation', 'local_receipt', 'unknown'):
+            raise Invalid('invalid_timestamp_basis')
+        if entry['observed_at'] is not None:
+            utc(entry['observed_at'])
+        reason = entry['reason']
+        if reason is not None and (type(reason) is not str or not CODE.fullmatch(reason)):
+            raise Invalid('invalid_native_reason')
+        scope = entry['scope']
+        if name == 'threads':
+            exact(scope, ('environment_id', 'project_id', 'include_archived'))
+            if type(scope['include_archived']) is not bool:
+                raise Invalid('invalid_native_scope')
+            identifiers = ('environment_id', 'project_id')
+        else:
+            identifiers = ('registry_id', 'owner_id', 'principal_id', 'server_generation',
+                           'registry_version', 'authorization_revision')
+            exact(scope, identifiers)
+        for key in identifiers:
+            item = scope[key]
+            if key == 'registry_id' and item is not None:
+                if type(item) is not str or len(item) > 256 or not item.isascii():
+                    raise Invalid('invalid_native_scope')
+                try:
+                    origin = urlsplit(item)
+                    port = origin.port
+                except ValueError as error:
+                    raise Invalid('invalid_native_scope') from error
+                if (origin.scheme != 'https' or not origin.hostname or
+                        not re.fullmatch(r'[A-Za-z0-9.:-]+', origin.hostname) or
+                        origin.username is not None or origin.password is not None or
+                        origin.path or origin.query or origin.fragment or (port is not None and port <= 0)):
+                    raise Invalid('invalid_native_scope')
+            elif name == 'workstreams' and key in ('server_generation', 'registry_version', 'authorization_revision') and type(item) is int:
+                count(item)
+            elif item is not None and (type(item) is not str or not IDENTIFIER.fullmatch(item)):
+                raise Invalid('invalid_native_scope')
+        if entry['status'] in ('observed', 'partial'):
+            required = {'operating', 'total'} if name == 'threads' else {'active', 'total'}
+            allowed = required | ({'foreground_waiting_approval', 'foreground_waiting_input',
+                                  'foreground_waiting_plan', 'background_operating'} if name == 'threads' else {'unknown_lifecycle'})
+            if type(entry['values']) is not dict or not required <= entry['values'].keys() <= allowed:
+                raise Invalid('invalid_native_counts')
+            for item in entry['values'].values():
+                count(item)
+            if any(item > entry['values']['total'] for key, item in entry['values'].items() if key != 'total'):
+                raise Invalid('invalid_native_counts')
+            if entry['observed_at'] is None or entry['timestamp_basis'] == 'unknown':
+                raise Invalid('missing_observation_time')
+        else:
+            exact(entry['values'], ())
+    return value
+
+
+@dataclass(frozen=True)
+class Binding:
+    name: str
+    argv: tuple[str, ...]
+    timeout: float
+    release_id: str = 'source_tree'
+    provenance: str = 'local_collector'
+
+
+def _path(value):
+    if type(value) is not str or len(value) > 4096:
+        raise Invalid('invalid_release_binding')
+    path = Path(value)
+    if not path.is_absolute() or '..' in path.parts:
+        raise Invalid('invalid_release_binding')
+    return value
+
+
+def local_bindings(root):
+    return {
+        'host': Binding('host', (sys.executable, '-I', '-S', '-B', str(root / 'skills/inspect-linux-system-telemetry/scripts/collect_work_capacity.py'), '--format', 'admission'), 3),
+        'workspaces': Binding('workspaces', (sys.executable, '-I', '-S', '-B', str(root / 'tools/chatgpt-web-connector-runtime/workspacectl.py'), 'counts'), 10),
+    }
+
+
+def release_bindings(root, purpose):
+    """Missing installation bindings remain unavailable; collection never enrolls them."""
+    bindings = local_bindings(root)
+    path = root / 'tools/decision-snapshot-sources.json'
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return bindings
+    with os.fdopen(fd, 'rb') as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_BYTES:
+            raise Invalid('invalid_release_binding')
+        try:
+            config = loads(stream.read(MAX_BYTES + 1))
+        except OSError as error:
+            raise Invalid('invalid_release_binding') from error
+    exact(config, ('schema', 'release_id', 'queue_store', 'accounts'))
+    if (config['schema'] != CONFIG_SCHEMA or type(config['release_id']) is not str or
+            not IDENTIFIER.fullmatch(config['release_id'])):
+        raise Invalid('invalid_release_binding')
+    release = config['release_id']
+    bindings = {name: Binding(item.name, item.argv, item.timeout, release) for name, item in bindings.items()}
+    if config['queue_store'] is not None:
+        store = _path(config['queue_store'])
+        bootstrap = 'import sys; sys.path.insert(0,sys.argv.pop(1)); from codex_v3.t3_work_queue_cli import main; raise SystemExit(main())'
+        bindings['queue'] = Binding('queue', (sys.executable, '-I', '-S', '-B', '-c', bootstrap, str(root / 'src'), '--store', store, 'counts'), 5, release)
+    accounts = config['accounts']
+    if type(accounts) is not dict or set(accounts) - {'malcolm', 'jace'}:
+        raise Invalid('invalid_release_binding')
+    for account, config in accounts.items():
+        exact(config, ('sdk', 'cli', 'launcher', 'model'))
+        if type(config['model']) is not str or not re.fullmatch(r'claude-(?:opus-5-5|sonnet-[0-9]+-[0-9]+(?:-[0-9]{8})?)', config['model']):
+            raise Invalid('invalid_release_binding')
+        argv = [sys.executable, '-I', '-S', '-B', str(root / 'tools/claude-account-usage.py'), account, '--purpose', purpose, '--model', config['model']]
+        for key in ('sdk', 'cli', 'launcher'):
+            argv.extend(('--' + key, _path(config[key])))
+        name = 'account_' + account
+        bindings[name] = Binding(name, tuple(argv), 35, release)
+    return bindings
+
+
+async def _read(stream):
+    chunks, size = [], 0
+    while True:
+        block = await stream.read(8192)
+        if not block:
+            return b''.join(chunks)
+        size += len(block)
+        if size > MAX_BYTES:
+            raise SourceFailure('output_limit')
+        chunks.append(block)
+
+
+async def _cleanup(process, seconds):
+    """TERM permits account cooldown persistence; KILL bounds the entire process group."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    cooperative = True
+    try:
+        await asyncio.wait_for(process.wait(), max(0, seconds - .2))
+    except asyncio.TimeoutError:
+        cooperative = False
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(process.wait(), .2)
+    except asyncio.TimeoutError as error:
+        raise SourceFailure('cleanup_unknown') from error
+    return cooperative
+
+
+async def collect(binding, seconds):
+    process = None
+    readers = []
+    argv = binding.argv
+    cleanup_seconds = HOST_CLEANUP_SECONDS if binding.name == 'host' else SOURCE_CLEANUP_SECONDS
+    work_seconds = max(0, seconds - cleanup_seconds) if binding.name == 'host' else seconds
+    if work_seconds <= 0:
+        raise SourceFailure('source_deadline', 'timeout')
+    if binding.name.startswith('account_'):
+        argv += ('--budget-seconds', str(min(35, work_seconds)))
+    try:
+        async with asyncio.timeout(work_seconds):
+            spawn = asyncio.create_task(asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL,
+                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                         start_new_session=True, limit=MAX_BYTES + 1))
+            try:
+                process = await asyncio.shield(spawn)
+            except asyncio.CancelledError:
+                process = await spawn
+                raise
+            readers = [asyncio.create_task(_read(process.stdout)), asyncio.create_task(_read(process.stderr))]
+            stdout, _ = await asyncio.gather(*readers)
+            returncode = await process.wait()
+            if returncode not in (0, 1, 3, 4):
+                raise SourceFailure('collector_failed')
+            return loads(stdout)
+    except TimeoutError as error:
+        raise SourceFailure('source_deadline', 'timeout') from error
+    except (OSError, Invalid) as error:
+        raise SourceFailure('collector_unavailable' if isinstance(error, OSError) else 'invalid_source_output') from error
+    finally:
+        for task in readers:
+            if not task.done():
+                task.cancel()
+        if readers:
+            await asyncio.gather(*readers, return_exceptions=True)
+        if process is not None:
+            cooperative = await _cleanup(process, cleanup_seconds)
+            if not cooperative and binding.name.startswith('account_'):
+                raise SourceFailure('cleanup_unknown')
+
+
+def _failure(name, reason, status='unavailable', received=None, release='source_tree'):
+    values = ({'ram_available_gib': None, 'cpu_used_percent': None, 'one_fully_used_core_percent': None,
+               'agent_batch_ceiling': 0, 'serial_test_process_ceiling': 0,
+               'broad_test_allowed': False, 'start_fenced': True} if name == 'host' else {})
+    return {'status': status, 'observed_at': None, 'received_at': stamp(received or now()),
+            'age_seconds': None, 'freshness': 'unknown',
+            'provenance': {'kind': 'local_collector', 'collector': name, 'release_id': release,
+                           'schema': None, 'timestamp_basis': 'unknown'},
+            'scope': {'host': 'same_host'} if name == 'host' else {}, 'values': values, 'reason': reason}
+
+
+def _entry(name, observed, received, values, schema, basis, purpose, *, kind='local_collector',
+           scope=None, status='observed', reason=None, release='source_tree'):
+    age = (received - utc(observed)).total_seconds()
+    if age < 0:
+        raise Invalid('future_observation')
+    maximum = 300 if name.startswith('account_') and purpose == 'display' else 120
+    freshness = 'fresh' if age <= 120 else 'display_only' if age <= maximum else 'stale'
+    if freshness == 'stale' and status in ('observed', 'partial'):
+        status, reason = 'stale', 'observation_stale'
+    return {'status': status, 'observed_at': observed, 'received_at': stamp(received),
+            'age_seconds': round(age, 3), 'freshness': freshness,
+            'provenance': {'kind': kind, 'collector': name, 'release_id': release,
+                           'schema': schema, 'timestamp_basis': basis},
+            'scope': scope or {}, 'values': values, 'reason': reason}
+
+
+def project(name, raw, received, purpose, release='source_tree'):
+    if type(raw) is not dict:
+        raise Invalid('invalid_source')
+    schema = raw.get('schema')
+    if name == 'host':
+        if schema != 'work-capacity-admission/v1' or raw.get('status') not in ('ok', 'partial'):
+            raise Invalid('invalid_host_source')
+        admission = raw['admission']
+        measures = admission['measurements']
+        values = {key: count(admission[key]) for key in ('agent_batch_ceiling', 'serial_test_process_ceiling')}
+        if values['agent_batch_ceiling'] > 10 or values['serial_test_process_ceiling'] > 1:
+            raise Invalid('invalid_host_source')
+        for key in ('ram_available_gib', 'cpu_used_percent', 'one_fully_used_core_percent'):
+            values[key] = number(measures[key], 100 if key == 'cpu_used_percent' else None) if measures[key] is not None else None
+        if values['ram_available_gib'] is None or values['cpu_used_percent'] is None:
+            values['agent_batch_ceiling'] = values['serial_test_process_ceiling'] = 0
+        status = 'partial' if raw['status'] == 'partial' or any(value is None for value in values.values()) else 'observed'
+        result = _entry(name, raw['collected_at_utc'], received, values, schema, 'local_receipt', purpose,
+                        scope={'host': 'same_host'}, status=status, release=release)
+        fenced = (values['ram_available_gib'] is None or values['cpu_used_percent'] is None or result['freshness'] == 'stale')
+        if fenced:
+            values['agent_batch_ceiling'] = values['serial_test_process_ceiling'] = 0
+        values['broad_test_allowed'] = values['serial_test_process_ceiling'] > 0
+        values['start_fenced'] = fenced
+        return result
+    if name == 'queue':
+        if schema != 'codex.t3-work-queue-counts/v1' or raw.get('full_store') is not True:
+            raise Invalid('invalid_queue_source')
+        values = {key: count(raw[key]) for key in ('total', 'pending', 'running', 'held', 'undispatched_nonterminal_depth')}
+        for key in ('by_kind', 'by_entry_kind', 'by_state'):
+            values[key] = counts(raw[key])
+            if sum(values[key].values()) != values['total']:
+                raise Invalid('incomplete_queue_counts')
+        observed = stamp(datetime.fromtimestamp(count(raw['observed_at_ms']) / 1000, timezone.utc))
+        return _entry(name, observed, received, values, schema, 'native_observation', purpose,
+                      scope={'full_store': True}, release=release)
+    if name == 'workspaces':
+        if schema == 'chatgpt-web-connector-workspace-control-response/v1':
+            raw = raw.get('result')
+            if type(raw) is not dict:
+                raise Invalid('workspace_route_unavailable')
+            schema = raw.get('schema')
+        if schema != 'chatgpt-web-connector-workspace-counts/v1':
+            raise Invalid('invalid_workspace_source')
+        values = {key: count(raw[key]) for key in ('total', 'active_or_possibly_active', 'exact_active', 'retained')}
+        values['by_state'] = counts(raw['by_state'])
+        if sum(values['by_state'].values()) != values['total']:
+            raise Invalid('incomplete_workspace_counts')
+        exact(raw['dispatch'], ('active', 'unknown', 'unavailable_workspaces', 'observed_active', 'observed_unknown'))
+        values['dispatch'] = {key: None if value is None and key in ('active', 'unknown') else count(value)
+                              for key, value in raw['dispatch'].items()}
+        if raw['dispatch_status'] not in ('complete', 'partial'):
+            raise Invalid('invalid_dispatch_status')
+        values['dispatch_status'] = raw['dispatch_status']
+        return _entry(name, raw['observed_at'], received, values, schema, 'native_observation', purpose,
+                      scope={'store_revision': count(raw['store_revision'])},
+                      status='partial' if raw['dispatch_status'] == 'partial' else 'observed', release=release)
+    if name.startswith('account_'):
+        if schema != 'claude.account-usage/v1' or raw.get('status') != 'observed':
+            reason = raw.get('reason')
+            safe = reason if type(reason) is str and reason in ACCOUNT_REASONS else 'account_unavailable'
+            result = _failure(name, safe, received=received, release=release)
+            if safe == 'native_cleanup_unconfirmed':
+                result['values']['start_fenced'] = True
+            if raw.get('retry_not_before') is not None:
+                utc(raw['retry_not_before'])
+                result['values']['retry_not_before'] = raw['retry_not_before']
+            return result
+        if raw.get('purpose') != purpose or raw.get('binding_verified') is not True:
+            raise Invalid('account_binding_unverified')
+        account = raw['account']
+        if account.get('account') != name.removeprefix('account_'):
+            raise Invalid('account_identity_mismatch')
+        observed = raw['received_at']
+        age = (received - utc(observed)).total_seconds()
+        values = {'admission_eligible': purpose == 'admission' and 0 <= age <= 120 and raw.get('admission_eligible') is True}
+        if 'protected' in account:
+            if type(account['protected']) is not bool:
+                raise Invalid('invalid_protected_metadata')
+            values['protected'] = account['protected']
+        def window(value):
+            if value is None:
+                return None
+            exact(value, ('remaining_percent', 'observed_at', 'reset_at'))
+            utc(value['observed_at'])
+            if value['observed_at'] != observed:
+                raise Invalid('account_window_time_mismatch')
+            reset = value['reset_at']
+            hours = None
+            if reset is not None:
+                remaining = (utc(reset) - received).total_seconds()
+                hours = round(remaining / 3600, 3) if remaining > 0 else None
+            return {'remaining_percent': number(value['remaining_percent'], 100),
+                    'observed_at': value['observed_at'], 'reset_at': reset,
+                    'hours_until_reset': hours}
+        for key in ('five_hour', 'weekly'):
+            values[key] = window(account[key])
+        models = account['model_weekly']
+        if type(models) is not dict or len(models) > 1:
+            raise Invalid('invalid_model_scope')
+        values['model_weekly'] = {}
+        for model, value in models.items():
+            if not re.fullmatch(r'claude-(?:opus-5-5|sonnet-[0-9]+-[0-9]+(?:-[0-9]{8})?)', model):
+                raise Invalid('invalid_model_scope')
+            values['model_weekly'][model] = window(value)
+        result = _entry(name, observed, received, values, schema, 'local_receipt_upstream_lag_unknown',
+                        purpose, scope={'account': name.removeprefix('account_')}, release=release)
+        basis = raw.get('source', 'unknown')
+        if basis not in ('sdk', 'fresh-cache', 'unknown'):
+            raise Invalid('invalid_account_source')
+        result['provenance']['collection_basis'] = basis
+        return result
+    raise Invalid('unknown_source')
+
+
+async def compose(bindings, *, purpose='display', sources=None, native=None, overall=OVERALL_SECONDS, runner=collect,
+                  unbound_reason='source_not_bound', deadline=None, native_reader=None):
+    """Budgets include cleanup; cancellation returns completed sources and typed gaps."""
+    selected = tuple(dict.fromkeys(sources or SOURCE_SECONDS))
+    if purpose not in ('display', 'admission') or not selected or set(selected) - SOURCE_SECONDS.keys():
+        raise Invalid('invalid_arguments')
+    if native is not None:
+        native_envelope(native)
+    if native is not None and native_reader is not None:
+        raise Invalid('duplicate_native_input')
+    if any(item.provenance not in ('local_collector', 'fixture') for item in bindings.values()):
+        raise Invalid('invalid_collector_provenance')
+    results = {}
+    deadline = min(time.monotonic() + max(0, overall), deadline if deadline is not None else math.inf)
+    reader = asyncio.ensure_future(native_reader) if native_reader is not None else None
+    async def finish_reader():
+        if reader is not None:
+            if not reader.done():
+                reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+    async def worker(name):
+        binding = bindings.get(name)
+        received = now()
+        if name in ('threads', 'workstreams'):
+            packet = native
+            if reader is not None:
+                try:
+                    packet = native_envelope(await asyncio.shield(reader))
+                except SourceFailure as error:
+                    results[name] = _failure(name, error.reason, error.status)
+                    return
+                except (Invalid, KeyError, TypeError, ValueError, OverflowError):
+                    results[name] = _failure(name, 'native_packet_invalid')
+                    return
+                except asyncio.CancelledError:
+                    results[name] = _failure(name, 'cancelled')
+                    raise
+                received = now()
+            entry = (packet or {}).get('sources', {}).get(name)
+            if entry is None:
+                results[name] = _failure(name, 'native_source_unavailable')
+            elif entry['observed_at'] is not None:
+                try:
+                    results[name] = _entry(name, entry['observed_at'], received, entry['values'], NATIVE_SCHEMA,
+                                          entry['timestamp_basis'], purpose, kind=packet['provenance'],
+                                          scope=entry['scope'], status=entry['status'], reason=entry['reason'])
+                except Invalid:
+                    results[name] = _failure(name, 'invalid_native_output')
+            else:
+                results[name] = _failure(name, entry['reason'] or 'native_source_unavailable', entry['status'])
+                results[name]['provenance']['kind'] = packet['provenance']
+                results[name]['scope'] = entry['scope']
+            return
+        if binding is None:
+            results[name] = _failure(name, unbound_reason)
+            return
+        try:
+            remaining = deadline - time.monotonic()
+            budget = (min(HOST_PHASE_SECONDS, max(0, remaining - RETURN_SECONDS)) if name == 'host' else
+                      min(SOURCE_SECONDS[name], binding.timeout, max(0, remaining - NONHOST_RESERVE_SECONDS)))
+            if budget <= 0:
+                raise SourceFailure('source_deadline', 'timeout')
+            raw = await runner(binding, budget)
+            results[name] = project(name, raw, now(), purpose, binding.release_id)
+        except SourceFailure as error:
+            results[name] = _failure(name, error.reason, error.status, release=binding.release_id)
+            if error.reason == 'cleanup_unknown' and name.startswith('account_'):
+                results[name]['values']['start_fenced'] = True
+        except (Invalid, KeyError, TypeError, ValueError, OverflowError):
+            results[name] = _failure(name, 'invalid_source_output', release=binding.release_id)
+        except asyncio.CancelledError:
+            results[name] = _failure(name, 'cancelled')
+            raise
+        finally:
+            if name in results:
+                results[name]['provenance']['kind'] = binding.provenance
+    tasks = [asyncio.create_task(worker(name)) for name in selected if name != 'host']
+    cancelled = False
+    try:
+        async with asyncio.timeout(max(0, deadline - time.monotonic())):
+            await asyncio.gather(*tasks)
+            await finish_reader()
+            if 'host' in selected:
+                await worker('host')
+    except (asyncio.CancelledError, TimeoutError) as error:
+        cancelled = isinstance(error, asyncio.CancelledError)
+        for task in tasks:
+            # gather may return after a sibling cancels while another worker still cleans up.
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        await finish_reader()
+    for name in selected:
+        results.setdefault(name, _failure(name, 'cancelled' if cancelled else 'snapshot_deadline',
+                                         'unavailable' if cancelled else 'timeout'))
+    good = sum(value['status'] == 'observed' for value in results.values())
+    available = sum(value['status'] in ('observed', 'partial', 'stale') for value in results.values())
+    output = {'schema': SCHEMA, 'authority_effect': 'none', 'purpose': purpose,
+              'coverage': 'complete' if good == len(selected) else 'partial' if available else 'unavailable',
+              'collected_at': stamp(now()), 'sources': {name: results[name] for name in selected}}
+    if len(json.dumps(output, allow_nan=False).encode()) > MAX_BYTES:
+        raise Invalid('snapshot_output_limit')
+    return output
+
+
+async def _stdin(deadline):
+    transport = None
+    try:
+        if time.monotonic() >= deadline:
+            raise SourceFailure('native_packet_timeout', 'timeout')
+        async with asyncio.timeout(max(0, deadline - time.monotonic())):
+            if stat.S_ISREG(os.fstat(sys.stdin.fileno()).st_mode):
+                raw = sys.stdin.buffer.read(NATIVE_MAX_BYTES + 1)
+            else:
+                loop = asyncio.get_running_loop()
+                stream = asyncio.StreamReader(limit=NATIVE_MAX_BYTES + 1)
+                protocol = asyncio.StreamReaderProtocol(stream)
+                transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+                chunks, size = [], 0
+                while True:
+                    block = await stream.read(8192)
+                    if not block:
+                        break
+                    size += len(block)
+                    if size > NATIVE_MAX_BYTES:
+                        raise Invalid('input_limit')
+                    chunks.append(block)
+                raw = b''.join(chunks)
+        if not raw:
+            raise SourceFailure('native_packet_eof')
+        return native_envelope(loads(raw, NATIVE_MAX_BYTES))
+    except TimeoutError as error:
+        raise SourceFailure('native_packet_timeout', 'timeout') from error
+    except Invalid as error:
+        raise SourceFailure('native_packet_invalid') from error
+    except (OSError, ValueError) as error:
+        raise SourceFailure('native_packet_unavailable') from error
+    finally:
+        if transport is not None:
+            transport.close()
+
+
+async def _main(args):
+    started = time.monotonic()
+    task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, task.cancel)
+    reader = None
+    try:
+        deadline = min(started + args.budget_seconds, args.deadline_monotonic if args.deadline_monotonic is not None else math.inf)
+        reader = asyncio.create_task(_stdin(deadline - NONHOST_RESERVE_SECONDS)) if args.native_counts_stdin else None
+        unbound_reason = 'source_not_bound'
+        try:
+            bindings = release_bindings(ROOT, args.purpose)
+        except (Invalid, OSError):
+            bindings, unbound_reason = local_bindings(ROOT), 'invalid_release_binding'
+        return await compose(bindings, purpose=args.purpose, sources=args.source, native_reader=reader,
+                             deadline=deadline, unbound_reason=unbound_reason)
+    finally:
+        if reader is not None:
+            if not reader.done():
+                reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.remove_signal_handler(sig)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument('--purpose', choices=('admission', 'display'), default='display')
+    parser.add_argument('--source', choices=tuple(SOURCE_SECONDS), action='append')
+    parser.add_argument('--native-counts-stdin', action='store_true')
+    def budget(value):
+        try:
+            seconds = float(value)
+            if not math.isfinite(seconds) or not 0 < seconds <= OVERALL_SECONDS:
+                raise ValueError()
+            return seconds
+        except ValueError as error:
+            raise argparse.ArgumentTypeError('budget must be positive and at most 40 seconds') from error
+    parser.add_argument('--budget-seconds', type=budget, default=OVERALL_SECONDS)
+    def absolute_deadline(value):
+        try:
+            seconds = float(value)
+            if not math.isfinite(seconds) or seconds <= 0:
+                raise ValueError()
+            return seconds
+        except ValueError as error:
+            raise argparse.ArgumentTypeError('deadline must be positive finite CLOCK_MONOTONIC seconds') from error
+    parser.add_argument('--deadline-monotonic', type=absolute_deadline)
+    args = parser.parse_args(argv)
+    try:
+        output = asyncio.run(_main(args))
+    except (Invalid, OSError, TimeoutError, asyncio.CancelledError, KeyboardInterrupt):
+        output = {'schema': SCHEMA, 'authority_effect': 'none', 'purpose': args.purpose,
+                  'coverage': 'unavailable', 'collected_at': stamp(now()),
+                  'sources': {'host': _failure('host', 'invalid_or_cancelled_request')},
+                  'reason': 'invalid_or_cancelled_request'}
+    print(json.dumps(output, sort_keys=True, allow_nan=False, separators=(',', ':')))
+    return 0 if output['coverage'] == 'complete' else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

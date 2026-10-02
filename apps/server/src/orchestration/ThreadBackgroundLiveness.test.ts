@@ -222,8 +222,10 @@ describe("ThreadBackgroundLiveness", () => {
       kind: "started",
     });
     expect(a.getThreadBackgroundLiveness("t")).toBe("working");
+    expect(a.listLiveThreadIds()).toEqual(["t"]);
     expect(b.getThreadBackgroundLiveness("t")).toBeNull();
     a.clearThreadLiveness("t");
+    expect(a.listLiveThreadIds()).toEqual([]);
     expect(a.getThreadBackgroundLiveness("t")).toBeNull();
   });
 });
