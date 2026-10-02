@@ -29,6 +29,7 @@ import {
   type VoiceReviewMutationPayload,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import * as Clock from "effect/Clock";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Effect FileSystem OpenFlag cannot express numeric O_NOFOLLOW | O_NONBLOCK credential guards.
 import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - native descriptors preserve guarded open, fstat, bounded read, and finally close on the same credential file.
@@ -118,6 +119,7 @@ export const makeVoiceReviewBridge = (
   config: VoiceReviewConfig | null,
   fetcher: typeof fetch = globalThis.fetch,
   native?: VoiceReviewNativeReadPort,
+  now: () => number = () => Clock.Clock.defaultValue().currentTimeMillisUnsafe(),
 ) => {
   const authorize = (principal: EnvironmentSessionPrincipalShape, mutation: boolean) => {
     if (config === null) throw new VoiceReviewNotConfiguredError({});
@@ -268,7 +270,7 @@ export const makeVoiceReviewBridge = (
         if (unique.size > 0) {
           const placements = validateVoiceReviewNativePlacementResult(
             await native.read(principal, Array.from(unique.values())),
-            Date.now(),
+            now(),
           );
           if (placements.readiness !== "ready") throw new Error("native_trust_unavailable");
           for (const thread of result.threads) {

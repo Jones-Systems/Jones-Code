@@ -20,6 +20,7 @@ import * as NodeOS from "node:os";
 import { makeVoiceReviewBridge } from "./bridge.ts";
 import { voiceReviewConfigFromEnv } from "./config.ts";
 import * as Schema from "effect/Schema";
+import * as DateTime from "effect/DateTime";
 
 const principal: EnvironmentSessionPrincipalShape = {
   sessionId: AuthSessionId.make("owner-session"),
@@ -264,6 +265,7 @@ describe("voice routing and registry bridge", () => {
   it("composes only qualified native placements with a separate namespace", async () =>
     withFixture(async (tokenFile) => {
       const key = '["host","environment","thread"]';
+      const fixedNow = DateTime.makeUnsafe("2026-10-02T12:00:00Z");
       const placement = {
         membership_id: "membership",
         workstream_id: "voice",
@@ -272,8 +274,8 @@ describe("voice routing and registry bridge", () => {
         source_instance_id: "environment",
         native_thread_id: "thread",
         attestation_version: 1,
-        attested_at: new Date(Date.now() - 60_000).toISOString(),
-        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        attested_at: DateTime.formatIso(DateTime.add(fixedNow, { minutes: -1 })),
+        expires_at: DateTime.formatIso(DateTime.add(fixedNow, { minutes: 1 })),
         evidence_sha256: "a".repeat(64),
         source_binding_version: 1,
         authority_namespace: "authority",
@@ -331,6 +333,7 @@ describe("voice routing and registry bridge", () => {
             new Map([[key, { source_instance_id: "environment", native_thread_id: "thread" }]]),
           read,
         },
+        () => DateTime.toEpochMillis(fixedNow),
       );
       const result = await bridge.registrySnapshot(principal);
       expect(read).toHaveBeenCalledWith(principal, [

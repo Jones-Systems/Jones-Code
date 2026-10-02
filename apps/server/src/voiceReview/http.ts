@@ -5,6 +5,7 @@ import {
   VoiceReviewUnavailableError,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as ByteSize from "effect/ByteSize";
@@ -59,7 +60,6 @@ const makeVoiceReviewHttpApiLayer = (
   HttpApiBuilder.group(EnvironmentHttpApi, "voiceReview", (handlers) => {
     const reviewConfig = voiceReviewConfigFromEnv(process.env);
     const binding = voiceReviewNativeBindingFromEnv(process.env);
-    const bridge = makeVoiceReviewBridge(reviewConfig, globalThis.fetch, native);
     const call = <A>(
       run: (principal: EnvironmentAuthenticatedPrincipal["Service"]) => Promise<A>,
     ) =>
@@ -69,8 +69,10 @@ const makeVoiceReviewHttpApiLayer = (
           catch: (error) => (isReviewError(error) ? error : new VoiceReviewUnavailableError({})),
         }),
       );
-    return Effect.succeed(
-      handlers
+    return Effect.map(Clock.Clock, (clock) => {
+      const now = () => clock.currentTimeMillisUnsafe();
+      const bridge = makeVoiceReviewBridge(reviewConfig, globalThis.fetch, native, now);
+      return handlers
         .handle("recent", ({ query }) =>
           call((principal) => bridge.recent(principal, query.limit ?? 50)),
         )
@@ -87,6 +89,7 @@ const makeVoiceReviewHttpApiLayer = (
                       reviewConfig,
                       globalThis.fetch,
                       qualifiedNative,
+                      now,
                     ).registrySnapshot(principal, query.cursor, query.limit ?? 50),
                   catch: (error) =>
                     isReviewError(error) ? error : new VoiceReviewUnavailableError({}),
@@ -136,8 +139,8 @@ const makeVoiceReviewHttpApiLayer = (
         )
         .handle("delete", ({ params, payload }) =>
           call((principal) => bridge.mutate(principal, params.id, "delete", payload)),
-        ),
-    );
+        );
+    });
   });
 
 export const voiceReviewHttpApiLayer = makeVoiceReviewHttpApiLayer();

@@ -10,10 +10,15 @@ import {
   type T3PlacementResult,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Data from "effect/Data";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
 import { makeVoiceReviewComposition, makeVoiceReviewCompositionFactory } from "./composition.ts";
+
+class NativeReadFailure extends Data.TaggedError("NativeReadFailure")<{
+  readonly cause: unknown;
+}> {}
 
 const principal: EnvironmentSessionPrincipalShape = {
   sessionId: AuthSessionId.make("reader"),
@@ -150,9 +155,10 @@ describe("voice native service composition", () => {
         fixture.removeThread();
         const error = yield* Effect.tryPromise({
           try: () => port!.read(principal, identities),
-          catch: (cause) => cause,
+          catch: (cause) => new NativeReadFailure({ cause }),
         }).pipe(Effect.flip);
-        expect(error).toBeInstanceOf(Error);
+        expect(error._tag).toBe("NativeReadFailure");
+        expect(error.cause).toBeInstanceOf(Error);
         expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
         expect(fixture.read).not.toHaveBeenCalled();
       }),
