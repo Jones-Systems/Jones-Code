@@ -68,6 +68,7 @@ import Migration0053 from "./Migrations/053_PullRequestFilesViewed.ts";
 import Migration0054 from "./Migrations/054_ProjectionThreadsAutoSettleDisabledAt.ts";
 import JonesMigration0002 from "./Migrations/002_JonesProjectionThreadRuntimeIdentity.ts";
 import JonesMigration0001 from "./Migrations/001_JonesWorktreeOwnershipLeases.ts";
+import JonesMigration0003 from "./Migrations/003_JonesNativeCreationIntents.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -152,6 +153,7 @@ const makeForkMigrationLoader = () =>
   Migrator.fromRecord({
     "1_WorktreeOwnershipLeases": JonesMigration0001,
     "2_ProjectionThreadRuntimeIdentity": JonesMigration0002,
+    "3_NativeCreationIntents": JonesMigration0003,
   });
 
 /**
