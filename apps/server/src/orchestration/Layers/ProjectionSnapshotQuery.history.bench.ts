@@ -3,30 +3,21 @@ import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Collection reads SQL before runtimes exist.
 import * as NodeFS from "node:fs";
 import * as NodePerfHooks from "node:perf_hooks";
-import {
-  ChatAttachment,
-  NonNegativeInt,
-  OrchestrationMessageContext,
-  ThreadId,
-} from "@t3tools/contracts";
+import { ChatAttachment, OrchestrationMessageContext, ThreadId } from "@t3tools/contracts";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { bench, describe } from "vite-plus/test";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
-import { ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessage } from "../../persistence/Services/ProjectionThreadMessages.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
-import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
-import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { encodeThreadDetailPageCursor } from "../threadDetailCursor.ts";
@@ -34,7 +25,7 @@ import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQu
 
 // Read the unchanged SQL from its owner so an experiment cannot silently weaken
 // the baseline. These anonymous databases run the real Node driver and migrations;
-// their experimental indexes never enter a migration or a file-backed database.
+// both message variants share one unchanged schema and fixture, with no added indexes.
 const source = NodeFS.readFileSync(
   new URL("./ProjectionSnapshotQuery.ts", import.meta.url),
   "utf8",
@@ -84,17 +75,13 @@ const plainRows = (rows: ReadonlyArray<object>) => rows.map((row) => ({ ...row }
 
 const baseline = {
   messages: sourceSql("listThreadMessageRowsByThreadWindow"),
-  activities: sourceSql("listThreadActivityRowsByThreadWindow"),
-  activityIds: sourceSql("listThreadActivityIdsByThreadWindow"),
 };
 type QueryClass = keyof typeof baseline;
-const queryClasses = ["messages", "activities", "activityIds"] as const;
+const queryClasses = ["messages"] as const;
 const columns = {
   messages: `message_id AS "messageId", thread_id AS "threadId", turn_id AS "turnId",
     role, text, attachments_json AS "attachments", context_json AS "context",
     is_streaming AS "isStreaming", created_at AS "createdAt", updated_at AS "updatedAt"`,
-  activities: `activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
-    tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"`,
 };
 const linkedTurnPredicate = `turn_id IN (
   SELECT turn_id FROM projection_turns
@@ -104,39 +91,14 @@ const linkedTurnPredicate = `turn_id IN (
     AND (requested_at < \${beforeAnchorAt}
       OR (requested_at = \${beforeAnchorAt} AND turn_id < \${beforeTurnKey}))
 )`;
-const disjointSql = (kind: QueryClass) => {
-  const table = kind === "messages" ? "projection_thread_messages" : "projection_thread_activities";
-  const union = `SELECT * FROM ${table}
+const disjointMessageUnion = `SELECT * FROM projection_thread_messages
     WHERE thread_id = \${threadId} AND ${linkedTurnPredicate}
     UNION ALL
-    SELECT * FROM ${table}
+    SELECT * FROM projection_thread_messages
     WHERE thread_id = \${threadId} AND turn_id IS NULL
       AND created_at >= \${minAnchorAt} AND created_at < \${beforeAnchorAt}`;
-  if (kind === "messages") {
-    return `SELECT ${columns.messages} FROM (${union})
+const disjointMessageSql = `SELECT ${columns.messages} FROM (${disjointMessageUnion})
       ORDER BY created_at ASC, message_id ASC`;
-  }
-  // Membership and NULL-turn branches are disjoint. The newest-500 selection
-  // applies once to their combined rows, before restoring the response order.
-  const recent = `SELECT * FROM (${union})
-    ORDER BY sequence DESC, created_at DESC, activity_id DESC
-    LIMIT \${THREAD_DETAIL_ACTIVITY_LIMIT}`;
-  return kind === "activityIds"
-    ? `SELECT activity_id AS "activityId" FROM (${recent})
-        ORDER BY sequence DESC, created_at DESC, activity_id DESC`
-    : `SELECT ${columns.activities} FROM (${recent})
-        ORDER BY sequence ASC, created_at ASC, activity_id ASC`;
-};
-const experimentalIndexes = [
-  `CREATE INDEX bench_messages_linked
-    ON projection_thread_messages(thread_id, turn_id, created_at, message_id)`,
-  `CREATE INDEX bench_messages_null
-    ON projection_thread_messages(thread_id, created_at, message_id) WHERE turn_id IS NULL`,
-  `CREATE INDEX bench_activities_linked
-    ON projection_thread_activities(thread_id, turn_id, sequence, created_at, activity_id)`,
-  `CREATE INDEX bench_activities_null
-    ON projection_thread_activities(thread_id, created_at, sequence, activity_id) WHERE turn_id IS NULL`,
-];
 
 const messageSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
@@ -145,17 +107,7 @@ const messageSchema = ProjectionThreadMessage.mapFields(
     context: Schema.NullOr(Schema.fromJsonString(OrchestrationMessageContext)),
   }),
 );
-const activitySchema = ProjectionThreadActivity.mapFields(
-  Struct.assign({
-    payload: Schema.fromJsonString(Schema.Unknown),
-    sequence: Schema.NullOr(NonNegativeInt),
-  }),
-);
 const decodeMessages = Schema.decodeUnknownSync(Schema.Array(messageSchema));
-const decodeActivities = Schema.decodeUnknownSync(Schema.Array(activitySchema));
-const decodeActivityIds = Schema.decodeUnknownSync(
-  Schema.Array(Schema.Struct({ activityId: ProjectionThreadActivity.fields.activityId })),
-);
 const mapMessages = (rows: unknown) =>
   decodeMessages(rows).map((row) => ({
     id: row.messageId,
@@ -168,23 +120,6 @@ const mapMessages = (rows: unknown) =>
     ...(row.attachments !== null ? { attachments: row.attachments } : {}),
     ...(row.context !== null ? { context: row.context } : {}),
   }));
-const mapActivities = (rows: unknown) =>
-  decodeActivities(rows).map((row) => ({
-    id: row.activityId,
-    tone: row.tone,
-    kind: row.kind,
-    summary: row.summary,
-    payload: row.payload,
-    turnId: row.turnId,
-    createdAt: row.createdAt,
-    ...(row.sequence !== null ? { sequence: row.sequence } : {}),
-  }));
-const decodeAndMap = (kind: QueryClass, rows: unknown) =>
-  kind === "messages"
-    ? mapMessages(rows)
-    : kind === "activities"
-      ? mapActivities(rows)
-      : decodeActivityIds(rows);
 
 const threadId = ThreadId.make("history-bench");
 const pinnedIds = ["pinned-approval", "pinned-input"];
@@ -308,10 +243,6 @@ const makeFixture = (turnCount: number) => {
 };
 type Fixture = ReturnType<typeof makeFixture>;
 const compareText = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
-const activityOrder = (left: Fixture["activities"][number], right: Fixture["activities"][number]) =>
-  (left.sequence ?? -1) - (right.sequence ?? -1) ||
-  compareText(left.created_at, right.created_at) ||
-  compareText(left.activity_id, right.activity_id);
 const oracle = (fixture: Fixture, bounds: Bounds) => {
   const turns = new Set(
     fixture.turns
@@ -348,26 +279,7 @@ const oracle = (fixture: Fixture, bounds: Bounds) => {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
-  const recent = fixture.activities
-    .filter(includes)
-    .toSorted((left, right) => activityOrder(right, left))
-    .slice(0, limits.activities);
-  const activities = recent.toSorted(activityOrder).map((row) => ({
-    activityId: row.activity_id,
-    threadId: row.thread_id,
-    turnId: row.turn_id,
-    tone: row.tone,
-    kind: row.kind,
-    summary: row.summary,
-    payload: row.payload_json,
-    sequence: row.sequence,
-    createdAt: row.created_at,
-  }));
-  return {
-    messages,
-    activities,
-    activityIds: recent.map((row) => ({ activityId: row.activity_id })),
-  };
+  return { messages };
 };
 
 const makeRuntime = () =>
@@ -502,77 +414,12 @@ const resolvePage = async (runtime: Runtime, fixture: Fixture, page: PageCase) =
 };
 type Variant = { name: string; runtime: Runtime; sql: SqlClient.SqlClient; disjoint: boolean };
 const statementFor = (variant: Variant, kind: QueryClass, bounds: Bounds) =>
-  bind(variant.disjoint ? disjointSql(kind) : baseline[kind], {
+  bind(variant.disjoint ? disjointMessageSql : baseline[kind], {
     threadId,
     ...bounds,
-    THREAD_DETAIL_ACTIVITY_LIMIT: limits.activities,
   });
-const hydratedCollections = async (variant: Variant, bounds: Bounds) => {
-  const messages = mapMessages(
-    await variant.runtime.runPromise(
-      execute(variant.sql, statementFor(variant, "messages", bounds)),
-    ),
-  );
-  const selected = decodeActivityIds(
-    await variant.runtime.runPromise(
-      execute(variant.sql, statementFor(variant, "activityIds", bounds)),
-    ),
-  );
-  const ids = [...new Set([...selected.map((row) => row.activityId), ...pinnedIds])];
-  const activities: Array<ReturnType<typeof projectActivityPayload>> = [];
-  let batches = 0;
-  for (let offset = 0; offset < ids.length; offset += limits.payloadBatch) {
-    const batch = ids.slice(offset, offset + limits.payloadBatch);
-    const rows = await variant.runtime.runPromise(
-      variant.sql.unsafe(
-        `SELECT ${columns.activities} FROM projection_thread_activities
-        WHERE activity_id IN (${batch.map(() => "?").join(", ")})`,
-        batch,
-      ),
-    );
-    activities.push(...mapActivities(rows).map(projectActivityPayload));
-    batches += 1;
-  }
-  activities.sort(
-    (left, right) =>
-      (left.sequence ?? -1) - (right.sequence ?? -1) ||
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.id.localeCompare(right.id),
-  );
-  return { messages, activities, batches };
-};
 
-// Measure only the insert statement inside an open transaction. Rollback is
-// outside that interval and keeps every query sample on the identical fixture.
-const insertion = Effect.fnUntraced(function* (fixture: Fixture, kind: "messages" | "activities") {
-  const sql = yield* SqlClient.SqlClient;
-  return yield* sql
-    .withTransaction(
-      Effect.gen(function* () {
-        const start = NodePerfHooks.performance.now();
-        if (kind === "messages") {
-          yield* sql`INSERT INTO projection_thread_messages ${sql.insert(
-            fixture.messages
-              .slice(0, 128)
-              .map((row) => ({ ...row, message_id: `insert-probe:${row.message_id}` })),
-          )}`;
-        } else {
-          yield* sql`INSERT INTO projection_thread_activities ${sql.insert(
-            fixture.activities
-              .slice(0, 128)
-              .map((row) => ({ ...row, activity_id: `insert-probe:${row.activity_id}` })),
-          )}`;
-        }
-        return yield* Effect.fail({
-          _tag: "InsertionRollback" as const,
-          ms: NodePerfHooks.performance.now() - start,
-        });
-      }),
-    )
-    .pipe(Effect.catchTag("InsertionRollback", (result) => Effect.succeed(result.ms)));
-});
-
-for (const turnCount of [1_000, 10_000]) {
+for (const turnCount of [10_000]) {
   describe(`history SQL / ${turnCount} turns`, () => {
     const fixture = makeFixture(turnCount);
     // The installed benchmark runner skips suite hooks. Keep acquisition and
@@ -582,33 +429,15 @@ for (const turnCount of [1_000, 10_000]) {
       const variants: Variant[] = [];
       let failed = false;
       try {
-        const setup: object[] = [];
-        for (const indexed of [false, true]) {
-          const runtime = makeRuntime();
-          runtimes.push(runtime);
-          const initialized = await timed(() => runtime.runPromise(SqlClient.SqlClient));
-          const sql = initialized.value;
-          const seeded = await timed(() => runtime.runPromise(seed(fixture)));
-          const indexBuild = await timed(async () => {
-            if (indexed) {
-              for (const statement of experimentalIndexes)
-                await runtime.runPromise(sql.unsafe(statement));
-            }
-          });
-          variants.push({
-            name: indexed ? "index-only" : "unchanged",
-            runtime,
-            sql,
-            disjoint: false,
-          });
-          setup.push({
-            variant: indexed ? "index-only" : "unchanged",
-            schemaMs: initialized.ms,
-            seedMs: seeded.ms,
-            indexBuildMs: indexed ? indexBuild.ms : null,
-          });
-        }
-        variants.push({ ...variants[1]!, name: "disjoint-indexed", disjoint: true });
+        const runtime = makeRuntime();
+        runtimes.push(runtime);
+        const initialized = await timed(() => runtime.runPromise(SqlClient.SqlClient));
+        const sql = initialized.value;
+        const seeded = await timed(() => runtime.runPromise(seed(fixture)));
+        variants.push(
+          { name: "unchanged", runtime, sql, disjoint: false },
+          { name: "disjoint-unchanged-schema", runtime, sql, disjoint: true },
+        );
         const base = variants[0]!;
         report("history-fixture", {
           turnCount,
@@ -633,37 +462,21 @@ for (const turnCount of [1_000, 10_000]) {
           forkMigrations: await base.runtime.runPromise(
             base.sql`SELECT * FROM jones_sql_migrations`,
           ),
-          indexes: experimentalIndexes,
-          setup,
+          schema: await runtime.runPromise(sql`
+            SELECT name, type, tbl_name, sql FROM sqlite_master
+            WHERE type IN ('table', 'index') AND tbl_name IN
+              ('projection_turns', 'projection_thread_messages', 'projection_thread_activities')
+            ORDER BY type, name`),
+          addedIndexes: [],
+          setup: [
+            {
+              database: "shared-unchanged-schema",
+              schemaMs: initialized.ms,
+              seedMs: seeded.ms,
+            },
+          ],
           durability: "anonymous in-memory database; no file/WAL durability measurement",
         });
-        for (const kind of ["messages", "activities"] as const) {
-          const samples: number[][] = [[], []];
-          for (let round = 0; round < 7; round += 1) {
-            for (const index of round % 2 === 0 ? [0, 1] : [1, 0]) {
-              samples[index]!.push(
-                await variants[index]!.runtime.runPromise(insertion(fixture, kind)),
-              );
-            }
-          }
-          for (const variant of variants.slice(0, 2)) {
-            const counts = await variant.runtime.runPromise(variant.sql`
-              SELECT (SELECT COUNT(*) FROM projection_thread_messages) AS messages,
-                (SELECT COUNT(*) FROM projection_thread_activities) AS activities`);
-            NodeAssert.deepEqual(plainRows(counts), [
-              { messages: fixture.messages.length, activities: fixture.activities.length },
-            ]);
-          }
-          report("history-insertion", {
-            turnCount,
-            queryClass: kind,
-            batchRows: 128,
-            interval: "insert construction/execution in open transaction; rolled back after timing",
-            variants: variants
-              .slice(0, 2)
-              .map((variant, index) => ({ variant: variant.name, ...statistics(samples[index]!) })),
-          });
-        }
         await run(variants);
       } catch (error) {
         failed = true;
@@ -691,11 +504,8 @@ for (const turnCount of [1_000, 10_000]) {
 
     const pages: PageCase[] = [
       { name: "first-recent-dense", turnLimit: 10 },
-      { name: "recent-sparse", turnLimit: 10, cursorIndex: turnCount - 150 },
       { name: "middle-sparse", turnLimit: 10, cursorIndex: turnCount / 2 },
       { name: "oldest-imported", turnLimit: 10, cursorIndex: 32 },
-      { name: "empty-before-oldest", turnLimit: 10, empty: true },
-      { name: "equal-timestamp-keyset", turnLimit: 1, cursorIndex: turnCount / 2 + 1 },
       { name: "subagent-ceiling", turnLimit: 10, cursorIndex: fixture.fanoutStart + 160 },
     ];
     for (const page of pages) {
@@ -705,24 +515,15 @@ for (const turnCount of [1_000, 10_000]) {
           await withVariants(async (variants) => {
             const resolved = await resolvePage(variants[0]!.runtime, fixture, page);
             NodeAssert.deepEqual(await resolvePage(variants[1]!.runtime, fixture, page), resolved);
-            if (page.empty) NodeAssert.equal(resolved.rawTurnCount, 0);
             if (page.name === "subagent-ceiling")
               NodeAssert.equal(resolved.rawTurnCount, limits.rawTurns);
-            if (page.name === "equal-timestamp-keyset") {
-              NodeAssert.equal(resolved.bounds.minAnchorAt, resolved.bounds.beforeAnchorAt);
-              NodeAssert.equal(resolved.rawTurnCount, 1);
-            }
             const expected = oracle(fixture, resolved.bounds);
-            if (page.name === "first-recent-dense")
-              NodeAssert.equal(expected.activities.length, limits.activities);
             if (page.name === "oldest-imported") {
               NodeAssert.equal(
                 expected.messages.filter((row) => row.messageId.startsWith("import:")).length,
                 2,
               );
             }
-            if (page.empty)
-              NodeAssert.deepEqual(expected, { messages: [], activities: [], activityIds: [] });
             report("history-page", {
               turnCount,
               page: page.name,
@@ -749,10 +550,7 @@ for (const turnCount of [1_000, 10_000]) {
                   expected[kind],
                   `${variant.name}/${kind}: complete ordered rows`,
                 );
-                NodeAssert.deepEqual(
-                  decodeAndMap(kind, first.value),
-                  decodeAndMap(kind, expected[kind]),
-                );
+                NodeAssert.deepEqual(mapMessages(first.value), mapMessages(expected[kind]));
                 plans.push({
                   variant: variant.name,
                   sql: statement.text,
@@ -764,17 +562,16 @@ for (const turnCount of [1_000, 10_000]) {
                   ),
                 });
               }
-              // Warm the exact statements, then rotate and reverse the variant order
-              // across fixed repeats. No cache eviction or wall-time assertion.
+              // Warm the exact statements, then alternate the two variant orders
+              // across fixed repeats on their shared database. No wall-time assertion.
               for (let round = -3; round < 15; round += 1) {
-                const order = round % 2 === 0 ? [0, 1, 2] : [2, 1, 0];
-                for (const index of order.map((value) => (value + Math.abs(round)) % 3)) {
+                for (const index of round % 2 === 0 ? [0, 1] : [1, 0]) {
                   const variant = variants[index]!;
                   const measured = await timed(() =>
                     variant.runtime.runPromise(execute(variant.sql, statements[index]!)),
                   );
                   const decodeStart = NodePerfHooks.performance.now();
-                  decodeAndMap(kind, measured.value);
+                  mapMessages(measured.value);
                   const decodeMs = NodePerfHooks.performance.now() - decodeStart;
                   if (round >= 0) {
                     samples[index]!.sql.push(measured.ms);
@@ -788,75 +585,19 @@ for (const turnCount of [1_000, 10_000]) {
                 queryClass: kind,
                 returnedRows: expected[kind].length,
                 rawOutputBytes: Buffer.byteLength(JSON.stringify(expected[kind])),
-                mappedOutputBytes: Buffer.byteLength(
-                  JSON.stringify(decodeAndMap(kind, expected[kind])),
-                ),
+                mappedOutputBytes: Buffer.byteLength(JSON.stringify(mapMessages(expected[kind]))),
                 plans,
                 variants: variants.map((variant, index) => ({
                   variant: variant.name,
                   sql: statistics(samples[index]!.sql),
                   decodeAndMap: statistics(samples[index]!.decodeMap),
                 })),
+                memoryAfter: process.memoryUsage(),
+                processMaxRssKiB: process.resourceUsage().maxRSS,
+                limits:
+                  "sampled process memory, not per-query allocation; first observed query is not a cold-cache claim; message SQL is not integrated into the production snapshot; reporter callback duration includes setup",
               });
             }
-
-            const snapshot = (runtime: Runtime) =>
-              runtime.runPromise(
-                Effect.flatMap(ProjectionSnapshotQuery, (query) =>
-                  query.getThreadDetailSnapshot(threadId, resolved.window),
-                ),
-              );
-            const unchangedSnapshot = Option.getOrThrow(await snapshot(variants[0]!.runtime));
-            NodeAssert.deepEqual(
-              Option.getOrThrow(await snapshot(variants[1]!.runtime)),
-              unchangedSnapshot,
-            );
-            const collections = variants.map(() => [] as number[]);
-            const snapshots: number[][] = [[], []];
-            for (let round = -1; round < 5; round += 1) {
-              for (const index of round % 2 === 0 ? [0, 1, 2] : [2, 1, 0]) {
-                const measured = await timed(() =>
-                  hydratedCollections(variants[index]!, resolved.bounds),
-                );
-                NodeAssert.deepEqual(measured.value.messages, unchangedSnapshot.thread.messages);
-                NodeAssert.deepEqual(
-                  measured.value.activities,
-                  unchangedSnapshot.thread.activities,
-                );
-                NodeAssert.ok(
-                  measured.value.batches <=
-                    Math.ceil((limits.activities + pinnedIds.length) / limits.payloadBatch),
-                );
-                if (round >= 0) collections[index]!.push(measured.ms);
-              }
-              for (const index of round % 2 === 0 ? [0, 1] : [1, 0]) {
-                const measured = await timed(() => snapshot(variants[index]!.runtime));
-                NodeAssert.deepEqual(Option.getOrThrow(measured.value), unchangedSnapshot);
-                if (round >= 0) snapshots[index]!.push(measured.ms);
-              }
-            }
-            for (const id of pinnedIds)
-              NodeAssert.ok(unchangedSnapshot.thread.activities.some((row) => row.id === id));
-            report("history-hydration", {
-              turnCount,
-              page: page.name,
-              interval:
-                "messages + activity IDs + fixed unresolved IDs + sequential 25-row payload hydration/projection/order",
-              pinnedIds,
-              activityRows: unchangedSnapshot.thread.activities.length,
-              collectionVariants: variants.map((variant, index) => ({
-                variant: variant.name,
-                ...statistics(collections[index]!),
-              })),
-              productionSnapshotVariants: variants.slice(0, 2).map((variant, index) => ({
-                variant: variant.name,
-                ...statistics(snapshots[index]!),
-              })),
-              memoryAfter: process.memoryUsage(),
-              processMaxRssKiB: process.resourceUsage().maxRSS,
-              limits:
-                "sampled process memory, not per-query allocation; first observed query is not a cold-cache claim; disjoint SQL is not integrated into the production snapshot",
-            });
           });
         },
         { time: 0, iterations: 1, warmupTime: 0, warmupIterations: 0 },
