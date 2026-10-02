@@ -103,6 +103,17 @@
       "scope": ["apps/server/src/cli/update.ts"]
     },
     {
+      "group_id": "voice-native-bootstrap-conformance",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/voiceNativeBootstrap.test.ts",
+      "modules": ["apps/server/src/voiceNativeBootstrap.test.ts"],
+      "scope": [
+        "apps/server/src/voiceNativeBootstrap.test.ts",
+        "apps/server/src/voiceNativeBootstrap.fixtures/**",
+        "apps/server/src/ws.ts",
+        "packages/contracts/src/orchestration.ts"
+      ]
+    },
+    {
       "group_id": "jones-runtime-adoption-qualification",
       "command": "node_modules/.bin/vp test run scripts/runtime-adoption-qualification --fileParallelism=false --maxWorkers=1",
       "modules": [
