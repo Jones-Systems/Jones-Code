@@ -39,6 +39,8 @@ import { orchestrationHttpApiLayer } from "./http.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../config.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
+import { layer as NativeCreationRepositoryLive } from "../persistence/Layers/NativeCreationRepository.ts";
+import { NativeCreationRepository } from "../persistence/Services/NativeCreationRepository.ts";
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
@@ -58,6 +60,7 @@ const testLayer = OrchestrationEngineLive.pipe(
   Layer.provide(OrchestrationEventStoreLive),
   Layer.provide(OrchestrationCommandReceiptRepositoryLive),
   Layer.provide(RepositoryIdentityResolver.layer),
+  Layer.provideMerge(NativeCreationRepositoryLive),
   Layer.provideMerge(SqlitePersistenceMemory),
   Layer.provideMerge(WorkspacePaths.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-dispatch-guard-" })),
@@ -459,6 +462,7 @@ it.layer(testLayer)("conditional native dispatch and command observation", (it) 
         | OrchestrationEngineService
         | ProjectionSnapshotQuery
         | SqlClient.SqlClient
+        | NativeCreationRepository
         | ServerConfig
         | FileSystem.FileSystem
         | Path.Path

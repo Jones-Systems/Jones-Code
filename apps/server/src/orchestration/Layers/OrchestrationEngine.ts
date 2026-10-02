@@ -499,6 +499,86 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               let nextCommandReadModel = commandReadModel;
               let acquiredLease: WorktreeOwnershipLease | null = null;
 
+              // Guarded cleanup names one creation event. Recheck it inside the
+              // write transaction so cleanup cannot delete a replacement thread.
+              if (
+                envelope.bootstrapEffect !== undefined &&
+                envelope.command.type === "thread.delete"
+              ) {
+                const cleanupCommand = envelope.command;
+                const history = yield* nativeCreationRepository.readHistoryByClaim(
+                  envelope.bootstrapEffect.claimId,
+                );
+                const commandStart = history.effects.find(
+                  (fact) =>
+                    fact.effectId === envelope.bootstrapEffect!.effectId &&
+                    fact.phase === "started",
+                );
+                if (
+                  commandStart?.kind !== "native_command" ||
+                  commandStart.phase !== "started" ||
+                  commandStart.commandType !== cleanupCommand.type ||
+                  commandStart.commandId !== cleanupCommand.commandId ||
+                  commandStart.threadId !== cleanupCommand.threadId ||
+                  history.intent.threadId !== cleanupCommand.threadId
+                ) {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: cleanupCommand.type,
+                    detail: "native creation cleanup command context mismatch",
+                  });
+                }
+                const cleanupStart = history.effects
+                  .filter(
+                    (fact) =>
+                      fact.kind === "cleanup" &&
+                      fact.phase === "started" &&
+                      fact.resource.kind === "thread" &&
+                      fact.resource.threadId === cleanupCommand.threadId &&
+                      fact.ordinal < commandStart.ordinal &&
+                      !history.effects.some(
+                        (completion) =>
+                          completion.effectId === fact.effectId && completion.phase === "completed",
+                      ),
+                  )
+                  .at(-1);
+                if (
+                  cleanupStart?.kind !== "cleanup" ||
+                  cleanupStart.phase !== "started" ||
+                  cleanupStart.resource.kind !== "thread"
+                ) {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: cleanupCommand.type,
+                    detail: "native creation thread cleanup authorization unavailable",
+                  });
+                }
+                const incarnation = cleanupStart.resource.incarnation;
+                const created = history.effects.some(
+                  (fact) =>
+                    fact.kind === "native_command" &&
+                    fact.phase === "completed" &&
+                    fact.commandType === "thread.create" &&
+                    fact.threadId === cleanupCommand.threadId &&
+                    fact.eventId === incarnation.eventId &&
+                    fact.sequence === incarnation.sequence,
+                );
+                const currentRows = yield* sql<{ eventId: string; sequence: number }>`
+                  SELECT event_id AS "eventId", sequence FROM orchestration_events
+                  WHERE aggregate_kind = 'thread' AND stream_id = ${cleanupCommand.threadId} AND event_type = 'thread.created'
+                  ORDER BY sequence DESC LIMIT 1
+                `;
+                const current = currentRows[0];
+                if (
+                  !created ||
+                  current?.eventId !== incarnation.eventId ||
+                  current.sequence !== incarnation.sequence
+                ) {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: cleanupCommand.type,
+                    detail: "native creation cleanup thread incarnation changed",
+                  });
+                }
+              }
+
               if (ownershipTarget !== null) {
                 acquiredLease = yield* acquireOwnershipRecord(ownershipTarget);
               }

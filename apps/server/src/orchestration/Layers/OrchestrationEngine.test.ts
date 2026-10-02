@@ -2338,3 +2338,160 @@ describe("native creation engine transaction", () => {
     }
   });
 });
+
+const prepareNativeCleanupFixture = (
+  engine: OrchestrationEngineService["Service"],
+  operationId: string,
+) =>
+  Effect.gen(function* () {
+    const fixture = yield* prepareNativeEngineFixture(operationId);
+    yield* engine.dispatch({
+      type: "project.create",
+      commandId: CommandId.make(`${operationId}:project-create`),
+      projectId: fixture.command.projectId,
+      title: "Synthetic cleanup project",
+      workspaceRoot: "/synthetic/project",
+      createdAt: now(),
+    });
+    yield* engine.dispatch(fixture.command, {
+      bootstrapEffect: { claimId: fixture.claimId, effectId: fixture.start.effectId },
+    });
+    const history = yield* fixture.repository.readHistoryByClaim(fixture.claimId);
+    const created = history.effects.find(
+      (fact) =>
+        fact.kind === "native_command" &&
+        fact.phase === "completed" &&
+        fact.commandType === "thread.create",
+    );
+    if (created?.kind !== "native_command" || created.phase !== "completed")
+      return yield* Effect.die("Missing synthetic creation incarnation");
+    yield* fixture.repository.startEffect(
+      fixture.claimId,
+      {
+        kind: "cleanup",
+        phase: "started",
+        effectId: `${operationId}:cleanup-thread`,
+        timestamp: now(),
+        resource: {
+          kind: "thread",
+          threadId: fixture.command.threadId,
+          incarnation: { eventId: created.eventId, sequence: created.sequence },
+        },
+        recoveryScopeId: `${operationId}:cleanup:thread`,
+      },
+      Effect.succeed(history.intent.binding),
+    );
+    const cleanupCommand = {
+      type: "thread.delete" as const,
+      commandId: CommandId.make(`${fixture.raw.commandId}:bootstrap-thread-delete`),
+      threadId: fixture.command.threadId,
+    };
+    yield* fixture.repository.reserveCommand(fixture.claimId, cleanupCommand);
+    const cleanupStart = yield* fixture.repository.startEffect(
+      fixture.claimId,
+      {
+        kind: "native_command",
+        phase: "started",
+        effectId: `${operationId}:cleanup-command`,
+        timestamp: now(),
+        commandId: cleanupCommand.commandId,
+        threadId: cleanupCommand.threadId,
+        commandType: cleanupCommand.type,
+        commandDigest: nativeCreationCommandDigest(cleanupCommand),
+      },
+      Effect.succeed(history.intent.binding),
+    );
+    return { ...fixture, cleanupCommand, cleanupStart };
+  });
+
+describe("native cleanup incarnation fence", () => {
+  it("rejects historical cleanup after replacement without effective deletion", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const fixture = await system.run(
+        prepareNativeCleanupFixture(system.engine, "cleanup-replacement"),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("ordinary-delete-original"),
+          threadId: fixture.command.threadId,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          ...fixture.command,
+          commandId: CommandId.make("ordinary-create-replacement"),
+          title: "Replacement incarnation",
+        }),
+      );
+      const beforeThread = await system.readThread(fixture.command.threadId);
+      const beforeModel = await system.readModel();
+      const beforeHistory = await system.run(
+        fixture.repository.readHistoryByClaim(fixture.claimId),
+      );
+      expect(Option.isSome(beforeThread)).toBe(true);
+      const result = await system.run(
+        system.engine
+          .dispatch(fixture.cleanupCommand, {
+            bootstrapEffect: { claimId: fixture.claimId, effectId: fixture.cleanupStart.effectId },
+          })
+          .pipe(Effect.result),
+      );
+      expect(result._tag).toBe("Failure");
+      expect(await system.readThread(fixture.command.threadId)).toEqual(beforeThread);
+      expect(await system.readModel()).toEqual(beforeModel);
+      expect(await system.run(fixture.repository.readHistoryByClaim(fixture.claimId))).toEqual(
+        beforeHistory,
+      );
+      const rows = await system.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return {
+            events:
+              yield* sql`SELECT COUNT(*) AS count FROM orchestration_events WHERE command_id = ${fixture.cleanupCommand.commandId}`,
+            receipts:
+              yield* sql`SELECT COUNT(*) AS count FROM orchestration_command_receipts WHERE command_id = ${fixture.cleanupCommand.commandId} AND status = 'accepted'`,
+          };
+        }),
+      );
+      expect(rows).toEqual({ events: [{ count: 0 }], receipts: [{ count: 0 }] });
+    } finally {
+      await system.dispose();
+    }
+  });
+
+  it("accepts cleanup of the unchanged authorized incarnation", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const fixture = await system.run(
+        prepareNativeCleanupFixture(system.engine, "cleanup-unchanged"),
+      );
+      const accepted = await system.run(
+        system.engine.dispatch(fixture.cleanupCommand, {
+          bootstrapEffect: { claimId: fixture.claimId, effectId: fixture.cleanupStart.effectId },
+        }),
+      );
+      expect(Option.isNone(await system.readThread(fixture.command.threadId))).toBe(true);
+      const history = await system.run(fixture.repository.readHistoryByClaim(fixture.claimId));
+      expect(
+        history.effects.find(
+          (fact) => fact.effectId === fixture.cleanupStart.effectId && fact.phase === "completed",
+        ),
+      ).toMatchObject({
+        kind: "native_command",
+        commandType: "thread.delete",
+        sequence: accepted.sequence,
+      });
+      const rows = await system.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return yield* sql`SELECT status, result_sequence FROM orchestration_command_receipts WHERE command_id = ${fixture.cleanupCommand.commandId}`;
+        }),
+      );
+      expect(rows).toEqual([{ status: "accepted", result_sequence: accepted.sequence }]);
+    } finally {
+      await system.dispose();
+    }
+  });
+});
