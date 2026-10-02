@@ -1,3 +1,4 @@
+import { ZoomableImage } from "~/components/chat/ZoomableImage";
 import { filePreviewDelimiter } from "@t3tools/shared/delimitedPreview";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
@@ -266,11 +267,12 @@ export function AttachmentFilePreview(props: {
       />
     </div>
   ) : kind === "image" ? (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
-      <img
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden p-4">
+      <ZoomableImage
+        key={url}
+        layout="panel"
         src={url}
-        alt={props.name}
-        className="max-h-full max-w-full object-contain"
+        name={props.name}
         onError={() => setError("Unable to load image.")}
       />
     </div>
