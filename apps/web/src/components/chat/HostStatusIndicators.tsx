@@ -10,10 +10,19 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const healthClasses = {
-  healthy: "border-emerald-500/60 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  warning: "border-amber-500/70 bg-amber-500/15 text-amber-800 dark:text-amber-200",
-  critical: "border-red-500/70 bg-red-500/15 text-red-700 dark:text-red-300",
+  healthy: "border-emerald-500/60 bg-emerald-500/10",
+  warning: "border-yellow-500/70 bg-yellow-500/15",
+  elevated: "border-orange-500/70 bg-orange-500/15",
+  critical: "border-red-500/70 bg-red-500/15",
   unavailable: "border-muted-foreground/30 bg-muted text-muted-foreground",
+};
+
+const metricClasses = {
+  healthy: "text-emerald-700 dark:text-emerald-300",
+  warning: "text-yellow-800 dark:text-yellow-200",
+  elevated: "text-orange-700 dark:text-orange-300",
+  critical: "text-red-700 dark:text-red-300",
+  unavailable: "text-muted-foreground",
 };
 
 const bubbleClasses =
@@ -57,7 +66,12 @@ export const HostStatusIndicators = memo(function HostStatusIndicators() {
       id,
       metrics,
       label: `${name}: ${detail}`,
-      text: `${name} · CPU ${metrics.cpu} · RAM ${metrics.ram}`,
+      text: (
+        <>
+          {name} · <span className={metricClasses[metrics.cpuHealth]}>{metrics.cpu}</span> ·{" "}
+          <span className={metricClasses[metrics.ramHealth]}>{metrics.ram}</span>
+        </>
+      ),
     };
   });
   return (

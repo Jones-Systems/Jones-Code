@@ -11,6 +11,7 @@ const available = {
   logicalCpuCount: 4,
   occupiedMemoryBytes: 12 * gib,
   totalMemoryBytes: 16 * gib,
+  availableMemoryBytes: 4 * gib,
   sampledAt: "2026-09-29T12:00:00.000Z",
 } satisfies Extract<HostStatus, { status: "available" }>;
 const snapshot: HostStatusSnapshot = { hosts: [available] };
@@ -34,36 +35,63 @@ afterEach(() => {
 });
 
 describe("host status metrics", () => {
-  it("shows CPU percentage and occupied/total RAM in GiB with an explicit definition", () => {
+  it("shows whole-number total CPU percentage and available RAM in GiB", () => {
     const metrics = hostStatusMetrics(available);
-    expect(metrics).toMatchObject({ cpu: "23%", ram: "12/16 GiB", health: "healthy" });
-    expect(metrics.detail).toContain("CPU 23%");
-    expect(metrics.detail).toContain("Occupied RAM 12/16 GiB");
-    expect(metrics.detail).toContain("includes reclaimable cache");
-    expect(metrics.detail).toContain("not memory pressure");
+    expect(metrics).toMatchObject({
+      cpu: "23%",
+      ram: "4",
+      cpuHealth: "healthy",
+      ramHealth: "warning",
+      health: "warning",
+    });
+    expect(metrics.detail).toContain("CPU 23% of total cores");
+    expect(metrics.detail).toContain("Available RAM 4 GiB");
     expect(hostStatusMetrics({ ...available, logicalCpuCount: 128 }).cpu).toBe("23%");
   });
   it.each([
     [0, "healthy"],
-    [79.9, "healthy"],
-    [80, "warning"],
-    [95, "critical"],
+    [49.9, "healthy"],
+    [50, "warning"],
+    [75, "warning"],
+    [75.1, "elevated"],
+    [90, "elevated"],
+    [90.1, "critical"],
     [100, "critical"],
-  ] as const)("colors CPU %s independently of occupied memory", (cpuUsagePercent, health) => {
+  ] as const)("colors each metric from unrounded utilization %s", (percent, health) => {
     expect(
-      hostStatusMetrics({ ...available, cpuUsagePercent, occupiedMemoryBytes: 16 * gib }).health,
-    ).toBe(health);
+      hostStatusMetrics({ ...available, cpuUsagePercent: percent, availableMemoryBytes: 16 * gib }),
+    ).toMatchObject({ cpuHealth: health, ramHealth: "healthy", health });
+    expect(
+      hostStatusMetrics({
+        ...available,
+        cpuUsagePercent: 0,
+        totalMemoryBytes: 1000,
+        availableMemoryBytes: Math.round(1000 * (1 - percent / 100)),
+      }),
+    ).toMatchObject({ cpuHealth: "healthy", ramHealth: health, health });
   });
-  it("formats fractional GiB and zero usage without confusing zero with missing", () => {
+  it("rounds displayed values without confusing zero or unavailable RAM", () => {
     expect(
-      hostStatusMetrics({ ...available, cpuUsagePercent: 0, occupiedMemoryBytes: 0 }),
-    ).toMatchObject({ cpu: "0%", ram: "0/16 GiB" });
+      hostStatusMetrics({ ...available, cpuUsagePercent: 0, availableMemoryBytes: 0 }),
+    ).toMatchObject({ cpu: "0%", ram: "0", ramHealth: "critical", health: "critical" });
     expect(
-      hostStatusMetrics({ ...available, cpuUsagePercent: 23.26, occupiedMemoryBytes: 12.26 * gib }),
-    ).toMatchObject({ cpu: "23.3%", ram: "12.3/16 GiB" });
+      hostStatusMetrics({
+        ...available,
+        cpuUsagePercent: 23.76,
+        availableMemoryBytes: 12.76 * gib,
+      }),
+    ).toMatchObject({ cpu: "24%", ram: "13" });
+    const { availableMemoryBytes: _memory, ...olderSample } = available;
+    expect(hostStatusMetrics(olderSample)).toMatchObject({
+      cpu: "23%",
+      ram: "—",
+      ramHealth: "unavailable",
+    });
     expect(hostStatusMetrics(undefined)).toMatchObject({
       cpu: "—",
       ram: "—",
+      cpuHealth: "unavailable",
+      ramHealth: "unavailable",
       health: "unavailable",
     });
   });
