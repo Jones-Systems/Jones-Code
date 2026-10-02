@@ -14,6 +14,7 @@ import {
   type UsageSource,
   type UsageSourceFingerprint,
   type UsageSummary,
+  type UsageTokenTotals,
 } from "@t3tools/contracts";
 
 export interface EnvironmentUsage {
@@ -27,6 +28,10 @@ export interface ProviderTotals {
   readonly costUsd: number;
   readonly totalTokens: number;
   readonly records: number;
+  readonly totals: UsageTokenTotals;
+  readonly providerReportedRecords: number;
+  readonly modelPricedRecords: number;
+  readonly unpricedRecords: number;
   readonly sessions: number;
   readonly costShare: number;
   readonly tokenShare: number;
@@ -38,6 +43,9 @@ export interface ModelTotals {
   readonly costUsd: number;
   readonly totalTokens: number;
   readonly records: number;
+  readonly totals: UsageTokenTotals;
+  readonly providerReportedRecords: number;
+  readonly modelPricedRecords: number;
   /**
    * Records whose tokens are counted here but which contributed nothing to
    * `costUsd`. When it equals `records` the cost is unknown, not zero.
@@ -283,6 +291,35 @@ function bucketTokens(bucket: UsageBucket): number {
   );
 }
 
+function emptyDetailTotals() {
+  return {
+    totals: {
+      uncachedInputTokens: 0,
+      cachedInputTokens: 0,
+      cacheCreationTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+    } satisfies UsageTokenTotals,
+    providerReportedRecords: 0,
+    modelPricedRecords: 0,
+    unpricedRecords: 0,
+  };
+}
+
+function addDetailTotals(detail: ReturnType<typeof emptyDetailTotals>, bucket: UsageBucket) {
+  detail.totals.uncachedInputTokens += bucket.totals.uncachedInputTokens;
+  detail.totals.cachedInputTokens += bucket.totals.cachedInputTokens;
+  detail.totals.cacheCreationTokens += bucket.totals.cacheCreationTokens;
+  detail.totals.outputTokens += bucket.totals.outputTokens;
+  detail.totals.reasoningTokens += bucket.totals.reasoningTokens;
+  const providerReportedRecords = bucket.costSource === "providerReported" ? bucket.records : 0;
+  detail.providerReportedRecords += providerReportedRecords;
+  detail.unpricedRecords += bucket.unpricedRecords;
+  // Match the existing cost-quality classification; the wire bucket carries
+  // unpriced counts and one cost source, not per-response pricing provenance.
+  detail.modelPricedRecords += bucket.records - providerReportedRecords - bucket.unpricedRecords;
+}
+
 export function isCompatibleUsageContractVersion(version: number, expected: number): boolean {
   return version >= USAGE_MERGE_COMPATIBLE_SINCE && version <= expected;
 }
@@ -367,16 +404,20 @@ export function mergeUsage(
 
   const providerAccumulator = new Map<
     UsageProviderKind,
-    { costUsd: number; totalTokens: number; records: number; sessions: number }
+    ReturnType<typeof emptyDetailTotals> & {
+      costUsd: number;
+      totalTokens: number;
+      records: number;
+      sessions: number;
+    }
   >();
   const modelAccumulator = new Map<
     string,
-    {
+    ReturnType<typeof emptyDetailTotals> & {
       provider: UsageProviderKind;
       costUsd: number;
       totalTokens: number;
       records: number;
-      unpricedRecords: number;
     }
   >();
   const dailyAccumulator = new Map<
@@ -412,6 +453,7 @@ export function mergeUsage(
       sessions += providerSessions;
       if (providerSessions === 0) continue;
       const provider = providerAccumulator.get(providerKind) ?? {
+        ...emptyDetailTotals(),
         costUsd: 0,
         totalTokens: 0,
         records: 0,
@@ -436,6 +478,7 @@ export function mergeUsage(
       if (bucket.costSource === "providerReported") providerReportedRecords += bucket.records;
 
       const provider = providerAccumulator.get(bucket.provider) ?? {
+        ...emptyDetailTotals(),
         costUsd: 0,
         totalTokens: 0,
         records: 0,
@@ -444,20 +487,21 @@ export function mergeUsage(
       provider.costUsd += bucket.costUsd;
       provider.totalTokens += tokens;
       provider.records += bucket.records;
+      addDetailTotals(provider, bucket);
       providerAccumulator.set(bucket.provider, provider);
 
       const modelKey = `${bucket.provider} ${bucket.model}`;
       const model = modelAccumulator.get(modelKey) ?? {
+        ...emptyDetailTotals(),
         provider: bucket.provider,
         costUsd: 0,
         totalTokens: 0,
         records: 0,
-        unpricedRecords: 0,
       };
       model.costUsd += bucket.costUsd;
       model.totalTokens += tokens;
       model.records += bucket.records;
-      model.unpricedRecords += bucket.unpricedRecords;
+      addDetailTotals(model, bucket);
       modelAccumulator.set(modelKey, model);
 
       const day = dailyAccumulator.get(bucket.day) ?? {
@@ -503,6 +547,10 @@ export function mergeUsage(
       costUsd: totals.costUsd,
       totalTokens: totals.totalTokens,
       records: totals.records,
+      totals: totals.totals,
+      providerReportedRecords: totals.providerReportedRecords,
+      modelPricedRecords: totals.modelPricedRecords,
+      unpricedRecords: totals.unpricedRecords,
       sessions: totals.sessions,
       costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
       tokenShare: totalTokens === 0 ? 0 : totals.totalTokens / totalTokens,
@@ -516,6 +564,9 @@ export function mergeUsage(
       costUsd: totals.costUsd,
       totalTokens: totals.totalTokens,
       records: totals.records,
+      totals: totals.totals,
+      providerReportedRecords: totals.providerReportedRecords,
+      modelPricedRecords: totals.modelPricedRecords,
       unpricedRecords: totals.unpricedRecords,
       costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
     }))
