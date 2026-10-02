@@ -5,7 +5,11 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import type { JonesStagedArtifact } from "@t3tools/shared/jonesActions";
-import { qualifiedPayloadDigest, QualifiedRuntimeBlockedError } from "./qualifiedRuntime.ts";
+import {
+  bundleFileSystem,
+  qualifiedPayloadDigest,
+  QualifiedRuntimeBlockedError,
+} from "./qualifiedRuntime.ts";
 
 export interface DarwinStageCommand {
   readonly command: string;
@@ -24,17 +28,18 @@ const object = (value: unknown): Record<string, unknown> => {
 };
 
 async function validateAppTree(app: string): Promise<void> {
-  const root = await NodeFSP.realpath(app);
+  const fs = bundleFileSystem().promises;
+  const root = await fs.realpath(app);
   let count = 0;
   let bytes = 0;
   const visit = async (directory: string): Promise<void> => {
-    for (const name of await NodeFSP.readdir(directory)) {
+    for (const name of await fs.readdir(directory)) {
       if (++count > 100_000) return invalid("App layout exceeds its entry bound.");
       const file = NodePath.join(directory, name);
-      const stat = await NodeFSP.lstat(file);
+      const stat = await fs.lstat(file);
       if (stat.isSymbolicLink()) {
-        const target = await NodeFSP.readlink(file);
-        const resolved = await NodeFSP.realpath(file);
+        const target = await fs.readlink(file);
+        const resolved = await fs.realpath(file);
         if (NodePath.isAbsolute(target) || !resolved.startsWith(`${root}${NodePath.sep}`))
           return invalid("App symlink escapes its immutable bundle.");
       } else if (stat.isDirectory()) await visit(file);
@@ -52,7 +57,10 @@ export async function readQualifiedAsarMetadata(
   asar: string,
   expected: { readonly version: string; readonly source: string; readonly tree: string },
 ): Promise<void> {
-  const fd = await NodeFSP.open(asar, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+  const fd = await bundleFileSystem().promises.open(
+    asar,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+  );
   try {
     const stat = await fd.stat();
     if (!stat.isFile() || stat.size > 2 * 1024 * 1024 * 1024)
