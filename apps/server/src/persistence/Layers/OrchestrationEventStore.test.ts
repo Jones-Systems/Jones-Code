@@ -50,6 +50,42 @@ const layer = it.layer(
   OrchestrationEventStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
 );
 
+it.effect(
+  "reads command attribution without reading or decoding event payload or metadata JSON",
+  () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const commandId = CommandId.make("command-content-free");
+      yield* sql`INSERT INTO orchestration_events
+        (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, command_id,
+          causation_event_id, correlation_id, actor_kind, payload_json, metadata_json)
+        VALUES ('event-content-free', 'thread', 'thread-content-free', 0, 'thread.settled',
+          '2026-01-01T00:00:00.000Z', ${commandId}, NULL, NULL, 'client', 'not-json', 'not-json')`;
+      const rows = yield* eventStore.readMetadataByCommandId(commandId);
+      assert.equal(rows.length, 1);
+      assert.deepEqual(Object.keys(rows[0]!).sort(), [
+        "aggregateId",
+        "aggregateKind",
+        "commandId",
+        "eventId",
+        "occurredAt",
+        "sequence",
+        "type",
+      ]);
+      assert.equal(rows[0]!.type, "thread.settled");
+      assert.deepEqual(yield* eventStore.readMetadataByCommandId("unrelated-command"), []);
+      assert.equal(
+        (yield* Stream.runCollect(eventStore.readFromSequence(rows[0]!.sequence - 1, 1)).pipe(
+          Effect.result,
+        ))._tag,
+        "Failure",
+      );
+    }).pipe(
+      Effect.provide(OrchestrationEventStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory))),
+    ),
+);
+
 layer("OrchestrationEventStore", (it) => {
   it.effect("stores json columns as strings and replays CLI-origin events", () =>
     Effect.gen(function* () {

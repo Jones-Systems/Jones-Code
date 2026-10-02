@@ -30,10 +30,22 @@ export interface OrchestrationAggregateReplayStats {
   readonly hasCreateEvent: boolean;
 }
 
+export type OrchestrationCommandEventMetadata = Pick<
+  OrchestrationEvent,
+  "eventId" | "commandId" | "aggregateKind" | "aggregateId" | "sequence" | "type" | "occurredAt"
+>;
+
 /**
  * OrchestrationEventStoreShape - Service API for orchestration event persistence.
  */
 export interface OrchestrationEventStoreShape {
+  /** Content-free attribution lookup; 257 rows includes an overflow sentinel. */
+  readonly readMetadataByCommandId: (
+    commandId: string,
+  ) => Effect.Effect<
+    ReadonlyArray<OrchestrationCommandEventMetadata>,
+    OrchestrationEventStoreError
+  >;
   /**
    * Persist a new orchestration event.
    *

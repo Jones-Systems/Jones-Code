@@ -181,6 +181,7 @@ import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
@@ -903,6 +904,7 @@ const makeWsRpcLayer = (
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const usage = yield* UsageService.UsageService;
+      const tokenAccounting = yield* TokenAccountingService.TokenAccountingService;
       const relayClient = yield* RelayClient.RelayClient;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
@@ -2448,6 +2450,9 @@ const makeWsRpcLayer = (
             yield* serverSettings.getSettings,
           );
           const environment = yield* serverEnvironment.getDescriptor;
+          const capabilities = { ...environment.capabilities };
+          delete capabilities.savedTokenAccounting;
+          if (yield* tokenAccounting.isAvailable) capabilities.savedTokenAccounting = true;
           const auth = yield* serverAuth.getDescriptor();
           const availableEditors: ReadonlyArray<EditorId> = yield* resolveAvailableEditorsForConfig(
             externalLauncher.resolveAvailableEditors(),
@@ -2462,7 +2467,7 @@ const makeWsRpcLayer = (
             environment: {
               ...environment,
               capabilities: {
-                ...environment.capabilities,
+                ...capabilities,
                 nativeBootstrapCreation: {
                   submissionSchema: "t3.native-bootstrap-submission/v1",
                   preparationSchema: "voice.t3-bootstrap-preparation/v1",
@@ -3355,6 +3360,10 @@ const makeWsRpcLayer = (
           ),
         [WS_METHODS.serverGetUsageSummary]: (input) =>
           observeRpcEffect(WS_METHODS.serverGetUsageSummary, usage.readSummary(input), {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverReadTokenAccounting]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverReadTokenAccounting, tokenAccounting.read, {
             "rpc.aggregate": "server",
           }),
         [WS_METHODS.serverRefreshUsageRates]: (_input) =>
