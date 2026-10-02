@@ -1,3 +1,8 @@
+import {
+  JonesUpdateState,
+  JonesUpdateDownloadInput,
+  JonesUpdateInstallInput,
+} from "./jonesUpdates.ts";
 import { HostStatusSnapshot } from "./hostStatus.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
@@ -868,6 +873,47 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
+class EnvironmentJonesUpdatesHttpApi extends HttpApiGroup.make("jonesUpdates")
+  .add(
+    HttpApiEndpoint.post("prepareNative", "/api/jones-updates/prepare-native", {
+      headers: OptionalBearerHeaders,
+      payload: JonesUpdateInstallInput,
+      success: JonesUpdateState,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("state", "/api/jones-updates", {
+      query: Schema.Struct({ after: Schema.optionalKey(Schema.NumberFromString) }),
+      headers: OptionalBearerHeaders,
+      success: JonesUpdateState,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("check", "/api/jones-updates/check", {
+      headers: OptionalBearerHeaders,
+      success: JonesUpdateState,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("download", "/api/jones-updates/download", {
+      headers: OptionalBearerHeaders,
+      payload: JonesUpdateDownloadInput,
+      success: JonesUpdateState,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("install", "/api/jones-updates/install", {
+      headers: OptionalBearerHeaders,
+      payload: JonesUpdateInstallInput,
+      success: JonesUpdateState,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 class EnvironmentHostStatusHttpApi extends HttpApiGroup.make("hostStatus").add(
   HttpApiEndpoint.get("snapshot", "/api/host-status", {
     headers: OptionalBearerHeaders,
@@ -914,6 +960,7 @@ export class ProviderQueueHttpApi extends HttpApiGroup.make("providerQueue")
 
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentHostStatusHttpApi)
+  .add(EnvironmentJonesUpdatesHttpApi)
   .add(ProviderQueueHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)

@@ -35,6 +35,45 @@ const baseState: DesktopUpdateState = {
 };
 
 describe("desktop update button state", () => {
+  it("retains the Jones staged Install action and links its qualified run", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "available",
+      availableVersion: "newer",
+      jones: {
+        source: "jones-actions",
+        channel: "jones-main",
+        phase: "staged",
+        stagedHandle: "fixed-candidate",
+        capability: { check: true, download: true, install: true },
+        provenance: {
+          repository: "Jones-Systems/Jones-Code",
+          sourceSha: "source",
+          sourceTree: "tree",
+          workflow: ".github/workflows/artifact-desktop-mac.yml",
+          runId: 123,
+          runAttempt: 2,
+          artifactId: 456,
+          artifactDigest: "sha256:verified",
+          platform: "darwin",
+          architecture: "arm64",
+        },
+      },
+    };
+    expect(resolveDesktopUpdateButtonAction(state)).toBe("install");
+    expect(getDesktopUpdateReleaseUrl("newer", state)).toBe(
+      "https://github.com/Jones-Systems/Jones-Code/actions/runs/123",
+    );
+    expect(
+      isDesktopUpdateButtonDisabled({ ...state, jones: { ...state.jones!, phase: "installing" } }),
+    ).toBe(true);
+    expect(
+      resolveDesktopUpdateButtonAction({
+        ...state,
+        jones: { ...state.jones!, capability: { check: true, download: true, install: false } },
+      }),
+    ).toBe("none");
+  });
   it("shows a download action when an update is available", () => {
     const state: DesktopUpdateState = {
       ...baseState,

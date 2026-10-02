@@ -48,6 +48,8 @@ import {
   workstreamHttpApiLayer,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
+import { jonesUpdatesHttpApiLayer } from "./jonesUpdates/http.ts";
+import * as JonesUpdates from "./jonesUpdates/service.ts";
 import { hostStatusHttpApiLayer } from "./hostStatus/http.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
@@ -627,6 +629,7 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(workstreamHttpApiLayer),
       Layer.provide(hostStatusHttpApiLayer),
+      Layer.provide(jonesUpdatesHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),
     ),
@@ -646,6 +649,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(PullRequestServiceLive),
   Layer.provide(workstreamGatewayLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer))),
   Layer.provide(PreviewAutomationBroker.layer),
+  Layer.provide(JonesUpdates.layer.pipe(Layer.provide(DesktopTelemetryReceiverLayerLive))),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),
   Layer.provide(workstreamResponseHeadersLayer),

@@ -219,6 +219,54 @@
         "scripts/runtime-adoption-qualification/adoption.test.mjs",
         "scripts/runtime-adoption-qualification/launcher.test.mjs"
       ]
+    },
+    {
+      "group_id": "jones-qualified-updates",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/shared/src/jonesActions.test.ts packages/shared/src/cliRelease.test.ts scripts/stamp-jones-build.test.ts scripts/build-desktop-artifact.test.ts apps/server/src/cli/update.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/qualifiedArchive.test.ts apps/server/src/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/cloud/qualifiedRuntime.test.ts apps/server/src/cloud/qualifiedLauncher.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/jonesUpdates/JonesUpdater.test.ts apps/server/src/jonesUpdates/trialGate.test.ts apps/desktop/src/updates/JonesDesktopUpdates.test.ts apps/desktop/src/updates/jonesNativeHelperSource.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/updates/updateChannels.test.ts apps/web/src/components/desktopUpdate.logic.test.ts packages/contracts/src/environmentHttp.test.ts apps/server/src/jonesUpdates/stagedSelection.test.ts apps/server/src/cloud/qualifiedQuiescence.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts packages/client-runtime/src/state/server.test.ts",
+      "modules": [
+        "packages/shared/src/jonesActions.test.ts",
+        "packages/shared/src/cliRelease.test.ts",
+        "scripts/stamp-jones-build.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "apps/server/src/cli/update.test.ts",
+        "apps/server/src/cloud/bootService.test.ts",
+        "apps/server/src/cloud/qualifiedArchive.test.ts",
+        "apps/server/src/cloud/qualifiedDarwinRuntime.test.ts",
+        "apps/server/src/cloud/qualifiedRuntime.test.ts",
+        "apps/server/src/cloud/qualifiedLauncher.test.ts",
+        "apps/server/src/cloud/selfUpdate.test.ts",
+        "apps/server/src/cloud/serviceLauncherClient.test.ts",
+        "apps/server/src/serviceLauncher.test.ts",
+        "apps/server/src/jonesUpdates/JonesUpdater.test.ts",
+        "apps/server/src/jonesUpdates/trialGate.test.ts",
+        "apps/desktop/src/updates/JonesDesktopUpdates.test.ts",
+        "apps/desktop/src/updates/jonesNativeHelperSource.test.ts",
+        "apps/desktop/src/updates/DesktopUpdates.test.ts",
+        "apps/desktop/src/updates/DesktopRemoteUpdates.test.ts",
+        "apps/desktop/src/updates/updateChannels.test.ts",
+        "apps/web/src/components/desktopUpdate.logic.test.ts",
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/server/src/jonesUpdates/stagedSelection.test.ts",
+        "apps/server/src/cloud/qualifiedQuiescence.test.ts",
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "packages/client-runtime/src/state/server.test.ts"
+      ],
+      "scope": [
+        "packages/shared/src/jonesActions.ts",
+        "packages/contracts/src/jonesUpdates.ts",
+        "apps/server/src/jonesUpdates/**",
+        "apps/server/src/cloud/qualified*.ts",
+        "apps/server/src/cloud/selfUpdate.ts",
+        "apps/server/src/cloud/bootService.ts",
+        "apps/server/src/serviceLauncher.ts",
+        "apps/desktop/src/updates/JonesDesktopUpdates.ts",
+        "apps/desktop/src/updates/jones*.ts",
+        ".github/workflows/artifact-cli-linux.yml",
+        ".github/workflows/artifact-desktop-mac.yml",
+        "packages/client-runtime/src/state/jonesUpdates.ts",
+        "apps/web/src/components/JonesUpdateControls.tsx",
+        "apps/mobile/src/features/settings/JonesUpdateControls.tsx"
+      ]
     }
   ]
 }

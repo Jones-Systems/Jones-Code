@@ -103,9 +103,14 @@ export class ServiceLauncherClient extends Context.Service<
   ServiceLauncherClient,
   {
     readonly managed: boolean;
+    readonly qualifiedUpdates?: boolean;
+    readonly currentVersion?: string;
+    /** Last durable terminal result; reading it never sends a prepared IPC message. */
+    readonly qualifiedStartupOutcome?: ServerSelfUpdateOutcome | undefined;
     readonly requestUpdate: (input: {
       readonly targetVersion: string;
       readonly dbPath: string;
+      readonly stagedHandle?: string;
     }) => Effect.Effect<string, ServiceLauncherClientError | ServiceLauncherRejectedError>;
     readonly prepareTrial: Effect.Effect<
       ServerSelfUpdateOutcome | undefined,
@@ -202,38 +207,57 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
       }),
     );
 
-  const requestUpdate = (input: { readonly targetVersion: string; readonly dbPath: string }) =>
-    context !== undefined && context.protocol !== SERVICE_LAUNCHER_PROTOCOL
+  const requestUpdate = (input: {
+    readonly targetVersion: string;
+    readonly dbPath: string;
+    readonly stagedHandle?: string;
+  }) =>
+    input.stagedHandle !== undefined && context?.qualifiedUpdatesProtocol !== 1
       ? Effect.fail(
           new ServiceLauncherRejectedError({
             targetVersion: input.targetVersion,
-            reason: "The installed service launcher must be upgraded before another remote update.",
+            reason:
+              "bootstrap-required: The installed launcher cannot activate qualified Jones artifacts. Upgrade it on this host first.",
           }),
         )
-      : exchange(
-          { type: "request-update", ...input },
-          (reply) => reply.type === "update-accepted" || reply.type === "update-rejected",
-        ).pipe(
-          Effect.flatMap((reply) =>
-            reply.type === "update-accepted"
-              ? Effect.succeed(reply.updateId)
-              : reply.type === "update-rejected"
-                ? Effect.fail(
-                    new ServiceLauncherRejectedError({
-                      targetVersion: input.targetVersion,
-                      reason: reply.reason,
-                    }),
-                  )
-                : Effect.die("service launcher returned an impossible update response"),
-          ),
-        );
+      : context !== undefined && context.protocol !== SERVICE_LAUNCHER_PROTOCOL
+        ? Effect.fail(
+            new ServiceLauncherRejectedError({
+              targetVersion: input.targetVersion,
+              reason:
+                "The installed service launcher must be upgraded before another remote update.",
+            }),
+          )
+        : exchange(
+            { type: "request-update", ...input },
+            (reply) => reply.type === "update-accepted" || reply.type === "update-rejected",
+          ).pipe(
+            Effect.flatMap((reply) =>
+              reply.type === "update-accepted"
+                ? Effect.succeed(reply.updateId)
+                : reply.type === "update-rejected"
+                  ? Effect.fail(
+                      new ServiceLauncherRejectedError({
+                        targetVersion: input.targetVersion,
+                        reason: reply.reason,
+                      }),
+                    )
+                  : Effect.die("service launcher returned an impossible update response"),
+            ),
+          );
 
   const pending = context?.update?.status === "pending" ? context.update : undefined;
-  const outcome =
+  let outcome: ServerSelfUpdateOutcome | undefined =
     context?.update === undefined || context.update.status === "pending"
       ? undefined
       : context.update;
-  const prepareTrial =
+  const qualifiedTransaction =
+    context?.protocol === SERVICE_LAUNCHER_PROTOCOL &&
+    context.qualifiedUpdatesProtocol === 1 &&
+    context.update !== undefined &&
+    "qualified" in context.update &&
+    context.update.qualified !== undefined;
+  const prepareTrial = yield* Effect.cached(
     pending !== undefined
       ? exchange(
           { type: "prepared", updateId: pending.id },
@@ -243,19 +267,26 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
             if (reply.type !== "committed") {
               return Effect.die("service launcher returned an impossible prepared response");
             }
-            return Effect.succeed({
+            outcome = {
               id: pending.id,
               fromVersion: pending.fromVersion,
               targetVersion: pending.targetVersion,
               status: "committed" as const,
-            });
+            };
+            return Effect.succeed(outcome);
           }),
         )
-      : Effect.succeed(outcome);
+      : Effect.succeed(outcome),
+  );
 
   return ServiceLauncherClient.of({
     managed,
+    qualifiedUpdates: context?.qualifiedUpdatesProtocol === 1,
+    ...(context === undefined ? {} : { currentVersion: context.childVersion }),
     requestUpdate,
+    get qualifiedStartupOutcome() {
+      return qualifiedTransaction ? outcome : undefined;
+    },
     prepareTrial,
   });
 });

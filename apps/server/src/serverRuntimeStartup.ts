@@ -1,3 +1,5 @@
+import packageJson from "../package.json" with { type: "json" };
+import { awaitJonesTrialCommit } from "./jonesUpdates/trialGate.ts";
 import * as NodeCrypto from "node:crypto";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 export const nativeCreationBootId = NodeCrypto.randomUUID();
@@ -1113,6 +1115,27 @@ export const make = (options?: StartupOptions) =>
       // This is the prepared boundary. Every dependency has been acquired and
       // every runtime root has confirmed that it is parked before this request.
       const updateOutcome = yield* launcher.prepareTrial;
+      yield* Effect.tryPromise({
+        try: (signal) =>
+          awaitJonesTrialCommit({
+            descriptorPath: process.env.T3CODE_JONES_TRIAL_DESCRIPTOR,
+            home: serverConfig.baseDir,
+            databasePath: serverConfig.dbPath,
+            profile: process.env.T3CODE_DESKTOP_USER_DATA_DIR,
+            environmentId: environment.environmentId,
+            version: packageJson.version,
+            buildMetadata: packageJson,
+            listener: `http://${formatHostForUrl(serverConfig.host ?? "127.0.0.1")}:${serverConfig.port}`,
+            signal,
+          }),
+        catch: (cause) =>
+          new ServerRuntimeStartupError({
+            mode: serverConfig.mode,
+            host: serverConfig.host ?? null,
+            port: serverConfig.port,
+            cause,
+          }),
+      });
       yield* runStartupPhase(
         "welcome.publish",
         lifecycleEvents.publish({

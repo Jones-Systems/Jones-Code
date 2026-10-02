@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./state/jonesUpdates": {
+      "types": "./src/state/jonesUpdates.ts",
+      "default": "./src/state/jonesUpdates.ts"
+    },
     "./conversations": {
       "types": "./src/conversations/index.ts",
       "default": "./src/conversations/index.ts"
