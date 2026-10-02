@@ -3,9 +3,11 @@ import { assert, it } from "@effect/vitest";
 import type { JonesStagedArtifact } from "@t3tools/shared/jonesActions";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import {
+  bundleFileSystem,
   currentQualifiedRuntimeBinding,
   qualifiedRuntimeArtifactFromJonesStage,
   qualifiedPayloadDigest,
@@ -307,4 +309,32 @@ it("stages the shared transport's real raw artifact digest representation", asyn
       staged,
     );
   });
+});
+
+it("keeps ordinary Node filesystem selection without loading Electron modules", () => {
+  assert.strictEqual(
+    bundleFileSystem({}, () => {
+      throw new Error("must not load");
+    }),
+    NodeFS,
+  );
+});
+
+it("selects Electron raw filesystem and fails closed when it is unavailable", () => {
+  const calls: string[] = [];
+  assert.strictEqual(
+    bundleFileSystem({ electron: "44.4.2" }, (id) => {
+      calls.push(id);
+      return NodeFS;
+    }),
+    NodeFS,
+  );
+  NodeAssert.deepStrictEqual(calls, ["original-fs"]);
+  NodeAssert.throws(
+    () =>
+      bundleFileSystem({ electron: "44.4.2" }, () => {
+        throw new Error("raw filesystem unavailable");
+      }),
+    /raw filesystem unavailable/,
+  );
 });
