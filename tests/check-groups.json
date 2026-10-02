@@ -165,6 +165,19 @@
         "apps/server/src/persistence/Migrations.test.ts",
         "knip.jsonc"
       ]
+    },
+    {
+      "group_id": "jones-creation-adoption-ledger",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism scripts/runtime-adoption-qualification/adoption.test.mjs scripts/runtime-adoption-qualification/launcher.test.mjs",
+      "modules": [
+        "scripts/runtime-adoption-qualification/adoption.test.mjs",
+        "scripts/runtime-adoption-qualification/launcher.test.mjs"
+      ],
+      "scope": [
+        "apps/server/src/persistence/Migrations.ts",
+        "scripts/runtime-adoption-qualification/adoption.test.mjs",
+        "scripts/runtime-adoption-qualification/launcher.test.mjs"
+      ]
     }
   ]
 }
