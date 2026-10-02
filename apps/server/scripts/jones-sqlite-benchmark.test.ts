@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- These tests capture native child receipts and exact creator-owned filesystem paths rather than relying on an Effect timeout.
+// @effect-diagnostics globalConsole:off -- Failed native fixtures report only already captured bounded streams before assertions; the original failure and retained-root evidence remain primary.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -27,6 +28,14 @@ const binding = {
   runId: "benchmark-tests",
 };
 const policy = { homePath: worktree, worktreePaths: [worktree], protectedPaths: [] };
+
+function nativeDiagnostic(child: OwnedChildReceipt) {
+  const capturedText = (text: string, limit: number) =>
+    Buffer.from(text, "utf8")
+      .subarray(0, limit - 3)
+      .toString("utf8");
+  return `Native CLI outcome=${child.outcome} exit=${child.exitCode ?? "null"} signal=${child.signal ?? "null"} closed=${child.closed} reaped=${child.reaped} truncated=${child.truncated}; stdout=${Buffer.byteLength(child.stdout)} bytes (within existing 96 KiB capture): ${capturedText(child.stdout, 96 * 1024)}; stderr=${Buffer.byteLength(child.stderr)} bytes (first 16 KiB): ${capturedText(child.stderr, 16 * 1024)}`;
+}
 
 async function withInvocation<Value>(
   use: (input: {
@@ -83,6 +92,8 @@ async function withInvocation<Value>(
           signal: cancellation.signal,
         });
         nativeChildren.push(child);
+        if (child.outcome !== "success" && child.exitCode !== 2)
+          console.error(nativeDiagnostic(child));
         if (child.stdout) {
           try {
             const envelope = Schema.decodeUnknownSync(
@@ -101,7 +112,19 @@ async function withInvocation<Value>(
         return child;
       },
       run: async (request) => {
-        const report = await runSqliteBenchmark(request, { policy });
+        let capturedChild: OwnedChildReceipt | undefined;
+        const report = await runSqliteBenchmark(request, {
+          policy,
+          runChild: async (options) => {
+            capturedChild = await runOwnedChild(options);
+            actualChildren.push(capturedChild);
+            return capturedChild;
+          },
+        });
+        if (report.status !== "completed")
+          console.error(
+            `Benchmark report status=${report.status} reason=${report.reason ?? "null"} primaryFailure=${JSON.stringify(report.primaryFailure)}; ${capturedChild ? nativeDiagnostic(capturedChild) : "native child receipt unavailable"}`,
+          );
         if (report.cleanup.outcome !== "complete") originalFixtureRetained = true;
         return report;
       },
@@ -143,10 +166,12 @@ function output(child: OwnedChildReceipt): unknown {
   expect(child.reaped).toBe(true);
   expect(child.truncated).toBe(false);
   if (!child.stdout.endsWith("\n"))
-    throw new Error(
-      `Native CLI output missing; exit=${child.exitCode}, signal=${child.signal}, stderr=${child.stderr.slice(0, 4096)}`,
-    );
-  return Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(child.stdout);
+    throw new Error(`Native CLI output missing; ${nativeDiagnostic(child)}`);
+  try {
+    return Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(child.stdout);
+  } catch (error) {
+    throw new Error(`Native CLI output invalid; ${nativeDiagnostic(child)}`, { cause: error });
+  }
 }
 
 describe("bounded synthetic SQLite benchmark", () => {
@@ -367,6 +392,7 @@ describe("bounded synthetic SQLite benchmark", () => {
             schema: "jones-sqlite-benchmark-worker/v1",
             status: "failed",
             fixtureCleanupKnown: false,
+            primaryFailure: null,
             trials: [],
           };
           const child = await runOwnedChild({

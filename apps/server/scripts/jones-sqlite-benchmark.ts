@@ -9,6 +9,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodePerfHooks from "node:perf_hooks";
 import * as NodeURL from "node:url";
+import * as Cause from "effect/Cause";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import {
@@ -161,9 +163,12 @@ async function sourceModules(source: SyntheticDatabaseSource) {
   const require = NodeModule.createRequire(
     NodePath.join(source.worktreePath, "apps/server/package.json"),
   );
-  const [Effect, SqlClient, Contracts] = await Promise.all([
+  const [Effect, SourceSchema, SqlClient, Contracts] = await Promise.all([
     import(NodeURL.pathToFileURL(require.resolve("effect/Effect")).href) as Promise<
       typeof import("effect/Effect")
+    >,
+    import(NodeURL.pathToFileURL(require.resolve("effect/Schema")).href) as Promise<
+      typeof import("effect/Schema")
     >,
     import(NodeURL.pathToFileURL(require.resolve("effect/unstable/sql/SqlClient")).href) as Promise<
       typeof import("effect/unstable/sql/SqlClient")
@@ -173,12 +178,26 @@ async function sourceModules(source: SyntheticDatabaseSource) {
         .href
     ) as Promise<typeof import("@t3tools/contracts")>,
   ]);
-  return { Effect, SqlClient, Contracts };
+  return { Effect, SourceSchema, SqlClient, Contracts };
 }
 
-async function runTrial(context: SyntheticFixtureContext, request: BenchmarkRequest) {
-  const { Effect, SqlClient, Contracts } = await sourceModules(context.databaseSource);
-  const decodeCommand = Schema.decodeUnknownSync(Contracts.OrchestrationCommand);
+async function runTrial(
+  context: SyntheticFixtureContext,
+  request: BenchmarkRequest,
+  setFailurePhase: (phase: FailurePhase) => void,
+) {
+  const { Effect, SourceSchema, SqlClient, Contracts } = await sourceModules(
+    context.databaseSource,
+  );
+  setFailurePhase("command-decode");
+  const decodeSourceCommand = SourceSchema.decodeUnknownSync(Contracts.OrchestrationCommand);
+  setFailurePhase("trial-callback");
+  const decodeCommand = (input: unknown) => {
+    setFailurePhase("command-decode");
+    const command = decodeSourceCommand(input);
+    setFailurePhase("trial-callback");
+    return command;
+  };
   const sql = await context.run(Effect.service(SqlClient.SqlClient));
   const captureCosts: number[] = [];
   const capture = async () => {
@@ -627,16 +646,176 @@ const TrialFrame = Schema.Struct({
     ),
   ),
 );
+const failureClasses = [
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "PerformanceStagingError",
+  "SqlError",
+  "PersistenceSqlError",
+  "PersistenceDecodeError",
+  "OrchestrationCommandInvariantError",
+  "OrchestrationCommandPreviouslyRejectedError",
+  "OrchestrationCommandIdConflictError",
+  "OrchestrationProjectorDecodeError",
+  "SchemaError",
+  "unknown",
+] as const;
+const failureCodes = [
+  "invalid_source",
+  "invalid_options",
+  "unsupported_profile",
+  "invalid_recipe",
+  "invalid_context",
+  "incoherent_fixture",
+  "invalid_capture",
+  "profile_mismatch",
+  "profile_failed",
+  "profile_cancelled",
+  "profile_integrity_failed",
+  "profile_content_changed",
+  "profile_header_failed",
+  "profile_identity_changed",
+  "profile_sidecars_present",
+  "profile_checkpoint_failed",
+  "closed_context",
+  "cleanup_retained",
+  "protected_path",
+  "outside_boundary",
+  "manifest_limit",
+  "invalid_owner",
+  "unknown_close",
+  "unknown_child",
+  "cleanup_unknown",
+  "ERR_SQLITE_ERROR",
+  "ENOENT",
+  "EACCES",
+  "ERR_MODULE_NOT_FOUND",
+  "durability_profile_mismatch",
+  "required_table_absent",
+  "missing_command",
+  "expected_failure_was_accepted",
+  "workload_consistency_failed",
+] as const;
+const safeFailureMessages = [
+  "durability_profile_mismatch",
+  "required_table_absent",
+  "missing_command",
+  "expected_failure_was_accepted",
+  "workload_consistency_failed",
+  "production state failed replay, cursor, coupling or integrity checks",
+  "database source must match an exact root-bound baseline",
+  "fixture options required",
+  "profile must be health-offline-delete or benchmark-wal",
+  "signal must be an AbortSignal",
+  "coherent-v1 requires 3–256 turns and 1–65536 payload bytes",
+  "production lease generation fencing failed",
+  "synthetic file identity changed",
+  "history recipe did not create an older-page cursor",
+  "synthetic reference escapes the owned root",
+  "checkpoint metadata names a missing synthetic file",
+  "attachment metadata differs from owned file",
+  "open fixture cleanup retained its root",
+  "Sync adapter can only throw schema errors",
+] as const;
+const FailureDescriptor = Schema.Struct({
+  classification: Schema.Literals(failureClasses),
+  code: Schema.NullOr(Schema.Literals(failureCodes)),
+  sqliteCode: Schema.NullOr(
+    Schema.Int.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 65535 }))),
+  ),
+  message: Schema.NullOr(Schema.Literals(safeFailureMessages)),
+  messageOmitted: Schema.Boolean,
+});
+const FailurePhase = Schema.Literals(["fixture-production", "trial-callback", "command-decode"]);
+type FailurePhase = typeof FailurePhase.Type;
+const PrimaryFailure = Schema.Struct({
+  phase: FailurePhase,
+  causes: Schema.Array(FailureDescriptor).pipe(
+    Schema.check(Schema.isMinLength(1), Schema.isMaxLength(4)),
+  ),
+  truncated: Schema.Boolean,
+});
+
+function primaryFailure(error: unknown, phase: FailurePhase): typeof PrimaryFailure.Type {
+  const causes: Array<typeof FailureDescriptor.Type> = [];
+  const seen = new Set<unknown>();
+  const pending = [{ value: error, depth: 0 }];
+  let truncated = false;
+  let inspected = 0;
+  const enqueue = (value: unknown, depth: number) => {
+    if (depth > 4 || pending.length >= 4) truncated = true;
+    else pending.push({ value, depth });
+  };
+  while (causes.length < 4 && pending.length && inspected < 16) {
+    const node = pending.shift();
+    if (!node) break;
+    const current = node.value;
+    inspected += 1;
+    if (seen.has(current)) {
+      truncated = true;
+      continue;
+    }
+    seen.add(current);
+    if (Cause.isCause(current)) {
+      if (current.reasons.length > 4) truncated = true;
+      for (const reason of current.reasons.slice(0, 4)) {
+        if (Cause.isFailReason(reason)) enqueue(reason.error, node.depth + 1);
+        else if (Cause.isDieReason(reason)) enqueue(reason.defect, node.depth + 1);
+        else truncated = true;
+      }
+      continue;
+    }
+    const object = Predicate.isObject(current) ? current : undefined;
+    const tag = object && "_tag" in object ? object._tag : undefined;
+    const name = object && "name" in object ? object.name : undefined;
+    const code = object && "code" in object ? object.code : undefined;
+    const sqliteCode = object && "errcode" in object ? object.errcode : undefined;
+    const message = object && "message" in object ? object.message : undefined;
+    const firstLine =
+      typeof message === "string" ? message.slice(0, 256).split("\n", 1)[0] : undefined;
+    const safeMessage = Schema.is(Schema.Literals(safeFailureMessages))(firstLine)
+      ? firstLine
+      : null;
+    causes.push({
+      classification: Schema.is(Schema.Literals(failureClasses))(tag)
+        ? tag
+        : Schema.is(Schema.Literals(failureClasses))(name)
+          ? name
+          : "unknown",
+      code: Schema.is(Schema.Literals(failureCodes))(code) ? code : null,
+      sqliteCode: Schema.is(FailureDescriptor.fields.sqliteCode)(sqliteCode) ? sqliteCode : null,
+      message: safeMessage,
+      messageOmitted: safeMessage === null,
+    });
+    if (object && "cause" in object && object.cause !== undefined)
+      enqueue(object.cause, node.depth + 1);
+  }
+  if (!causes.length)
+    causes.push({
+      classification: "unknown",
+      code: null,
+      sqliteCode: null,
+      message: null,
+      messageOmitted: true,
+    });
+  return { phase, causes, truncated: truncated || pending.length > 0 };
+}
+
 const WorkerFrame = Schema.Struct({
   schema: Schema.Literal("jones-sqlite-benchmark-worker/v1"),
   status: Schema.Literals(["completed", "failed"]),
   fixtureCleanupKnown: Schema.Boolean,
+  primaryFailure: Schema.NullOr(PrimaryFailure),
   trials: Schema.Array(TrialFrame).pipe(Schema.check(Schema.isMaxLength(5))),
 });
 
 async function worker(input: WorkerRequest, signal: AbortSignal) {
   const trials: Trial[] = [];
   let fixtureCleanupKnown = true;
+  let failurePhase: FailurePhase = "fixture-production";
   try {
     for (let index = 0; index < input.request.trials; index += 1) {
       const result = await withOpenSyntheticFixture(
@@ -653,7 +832,14 @@ async function worker(input: WorkerRequest, signal: AbortSignal) {
           },
           signal,
         },
-        (context) => runTrial(context, input.request),
+        async (context) => {
+          failurePhase = "trial-callback";
+          const trial = await runTrial(context, input.request, (phase) => {
+            failurePhase = phase;
+          });
+          failurePhase = "fixture-production";
+          return trial;
+        },
       );
       fixtureCleanupKnown = result.cleanup.outcome === "complete";
       trials.push(result.value);
@@ -662,6 +848,7 @@ async function worker(input: WorkerRequest, signal: AbortSignal) {
       schema: "jones-sqlite-benchmark-worker/v1",
       status: "completed",
       fixtureCleanupKnown,
+      primaryFailure: null,
       trials,
     };
   } catch (error) {
@@ -675,6 +862,7 @@ async function worker(input: WorkerRequest, signal: AbortSignal) {
       schema: "jones-sqlite-benchmark-worker/v1",
       status: "failed",
       fixtureCleanupKnown,
+      primaryFailure: primaryFailure(error, failurePhase),
       trials,
     };
   }
@@ -792,6 +980,7 @@ export async function runSqliteBenchmark(
     schema: "jones-sqlite-benchmark/v1",
     status: reason ? "failed" : cleanup.outcome === "complete" ? "completed" : "failed",
     reason: reason ?? (cleanup.outcome === "complete" ? null : "cleanup_retained"),
+    primaryFailure: frame?.primaryFailure ?? null,
     binding: request.binding,
     databaseSource: request.databaseSource,
     child: childSummary(child),
@@ -818,7 +1007,8 @@ if (
       process.stdout.write(`${JSON.stringify(benchmarkMetadata())}\n`);
     } else if (args.length === 2 && args[0] === "--worker-json" && args[1]) {
       const result = await worker(decodeJson(WorkerRequest, args[1]), cancellation.signal);
-      const encoded = `${JSON.stringify(result)}\n`;
+      const frame = Schema.decodeUnknownSync(WorkerFrame, { onExcessProperty: "error" })(result);
+      const encoded = `${JSON.stringify(frame)}\n`;
       if (Buffer.byteLength(encoded) > stdoutBytes) refuse("output_limit");
       process.stdout.write(encoded);
       process.exitCode = result.status === "completed" ? 0 : 1;
