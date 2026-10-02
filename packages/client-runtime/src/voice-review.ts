@@ -1,4 +1,6 @@
 import {
+  ThreadRegistryAssociationPayload,
+  ThreadRegistryLabelPayload,
   VoiceReviewError,
   type VoiceReviewAction,
   type VoiceReviewMutationPayload,
@@ -123,3 +125,137 @@ export const mutateVoiceReviewDraft = Effect.fn("clientRuntime.voiceReview.mutat
     }),
   );
 });
+
+export const fetchVoiceReviewRecent = Effect.fn("clientRuntime.voiceReview.recent")(function* (
+  input: VoiceReviewClientOptions & { readonly limit?: number },
+) {
+  const query = { limit: input.limit ?? 50 };
+  return yield* unwrapReviewError(
+    executeAuthenticatedEnvironmentHttpRequest({
+      ...input,
+      remoteAuthorization: yield* authorization(input),
+      group: "voiceReview",
+      method: "GET",
+      timeoutMs: input.timeoutMs ?? 15_000,
+      url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.recent({ query }),
+      request: ({ client, headers }) => client.recent({ query, headers }),
+    }),
+  );
+});
+
+export const fetchThreadRegistrySnapshot = Effect.fn("clientRuntime.voiceReview.registrySnapshot")(
+  function* (
+    input: VoiceReviewClientOptions & { readonly limit?: number; readonly cursor?: string },
+  ) {
+    const query = {
+      limit: input.limit ?? 50,
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+    };
+    return yield* unwrapReviewError(
+      executeAuthenticatedEnvironmentHttpRequest({
+        ...input,
+        remoteAuthorization: yield* authorization(input),
+        group: "voiceReview",
+        method: "GET",
+        timeoutMs: input.timeoutMs ?? 15_000,
+        url: (base) =>
+          makeEnvironmentHttpApiUrlBuilder(base).voiceReview.registrySnapshot({ query }),
+        request: ({ client, headers }) => client.registrySnapshot({ query, headers }),
+      }),
+    );
+  },
+);
+
+export const fetchThreadRegistryWorkstreams = Effect.fn(
+  "clientRuntime.voiceReview.registryWorkstreams",
+)(function* (input: VoiceReviewClientOptions & {}) {
+  return yield* unwrapReviewError(
+    executeAuthenticatedEnvironmentHttpRequest({
+      ...input,
+      remoteAuthorization: yield* authorization(input),
+      group: "voiceReview",
+      method: "GET",
+      timeoutMs: input.timeoutMs ?? 15_000,
+      url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.registryWorkstreams(),
+      request: ({ client, headers }) => client.registryWorkstreams({ headers }),
+    }),
+  );
+});
+
+export const fetchThreadRegistryEvents = Effect.fn("clientRuntime.voiceReview.registryEvents")(
+  function* (
+    input: VoiceReviewClientOptions & { readonly after?: number; readonly limit?: number },
+  ) {
+    const query = { after: input.after ?? 0, limit: input.limit ?? 50 };
+    return yield* unwrapReviewError(
+      executeAuthenticatedEnvironmentHttpRequest({
+        ...input,
+        remoteAuthorization: yield* authorization(input),
+        group: "voiceReview",
+        method: "GET",
+        timeoutMs: input.timeoutMs ?? 15_000,
+        url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.registryEvents({ query }),
+        request: ({ client, headers }) => client.registryEvents({ query, headers }),
+      }),
+    );
+  },
+);
+
+export const fetchVoiceReviewDiagnostics = Effect.fn("clientRuntime.voiceReview.diagnostics")(
+  function* (input: VoiceReviewClientOptions & { readonly id: string }) {
+    const params = { id: input.id };
+    return yield* unwrapReviewError(
+      executeAuthenticatedEnvironmentHttpRequest({
+        ...input,
+        remoteAuthorization: yield* authorization(input),
+        group: "voiceReview",
+        method: "GET",
+        timeoutMs: input.timeoutMs ?? 15_000,
+        url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.diagnostics({ params }),
+        request: ({ client, headers }) => client.diagnostics({ params, headers }),
+      }),
+    );
+  },
+);
+
+export const correctThreadRegistryAssociation = Effect.fn(
+  "clientRuntime.voiceReview.correctAssociation",
+)(function* (
+  input: VoiceReviewClientOptions & {
+    readonly payload: typeof ThreadRegistryAssociationPayload.Type;
+  },
+) {
+  const payload = yield* Schema.decodeUnknownEffect(ThreadRegistryAssociationPayload)(
+    input.payload,
+  );
+  return yield* unwrapReviewError(
+    executeAuthenticatedEnvironmentHttpRequest({
+      ...input,
+      remoteAuthorization: yield* authorization(input),
+      group: "voiceReview",
+      method: "POST",
+      timeoutMs: input.timeoutMs ?? 15_000,
+      url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.correctAssociation(),
+      request: ({ client, headers }) => client.correctAssociation({ payload, headers }),
+    }),
+  );
+});
+
+export const correctThreadRegistryLabel = Effect.fn("clientRuntime.voiceReview.correctLabel")(
+  function* (
+    input: VoiceReviewClientOptions & { readonly payload: typeof ThreadRegistryLabelPayload.Type },
+  ) {
+    const payload = yield* Schema.decodeUnknownEffect(ThreadRegistryLabelPayload)(input.payload);
+    return yield* unwrapReviewError(
+      executeAuthenticatedEnvironmentHttpRequest({
+        ...input,
+        remoteAuthorization: yield* authorization(input),
+        group: "voiceReview",
+        method: "POST",
+        timeoutMs: input.timeoutMs ?? 15_000,
+        url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.correctLabel(),
+        request: ({ client, headers }) => client.correctLabel({ payload, headers }),
+      }),
+    );
+  },
+);

@@ -1,6 +1,12 @@
-import type { EnvironmentId, VoiceReviewDraft } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  VoiceReviewDraft,
+  VoiceReviewRecentList,
+  ThreadRegistryComposedSnapshot,
+  ThreadRegistryWorkstreams,
+} from "@t3tools/contracts";
 import { MicIcon, PauseIcon, PlayIcon } from "lucide-react";
-import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { isElectron } from "../../env";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
@@ -9,6 +15,8 @@ import { SidebarInset } from "../ui/sidebar";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { useVoiceReview } from "./useVoiceReview";
+import { RecentVoicePrompts } from "./RecentVoicePrompts";
+import { RoutingDiagnostics } from "./RoutingDiagnostics";
 import {
   remainingSeconds,
   VoiceReviewActions,
@@ -72,7 +80,44 @@ export function VoiceReviewPage() {
 }
 
 function EnvironmentVoiceReview({ environmentId }: { environmentId: EnvironmentId }) {
-  const { fetchList, transport } = useVoiceReview(environmentId);
+  const { fetchList, transport, review } = useVoiceReview(environmentId);
+  const [tab, setTab] = useState<"review" | "routing">("review");
+  const [recent, setRecent] = useState<VoiceReviewRecentList | null>(null);
+  const [registry, setRegistry] = useState<ThreadRegistryComposedSnapshot | null>(null);
+  const [workstreams, setWorkstreams] = useState<ThreadRegistryWorkstreams | null>(null);
+  const [metadataError, setMetadataError] = useState(false);
+  const metadataRequest = useRef(0);
+  const refreshMetadata = useCallback(async () => {
+    const request = ++metadataRequest.current;
+    const results = await Promise.allSettled([
+      review.recent(),
+      review.registry(),
+      review.workstreams(),
+    ]);
+    if (request !== metadataRequest.current) throw new Error("Metadata read superseded");
+    const [prompts, threads, labels] = results;
+    if (prompts.status === "fulfilled") setRecent(prompts.value);
+    if (threads.status === "fulfilled") setRegistry(threads.value);
+    else setRegistry(null);
+    if (labels.status === "fulfilled") setWorkstreams(labels.value);
+    else setWorkstreams(null);
+    const failed = results.some((result) => result.status === "rejected");
+    setMetadataError(failed);
+    if (failed) throw new Error("Metadata unavailable");
+  }, [review]);
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") void refreshMetadata().catch(() => undefined);
+    };
+    refresh();
+    const poll = window.setInterval(refresh, 10000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      metadataRequest.current++;
+      window.clearInterval(poll);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [refreshMetadata]);
   const [drafts, setDrafts] = useState<readonly VoiceReviewDraft[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -85,13 +130,8 @@ function EnvironmentVoiceReview({ environmentId }: { environmentId: EnvironmentI
       refreshing.current = true;
       try {
         const pending = await fetchList("pending");
-        const recent = await fetchList("recent");
         if (!active) return;
-        const combined = new Map(pending.drafts.map((draft) => [draft.id, draft]));
-        recent.drafts.forEach((draft) => {
-          if (!combined.has(draft.id)) combined.set(draft.id, draft);
-        });
-        setDrafts([...combined.values()]);
+        setDrafts(pending.drafts);
         setError(null);
       } catch (cause) {
         if (active) setError(voiceReviewError(cause));
@@ -119,30 +159,96 @@ function EnvironmentVoiceReview({ environmentId }: { environmentId: EnvironmentI
   const pending = drafts.filter(
     (draft) => !["released", "deleted", "expired"].includes(draft.state),
   );
-  const recent = drafts.filter((draft) => ["released", "deleted", "expired"].includes(draft.state));
+  const diagnosticDrafts = [
+    ...new Map(
+      [...drafts, ...(recent?.entries.map((entry) => entry.draft) ?? [])].map((draft) => [
+        draft.id,
+        draft,
+      ]),
+    ).values(),
+  ];
   return (
     <>
+      <div className="flex gap-2" role="tablist" aria-label="Voice review views">
+        <Button
+          variant={tab === "review" ? "default" : "outline"}
+          role="tab"
+          aria-selected={tab === "review"}
+          aria-controls="voice-review-panel"
+          id="voice-review-tab"
+          onClick={() => setTab("review")}
+        >
+          Review
+        </Button>
+        <Button
+          variant={tab === "routing" ? "default" : "outline"}
+          role="tab"
+          aria-selected={tab === "routing"}
+          aria-controls="voice-routing-panel"
+          id="voice-routing-tab"
+          onClick={() => setTab("routing")}
+        >
+          Routing
+        </Button>
+      </div>
       {error ? <p role="alert">{error}</p> : null}
       {loading ? <p role="status">Loading voice prompts…</p> : null}
-      <section className="flex flex-col gap-3" aria-label="Voice prompts">
-        <h2 className="font-medium">Pending</h2>
-        {!loading && !error && pending.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No pending voice prompts.</p>
-        ) : null}
-        {[...pending, ...recent].map((draft, index) => (
-          <Fragment key={draft.id}>
-            {index === pending.length ? (
-              <h2 className="font-medium">Recent releases and removals</h2>
+      <div
+        role="tabpanel"
+        aria-labelledby="voice-review-tab"
+        id="voice-review-panel"
+        hidden={tab !== "review"}
+      >
+        <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,0.85fr)]">
+          <section className="flex min-w-0 flex-col gap-3" aria-label="Pending voice prompts">
+            <h2 className="font-medium">Pending</h2>
+            {!loading && !error && pending.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No pending voice prompts.</p>
             ) : null}
-            <VoiceReviewRow
-              draft={draft}
-              transport={transport}
-              now={now}
-              unavailable={error !== null}
+            {pending.map((draft) => (
+              <VoiceReviewRow
+                key={draft.id}
+                draft={draft}
+                transport={transport}
+                now={now}
+                unavailable={error !== null}
+              />
+            ))}
+          </section>
+          <div className="flex min-w-0 flex-col gap-3">
+            {metadataError ? (
+              <p role="alert" className="text-sm">
+                Recent prompts or workstreams are unavailable. Previously observed prompts may be
+                stale.
+              </p>
+            ) : null}
+            {recent?.partial || registry?.partial ? (
+              <p className="text-xs text-muted-foreground">
+                Only part of the recent prompt and thread context is available.
+              </p>
+            ) : null}
+            {(recent?.unavailable.length ?? 0) + (registry?.unavailable.length ?? 0) > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Unavailable:{" "}
+                {[...(recent?.unavailable ?? []), ...(registry?.unavailable ?? [])].join(", ")}
+              </p>
+            ) : null}
+            <RecentVoicePrompts
+              entries={recent?.entries ?? []}
+              registry={registry}
+              workstreams={workstreams}
+              transport={review}
+              onRefresh={refreshMetadata}
+              unavailable={metadataError || recent?.partial === true}
             />
-          </Fragment>
-        ))}
-      </section>
+          </div>
+        </div>
+      </div>
+      {tab === "routing" ? (
+        <div role="tabpanel" aria-labelledby="voice-routing-tab" id="voice-routing-panel">
+          <RoutingDiagnostics drafts={diagnosticDrafts} fetchDiagnostics={review.diagnostics} />
+        </div>
+      ) : null}
     </>
   );
 }

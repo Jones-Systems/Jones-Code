@@ -1,0 +1,10 @@
+{
+  "authSession": "t3.auth-session-cli/v1",
+  "commandObservation": "t3.command-observation/v1",
+  "dispatchGuard": "t3.thread-turn-dispatch-guard/v1",
+  "orchestrationProtocolVersion": 1,
+  "persistedRejection": "t3.command-rejection/v1",
+  "providerInventory": "t3.provider-queue-inventory/v1",
+  "qualifiedQuota": "codex.t3-qualified-quota/v1",
+  "schemaVersion": "t3.queue-dispatch-capability/v1"
+}
