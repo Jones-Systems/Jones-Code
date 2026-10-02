@@ -8,6 +8,7 @@ import { useState } from "react";
 import { XIcon } from "lucide-react";
 import { randomUUID } from "../../lib/utils";
 import { Button } from "../ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RegistryCorrectionActions, type RegistryCorrectionTransport } from "./voiceReviewActions";
 
 type Thread = ThreadRegistryComposedSnapshot["threads"][number];
@@ -185,18 +186,20 @@ function RecentPromptRow({
               {readonly ? (
                 <span className="text-muted-foreground"> · native</span>
               ) : (
-                <button
-                  type="button"
-                  className="rounded-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 disabled:opacity-40"
-                  aria-label={`Remove ${options.get(ref) ?? ref} workstream`}
-                  disabled={disabled || !record || entry.associations === undefined}
-                  title={
-                    record ? "Remove workstream association" : "Association revision unavailable"
-                  }
-                  onClick={() => void correct(ref, "suppressed", record)}
-                >
-                  <XIcon className="size-3" />
-                </button>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={<button type="button" />}
+                    className="rounded-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 disabled:opacity-40"
+                    aria-label={`Remove ${options.get(ref) ?? ref} workstream`}
+                    disabled={disabled || !record || entry.associations === undefined}
+                    onClick={() => void correct(ref, "suppressed", record)}
+                  >
+                    <XIcon className="size-3" />
+                  </TooltipTrigger>
+                  <TooltipPopup>
+                    {record ? "Remove workstream association" : "Association revision unavailable"}
+                  </TooltipPopup>
+                </Tooltip>
               )}
             </span>
           );
