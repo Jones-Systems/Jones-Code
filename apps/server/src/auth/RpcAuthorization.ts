@@ -207,18 +207,16 @@ export const assertLegacyBootstrapAllowed = <E>(input: {
 }): Effect.Effect<void, OrchestrationDispatchCommandError> =>
   Effect.gen(function* () {
     if (input.command.type !== "thread.turn.start" || input.command.bootstrap === undefined) return;
-    const enrolled = yield* input
-      .hasAutomationEnrollment(input.actorSessionId)
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestrationDispatchCommandError({
-              message: "Native enrollment lookup unavailable",
-              cause,
-              creationRejectionCode: "unsupported_authority",
-            }),
-        ),
-      );
+    const enrolled = yield* input.hasAutomationEnrollment(input.actorSessionId).pipe(
+      Effect.mapError(
+        (cause) =>
+          new OrchestrationDispatchCommandError({
+            message: "Native enrollment lookup unavailable",
+            cause,
+            creationRejectionCode: "unsupported_authority",
+          }),
+      ),
+    );
     if (enrolled)
       return yield* new OrchestrationDispatchCommandError({
         message: "Automation sessions require guarded bootstrap",
