@@ -1,3 +1,4 @@
+import { NativeBootstrapSubmission } from "./orchestration.ts";
 import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
@@ -1308,6 +1309,15 @@ const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
   stream: true,
 });
 
+export const WsOrchestrationDispatchBootstrapRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.dispatchBootstrap,
+  {
+    payload: NativeBootstrapSubmission,
+    success: OrchestrationRpcSchemas.dispatchCommand.output,
+    error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsOrchestrationDispatchCommandRpc = Rpc.make(ORCHESTRATION_WS_METHODS.dispatchCommand, {
   payload: ClientOrchestrationCommand,
   success: OrchestrationRpcSchemas.dispatchCommand.output,
@@ -1569,6 +1579,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
   WsOrchestrationDispatchCommandRpc,
+  WsOrchestrationDispatchBootstrapRpc,
   WsOrchestrationGetWorkflowScriptRpc,
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,

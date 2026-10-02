@@ -1,3 +1,16 @@
+import * as NativeCreationRepositoryLayer from "../../persistence/Layers/NativeCreationRepository.ts";
+import {
+  NativePreparationBinding,
+  nativePreparationCommand,
+  nativeCreationCanonicalJson,
+  nativeCreationSha256,
+  validateNativeCreationPreparation,
+  nativeCreationCommandDigest,
+} from "../NativeCreationPreparation.ts";
+import { NativeCreationHistoricalBinding } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { nativeBootstrapCommandIds } from "../../ws.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
@@ -13,7 +26,7 @@ import {
   ProjectId,
   ThreadId,
   TurnId,
-  type OrchestrationCommand,
+  OrchestrationCommand,
   type OrchestrationEvent,
   ProviderInstanceId,
 } from "@t3tools/contracts";
@@ -89,7 +102,7 @@ function makeOrchestrationLayer(
           )
         : RepositoryIdentityResolver.layer,
     ),
-    Layer.provide(persistence),
+    Layer.provideMerge(persistence),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
   );
@@ -109,7 +122,7 @@ async function createOrchestrationSystem(
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     readThread: (threadId: ThreadId) =>
       runtime.runPromise(snapshotQuery.getThreadDetailById(threadId)),
-    run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
+    run: <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) => runtime.runPromise(effect),
     dispose: () => runtime.dispose(),
   };
 }
@@ -2127,5 +2140,358 @@ describe("OrchestrationEngine", () => {
     expect(withoutOrigin?.metadata.origin).toBeUndefined();
 
     await system.dispose();
+  });
+});
+
+const prepareNativeEngineFixture = (operationId: string) =>
+  Effect.gen(function* () {
+    const repository = yield* NativeCreationRepositoryLayer.make;
+    const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
+      backend_instance: "synthetic-backend",
+      environment_id: "synthetic-env",
+      project_id: "synthetic-project",
+      project_cwd: "/synthetic/project",
+      account_ref: "synthetic-account",
+      runtime_mode: "full-access",
+      interaction_mode: "default",
+      base_branch: "main",
+      start_from_origin: false,
+      run_setup_script: false,
+      provider_model_selection: { instanceId: "codex", model: "synthetic-model" },
+    });
+    const raw = nativePreparationCommand(
+      operationId,
+      binding,
+      "Synthetic text",
+      "Synthetic thread",
+      now(),
+    );
+    const preparation = yield* validateNativeCreationPreparation(
+      new TextEncoder().encode(
+        nativeCreationCanonicalJson({
+          schema: "voice.t3-bootstrap-preparation/v1",
+          operation_id: operationId,
+          preparation_id: raw.commandId.replace("voice-command-", "voice-bootstrap-"),
+          binding,
+          command: raw,
+          binding_digest: nativeCreationSha256(nativeCreationCanonicalJson(binding)),
+          prompt_digest: nativeCreationSha256(raw.message.text),
+          command_digest: nativeCreationSha256(nativeCreationCanonicalJson(raw)),
+        }),
+      ),
+    );
+    const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
+      backendInstance: binding.backend_instance,
+      environmentId: binding.environment_id,
+      projectId: binding.project_id,
+      projectCwd: binding.project_cwd,
+      accountRef: binding.account_ref,
+      accountBindingId: "synthetic-account-binding",
+      accountBindingRevision: 1,
+      providerModelSelection: binding.provider_model_selection,
+      runtimeMode: binding.runtime_mode,
+      interactionMode: binding.interaction_mode,
+      baseBranch: binding.base_branch,
+      startFromOrigin: false,
+      runSetupScript: false,
+      requestedBranch: raw.bootstrap.prepareWorktree.branch,
+    });
+    const claimId = `synthetic-${operationId}`;
+    yield* repository.claim(
+      {
+        preparation,
+        resources: {
+          projectCwd: binding.project_cwd,
+          branch: historical.requestedBranch,
+          worktreePath: "/synthetic/worktree",
+        },
+        claimId,
+        claimedBootId: "synthetic-boot",
+        claimedAt: now(),
+        actorSessionId: "synthetic-session",
+        grantId: "synthetic-grant",
+        grantRevision: 1,
+      },
+      Effect.succeed(historical),
+    );
+    yield* repository.reserveCommandIdentities(claimId, nativeBootstrapCommandIds(raw.commandId));
+    const command = yield* Schema.decodeUnknownEffect(OrchestrationCommand)({
+      type: "thread.create",
+      commandId: `${raw.commandId}:bootstrap-thread-create`,
+      threadId: raw.threadId,
+      ...raw.bootstrap.createThread,
+    });
+    if (command.type !== "thread.create")
+      return yield* Effect.die("Invalid synthetic command fixture");
+    yield* repository.reserveCommand(claimId, command);
+    const start = yield* repository.startEffect(
+      claimId,
+      {
+        effectId: "synthetic-create-effect",
+        kind: "native_command",
+        phase: "started",
+        timestamp: now(),
+        commandId: command.commandId,
+        threadId: ThreadId.make(raw.threadId),
+        commandType: "thread.create",
+        commandDigest: nativeCreationCommandDigest(command),
+      },
+      Effect.succeed(historical),
+    );
+    return { repository, claimId, command, start, raw };
+  });
+
+describe("native creation engine transaction", () => {
+  it("rejects a reserved identity without creation context before command events", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const fixture = await system.run(prepareNativeEngineFixture("missing-context"));
+      const result = await system.run(system.engine.dispatch(fixture.command).pipe(Effect.result));
+      expect(result._tag).toBe("Failure");
+      expect(Option.isNone(await system.readThread(fixture.command.threadId))).toBe(true);
+      const history = await system.run(fixture.repository.readHistoryByClaim(fixture.claimId));
+      expect(history.effects.filter((fact) => fact.phase === "completed")).toHaveLength(0);
+    } finally {
+      await system.dispose();
+    }
+  });
+  it("commits creation event, projection, receipt and effect completion together", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const fixture = await system.run(prepareNativeEngineFixture("atomic-success"));
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("synthetic-project-create"),
+          projectId: ProjectId.make("synthetic-project"),
+          title: "Synthetic",
+          workspaceRoot: "/synthetic/project",
+          createdAt: now(),
+        }),
+      );
+      const accepted = await system.run(
+        system.engine.dispatch(fixture.command, {
+          bootstrapEffect: { claimId: fixture.claimId, effectId: fixture.start.effectId },
+        }),
+      );
+      const history = await system.run(fixture.repository.readHistoryByClaim(fixture.claimId));
+      const completion = history.effects.find((fact) => fact.phase === "completed");
+      expect(completion).toMatchObject({
+        kind: "native_command",
+        commandType: "thread.create",
+        sequence: accepted.sequence,
+      });
+      expect(Option.isSome(await system.readThread(fixture.command.threadId))).toBe(true);
+      const rows = await system.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return yield* sql`SELECT status, result_sequence FROM orchestration_command_receipts WHERE command_id = ${fixture.command.commandId}`;
+        }),
+      );
+      expect(rows).toEqual([{ status: "accepted", result_sequence: accepted.sequence }]);
+    } finally {
+      await system.dispose();
+    }
+  });
+  it("rolls back events, projection and accepted receipt when fact completion fails", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const fixture = await system.run(prepareNativeEngineFixture("atomic-rollback"));
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("synthetic-project-create"),
+          projectId: ProjectId.make("synthetic-project"),
+          title: "Synthetic",
+          workspaceRoot: "/synthetic/project",
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql.unsafe(
+            "CREATE TRIGGER synthetic_completion_failure BEFORE INSERT ON native_creation_effect_facts WHEN NEW.phase = 'completed' BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END",
+          );
+        }),
+      );
+      const result = await system.run(
+        system.engine
+          .dispatch(fixture.command, {
+            bootstrapEffect: { claimId: fixture.claimId, effectId: fixture.start.effectId },
+          })
+          .pipe(Effect.result),
+      );
+      expect(result._tag).toBe("Failure");
+      expect(Option.isNone(await system.readThread(fixture.command.threadId))).toBe(true);
+      const history = await system.run(fixture.repository.readHistoryByClaim(fixture.claimId));
+      expect(history.effects.filter((fact) => fact.phase === "completed")).toHaveLength(0);
+      const rows = await system.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return yield* sql`SELECT COUNT(*) AS count FROM orchestration_events WHERE command_id = ${fixture.command.commandId}`;
+        }),
+      );
+      expect(rows).toEqual([{ count: 0 }]);
+    } finally {
+      await system.dispose();
+    }
+  });
+});
+
+const prepareNativeCleanupFixture = (
+  engine: OrchestrationEngineService["Service"],
+  operationId: string,
+) =>
+  Effect.gen(function* () {
+    const fixture = yield* prepareNativeEngineFixture(operationId);
+    yield* engine.dispatch({
+      type: "project.create",
+      commandId: CommandId.make(`${operationId}:project-create`),
+      projectId: fixture.command.projectId,
+      title: "Synthetic cleanup project",
+      workspaceRoot: "/synthetic/project",
+      createdAt: now(),
+    });
+    yield* engine.dispatch(fixture.command, {
+      bootstrapEffect: { claimId: fixture.claimId, effectId: fixture.start.effectId },
+    });
+    const history = yield* fixture.repository.readHistoryByClaim(fixture.claimId);
+    const created = history.effects.find(
+      (fact) =>
+        fact.kind === "native_command" &&
+        fact.phase === "completed" &&
+        fact.commandType === "thread.create",
+    );
+    if (created?.kind !== "native_command" || created.phase !== "completed")
+      return yield* Effect.die("Missing synthetic creation incarnation");
+    yield* fixture.repository.startEffect(
+      fixture.claimId,
+      {
+        kind: "cleanup",
+        phase: "started",
+        effectId: `${operationId}:cleanup-thread`,
+        timestamp: now(),
+        resource: {
+          kind: "thread",
+          threadId: fixture.command.threadId,
+          incarnation: { eventId: created.eventId, sequence: created.sequence },
+        },
+        recoveryScopeId: `${operationId}:cleanup:thread`,
+      },
+      Effect.succeed(history.intent.binding),
+    );
+    const cleanupCommand = {
+      type: "thread.delete" as const,
+      commandId: CommandId.make(`${fixture.raw.commandId}:bootstrap-thread-delete`),
+      threadId: fixture.command.threadId,
+    };
+    yield* fixture.repository.reserveCommand(fixture.claimId, cleanupCommand);
+    const cleanupStart = yield* fixture.repository.startEffect(
+      fixture.claimId,
+      {
+        kind: "native_command",
+        phase: "started",
+        effectId: `${operationId}:cleanup-command`,
+        timestamp: now(),
+        commandId: cleanupCommand.commandId,
+        threadId: cleanupCommand.threadId,
+        commandType: cleanupCommand.type,
+        commandDigest: nativeCreationCommandDigest(cleanupCommand),
+      },
+      Effect.succeed(history.intent.binding),
+    );
+    return { ...fixture, cleanupCommand, cleanupStart };
+  });
+
+describe("native cleanup incarnation fence", () => {
+  it("rejects historical cleanup after replacement without effective deletion", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const fixture = await system.run(
+        prepareNativeCleanupFixture(system.engine, "cleanup-replacement"),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("ordinary-delete-original"),
+          threadId: fixture.command.threadId,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          ...fixture.command,
+          commandId: CommandId.make("ordinary-create-replacement"),
+          title: "Replacement incarnation",
+        }),
+      );
+      const beforeThread = await system.readThread(fixture.command.threadId);
+      const beforeModel = await system.readModel();
+      const beforeHistory = await system.run(
+        fixture.repository.readHistoryByClaim(fixture.claimId),
+      );
+      expect(Option.isSome(beforeThread)).toBe(true);
+      const result = await system.run(
+        system.engine
+          .dispatch(fixture.cleanupCommand, {
+            bootstrapEffect: { claimId: fixture.claimId, effectId: fixture.cleanupStart.effectId },
+          })
+          .pipe(Effect.result),
+      );
+      expect(result._tag).toBe("Failure");
+      expect(await system.readThread(fixture.command.threadId)).toEqual(beforeThread);
+      expect(await system.readModel()).toEqual(beforeModel);
+      expect(await system.run(fixture.repository.readHistoryByClaim(fixture.claimId))).toEqual(
+        beforeHistory,
+      );
+      const rows = await system.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return {
+            events:
+              yield* sql`SELECT COUNT(*) AS count FROM orchestration_events WHERE command_id = ${fixture.cleanupCommand.commandId}`,
+            receipts:
+              yield* sql`SELECT COUNT(*) AS count FROM orchestration_command_receipts WHERE command_id = ${fixture.cleanupCommand.commandId} AND status = 'accepted'`,
+          };
+        }),
+      );
+      expect(rows).toEqual({ events: [{ count: 0 }], receipts: [{ count: 0 }] });
+    } finally {
+      await system.dispose();
+    }
+  });
+
+  it("accepts cleanup of the unchanged authorized incarnation", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const fixture = await system.run(
+        prepareNativeCleanupFixture(system.engine, "cleanup-unchanged"),
+      );
+      const accepted = await system.run(
+        system.engine.dispatch(fixture.cleanupCommand, {
+          bootstrapEffect: { claimId: fixture.claimId, effectId: fixture.cleanupStart.effectId },
+        }),
+      );
+      expect(Option.isNone(await system.readThread(fixture.command.threadId))).toBe(true);
+      const history = await system.run(fixture.repository.readHistoryByClaim(fixture.claimId));
+      expect(
+        history.effects.find(
+          (fact) => fact.effectId === fixture.cleanupStart.effectId && fact.phase === "completed",
+        ),
+      ).toMatchObject({
+        kind: "native_command",
+        commandType: "thread.delete",
+        sequence: accepted.sequence,
+      });
+      const rows = await system.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return yield* sql`SELECT status, result_sequence FROM orchestration_command_receipts WHERE command_id = ${fixture.cleanupCommand.commandId}`;
+        }),
+      );
+      expect(rows).toEqual([{ status: "accepted", result_sequence: accepted.sequence }]);
+    } finally {
+      await system.dispose();
+    }
   });
 });
