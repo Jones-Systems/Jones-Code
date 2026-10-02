@@ -291,6 +291,148 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
+  describe("base feed memo", () => {
+    function makeInput() {
+      return {
+        messages: [2, 4].map((second) => ({
+          id: MessageId.make(`memo-message-${second}`),
+          role: "assistant" as const,
+          text: `Response ${second}`,
+          turnId: null,
+          streaming: false,
+          createdAt: `2026-04-01T00:00:0${second}.000Z`,
+          updatedAt: `2026-04-01T00:00:0${second}.000Z`,
+        })),
+        activities: [1, 3, 5].map((second) =>
+          makeActivity({
+            id: EventId.make(`memo-work-${second}`),
+            kind: "runtime.warning",
+            summary: `Notice ${second}`,
+            createdAt: `2026-04-01T00:00:0${second}.000Z`,
+          }),
+        ),
+      };
+    }
+
+    it("keeps returned arrays independent without mutating source arrays", () => {
+      const thread = makeInput();
+      Object.freeze(thread.messages);
+      Object.freeze(thread.activities);
+      const first = buildThreadFeed(thread);
+      const second = buildThreadFeed(thread);
+      const expectedIds = [
+        "memo-work-1",
+        "memo-message-2",
+        "memo-work-3",
+        "memo-message-4",
+        "memo-work-5",
+      ];
+      expect(second).not.toBe(first);
+      first.reverse();
+      first.pop();
+      second.splice(0, second.length);
+      const third = buildThreadFeed(thread);
+      expect(third).not.toBe(second);
+      expect(third.map((row) => row.id)).toEqual(expectedIds);
+      expect(thread.messages.map((message) => message.id)).toEqual([
+        "memo-message-2",
+        "memo-message-4",
+      ]);
+      expect(thread.activities.map((activity) => activity.id)).toEqual([
+        "memo-work-1",
+        "memo-work-3",
+        "memo-work-5",
+      ]);
+    });
+
+    it("reuses base rows only for the same ordered activity objects and message array", () => {
+      const thread = makeInput();
+      const original = buildThreadFeed(thread);
+      const copiedActivities = buildThreadFeed({ ...thread, activities: [...thread.activities] });
+      expect(copiedActivities).not.toBe(original);
+      for (const [index, row] of copiedActivities.entries()) {
+        expect(row).toBe(original[index]);
+      }
+
+      const reordered = buildThreadFeed({
+        ...thread,
+        activities: [...thread.activities].reverse(),
+      });
+      expect(reordered.map((row) => row.id)).toEqual(original.map((row) => row.id));
+      expect(reordered[0]).not.toBe(original[0]);
+      const replacedActivities = buildThreadFeed({
+        ...thread,
+        activities: thread.activities.map((activity) => ({ ...activity })),
+      });
+      expect(replacedActivities.map((row) => row.id)).toEqual(original.map((row) => row.id));
+      expect(replacedActivities[0]).not.toBe(reordered[0]);
+      const replacedMessages = buildThreadFeed({
+        messages: [...thread.messages],
+        activities: [...thread.activities],
+      });
+      expect(replacedMessages.map((row) => row.id)).toEqual(original.map((row) => row.id));
+      expect(replacedMessages[0]).not.toBe(copiedActivities[0]);
+      expect(original[0]).toMatchObject({ activities: [{ summary: "Notice 1" }] });
+    });
+
+    it("falls back for changed messages, activities, loaded windows and local inputs", () => {
+      const thread = makeInput();
+      const original = buildThreadFeed(thread);
+      const originalIds = original.map((row) => row.id);
+      const windowed = buildThreadFeed(thread, { loadedMessages: thread.messages });
+      expect(windowed.map((row) => row.id)).toEqual(originalIds.slice(1));
+      expect(buildThreadFeed(thread).map((row) => row.id)).toEqual(originalIds);
+
+      const corrected = buildThreadFeed({
+        ...thread,
+        activities: [
+          thread.activities[0]!,
+          { ...thread.activities[1]!, summary: "Corrected notice" },
+          thread.activities[2]!,
+        ],
+      });
+      expect(corrected[2]).toMatchObject({ activities: [{ summary: "Corrected notice" }] });
+      expect(original[2]).toMatchObject({ activities: [{ summary: "Notice 3" }] });
+      const hiddenMessage = buildThreadFeed({
+        ...thread,
+        messages: [{ ...thread.messages[0]!, text: "" }, thread.messages[1]!],
+      });
+      expect(hiddenMessage.map((row) => row.id)).toEqual([
+        "memo-work-1",
+        "memo-message-4",
+        "memo-work-5",
+      ]);
+      expect(hiddenMessage[0]).toMatchObject({
+        activities: [{ id: "memo-work-1" }, { id: "memo-work-3" }],
+      });
+      expect(original.map((row) => row.id)).toEqual(originalIds);
+
+      const recentMessages = [thread.messages[1]!];
+      expect(
+        buildThreadFeed(thread, { loadedMessages: recentMessages }).map((row) => row.id),
+      ).toEqual(["memo-message-4", "memo-work-5"]);
+      const localMessage = {
+        ...thread.messages[0]!,
+        id: MessageId.make("memo-local-message"),
+        createdAt: "2026-04-01T00:00:00.000Z",
+      };
+      expect(
+        buildThreadFeed(thread, {
+          loadedMessages: recentMessages,
+          localMessages: [localMessage],
+        }).map((row) => row.id),
+      ).toEqual(["memo-local-message", "memo-message-4", "memo-work-5"]);
+      const restored = buildThreadFeed(thread);
+      const emptyLocal = buildThreadFeed(
+        { ...thread, activities: [...thread.activities] },
+        { localMessages: [] },
+      );
+      expect(emptyLocal.map((row) => row.id)).toEqual(originalIds);
+      expect(emptyLocal[0]).not.toBe(restored[0]);
+      expect(buildThreadFeed(thread).map((row) => row.id)).toEqual(originalIds);
+    });
+  });
+
   it("keeps equal-time message order ahead of sequence-ordered activities", () => {
     const createdAt = "2026-04-01T00:00:01.000Z";
     const messages = ["message-z", "message-a"].map((id) => ({

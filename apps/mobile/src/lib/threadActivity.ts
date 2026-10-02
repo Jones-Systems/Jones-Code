@@ -242,6 +242,14 @@ const messageEntriesCache = new WeakMap<
   OrchestrationThread["messages"][number],
   Extract<RawThreadFeedEntry, { readonly type: "message" }>
 >();
+const baseFeedCache = new WeakMap<
+  ReadonlyArray<OrchestrationThread["messages"][number]>,
+  {
+    readonly oldestLoadedMessageCreatedAt: string | null;
+    readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+    readonly feed: ReadonlyArray<ThreadFeedEntry>;
+  }
+>();
 const activityGroupsCache = new WeakMap<ThreadFeedActivity, ThreadFeedActivityGroup>();
 const presentedActivityGroupsCache = new WeakMap<
   ThreadFeedActivityGroup,
@@ -2411,11 +2419,22 @@ export function buildThreadFeed(
   },
 ): ThreadFeedEntry[] {
   const loadedMessages = options?.loadedMessages ?? thread.messages;
+  const oldestLoadedMessageCreatedAt =
+    options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
+  const cacheable = options?.localMessages === undefined;
+  const cached = cacheable ? baseFeedCache.get(loadedMessages) : undefined;
+  if (
+    cached &&
+    cached.oldestLoadedMessageCreatedAt === oldestLoadedMessageCreatedAt &&
+    cached.activities.length === thread.activities.length &&
+    cached.activities.every((activity, index) => activity === thread.activities[index])
+  ) {
+    return cached.feed.slice();
+  }
+
   const messages = options?.localMessages
     ? [...loadedMessages, ...options.localMessages]
     : loadedMessages;
-  const oldestLoadedMessageCreatedAt =
-    options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
   const activityEntries = getThreadFeedActivityEntries(thread.activities).filter(
     (entry) =>
       oldestLoadedMessageCreatedAt === null || entry.createdAt >= oldestLoadedMessageCreatedAt,
@@ -2445,7 +2464,16 @@ export function buildThreadFeed(
     Order.Date,
   );
 
-  return groupAdjacentActivities(entries);
+  const feed = groupAdjacentActivities(entries);
+  if (cacheable) {
+    baseFeedCache.set(loadedMessages, {
+      oldestLoadedMessageCreatedAt,
+      activities: thread.activities.slice(),
+      // Callers may reorder or splice their returned array without changing the memo.
+      feed: feed.slice(),
+    });
+  }
+  return feed;
 }
 
 function getThreadFeedActivityEntries(activities: ReadonlyArray<OrchestrationThreadActivity>) {
