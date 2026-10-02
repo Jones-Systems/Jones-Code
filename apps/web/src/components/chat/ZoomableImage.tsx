@@ -10,7 +10,7 @@ import {
   type Ref,
 } from "react";
 
-const MIN_ZOOM = 0.1;
+const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 8;
 
 export interface ZoomableImageHandle {
@@ -159,7 +159,12 @@ export function ZoomableImage({
     changeZoom(zoomRef.current >= 1.5 ? 1 : (Math.round(zoomRef.current * 100) + 10) / 100, point);
   const commitPercent = () => {
     const value = Number(percentInput.trim());
-    if (percentInput.trim() && Number.isFinite(value) && value >= 10 && value <= 800) {
+    if (
+      percentInput.trim() &&
+      Number.isFinite(value) &&
+      value >= MIN_ZOOM * 100 &&
+      value <= MAX_ZOOM * 100
+    ) {
       changeZoom(value / 100);
       setPercentInput(String(Math.round(value)));
     } else {
@@ -193,60 +198,62 @@ export function ZoomableImage({
           : "min-w-0 max-w-[var(--media-width)]"
       }
     >
-      <div
-        role="toolbar"
-        aria-label="Image zoom"
-        className="mb-2 flex shrink-0 justify-end gap-1 text-sm"
-        onKeyDown={(event) => event.stopPropagation()}
-      >
-        <Button
-          type="button"
-          aria-label="Zoom out"
-          variant="outline"
-          size="compact"
-          onClick={() => stepZoom(-1)}
+      {layout === "panel" && (
+        <div
+          role="toolbar"
+          aria-label="Image zoom"
+          className="mb-2 flex shrink-0 justify-end gap-1 text-sm"
+          onKeyDown={(event) => event.stopPropagation()}
         >
-          −
-        </Button>
-        <label className="flex items-center gap-1">
-          <Input
+          <Button
+            type="button"
+            aria-label="Zoom out"
+            variant="outline"
             size="compact"
-            font="mono"
-            nativeInput
-            aria-label="Zoom percentage"
-            inputMode="decimal"
-            className="w-16"
-            value={percentInput}
-            onChange={(event) => setPercentInput(event.target.value)}
-            onBlur={commitPercent}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                commitPercent();
-              }
-            }}
-          />
-          <span aria-hidden="true">%</span>
-        </label>
-        <Button
-          type="button"
-          aria-label="Zoom in"
-          variant="outline"
-          size="compact"
-          onClick={() => stepZoom(1)}
-        >
-          +
-        </Button>
-        <Button
-          type="button"
-          aria-label="Reset zoom to 100%"
-          variant="outline"
-          size="compact"
-          onClick={() => changeZoom(1)}
-        >
-          100%
-        </Button>
-      </div>
+            onClick={() => stepZoom(-1)}
+          >
+            −
+          </Button>
+          <label className="flex items-center gap-1">
+            <Input
+              size="compact"
+              font="mono"
+              nativeInput
+              aria-label="Zoom percentage"
+              inputMode="decimal"
+              className="w-16"
+              value={percentInput}
+              onChange={(event) => setPercentInput(event.target.value)}
+              onBlur={commitPercent}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitPercent();
+                }
+              }}
+            />
+            <span aria-hidden="true">%</span>
+          </label>
+          <Button
+            type="button"
+            aria-label="Zoom in"
+            variant="outline"
+            size="compact"
+            onClick={() => stepZoom(1)}
+          >
+            +
+          </Button>
+          <Button
+            type="button"
+            aria-label="Reset zoom to 100%"
+            variant="outline"
+            size="compact"
+            onClick={() => changeZoom(1)}
+          >
+            100%
+          </Button>
+        </div>
+      )}
       <div
         ref={sizingRef}
         className={layout === "panel" ? "relative min-h-0 min-w-0 flex-1" : undefined}
