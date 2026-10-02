@@ -16,9 +16,42 @@ vi.mock("../../hostStatus", async (importOriginal) => ({
 let container: HTMLDivElement;
 let root: Root;
 let receive: (snapshot: HostStatusSnapshot | null) => void;
+let availableWidth: number;
+let bubbleWidths: number[];
+let resize: () => void;
+let observerDisconnected: boolean;
 
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  availableWidth = 1000;
+  bubbleWidths = [100, 110, 120, 130];
+  observerDisconnected = false;
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: () => void) {
+        resize = callback;
+      }
+      observe() {}
+      disconnect() {
+        observerDisconnected = true;
+      }
+    },
+  );
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.getAttribute("aria-label") === "Host status") {
+      return new DOMRect(0, 0, availableWidth, 32);
+    }
+    if (this.parentElement?.hasAttribute("data-host-status-measurement")) {
+      const index = Array.from(this.parentElement.children).indexOf(this);
+      const left = bubbleWidths.slice(0, index).reduce((sum, width) => sum + width + 8, 0);
+      return new DOMRect(left, 0, bubbleWidths[index] ?? 0, 32);
+    }
+    return originalRect.call(this);
+  });
   vi.mocked(observeHostStatus).mockImplementation((_visibility, listener) => {
     receive = listener;
     return () => {};
@@ -37,8 +70,10 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await act(async () => root.unmount());
+  expect(observerDisconnected).toBe(true);
   container.remove();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
@@ -82,4 +117,75 @@ it("keeps one bubble per host while live samples update text, CPU health, and ac
   expect(bubbles()[0]?.textContent).toBe("VPS · CPU — · RAM —");
   expect(bubbles()[0]?.className).toContain("bg-muted");
   expect(bubbles()[0]?.getAttribute("aria-label")).toContain("stale");
+});
+
+it("removes complete bubbles from the right as available header space shrinks and restores them", async () => {
+  const names = () =>
+    Array.from(container.querySelectorAll('[role="img"]')).map(
+      (bubble) => bubble.textContent?.split(" · ")[0],
+    );
+  expect(names()).toEqual(["VPS", "Test", "Mini", "Home"]);
+  for (const [width, expected] of [
+    [353, ["VPS", "Test", "Mini"]],
+    [225, ["VPS", "Test"]],
+    [217, ["VPS"]],
+    [99, []],
+    [100, ["VPS"]],
+    [218, ["VPS", "Test"]],
+    [346, ["VPS", "Test", "Mini"]],
+    [484, ["VPS", "Test", "Mini", "Home"]],
+  ] as const) {
+    await act(async () => {
+      availableWidth = width;
+      resize();
+    });
+    expect(names()).toEqual(expected);
+    expect(container.querySelectorAll('[tabindex="0"]')).toHaveLength(expected.length);
+  }
+  expect(
+    container.querySelector("[data-host-status-measurement]")?.querySelector("[tabindex]"),
+  ).toBeNull();
+});
+
+it("recalculates fitting bubbles when live metric text changes width without a viewport resize", async () => {
+  const names = () =>
+    Array.from(container.querySelectorAll('[role="img"]')).map(
+      (bubble) => bubble.textContent?.split(" · ")[0],
+    );
+  await act(async () => {
+    availableWidth = 346;
+    resize();
+  });
+  expect(names()).toEqual(["VPS", "Test", "Mini"]);
+  await act(async () => {
+    receive({
+      hosts: [
+        {
+          id: "vps",
+          status: "available",
+          cpuUsagePercent: 100,
+          logicalCpuCount: 16,
+          occupiedMemoryBytes: 128 * 1024 ** 3,
+          totalMemoryBytes: 256 * 1024 ** 3,
+          sampledAt: new Date().toISOString(),
+        },
+      ],
+    });
+  });
+  expect(container.querySelector("[data-host-status-measurement]")?.textContent).toContain(
+    "VPS · CPU 100% · RAM 128/256 GiB",
+  );
+  await act(async () => {
+    bubbleWidths = [180, 110, 120, 130];
+    resize();
+  });
+  expect(names()).toEqual(["VPS", "Test"]);
+  await act(async () => {
+    receive(null);
+  });
+  await act(async () => {
+    bubbleWidths = [100, 110, 120, 130];
+    resize();
+  });
+  expect(names()).toEqual(["VPS", "Test", "Mini"]);
 });

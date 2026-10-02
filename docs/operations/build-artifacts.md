@@ -6,10 +6,9 @@ for seven days. They are not GitHub Releases, package publications, or a deploye
 Jones-Code installation. Native GitHub-hosted Ubuntu 24.04 runners build each
 architecture; the minimum compatible Linux environment is not yet established.
 
-Run the workflow manually from Actions once it is on the default branch, selecting
-the intended source ref. Pull requests touching the workflow or its selected build
-inputs run it automatically. This narrow trigger is packaging validation, not a
-build of every application change. Check both architecture jobs and the source
+Main pushes produce qualified update candidates. For a manual trial, run the
+workflow from Actions on the default branch, selecting the intended source ref. Pull requests touching the workflow or its selected build
+inputs run it automatically. The narrow PR trigger validates packaging; main pushes build every source change. Check both architecture jobs and the source
 commit in the run summary. PR runs build GitHub's merge ref; `SOURCE_COMMIT` records
 the exact built commit, which may differ from the PR head.
 
@@ -61,7 +60,7 @@ owned by the person running the trial; retain them only as long as needed and
 remove only that exact directory after stopping the trial. Do not copy credentials
 or real user state into this first smoke trial.
 
-Versions use `0.0.0-preview.YYYYMMDD.RUN_ID`, which the existing CLI recognizes as
+Versions use `BASE-preview.YYYYMMDD.RUN_ID.RUN_ATTEMPT`, where `BASE` is the checked-in server package version, which the existing CLI recognizes as
 the preview channel. The archive retains T3 branding. CLI discovery, archive downloads and the tracked
 installers default to `Jones-Systems/Jones-Code`; desktop release feeds use the
 same repository unless `T3CODE_DESKTOP_UPDATE_REPOSITORY` explicitly overrides it.
@@ -77,12 +76,29 @@ Publishing this workflow does not authorize a VPS service restart, installation,
 replacement of an active binary, or use of the real T3 home. Those steps need a
 separate decision covering the target, state backup, rollback, and verification.
 
+## Qualified main updates
+
+Both artifact workflows run on canonical main pushes. The Jones updater accepts
+successful completed main push builds only after CI succeeds on the same source
+SHA and canonical ancestry is verified. PR and fork builds remain useful for
+manual trials but cannot become updater candidates. Build receipts bind source
+and tree, workflow, run attempt, artifact ID, outer artifact digest and inner
+payload hash. Artifacts remain subject to their seven-day retention window.
+
+Download stages a verified immutable candidate; Install uses its fixed handle.
+Existing version-only caches and older launchers require a local, source-qualified
+bootstrap. The unsigned Mac desktop uses the detached Jones activation helper;
+the Darwin arm64 headless service derives an Electron server runtime from the
+same qualified DMG and uses the service launcher. Neither route publishes a
+Release or supplies a Squirrel feed. Native Mac acceptance and initial host
+bootstrap must be performed on each host with its original state.
+
 ## Mac desktop artifact
 
 The companion **Mac Desktop Artifact** workflow builds an Apple Silicon
 DMG on `macos-15`. It follows the same seven-day
 Actions download process, with artifact name
-`desktop-mac-arm64-RUN_ID-RUN_ATTEMPT`. Confirm the source revision in its run
+`desktop-mac-arm64-RUN_ID-RUN_ATTEMPT--VERSION`. Confirm the source revision in its run
 summary and downloaded `SOURCE_COMMIT`/`ARTIFACT.json`. After downloading into an empty directory on a Mac, verify:
 
 ```bash
