@@ -9,7 +9,9 @@ import {
   type EnvironmentSessionPrincipalShape,
   type VoiceReviewDraft,
 } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - native fixtures prove credential permission and symlink defenses, with exact-root cleanup in finally.
 import * as NodeFSP from "node:fs/promises";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - native path joins bind permission and symlink fixtures to their exact cleanup-owned root.
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import { makeVoiceReviewBridge } from "./bridge.ts";

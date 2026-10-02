@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - synchronous configuration parsing requires native absolute-path validation before credential access.
 import * as NodePath from "node:path";
 
 export interface VoiceReviewConfig {

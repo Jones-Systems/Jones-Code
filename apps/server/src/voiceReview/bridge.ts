@@ -17,7 +17,9 @@ import {
   type VoiceReviewMutationPayload,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Effect FileSystem OpenFlag cannot express numeric O_NOFOLLOW | O_NONBLOCK credential guards.
 import * as NodeFS from "node:fs";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - native descriptors preserve guarded open, fstat, bounded read, and finally close on the same credential file.
 import * as NodeFSP from "node:fs/promises";
 import type { VoiceReviewConfig } from "./config.ts";
 
@@ -37,6 +39,8 @@ const decodeVoiceReviewMutationResult = Schema.decodeUnknownSync(VoiceReviewMuta
 const decodeVoiceReviewEditSavePayload = Schema.decodeUnknownSync(VoiceReviewEditSavePayload);
 const decodeVoiceReviewEditCancelPayload = Schema.decodeUnknownSync(VoiceReviewEditCancelPayload);
 const decodeVoiceReviewRevisionPayload = Schema.decodeUnknownSync(VoiceReviewRevisionPayload);
+const isVoiceReviewNotFoundError = Schema.is(VoiceReviewNotFoundError);
+const isVoiceReviewConflictError = Schema.is(VoiceReviewConflictError);
 
 const readToken = async (path: string): Promise<string> => {
   const file = await NodeFSP.open(
@@ -107,6 +111,7 @@ export const makeVoiceReviewBridge = (
     payload?: VoiceReviewMutationPayload,
   ) => {
     const controller = new AbortController();
+    // @effect-diagnostics-next-line globalTimers:off - native fetch deadline; cleared on every completion.
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       const token = await readToken(trusted.reviewer_token_file);
@@ -136,8 +141,7 @@ export const makeVoiceReviewBridge = (
       }
       return await boundedJson(response);
     } catch (error) {
-      if (error instanceof VoiceReviewNotFoundError || error instanceof VoiceReviewConflictError)
-        throw error;
+      if (isVoiceReviewNotFoundError(error) || isVoiceReviewConflictError(error)) throw error;
       throw new VoiceReviewUnavailableError({});
     } finally {
       clearTimeout(timeout);
