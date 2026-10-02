@@ -242,10 +242,16 @@ function connect(
   generation = 1,
   phase: SupervisorConnectionState["phase"] = "connected",
 ) {
-  testState.connections.set(
+  testState.connections = new Map(testState.connections).set(
     id,
     AsyncResult.success({ ...AVAILABLE_CONNECTION_STATE, phase, generation }),
   );
+  const presentation = testState.presentations.get(id);
+  if (presentation !== undefined) {
+    // State updates rebuild the real presentation and map. Preserve the supplied
+    // projected phase so the lag test can still exercise the connection guard.
+    testState.presentations = new Map(testState.presentations).set(id, { ...presentation });
+  }
 }
 
 function deferredRead() {
@@ -344,7 +350,10 @@ describe("saved token accounting panel", () => {
   it.each(["omitted", false] as const)(
     "does not expose or dispatch a reader when capability is %s",
     async (capability) => {
-      testState.presentations.set(primaryId, environment(primaryId, { capability }));
+      testState.presentations = new Map(testState.presentations).set(
+        primaryId,
+        environment(primaryId, { capability }),
+      );
       await render();
       expect(container.textContent).toBe("");
       expect(testState.read).not.toHaveBeenCalled();
@@ -360,7 +369,10 @@ describe("saved token accounting panel", () => {
     await act(() => button.click());
     expect(testState.read).not.toHaveBeenCalled();
     expect(container.textContent).toContain("disconnected");
-    testState.presentations.set(primaryId, environment(primaryId, { phase: "offline" }));
+    testState.presentations = new Map(testState.presentations).set(
+      primaryId,
+      environment(primaryId, { phase: "offline" }),
+    );
     await render();
     expect(container.textContent).toContain("Connect an environment");
     expect(testState.read).not.toHaveBeenCalled();
@@ -416,11 +428,17 @@ describe("saved token accounting panel", () => {
     const finish = deferredRead();
     await render();
     await click("Load saved report");
-    testState.presentations.set(primaryId, environment(primaryId, { capability: "omitted" }));
+    testState.presentations = new Map(testState.presentations).set(
+      primaryId,
+      environment(primaryId, { capability: "omitted" }),
+    );
     await render();
     await act(() => finish());
     expect(container.textContent).toBe("");
-    testState.presentations.set(primaryId, environment(primaryId));
+    testState.presentations = new Map(testState.presentations).set(
+      primaryId,
+      environment(primaryId),
+    );
     await render();
     expect(container.textContent).not.toContain(REPORT_ID);
     expect(testState.read).toHaveBeenCalledTimes(1);
