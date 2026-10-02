@@ -221,6 +221,43 @@
       ]
     },
     {
+      "group_id": "jones-voice-review",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/voiceReview/bridge.test.ts apps/server/src/voiceReview/http.test.ts apps/web/src/components/sidebar/mainAppLocation.test.ts apps/web/src/components/voiceReview/voiceReviewActions.test.ts packages/client-runtime/src/voice-review.test.ts packages/contracts/src/voiceReview.test.ts",
+      "modules": [
+        "apps/server/src/voiceReview/bridge.test.ts",
+        "apps/server/src/voiceReview/http.test.ts",
+        "apps/web/src/components/sidebar/mainAppLocation.test.ts",
+        "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
+        "packages/client-runtime/src/voice-review.test.ts",
+        "packages/contracts/src/voiceReview.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/server.ts",
+        "apps/server/src/voiceReview/bridge.test.ts",
+        "apps/server/src/voiceReview/bridge.ts",
+        "apps/server/src/voiceReview/config.ts",
+        "apps/server/src/voiceReview/http.test.ts",
+        "apps/server/src/voiceReview/http.ts",
+        "apps/web/src/components/sidebar/SidebarChrome.tsx",
+        "apps/web/src/components/sidebar/mainAppLocation.test.ts",
+        "apps/web/src/components/sidebar/mainAppLocation.ts",
+        "apps/web/src/components/voiceReview/VoiceReviewPage.tsx",
+        "apps/web/src/components/voiceReview/useVoiceReview.ts",
+        "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
+        "apps/web/src/components/voiceReview/voiceReviewActions.ts",
+        "apps/web/src/routeTree.gen.ts",
+        "apps/web/src/routes/voice-review.tsx",
+        "docs/user/composer.md",
+        "packages/client-runtime/package.json",
+        "packages/client-runtime/src/voice-review.test.ts",
+        "packages/client-runtime/src/voice-review.ts",
+        "packages/contracts/src/environmentHttp.ts",
+        "packages/contracts/src/index.ts",
+        "packages/contracts/src/voiceReview.test.ts",
+        "packages/contracts/src/voiceReview.ts"
+      ]
+    },
+    {
       "group_id": "jones-qualified-updates",
       "command": "node_modules/.bin/vp test run --no-file-parallelism packages/shared/src/jonesActions.test.ts packages/shared/src/cliRelease.test.ts scripts/stamp-jones-build.test.ts scripts/build-desktop-artifact.test.ts apps/server/src/cli/update.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/qualifiedArchive.test.ts apps/server/src/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/cloud/qualifiedRuntime.test.ts apps/server/src/cloud/qualifiedLauncher.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/jonesUpdates/JonesUpdater.test.ts apps/server/src/jonesUpdates/trialGate.test.ts apps/desktop/src/updates/JonesDesktopUpdates.test.ts apps/desktop/src/updates/jonesNativeHelperSource.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/updates/updateChannels.test.ts apps/web/src/components/desktopUpdate.logic.test.ts packages/contracts/src/environmentHttp.test.ts apps/server/src/jonesUpdates/stagedSelection.test.ts apps/server/src/cloud/qualifiedQuiescence.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts packages/client-runtime/src/state/server.test.ts",
       "modules": [
