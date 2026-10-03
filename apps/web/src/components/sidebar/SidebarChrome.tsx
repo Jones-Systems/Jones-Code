@@ -3,6 +3,7 @@ import {
   BookOpenIcon,
   ChartNoAxesColumnIcon,
   MicIcon,
+  ListTodoIcon,
   SettingsIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -198,6 +199,11 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     void navigate({ to: "/voice-review" });
   }, [closeMobileSidebar, navigate]);
 
+  const handleWorkQueueClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/work-queue" });
+  }, [closeMobileSidebar, navigate]);
+
   return (
     <SidebarMenu className="flex-row items-center">
       {isOnUtilityPage ? (
@@ -236,6 +242,12 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             label="Voice review"
             tooltip="Review, edit, and pause voice prompts"
             onClick={handleVoiceReviewClick}
+          />
+          <SidebarUtilityItem
+            icon={<ListTodoIcon />}
+            label="Submitted work"
+            tooltip="View submitted work queue samples"
+            onClick={handleWorkQueueClick}
           />
         </>
       )}

@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as WorkQueueRouteImport } from './routes/work-queue'
 import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as VoiceReviewRouteImport } from './routes/voice-review'
 import { Route as UsageRouteImport } from './routes/usage'
@@ -36,6 +37,11 @@ import { Route as ChatConversationsRouteImport } from './routes/_chat.conversati
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
 
+const WorkQueueRoute = WorkQueueRouteImport.update({
+  id: '/work-queue',
+  path: '/work-queue',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WelcomeRoute = WelcomeRouteImport.update({
   id: '/welcome',
   path: '/welcome',
@@ -176,6 +182,7 @@ export interface FileRoutesByFullPath {
   '/usage': typeof UsageRoute
   '/voice-review': typeof VoiceReviewRoute
   '/welcome': typeof WelcomeRoute
+  '/work-queue': typeof WorkQueueRoute
   '/conversations': typeof ChatConversationsRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
@@ -202,6 +209,7 @@ export interface FileRoutesByTo {
   '/usage': typeof UsageRoute
   '/voice-review': typeof VoiceReviewRoute
   '/welcome': typeof WelcomeRoute
+  '/work-queue': typeof WorkQueueRoute
   '/conversations': typeof ChatConversationsRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
@@ -231,6 +239,7 @@ export interface FileRoutesById {
   '/usage': typeof UsageRoute
   '/voice-review': typeof VoiceReviewRoute
   '/welcome': typeof WelcomeRoute
+  '/work-queue': typeof WorkQueueRoute
   '/_chat/conversations': typeof ChatConversationsRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
@@ -261,6 +270,7 @@ export interface FileRouteTypes {
     | '/usage'
     | '/voice-review'
     | '/welcome'
+    | '/work-queue'
     | '/conversations'
     | '/pull-requests'
     | '/projects/$projectKey'
@@ -287,6 +297,7 @@ export interface FileRouteTypes {
     | '/usage'
     | '/voice-review'
     | '/welcome'
+    | '/work-queue'
     | '/conversations'
     | '/pull-requests'
     | '/projects/$projectKey'
@@ -315,6 +326,7 @@ export interface FileRouteTypes {
     | '/usage'
     | '/voice-review'
     | '/welcome'
+    | '/work-queue'
     | '/_chat/conversations'
     | '/_chat/pull-requests'
     | '/projects/$projectKey'
@@ -344,11 +356,19 @@ export interface RootRouteChildren {
   UsageRoute: typeof UsageRoute
   VoiceReviewRoute: typeof VoiceReviewRoute
   WelcomeRoute: typeof WelcomeRoute
+  WorkQueueRoute: typeof WorkQueueRoute
   ProjectsProjectKeyRoute: typeof ProjectsProjectKeyRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/work-queue': {
+      id: '/work-queue'
+      path: '/work-queue'
+      fullPath: '/work-queue'
+      preLoaderRoute: typeof WorkQueueRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/welcome': {
       id: '/welcome'
       path: '/welcome'
@@ -596,6 +616,7 @@ const rootRouteChildren: RootRouteChildren = {
   UsageRoute: UsageRoute,
   VoiceReviewRoute: VoiceReviewRoute,
   WelcomeRoute: WelcomeRoute,
+  WorkQueueRoute: WorkQueueRoute,
   ProjectsProjectKeyRoute: ProjectsProjectKeyRoute,
 }
 export const routeTree = rootRouteImport
