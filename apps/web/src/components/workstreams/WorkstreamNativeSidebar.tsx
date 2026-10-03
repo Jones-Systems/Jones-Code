@@ -24,11 +24,13 @@ import {
 } from "./nativeThreadGrouping";
 
 import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
+import type { ThreadOperatingState } from "../../state/threads";
 
 export function WorkstreamNativeSidebar(props: {
   readonly controller: WorkstreamListView;
   readonly grouping: NativeWorkstreamThreadGrouping<EnvironmentThreadShell>;
   readonly summaryGrouping?: NativeWorkstreamThreadGrouping<EnvironmentThreadShell>;
+  readonly getOperatingState?: (thread: EnvironmentThreadShell) => ThreadOperatingState | undefined;
   readonly renderThread: (thread: EnvironmentThreadShell) => ReactNode;
   readonly canReorder: (thread: EnvironmentThreadShell) => boolean;
   readonly onMovementError?: (cause: unknown) => void;
@@ -54,8 +56,8 @@ export function WorkstreamNativeSidebar(props: {
   const { controller, grouping } = props;
   const statusGrouping = props.summaryGrouping ?? grouping;
   const threadStatusSummaries = useMemo(
-    () => summarizeWorkstreamThreadStatuses(statusGrouping),
-    [statusGrouping],
+    () => summarizeWorkstreamThreadStatuses(statusGrouping, props.getOperatingState),
+    [statusGrouping, props.getOperatingState],
   );
   const [dragged, setDragged] = useState<readonly EnvironmentThreadShell[] | null>(null);
   const [dropTarget, setDropTarget] = useState<{

@@ -1,5 +1,5 @@
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
-import { scopeProjectRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -7,17 +7,21 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
-import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import type { ScopedThreadRef, ThreadId, OrchestrationV2CurrentThreadRuntimeTarget } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 
 import { resolveSnoozePresets } from "../components/Sidebar.snooze";
 import {
   buildThreadActionMenuItems,
+  createCurrentRuntimeStopController,
+  currentRuntimeStopMenuTarget,
   type ThreadActionMenuId,
 } from "../components/threadActionMenu.logic";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
-import { threadEnvironment } from "../state/threads";
+import { threadContinuation, threadEnvironment } from "../state/threads";
+import { useAtomQueryRunner } from "../state/use-atom-query-runner";
+import { useComposerDraftStore, reserveCurrentRuntimeStopPointer, clearCurrentRuntimeStopPointer } from "../composerDraftStore";
 import { useAtomCommand } from "../state/use-atom-command";
 import {
   readEnvironmentSupportsAutoSettleOptOut,
@@ -36,7 +40,7 @@ import {
   selectProjectGroupingSettings,
 } from "../logicalProject";
 import { buildPhysicalToLogicalProjectKeyMap } from "../sidebarProjectGrouping";
-import { useUiStateStore } from "../uiStateStore";
+import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
@@ -50,6 +54,52 @@ function failureToast(title: string, error: unknown) {
       description: error instanceof Error ? error.message : "An error occurred.",
     }),
   );
+}
+
+export function useCurrentRuntimeStop() {
+  const readAttachment = useAtomQueryRunner(threadContinuation.runtimeAttachment, { refresh: true, reportFailure: false });
+  const stop = useAtomCommand(threadEnvironment.stopCurrentThreadRuntime, { reportFailure: false });
+  const observe = useAtomCommand(threadEnvironment.observeCurrentThreadRuntimeStop, { reportFailure: false });
+  const run = useMemo(() => createCurrentRuntimeStopController({
+    read: (threadRef) => {
+      const pointer = useComposerDraftStore.getState().getComposerDraft(threadRef)?.currentRuntimeStop;
+      if (!pointer) return null;
+      if (pointer.environmentId !== threadRef.environmentId || pointer.threadId !== threadRef.threadId) throw new Error("The saved stop belongs to another environment or thread.");
+      return { commandId: pointer.commandId, threadId: pointer.threadId, target: pointer.target };
+    },
+    reserve: (threadRef, input) => reserveCurrentRuntimeStopPointer({ environmentId: threadRef.environmentId, ...input }),
+    clear: (threadRef, input) => clearCurrentRuntimeStopPointer({ environmentId: threadRef.environmentId, ...input }),
+    stop: async (threadRef, input) => {
+      const result = await stop({ environmentId: threadRef.environmentId, input });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      return result.value;
+    },
+    observe: async (threadRef, input) => {
+      const result = await observe({ environmentId: threadRef.environmentId, input });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      return result.value;
+    },
+  }), [stop, observe]);
+  const capture = useCallback(async (threadRef: ScopedThreadRef) => {
+    try {
+      const result = await readAttachment({ environmentId: threadRef.environmentId, input: { threadId: threadRef.threadId } });
+      return currentRuntimeStopMenuTarget(result._tag === "Success" ? result.value : null, threadRef.threadId);
+    } catch { return null; }
+  }, [readAttachment]);
+  const request = useCallback(async (threadRef: ScopedThreadRef, target: OrchestrationV2CurrentThreadRuntimeTarget): Promise<void> => {
+    try {
+      const outcome = await run(threadRef, target);
+      toastManager.add(stackedThreadToast({
+        type: outcome.status === "stopped" ? "success" : outcome.status === "rejected" ? "error" : "info",
+        title: outcome.status === "stopped" ? "Agent runtime stopped" : outcome.status === "rejected" ? "Stop request rejected" : outcome.status === "unknown" ? "Stop outcome unknown" : "Runtime stop pending",
+        description: outcome.reason ?? (outcome.status === "pending" ? "The runtime has not been confirmed stopped." : undefined),
+        ...(outcome.status === "pending" || outcome.status === "unknown" ? { timeout: 0, actionProps: { children: "Check status", onClick: () => { void request(threadRef, target); } } } : {}),
+      }));
+    } catch (error) {
+      failureToast("Stop request was not sent", error);
+    }
+  }, [run]);
+  return useMemo(() => ({ capture, request }), [capture, request]);
 }
 
 /**
@@ -92,15 +142,13 @@ export function useThreadActionMenu(input: {
     setThreadAutoSettle,
     archiveThread,
     deleteThread,
+    markThreadUnread,
   } = useThreadActions();
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
-  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
-    reportFailure: false,
-  });
+  const runtimeStop = useCurrentRuntimeStop();
   const handleNewThread = useNewThreadHandler();
-  const markThreadUnread = useUiStateStore((s) => s.markThreadUnread);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
@@ -144,10 +192,9 @@ export function useThreadActionMenu(input: {
         };
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const snoozePresets = resolveSnoozePresets(now, timestampFormat);
+        const capturedStop = await runtimeStop.capture(threadRef);
         const items = buildThreadActionMenuItems({
           branch: thread.branch ?? null,
-          // The chat header has no project-scoped thread list behind the
-          // menu, so the "Filter by project" affordance is sidebar-only.
           projectFilter: null,
           isPinned: thread.pinnedAt != null,
           isSettled: supports.settlement && thread.settledOverride === "settled",
@@ -155,8 +202,8 @@ export function useThreadActionMenu(input: {
           isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
-          isRunning: thread.session?.status === "running" && thread.session.activeTurnId != null,
-          canStopSession: thread.session != null && thread.session.status !== "stopped",
+          isRunning: !threadRuntimeCanArchive(thread.runtime),
+          canStopSession: capturedStop !== null,
           supports,
           snoozePresets,
         });
@@ -221,12 +268,7 @@ export function useThreadActionMenu(input: {
             await reportFailure("Failed to settle thread", () => settleThread(threadRef));
             return;
           case "kill-thread":
-            await reportFailure("Failed to kill thread", () =>
-              stopThreadSession({
-                environmentId: threadRef.environmentId,
-                input: { threadId: threadRef.threadId },
-              }),
-            );
+            if (capturedStop !== null) await runtimeStop.request(threadRef, capturedStop);
             return;
           case "unsettle":
             await reportFailure("Failed to un-settle thread", () => unsettleThread(threadRef));
@@ -260,7 +302,7 @@ export function useThreadActionMenu(input: {
             );
             return;
           case "mark-unread":
-            markThreadUnread(scopedThreadKey(threadRef), thread.latestTurn?.completedAt);
+            markThreadUnread(threadRef);
             return;
           case "copy-path": {
             const workspacePath = thread.worktreePath ?? projectCwd;
@@ -357,7 +399,7 @@ export function useThreadActionMenu(input: {
       router,
       setThreadAutoSettle,
       settleThread,
-      stopThreadSession,
+      runtimeStop,
       snoozeThread,
       threadRef,
       timestampFormat,
