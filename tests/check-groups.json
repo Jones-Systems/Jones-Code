@@ -2,6 +2,16 @@
   "manifest_version": 1,
   "groups": [
     {
+      "group_id": "jones-performance-transport",
+      "command": "node_modules/.bin/vp test run apps/server/src/server.test.ts -t subscribeShell --maxWorkers=1 --no-file-parallelism --maxConcurrency=1",
+      "modules": ["apps/server/src/server.test.ts"],
+      "scope": [
+        "apps/server/src/server.test.ts",
+        "apps/server/src/ws.ts",
+        "apps/server/src/orchestration/ShellLiveEventPublisher.ts"
+      ]
+    },
+    {
       "group_id": "t3-conditional-dispatch",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration/DispatchGuard.test.ts apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts packages/contracts/src/orchestration.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts",
       "modules": [
