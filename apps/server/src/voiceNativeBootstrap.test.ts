@@ -52,6 +52,7 @@ import * as TokenAccountingService from "./tokenAccounting/TokenAccountingServic
 import { ExternalLauncher } from "./process/externalLauncher.ts";
 import { RemoteOpenTargets } from "./environment/RemoteOpenTargets.ts";
 import { GitWorkflowService } from "./git/GitWorkflowService.ts";
+import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { ReviewService } from "./review/ReviewService.ts";
 import { VcsProvisioningService } from "./vcs/VcsProvisioningService.ts";
 import { VcsStatusBroadcaster } from "./vcs/VcsStatusBroadcaster.ts";
@@ -311,6 +312,7 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
     Layer.mock(RemoteOpenTargets)({}),
     Layer.mock(ReviewService)({}),
     Layer.mock(VcsProvisioningService)({}),
+    Layer.mock(GitVcsDriver.GitVcsDriver)({}),
     Layer.mock(TerminalManager)({}),
     Layer.mock(PreviewManager)({}),
     Layer.mock(PreviewAutomationBroker)({}),

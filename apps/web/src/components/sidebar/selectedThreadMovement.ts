@@ -32,6 +32,8 @@ export function planSelectedShelfDrop(input: {
   readonly currentOrder: readonly string[];
   readonly keysById: ReadonlyMap<string, string | null | undefined>;
   readonly reorderableKeys: ReadonlySet<string>;
+  /** Working beta keeps Active time-ordered; only lifecycle steps apply. */
+  readonly activeTimeOrdered?: boolean;
 }): readonly SelectedShelfStep[] {
   const { threads, target } = input;
   const selected = new Set(threads.map((thread) => thread.key));
@@ -67,7 +69,8 @@ export function planSelectedShelfDrop(input: {
       }
     }
   }
-  if (target.section === "settled") return steps;
+  if (target.section === "settled" || (target.section === "active" && input.activeTimeOrdered))
+    return steps;
   const singleOrder = target.section === "pinned" ? target.pinnedOrder : target.activeOrder;
   const initiatorIndex = singleOrder.indexOf(input.initiator);
   if (initiatorIndex === -1)
