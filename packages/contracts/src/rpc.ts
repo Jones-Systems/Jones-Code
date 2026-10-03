@@ -1,4 +1,17 @@
-import { NativeBootstrapSubmission } from "./orchestration.ts";
+import { NativeBootstrapSubmission } from "./nativeCreation.ts";
+import {
+  OrchestrationV2ThreadRuntimeAttachmentResult,
+  OrchestrationV2ThreadRuntimeObservationResult,
+  OrchestrationV2OperatingCountsResult,
+  OrchestrationV2CurrentThreadRuntimeTarget,
+  OrchestrationV2StopCurrentThreadRuntimeResult,
+  OrchestrationV2ThreadDeletionCleanupObservation,
+  NativeBootstrapDispatchResultV2,
+  OrchestrationV2ImportedHistoryReviewResult,
+  OrchestrationV2ImportedHistoryStartReceipt,
+  ThreadTurnDispatchGuardV2,
+} from "./orchestrationNative.ts";
+import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
@@ -9,7 +22,7 @@ import {
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { CommandId, NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   CodexAuthCallbackInput,
   CodexAuthCallbackState,
@@ -24,6 +37,31 @@ import {
   ProviderSetupInput,
 } from "./providerSetup.ts";
 
+import {
+  AcpRegistryAcceptUrlAuthInput,
+  AcpRegistryAcceptUrlAuthResult,
+  AcpRegistryDeleteSessionInput,
+  AcpRegistryDeleteSessionResult,
+  AcpRegistryDisableProviderInput,
+  AcpRegistryDisableProviderResult,
+  AcpRegistryImportSessionInput,
+  AcpRegistryImportSessionResult,
+  AcpRegistryListSessionsInput,
+  AcpRegistryListSessionsResult,
+  AcpRegistryListProvidersInput,
+  AcpRegistryListProvidersResult,
+  AcpRegistryLogoutInput,
+  AcpRegistryLogoutResult,
+  AcpRegistryManagedBinaryUninstallInput,
+  AcpRegistryManagedBinaryUninstallResult,
+  AcpRegistryOperationError,
+  AcpRegistryPrepareInput,
+  AcpRegistryPrepareResult,
+  AcpRegistrySearchInput,
+  AcpRegistrySearchResult,
+  AcpRegistrySetProviderInput,
+  AcpRegistrySetProviderResult,
+} from "./acpRegistry.ts";
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import {
   AuthAccessStreamError,
@@ -58,6 +96,15 @@ import {
   AttachmentDeleteInput,
   AttachmentUploadSigningKeyError,
 } from "./assets.ts";
+import {
+  PersistChatAttachmentsError,
+  PersistChatAttachmentsInput,
+  PersistChatAttachmentsResult,
+} from "./chatAttachment.ts";
+import {
+  OrchestrationGetFullThreadDiffError,
+  OrchestrationGetTurnDiffError,
+} from "./checkpointDiff.ts";
 import {
   WorktreeSetupCancelInput,
   WorktreeSetupCancelResult,
@@ -98,25 +145,16 @@ import {
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
-  ClientOrchestrationCommand,
-  ORCHESTRATION_WS_METHODS,
-  OrchestrationDispatchCommandError,
-  OrchestrationGetFullThreadDiffError,
-  OrchestrationGetFullThreadDiffInput,
-  OrchestrationGetSnapshotError,
   OrchestrationSearchThreadsError,
   OrchestrationSearchThreadsInput,
-  OrchestrationGetTurnDiffError,
-  OrchestrationGetTurnDiffInput,
-  OrchestrationRpcSchemas,
-  OrchestrationGetWorkflowScriptError,
-} from "./orchestration.ts";
+  OrchestrationSearchThreadsResult,
+} from "./threadSearch.ts";
 import {
   ProviderUploadFeedbackError,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
 } from "./provider.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderInstanceId, ProviderInstanceMutation } from "./providerInstance.ts";
 import {
   PullRequestActionInput,
   PullRequestActivity,
@@ -124,6 +162,7 @@ import {
   PullRequestCommentUpdateInput,
   PullRequestDetail,
   PullRequestPreview,
+  PullRequestChecks,
   PullRequestDiffFileContentsInput,
   PullRequestDiffFileContentsResult,
   PullRequestFilesViewedResult,
@@ -159,6 +198,18 @@ import {
   RelayClientInstallProgressEventSchema,
   RelayClientStatusSchema,
 } from "./relayClient.ts";
+import {
+  ORCHESTRATION_V2_WS_METHODS,
+  OrchestrationGetWorkflowScriptError,
+  OrchestrationV2DispatchCommandError,
+  OrchestrationV2GetShellSnapshotError,
+  OrchestrationV2GetThreadProjectionError,
+  OrchestrationV2RpcSchemas,
+  OrchestrationV2ClientCommand,
+  OrchestrationV2ImportedHistoryDelivery,
+  OrchestrationV2StartWithImportedHistoryCommand,
+  OrchestrationV2ThreadLaunchError,
+} from "./orchestrationV2.ts";
 import {
   ProjectCreateNewInput,
   ProjectCreateNewResult,
@@ -269,6 +320,18 @@ import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from ".
 import { TokenAccountingReadInput, TokenAccountingReadResult } from "./tokenAccounting.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
+  ScheduledTaskDeleteInput,
+  ScheduledTaskDeleteResult,
+  ScheduledTaskError,
+  ScheduledTaskListInput,
+  ScheduledTaskListResult,
+  ScheduledTaskRunNowInput,
+  ScheduledTaskRunNowResult,
+  ScheduledTaskSetEnabledInput,
+  ScheduledTaskUpsertInput,
+  ScheduledTaskMutationResult,
+} from "./scheduledTask.ts";
+import {
   ProjectCloneActionInput,
   ProjectCloneActionResult,
   ProjectCloneListEvent,
@@ -287,6 +350,7 @@ import {
   SourceControlRepositoryLookupInput,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -298,6 +362,7 @@ export const WS_METHODS = {
   projectsSearchContents: "projects.searchContents",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
+  projectsMutate: "projects.mutate",
   projectsEnsureScratch: "projects.ensureScratch",
   projectsCreateNew: "projects.createNew",
 
@@ -309,6 +374,7 @@ export const WS_METHODS = {
   agentSessionsScan: "agentSessions.scan",
   agentSessionsImport: "agentSessions.import",
   assetsCreateUrl: "assets.createUrl",
+  assetsPersistChatAttachments: "assets.persistChatAttachments",
   attachmentsCreateUploadUrl: "attachments.createUploadUrl",
   attachmentsDelete: "attachments.delete",
 
@@ -393,6 +459,17 @@ export const WS_METHODS = {
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
+  serverSearchAcpRegistry: "server.searchAcpRegistry",
+  serverPrepareAcpRegistryAgent: "server.prepareAcpRegistryAgent",
+  serverUninstallAcpRegistryManagedBinary: "server.uninstallAcpRegistryManagedBinary",
+  serverAcceptAcpRegistryUrlAuth: "server.acceptAcpRegistryUrlAuth",
+  serverListAcpRegistrySessions: "server.listAcpRegistrySessions",
+  serverImportAcpRegistrySession: "server.importAcpRegistrySession",
+  serverDeleteAcpRegistrySession: "server.deleteAcpRegistrySession",
+  serverListAcpRegistryProviders: "server.listAcpRegistryProviders",
+  serverSetAcpRegistryProvider: "server.setAcpRegistryProvider",
+  serverDisableAcpRegistryProvider: "server.disableAcpRegistryProvider",
+  serverLogoutAcpRegistry: "server.logoutAcpRegistry",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetHostResources: "server.getHostResources",
@@ -406,6 +483,14 @@ export const WS_METHODS = {
   serverGetUsageSummary: "server.getUsageSummary",
   serverReadTokenAccounting: "server.readTokenAccounting",
   serverRefreshUsageRates: "server.refreshUsageRates",
+
+  // Scheduled tasks
+  scheduledTasksList: "scheduledTasks.list",
+  scheduledTasksSubscribe: "scheduledTasks.subscribe",
+  scheduledTasksUpsert: "scheduledTasks.upsert",
+  scheduledTasksSetEnabled: "scheduledTasks.setEnabled",
+  scheduledTasksDelete: "scheduledTasks.delete",
+  scheduledTasksRunNow: "scheduledTasks.runNow",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -421,6 +506,7 @@ export const WS_METHODS = {
   pullRequestsLinkedThreads: "pullRequests.linkedThreads",
   pullRequestsDetail: "pullRequests.detail",
   pullRequestsPreview: "pullRequests.preview",
+  pullRequestsChecks: "pullRequests.checks",
   pullRequestsActivity: "pullRequests.activity",
   pullRequestsThreadComments: "pullRequests.threadComments",
   pullRequestsDiffFileContents: "pullRequests.diffFileContents",
@@ -636,7 +722,10 @@ const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
 });
 
 const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
-  payload: Schema.Struct({ patch: ServerSettingsPatch }),
+  payload: Schema.Struct({
+    patch: ServerSettingsPatch,
+    providerInstanceMutation: Schema.optionalKey(ProviderInstanceMutation),
+  }),
   success: ServerSettings,
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
 });
@@ -645,6 +734,78 @@ const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourc
   payload: Schema.Struct({}),
   success: SourceControlDiscoveryResult,
   error: EnvironmentAuthorizationError,
+});
+
+const WsServerSearchAcpRegistryRpc = Rpc.make(WS_METHODS.serverSearchAcpRegistry, {
+  payload: AcpRegistrySearchInput,
+  success: AcpRegistrySearchResult,
+  error: Schema.Union([AcpRegistryOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsServerPrepareAcpRegistryAgentRpc = Rpc.make(WS_METHODS.serverPrepareAcpRegistryAgent, {
+  payload: AcpRegistryPrepareInput,
+  success: AcpRegistryPrepareResult,
+  error: Schema.Union([AcpRegistryOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsServerUninstallAcpRegistryManagedBinaryRpc = Rpc.make(
+  WS_METHODS.serverUninstallAcpRegistryManagedBinary,
+  {
+    payload: AcpRegistryManagedBinaryUninstallInput,
+    success: AcpRegistryManagedBinaryUninstallResult,
+    error: Schema.Union([AcpRegistryOperationError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsServerAcceptAcpRegistryUrlAuthRpc = Rpc.make(WS_METHODS.serverAcceptAcpRegistryUrlAuth, {
+  payload: AcpRegistryAcceptUrlAuthInput,
+  success: AcpRegistryAcceptUrlAuthResult,
+  error: EnvironmentAuthorizationError,
+});
+
+const WsServerListAcpRegistrySessionsRpc = Rpc.make(WS_METHODS.serverListAcpRegistrySessions, {
+  payload: AcpRegistryListSessionsInput,
+  success: AcpRegistryListSessionsResult,
+  error: Schema.Union([AcpRegistryOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsServerImportAcpRegistrySessionRpc = Rpc.make(WS_METHODS.serverImportAcpRegistrySession, {
+  payload: AcpRegistryImportSessionInput,
+  success: AcpRegistryImportSessionResult,
+  error: Schema.Union([AcpRegistryOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsServerDeleteAcpRegistrySessionRpc = Rpc.make(WS_METHODS.serverDeleteAcpRegistrySession, {
+  payload: AcpRegistryDeleteSessionInput,
+  success: AcpRegistryDeleteSessionResult,
+  error: Schema.Union([AcpRegistryOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsServerListAcpRegistryProvidersRpc = Rpc.make(WS_METHODS.serverListAcpRegistryProviders, {
+  payload: AcpRegistryListProvidersInput,
+  success: AcpRegistryListProvidersResult,
+  error: Schema.Union([AcpRegistryOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsServerSetAcpRegistryProviderRpc = Rpc.make(WS_METHODS.serverSetAcpRegistryProvider, {
+  payload: AcpRegistrySetProviderInput,
+  success: AcpRegistrySetProviderResult,
+  error: Schema.Union([AcpRegistryOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsServerDisableAcpRegistryProviderRpc = Rpc.make(
+  WS_METHODS.serverDisableAcpRegistryProvider,
+  {
+    payload: AcpRegistryDisableProviderInput,
+    success: AcpRegistryDisableProviderResult,
+    error: Schema.Union([AcpRegistryOperationError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsServerLogoutAcpRegistryRpc = Rpc.make(WS_METHODS.serverLogoutAcpRegistry, {
+  payload: AcpRegistryLogoutInput,
+  success: AcpRegistryLogoutResult,
+  error: Schema.Union([AcpRegistryOperationError, EnvironmentAuthorizationError]),
 });
 
 const WsServerGetTraceDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetTraceDiagnostics, {
@@ -805,6 +966,12 @@ const WsPullRequestsDetailRpc = Rpc.make(WS_METHODS.pullRequestsDetail, {
 const WsPullRequestsPreviewRpc = Rpc.make(WS_METHODS.pullRequestsPreview, {
   payload: PullRequestRef,
   success: PullRequestPreview,
+  error: PullRequestRpcError,
+});
+
+const WsPullRequestsChecksRpc = Rpc.make(WS_METHODS.pullRequestsChecks, {
+  payload: PullRequestRef,
+  success: Schema.NullOr(PullRequestChecks),
   error: PullRequestRpcError,
 });
 
@@ -1008,6 +1175,12 @@ const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   error: Schema.Union([ProjectWriteFileError, EnvironmentAuthorizationError]),
 });
 
+const WsProjectsMutateRpc = Rpc.make(WS_METHODS.projectsMutate, {
+  payload: ProjectMutation,
+  success: Project,
+  error: Schema.Union([ProjectMutationError, EnvironmentAuthorizationError]),
+});
+
 // Finds or creates the Scratch project rooted at ServerConfig.scratchWorkspaceRoot.
 const WsProjectsEnsureScratchRpc = Rpc.make(WS_METHODS.projectsEnsureScratch, {
   payload: Schema.Struct({}),
@@ -1054,6 +1227,12 @@ const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
   payload: AssetCreateUrlInput,
   success: AssetCreateUrlResult,
   error: Schema.Union([AssetAccessError, EnvironmentAuthorizationError]),
+});
+
+const WsAssetsPersistChatAttachmentsRpc = Rpc.make(WS_METHODS.assetsPersistChatAttachments, {
+  payload: PersistChatAttachmentsInput,
+  success: PersistChatAttachmentsResult,
+  error: Schema.Union([PersistChatAttachmentsError, EnvironmentAuthorizationError]),
 });
 
 const WsAttachmentsCreateUploadUrlRpc = Rpc.make(WS_METHODS.attachmentsCreateUploadUrl, {
@@ -1339,65 +1518,270 @@ const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
   stream: true,
 });
 
-export const WsOrchestrationDispatchBootstrapRpc = Rpc.make(
-  ORCHESTRATION_WS_METHODS.dispatchBootstrap,
+export const WsOrchestrationDispatchBootstrapRpc = Rpc.make("orchestration.dispatchBootstrap", {
+  payload: NativeBootstrapSubmission,
+  success: Schema.Struct({ sequence: NonNegativeInt }),
+  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+});
+
+const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
+  payload: OrchestrationV2RpcSchemas.dispatchCommand.input,
+  success: OrchestrationV2RpcSchemas.dispatchCommand.output,
+  error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
+});
+
+export const OrchestrationV2DispatchNativeBootstrapInput = NativeBootstrapSubmission;
+export type OrchestrationV2DispatchNativeBootstrapInput =
+  typeof OrchestrationV2DispatchNativeBootstrapInput.Type;
+export const WsOrchestrationV2DispatchNativeBootstrapRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
   {
-    payload: NativeBootstrapSubmission,
-    success: OrchestrationRpcSchemas.dispatchCommand.output,
+    payload: OrchestrationV2DispatchNativeBootstrapInput,
+    success: NativeBootstrapDispatchResultV2,
     error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
   },
 );
 
-const WsOrchestrationDispatchCommandRpc = Rpc.make(ORCHESTRATION_WS_METHODS.dispatchCommand, {
-  payload: ClientOrchestrationCommand,
-  success: OrchestrationRpcSchemas.dispatchCommand.output,
-  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+const OrchestrationV2GuardedMessageCommand = OrchestrationV2ClientCommand.pipe(
+  Schema.refine<
+    typeof OrchestrationV2ClientCommand,
+    Extract<OrchestrationV2ClientCommand, { readonly type: "message.dispatch" }>
+  >(
+    (command): command is Extract<OrchestrationV2ClientCommand, { readonly type: "message.dispatch" }> =>
+      command.type === "message.dispatch",
+    { message: "Guarded dispatch requires message.dispatch" },
+  ),
+);
+const OrchestrationV2GuardedDispatchFields = {
+  command: OrchestrationV2GuardedMessageCommand,
+  guard: ThreadTurnDispatchGuardV2,
+};
+const OrchestrationV2GuardedDispatchSchema = Schema.Struct(OrchestrationV2GuardedDispatchFields);
+export const OrchestrationV2GuardedDispatchInput = Schema.flip(
+  Schema.flip(OrchestrationV2GuardedDispatchSchema).check(
+    Schema.makeFilter(
+      (input) => input !== null && typeof input === "object" &&
+        Reflect.ownKeys(input).every((key) => Object.hasOwn(OrchestrationV2GuardedDispatchFields, key)),
+    ),
+  ),
+);
+export type OrchestrationV2GuardedDispatchInput = typeof OrchestrationV2GuardedDispatchInput.Type;
+
+export const WsOrchestrationV2DispatchGuardedRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchGuarded, {
+  payload: OrchestrationV2GuardedDispatchInput,
+  success: OrchestrationV2RpcSchemas.dispatchCommand.output,
+  error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
 });
 
-const WsOrchestrationGetWorkflowScriptRpc = Rpc.make(ORCHESTRATION_WS_METHODS.getWorkflowScript, {
-  payload: OrchestrationRpcSchemas.getWorkflowScript.input,
-  success: OrchestrationRpcSchemas.getWorkflowScript.output,
-  error: Schema.Union([OrchestrationGetWorkflowScriptError, EnvironmentAuthorizationError]),
-});
+export const OrchestrationV2GetThreadRuntimeAttachmentInput = Schema.Struct({ threadId: ThreadId });
+export type OrchestrationV2GetThreadRuntimeAttachmentInput =
+  typeof OrchestrationV2GetThreadRuntimeAttachmentInput.Type;
 
-const WsOrchestrationGetTurnDiffRpc = Rpc.make(ORCHESTRATION_WS_METHODS.getTurnDiff, {
-  payload: OrchestrationGetTurnDiffInput,
-  success: OrchestrationRpcSchemas.getTurnDiff.output,
-  error: Schema.Union([OrchestrationGetTurnDiffError, EnvironmentAuthorizationError]),
-});
-
-const WsOrchestrationGetFullThreadDiffRpc = Rpc.make(ORCHESTRATION_WS_METHODS.getFullThreadDiff, {
-  payload: OrchestrationGetFullThreadDiffInput,
-  success: OrchestrationRpcSchemas.getFullThreadDiff.output,
-  error: Schema.Union([OrchestrationGetFullThreadDiffError, EnvironmentAuthorizationError]),
-});
-
-const WsOrchestrationSearchThreadsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.searchThreads, {
-  payload: OrchestrationSearchThreadsInput,
-  success: OrchestrationRpcSchemas.searchThreads.output,
-  error: Schema.Union([OrchestrationSearchThreadsError, EnvironmentAuthorizationError]),
-});
-
-const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(
-  ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
+export const WsOrchestrationV2GetThreadRuntimeAttachmentRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeAttachment,
   {
-    payload: OrchestrationRpcSchemas.getArchivedShellSnapshot.input,
-    success: OrchestrationRpcSchemas.getArchivedShellSnapshot.output,
-    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+    payload: OrchestrationV2GetThreadRuntimeAttachmentInput,
+    success: OrchestrationV2ThreadRuntimeAttachmentResult,
+    error: EnvironmentAuthorizationError,
   },
 );
 
-const WsOrchestrationSubscribeShellRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeShell, {
-  payload: OrchestrationRpcSchemas.subscribeShell.input,
-  success: OrchestrationRpcSchemas.subscribeShell.output,
-  error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+const closedOrchestrationV2RpcInput = <Fields extends Schema.Struct.Fields>(fields: Fields) => {
+  const schema = Schema.Struct(fields);
+  return Schema.flip(Schema.flip(schema).check(Schema.makeFilter(
+    (value) => Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
+  )));
+};
+
+export const OrchestrationV2GetThreadRuntimeObservationInput = closedOrchestrationV2RpcInput({
+  threadId: ThreadId,
+});
+export type OrchestrationV2GetThreadRuntimeObservationInput =
+  typeof OrchestrationV2GetThreadRuntimeObservationInput.Type;
+export const OrchestrationV2GetOperatingCountsInput = closedOrchestrationV2RpcInput({
+  projectId: Schema.optionalKey(ProjectId),
+});
+export type OrchestrationV2GetOperatingCountsInput =
+  typeof OrchestrationV2GetOperatingCountsInput.Type;
+
+export const WsOrchestrationV2GetThreadRuntimeObservationRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation,
+  {
+    payload: OrchestrationV2GetThreadRuntimeObservationInput,
+    success: OrchestrationV2ThreadRuntimeObservationResult,
+    error: EnvironmentAuthorizationError,
+  },
+);
+export const WsOrchestrationV2GetOperatingCountsRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getOperatingCounts,
+  {
+    payload: OrchestrationV2GetOperatingCountsInput,
+    success: OrchestrationV2OperatingCountsResult,
+    error: EnvironmentAuthorizationError,
+  },
+);
+
+export const OrchestrationV2StopCurrentThreadRuntimeInput = closedOrchestrationV2RpcInput({
+  commandId: CommandId,
+  threadId: ThreadId,
+  target: OrchestrationV2CurrentThreadRuntimeTarget,
+}).check(Schema.makeFilter((input) => input.target.binding.threadId === input.threadId));
+export type OrchestrationV2StopCurrentThreadRuntimeInput =
+  typeof OrchestrationV2StopCurrentThreadRuntimeInput.Type;
+
+export const OrchestrationV2ObserveCurrentThreadRuntimeStopInput = closedOrchestrationV2RpcInput({
+  threadId: ThreadId,
+  commandId: CommandId,
+});
+export type OrchestrationV2ObserveCurrentThreadRuntimeStopInput =
+  typeof OrchestrationV2ObserveCurrentThreadRuntimeStopInput.Type;
+
+export const OrchestrationV2ObserveThreadDeletionCleanupInput = closedOrchestrationV2RpcInput({
+  threadId: ThreadId,
+  commandId: CommandId,
+});
+export type OrchestrationV2ObserveThreadDeletionCleanupInput =
+  typeof OrchestrationV2ObserveThreadDeletionCleanupInput.Type;
+export const WsOrchestrationV2ObserveThreadDeletionCleanupRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup,
+  {
+    payload: OrchestrationV2ObserveThreadDeletionCleanupInput,
+    success: OrchestrationV2ThreadDeletionCleanupObservation,
+    error: EnvironmentAuthorizationError,
+  },
+);
+
+export const WsOrchestrationV2StopCurrentThreadRuntimeRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
+  {
+    payload: OrchestrationV2StopCurrentThreadRuntimeInput,
+    success: OrchestrationV2StopCurrentThreadRuntimeResult,
+    error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
+  },
+);
+export const WsOrchestrationV2ObserveCurrentThreadRuntimeStopRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop,
+  {
+    payload: OrchestrationV2ObserveCurrentThreadRuntimeStopInput,
+    success: OrchestrationV2StopCurrentThreadRuntimeResult,
+    error: EnvironmentAuthorizationError,
+  },
+);
+
+export const OrchestrationV2ReviewImportedHistoryStartInput = closedOrchestrationV2RpcInput({
+  threadId: ThreadId,
+  delivery: OrchestrationV2ImportedHistoryDelivery,
+});
+export type OrchestrationV2ReviewImportedHistoryStartInput =
+  typeof OrchestrationV2ReviewImportedHistoryStartInput.Type;
+
+export const OrchestrationV2ObserveImportedHistoryStartInput = closedOrchestrationV2RpcInput({
+  threadId: ThreadId,
+  commandId: CommandId,
+});
+export type OrchestrationV2ObserveImportedHistoryStartInput =
+  typeof OrchestrationV2ObserveImportedHistoryStartInput.Type;
+
+export const WsOrchestrationV2ReviewImportedHistoryStartRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.reviewImportedHistoryStart,
+  {
+    payload: OrchestrationV2ReviewImportedHistoryStartInput,
+    success: OrchestrationV2ImportedHistoryReviewResult,
+    error: EnvironmentAuthorizationError,
+  },
+);
+export const WsOrchestrationV2StartWithImportedHistoryRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.startWithImportedHistory,
+  {
+    payload: OrchestrationV2StartWithImportedHistoryCommand,
+    success: OrchestrationV2ImportedHistoryStartReceipt,
+    error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
+  },
+);
+export const WsOrchestrationV2ObserveImportedHistoryStartRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.observeImportedHistoryStart,
+  {
+    payload: OrchestrationV2ObserveImportedHistoryStartInput,
+    success: OrchestrationV2ImportedHistoryStartReceipt,
+    error: EnvironmentAuthorizationError,
+  },
+);
+
+const WsOrchestrationV2GetTurnDiffRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getTurnDiff, {
+  payload: OrchestrationV2RpcSchemas.getTurnDiff.input,
+  success: OrchestrationV2RpcSchemas.getTurnDiff.output,
+  error: Schema.Union([OrchestrationGetTurnDiffError, EnvironmentAuthorizationError]),
+});
+
+const WsOrchestrationV2GetFullThreadDiffRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff,
+  {
+    payload: OrchestrationV2RpcSchemas.getFullThreadDiff.input,
+    success: OrchestrationV2RpcSchemas.getFullThreadDiff.output,
+    error: Schema.Union([OrchestrationGetFullThreadDiffError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2SearchThreadsRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.searchThreads, {
+  payload: OrchestrationSearchThreadsInput,
+  success: OrchestrationSearchThreadsResult,
+  error: Schema.Union([OrchestrationSearchThreadsError, EnvironmentAuthorizationError]),
+});
+
+const WsOrchestrationV2GetArchivedShellSnapshotRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot,
+  {
+    payload: OrchestrationV2RpcSchemas.getArchivedShellSnapshot.input,
+    success: OrchestrationV2RpcSchemas.getArchivedShellSnapshot.output,
+    error: Schema.Union([OrchestrationV2GetShellSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2GetThreadProjectionRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
+  {
+    payload: OrchestrationV2RpcSchemas.getThreadProjection.input,
+    success: OrchestrationV2RpcSchemas.getThreadProjection.output,
+    error: Schema.Union([OrchestrationV2GetThreadProjectionError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2GetWorkflowScriptRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getWorkflowScript,
+  {
+    payload: OrchestrationV2RpcSchemas.getWorkflowScript.input,
+    success: OrchestrationV2RpcSchemas.getWorkflowScript.output,
+    error: Schema.Union([OrchestrationGetWorkflowScriptError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2LaunchThreadRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.launchThread, {
+  payload: OrchestrationV2RpcSchemas.launchThread.input,
+  success: OrchestrationV2RpcSchemas.launchThread.output,
+  error: Schema.Union([OrchestrationV2ThreadLaunchError, EnvironmentAuthorizationError]),
+});
+
+const WsOrchestrationV2SubscribeArchivedShellRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell,
+  {
+    payload: OrchestrationV2RpcSchemas.subscribeArchivedShell.input,
+    success: OrchestrationV2RpcSchemas.subscribeArchivedShell.output,
+    error: Schema.Union([OrchestrationV2GetShellSnapshotError, EnvironmentAuthorizationError]),
+    stream: true,
+  },
+);
+
+const WsOrchestrationV2SubscribeShellRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.subscribeShell, {
+  payload: OrchestrationV2RpcSchemas.subscribeShell.input,
+  success: OrchestrationV2RpcSchemas.subscribeShell.output,
+  error: Schema.Union([OrchestrationV2GetShellSnapshotError, EnvironmentAuthorizationError]),
   stream: true,
 });
 
-const WsOrchestrationSubscribeThreadRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeThread, {
-  payload: OrchestrationRpcSchemas.subscribeThread.input,
-  success: OrchestrationRpcSchemas.subscribeThread.output,
-  error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+const WsOrchestrationV2SubscribeThreadRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.subscribeThread, {
+  payload: OrchestrationV2RpcSchemas.subscribeThread.input,
+  success: OrchestrationV2RpcSchemas.subscribeThread.output,
+  error: Schema.Union([OrchestrationV2GetThreadProjectionError, EnvironmentAuthorizationError]),
   stream: true,
 });
 
@@ -1444,6 +1828,44 @@ const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServerLifecyc
   success: ServerLifecycleStreamEvent,
   error: EnvironmentAuthorizationError,
   stream: true,
+});
+
+const WsScheduledTasksListRpc = Rpc.make(WS_METHODS.scheduledTasksList, {
+  payload: ScheduledTaskListInput,
+  success: ScheduledTaskListResult,
+  error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
+});
+
+/** Streams the full scheduled-task list: one snapshot on subscribe, then a fresh list after every change. */
+const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
+  payload: ScheduledTaskListInput,
+  success: ScheduledTaskListResult,
+  error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsScheduledTasksUpsertRpc = Rpc.make(WS_METHODS.scheduledTasksUpsert, {
+  payload: ScheduledTaskUpsertInput,
+  success: ScheduledTaskMutationResult,
+  error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
+});
+
+const WsScheduledTasksSetEnabledRpc = Rpc.make(WS_METHODS.scheduledTasksSetEnabled, {
+  payload: ScheduledTaskSetEnabledInput,
+  success: ScheduledTaskMutationResult,
+  error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
+});
+
+const WsScheduledTasksDeleteRpc = Rpc.make(WS_METHODS.scheduledTasksDelete, {
+  payload: ScheduledTaskDeleteInput,
+  success: ScheduledTaskDeleteResult,
+  error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
+});
+
+const WsScheduledTasksRunNowRpc = Rpc.make(WS_METHODS.scheduledTasksRunNow, {
+  payload: ScheduledTaskRunNowInput,
+  success: ScheduledTaskRunNowResult,
+  error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
 });
 
 const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
@@ -1495,6 +1917,17 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
   WsServerDiscoverSourceControlRpc,
+  WsServerSearchAcpRegistryRpc,
+  WsServerPrepareAcpRegistryAgentRpc,
+  WsServerUninstallAcpRegistryManagedBinaryRpc,
+  WsServerAcceptAcpRegistryUrlAuthRpc,
+  WsServerListAcpRegistrySessionsRpc,
+  WsServerImportAcpRegistrySessionRpc,
+  WsServerDeleteAcpRegistrySessionRpc,
+  WsServerListAcpRegistryProvidersRpc,
+  WsServerSetAcpRegistryProviderRpc,
+  WsServerDisableAcpRegistryProviderRpc,
+  WsServerLogoutAcpRegistryRpc,
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetHostResourcesRpc,
@@ -1505,6 +1938,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerReadTokenAccountingRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
+  WsScheduledTasksListRpc,
+  WsScheduledTasksSubscribeRpc,
+  WsScheduledTasksUpsertRpc,
+  WsScheduledTasksSetEnabledRpc,
+  WsScheduledTasksDeleteRpc,
+  WsScheduledTasksRunNowRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,
@@ -1519,6 +1958,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestsLinkedThreadsRpc,
   WsPullRequestsDetailRpc,
   WsPullRequestsPreviewRpc,
+  WsPullRequestsChecksRpc,
   WsPullRequestsActivityRpc,
   WsPullRequestsThreadCommentsRpc,
   WsPullRequestsDiffFileContentsRpc,
@@ -1552,11 +1992,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsEnsureScratchRpc,
   WsProjectsCreateNewRpc,
   WsProjectsWriteFileRpc,
+  WsProjectsMutateRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsAgentSessionsScanRpc,
   WsAgentSessionsImportRpc,
   WsAssetsCreateUrlRpc,
+  WsAssetsPersistChatAttachmentsRpc,
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,
   WsProviderUploadFeedbackRpc,
@@ -1611,13 +2053,27 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeAuthAccessRpc,
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
-  WsOrchestrationDispatchCommandRpc,
   WsOrchestrationDispatchBootstrapRpc,
-  WsOrchestrationGetWorkflowScriptRpc,
-  WsOrchestrationGetTurnDiffRpc,
-  WsOrchestrationGetFullThreadDiffRpc,
-  WsOrchestrationSearchThreadsRpc,
-  WsOrchestrationGetArchivedShellSnapshotRpc,
-  WsOrchestrationSubscribeShellRpc,
-  WsOrchestrationSubscribeThreadRpc,
+  WsOrchestrationV2DispatchCommandRpc,
+  WsOrchestrationV2DispatchGuardedRpc,
+  WsOrchestrationV2DispatchNativeBootstrapRpc,
+  WsOrchestrationV2GetThreadRuntimeAttachmentRpc,
+  WsOrchestrationV2GetThreadRuntimeObservationRpc,
+  WsOrchestrationV2GetOperatingCountsRpc,
+  WsOrchestrationV2StopCurrentThreadRuntimeRpc,
+  WsOrchestrationV2ObserveCurrentThreadRuntimeStopRpc,
+  WsOrchestrationV2ObserveThreadDeletionCleanupRpc,
+  WsOrchestrationV2ReviewImportedHistoryStartRpc,
+  WsOrchestrationV2StartWithImportedHistoryRpc,
+  WsOrchestrationV2ObserveImportedHistoryStartRpc,
+  WsOrchestrationV2GetWorkflowScriptRpc,
+  WsOrchestrationV2GetTurnDiffRpc,
+  WsOrchestrationV2GetFullThreadDiffRpc,
+  WsOrchestrationV2SearchThreadsRpc,
+  WsOrchestrationV2GetArchivedShellSnapshotRpc,
+  WsOrchestrationV2GetThreadProjectionRpc,
+  WsOrchestrationV2LaunchThreadRpc,
+  WsOrchestrationV2SubscribeArchivedShellRpc,
+  WsOrchestrationV2SubscribeShellRpc,
+  WsOrchestrationV2SubscribeThreadRpc,
 );

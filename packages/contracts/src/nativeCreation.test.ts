@@ -29,7 +29,7 @@ const submission = {
 const capability = {
   submissionSchema: "t3.native-bootstrap-submission/v1",
   preparationSchema: "voice.t3-bootstrap-preparation/v1",
-  observationSchema: "t3.native-creation-observation/v1",
+  observationSchema: "t3.native-creation-observation/v2",
   guardRequired: true,
 };
 const commandObservation = {
@@ -135,7 +135,7 @@ it("bounds decoded preparation bytes, rejects malformed base64 and bounds submis
   );
 });
 
-it("keeps legacy capabilities and observations decodable while requiring exact creation versions", () => {
+it("keeps absent capabilities and historical observations decodable while requiring exact current creation versions", () => {
   const decodeCapabilities = Schema.decodeUnknownSync(ExecutionEnvironmentCapabilities);
   assert.deepEqual<unknown>(decodeCapabilities({}), { repositoryIdentity: false });
   assert.deepEqual<unknown>(
@@ -145,6 +145,7 @@ it("keeps legacy capabilities and observations decodable while requiring exact c
   const acceptsCapability = acceptsWire(NativeBootstrapCreationCapability);
   assert.isFalse(acceptsCapability({ ...capability, extra: true }));
   assert.isFalse(acceptsCapability({ ...capability, guardRequired: false }));
+  assert.isFalse(acceptsCapability({ ...capability, observationSchema: "t3.native-creation-observation/v1" }));
   for (const field of ["submissionSchema", "preparationSchema", "observationSchema"]) {
     assert.isFalse(acceptsCapability({ ...capability, [field]: "unsupported/v2" }));
   }

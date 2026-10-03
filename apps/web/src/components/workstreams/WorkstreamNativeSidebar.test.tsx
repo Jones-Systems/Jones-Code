@@ -4,28 +4,35 @@ import { act, useState, useCallback, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";
+import type { OrchestrationV2ThreadRuntimeObservation, WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";
 import type { WorkstreamDetailView, WorkstreamListView } from "../../state/workstreams";
 import { WorkstreamCreateForm, WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
 import { SidebarThreadHeader } from "../sidebar/SidebarThreadHeader";
 import { SidebarProvider } from "../ui/sidebar";
 import { canEditWorkstreams } from "./nativeWorkstreamActions";
 import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
+import { resolveThreadOperatingState } from "@t3tools/client-runtime/state/thread-continuation";
+import { makeThreadFixture } from "../../test-fixtures";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ProviderSessionId, ProviderThreadId, ThreadId } from "@t3tools/contracts";
 import { WorkstreamNativeSidebar } from "./WorkstreamNativeSidebar";
 import { groupNativeThreadsByWorkstream } from "./nativeThreadGrouping";
 import { data, now, placements, reference, thread } from "./nativeWorkstreamActions.fixtures";
 
 let root: Root;
 let container: HTMLDivElement;
-const threads = [
-  { ...thread, title: "First native conversation" },
-  {
-    ...thread,
-    id: "unassigned",
-    title: "Unassigned native conversation",
-    projectId: "another-repo",
-  },
-] as unknown as readonly EnvironmentThreadShell[];
+const currentOwner = ProviderThreadId.make("native-current-owner");
+const threads: readonly EnvironmentThreadShell[] = [
+  makeThreadFixture({
+    environmentId: EnvironmentId.make(thread.environmentId), id: ThreadId.make(thread.id),
+    projectId: ProjectId.make(thread.projectId), title: "First native conversation",
+    activeProviderThreadId: currentOwner,
+  }),
+  makeThreadFixture({
+    environmentId: EnvironmentId.make(thread.environmentId), id: ThreadId.make("unassigned"),
+    projectId: ProjectId.make("another-repo"), title: "Unassigned native conversation",
+    activeProviderThreadId: currentOwner,
+  }),
+];
 const detail = {
   detail: {
     context: { owner_id: "owner", server_generation: 7, registry_version: 11 },
@@ -121,6 +128,7 @@ async function render(
         controller={controller}
         grouping={group(visibleThreads)}
         summaryGrouping={group(summaryThreads)}
+        getOperatingState={fixtureOperatingState}
         renderThread={(item) => (
           <li>
             <button type="button">{item.title}</button>
@@ -742,21 +750,39 @@ describe("Workstream toolbar creation", () => {
   });
 });
 
+const fixtureObservations = new WeakMap<EnvironmentThreadShell, OrchestrationV2ThreadRuntimeObservation>();
+
+function fixtureOperatingState(member: EnvironmentThreadShell) {
+  return resolveThreadOperatingState(member, fixtureObservations.get(member) ?? {
+    status: "unknown", reason: "No current runtime observation in this fixture.",
+  });
+}
+
 function statusThread(
   id: string,
-  status: NonNullable<EnvironmentThreadShell["session"]>["status"] | null,
+  status: NonNullable<EnvironmentThreadShell["runtime"]>["status"] | null,
   changes: Partial<EnvironmentThreadShell> = {},
+  backgroundStatus: "working" | "monitoring" | "unknown" = "unknown",
 ): EnvironmentThreadShell {
-  return {
+  const member: EnvironmentThreadShell = {
     ...threads[0]!,
-    id,
+    id: ThreadId.make(id),
     title: id,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
-    backgroundLiveness: null,
-    session: status === null ? null : { status },
+    runtime: status === null ? null : { ...threads[0]!.runtime!, status },
     ...changes,
-  } as EnvironmentThreadShell;
+  };
+  if (backgroundStatus !== "unknown") {
+    if (member.activeProviderThreadId === null) throw new Error("Current observation fixture needs its active owner.");
+    fixtureObservations.set(member, {
+      status: backgroundStatus, observedAt: new Date(now).toISOString(),
+      binding: { threadId: member.id, providerThreadId: member.activeProviderThreadId,
+        providerSessionId: ProviderSessionId.make(`current-session:${id}`),
+        instanceId: ProviderInstanceId.make("resident-account"), runtimeGeneration: "fixture-current-generation" },
+    });
+  }
+  return member;
 }
 
 function primaryPlacementsFor(members: readonly EnvironmentThreadShell[]) {
@@ -770,22 +796,53 @@ function primaryPlacementsFor(members: readonly EnvironmentThreadShell[]) {
 }
 
 describe("Workstream live thread summaries", () => {
+  it("counts positive current background work even when the foreground run failed", () => {
+    const member = makeThreadFixture({ activeProviderThreadId: currentOwner });
+    const failed = { ...member, runtime: { ...member.runtime!, status: "failed" as const } };
+    const state = resolveThreadOperatingState(failed, {
+      status: "working", observedAt: "2026-10-03T03:01:13Z",
+      binding: { threadId: failed.id, providerThreadId: currentOwner,
+        providerSessionId: ProviderSessionId.make("failed-foreground-current-session"),
+        instanceId: ProviderInstanceId.make("current-active-account"), runtimeGeneration: "current-generation" },
+    });
+    expect(state).toMatchObject({ operating: true, workstreamRunning: true });
+    expect(summarizeWorkstreamThreadStatuses({ groups: [
+      { workstream: data.items[0]!, threads: [failed] },
+    ] }, () => state).get("alpha")).toEqual({ total: 1, running: 1, waiting: 0, failed: 1 });
+  });
+  it("counts current working independently from attention and never counts monitoring as Running", () => {
+    const owner = ProviderThreadId.make("workstream-owner");
+    const base = makeThreadFixture({ activeProviderThreadId: owner });
+    const approval = { ...base, id: "approval" as typeof base.id, hasPendingApprovals: true };
+    const monitoring = { ...base, id: "monitoring" as typeof base.id };
+    const unknown = { ...base, id: "unknown" as typeof base.id };
+    const state = (member: EnvironmentThreadShell) => resolveThreadOperatingState(member,
+      member === unknown ? { status: "unknown", reason: "unavailable" } : {
+        status: member === monitoring ? "monitoring" : "working", observedAt: "2026-10-03T02:32:29Z",
+        binding: { threadId: member.id, providerThreadId: owner,
+          providerSessionId: ProviderSessionId.make("current-session"),
+          instanceId: ProviderInstanceId.make("current-owner-account"), runtimeGeneration: "current-generation" },
+      });
+    expect(summarizeWorkstreamThreadStatuses({ groups: [
+      { workstream: data.items[0]!, threads: [approval, monitoring, unknown] },
+    ] }, state).get("alpha")).toEqual({ total: 3, running: 1, waiting: 1, failed: 0 });
+  });
   it("matches native row precedence for running, connecting, approval, input, failed and background states", () => {
     const members = [
       statusThread("running", "running"),
       statusThread("starting", "starting"),
-      statusThread("input", "running", { hasPendingUserInput: true }),
-      statusThread("approval", "running", { hasPendingApprovals: true }),
-      statusThread("failed", "error", { backgroundLiveness: "working" }),
-      statusThread("background", "idle", { backgroundLiveness: "working" }),
-      statusThread("monitoring", "idle", { backgroundLiveness: "monitoring" }),
+      statusThread("input", "waiting", { hasPendingUserInput: true }),
+      statusThread("approval", "waiting", { hasPendingApprovals: true }),
+      statusThread("failed", "failed"),
+      statusThread("background", "idle", {}, "working"),
+      statusThread("monitoring", "idle", {}, "monitoring"),
       statusThread("unknown", null),
-      statusThread("ready", "ready"),
+      statusThread("ready", "idle"),
     ];
     expect(
       summarizeWorkstreamThreadStatuses({
         groups: [{ workstream: data.items[0]!, threads: members }],
-      }).get("alpha"),
+      }, fixtureOperatingState).get("alpha"),
     ).toEqual({ total: 9, running: 3, waiting: 2, failed: 1 });
     expect(
       summarizeWorkstreamThreadStatuses({
@@ -793,18 +850,18 @@ describe("Workstream live thread summaries", () => {
           {
             workstream: data.items[0]!,
             threads: [
-              statusThread("approval-error", "error", { hasPendingApprovals: true }),
-              statusThread("input-error", "error", { hasPendingUserInput: true }),
+              statusThread("approval-error", "failed", { hasPendingApprovals: true }),
+              statusThread("input-error", "failed", { hasPendingUserInput: true }),
             ],
           },
         ],
-      }).get("alpha"),
+      }, fixtureOperatingState).get("alpha"),
     ).toEqual({ total: 2, running: 0, waiting: 2, failed: 0 });
   });
 
-  it("counts distinct environment/thread pairs and never invents a running state for unknown sessions", () => {
+  it("counts distinct environment/thread pairs and never invents a running state for unknown observations", () => {
     const running = statusThread("same", "running");
-    const remote = { ...running, environmentId: "env:other" } as EnvironmentThreadShell;
+    const remote = { ...running, environmentId: EnvironmentId.make("env:other") };
     expect(
       summarizeWorkstreamThreadStatuses({
         groups: [
@@ -813,7 +870,7 @@ describe("Workstream live thread summaries", () => {
             threads: [running, running, remote, statusThread("unknown", null)],
           },
         ],
-      }).get("alpha"),
+      }, fixtureOperatingState).get("alpha"),
     ).toEqual({ total: 3, running: 2, waiting: 0, failed: 0 });
     expect(summarizeWorkstreamThreadStatuses({ groups: [] }).size).toBe(0);
   });
@@ -821,7 +878,7 @@ describe("Workstream live thread summaries", () => {
   it("keeps all known primary members in collapsed counts and replaces input/running indicators with Failed", async () => {
     const members = [
       statusThread("running", "running"),
-      statusThread("waiting", "running", { hasPendingUserInput: true }),
+      statusThread("waiting", "waiting", { hasPendingUserInput: true }),
       statusThread("pinned", "idle", { pinnedAt: new Date(now).toISOString() }),
       statusThread("settled", "idle", { settledOverride: "settled" }),
       statusThread("snoozed", "idle", { snoozedAt: new Date(now).toISOString() }),
@@ -871,13 +928,13 @@ describe("Workstream live thread summaries", () => {
     ).toBe(false);
     const mixedFailure = [
       ...members.slice(0, 2),
-      statusThread("pinned", "error"),
+      statusThread("pinned", "failed"),
       ...members.slice(3),
     ];
     await render(mixedFailure.slice(0, 2), mixedFailure);
     expect(count()?.parentElement?.textContent).toBe("Failed1/6");
     expect(count()?.parentElement?.querySelector("svg")).toBeNull();
-    const failedMembers = [statusThread("running", "error"), ...members.slice(1)];
+    const failedMembers = [statusThread("running", "failed"), ...members.slice(1)];
     await render(failedMembers.slice(0, 2), failedMembers);
     const failedCount = container.querySelector(
       '[aria-label="alpha: 0 of 6 known threads running"]',
@@ -891,7 +948,7 @@ describe("Workstream live thread summaries", () => {
     expect(
       failedIndicators.querySelector('[aria-label="1 thread waiting for input or approval"]'),
     ).toBeNull();
-    const recoveredMembers = [statusThread("running", "ready"), ...members.slice(1)];
+    const recoveredMembers = [statusThread("running", "idle"), ...members.slice(1)];
     await render(recoveredMembers.slice(0, 2), recoveredMembers);
     expect(container.querySelector('[aria-label="1 failed thread"]')).toBeNull();
     expect(
