@@ -2,7 +2,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { WorkQueuePanel } from "./WorkQueuePage";
+import { WorkQueuePanel } from "./WorkQueuePanel";
+import { WorkQueuePreview } from "./WorkQueuePreview";
 import {
   createMockWorkQueueSource,
   type WorkQueueItem,
@@ -94,6 +95,41 @@ describe("submitted work preview", () => {
       ),
     );
   }
+  it("toggles the row pause icon to resume and back without sending", async () => {
+    const source = createMockWorkQueueSource();
+    const send = vi.spyOn(source, "sendNow");
+    await render(source);
+    const pause = container.querySelector<HTMLButtonElement>('[aria-label="Pause pending"]')!;
+    expect(pause.querySelector("svg")).not.toBeNull();
+    await act(() => pause.click());
+    expect((await source.load())[0]!.pause).toBe("manual");
+    const resume = container.querySelector<HTMLButtonElement>('[aria-label="Resume pending"]')!;
+    expect(resume.querySelector("svg")).not.toBeNull();
+    await act(() => resume.click());
+    expect((await source.load())[0]!.pause).toBeUndefined();
+    expect(container.querySelector('[aria-label="Pause pending"]')).not.toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+  it("guards device navigation and unload while preserving a dirty preview draft", async () => {
+    await act(() => root.render(<WorkQueuePreview />));
+    const cleanUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(cleanUnload);
+    expect(cleanUnload.defaultPrevented).toBe(false);
+    await edit("Preserve this preview draft");
+    const dirtyUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(dirtyUnload);
+    expect(dirtyUnload.defaultPrevented).toBe(true);
+    await click("Connect a device");
+    expect(container.textContent).toContain("Leave this preview?");
+    expect(draft().value).toBe("Preserve this preview draft");
+    await click("Keep editing");
+    expect(container.textContent).not.toContain("Leave this preview?");
+    expect(draft().value).toBe("Preserve this preview draft");
+    await click("Discard changes");
+    const discardedUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(discardedUnload);
+    expect(discardedUnload.defaultPrevented).toBe(false);
+  });
   it("updates once with Enter while Shift+Enter, IME and repeated Enter do not save", async () => {
     const source = makeSource();
     await render(source);

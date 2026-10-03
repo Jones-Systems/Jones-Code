@@ -1,4 +1,5 @@
 import { stripInlineContextReferences } from "./lib/composerContextReferences";
+import { DraftId } from "./draftId";
 import { elementContextToPreviewAnnotation } from "./lib/elementContext";
 import {
   ElementContextDetails,
@@ -95,8 +96,7 @@ const COMPOSER_DRAFT_STORAGE_VERSION = 9;
 const DraftThreadEnvModeSchema = Schema.Literals(["local", "worktree"]);
 export type DraftThreadEnvMode = typeof DraftThreadEnvModeSchema.Type;
 
-export const DraftId = Schema.String.pipe(Schema.brand("DraftId"));
-export type DraftId = typeof DraftId.Type;
+export { DraftId } from "./draftId";
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 
