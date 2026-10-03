@@ -7,6 +7,7 @@ describe("sidebar utility locations", () => {
     expect(isSidebarUtilityPage("/conversations")).toBe(true);
     expect(isSidebarUtilityPage("/pull-requests")).toBe(true);
     expect(isSidebarUtilityPage("/voice-review")).toBe(true);
+    expect(isSidebarUtilityPage("/work-queue")).toBe(true);
     expect(isSidebarUtilityPage("/")).toBe(false);
   });
 });
