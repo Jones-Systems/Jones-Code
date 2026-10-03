@@ -1,7 +1,17 @@
-import type { CommandId, OrchestrationThreadShell, ThreadId } from "@t3tools/contracts";
+import type {
+  CommandId,
+  OrchestrationThreadShell,
+  OrganizationThreadMetadata,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import { HttpServer } from "effect/unstable/http";
+import * as NetAddress from "effect/unstable/net/NetAddress";
+import packageJson from "../../../../package.json" with { type: "json" };
+import { ServerConfig } from "../../../config.ts";
 import { requireMcpCapability } from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -22,6 +32,46 @@ const organizationThread = (thread: OrchestrationThreadShell): typeof Organizati
   settledOverride: thread.settledOverride,
   settledAt: thread.settledAt,
   archivedAt: thread.archivedAt,
+});
+const organizationThreadMetadata = (
+  thread: OrchestrationThreadShell,
+): OrganizationThreadMetadata => ({
+  threadId: thread.id,
+  title: thread.title.slice(0, 512),
+  projectId: thread.projectId,
+  pinnedAt: thread.pinnedAt ?? null,
+  pinOrderKey: thread.pinOrderKey ?? null,
+  activeOrderKey: thread.activeOrderKey ?? null,
+  snoozedUntil: thread.snoozedUntil ?? null,
+  settledOverride: thread.settledOverride,
+  settledAt: thread.settledAt,
+  archivedAt: thread.archivedAt,
+  createdAt: thread.createdAt,
+  projectionUpdatedAt: thread.updatedAt,
+  latestUserMessageAt: thread.latestUserMessageAt,
+  latestTurn:
+    thread.latestTurn === null
+      ? null
+      : {
+          turnId: thread.latestTurn.turnId,
+          state: thread.latestTurn.state,
+          requestedAt: thread.latestTurn.requestedAt,
+          startedAt: thread.latestTurn.startedAt,
+          completedAt: thread.latestTurn.completedAt,
+        },
+  session:
+    thread.session === null
+      ? null
+      : {
+          status: thread.session.status,
+          activeTurnId: thread.session.activeTurnId,
+          updatedAt: thread.session.updatedAt,
+        },
+  hasPendingApprovals: thread.hasPendingApprovals,
+  hasPendingUserInput: thread.hasPendingUserInput,
+  hasActionableProposedPlan: thread.hasActionableProposedPlan,
+  backgroundLiveness:
+    thread.backgroundLiveness === undefined ? "unknown" : thread.backgroundLiveness,
 });
 const localFailure = (cause: unknown) =>
   new OrganizationToolError({ reason: "local-operation-failed", cause });
@@ -82,6 +132,63 @@ const make = Effect.gen(function* () {
     );
   });
   return OrganizationToolkit.of({
+    get_invocation_context: () =>
+      Effect.gen(function* () {
+        const scope = yield* requireMcpCapability("organization");
+        const config = yield* ServerConfig;
+        const { address } = yield* HttpServer.HttpServer;
+        let loopbackOrigin: string | null = null;
+        if (
+          NetAddress.isInetAddress(address) &&
+          address.port > 0 &&
+          (!NetAddress.isInetAddressV6(address) || address.scopeId === 0) &&
+          (NetAddress.isLoopback(address.address) || NetAddress.isUnspecified(address.address))
+        ) {
+          const host = NetAddress.isUnspecified(address.address)
+            ? NetAddress.isIpv4Address(address.address)
+              ? NetAddress.ipv4Loopback
+              : NetAddress.ipv6Loopback
+            : address.address;
+          loopbackOrigin = `http://${NetAddress.formatUrlHost(host)}:${address.port}`;
+        }
+        return {
+          environmentId: scope.environmentId,
+          threadId: scope.threadId,
+          effectiveBaseDir: config.baseDir,
+          loopbackOrigin,
+          serverVersion: packageJson.version,
+          serverGeneration: null,
+        };
+      }),
+    list_organization_thread_metadata: (input) =>
+      Effect.gen(function* () {
+        const scope = yield* requireMcpCapability("organization");
+        const snapshot = yield* snapshots
+          .getShellSnapshot()
+          .pipe(
+            Effect.mapError(() => new OrganizationToolError({ reason: "local-operation-failed" })),
+          );
+        if (
+          input.expectedSnapshotSequence !== undefined &&
+          input.expectedSnapshotSequence !== snapshot.snapshotSequence
+        ) {
+          return yield* new OrganizationToolError({
+            reason: "snapshot-sequence-changed",
+            expectedSnapshotSequence: input.expectedSnapshotSequence,
+            snapshotSequence: snapshot.snapshotSequence,
+          });
+        }
+        const start = input.offset ?? 0;
+        const end = start + (input.limit ?? 50);
+        const observedAt = DateTime.formatIso(yield* DateTime.now);
+        return {
+          environmentId: scope.environmentId,
+          snapshotSequence: snapshot.snapshotSequence,
+          observedAt,
+          threads: snapshot.threads.slice(start, end).map(organizationThreadMetadata),
+          nextOffset: end < snapshot.threads.length ? end : null,
+        };
+      }),
     list_organization_threads: (input) =>
       authorized(
         Effect.gen(function* () {
