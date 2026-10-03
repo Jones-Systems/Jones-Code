@@ -5,6 +5,8 @@ interface WorkQueueItemFields {
   statusLabel: string;
   submittedAt: string | null;
   targetLabel: string | null;
+  pause?: "manual" | "editing" | "grace" | undefined;
+  graceUntil?: number | undefined;
 }
 
 export type WorkQueueItem = WorkQueueItemFields &
@@ -20,10 +22,15 @@ export type WorkQueueSaveResult =
 export interface WorkQueueSource {
   mode: "mock";
   load(): Promise<readonly WorkQueueItem[]>;
+  beginEdit(id: string): WorkQueueItem | undefined;
+  finishEdit(id: string): WorkQueueItem | undefined;
+  setManualPause(id: string, paused: boolean): WorkQueueItem | undefined;
+  tick(protectedIds: readonly string[]): readonly WorkQueueItem[];
+  sendNow(input: { id: string; baseToken: string }): WorkQueueSaveResult;
   save(input: { id: string; baseToken: string; text: string }): Promise<WorkQueueSaveResult>;
 }
 
-export function createMockWorkQueueSource(): WorkQueueSource {
+export function createMockWorkQueueSource(now: () => number = Date.now): WorkQueueSource {
   const descriptions = [
     [
       "pending",
@@ -32,16 +39,16 @@ export function createMockWorkQueueSource(): WorkQueueSource {
       "editable",
       "",
     ],
-    ["conflict", "Pending", "Add keyboard navigation to the project list.", "editable", ""],
-    ["held-on-save", "Pending", "Check the release notes before the next update.", "editable", ""],
+    ["navigation", "Pending", "Add keyboard navigation to the project list.", "editable", ""],
+    ["release-notes", "Pending", "Check the release notes before the next update.", "editable", ""],
     [
       "held",
-      "Held",
+      "Blocked",
       "Verify the target workspace before delivery.",
       "readonly",
       "Target verification is still required.",
     ],
-    ["error", "Pending", "Summarize the latest design decisions.", "editable", ""],
+    ["decisions", "Pending", "Summarize the latest design decisions.", "editable", ""],
     [
       "unknown",
       "UNKNOWN",
@@ -81,10 +88,76 @@ export function createMockWorkQueueSource(): WorkQueueSource {
     ]),
   );
   let revision = 1;
+  function grace(item: WorkQueueItem) {
+    return item.pause === "manual"
+      ? { pause: "manual" as const, graceUntil: undefined }
+      : { pause: "grace" as const, graceUntil: now() + 120_000 };
+  }
+  function change(id: string, update: (item: WorkQueueItem) => WorkQueueItem) {
+    const item = rows.get(id);
+    if (!item || item.editability !== "editable") return undefined;
+    const next = update(item);
+    rows.set(id, next);
+    return { ...next };
+  }
   return {
     mode: "mock",
     async load() {
       return [...rows.values()].map((item) => ({ ...item }));
+    },
+    beginEdit(id) {
+      return change(id, (item) =>
+        item.pause === "manual" ? item : { ...item, pause: "editing", graceUntil: undefined },
+      );
+    },
+    finishEdit(id) {
+      return change(id, (item) => ({ ...item, ...grace(item) }));
+    },
+    setManualPause(id, paused) {
+      return change(id, (item) => ({
+        ...item,
+        pause: paused ? "manual" : undefined,
+        graceUntil: undefined,
+      }));
+    },
+    tick(protectedIds) {
+      for (const [id, item] of rows) {
+        if (
+          item.pause === "grace" &&
+          item.graceUntil !== undefined &&
+          item.graceUntil <= now() &&
+          !protectedIds.includes(id)
+        ) {
+          rows.set(id, { ...item, pause: undefined, graceUntil: undefined });
+        }
+      }
+      return [...rows.values()].map((item) => ({ ...item }));
+    },
+    sendNow({ id, baseToken }) {
+      const current = rows.get(id);
+      if (!current)
+        return { kind: "error", message: "Sample submission is unavailable.", effect: "none" };
+      if (current.editability !== "editable")
+        return { kind: "held", current, reason: current.reason };
+      if (current.snapshotToken !== baseToken) return { kind: "conflict", current: { ...current } };
+      if (current.pause === "editing")
+        return {
+          kind: "held",
+          current: { ...current },
+          reason: "Finish editing this sample before sending.",
+        };
+      const item: WorkQueueItem = {
+        ...current,
+        statusLabel: "Submitted (mock)",
+        editability: "readonly",
+        pause: undefined,
+        graceUntil: undefined,
+        reason: "Submitted in this simulation.",
+        submittedAt: new Date(now()).toISOString(),
+        snapshotToken: `sample-${id}-${++revision}`,
+      };
+      rows.set(id, item);
+      return { kind: "saved", item: { ...item } };
     },
     async save({ id, baseToken, text }) {
       const current = rows.get(id);
@@ -97,33 +170,12 @@ export function createMockWorkQueueSource(): WorkQueueSource {
           reason: current.reason ?? "Read-only submission.",
         };
       if (baseToken !== current.snapshotToken) return { kind: "conflict", current: { ...current } };
-      if (id === "conflict" && current.snapshotToken === "sample-conflict-1") {
-        const changed = {
-          ...current,
-          text: "Add keyboard navigation and visible focus to the project list.",
-          snapshotToken: "sample-conflict-2",
-        };
-        rows.set(id, changed);
-        return { kind: "conflict", current: { ...changed } };
-      }
-      if (id === "held-on-save") {
-        const held: WorkQueueItem = {
-          ...current,
-          statusLabel: "Held",
-          editability: "readonly",
-          reason: "Target verification is still required.",
-          snapshotToken: "sample-held-on-save-2",
-        };
-        rows.set(id, held);
-        return { kind: "held", current: { ...held }, reason: held.reason };
-      }
-      if (id === "error")
-        return {
-          kind: "error",
-          message: "The sample save failed. Your draft is preserved.",
-          effect: "none",
-        };
-      const item = { ...current, text, snapshotToken: `sample-${id}-${++revision}` };
+      const item = {
+        ...current,
+        ...grace(current),
+        text,
+        snapshotToken: `sample-${id}-${++revision}`,
+      };
       rows.set(id, item);
       return { kind: "saved", item: { ...item } };
     },

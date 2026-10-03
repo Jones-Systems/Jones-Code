@@ -30,6 +30,15 @@ function submittedTime(value: string | null) {
       }).format(date);
 }
 
+function queueStatus(item: WorkQueueItem) {
+  if (item.editability === "readonly")
+    return item.statusLabel === "Held" ? "Blocked" : item.statusLabel;
+  if (item.pause === "manual") return "Paused";
+  if (item.pause === "editing") return "Paused while editing";
+  if (item.pause === "grace") return "Paused · 2-minute grace";
+  return "Ready";
+}
+
 type Editor = { base: WorkQueueItem; draft: string; current?: WorkQueueItem };
 
 export function WorkQueuePanel({
@@ -49,6 +58,7 @@ export function WorkQueuePanel({
   const [loading, setLoading] = useState(false);
   const [unknown, setUnknown] = useState(false);
   const generation = useRef(0);
+  const saveInFlight = useRef(false);
   const readRequest = useRef(0);
   const mutation = useRef(0);
   const editorRef = useRef(editor);
@@ -112,12 +122,105 @@ export function WorkQueuePanel({
     setMessage("");
     setUnknown(false);
     setSaving(false);
+    saveInFlight.current = false;
     void refresh();
     return () => {
       generation.current++;
     };
   }, [refresh]);
 
+  function updateItem(item: WorkQueueItem) {
+    setItems((previous) => previous.map((row) => (row.id === item.id ? item : row)));
+    setEditor((previous) =>
+      previous?.base.id === item.id
+        ? {
+            ...previous,
+            base: { ...previous.base, pause: item.pause, graceUntil: item.graceUntil },
+          }
+        : previous,
+    );
+  }
+  const protectedId =
+    editor && (dirty || saving || unknown || editor.current) ? editor.base.id : null;
+  useEffect(() => {
+    if (saving) return;
+    const deadlines = items
+      .filter(
+        (item) =>
+          item.id !== protectedId && item.pause === "grace" && item.graceUntil !== undefined,
+      )
+      .map((item) => item.graceUntil!);
+    if (!deadlines.length) return;
+    const timer = setTimeout(
+      () => {
+        if (saveInFlight.current) return;
+        mutation.current++;
+        const next = source.tick(protectedId ? [protectedId] : []);
+        setItems(next);
+        setEditor((previous) => {
+          const current = next.find((item) => item.id === previous?.base.id);
+          return previous && current
+            ? {
+                ...previous,
+                base: { ...previous.base, pause: current.pause, graceUntil: current.graceUntil },
+              }
+            : previous;
+        });
+      },
+      Math.max(1, Math.min(...deadlines) - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [items, protectedId, source, saving]);
+  function discard(item: WorkQueueItem) {
+    mutation.current++;
+    const updated = source.finishEdit(item.id);
+    const next = updated ? { ...item, pause: updated.pause, graceUntil: updated.graceUntil } : item;
+    updateItem(next);
+    open(next);
+  }
+  function togglePause(item: WorkQueueItem, paused = item.pause !== "manual") {
+    if (
+      saving ||
+      (!paused && (unknown || (item.id === editor?.base.id && (dirty || editor.current))))
+    )
+      return;
+    mutation.current++;
+    const updated = source.setManualPause(item.id, paused);
+    if (updated) updateItem(updated);
+  }
+  function sendNow() {
+    if (
+      !editor ||
+      dirty ||
+      saving ||
+      unknown ||
+      editor.current ||
+      editor.base.editability !== "editable"
+    )
+      return;
+    mutation.current++;
+    const result = source.sendNow({ id: editor.base.id, baseToken: editor.base.snapshotToken });
+    if (result.kind === "saved") {
+      if (result.item.id !== editor.base.id || result.item.text !== editor.base.text) {
+        setUnknown(true);
+        setMessage("Submission acknowledgment did not match. Read back before further action.");
+        return;
+      }
+      updateItem(result.item);
+      open(result.item);
+      setMessage("Submitted once in this simulation. No real work was sent.");
+    } else if (result.kind === "conflict" || result.kind === "held") {
+      setEditor({ ...editor, current: result.current });
+      setMessage(
+        result.kind === "held"
+          ? result.reason
+          : "The submission changed. Reload current text before sending.",
+      );
+    } else {
+      setUnknown(result.effect === "unknown");
+      setMessage(result.message);
+    }
+  }
   function select(item: WorkQueueItem) {
     if (saving || unknown || item.id === editor?.base.id) return;
     if (dirty) {
@@ -136,7 +239,9 @@ export function WorkQueuePanel({
     if (
       !editor ||
       !dirty ||
+      !editor.draft.trim() ||
       saving ||
+      saveInFlight.current ||
       unknown ||
       editor.current ||
       editor.base.editability !== "editable"
@@ -145,6 +250,7 @@ export function WorkQueuePanel({
     const scope = generation.current;
     const version = ++mutation.current;
     const submitted = editor;
+    saveInFlight.current = true;
     setSaving(true);
     setMessage("");
     try {
@@ -189,13 +295,22 @@ export function WorkQueuePanel({
         );
       }
     } finally {
-      if (scope === generation.current && version === mutation.current) setSaving(false);
+      if (scope === generation.current && version === mutation.current) {
+        saveInFlight.current = false;
+        setSaving(false);
+      }
     }
   }
-  const visible = items.filter(
+  const recent = items.filter(
+    (item) => item.statusLabel === "Delivered" || item.statusLabel === "Submitted (mock)",
+  );
+  const queued = items.filter(
+    (item) => item.statusLabel !== "Delivered" && item.statusLabel !== "Submitted (mock)",
+  );
+  const visible = queued.filter(
     (item) =>
       (filter === "all" || item.editability === filter) &&
-      `${item.text ?? ""} ${item.targetLabel ?? ""} ${item.statusLabel}`
+      `${item.text ?? ""} ${item.targetLabel ?? ""} ${queueStatus(item)}`
         .toLowerCase()
         .includes(query.toLowerCase()),
   );
@@ -204,7 +319,10 @@ export function WorkQueuePanel({
     <div className="flex flex-col gap-6">
       <Alert variant="info">
         <AlertTitle>Sample data</AlertTitle>
-        <AlertDescription>Sample data. Edits apply only to this preview.</AlertDescription>
+        <AlertDescription>
+          Sample data. Edits apply only to this preview. Pause, resume, and send are local
+          simulations.
+        </AlertDescription>
       </Alert>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -225,7 +343,8 @@ export function WorkQueuePanel({
         <span>{items.length - editableCount} read-only</span>
       </div>
       <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.4fr)]">
-        <section aria-label="Submissions" className="flex min-w-0 flex-col gap-3">
+        <section aria-label="Queued work" className="flex min-w-0 flex-col gap-3">
+          <h2 className="text-lg font-semibold">Queued work</h2>
           <Input
             aria-label="Search submissions"
             placeholder="Search text or target…"
@@ -251,27 +370,67 @@ export function WorkQueuePanel({
           </div>
           <div className="overflow-hidden rounded-xl border border-border">
             {visible.map((item) => (
-              <button
+              <div
                 key={item.id}
-                type="button"
-                disabled={saving || unknown}
-                aria-pressed={item.id === editor?.base.id}
-                onClick={() => select(item)}
-                className={`block w-full border-b border-border p-4 text-left last:border-0 hover:bg-muted/40 disabled:opacity-60 ${item.id === editor?.base.id ? "bg-muted/60" : "bg-card"}`}
+                className={`flex gap-3 border-b border-border p-4 last:border-0 ${item.id === editor?.base.id ? "bg-muted/60" : "bg-card"}`}
               >
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <Badge variant="outline">{item.statusLabel}</Badge>
+                <button
+                  type="button"
+                  disabled={saving || unknown}
+                  aria-pressed={item.id === editor?.base.id}
+                  onClick={() => select(item)}
+                  className="min-w-0 flex-1 text-left hover:text-primary disabled:opacity-60"
+                >
+                  <Badge variant="outline">{queueStatus(item)}</Badge>
+                  <p className="mt-2 line-clamp-2 break-words text-sm font-medium">
+                    {item.text ?? "Text unavailable"}
+                  </p>
+                  <p className="mt-2 break-words text-xs text-muted-foreground">
+                    {item.targetLabel ?? "Target unavailable"}
+                  </p>
+                  {item.reason && item.editability === "readonly" && (
+                    <p className="mt-2 text-xs text-muted-foreground">{item.reason}</p>
+                  )}
+                </button>
+                <div className="flex max-w-32 shrink-0 flex-col items-end gap-2 text-right">
                   <span className="text-xs text-muted-foreground">
                     {submittedTime(item.submittedAt)}
                   </span>
+                  {item.editability === "editable" && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        aria-label={`${item.pause === "manual" ? "Resume" : "Pause"} ${item.id}`}
+                        disabled={
+                          saving ||
+                          (item.pause === "manual" &&
+                            (unknown ||
+                              (item.id === editor?.base.id && (dirty || !!editor.current))))
+                        }
+                        onClick={() => togglePause(item)}
+                      >
+                        {item.pause === "manual" ? "Resume" : "Pause"}
+                      </Button>
+                      {(item.pause === "editing" || item.pause === "grace") && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={`Resume ${item.id}`}
+                          disabled={
+                            saving ||
+                            unknown ||
+                            (item.id === editor?.base.id && (dirty || !!editor.current))
+                          }
+                          onClick={() => togglePause(item, false)}
+                        >
+                          Resume
+                        </Button>
+                      )}
+                    </>
+                  )}
                 </div>
-                <p className="line-clamp-2 break-words text-sm font-medium">
-                  {item.text ?? "Text unavailable"}
-                </p>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {item.targetLabel ?? "Target unavailable"}
-                </p>
-              </button>
+              </div>
             ))}
             {!visible.length && (
               <p className="p-5 text-sm text-muted-foreground">
@@ -294,7 +453,14 @@ export function WorkQueuePanel({
                 <Button variant="outline" onClick={() => setSwitchTo(null)}>
                   Keep editing
                 </Button>
-                <Button onClick={() => open(switchTo)}>Discard changes and switch</Button>
+                <Button
+                  onClick={() => {
+                    if (editor) discard(editor.current ?? editor.base);
+                    open(switchTo);
+                  }}
+                >
+                  Discard changes and switch
+                </Button>
               </div>
             </div>
           )}
@@ -302,7 +468,7 @@ export function WorkQueuePanel({
             <div className="flex flex-col gap-5">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-lg font-semibold">Submission details</h2>
-                <Badge variant="outline">{editor.base.statusLabel}</Badge>
+                <Badge variant="outline">{queueStatus(editor.base)}</Badge>
               </div>
               <dl className="grid gap-3 text-sm">
                 <div>
@@ -345,7 +511,11 @@ export function WorkQueuePanel({
                   <pre className="whitespace-pre-wrap break-words rounded-lg bg-muted/40 p-3 text-sm font-sans">
                     {editor.current.text ?? "Text unavailable"}
                   </pre>
-                  <Button variant="outline" disabled={saving} onClick={() => open(editor.current!)}>
+                  <Button
+                    variant="outline"
+                    disabled={saving}
+                    onClick={() => discard(editor.current!)}
+                  >
                     Reload current text and discard draft
                   </Button>
                 </div>
@@ -359,12 +529,39 @@ export function WorkQueuePanel({
                     id="work-queue-draft"
                     value={editor.draft}
                     disabled={saving}
-                    onChange={(event) => setEditor({ ...editor, draft: event.target.value })}
+                    onChange={(event) => {
+                      const paused =
+                        event.target.value === (editor.base.text ?? "")
+                          ? source.finishEdit(editor.base.id)
+                          : source.beginEdit(editor.base.id);
+                      mutation.current++;
+                      if (paused) updateItem(paused);
+                      setEditor({
+                        ...editor,
+                        base: paused
+                          ? { ...editor.base, pause: paused.pause, graceUntil: paused.graceUntil }
+                          : editor.base,
+                        draft: event.target.value,
+                      });
+                    }}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key !== "Enter" ||
+                        event.shiftKey ||
+                        event.nativeEvent.isComposing ||
+                        event.repeat
+                      )
+                        return;
+                      event.preventDefault();
+                      void save();
+                    }}
                     rows={8}
                   />
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
-                      disabled={!dirty || saving || unknown || !!editor.current}
+                      disabled={
+                        !dirty || !editor.draft.trim() || saving || unknown || !!editor.current
+                      }
                       onClick={() => void save()}
                     >
                       {saving ? "Saving…" : "Save mock edit"}
@@ -372,14 +569,32 @@ export function WorkQueuePanel({
                     <Button
                       variant="outline"
                       disabled={!dirty || saving || unknown}
-                      onClick={() => open(editor.current ?? editor.base)}
+                      onClick={() => discard(editor.current ?? editor.base)}
                     >
                       Discard changes
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={
+                        dirty ||
+                        saving ||
+                        unknown ||
+                        !!editor.current ||
+                        editor.base.pause === "editing"
+                      }
+                      onClick={sendNow}
+                    >
+                      Send now (mock)
                     </Button>
                     <span className="text-xs text-muted-foreground">
                       {dirty ? "Unsaved changes" : "No unsaved changes"}
                     </span>
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    Enter updates text. Shift+Enter adds a line. Automatic edit pauses last two
+                    minutes after an update or discard; expiry only makes it ready. Manual pauses
+                    last until you resume or send.
+                  </p>
                 </>
               ) : (
                 <>
@@ -397,6 +612,32 @@ export function WorkQueuePanel({
           )}
         </section>
       </div>
+      <section aria-label="Recently submitted" className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold">Recently submitted</h2>
+        <p className="text-sm text-muted-foreground">
+          Sample deliveries and explicit mock submissions appear here after leaving the queue. This
+          history is read-only; nothing is dispatched automatically.
+        </p>
+        {recent.map((item) => (
+          <article key={item.id} className="rounded-xl border border-border bg-card p-4">
+            <div className="flex flex-wrap justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline">{item.statusLabel}</Badge>
+                <span className="text-sm font-medium">
+                  {item.targetLabel ?? "Target unavailable"}
+                </span>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {submittedTime(item.submittedAt)}
+              </span>
+            </div>
+            <pre className="mt-3 whitespace-pre-wrap break-words font-sans text-sm">
+              {item.text ?? "Text unavailable"}
+            </pre>
+          </article>
+        ))}
+        {!recent.length && <p className="text-sm text-muted-foreground">No submissions yet.</p>}
+      </section>
     </div>
   );
 }
