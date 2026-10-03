@@ -207,25 +207,48 @@ async function readHost(
       });
     const [cpuPayload, memoryPayload] = await Promise.all([
       getMetric("system.cpu", "*"),
-      getMetric("system.ram", "free"),
+      getMetric("system.ram", "*"),
     ]);
     const at = now();
     const cpu = metric(cpuPayload, "percentage", at);
     const cpuUsagePercent = cpuUsage(cpu.values);
     const memory = metric(memoryPayload, "MiB", at);
     const freeMiB = memory.values.get("free");
-    if (memory.values.size !== 1 || freeMiB === undefined) throw new InvalidResponse();
+    if (freeMiB === undefined) throw new InvalidResponse();
     const freeMemoryBytes = Math.round(freeMiB * 1024 * 1024);
     if (!Number.isSafeInteger(freeMemoryBytes) || freeMemoryBytes > node.totalMemoryBytes)
       throw new InvalidResponse();
+    let availableMemoryBytes: number | undefined;
+    let availableSampledAt = Math.min(cpu.sampledAt, memory.sampledAt);
+    try {
+      const isMac = !cpu.values.has("irq");
+      const available = isMac
+        ? memory
+        : metric(await getMetric("mem.available", "avail"), "MiB", now());
+      // Match Netdata's macOS estimate: chart free excludes speculative pages.
+      const dimensions = isMac ? ["free", "speculative", "inactive", "purgeable"] : ["avail"];
+      if (dimensions.some((dimension) => !available.values.has(dimension)))
+        throw new InvalidResponse();
+      const bytes = Math.round(
+        dimensions.reduce((sum, dimension) => sum + available.values.get(dimension)!, 0) *
+          1024 ** 2,
+      );
+      if (!Number.isSafeInteger(bytes) || bytes > node.totalMemoryBytes)
+        throw new InvalidResponse();
+      availableMemoryBytes = bytes;
+      availableSampledAt = Math.min(availableSampledAt, available.sampledAt);
+    } catch {
+      // Older collectors can lack available memory; retain CPU without mislabeling free RAM.
+    }
     return {
       id,
       status: "available",
       cpuUsagePercent,
       logicalCpuCount: node.logicalCpuCount,
       occupiedMemoryBytes: node.totalMemoryBytes - freeMemoryBytes,
+      ...(availableMemoryBytes === undefined ? {} : { availableMemoryBytes }),
       totalMemoryBytes: node.totalMemoryBytes,
-      sampledAt: DateTime.formatIso(DateTime.makeUnsafe(Math.min(cpu.sampledAt, memory.sampledAt))),
+      sampledAt: DateTime.formatIso(DateTime.makeUnsafe(availableSampledAt)),
     };
   } catch (error) {
     return {
