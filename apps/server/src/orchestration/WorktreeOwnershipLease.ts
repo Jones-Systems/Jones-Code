@@ -26,7 +26,6 @@ const AcquireLeaseInput = Schema.Struct({
   resourcePath: TrimmedNonEmptyString,
   leaseId: TrimmedNonEmptyString,
   ownerThreadId: ThreadId,
-  ownerIncarnation: TrimmedNonEmptyString,
   branch: Schema.NullOr(Schema.String),
   nowMs: Schema.Number,
   expiresAtMs: Schema.Number,
@@ -81,16 +80,27 @@ export const makeWorktreeOwnershipLeaseStore = Effect.fn("makeWorktreeOwnershipL
           acquired_at_ms,
           renewed_at_ms,
           expires_at_ms
-        ) VALUES (
+        )
+        SELECT
           ${input.resourcePath},
           ${input.leaseId},
           ${input.ownerThreadId},
-          ${input.ownerIncarnation},
+          creation.event_id,
           ${input.branch},
           ${input.nowMs},
           ${input.nowMs},
           ${input.expiresAtMs}
-        )
+        FROM (
+          SELECT event_id
+          FROM orchestration_events
+          WHERE aggregate_kind = 'thread'
+            AND stream_id = ${input.ownerThreadId}
+            AND event_type = 'thread.created'
+          ORDER BY sequence DESC
+          LIMIT 1
+        ) AS creation
+        -- An outer WHERE disambiguates SQLite's SELECT ... ON CONFLICT parser.
+        WHERE true
         ON CONFLICT (resource_path) DO UPDATE SET
           owner_thread_id = excluded.owner_thread_id,
           owner_incarnation = excluded.owner_incarnation,

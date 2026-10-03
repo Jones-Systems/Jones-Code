@@ -15,6 +15,8 @@ import { nativeBootstrapCommandIds } from "../../ws.ts";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeSqlite from "node:sqlite";
 
 import {
   ApprovalRequestId,
@@ -32,7 +34,9 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Metric from "effect/Metric";
@@ -76,6 +80,9 @@ const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(val
 function makeOrchestrationLayer(
   databasePath?: string,
   repositoryIdentityResolver?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"],
+  fileSystemTransform: (fileSystem: FileSystem.FileSystem) => FileSystem.FileSystem = (
+    fileSystem,
+  ) => fileSystem,
 ) {
   const persistence = databasePath
     ? makeSqlitePersistenceLive(databasePath)
@@ -104,6 +111,7 @@ function makeOrchestrationLayer(
     ),
     Layer.provideMerge(persistence),
     Layer.provideMerge(ServerConfigLayer),
+    Layer.updateService(FileSystem.FileSystem, fileSystemTransform),
     Layer.provideMerge(NodeServices.layer),
   );
 }
@@ -111,9 +119,10 @@ function makeOrchestrationLayer(
 async function createOrchestrationSystem(
   databasePath?: string,
   repositoryIdentityResolver?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"],
+  fileSystemTransform?: (fileSystem: FileSystem.FileSystem) => FileSystem.FileSystem,
 ) {
   const runtime = ManagedRuntime.make(
-    makeOrchestrationLayer(databasePath, repositoryIdentityResolver),
+    makeOrchestrationLayer(databasePath, repositoryIdentityResolver, fileSystemTransform),
   );
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
   const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
@@ -143,6 +152,104 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("acquires worktree ownership after a foreign commit during path preparation", async () => {
+    const directory = await NodeFSP.mkdtemp(
+      NodePath.join(process.cwd(), "node_modules", ".jones-lease-snapshot-"),
+    );
+    const pathPreparationEntered = Deferred.makeUnsafe<void>();
+    const resumePathPreparation = Deferred.makeUnsafe<void>();
+    let armed = false;
+    let targetRealPathCalls = 0;
+    let system: Awaited<ReturnType<typeof createOrchestrationSystem>> | undefined;
+    let writer: NodeSqlite.DatabaseSync | undefined;
+    let acquisition: Promise<unknown> | undefined;
+    try {
+      const databasePath = NodePath.join(directory, "state.sqlite");
+      system = await createOrchestrationSystem(databasePath, undefined, (fileSystem) => ({
+        ...fileSystem,
+        realPath: (targetPath) =>
+          Effect.gen(function* () {
+            if (armed && targetPath === directory) {
+              targetRealPathCalls += 1;
+              if (targetRealPathCalls === 2) {
+                yield* Deferred.succeed(pathPreparationEntered, undefined);
+                yield* Deferred.await(resumePathPreparation);
+              }
+            }
+            return yield* fileSystem.realPath(targetPath);
+          }),
+      }));
+      const projectId = ProjectId.make("lease-snapshot-project");
+      const threadId = ThreadId.make("lease-snapshot-thread");
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("lease-snapshot-project-create"),
+          projectId,
+          title: "Lease snapshot",
+          workspaceRoot: directory,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("lease-snapshot-thread-create"),
+          threadId,
+          projectId,
+          title: "Lease snapshot",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`PRAGMA busy_timeout = 0`;
+        }),
+      );
+      writer = new NodeSqlite.DatabaseSync(databasePath);
+      writer.exec("PRAGMA busy_timeout = 0");
+      writer.exec("CREATE TABLE lease_snapshot_foreign_commits (id INTEGER PRIMARY KEY)");
+
+      armed = true;
+      const ownership = system.run(
+        system.engine.acquireWorktreeOwnership(threadId).pipe(Effect.result),
+      );
+      acquisition = ownership;
+      await Promise.race([
+        system.run(Deferred.await(pathPreparationEntered)),
+        ownership.then(() => {
+          throw new Error("ownership acquisition completed before the path barrier");
+        }),
+      ]);
+      writer.exec("INSERT INTO lease_snapshot_foreign_commits (id) VALUES (1)");
+      await system.run(Deferred.succeed(resumePathPreparation, undefined));
+      const result = await ownership;
+      expect(result).toMatchObject({
+        _tag: "Success",
+        success: { resourcePath: directory, ownerThreadId: threadId },
+      });
+      expect(await system.run(system.engine.listWorktreeOwnershipLeases)).toHaveLength(1);
+      expect(writer.prepare("SELECT id FROM lease_snapshot_foreign_commits").all()).toEqual([
+        { id: 1 },
+      ]);
+    } finally {
+      if (system !== undefined) {
+        await system.run(Deferred.succeed(resumePathPreparation, undefined));
+        await acquisition;
+        await system.dispose();
+      }
+      writer?.close();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+      await expect(NodeFSP.access(directory)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
   it.each(["running", "stopped"] as const)(
     "sends async answers with a %s session and rejects old duplicate replies",
     async (status) => {
