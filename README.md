@@ -80,14 +80,14 @@ Desktop and mobile builds have additional platform prerequisites.
 
 ## Find your way around
 
-| Area | Purpose |
-| --- | --- |
-| [Server](apps/server) | Provider execution, RPC, orchestration, persistence, and checkpoints. |
-| [Web](apps/web) | Browser UI and the renderer shared with desktop. |
-| [Desktop](apps/desktop) | Electron shell and bundled-server integration. |
-| [Mobile](apps/mobile) | React Native client and native build instructions. |
-| [Contracts](packages/contracts) | Schemas shared across clients and servers. |
-| [Client runtime](packages/client-runtime) | Shared connections and client state. |
+| Area                                      | Purpose                                                               |
+| ----------------------------------------- | --------------------------------------------------------------------- |
+| [Server](apps/server)                     | Provider execution, RPC, orchestration, persistence, and checkpoints. |
+| [Web](apps/web)                           | Browser UI and the renderer shared with desktop.                      |
+| [Desktop](apps/desktop)                   | Electron shell and bundled-server integration.                        |
+| [Mobile](apps/mobile)                     | React Native client and native build instructions.                    |
+| [Contracts](packages/contracts)           | Schemas shared across clients and servers.                            |
+| [Client runtime](packages/client-runtime) | Shared connections and client state.                                  |
 
 Start with the [architecture overview](docs/internals/overview.md) for ownership
 and lifecycle boundaries, or the [glossary](docs/internals/glossary.md) for
