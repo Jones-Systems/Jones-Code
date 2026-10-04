@@ -6,7 +6,10 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -115,7 +118,7 @@ const makeHarness = Effect.fn("ServerTokenAccountingTest.makeHarness")(function*
   const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (registry) =>
     Effect.sync(() => registry.dispose()),
   );
-  return { atoms, registry, sessionRef, session, reads: () => reads };
+  return { atoms, registry, sessionRef, session, config, reads: () => reads };
 });
 
 it.effect("reads saved accounting only after an explicit command and rereads explicitly", () =>
@@ -158,6 +161,75 @@ it.effect("does not dispatch to a server that omits the optional reader capabili
       );
       expect(read._tag).toBe("Failure");
       expect(harness.reads()).toBe(0);
+    }),
+  ),
+);
+
+it.effect("keeps saved accounting validation and dispatch on the same session", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const validationStarted = yield* Deferred.make<void>();
+      const finishValidation = yield* Deferred.make<void>();
+      const validatedSession: RpcSession = {
+        ...harness.session,
+        initialConfig: Effect.gen(function* () {
+          yield* Deferred.succeed(validationStarted, undefined);
+          yield* Deferred.await(finishValidation);
+          return harness.config;
+        }),
+      };
+      let replacementReads = 0;
+      const replacementConfig: ServerConfig = {
+        ...harness.config,
+        environment: {
+          ...harness.config.environment,
+          capabilities: {
+            ...harness.config.environment.capabilities,
+            savedTokenAccounting: false,
+          },
+        },
+      };
+      const replacementSession: RpcSession = {
+        ...harness.session,
+        initialConfig: Effect.succeed(replacementConfig),
+        client: {
+          [WS_METHODS.serverReadTokenAccounting]: () =>
+            Effect.sync(() => {
+              replacementReads += 1;
+              return result;
+            }),
+        } as unknown as WsRpcProtocolClient,
+      };
+      yield* SubscriptionRef.set(harness.sessionRef, Option.some(validatedSession));
+      const readFiber = yield* Effect.promise(() =>
+        harness.atoms.readTokenAccounting.run(harness.registry, {
+          environmentId: target.environmentId,
+          input: {},
+        }),
+      ).pipe(Effect.forkChild);
+      yield* Effect.raceFirst(
+        Deferred.await(validationStarted),
+        Fiber.join(readFiber).pipe(
+          Effect.flatMap((read) =>
+            Effect.die(
+              new Error(
+                read._tag === "Failure"
+                  ? Cause.pretty(read.cause)
+                  : "Saved accounting completed before capability validation.",
+              ),
+            ),
+          ),
+        ),
+      );
+      yield* SubscriptionRef.set(harness.sessionRef, Option.some(replacementSession));
+      yield* Deferred.succeed(finishValidation, undefined);
+      const read = yield* Fiber.join(readFiber);
+
+      expect(replacementReads).toBe(0);
+      expect(harness.reads()).toBe(1);
+      expect(read._tag).toBe("Success");
+      if (read._tag === "Success") expect(read.value).toEqual(result);
     }),
   ),
 );
