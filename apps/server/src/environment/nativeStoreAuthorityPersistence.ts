@@ -6,7 +6,10 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import { validateNativeStoreAuthorityPath } from "./nativeStoreAuthorityPath.ts";
+import {
+  validateNativeStoreAuthorityDatabasePath,
+  validateNativeStoreAuthorityPath,
+} from "./nativeStoreAuthorityPath.ts";
 import { parseServiceState, SERVICE_RESTART_PENDING_FILE } from "../cloud/serviceProtocol.ts";
 
 const NATIVE_STORE_AUTHORITY_RECORD_VERSION = "t3-native-store-authority/1.0.0" as const;
@@ -105,6 +108,23 @@ const readEnvironmentIdForBaseDir = (baseDir: string): string => {
 
 const persistenceError = (code: NativeStoreAuthorityErrorCode, message: string, cause?: unknown) =>
   new NativeStoreAuthorityPersistenceError(code, message, cause);
+
+// The v1 record belongs to the qualified userdata/state.sqlite store. A copied
+// V2 store or a different path cannot inherit its namespace and generation.
+export const requireNativeStoreAuthoritySelectedStoreForBaseDir = (
+  baseDir: string,
+  databasePath: string,
+): void => {
+  try {
+    validateNativeStoreAuthorityDatabasePath(baseDir, databasePath);
+  } catch (cause) {
+    throw persistenceError(
+      "source_unavailable",
+      "Selected database requires separate native store qualification.",
+      cause,
+    );
+  }
+};
 
 const isErrno = (cause: unknown, code: string): boolean =>
   cause instanceof Error && "code" in cause && cause.code === code;
@@ -305,9 +325,11 @@ const hasNativeStoreAuthorityState = (authorityStateDir: string): boolean => {
  */
 export const fenceNativeStoreAuthorityForBaseDir = (
   baseDir: string,
+  databasePath: string,
 ): NativeStoreAuthorityState | null => {
   const authorityStateDir = nativeStoreAuthorityStateDirForBaseDir(baseDir);
   if (!hasNativeStoreAuthorityState(authorityStateDir)) return null;
+  requireNativeStoreAuthoritySelectedStoreForBaseDir(baseDir, databasePath);
   return fenceNativeStoreAuthority(authorityStateDir, readEnvironmentIdForBaseDir(baseDir));
 };
 
@@ -315,8 +337,14 @@ export const fenceNativeStoreAuthorityForBaseDir = (
 export const initializeNativeStoreAuthorityForBaseDir = (
   baseDir: string,
   requiredLauncherProtocol: number,
+  databasePath: string,
 ): NativeStoreAuthorityState => {
-  requireNativeStoreAuthorityLauncherProtocolForBaseDir(baseDir, requiredLauncherProtocol);
+  requireNativeStoreAuthorityLauncherProtocolForBaseDir(
+    baseDir,
+    requiredLauncherProtocol,
+    undefined,
+    databasePath,
+  );
   const state = initializeNativeStoreAuthority(
     nativeStoreAuthorityStateDirForBaseDir(baseDir),
     readEnvironmentIdForBaseDir(baseDir),
@@ -333,8 +361,10 @@ export const initializeNativeStoreAuthorityForBaseDir = (
 export const requireNativeStoreAuthorityLauncherProtocolForBaseDir = (
   baseDir: string,
   requiredLauncherProtocol: number,
-  runningVersion?: string,
+  runningVersion: string | undefined,
+  databasePath: string,
 ): void => {
+  requireNativeStoreAuthoritySelectedStoreForBaseDir(baseDir, databasePath);
   const statePath = NodePath.join(baseDir, "runtime", "service-state.json");
   let fd: number | undefined;
   try {
@@ -384,6 +414,7 @@ export const advanceNativeStoreAuthorityForBaseDir = (
 ): NativeStoreAuthorityState | null => {
   const authorityStateDir = nativeStoreAuthorityStateDirForBaseDir(baseDir);
   if (!hasNativeStoreAuthorityState(authorityStateDir)) return null;
+  requireNativeStoreAuthoritySelectedStoreForBaseDir(baseDir, databasePath);
   return advanceNativeStoreAuthority(
     authorityStateDir,
     readEnvironmentIdForBaseDir(baseDir),

@@ -1,621 +1,371 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
+import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  ApprovalRequestId,
-  CodexSettings,
-  ProviderDriverKind,
-  type OrchestrationEvent,
-  type OrchestrationThread,
-  type ProviderApprovalDecision,
+  CommandId, EventId, MessageId, ProjectId, ProviderDriverKind, ProviderInstanceId,
+  ProviderThreadId, ProviderTurnId, RuntimeRequestId, ThreadId, TurnItemId,
+  type OrchestrationV2ConversationMessage, type OrchestrationV2ProviderThread,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
-import * as Ref from "effect/Ref";
-import * as Schedule from "effect/Schedule";
-import * as Schema from "effect/Schema";
-import * as Scope from "effect/Scope";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import * as Tracer from "effect/Tracer";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import * as CheckpointStore from "../src/checkpointing/CheckpointStore.ts";
-import { TextGeneration } from "../src/textGeneration/TextGeneration.ts";
-import * as TerminalManager from "../src/terminal/Manager.ts";
-import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/Layers/OrchestrationCommandReceipts.ts";
-import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
-import { ProjectionPendingApprovalRepositoryLive } from "../src/persistence/Layers/ProjectionPendingApprovals.ts";
-import * as ProviderSessionRuntime from "../src/persistence/ProviderSessionRuntime.ts";
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
-import { ProjectionPendingApprovalRepository } from "../src/persistence/Services/ProjectionPendingApprovals.ts";
-import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
-import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
-import { makeProviderRegistryLayer } from "../src/provider/testUtils/providerRegistryMock.ts";
-import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
-import { ServerSettingsService } from "../src/serverSettings.ts";
-import * as StorageCleanup from "../src/storageCleanup.ts";
-import { makeProviderServiceLive } from "../src/provider/Layers/ProviderService.ts";
-import { makeCodexAdapter } from "../src/provider/Layers/CodexAdapter.ts";
-import {
-  NoOpProviderEventLoggers,
-  ProviderEventLoggers,
-} from "../src/provider/Layers/ProviderEventLoggers.ts";
-import { ProviderService } from "../src/provider/Services/ProviderService.ts";
-import { ProviderAuthService } from "../src/provider/Services/ProviderAuthService.ts";
-import { AnalyticsService } from "../src/telemetry/AnalyticsService.ts";
-import { CheckpointReactorLive } from "../src/orchestration/Layers/CheckpointReactor.ts";
-import * as RepositoryIdentityResolver from "../src/project/RepositoryIdentityResolver.ts";
-import { OrchestrationEngineLive } from "../src/orchestration/Layers/OrchestrationEngine.ts";
-import { OrchestrationProjectionPipelineLive } from "../src/orchestration/Layers/ProjectionPipeline.ts";
-import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/Layers/ProjectionSnapshotQuery.ts";
-import * as ThreadBackgroundLiveness from "../src/orchestration/ThreadBackgroundLiveness.ts";
-import * as ThreadPlanProgress from "../src/orchestration/ThreadPlanProgress.ts";
-import { RuntimeReceiptBusTest } from "../src/orchestration/Layers/RuntimeReceiptBus.ts";
-import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
-import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
-import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
-import { CheckpointReactor } from "../src/orchestration/Services/CheckpointReactor.ts";
-import { ProviderRuntimeIngestionService } from "../src/orchestration/Services/ProviderRuntimeIngestion.ts";
-import {
-  OrchestrationEngineService,
-  type OrchestrationEngineShape,
-} from "../src/orchestration/Services/OrchestrationEngine.ts";
-import { ThreadDeletionReactor } from "../src/orchestration/Services/ThreadDeletionReactor.ts";
-import * as ThreadSettlementReactor from "../src/orchestration/ThreadSettlementReactor.ts";
-import * as PullRequestSyncReactor from "../src/orchestration/PullRequestSyncReactor.ts";
-import * as ThreadPullRequestReactor from "../src/orchestration/ThreadPullRequestReactor.ts";
-import { OrchestrationReactor } from "../src/orchestration/Services/OrchestrationReactor.ts";
-import { ProjectionSnapshotQuery } from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
-import {
-  RuntimeReceiptBus,
-  type OrchestrationRuntimeReceipt,
-} from "../src/orchestration/Services/RuntimeReceiptBus.ts";
+import { ClaudeProviderCapabilitiesV2 } from "../src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { CodexProviderCapabilitiesV2 } from "../src/orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as EffectWorker from "../src/orchestration-v2/EffectWorker.ts";
+import * as EffectOutbox from "../src/orchestration-v2/EffectOutbox.ts";
+import * as EventSink from "../src/orchestration-v2/EventSink.ts";
+import * as Orchestrator from "../src/orchestration-v2/Orchestrator.ts";
+import * as ProjectStore from "../src/orchestration-v2/ProjectStore.ts";
+import * as ProviderAdapter from "../src/orchestration-v2/ProviderAdapter.ts";
+import * as ProviderAdapterRegistry from "../src/orchestration-v2/ProviderAdapterRegistry.ts";
+import { makeOrchestratorV2ReplayLayerWithRegistry } from "../src/orchestration-v2/testkit/ProviderReplayHarness.ts";
 
-import {
-  makeTestProviderAdapterHarness,
-  type TestProviderAdapterHarness,
-} from "./TestProviderAdapter.integration.ts";
-import { deriveServerPaths, ServerConfig } from "../src/config.ts";
-import * as WorkspaceEntries from "../src/workspace/WorkspaceEntries.ts";
-import * as WorkspacePaths from "../src/workspace/WorkspacePaths.ts";
-import * as VcsDriverRegistry from "../src/vcs/VcsDriverRegistry.ts";
-import { VcsStatusBroadcaster } from "../src/vcs/VcsStatusBroadcaster.ts";
-import { GitWorkflowService } from "../src/git/GitWorkflowService.ts";
-import * as VcsProcess from "../src/vcs/VcsProcess.ts";
-import * as AgentAwarenessRelay from "../src/relay/AgentAwarenessRelay.ts";
-import * as PullRequestService from "../src/pullRequest/PullRequestService.ts";
-
-const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
-
-function runGit(cwd: string, args: ReadonlyArray<string>) {
-  return NodeChildProcess.execFileSync("git", args, {
-    cwd,
-    stdio: ["ignore", "pipe", "pipe"],
-    encoding: "utf8",
-  });
+export interface LocalTurn {
+  readonly text: string;
+  readonly contents?: string;
+  readonly approval?: boolean;
+  readonly fail?: boolean;
 }
 
-const initializeGitWorkspace = Effect.fn(function* (cwd: string) {
-  runGit(cwd, ["init", "--initial-branch=main"]);
-  runGit(cwd, ["config", "user.email", "test@example.com"]);
-  runGit(cwd, ["config", "user.name", "Test User"]);
-  const fileSystem = yield* FileSystem.FileSystem;
-  const { join } = yield* Path.Path;
-  yield* fileSystem.writeFileString(join(cwd, "README.md"), "v1\n");
-  runGit(cwd, ["add", "."]);
-  runGit(cwd, ["commit", "-m", "Initial"]);
-});
+function git(cwd: string, args: readonly string[]): string {
+  const environment = Object.fromEntries(Object.entries(process.env)
+    .filter(([name]) => !name.startsWith("GIT_")));
+  return NodeChildProcess.execFileSync("git", [...args], {
+    cwd, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...environment, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+  }).trimEnd();
+}
 
 export function gitRefExists(cwd: string, ref: string): boolean {
   try {
-    runGit(cwd, ["show-ref", "--verify", "--quiet", ref]);
+    git(cwd, ["show-ref", "--verify", "--quiet", ref]);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if ((error as { readonly status?: number }).status === 1) return false;
+    throw error;
   }
 }
 
-export function gitShowFileAtRef(cwd: string, ref: string, filePath: string): string {
-  return runGit(cwd, ["show", `${ref}:${filePath}`]);
+export function gitShowFileAtRef(cwd: string, ref: string, file: string): string {
+  return git(cwd, ["show", `${ref}:${file}`]) + "\n";
 }
 
-class WaitForTimeoutError extends Schema.TaggedError<WaitForTimeoutError>()("WaitForTimeoutError", {
-  description: Schema.String,
-}) {}
-
-function waitFor<A, E>(
-  read: Effect.Effect<A, E>,
-  predicate: (value: A) => boolean,
-  description: string,
-  timeoutMs?: number,
-): Effect.Effect<A, never>;
-function waitFor<A, B extends A, E>(
-  read: Effect.Effect<A, E>,
-  predicate: (value: A) => value is B,
-  description: string,
-  timeoutMs?: number,
-): Effect.Effect<B, never>;
-function waitFor<A, E>(
-  read: Effect.Effect<A, E>,
-  predicate: (value: A) => boolean,
-  description: string,
-  timeoutMs = 40_000,
-): Effect.Effect<A, never> {
-  const RETRY_SIGNAL = "wait_for_retry";
-  const retryIntervalMs = 10;
-  const maxRetries = Math.max(0, Math.floor(timeoutMs / retryIntervalMs));
-  const retrySchedule = Schedule.spaced(`${retryIntervalMs} millis`);
-
-  return read.pipe(
-    Effect.filterOrFail(predicate, () => RETRY_SIGNAL),
-    Effect.retry({
-      schedule: retrySchedule,
-      times: maxRetries,
-      while: (error) => error === RETRY_SIGNAL,
-    }),
-    Effect.mapError((error) =>
-      error === RETRY_SIGNAL ? new WaitForTimeoutError({ description }) : error,
-    ),
-    Effect.orDie,
-  );
-}
-
-class OrchestrationHarnessRuntimeError extends Schema.TaggedError<OrchestrationHarnessRuntimeError>()(
-  "OrchestrationHarnessRuntimeError",
-  {
-    operation: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {}
-
-const tryRuntimePromise = <A>(operation: string, run: () => Promise<A>) =>
-  Effect.tryPromise({
-    try: run,
-    catch: (cause) => new OrchestrationHarnessRuntimeError({ operation, cause }),
-  });
-
-export interface OrchestrationIntegrationHarness {
-  readonly rootDir: string;
-  readonly workspaceDir: string;
-  readonly dbPath: string;
-  readonly adapterHarness: TestProviderAdapterHarness | null;
-  readonly engine: OrchestrationEngineShape;
-  readonly snapshotQuery: ProjectionSnapshotQuery["Service"];
-  readonly providerService: ProviderService["Service"];
-  readonly checkpointStore: CheckpointStore.CheckpointStore["Service"];
-  readonly pendingApprovalRepository: ProjectionPendingApprovalRepository["Service"];
-  readonly waitForThread: (
-    threadId: string,
-    predicate: (thread: OrchestrationThread) => boolean,
-    timeoutMs?: number,
-  ) => Effect.Effect<OrchestrationThread, never>;
-  readonly waitForDomainEvent: (
-    predicate: (event: OrchestrationEvent) => boolean,
-    timeoutMs?: number,
-  ) => Effect.Effect<ReadonlyArray<OrchestrationEvent>, never>;
-  readonly waitForPendingApproval: (
-    requestId: string,
-    predicate: (row: {
-      readonly status: "pending" | "resolved";
-      readonly decision: ProviderApprovalDecision | null;
-      readonly resolvedAt: string | null;
-    }) => boolean,
-    timeoutMs?: number,
-  ) => Effect.Effect<
-    {
-      readonly status: "pending" | "resolved";
-      readonly decision: ProviderApprovalDecision | null;
-      readonly resolvedAt: string | null;
-    },
-    never
-  >;
-  readonly waitForReceipt: {
-    (
-      predicate: (receipt: OrchestrationRuntimeReceipt) => boolean,
-      timeoutMs?: number,
-    ): Effect.Effect<OrchestrationRuntimeReceipt, never>;
-    <Receipt extends OrchestrationRuntimeReceipt>(
-      predicate: (receipt: OrchestrationRuntimeReceipt) => receipt is Receipt,
-      timeoutMs?: number,
-    ): Effect.Effect<Receipt, never>;
-  };
-  readonly drainProviderRuntime: Effect.Effect<void>;
-  readonly drainCheckpointReactor: Effect.Effect<void>;
-  readonly dispose: Effect.Effect<void, never>;
-}
-
-interface MakeOrchestrationIntegrationHarnessOptions {
-  readonly provider?: ProviderDriverKind;
-  readonly realCodex?: boolean;
-  /** Tracer for every fiber the harness runtime runs, including reactors. */
-  readonly tracer?: Tracer.Tracer;
-}
-
-export const makeOrchestrationIntegrationHarness = (
-  options?: MakeOrchestrationIntegrationHarnessOptions,
-) =>
-  Effect.gen(function* () {
-    const path = yield* Path.Path;
-    const fileSystem = yield* FileSystem.FileSystem;
-
-    const provider = options?.provider ?? ProviderDriverKind.make("codex");
-    const useRealCodex = options?.realCodex === true;
-    const adapterHarness = useRealCodex
-      ? null
-      : yield* makeTestProviderAdapterHarness({
-          provider,
-        });
-    const fakeRegistry = adapterHarness
-      ? Layer.succeed(
-          ProviderAdapterRegistry,
-          makeAdapterRegistryMock({ [adapterHarness.provider]: adapterHarness.adapter }),
-        )
-      : null;
-    const rootDir = yield* fileSystem.makeTempDirectoryScoped({
-      prefix: "t3-orchestration-integration-",
-    });
-    const repositoryDir = path.join(rootDir, "repository");
-    const workspaceDir = path.join(rootDir, "workspace");
-    const { stateDir, dbPath } = yield* deriveServerPaths(rootDir, undefined).pipe(
-      Effect.provideService(Path.Path, path),
-    );
-    yield* fileSystem.makeDirectory(repositoryDir, { recursive: true });
-    yield* fileSystem.makeDirectory(stateDir, { recursive: true });
-    yield* initializeGitWorkspace(repositoryDir);
-    runGit(repositoryDir, ["worktree", "add", "-b", "checkpoint-tests", workspaceDir]);
-
-    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
-    const orchestrationLayer = OrchestrationEngineLive.pipe(
-      Layer.provide(OrchestrationProjectionPipelineLive),
-      Layer.provide(OrchestrationEventStoreLive),
-      Layer.provide(OrchestrationCommandReceiptRepositoryLive),
-    );
-    const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
-      Layer.provide(ProviderSessionRuntime.layer),
-    );
-    const realCodexRegistry = Layer.effect(
-      ProviderAdapterRegistry,
-      Effect.gen(function* () {
-        const codexSettings = yield* decodeCodexSettings({});
-        const codexAdapter = yield* makeCodexAdapter(codexSettings);
-        return makeAdapterRegistryMock({
-          [ProviderDriverKind.make("codex")]: codexAdapter,
-        });
-      }),
-    ).pipe(
-      Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
-      Layer.provideMerge(NodeServices.layer),
-      Layer.provideMerge(providerSessionDirectoryLayer),
-    );
-    const providerEventLoggersLayer = Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers);
-    const providerLayer = useRealCodex
-      ? makeProviderServiceLive().pipe(
-          Layer.provide(providerSessionDirectoryLayer),
-          Layer.provide(realCodexRegistry),
-          Layer.provide(AnalyticsService.layerTest),
-          Layer.provide(providerEventLoggersLayer),
-        )
-      : makeProviderServiceLive().pipe(
-          Layer.provide(providerSessionDirectoryLayer),
-          Layer.provide(fakeRegistry!),
-          Layer.provide(AnalyticsService.layerTest),
-          Layer.provide(providerEventLoggersLayer),
-        );
-    const providerRegistryLayer = makeProviderRegistryLayer();
-
-    const checkpointStoreLayer = CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer));
-    const projectionSnapshotQueryLayer = OrchestrationProjectionSnapshotQueryLive;
-    const runtimeServicesLayer = Layer.mergeAll(
-      projectionSnapshotQueryLayer,
-      orchestrationLayer.pipe(Layer.provide(projectionSnapshotQueryLayer)),
-      ProjectionPendingApprovalRepositoryLive,
-      checkpointStoreLayer,
-      providerLayer,
-      RuntimeReceiptBusTest,
-    ).pipe(
-      Layer.provideMerge(ThreadBackgroundLiveness.layer),
-      Layer.provideMerge(ThreadPlanProgress.layer),
-    );
-    const serverSettingsLayer = ServerSettingsService.layerTest();
-    const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
-      Layer.provideMerge(runtimeServicesLayer),
-      Layer.provideMerge(serverSettingsLayer),
-    );
-    const gitWorkflowLayer = Layer.mock(GitWorkflowService)({
-      renameBranch: (input: {
-        readonly cwd: string;
-        readonly oldBranch: string;
-        readonly newBranch: string;
-      }) => Effect.succeed({ branch: input.newBranch }),
-    });
-    const textGenerationLayer = Layer.succeed(TextGeneration, {
-      generateBranchName: () => Effect.succeed({ branch: "update" }),
-      generateThreadTitle: () => Effect.succeed({ title: "New thread" }),
-    } as unknown as TextGeneration["Service"]);
-    const providerCommandReactorLayer = ProviderCommandReactorLive.pipe(
-      Layer.provide(
-        Layer.mock(ProviderAuthService)({
-          tryHandlePromptCommand: () => Effect.succeed(false),
-        }),
-      ),
-      Layer.provide(Layer.mock(TerminalManager.TerminalManager)({ closeIdle: () => Effect.void })),
-      Layer.provideMerge(runtimeServicesLayer),
-      Layer.provideMerge(gitWorkflowLayer),
-      Layer.provideMerge(textGenerationLayer),
-      Layer.provideMerge(serverSettingsLayer),
-    );
-    const checkpointReactorLayer = CheckpointReactorLive.pipe(
-      Layer.provideMerge(runtimeServicesLayer),
-      Layer.provideMerge(
-        Layer.mock(PullRequestService.PullRequestService)({
-          refreshAfterTurn: () => Effect.void,
-        }),
-      ),
-      Layer.provideMerge(
-        Layer.succeed(VcsStatusBroadcaster, {
-          getStatus: () => Effect.die("getStatus should not be called in this test"),
-          refreshLocalStatus: () =>
-            Effect.succeed({
-              isRepo: true,
-              hasPrimaryRemote: false,
-              isDefaultRef: true,
-              refName: "main",
-              hasWorkingTreeChanges: false,
-              workingTree: { files: [], insertions: 0, deletions: 0 },
-            }),
-          refreshStatus: () => Effect.die("refreshStatus should not be called in this test"),
-          refreshPullRequestStatus: () =>
-            Effect.die("refreshPullRequestStatus should not be called in this test"),
-          streamStatus: () => Stream.empty,
-        }),
-      ),
-      Layer.provideMerge(
-        WorkspaceEntries.layer.pipe(
-          Layer.provide(WorkspacePaths.layer),
-          Layer.provideMerge(VcsDriverRegistry.layer),
-          Layer.provide(NodeServices.layer),
-        ),
-      ),
-      Layer.provideMerge(WorkspacePaths.layer),
-      Layer.provideMerge(VcsProcess.layer),
-    );
-    const orchestrationReactorLayer = OrchestrationReactorLive.pipe(
-      Layer.provideMerge(
-        Layer.succeed(StorageCleanup.StorageCleanup, {
-          start: () => Effect.void,
-          drain: Effect.void,
-        }),
-      ),
-      Layer.provideMerge(runtimeIngestionLayer),
-      Layer.provideMerge(providerCommandReactorLayer),
-      Layer.provideMerge(checkpointReactorLayer),
-      Layer.provideMerge(
-        Layer.succeed(ThreadDeletionReactor, {
-          start: () => Effect.void,
-          drainThrough: () => Effect.void,
-        }),
-      ),
-      Layer.provideMerge(
-        Layer.succeed(ThreadPullRequestReactor.ThreadPullRequestReactor, {
-          start: () => Effect.void,
-          drain: Effect.void,
-        }),
-      ),
-      Layer.provideMerge(
-        Layer.succeed(ThreadSettlementReactor.ThreadSettlementReactor, {
-          start: () => Effect.void,
-          drain: Effect.void,
-        }),
-      ),
-      Layer.provideMerge(
-        Layer.succeed(PullRequestSyncReactor.PullRequestSyncReactor, {
-          start: () => Effect.void,
-          drain: Effect.void,
-          requestSync: () => Effect.void,
-        }),
-      ),
-      Layer.provideMerge(
-        Layer.succeed(AgentAwarenessRelay.AgentAwarenessRelay, {
-          publishThread: () => Effect.void,
-          requestCatchUp: () => Effect.void,
-          start: () => Effect.void,
-        }),
-      ),
-    );
-    const layer = Layer.empty.pipe(
-      Layer.provideMerge(runtimeServicesLayer),
-      Layer.provideMerge(orchestrationReactorLayer),
-      Layer.provideMerge(providerRegistryLayer),
-      Layer.provide(persistenceLayer),
-      Layer.provideMerge(RepositoryIdentityResolver.layer),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
-      Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
-      Layer.provideMerge(NodeServices.layer),
-      Layer.provideMerge(
-        options?.tracer ? Layer.succeed(Tracer.Tracer, options.tracer) : Layer.empty,
-      ),
-    );
-
-    const runtime = ManagedRuntime.make(layer);
-    const engine = yield* tryRuntimePromise("load OrchestrationEngine service", () =>
-      runtime.runPromise(Effect.service(OrchestrationEngineService)),
-    ).pipe(Effect.orDie);
-    const reactor = yield* tryRuntimePromise("load OrchestrationReactor service", () =>
-      runtime.runPromise(Effect.service(OrchestrationReactor)),
-    ).pipe(Effect.orDie);
-    const providerRuntimeIngestion = yield* tryRuntimePromise(
-      "load ProviderRuntimeIngestion service",
-      () => runtime.runPromise(Effect.service(ProviderRuntimeIngestionService)),
-    ).pipe(Effect.orDie);
-    const checkpointReactor = yield* tryRuntimePromise("load CheckpointReactor service", () =>
-      runtime.runPromise(Effect.service(CheckpointReactor)),
-    ).pipe(Effect.orDie);
-    const snapshotQuery = yield* tryRuntimePromise("load ProjectionSnapshotQuery service", () =>
-      runtime.runPromise(Effect.service(ProjectionSnapshotQuery)),
-    ).pipe(Effect.orDie);
-    const providerService = yield* tryRuntimePromise("load ProviderService service", () =>
-      runtime.runPromise(Effect.service(ProviderService)),
-    ).pipe(Effect.orDie);
-    const checkpointStore = yield* tryRuntimePromise("load CheckpointStore service", () =>
-      runtime.runPromise(Effect.service(CheckpointStore.CheckpointStore)),
-    ).pipe(Effect.orDie);
-    const pendingApprovalRepository = yield* tryRuntimePromise(
-      "load ProjectionPendingApprovalRepository service",
-      () => runtime.runPromise(Effect.service(ProjectionPendingApprovalRepository)),
-    ).pipe(Effect.orDie);
-    const runtimeReceiptBus = yield* tryRuntimePromise("load RuntimeReceiptBus service", () =>
-      runtime.runPromise(Effect.service(RuntimeReceiptBus)),
-    ).pipe(Effect.orDie);
-
-    const scope = yield* Scope.make("sequential");
-    yield* tryRuntimePromise("start OrchestrationReactor", () =>
-      runtime.runPromise(reactor.start().pipe(Scope.provide(scope))),
-    ).pipe(Effect.orDie);
-    const receiptHistory = yield* Ref.make<ReadonlyArray<OrchestrationRuntimeReceipt>>([]);
-    yield* Stream.runForEach(runtimeReceiptBus.streamEventsForTest, (receipt) =>
-      Ref.update(receiptHistory, (history) => [...history, receipt]).pipe(Effect.asVoid),
-    ).pipe(Effect.forkIn(scope));
-    yield* Effect.sleep(10);
-
-    const waitForThread: OrchestrationIntegrationHarness["waitForThread"] = (
-      threadId,
-      predicate,
-      timeoutMs,
-    ) =>
-      waitFor(
-        snapshotQuery
-          .getSnapshot()
-          .pipe(
-            Effect.map(
-              (snapshot) => snapshot.threads.find((thread) => thread.id === threadId) ?? null,
-            ),
-          ),
-        (thread): thread is OrchestrationThread => thread !== null && predicate(thread),
-        `projected thread '${threadId}'`,
-        timeoutMs,
-      ) as Effect.Effect<OrchestrationThread, never>;
-
-    const waitForDomainEvent: OrchestrationIntegrationHarness["waitForDomainEvent"] = (
-      predicate,
-      timeoutMs,
-    ) =>
-      waitFor(
-        Stream.runCollect(engine.readEvents(0)).pipe(
-          Effect.map((chunk): ReadonlyArray<OrchestrationEvent> => Array.from(chunk)),
-        ),
-        (events) => events.some(predicate),
-        "domain event",
-        timeoutMs,
-      );
-
-    const waitForPendingApproval: OrchestrationIntegrationHarness["waitForPendingApproval"] = (
-      requestId,
-      predicate,
-      timeoutMs,
-    ) =>
-      waitFor(
-        pendingApprovalRepository
-          .getByRequestId({ requestId: ApprovalRequestId.make(requestId) })
-          .pipe(
-            Effect.map((row) =>
-              Option.match(row, {
-                onNone: () => null,
-                onSome: (value) => ({
-                  status: value.status,
-                  decision: value.decision,
-                  resolvedAt: value.resolvedAt,
-                }),
-              }),
-            ),
-          ),
-        (
-          row,
-        ): row is {
-          readonly status: "pending" | "resolved";
-          readonly decision: ProviderApprovalDecision | null;
-          readonly resolvedAt: string | null;
-        } => row !== null && predicate(row),
-        `pending approval '${requestId}'`,
-        timeoutMs,
-      ) as Effect.Effect<
-        {
-          readonly status: "pending" | "resolved";
-          readonly decision: ProviderApprovalDecision | null;
-          readonly resolvedAt: string | null;
-        },
-        never
-      >;
-
-    function waitForReceipt(
-      predicate: (receipt: OrchestrationRuntimeReceipt) => boolean,
-      timeoutMs?: number,
-    ): Effect.Effect<OrchestrationRuntimeReceipt, never>;
-    function waitForReceipt<Receipt extends OrchestrationRuntimeReceipt>(
-      predicate: (receipt: OrchestrationRuntimeReceipt) => receipt is Receipt,
-      timeoutMs?: number,
-    ): Effect.Effect<Receipt, never>;
-    function waitForReceipt(
-      predicate: (receipt: OrchestrationRuntimeReceipt) => boolean,
-      timeoutMs?: number,
-    ) {
-      const readMatchingReceipt = Ref.get(receiptHistory).pipe(
-        Effect.map((history) => history.find(predicate)),
-      );
-
-      return waitFor(
-        readMatchingReceipt,
-        (receipt): receipt is OrchestrationRuntimeReceipt => receipt !== undefined,
-        "runtime receipt",
-        timeoutMs,
-      );
+export const makeOrchestrationIntegrationHarness = Effect.fn("makeOrchestrationIntegrationHarness")(
+  function* (driverName: "codex" | "claudeAgent") {
+    const fs = yield* FileSystem.FileSystem;
+    // The focused runner routes Node's scoped temporary directories to its
+    // unique disk-backed TMPDIR and removes the invocation root after exit.
+    const scratch = process.env.TMPDIR;
+    if (scratch === undefined || !NodePath.isAbsolute(scratch) ||
+        scratch === "/tmp" || scratch.startsWith("/tmp/")) {
+      return yield* Effect.die("Run this fixture with a unique disk-backed TMPDIR.");
     }
-
-    let disposed = false;
-    const dispose = Effect.gen(function* () {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-
-      const shutdown = Effect.gen(function* () {
-        const closeScopeExit = yield* Effect.exit(Scope.close(scope, Exit.void));
-        const disposeRuntimeExit = yield* Effect.exit(Effect.promise(() => runtime.dispose()));
-
-        const failureCause = Exit.isFailure(closeScopeExit)
-          ? closeScopeExit.cause
-          : Exit.isFailure(disposeRuntimeExit)
-            ? disposeRuntimeExit.cause
-            : null;
-
-        if (failureCause) {
-          return yield* Effect.failCause(failureCause);
-        }
-      });
-
-      yield* shutdown;
+    // Register the captured root's cleanup before any Git or database acquisition.
+    const root = yield* fs.makeTempDirectoryScoped({ directory: scratch, prefix: "t3-engine-v2-" });
+    const repositoryDir = NodePath.join(root, "repository");
+    const workspaceDir = NodePath.join(root, "linked-worktree");
+    yield* fs.makeDirectory(repositoryDir);
+    yield* Effect.sync(() => {
+      git(repositoryDir, ["init", "--initial-branch=main"]);
+      git(repositoryDir, ["config", "user.name", "T3 Integration"]);
+      git(repositoryDir, ["config", "user.email", "integration@example.invalid"]);
+    });
+    yield* fs.writeFileString(NodePath.join(repositoryDir, "README.md"), "v1\n");
+    yield* Effect.sync(() => {
+      git(repositoryDir, ["add", "README.md"]);
+      git(repositoryDir, ["commit", "-m", "fixture baseline"]);
+      git(repositoryDir, ["worktree", "add", "-b", "fixture-linked", workspaceDir]);
     });
 
+    const driver = ProviderDriverKind.make(driverName);
+    const instanceId = ProviderInstanceId.make(driverName);
+    const capabilities = driverName === "claudeAgent"
+      ? ClaudeProviderCapabilitiesV2 : CodexProviderCapabilitiesV2;
+    const modelSelection = { instanceId, model: "local-fixture" };
+    const threadId = ThreadId.make("thread:linked-worktree");
+    const projectId = ProjectId.make("project:engine-fixture");
+    const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+    yield* Effect.addFinalizer(() => Queue.shutdown(events));
+    const scripts: LocalTurn[] = [];
+    const started: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
+    const approvalResponses: ProviderAdapter.ProviderAdapterV2RuntimeRequestResponseInput[] = [];
+    const rollbackCalls: ProviderAdapter.ProviderAdapterV2RollbackThreadInput[] = [];
+    const stages: string[] = [];
+    let openedRuntimeCount = 0;
+    let messages: OrchestrationV2ConversationMessage[] = [];
+    let providerTurns: OrchestrationV2ProviderTurn[] = [];
+    const pending = new Map<RuntimeRequestId, Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>>();
+
+    const adapter: ProviderAdapter.ProviderAdapterV2Shape = {
+      instanceId, driver,
+      getCapabilities: () => Effect.succeed(capabilities),
+      planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+      openSession: (input) => Effect.gen(function* () {
+        stages.push("session.open");
+        // Correlate this actual local runtime closure; this is no process or
+        // qualification attestation. It stays immutable for the open's lifetime.
+        const runtimeGeneration = `local-runtime:${driverName}:${++openedRuntimeCount}`;
+        const now = yield* DateTime.now;
+        return {
+          instanceId, driver, providerSessionId: input.providerSessionId, runtimeGeneration,
+          providerSession: {
+            id: input.providerSessionId, driver, providerInstanceId: instanceId,
+            status: "ready", cwd: workspaceDir, model: modelSelection.model,
+            capabilities, createdAt: now, updatedAt: now, lastError: null,
+          },
+          events: Stream.fromQueue(events),
+          ensureThread: (selection) => Effect.sync(() => {
+            stages.push("thread.ensure");
+            const localThread: OrchestrationV2ProviderThread = selection.existingProviderThread ?? {
+              id: ProviderThreadId.make(`provider:${selection.threadId}`), driver,
+              providerInstanceId: instanceId, providerSessionId: input.providerSessionId,
+              appThreadId: selection.threadId, ownerNodeId: null, nativeThreadRef: null,
+              nativeConversationHeadRef: null, status: "idle", firstRunOrdinal: null,
+              lastRunOrdinal: null, handoffIds: [], forkedFrom: null, createdAt: now, updatedAt: now,
+            };
+            // Adopt the persisted placeholder's row rather than returning it
+            // uninitialized or allocating a second application provider row.
+            return {
+              ...localThread, appThreadId: selection.threadId,
+              providerSessionId: input.providerSessionId,
+              nativeThreadRef: localThread.nativeThreadRef ?? {
+                driver, nativeId: `local:${selection.threadId}`, strength: "strong",
+              },
+            } satisfies OrchestrationV2ProviderThread;
+          }),
+          resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+          startTurn: (turn) => Effect.gen(function* () {
+            stages.push("turn.start");
+            const script = scripts.shift();
+            if (script === undefined || turn.runtimePolicy.cwd !== workspaceDir) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver, detail: "The local tool received an unexpected script or workspace.",
+              });
+            }
+            started.push(turn);
+            const startedAt = yield* DateTime.now;
+            messages.push({
+              id: turn.message.messageId, threadId: turn.threadId, runId: turn.runId,
+              nodeId: turn.rootNodeId, role: "user", text: turn.message.text,
+              attachments: turn.message.attachments, streaming: false,
+              createdAt: startedAt, updatedAt: startedAt,
+              createdBy: turn.message.createdBy, creationSource: turn.message.creationSource,
+            });
+            const providerTurn: OrchestrationV2ProviderTurn = {
+              id: ProviderTurnId.make(`turn:${turn.attemptId}`),
+              providerThreadId: turn.providerThread.id, nodeId: turn.rootNodeId,
+              runAttemptId: turn.attemptId, ordinal: turn.providerTurnOrdinal,
+              nativeTurnRef: { driver, nativeId: `local-turn:${turn.attemptId}`, strength: "strong" },
+              status: "running", startedAt, completedAt: null,
+            };
+            yield* Queue.offer(events, { type: "provider_turn.updated", driver, providerTurn });
+            const finish = Effect.gen(function* () {
+              const completedAt = yield* DateTime.now;
+              if (script.contents !== undefined) {
+                const file = NodePath.join(workspaceDir, "README.md");
+                const oldStr = yield* fs.readFileString(file);
+                yield* fs.writeFileString(file, script.contents);
+                yield* Queue.offer(events, {
+                  type: "turn_item.updated", driver,
+                  turnItem: {
+                    id: TurnItemId.make(`edit:${turn.attemptId}`), threadId: turn.threadId,
+                    runId: turn.runId, nodeId: turn.rootNodeId, providerThreadId: turn.providerThread.id,
+                    providerTurnId: providerTurn.id, nativeItemRef: null, parentItemId: null,
+                    ordinal: turn.runOrdinal * 100 + 1, status: "completed", title: "Edit README",
+                    startedAt, completedAt, updatedAt: completedAt, type: "file_change",
+                    fileName: "README.md", oldStr, newStr: script.contents,
+                  },
+                });
+              }
+              const message: OrchestrationV2ConversationMessage = {
+                id: MessageId.make(`assistant:${turn.attemptId}`), threadId: turn.threadId,
+                runId: turn.runId, nodeId: turn.rootNodeId, role: "assistant", text: script.text,
+                attachments: [], streaming: false, createdAt: startedAt, updatedAt: completedAt,
+                createdBy: "agent", creationSource: "provider",
+              };
+              messages.push(message);
+              yield* Queue.offer(events, { type: "message.updated", driver, message });
+              // V2 orders conversation messages by their companion turn items.
+              // Emit the same assistant item shape used by both real adapters.
+              yield* Queue.offer(events, {
+                type: "turn_item.updated", driver,
+                turnItem: {
+                  id: TurnItemId.make(`assistant-item:${turn.attemptId}`),
+                  threadId: turn.threadId, runId: turn.runId, nodeId: turn.rootNodeId,
+                  providerThreadId: turn.providerThread.id, providerTurnId: providerTurn.id,
+                  nativeItemRef: null, parentItemId: null, ordinal: turn.runOrdinal * 100 + 2,
+                  status: "completed", title: null, startedAt, completedAt, updatedAt: completedAt,
+                  type: "assistant_message", messageId: message.id, text: message.text, streaming: false,
+                },
+              });
+              const terminalTurn = {
+                ...providerTurn, status: script.fail ? "failed" as const : "completed" as const,
+                completedAt,
+              };
+              providerTurns.push(terminalTurn);
+              stages.push(`turn.terminal.enqueued:${terminalTurn.status}`);
+              yield* Queue.offer(events, { type: "provider_turn.updated", driver, providerTurn: terminalTurn });
+              yield* Queue.offer(events, script.fail ? {
+                type: "turn.terminal", driver, providerThreadId: turn.providerThread.id,
+                providerTurnId: providerTurn.id, runOrdinal: turn.runOrdinal,
+                failureItemOrdinal: turn.runOrdinal * 100 + 3, status: "failed",
+                failure: { class: "provider_error", message: "Local fixture failure", code: "fixture", retryable: false },
+                threadDisposition: "reusable",
+              } : {
+                type: "turn.terminal", driver, providerThreadId: turn.providerThread.id,
+                providerTurnId: providerTurn.id, runOrdinal: turn.runOrdinal, status: "completed",
+                failure: null, threadDisposition: "reusable",
+              });
+            }).pipe(Effect.mapError((cause) => new ProviderAdapter.ProviderAdapterProtocolError({
+              driver, detail: "The bounded local tool failed.", cause,
+            })));
+            if (!script.approval) return yield* finish;
+            const requestId = RuntimeRequestId.make(`approval:${turn.attemptId}`);
+            pending.set(requestId, finish);
+            stages.push("approval.enqueued");
+            yield* Queue.offer(events, {
+              type: "runtime_request.updated", driver, threadId: turn.threadId,
+              runtimeRequest: {
+                id: requestId, nodeId: turn.rootNodeId, providerTurnId: providerTurn.id,
+                nativeRequestRef: { driver, nativeId: requestId, strength: "strong" },
+                kind: "file-change", status: "pending",
+                responseCapability: { type: "live", providerSessionId: input.providerSessionId },
+                createdAt: startedAt, resolvedAt: null,
+              },
+            });
+          }),
+          steerTurn: () => Effect.die("This fixture does not steer turns."),
+          interruptTurn: () => Effect.die("This fixture does not interrupt turns."),
+          respondToRuntimeRequest: (response) => Effect.gen(function* () {
+            approvalResponses.push(response);
+            const finish = pending.get(response.requestId);
+            if (finish === undefined || response.decision !== "accept") {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({ driver, detail: "Unexpected approval response." });
+            }
+            pending.delete(response.requestId);
+            yield* finish;
+          }),
+          readThreadSnapshot: ({ providerThread }) => Effect.succeed({
+            providerThread, providerTurns, messages, runtimeRequests: [],
+          }),
+          rollbackThread: (rollback) => Effect.sync(() => {
+            rollbackCalls.push(rollback);
+            const retained = new Set(started.filter((turn) => turn.runOrdinal <= rollback.target.appRunOrdinal)
+              .map((turn) => turn.runId));
+            messages = messages.filter((message) => message.runId !== null && retained.has(message.runId));
+            providerTurns = providerTurns.filter((turn) => turn.ordinal <= rollback.target.appRunOrdinal);
+            return {
+              providerThread: { ...rollback.providerThread, status: "idle" as const,
+                lastRunOrdinal: rollback.target.appRunOrdinal === 0 ? null : rollback.target.appRunOrdinal },
+              providerTurns, messages, runtimeRequests: [],
+            };
+          }),
+          forkThread: () => Effect.die("This fixture does not fork provider conversations."),
+        } satisfies ProviderAdapter.ProviderAdapterV2SessionRuntime;
+      }),
+    };
+
+    const databaseLayer = makeSqlitePersistenceLive(NodePath.join(root, "state.sqlite"))
+      .pipe(Layer.provide(NodeServices.layer));
+    const replayLayer = makeOrchestratorV2ReplayLayerWithRegistry(
+      { name: `linked-engine-${driverName}` }, ProviderAdapterRegistry.makeSingleLayer(adapter),
+      { databaseLayer, runEffectWorker: false },
+    );
+    const context = yield* Layer.build(Layer.mergeAll(replayLayer, databaseLayer,
+      ProjectStore.layer.pipe(Layer.provide(databaseLayer))));
+    const orchestrator = Context.get(context, Orchestrator.OrchestratorV2);
+    const worker = Context.get(context, EffectWorker.OrchestrationEffectWorkerV2);
+    const sink = Context.get(context, EventSink.EventSinkV2);
+    const outbox = Context.get(context, EffectOutbox.EffectOutboxV2);
+    const sql = Context.get(context, SqlClient.SqlClient);
+    const projects = Context.get(context, ProjectStore.ProjectStoreV2);
+    const timestamp = DateTime.formatIso(yield* DateTime.now);
+    yield* projects.apply({
+      sequence: 1, eventId: EventId.make("project:fixture"), aggregateKind: "project",
+      aggregateId: projectId, occurredAt: timestamp, commandId: null,
+      causationEventId: null, correlationId: null, metadata: {}, type: "project.created",
+      payload: { projectId, title: "Engine fixture", workspaceRoot: repositoryDir,
+        defaultModelSelection: modelSelection, scripts: [], createdAt: timestamp, updatedAt: timestamp },
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.create", commandId: CommandId.make("thread:create"), threadId, projectId,
+      title: "Linked worktree", modelSelection, runtimeMode: "full-access", interactionMode: "default",
+      branch: "fixture-linked", worktreePath: workspaceDir, createdBy: "user", creationSource: "web",
+    });
+    const primaryThreadId = ThreadId.make("thread:primary-checkout");
+    yield* orchestrator.dispatch({
+      type: "thread.create", commandId: CommandId.make("thread:primary:create"), threadId: primaryThreadId, projectId,
+      title: "Unrelated primary checkout", modelSelection, runtimeMode: "full-access", interactionMode: "default",
+      branch: "main", worktreePath: null, createdBy: "user", creationSource: "web",
+    });
+
+    const diagnostics = Effect.gen(function* () {
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      const effects = yield* sql<{ readonly effect_type: string; readonly status: string;
+        readonly available_at: string; readonly last_error: string | null }>`
+        SELECT effect_type, status, available_at, last_error FROM orchestration_v2_effect_outbox
+        WHERE thread_id = ${threadId} ORDER BY created_at, effect_id LIMIT 32
+      `;
+      const holds = yield* outbox.listHeldByThreadId(threadId);
+      return {
+        stages: stages.slice(-32), scriptCount: scripts.length, startedCount: started.length,
+        runs: projection.runs.map((run) => ({ ordinal: run.ordinal, status: run.status,
+          activeAttemptId: run.activeAttemptId, checkpointId: run.checkpointId })),
+        providerTurns: projection.providerTurns.map((turn) => ({ ordinal: turn.ordinal, status: turn.status })),
+        requests: projection.runtimeRequests.map((request) => ({ id: request.id, status: request.status })),
+        effects, holds,
+      };
+    });
+    const waitForProjection = (predicate: (projection: OrchestrationV2ThreadProjection) => boolean) =>
+      sink.stream({ threadId, afterSequence: 0 }).pipe(
+        Stream.mapEffect(() => orchestrator.getThreadProjection(threadId)),
+        Stream.filter(predicate), Stream.runHead, Effect.map(Option.getOrThrow),
+        Effect.timeout("15 seconds"),
+        Effect.catchCause((cause) => diagnostics.pipe(
+          Effect.flatMap((state) => Effect.logError("V2 engine fixture wait failed", state)),
+          Effect.catchCause(() => Effect.logError("V2 engine fixture diagnostics unavailable", {
+            stages: stages.slice(-32), startedCount: started.length,
+          })),
+          Effect.andThen(Effect.failCause(cause)),
+        )),
+      );
+    const settle = (ordinal: number) => Effect.gen(function* () {
+      yield* waitForProjection((projection) => projection.runs.some((run) => run.ordinal === ordinal &&
+        (run.status === "waiting" || run.status === "completed" || run.status === "failed")));
+      // The real terminal transaction enqueues capture before publishing waiting.
+      // Drain the same worker through finalization before the next edit or rollback.
+      yield* worker.drain(32);
+      return yield* orchestrator.getThreadProjection(threadId);
+    });
     return {
-      rootDir,
-      workspaceDir,
-      dbPath,
-      adapterHarness,
-      engine,
-      snapshotQuery,
-      providerService,
-      checkpointStore,
-      pendingApprovalRepository,
-      waitForThread,
-      waitForDomainEvent,
-      waitForPendingApproval,
-      waitForReceipt,
-      drainProviderRuntime: providerRuntimeIngestion.drain,
-      drainCheckpointReactor: checkpointReactor.drain,
-      dispose,
-    } satisfies OrchestrationIntegrationHarness;
-  });
+      root, repositoryDir, workspaceDir, threadId, primaryThreadId, modelSelection,
+      orchestrator, worker, sink, outbox, sql, fs, started, approvalResponses, rollbackCalls,
+      waitForProjection, settle,
+      conversation: () => messages.map((message) => [message.role, message.text]),
+      dispatchTurn: (script: LocalTurn) => Effect.gen(function* () {
+        scripts.push(script);
+        const ordinal = started.length + 1;
+        yield* orchestrator.dispatch({
+          type: "message.dispatch", commandId: CommandId.make(`dispatch:${ordinal}`), threadId,
+          messageId: MessageId.make(`user:${ordinal}`), text: `Request ${ordinal}`,
+          attachments: [], dispatchMode: { type: "start_immediately" }, createdBy: "user", creationSource: "web",
+        });
+        const drained = yield* worker.drain(32);
+        stages.push(`dispatch.drain:${drained}`);
+        return ordinal;
+      }),
+    };
+  }, Effect.provide(NodeServices.layer),
+);

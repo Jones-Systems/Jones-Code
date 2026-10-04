@@ -1,3 +1,5 @@
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -13,8 +15,8 @@ import { McpProtocol, McpSchema, McpServer } from "effect/unstable/ai";
 import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
 import { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import { ProviderSessionManagerV2 } from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -55,10 +57,9 @@ const PullRequestsTestLayer = McpHttpServer.PullRequestsToolkitRegistrationLive.
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provide(
     Layer.mergeAll(
-      Layer.mock(ProjectionSnapshotQuery)({
-        getThreadShellById: () => Effect.succeedNone,
-      }),
-      Layer.mock(OrchestrationEngineService)({}),
+      Layer.mock(ProjectService.ProjectService)({}),
+      Layer.mock(Orchestrator.OrchestratorV2)({}),
+      Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
       NodeServices.layer,
     ),
   ),
@@ -896,7 +897,7 @@ it.effect("registers the focused decision snapshot tool and denies ungranted cre
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(
           Layer.mergeAll(
-            Layer.mock(ProjectionSnapshotQuery)({}),
+            Layer.mock(ProviderSessionManagerV2)({}),
             Layer.mock(WorkstreamGateway)({ purgeAuthorization: () => {} }),
           ),
         ),

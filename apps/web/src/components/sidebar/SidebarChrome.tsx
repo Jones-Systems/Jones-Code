@@ -3,6 +3,7 @@ import {
   BookOpenIcon,
   ChartNoAxesColumnIcon,
   MicIcon,
+  ListTodoIcon,
   SettingsIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -11,7 +12,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
-import { useEnvironments } from "../../state/environments";
+import { usePullRequestsSupported } from "../../state/environments";
 import { SidebarActiveThreadsPill } from "./SidebarActiveThreadsPill";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -41,9 +42,11 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   activeThreadCount,
   activeOnly,
   onToggleActiveOnly,
+  operatingScopeLabel,
 }: {
   isElectron: boolean;
-  activeThreadCount?: number;
+  activeThreadCount?: number | null;
+  operatingScopeLabel?: "project" | "environment";
   activeOnly?: boolean;
   onToggleActiveOnly?: () => void;
 }) {
@@ -75,7 +78,8 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
       <SidebarBrand onBackdrop={backdropVariant !== null} />
       {onToggleActiveOnly ? (
         <SidebarActiveThreadsPill
-          count={activeThreadCount ?? 0}
+          count={activeThreadCount ?? null}
+          {...(operatingScopeLabel === undefined ? {} : { scopeLabel: operatingScopeLabel })}
           activeOnly={activeOnly ?? false}
           onToggle={onToggleActiveOnly}
         />
@@ -154,12 +158,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const isOnUtilityPage = useLocation({
     select: (location) => isSidebarUtilityPage(location.pathname),
   });
-  const { environments } = useEnvironments();
-  // The page reads every connected server, so one of them offering pull requests is enough for
-  // the link to lead somewhere.
-  const pullRequestsSupported = environments.some(
-    (environment) => environment.serverConfig?.environment.capabilities.pullRequests === true,
-  );
+  const pullRequestsSupported = usePullRequestsSupported();
   const closeMobileSidebar = useCallback(() => {
     if (isMobile) {
       setOpenMobile(false);
@@ -196,6 +195,11 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const handleVoiceReviewClick = useCallback(() => {
     closeMobileSidebar();
     void navigate({ to: "/voice-review" });
+  }, [closeMobileSidebar, navigate]);
+
+  const handleWorkQueueClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/work-queue" });
   }, [closeMobileSidebar, navigate]);
 
   return (
@@ -236,6 +240,12 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             label="Voice review"
             tooltip="Review, edit, and pause voice prompts"
             onClick={handleVoiceReviewClick}
+          />
+          <SidebarUtilityItem
+            icon={<ListTodoIcon />}
+            label="Submitted work"
+            tooltip="View submitted work queue samples"
+            onClick={handleWorkQueueClick}
           />
         </>
       )}
