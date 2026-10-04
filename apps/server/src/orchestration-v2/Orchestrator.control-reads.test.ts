@@ -534,3 +534,180 @@ it.effect("settles only the stopped run's background work, once", () =>
     ]);
   }).pipe(Effect.provide(testLayer)),
 );
+
+it.effect("persists message blocking and rejects foreign content before any effects", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = ThreadId.make("thread:blocked-target");
+    const senderThreadId = ThreadId.make("thread:blocked-sender");
+    for (const id of [threadId, senderThreadId]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${id}`),
+        threadId: id,
+        projectId: ProjectId.make("project:block-messages"),
+        title: "Message controls",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    assert.isFalse((yield* projections.getThread(threadId)).threadMessagesBlocked ?? false);
+    assert.isFalse((yield* projections.getThreadShell(threadId))?.threadMessagesBlocked);
+    const acceptedCommand = {
+      type: "message.dispatch",
+      commandId: CommandId.make("foreign:before-block"),
+      threadId,
+      senderThreadId,
+      messageId: MessageId.make("message:foreign-before-block"),
+      text: "Already accepted work",
+      attachments: [],
+      createdBy: "agent",
+      creationSource: "mcp",
+      dispatchMode: { type: "defer_start" },
+    } as const;
+    const accepted = yield* orchestrator.dispatch(acceptedCommand);
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle:blocked-target"),
+      threadId,
+    });
+    const blocked = yield* orchestrator.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make("block:target"),
+      threadId,
+      threadMessagesBlocked: true,
+    });
+    assert.isTrue((yield* projections.getThread(threadId)).threadMessagesBlocked);
+    assert.isTrue((yield* projections.getThreadShell(threadId))?.threadMessagesBlocked);
+    assert.isTrue(
+      (yield* orchestrator.getShellSnapshot()).threads.find((t) => t.id === threadId)
+        ?.threadMessagesBlocked,
+    );
+    const rows = yield* sql<{
+      blocked: number;
+    }>`SELECT json_extract(payload_json, '$.threadMessagesBlocked') AS blocked
+      FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}`;
+    assert.equal(rows[0]?.blocked, 1);
+    const replayed = yield* orchestrator.dispatch(acceptedCommand);
+    assert.equal(replayed.sequence, accepted.sequence);
+    const before = yield* projections.getThreadProjection(threadId);
+    const effectsBefore = yield* sql`SELECT * FROM orchestration_v2_effect_outbox`;
+    const targetRunId = RunId.make("run:blocked-active");
+    const modes = [
+      { type: "start_immediately" },
+      { type: "defer_start" },
+      { type: "queue_after_active" },
+      { type: "steer_active", targetRunId },
+      { type: "restart_active", targetRunId },
+    ] as const;
+    let preparations = 0;
+    for (const dispatchMode of modes) {
+      const error = yield* orchestrator
+        .dispatch(
+          {
+            type: "message.dispatch",
+            commandId: CommandId.make(`send:blocked:${dispatchMode.type}`),
+            threadId,
+            senderThreadId,
+            messageId: MessageId.make(`message:blocked:${dispatchMode.type}`),
+            text: "Foreign message",
+            attachments: [],
+            createdBy: "agent",
+            creationSource: "mcp",
+            dispatchMode,
+          },
+          Effect.sync(() => {
+            preparations += 1;
+          }),
+        )
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "OrchestratorThreadMessagesBlockedError");
+      assert.include(error.message, "blocking messages from other threads");
+    }
+    assert.equal(preparations, 0);
+    for (const command of [
+      { type: "queued-run.edit", runId: targetRunId, text: "Foreign edit" },
+      {
+        type: "runtime-request.respond",
+        requestId: RuntimeRequestId.make("request:blocked"),
+        answers: { q: ["Foreign answer"] },
+      },
+    ] as const) {
+      const error = yield* orchestrator
+        .dispatch({
+          ...command,
+          commandId: CommandId.make(`blocked:${command.type}`),
+          threadId,
+          senderThreadId,
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "OrchestratorThreadMessagesBlockedError");
+    }
+    const merge = {
+      type: "thread.merge_back",
+      sourceThreadId: senderThreadId,
+      targetThreadId: threadId,
+      sourcePoint: { type: "run", runId: targetRunId },
+      creationSource: "mcp",
+    } as const;
+    const rejected = yield* orchestrator
+      .dispatch({ ...merge, commandId: CommandId.make("blocked:merge"), createdBy: "agent" })
+      .pipe(Effect.flip);
+    assert.equal(rejected._tag, "OrchestratorThreadMessagesBlockedError");
+    const ownerMerge = yield* orchestrator
+      .dispatch({ ...merge, commandId: CommandId.make("owner:merge"), createdBy: "user" })
+      .pipe(Effect.flip);
+    // The normal lineage validation still runs for owner transfers.
+    assert.equal(ownerMerge._tag, "OrchestratorDispatchError");
+    assert.deepEqual(yield* projections.getThreadProjection(threadId), before);
+    assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, effectsBefore);
+    const ownerCommand = {
+      type: "message.dispatch",
+      commandId: CommandId.make("owner:blocked-message"),
+      threadId,
+      messageId: MessageId.make("message:owner-blocked"),
+      text: "Owner input",
+      attachments: [],
+      createdBy: "user",
+      creationSource: "web",
+      dispatchMode: { type: "defer_start" },
+    } as const;
+    yield* orchestrator.dispatch(ownerCommand);
+    yield* orchestrator.dispatch({
+      ...ownerCommand,
+      commandId: CommandId.make("self:blocked-message"),
+      messageId: MessageId.make("message:self-blocked"),
+      createdBy: "agent",
+      creationSource: "mcp",
+      senderThreadId: threadId,
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make("allow:target"),
+      threadId,
+      threadMessagesBlocked: false,
+    });
+    assert.isFalse((yield* projections.getThreadShell(threadId))?.threadMessagesBlocked);
+    yield* orchestrator.dispatch({
+      ...ownerCommand,
+      commandId: CommandId.make("foreign:allowed-message"),
+      messageId: MessageId.make("message:foreign-allowed"),
+      createdBy: "agent",
+      creationSource: "mcp",
+      senderThreadId,
+    });
+    const after = yield* projections.getThreadProjection(threadId);
+    assert.lengthOf(after.messages, 4);
+    assert.lengthOf(after.runs, 4);
+    assert.isTrue(
+      blocked.storedEvents.some((stored) => stored.event.type === "thread.metadata-updated"),
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
