@@ -3926,7 +3926,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       let restartTransfer: OrchestrationV2ContextTransfer | null = null;
       const canResumeAcrossInstances =
         providerInstanceChanged &&
-        providerThread.nativeThreadRef !== null &&
         (yield* providerSwitchService
           .plan({
             projection: {
@@ -3935,7 +3934,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             },
             targetModelSelection: input.modelSelection,
           })
-          .pipe(mapDispatchError(input.command))).transition.type === "restart_and_resume";
+          .pipe(mapDispatchError(input.command))).transition.type === "restart_and_resume" &&
+        providerThread.nativeThreadRef !== null;
       const requiresProviderThreadHandoff =
         (providerInstanceChanged && !canResumeAcrossInstances) ||
         selectionTransition?.type === "create_with_handoff";
@@ -5024,8 +5024,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // Account overlays share native history. Selection commands may already
       // have updated the app thread, so classify against the native thread's owner.
       const canResumeAcrossInstances =
-        isProviderSwitch &&
-        activeProviderThread.nativeThreadRef !== null &&
+        (isProviderSwitch ||
+          projection.thread.modelSelection.instanceId !== modelSelection.instanceId) &&
         (yield* providerSwitchService
           .plan({
             projection: {
@@ -5034,13 +5034,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ...projection.thread,
                 modelSelection: {
                   ...projection.thread.modelSelection,
-                  instanceId: activeProviderThread.providerInstanceId,
+                  instanceId:
+                    activeProviderThread?.providerInstanceId ??
+                    projection.thread.modelSelection.instanceId,
                 },
               },
             },
             targetModelSelection: modelSelection,
           })
-          .pipe(mapDispatchError(command))).transition.type === "restart_and_resume";
+          .pipe(mapDispatchError(command))).transition.type === "restart_and_resume" &&
+        activeProviderThread !== undefined &&
+        activeProviderThread.nativeThreadRef !== null;
 
       if (
         pendingForkTransfer === undefined &&
