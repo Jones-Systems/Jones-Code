@@ -1,15 +1,18 @@
-import type { OrchestrationThreadShell } from "./orchestration.ts";
+import type { OrchestrationSessionStatus } from "./orchestrationNative.ts";
+import type { ProviderInteractionMode } from "./providerPolicy.ts";
 
-export type ThreadActivityInput = Pick<
-  OrchestrationThreadShell,
-  | "session"
-  | "hasPendingApprovals"
-  | "hasPendingUserInput"
-  | "hasActionableProposedPlan"
-  | "backgroundLiveness"
-  | "interactionMode"
-  | "latestTurn"
->;
+export interface ThreadActivityInput {
+  readonly session: { readonly status: OrchestrationSessionStatus } | null;
+  readonly hasPendingApprovals: boolean;
+  readonly hasPendingUserInput: boolean;
+  readonly hasActionableProposedPlan: boolean;
+  readonly backgroundLiveness?: "working" | "monitoring" | null;
+  readonly interactionMode: ProviderInteractionMode;
+  readonly latestTurn: {
+    readonly startedAt: string | null;
+    readonly completedAt: string | null;
+  } | null;
+}
 
 export function classifyThreadActivity(thread: ThreadActivityInput) {
   const foreground = thread.hasPendingApprovals
@@ -35,7 +38,7 @@ export function classifyThreadActivity(thread: ThreadActivityInput) {
 }
 
 export function isOperatingThread(
-  thread: ThreadActivityInput & Pick<OrchestrationThreadShell, "archivedAt">,
+  thread: ThreadActivityInput & { readonly archivedAt: string | object | null },
 ): boolean {
   return thread.archivedAt === null && classifyThreadActivity(thread).operating;
 }

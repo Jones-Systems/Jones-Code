@@ -2,7 +2,8 @@ import * as Effect from "effect/Effect";
 import {
   OrchestrationDispatchCommandError,
   type AuthSessionId,
-  type ClientOrchestrationCommand,
+  type OrchestrationV2Command,
+  type ThreadTurnStartCommand,
 } from "@t3tools/contracts";
 import {
   type DeviceListInput,
@@ -13,7 +14,7 @@ import {
   AuthRelayWriteScope,
   AuthReviewWriteScope,
   AuthTerminalOperateScope,
-  ORCHESTRATION_WS_METHODS,
+  ORCHESTRATION_V2_WS_METHODS,
   type AuthEnvironmentScope,
   WS_METHODS,
   WsRpcGroup,
@@ -28,15 +29,30 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * runtime failure.
  */
 export const RPC_REQUIRED_SCOPES = {
-  [ORCHESTRATION_WS_METHODS.dispatchBootstrap]: AuthOrchestrationOperateScope,
-  [ORCHESTRATION_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
-  [ORCHESTRATION_WS_METHODS.getWorkflowScript]: AuthOrchestrationReadScope,
-  [ORCHESTRATION_WS_METHODS.getTurnDiff]: AuthOrchestrationReadScope,
-  [ORCHESTRATION_WS_METHODS.getFullThreadDiff]: AuthOrchestrationReadScope,
-  [ORCHESTRATION_WS_METHODS.searchThreads]: AuthOrchestrationReadScope,
-  [ORCHESTRATION_WS_METHODS.subscribeShell]: AuthOrchestrationReadScope,
-  [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: AuthOrchestrationReadScope,
-  [ORCHESTRATION_WS_METHODS.subscribeThread]: AuthOrchestrationReadScope,
+  ["orchestration.dispatchBootstrap"]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.dispatchGuarded]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.reviewImportedHistoryStart]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.startWithImportedHistory]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.observeImportedHistoryStart]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeAttachment]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getOperatingCounts]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getTurnDiff]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.searchThreads]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.launchThread]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectsMutate]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverProbe]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetConfig]: AuthOrchestrationReadScope,
   [WS_METHODS.serverRefreshProviders]: AuthOrchestrationOperateScope,
@@ -63,6 +79,17 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverRemoveKeybinding]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverGetSettings]: AuthOrchestrationReadScope,
   [WS_METHODS.serverUpdateSettings]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverSearchAcpRegistry]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverPrepareAcpRegistryAgent]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverUninstallAcpRegistryManagedBinary]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverAcceptAcpRegistryUrlAuth]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverListAcpRegistrySessions]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverImportAcpRegistrySession]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverDeleteAcpRegistrySession]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverListAcpRegistryProviders]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverSetAcpRegistryProvider]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverDisableAcpRegistryProvider]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverLogoutAcpRegistry]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverDiscoverSourceControl]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetTraceDiagnostics]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetProcessDiagnostics]: AuthOrchestrationReadScope,
@@ -77,6 +104,12 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverReportClientActivity]: AuthOrchestrationReadScope,
   [WS_METHODS.serverReportHostPowerState]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverGetBackgroundPolicy]: AuthOrchestrationReadScope,
+  [WS_METHODS.scheduledTasksList]: AuthOrchestrationReadScope,
+  [WS_METHODS.scheduledTasksSubscribe]: AuthOrchestrationReadScope,
+  [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
+  [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,
+  [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,
+  [WS_METHODS.scheduledTasksRunNow]: AuthOrchestrationOperateScope,
   [WS_METHODS.cloudGetRelayClientStatus]: AuthRelayReadScope,
   [WS_METHODS.cloudInstallRelayClient]: AuthRelayWriteScope,
   [WS_METHODS.pullRequestsList]: AuthOrchestrationReadScope,
@@ -88,6 +121,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.pullRequestsLinkedThreads]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsDetail]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsPreview]: AuthOrchestrationReadScope,
+  [WS_METHODS.pullRequestsChecks]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsActivity]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsThreadComments]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsDiffFileContents]: AuthOrchestrationReadScope,
@@ -130,6 +164,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.agentSessionsScan]: AuthOrchestrationReadScope,
   [WS_METHODS.agentSessionsImport]: AuthOrchestrationOperateScope,
   [WS_METHODS.assetsCreateUrl]: AuthOrchestrationReadScope,
+  [WS_METHODS.assetsPersistChatAttachments]: AuthOrchestrationOperateScope,
   [WS_METHODS.attachmentsCreateUploadUrl]: AuthOrchestrationOperateScope,
   [WS_METHODS.attachmentsDelete]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerUploadFeedback]: AuthOrchestrationOperateScope,
@@ -205,11 +240,18 @@ export const requiredScopeForDeviceList = (input: DeviceListInput): AuthEnvironm
 
 export const assertLegacyBootstrapAllowed = <E>(input: {
   readonly actorSessionId: AuthSessionId;
-  readonly command: ClientOrchestrationCommand;
+  readonly command:
+    | OrchestrationV2Command
+    | typeof ThreadTurnStartCommand.Type
+    | { readonly type: "thread.create" };
   readonly hasAutomationEnrollment: (sessionId: AuthSessionId) => Effect.Effect<boolean, E>;
 }): Effect.Effect<void, OrchestrationDispatchCommandError> =>
   Effect.gen(function* () {
-    if (input.command.type !== "thread.turn.start" || input.command.bootstrap === undefined) return;
+    if (
+      input.command.type !== "thread.create" &&
+      (input.command.type !== "thread.turn.start" || input.command.bootstrap === undefined)
+    )
+      return;
     const enrolled = yield* input.hasAutomationEnrollment(input.actorSessionId).pipe(
       Effect.mapError(
         (cause) =>

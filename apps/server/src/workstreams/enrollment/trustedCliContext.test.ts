@@ -408,3 +408,28 @@ it.effect("apply authority binding rejects a connection to another main database
     }).pipe(Effect.provide(NodeSqliteClient.layer(otherTrusted.sqlite)), Effect.scoped);
   }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "native enrollment rejects selected V2 and copied stores before opening SQLite or changing authority",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      for (const name of ["statev2.sqlite", "copied-state.sqlite"]) {
+        const dbPath = NodePath.join(f.baseDir, "userdata", name);
+        NodeFS.copyFileSync(f.dbPath, dbPath);
+        const before = snapshot(f.baseDir);
+        for (const access of ["strict_inspection", "operational_inspection", "apply"] as const) {
+          const result = yield* makeTrustedNativeEnrollmentCliContext(
+            { ...f, dbPath },
+            access,
+          ).pipe(Effect.result);
+          assert.strictEqual(result._tag, "Failure");
+          if (result._tag === "Failure")
+            assert.strictEqual(result.failure.code, "runtime_unqualified");
+          assert.deepEqual(snapshot(f.baseDir), before);
+          assert.strictEqual(NodeFS.existsSync(`${dbPath}-wal`), false);
+          assert.strictEqual(NodeFS.existsSync(`${dbPath}-shm`), false);
+        }
+      }
+    }).pipe(Effect.scoped),
+);

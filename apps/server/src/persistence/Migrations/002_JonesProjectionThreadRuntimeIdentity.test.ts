@@ -26,6 +26,13 @@ it.effect("records runtime identity as fork migration 2 after fresh upstream mig
         { migration_id: 4, name: "NativeCreationCommandIdentities" },
         { migration_id: 5, name: "WorkstreamsNativeAttempts" },
         { migration_id: 6, name: "WorkstreamsProviderEnrollments" },
+        { migration_id: 7, name: "V2NativeAcceptance" },
+        { migration_id: 8, name: "DeletionWorktreeAdmission" },
+        { migration_id: 9, name: "OrdinaryCheckoutOwnership" },
+        { migration_id: 10, name: "AttachmentCleanup" },
+        { migration_id: 11, name: "OrdinaryCheckoutExecutionLifetime" },
+        { migration_id: 12, name: "ImportedApplicationAttachments" },
+        { migration_id: 13, name: "CommandNormalizationWitness" },
       ],
     );
     assert.deepEqual(

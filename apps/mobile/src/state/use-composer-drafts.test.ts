@@ -6,6 +6,7 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import { onTestFinished, vi } from "vite-plus/test";
@@ -173,8 +174,11 @@ import {
   findLocalComposerClipboardAttachment,
   flushComposerDrafts,
   getComposerDraftSnapshot,
+  saveComposerImportedContinuationPointer,
+  clearComposerImportedContinuationPointer,
   mergeComposerDraftContentState,
   migrateLegacyNewTaskDraft,
+  modelOptionMemoryAtom,
   releaseUnusedComposerAttachmentFiles,
   removeComposerDraftsForEnvironment,
   replaceComposerDraftAttachments,
@@ -200,6 +204,87 @@ const DRAFT: ComposerDraft = {
   attachments: [],
 };
 
+describe("imported continuation receipt pointers", () => {
+  const pointer = {
+    environmentId: EnvironmentId.make("receipt-environment"),
+    threadId: ThreadId.make("receipt-thread"),
+    commandId: CommandId.make("receipt-command"),
+    target: { type: "message" as const, messageId: MessageId.make("receipt-message") },
+  };
+  const key = `${pointer.environmentId}:${pointer.threadId}`;
+
+  it("durably retains an empty draft's pointer and restores only correlation metadata", async () => {
+    await saveComposerImportedContinuationPointer(key, pointer);
+    const restored = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()));
+    expect(restored.drafts[key]?.importedContinuation).toEqual(pointer);
+    expect(restored.drafts[key]?.text).toBe("");
+    expect(restored.drafts[key]?.attachments).toEqual([]);
+    await expect(
+      saveComposerImportedContinuationPointer(key, {
+        ...pointer,
+        commandId: CommandId.make("replacement-command"),
+      }),
+    ).rejects.toThrow("Observe the existing");
+    await expect(
+      saveComposerImportedContinuationPointer(key, {
+        ...pointer,
+        target: { type: "message", messageId: MessageId.make("replacement-message") },
+      }),
+    ).rejects.toThrow("Observe the existing");
+  });
+
+  it("preserves draft content after failed flush and refuses a stale correlation clear", async () => {
+    await waitForComposerDraftsLoaded();
+    setComposerDraftText(key, "Edited after the previous request");
+    composerDraftFileMocks.setWriteError(new Error("disk full"));
+    await expect(saveComposerImportedContinuationPointer(key, pointer)).rejects.toThrow();
+    expect(getComposerDraftSnapshot(key).text).toBe("Edited after the previous request");
+    expect(getComposerDraftSnapshot(key).importedContinuation).toEqual(pointer);
+    expect(
+      clearComposerImportedContinuationPointer(key, {
+        ...pointer,
+        commandId: CommandId.make("stale-command"),
+      }),
+    ).toBe(false);
+    expect(clearComposerImportedContinuationPointer(key, pointer)).toBe(true);
+    expect(getComposerDraftSnapshot(key).text).toBe("Edited after the previous request");
+    composerDraftFileMocks.setWriteError(null);
+    await flushComposerDrafts();
+  });
+
+  it("keeps pending queued correlation through empty-content clearing and cannot clear another environment or target", async () => {
+    const queued = {
+      ...pointer,
+      target: {
+        type: "queued_run" as const,
+        runId: RunId.make("held-run"),
+        messageId: pointer.target.messageId,
+      },
+    };
+    await saveComposerImportedContinuationPointer(key, queued);
+    setComposerDraftText(key, "Unsaved queued edit");
+    clearComposerDraftContent(key);
+    await flushComposerDrafts();
+    const restored = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()))
+      .drafts[key];
+    expect(restored?.importedContinuation).toEqual(queued);
+    expect(restored?.text).toBe("");
+    expect(
+      clearComposerImportedContinuationPointer(key, {
+        ...queued,
+        environmentId: EnvironmentId.make("different-environment"),
+      }),
+    ).toBe(false);
+    expect(
+      clearComposerImportedContinuationPointer(key, {
+        ...queued,
+        target: { ...queued.target, runId: RunId.make("different-run") },
+      }),
+    ).toBe(false);
+    expect(getComposerDraftSnapshot(key).importedContinuation).toEqual(queued);
+  });
+});
+
 afterEach(() => {
   vi.useRealTimers();
   resetComposerDraftsLoadState();
@@ -214,6 +299,7 @@ afterEach(() => {
   appAtomRegistry.set(composerDraftsAtom, {});
   appAtomRegistry.set(composerCloudDraftsAtom, { accountId: null, signedOut: {} });
   appAtomRegistry.set(stickyComposerModelSelectionAtom, null);
+  appAtomRegistry.set(modelOptionMemoryAtom, {});
   appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, {});
   composerAttachmentCleanupMocks.remove.mockClear();
   composerAttachmentCleanupMocks.releaseUploads.mockReset();
@@ -1913,6 +1999,44 @@ describe("mobile composer drafts", () => {
     ).toEqual({
       instanceId: "codex",
       model: "gpt-5.6-sol",
+    });
+  });
+
+  it("decodes model option memory from the composer document", () => {
+    expect(
+      decodePersistedComposerState({
+        schemaVersion: 1,
+        drafts: {},
+        modelOptionMemory: {
+          pi: { "xai/grok-4.6": [{ id: "thinking", value: "xhigh" }] },
+        },
+      }).modelOptionMemory,
+    ).toEqual({ pi: { "xai/grok-4.6": [{ id: "thinking", value: "xhigh" }] } });
+  });
+
+  it("merges persisted option memory without replacing newer choices", async () => {
+    composerDraftFileMocks.setDocument({
+      schemaVersion: 1,
+      drafts: {},
+      modelOptionMemory: {
+        pi: {
+          "xai/grok-4.6": [{ id: "thinking", value: "high" }],
+          "openai/gpt-5.4": [{ id: "thinking", value: "medium" }],
+        },
+      },
+    });
+    appAtomRegistry.set(modelOptionMemoryAtom, {
+      pi: { "xai/grok-4.6": [{ id: "thinking", value: "xhigh" }] },
+    });
+
+    ensureComposerDraftsLoaded();
+    await waitForComposerDraftsLoaded();
+
+    expect(appAtomRegistry.get(modelOptionMemoryAtom)).toEqual({
+      pi: {
+        "xai/grok-4.6": [{ id: "thinking", value: "xhigh" }],
+        "openai/gpt-5.4": [{ id: "thinking", value: "medium" }],
+      },
     });
   });
 

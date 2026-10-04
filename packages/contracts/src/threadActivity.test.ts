@@ -4,10 +4,10 @@ import {
   isOperatingThread,
   type ThreadActivityInput,
 } from "./threadActivity.ts";
-import type { OrchestrationSession } from "./orchestration.ts";
+import type { OrchestrationSessionStatus } from "./orchestrationNative.ts";
 
-const input = (status: OrchestrationSession["status"] | null): ThreadActivityInput => ({
-  session: status === null ? null : ({ status } as OrchestrationSession),
+const input = (status: OrchestrationSessionStatus | null): ThreadActivityInput => ({
+  session: status === null ? null : { status },
   interactionMode: "default",
   latestTurn: null,
   hasPendingApprovals: false,
@@ -49,7 +49,7 @@ describe("native thread activity", () => {
       latestTurn: {
         startedAt: "2026-10-02T00:00:00Z",
         completedAt: "2026-10-02T00:01:00Z",
-      } as NonNullable<ThreadActivityInput["latestTurn"]>,
+      },
     };
     expect(classifyThreadActivity(waiting).foreground).toBe("waiting_plan");
     expect(classifyThreadActivity(waiting).operating).toBe(false);

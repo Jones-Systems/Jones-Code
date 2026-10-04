@@ -338,3 +338,24 @@ it("selects Electron raw filesystem and fails closed when it is unavailable", ()
     /raw filesystem unavailable/,
   );
 });
+
+it("rejects selecting V2 or copied state without mutating the legacy binding", async () => {
+  await fixture(async (base) => {
+    const legacy = NodePath.join(base, "userdata", "state.sqlite");
+    const original = await NodeFSP.readFile(legacy);
+    const binding = await currentQualifiedRuntimeBinding(base, baseline, undefined, legacy);
+    for (const name of ["statev2.sqlite", "copied.sqlite"]) {
+      const selected = NodePath.join(base, "userdata", name);
+      await NodeFSP.copyFile(legacy, selected);
+      await NodeAssert.rejects(
+        currentQualifiedRuntimeBinding(base, baseline, undefined, selected),
+        /selected database has no qualified native store binding/,
+      );
+      assert.deepEqual(await NodeFSP.readFile(legacy), original);
+      assert.deepEqual(
+        await currentQualifiedRuntimeBinding(base, baseline, undefined, legacy),
+        binding,
+      );
+    }
+  });
+});

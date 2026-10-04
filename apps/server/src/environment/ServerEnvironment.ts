@@ -214,12 +214,20 @@ export const make = Effect.gen(function* () {
     serverVersion: packageJson.version,
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     capabilities: {
+      // The bundled RPC registers this guarded endpoint; execution still requires current authority.
+      nativeBootstrapCreation: {
+        submissionSchema: "t3.native-bootstrap-submission/v1",
+        preparationSchema: "voice.t3-bootstrap-preparation/v1",
+        observationSchema: "t3.native-creation-observation/v2",
+        guardRequired: true,
+      },
       repositoryIdentity: true,
       connectionProbe: true,
       attachmentUploads: true,
       questionAttachments: true,
       fileAttachments: { maxUploadBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES },
       pullRequests: true,
+      pullRequestChecks: true,
       inlineMessageContext: true,
       requiredWorktreeBootstrap: true,
       threadSettlement: true,
@@ -237,17 +245,18 @@ export const make = Effect.gen(function* () {
       threadActiveReorder: true,
       threadAutoSettleOptOut: true,
       threadTitleRegeneration: true,
+      threadVisitedTracking: true,
       threadPullRequests: true,
       pullRequestStackActions: true,
       threadPullRequestLinking: true,
+      serverResolvedCommandContext: true,
       environmentIcon: true,
       projectCloneTracking: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
+      // V2 restart recovery uses the environment-owned opt-in. The old
+      // per-update request flag is not wired into the V2 update RPC path.
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
-        ? {
-            serverSelfUpdateProgress: true,
-            serverUpdateThreadContinuation: true,
-          }
+        ? { serverSelfUpdateProgress: true }
         : {}),
       ...(desktopAppUpdate ? { desktopAppUpdate: true } : {}),
     },

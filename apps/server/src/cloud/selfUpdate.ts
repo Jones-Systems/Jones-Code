@@ -447,10 +447,15 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
           throw new Error(
             "This service requires an Actions artifact matching its native platform.",
           );
-        const binding = await currentQualifiedRuntimeBinding(serverConfig.baseDir, activeVersion, {
-          platform,
-          architecture: arch,
-        });
+        const binding = await currentQualifiedRuntimeBinding(
+          serverConfig.baseDir,
+          activeVersion,
+          {
+            platform,
+            architecture: arch,
+          },
+          serverConfig.dbPath,
+        );
         if (binding.dbPath !== (await NodeFSP.realpath(serverConfig.dbPath)))
           throw new Error("This qualified staging binding does not match the running database.");
         await NodeFSP.mkdir(NodePath.join(binding.baseDir, "runtime"), {
@@ -531,6 +536,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
             requireQualifiedLauncher(),
             input.stagedHandle,
             { platform, architecture: arch },
+            serverConfig.dbPath,
           ),
         catch: (cause) =>
           failWith(

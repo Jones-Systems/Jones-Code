@@ -1,0 +1,1147 @@
+import { assert, describe, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import {
+  AuthSessionId,
+  CommandId,
+  EnvironmentAuthenticatedPrincipal,
+  MessageId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+  type OrchestrationV2ImportedHistoryDelivery,
+  type OrchestrationV2StartWithImportedHistoryCommand,
+  type OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import * as Path from "effect/Path";
+import * as References from "effect/References";
+import * as Option from "effect/Option";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import * as AuthSessions from "../../persistence/AuthSessions.ts";
+import { runMigrations } from "../../persistence/Migrations.ts";
+import { makeSqlitePersistenceLive } from "../../persistence/Layers/Sqlite.ts";
+import Migration0042 from "../../persistence/Migrations/042_ProjectionThreadLinkedPullRequest.ts";
+import Migration0043 from "../../persistence/Migrations/043_ProjectionThreadsUnsettledAt.ts";
+import Migration0044 from "../../persistence/Migrations/044_ClearAutomaticProjectModelDefaults.ts";
+import Migration0045 from "../../persistence/Migrations/045_ProjectionProjectsAutoPull.ts";
+import Migration0046 from "../../persistence/Migrations/046_RepairAutomaticSettlementTimestamps.ts";
+import Migration0047 from "../../persistence/Migrations/047_ProjectionProjectIcon.ts";
+import Migration0048 from "../../persistence/Migrations/048_ProjectionThreadBranchPullRequest.ts";
+import Migration0049 from "../../persistence/Migrations/049_ProjectionThreadsActiveOrderKey.ts";
+import * as EffectOutbox from "../EffectOutbox.ts";
+import * as EventSink from "../EventSink.ts";
+import * as EventStore from "../EventStore.ts";
+import { deriveProviderThread } from "../IdAllocator.ts";
+import * as LegacyV1ThreadImporter from "./LegacyV1ThreadImporter.ts";
+import * as ProjectionMaintenance from "../ProjectionMaintenance.ts";
+import * as ProjectionStore from "../ProjectionStore.ts";
+import * as ThreadManagementService from "../ThreadManagementService.ts";
+import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
+import { makeOrchestratorV2ReplayLayerWithRegistry } from "../testkit/ProviderReplayHarness.ts";
+import { checkpointWorkspace } from "../testkit/ReplayFixtureWorkspace.ts";
+
+const PROJECT_ID = "project:cutover";
+const ACTIVE_THREAD = "thread:cutover:active";
+const ARCHIVED_THREAD = "thread:cutover:archived";
+const PINNED_THREAD = "thread:cutover:pinned";
+const SNOOZED_THREAD = "thread:cutover:snoozed";
+const DELETED_THREAD = "thread:cutover:deleted";
+const INTERRUPTED_THREAD = "thread:cutover:interrupted";
+const LONG_THREAD = "thread:cutover:long";
+const ALL_THREADS = [
+  ACTIVE_THREAD,
+  ARCHIVED_THREAD,
+  PINNED_THREAD,
+  SNOOZED_THREAD,
+  DELETED_THREAD,
+  INTERRUPTED_THREAD,
+  LONG_THREAD,
+] as const;
+
+const EARLIEST_MARKER = "EARLIEST_IMPORT_MARKER";
+const LATEST_MARKER = "LATEST_IMPORT_MARKER";
+const CONTINUATION_PROMPT = "Continue the migrated thread.";
+
+const driver = ProviderDriverKind.make("codex");
+const instanceId = ProviderInstanceId.make("codex");
+const modelSelectionJson = '{"instanceId":"codex","model":"gpt-5.4"}';
+const codexModelSelection = {
+  instanceId,
+  model: "gpt-5.4",
+};
+
+/**
+ * A V1 database as it exists on disk before a V2 server first opens it: schema
+ * through migration 40 plus the 42-49 tail. Slot 41 carries a site-local
+ * `ThreadSummaryTimeline` migration, matching production databases where local
+ * builds recorded extra names under the shared id sequence. The current V2
+ * migrations run on the copied database, preserving the source ledger and
+ * applying Jones extensions through their separate ledger.
+ */
+const seedV1Database = (fixturePath: string, workspace: string) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`PRAGMA busy_timeout = 5000;`;
+      yield* sql`PRAGMA foreign_keys = ON;`;
+      yield* sql`PRAGMA journal_mode = WAL;`;
+      yield* runMigrations({ toMigrationInclusive: 40 });
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (41, 'ThreadSummaryTimeline')
+      `;
+      yield* sql`
+        CREATE TABLE thread_summary_timeline_entries (
+          entry_id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL
+        )
+      `;
+      const tailMigrations = [
+        [42, "ProjectionThreadLinkedPullRequest", Migration0042],
+        [43, "ProjectionThreadsUnsettledAt", Migration0043],
+        [44, "ClearAutomaticProjectModelDefaults", Migration0044],
+        [45, "ProjectionProjectsAutoPull", Migration0045],
+        [46, "RepairAutomaticSettlementTimestamps", Migration0046],
+        [47, "ProjectionProjectIcon", Migration0047],
+        [48, "ProjectionThreadBranchPullRequest", Migration0048],
+        [49, "ProjectionThreadsActiveOrderKey", Migration0049],
+      ] as const;
+      for (const [id, name, migration] of tailMigrations) {
+        yield* migration;
+        yield* sql`
+          INSERT INTO effect_sql_migrations (migration_id, name)
+          VALUES (${id}, ${name})
+        `;
+      }
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at, deleted_at
+        ) VALUES (
+          ${PROJECT_ID},
+          'Cutover project',
+          ${workspace},
+          '[]',
+          '2026-01-01T00:00:00.000Z',
+          '2026-01-10T00:00:00.000Z',
+          NULL
+        )
+      `;
+
+      const insertThread = (input: {
+        readonly threadId: string;
+        readonly title: string;
+        readonly createdAt: string;
+        readonly updatedAt: string;
+        readonly archivedAt?: string;
+        readonly snoozedAt?: string;
+        readonly snoozedUntil?: string;
+        readonly pinnedAt?: string;
+        readonly pinOrderKey?: string;
+        readonly deletedAt?: string;
+        readonly worktreePath?: string;
+        readonly linkedPullRequestJson?: string;
+      }) =>
+        sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, model_selection_json, runtime_mode,
+            interaction_mode, branch, worktree_path, latest_turn_id,
+            created_at, updated_at, archived_at, settled_override, settled_at,
+            unsettled_at, snoozed_until, snoozed_at, pinned_at, pin_order_key,
+            linked_pull_request_json, deleted_at
+          ) VALUES (
+            ${input.threadId},
+            ${PROJECT_ID},
+            ${input.title},
+            ${modelSelectionJson},
+            'full-access',
+            'default',
+            'main',
+            ${input.worktreePath ?? null},
+            NULL,
+            ${input.createdAt},
+            ${input.updatedAt},
+            ${input.archivedAt ?? null},
+            NULL,
+            NULL,
+            NULL,
+            ${input.snoozedUntil ?? null},
+            ${input.snoozedAt ?? null},
+            ${input.pinnedAt ?? null},
+            ${input.pinOrderKey ?? null},
+            ${input.linkedPullRequestJson ?? null},
+            ${input.deletedAt ?? null}
+          )
+        `;
+
+      const insertMessage = (input: {
+        readonly messageId: string;
+        readonly threadId: string;
+        readonly role: "user" | "assistant";
+        readonly text: string;
+        readonly createdAt: string;
+        readonly isStreaming?: boolean;
+        readonly attachmentsJson?: string;
+      }) =>
+        sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, attachments_json,
+            is_streaming, created_at, updated_at
+          ) VALUES (
+            ${input.messageId},
+            ${input.threadId},
+            NULL,
+            ${input.role},
+            ${input.text},
+            ${input.attachmentsJson ?? "[]"},
+            ${input.isStreaming === true ? 1 : 0},
+            ${input.createdAt},
+            ${input.createdAt}
+          )
+        `;
+
+      yield* insertThread({
+        threadId: ACTIVE_THREAD,
+        title: "Active conversation",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-05T00:00:00.000Z",
+        linkedPullRequestJson:
+          '{"projectId":"project:cutover","repository":"pingdotgg/t3code","number":9100,"url":"https://github.com/pingdotgg/t3code/pull/9100"}',
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:active:1",
+        threadId: ACTIVE_THREAD,
+        role: "user",
+        text: "First question",
+        createdAt: "2026-01-01T01:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:active:2",
+        threadId: ACTIVE_THREAD,
+        role: "assistant",
+        text: "First answer",
+        createdAt: "2026-01-02T01:00:00.000Z",
+        attachmentsJson:
+          '[{"type":"image","id":"att-1","name":"shot.png","mimeType":"image/png","sizeBytes":1234}]',
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:active:3",
+        threadId: ACTIVE_THREAD,
+        role: "user",
+        text: "Follow-up question",
+        createdAt: "2026-01-03T01:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:active:4",
+        threadId: ACTIVE_THREAD,
+        role: "assistant",
+        text: "Final answer",
+        createdAt: "2026-01-05T01:00:00.000Z",
+      });
+
+      yield* insertThread({
+        threadId: ARCHIVED_THREAD,
+        title: "Archived conversation",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-06T00:00:00.000Z",
+        archivedAt: "2026-01-06T00:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:archived:1",
+        threadId: ARCHIVED_THREAD,
+        role: "user",
+        text: "Archived question",
+        createdAt: "2026-01-01T02:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:archived:2",
+        threadId: ARCHIVED_THREAD,
+        role: "assistant",
+        text: "Archived answer",
+        createdAt: "2026-01-02T02:00:00.000Z",
+      });
+
+      yield* insertThread({
+        threadId: PINNED_THREAD,
+        title: "Pinned conversation",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-07T00:00:00.000Z",
+        pinnedAt: "2026-01-03T00:00:00.000Z",
+        pinOrderKey: "a0",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:pinned:1",
+        threadId: PINNED_THREAD,
+        role: "user",
+        text: "Pinned question",
+        createdAt: "2026-01-01T03:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:pinned:2",
+        threadId: PINNED_THREAD,
+        role: "assistant",
+        text: "Pinned answer",
+        createdAt: "2026-01-02T03:00:00.000Z",
+      });
+
+      yield* insertThread({
+        threadId: SNOOZED_THREAD,
+        title: "Snoozed conversation",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-08T00:00:00.000Z",
+        snoozedAt: "2026-01-08T00:00:00.000Z",
+        snoozedUntil: "2026-02-01T00:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:snoozed:1",
+        threadId: SNOOZED_THREAD,
+        role: "user",
+        text: "Snoozed question",
+        createdAt: "2026-01-01T04:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:snoozed:2",
+        threadId: SNOOZED_THREAD,
+        role: "assistant",
+        text: "Snoozed answer part one",
+        createdAt: "2026-01-02T04:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:snoozed:3",
+        threadId: SNOOZED_THREAD,
+        role: "assistant",
+        text: "Snoozed answer part two",
+        createdAt: "2026-01-03T04:00:00.000Z",
+      });
+
+      yield* insertThread({
+        threadId: DELETED_THREAD,
+        title: "Deleted conversation",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-09T00:00:00.000Z",
+        deletedAt: "2026-01-09T00:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:deleted:1",
+        threadId: DELETED_THREAD,
+        role: "user",
+        text: "Deleted question",
+        createdAt: "2026-01-01T05:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:deleted:2",
+        threadId: DELETED_THREAD,
+        role: "assistant",
+        text: "Deleted answer",
+        createdAt: "2026-01-02T05:00:00.000Z",
+      });
+
+      yield* insertThread({
+        threadId: INTERRUPTED_THREAD,
+        title: "Interrupted conversation",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-09T01:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:interrupted:1",
+        threadId: INTERRUPTED_THREAD,
+        role: "user",
+        text: "Interrupted question",
+        createdAt: "2026-01-01T06:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:interrupted:2",
+        threadId: INTERRUPTED_THREAD,
+        role: "assistant",
+        text: "Partial answer",
+        createdAt: "2026-01-02T06:00:00.000Z",
+        isStreaming: true,
+      });
+
+      yield* insertThread({
+        threadId: LONG_THREAD,
+        title: "Long conversation",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-10T00:00:00.000Z",
+        worktreePath: workspace,
+      });
+      const filler = "history detail ".repeat(800); // ~12k chars per message
+      yield* insertMessage({
+        messageId: "message:cutover:long:1",
+        threadId: LONG_THREAD,
+        role: "user",
+        text: `${EARLIEST_MARKER} ${filler}`,
+        createdAt: "2026-01-01T07:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:long:2",
+        threadId: LONG_THREAD,
+        role: "assistant",
+        text: `${filler} middle answer`,
+        createdAt: "2026-01-02T07:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:long:3",
+        threadId: LONG_THREAD,
+        role: "user",
+        text: `${filler} middle question`,
+        createdAt: "2026-01-03T07:00:00.000Z",
+      });
+      yield* insertMessage({
+        messageId: "message:cutover:long:4",
+        threadId: LONG_THREAD,
+        role: "assistant",
+        text: `${filler} ${LATEST_MARKER}`,
+        createdAt: "2026-01-04T07:00:00.000Z",
+      });
+
+      yield* sql`PRAGMA wal_checkpoint(TRUNCATE);`;
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: fixturePath }))),
+  );
+
+const principal: EnvironmentAuthenticatedPrincipal["Service"] = {
+  sessionId: AuthSessionId.make("session:cutover:imported-start"),
+  subject: "user:synthetic-cutover",
+  method: "browser-session-cookie",
+  scopes: new Set(["orchestration:operate"]),
+};
+
+const importedDelivery = (messageId: string): OrchestrationV2ImportedHistoryDelivery => ({
+  type: "message",
+  messageId: MessageId.make(messageId),
+  text: CONTINUATION_PROMPT,
+  attachments: [],
+  modelSelection: codexModelSelection,
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  dispatchMode: { type: "start_immediately" },
+});
+
+// This fixture proves SQL acceptance only. A provider lookup would cross the
+// boundary under test and must fail instead of inventing native startup proof.
+const handoffRegistryLayer = Layer.succeed(
+  ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+  ProviderAdapterRegistry.ProviderAdapterRegistryV2.of({
+    get: () => Effect.die(new Error("Provider lookup unused in imported cutover acceptance")),
+    list: () => Effect.succeed([instanceId]),
+    getHandoffDeliveryDescriptor: (requestedInstanceId) =>
+      requestedInstanceId === instanceId
+        ? Effect.succeed({
+            instanceId,
+            driver,
+            enabled: true,
+            declared: {
+              canConsumeHandoffSummaries: true,
+              supportsFullThreadHandoff: true,
+              supportsProviderSwitchingViaHandoff: true,
+            },
+          })
+        : Effect.fail(
+            new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({
+              instanceId: requestedInstanceId,
+            }),
+          ),
+  }),
+);
+
+const makeBootLayer = (input: {
+  readonly name: string;
+  readonly dbPath: string;
+  readonly workspace: string;
+}) => {
+  const databaseLayer = makeSqlitePersistenceLive(input.dbPath).pipe(
+    Layer.provide(NodeServices.layer),
+  );
+  const eventStoreProvided = EventStore.layer.pipe(Layer.provideMerge(databaseLayer));
+  const projectionStoreProvided = ProjectionStore.layer.pipe(Layer.provideMerge(databaseLayer));
+  const storesProvided = Layer.mergeAll(databaseLayer, eventStoreProvided, projectionStoreProvided);
+  const eventSinkProvided = EventSink.layer.pipe(Layer.provide(storesProvided));
+  const importerProvided = LegacyV1ThreadImporter.layer.pipe(
+    Layer.provide(Layer.mergeAll(storesProvided, eventSinkProvided)),
+  );
+  const maintenanceProvided = ProjectionMaintenance.layer.pipe(Layer.provide(storesProvided));
+  const orchestratorProvided = makeOrchestratorV2ReplayLayerWithRegistry(
+    {
+      name: input.name,
+      runtimePolicyOverride: {
+        cwd: input.workspace,
+        approvalPolicy: "never",
+        sandboxPolicy: {
+          type: "readOnly",
+          access: { type: "fullAccess" },
+          networkAccess: false,
+        },
+      },
+    },
+    handoffRegistryLayer,
+    { databaseLayer, runEffectWorker: false },
+  );
+  const threadManagementProvided = ThreadManagementService.layerWithLegacyImporter.pipe(
+    Layer.provide(Layer.mergeAll(importerProvided, orchestratorProvided)),
+  );
+  const outboxProvided = EffectOutbox.layer.pipe(Layer.provide(databaseLayer));
+  return Layer.mergeAll(
+    threadManagementProvided,
+    outboxProvided,
+    storesProvided,
+    eventSinkProvided,
+    importerProvided,
+    maintenanceProvided,
+    orchestratorProvided,
+  );
+};
+
+interface CapturedLog {
+  readonly message: unknown;
+  readonly annotations: Readonly<Record<string, unknown>>;
+}
+
+const makeCapturingLogger = (logs: CapturedLog[]) =>
+  Logger.make(({ fiber, message }) => {
+    logs.push({
+      message,
+      annotations: fiber.getRef(References.CurrentLogAnnotations),
+    });
+  });
+
+const messageOrdinals = (projection: OrchestrationV2ThreadProjection) =>
+  projection.turnItems
+    .filter(
+      (
+        item,
+      ): item is Extract<typeof item, { readonly type: "user_message" | "assistant_message" }> =>
+        item.type === "user_message" || item.type === "assistant_message",
+    )
+    .map((item) => [String(item.messageId), item.ordinal, item.status] as const);
+
+describe("orchestration v2 legacy v1 cutover", () => {
+  it.live(
+    "migrates an untouched v1 database copy through shell import, lazy transcripts, explicit imported Start and restart",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const workspace = yield* checkpointWorkspace("legacy-v1-cutover");
+          const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-v1-cutover-state-" });
+          const fixturePath = path.join(stateDir, "v1-source.sqlite");
+          const copyPath = path.join(stateDir, "userdata", "state.sqlite");
+          yield* fs.makeDirectory(path.join(stateDir, "userdata"), { recursive: true });
+
+          yield* seedV1Database(fixturePath, workspace);
+          yield* fs.copyFile(fixturePath, copyPath);
+
+          const longThreadId = ThreadId.make(LONG_THREAD);
+
+          // First boot: the real file-backed stack migrates the copied database.
+          const boot1Logs: CapturedLog[] = [];
+          const firstBoot = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+              const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+              const projections = yield* ProjectionStore.ProjectionStoreV2;
+              const threads = yield* ThreadManagementService.ThreadManagementService;
+              const sink = yield* EventSink.EventSinkV2;
+              const outbox = yield* EffectOutbox.EffectOutboxV2;
+              const auth = yield* AuthSessions.make;
+              const issuedAt = yield* DateTime.now;
+              yield* auth.create({
+                sessionId: principal.sessionId,
+                subject: principal.subject,
+                method: principal.method,
+                scopes: ["orchestration:operate"],
+                client: {
+                  label: null,
+                  ipAddress: null,
+                  userAgent: null,
+                  deviceType: "unknown",
+                  os: null,
+                  browser: null,
+                },
+                issuedAt,
+                expiresAt: DateTime.makeUnsafe(DateTime.toEpochMillis(issuedAt) + 3_600_000),
+              });
+
+              assert.equal(yield* importer.pendingThreadCount, ALL_THREADS.length);
+              const shellImport = yield* importer.reconcileShells;
+              assert.deepStrictEqual(shellImport, {
+                importedThreadCount: ALL_THREADS.length,
+                importedMessageCount: 14,
+              });
+              // A repeated shell reconcile in the same boot is a no-op.
+              assert.deepStrictEqual(yield* importer.reconcileShells, {
+                importedThreadCount: 0,
+                importedMessageCount: 0,
+              });
+              const delivery = importedDelivery("message:cutover:long:continuation");
+              const previewReview = yield* threads.reviewImportedHistoryStart({
+                threadId: longThreadId,
+                delivery,
+              });
+              assert.equal(previewReview.transcriptEligibility.type, "unknown");
+              assert.isNull(previewReview.reviewedBasis);
+              const blocked = yield* threads
+                .dispatch({
+                  type: "message.dispatch",
+                  createdBy: "user",
+                  creationSource: "web",
+                  commandId: CommandId.make("command:cutover:implicit-rejected"),
+                  threadId: longThreadId,
+                  messageId: MessageId.make("message:cutover:implicit-rejected"),
+                  text: CONTINUATION_PROMPT,
+                  attachments: [],
+                  dispatchMode: { type: "start_immediately" },
+                })
+                .pipe(Effect.flip);
+              assert.equal(blocked._tag, "OrchestratorImportedContinuationHeldError");
+              if (blocked._tag === "OrchestratorImportedContinuationHeldError") {
+                assert.equal(blocked.reason, "continuation_unknown");
+              }
+              const stillPreview = yield* projections.getThreadProjection(longThreadId);
+              assert.equal(stillPreview.messages.length, 2);
+              assert.equal(stillPreview.runs.length, 0);
+              assert.equal(stillPreview.providerThreads.length, 0);
+              assert.isTrue((yield* maintenance.rebuild).valid);
+
+              const shellSnapshot = yield* projections.getShellSnapshot();
+              const visibleShellIds = [
+                ...shellSnapshot.threads.map((thread) => thread.id),
+                ...shellSnapshot.archivedThreads.map((thread) => thread.id),
+              ];
+              assert.notInclude(visibleShellIds, ThreadId.make(DELETED_THREAD));
+              assert.include(
+                shellSnapshot.archivedThreads.map((thread) => thread.id),
+                ThreadId.make(ARCHIVED_THREAD),
+              );
+              const pinnedShell = shellSnapshot.threads.find(
+                (thread) => thread.id === PINNED_THREAD,
+              );
+              assert.equal(pinnedShell?.pinOrderKey, "a0");
+
+              // Shells carry only the last user + latest message previews until a
+              // transcript is hydrated on demand.
+              const activeShell = yield* projections.getThreadProjection(
+                ThreadId.make(ACTIVE_THREAD),
+              );
+              assert.equal(activeShell.thread.historyOrigin, "v1_import");
+              assert.isNull(activeShell.thread.activeProviderThreadId);
+              assert.deepEqual(activeShell.runs, []);
+              assert.deepEqual(activeShell.attempts, []);
+              assert.deepEqual(activeShell.providerSessions, []);
+              assert.deepEqual(activeShell.runtimeRequests, []);
+              assert.deepEqual(activeShell.providerTurns, []);
+              assert.isTrue(activeShell.messages.every((message) => message.runId === null));
+              assert.deepStrictEqual(
+                activeShell.messages.map((message) => message.id),
+                ["message:cutover:active:3", "message:cutover:active:4"],
+              );
+              assert.isEmpty(activeShell.providerThreads);
+              // The import contract is messages + metadata only: no checkpoints,
+              // tool items, or native sessions are presented as migrated.
+              assert.isEmpty(
+                activeShell.turnItems.filter(
+                  (item) => item.type !== "user_message" && item.type !== "assistant_message",
+                ),
+              );
+
+              const deletedShell = yield* projections.getThreadProjection(
+                ThreadId.make(DELETED_THREAD),
+              );
+              assert.isNotNull(deletedShell.thread.deletedAt);
+              assert.equal(
+                deletedShell.thread.deletedAt?.toString(),
+                DateTime.makeUnsafe("2026-01-09T00:00:00.000Z").toString(),
+              );
+
+              // Lazy transcript import on first read. The snoozed thread stays
+              // unhydrated until after the restart to prove laziness survives a
+              // process boundary.
+              for (const threadId of [
+                ACTIVE_THREAD,
+                ARCHIVED_THREAD,
+                PINNED_THREAD,
+                DELETED_THREAD,
+                INTERRUPTED_THREAD,
+                LONG_THREAD,
+              ]) {
+                yield* importer.ensureTranscript(ThreadId.make(threadId));
+              }
+              assert.deepStrictEqual(
+                yield* importer.ensureTranscript(ThreadId.make(ACTIVE_THREAD)),
+                { importedThreadCount: 0, importedMessageCount: 0 },
+              );
+
+              const active = yield* projections.getThreadProjection(ThreadId.make(ACTIVE_THREAD));
+              assert.deepStrictEqual(
+                active.messages.map((message) => message.id),
+                [
+                  "message:cutover:active:1",
+                  "message:cutover:active:2",
+                  "message:cutover:active:3",
+                  "message:cutover:active:4",
+                ],
+              );
+              assert.deepStrictEqual(messageOrdinals(active), [
+                ["message:cutover:active:1", 1, "completed"],
+                ["message:cutover:active:2", 2, "completed"],
+                ["message:cutover:active:3", 3, "completed"],
+                ["message:cutover:active:4", 4, "completed"],
+              ]);
+              assert.deepStrictEqual(
+                active.messages.find((message) => message.id === "message:cutover:active:2")
+                  ?.attachments,
+                [
+                  {
+                    type: "image",
+                    id: "att-1",
+                    name: "shot.png",
+                    mimeType: "image/png",
+                    sizeBytes: 1234,
+                  },
+                ],
+              );
+              assert.equal(active.thread.linkedPullRequest?.number, 9100);
+              assert.deepStrictEqual(
+                active.thread.pullRequests?.map((pullRequest) => pullRequest.number),
+                [9100],
+              );
+
+              const archived = yield* projections.getThreadProjection(
+                ThreadId.make(ARCHIVED_THREAD),
+              );
+              assert.isNotNull(archived.thread.archivedAt);
+              const pinned = yield* projections.getThreadProjection(ThreadId.make(PINNED_THREAD));
+              assert.isNotNull(pinned.thread.pinnedAt);
+              assert.equal(pinned.thread.pinOrderKey, "a0");
+              const snoozed = yield* projections.getThreadProjection(ThreadId.make(SNOOZED_THREAD));
+              assert.equal(
+                snoozed.thread.snoozedUntil?.toString(),
+                DateTime.makeUnsafe("2026-02-01T00:00:00.000Z").toString(),
+              );
+              // Still preview-only: its transcript was never requested, so the
+              // middle message between the two shell previews is absent.
+              assert.deepStrictEqual(
+                snoozed.messages.map((message) => message.id),
+                ["message:cutover:snoozed:1", "message:cutover:snoozed:3"],
+              );
+              const snoozedImportRow = yield* sql<{
+                readonly transcript_imported_at: string | null;
+              }>`
+              SELECT transcript_imported_at
+              FROM orchestration_v2_legacy_imports
+              WHERE thread_id = ${SNOOZED_THREAD}
+            `;
+              assert.isNull(snoozedImportRow[0]?.transcript_imported_at);
+
+              const interrupted = yield* projections.getThreadProjection(
+                ThreadId.make(INTERRUPTED_THREAD),
+              );
+              assert.deepStrictEqual(messageOrdinals(interrupted), [
+                ["message:cutover:interrupted:1", 1, "completed"],
+                ["message:cutover:interrupted:2", 2, "interrupted"],
+              ]);
+
+              // Full imported parity permits an explicit reviewed handoff. SQL
+              // acceptance remains pending until a real native effect is acknowledged.
+              const review = yield* threads.reviewImportedHistoryStart({
+                threadId: longThreadId,
+                delivery,
+              });
+              assert.equal(review.applicability, "imported");
+              assert.equal(review.qualification.type, "unknown");
+              assert.equal(review.restoredBinding.type, "missing");
+              assert.equal(review.nativeEffects.type, "clear");
+              assert.equal(review.transcriptEligibility.type, "eligible");
+              assert.isTrue(review.capability.startWithImportedHistory);
+              if (review.reviewedBasis === null)
+                return yield* Effect.die(new Error("Expected complete imported review basis"));
+              const command: OrchestrationV2StartWithImportedHistoryCommand = {
+                type: "thread.imported-history.start",
+                commandId: CommandId.make("command:cutover:continue"),
+                threadId: longThreadId,
+                reviewedBasis: review.reviewedBasis,
+                delivery,
+              };
+              const accepted = yield* threads.startWithImportedHistory(command);
+              assert.equal(accepted.intentStatus, "accepted");
+              assert.equal(accepted.execution.status, "pending");
+              assert.isNull(accepted.execution.nativeThreadId);
+              assert.isNull(accepted.execution.providerSessionId);
+              assert.isNull(accepted.execution.effectOutcome);
+              const continued = yield* projections.getThreadProjection(longThreadId);
+              assert.equal(continued.runs.length, 1);
+              assert.equal(continued.runs[0]?.status, "starting");
+              assert.isNull(continued.runs[0]?.startedAt);
+              assert.equal(continued.providerThreads.length, 1);
+              assert.equal(continued.providerThreads[0]?.status, "not_loaded");
+              assert.isNull(continued.providerThreads[0]?.nativeThreadRef);
+              assert.isNull(continued.providerThreads[0]?.providerSessionId);
+              assert.isNull(continued.providerThreads[0]?.nativeConversationHeadRef);
+              assert.equal(accepted.execution.runId, continued.runs[0]!.id);
+              const preparedProviderThreadId = deriveProviderThread({
+                driver,
+                nativeThreadId: `pending:${continued.runs[0]!.id}`,
+              });
+              assert.equal(continued.providerThreads[0]!.id, preparedProviderThreadId);
+              assert.equal(continued.thread.activeProviderThreadId, preparedProviderThreadId);
+              assert.equal(continued.runs[0]!.providerThreadId, preparedProviderThreadId);
+              const preparedEvents = yield* sql<{ readonly payload_json: string }>`
+                SELECT payload_json FROM orchestration_events
+                WHERE command_id = ${command.commandId} AND stream_id = ${longThreadId}
+                  AND application_event_version = 2 AND event_type = 'provider-thread.updated'
+              `;
+              assert.lengthOf(preparedEvents, 1);
+              const preparedPayload = JSON.parse(preparedEvents[0]!.payload_json);
+              assert.equal(preparedPayload.id, preparedProviderThreadId);
+              assert.equal(preparedPayload.appThreadId, longThreadId);
+              assert.equal(preparedPayload.status, "not_loaded");
+              assert.isNull(preparedPayload.nativeThreadRef);
+              assert.isNull(preparedPayload.nativeConversationHeadRef);
+              assert.isNull(preparedPayload.providerSessionId);
+              assert.isNull(yield* sink.readProviderRuntimeEvidence(longThreadId));
+              assert.isEmpty(continued.providerSessions);
+              assert.isEmpty(continued.providerTurns);
+              assert.equal(continued.contextHandoffs.length, 1);
+              const handoff = continued.contextHandoffs[0]!;
+              assert.equal(handoff.strategy, "manual_context");
+              assert.equal(handoff.targetRunId, continued.runs[0]!.id);
+              assert.equal(handoff.toProviderThreadId, preparedProviderThreadId);
+              assert.isAtMost(handoff.summaryText.length, 32_000);
+              assert.include(handoff.summaryText, LATEST_MARKER);
+              assert.notInclude(handoff.summaryText, EARLIEST_MARKER);
+              assert.equal(
+                continued.messages.filter((message) => message.runId !== null).length,
+                1,
+              );
+              const effects = yield* outbox.listByCommandId(command.commandId);
+              assert.equal(effects.length, 1);
+              assert.equal(effects[0]?.request.type, "provider-turn.start");
+              assert.equal(effects[0]?.status, "pending");
+              const replayed = yield* threads.startWithImportedHistory(command);
+              assert.deepStrictEqual(replayed, accepted);
+              assert.deepStrictEqual(
+                yield* projections.getThreadProjection(longThreadId),
+                continued,
+              );
+              assert.deepStrictEqual(yield* outbox.listByCommandId(command.commandId), effects);
+              const observed = yield* threads.observeImportedHistoryStart({
+                threadId: longThreadId,
+                commandId: command.commandId,
+              });
+              assert.deepStrictEqual(observed, accepted);
+              const reusedAsOrdinary = yield* threads
+                .dispatch({
+                  type: "message.dispatch",
+                  createdBy: "user",
+                  creationSource: "web",
+                  commandId: command.commandId,
+                  threadId: longThreadId,
+                  messageId: MessageId.make("message:cutover:identity-conflict"),
+                  text: "One more.",
+                  attachments: [],
+                  dispatchMode: { type: "start_immediately" },
+                })
+                .pipe(Effect.flip);
+              assert.equal(reusedAsOrdinary._tag, "DispatchGuardRejectedError");
+              assert.deepStrictEqual(
+                yield* projections.getThreadProjection(longThreadId),
+                continued,
+              );
+
+              const activeId = ThreadId.make(ACTIVE_THREAD);
+              const staleDelivery = importedDelivery("message:cutover:stale-basis");
+              const staleReview = yield* threads.reviewImportedHistoryStart({
+                threadId: activeId,
+                delivery: staleDelivery,
+              });
+              if (staleReview.reviewedBasis === null)
+                return yield* Effect.die(new Error("Expected active imported review basis"));
+              const activeBefore = yield* projections.getThreadProjection(activeId);
+              const source = yield* sql<{
+                readonly updated_at: string;
+              }>`SELECT updated_at FROM projection_threads WHERE thread_id = ${activeId}`;
+              yield* sql`UPDATE projection_threads SET updated_at = '2026-03-01T00:00:00.000Z' WHERE thread_id = ${activeId}`;
+              const rejected = yield* threads.startWithImportedHistory({
+                type: "thread.imported-history.start",
+                commandId: CommandId.make("command:cutover:stale-basis"),
+                threadId: activeId,
+                reviewedBasis: staleReview.reviewedBasis,
+                delivery: staleDelivery,
+              });
+              assert.equal(rejected.intentStatus, "rejected");
+              assert.equal(rejected.rejectionReason, "imported_history_review_changed");
+              assert.equal(rejected.execution.status, "not_started");
+              assert.deepStrictEqual(
+                yield* projections.getThreadProjection(activeId),
+                activeBefore,
+              );
+              assert.equal((yield* outbox.listByCommandId(rejected.commandId)).length, 0);
+              yield* sql`UPDATE projection_threads SET updated_at = ${source[0]!.updated_at} WHERE thread_id = ${activeId}`;
+
+              // A claim with unknown outcome remains held; review cannot silently
+              // authorize a second fresh attempt and restart cannot clear it.
+              const claimed = yield* outbox.claimNext({
+                workerId: "worker:cutover",
+                leaseDurationMs: 60_000,
+              });
+              if (Option.isNone(claimed))
+                return yield* Effect.die(new Error("Expected pending imported Start effect"));
+              assert.equal(claimed.value.id, effects[0]!.id);
+              assert.isTrue(
+                yield* outbox.holdUnknown({
+                  effectId: claimed.value.id,
+                  workerId: "worker:cutover",
+                  expectedAttempt: claimed.value.attemptCount,
+                  operationId: "operation:cutover:unknown",
+                  evidence: {
+                    operationId: "operation:cutover:unknown",
+                    operation: "start_turn",
+                    threadId: longThreadId,
+                    outcome: "unknown",
+                  },
+                }),
+              );
+              const heldReview = yield* threads.reviewImportedHistoryStart({
+                threadId: longThreadId,
+                delivery: importedDelivery("message:cutover:held-retry"),
+              });
+              assert.equal(heldReview.nativeEffects.type, "unknown");
+              assert.isNull(heldReview.reviewedBasis);
+              const heldReceipt = yield* threads.observeImportedHistoryStart({
+                threadId: longThreadId,
+                commandId: command.commandId,
+              });
+              assert.equal(heldReceipt.intentStatus, "accepted");
+              assert.equal(heldReceipt.execution.status, "unknown");
+              assert.isNull(heldReceipt.execution.nativeThreadId);
+              assert.equal((yield* outbox.listHeldByThreadId(longThreadId)).length, 1);
+              const historicalDisposition =
+                yield* sink.readLegacyContinuationDisposition(longThreadId);
+              assert.equal(historicalDisposition?.qualification.type, "unknown");
+
+              const migrationEventCount = yield* sql<{ readonly count: number }>`
+              SELECT COUNT(*) AS count
+              FROM orchestration_events
+              WHERE application_event_version = 2
+                AND event_id LIKE 'migration:v1:%'
+            `;
+              const importRows = yield* sql<{
+                readonly thread_id: string;
+                readonly transcript_imported_at: string | null;
+              }>`
+              SELECT thread_id, transcript_imported_at
+              FROM orchestration_v2_legacy_imports
+              ORDER BY thread_id
+            `;
+              const legacyMessageCount = yield* sql<{ readonly count: number }>`
+              SELECT COUNT(*) AS count FROM projection_thread_messages
+            `;
+              const legacyThreadCount = yield* sql<{ readonly count: number }>`
+              SELECT COUNT(*) AS count FROM projection_threads
+            `;
+              const recordedMigration41 = yield* sql<{ readonly name: string }>`
+              SELECT name FROM effect_sql_migrations WHERE migration_id = 41
+            `;
+              const authSessionColumns = yield* sql<{ readonly name: string }>`
+              PRAGMA table_info(auth_sessions)
+            `;
+              return {
+                migrationEventCount: migrationEventCount[0]?.count ?? 0,
+                importRows,
+                legacyMessageCount: legacyMessageCount[0]?.count ?? 0,
+                legacyThreadCount: legacyThreadCount[0]?.count ?? 0,
+                longProjection: continued,
+                importedCommand: command,
+                heldReceipt,
+                migration41Name: recordedMigration41[0]?.name ?? null,
+                authSessionColumnNames: authSessionColumns.map((column) => column.name),
+              };
+            }).pipe(
+              Effect.provide(
+                makeBootLayer({
+                  name: "legacy-v1-cutover-first",
+                  dbPath: copyPath,
+                  workspace,
+                }),
+              ),
+              Effect.provideService(
+                Logger.CurrentLoggers,
+                new Set([makeCapturingLogger(boot1Logs)]),
+              ),
+            ),
+          );
+
+          // The copied database recorded a site-local migration under id 41, so
+          // the migrator skipped this build's AuthSessionClientConnection by
+          // id. The divergence is surfaced at startup while the rest of the
+          // cutover still runs.
+          const divergenceLog = boot1Logs.find((log) =>
+            String(log.message).includes("migration history diverges"),
+          );
+          assert.deepStrictEqual(divergenceLog?.annotations.divergent, [
+            "41:ThreadSummaryTimeline (this build: AuthSessionClientConnection)",
+          ]);
+          assert.equal(firstBoot.migration41Name, "ThreadSummaryTimeline");
+          // The skipped migration's columns never landed; the schema gap is
+          // what the startup warning points at.
+          assert.notInclude(firstBoot.authSessionColumnNames, "client_surface");
+          assert.notInclude(firstBoot.authSessionColumnNames, "client_app_version");
+
+          assert.equal(firstBoot.importRows.length, ALL_THREADS.length);
+          const unhydratedRows = firstBoot.importRows.filter(
+            (row) => row.transcript_imported_at === null,
+          );
+          assert.deepStrictEqual(
+            unhydratedRows.map((row) => row.thread_id),
+            [SNOOZED_THREAD],
+          );
+
+          // Restart: a fresh runtime on the same file repeats nothing, and the
+          // still-unhydrated snoozed transcript lands lazily after the restart.
+          const boot2Logs: CapturedLog[] = [];
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+              const projections = yield* ProjectionStore.ProjectionStoreV2;
+
+              assert.equal(yield* importer.pendingThreadCount, 1);
+              assert.deepStrictEqual(yield* importer.reconcileShells, {
+                importedThreadCount: 0,
+                importedMessageCount: 0,
+              });
+              assert.deepStrictEqual(
+                yield* importer.ensureTranscript(ThreadId.make(SNOOZED_THREAD)),
+                { importedThreadCount: 1, importedMessageCount: 1 },
+              );
+              const snoozed = yield* projections.getThreadProjection(ThreadId.make(SNOOZED_THREAD));
+              assert.deepStrictEqual(
+                snoozed.messages.map((message) => message.id),
+                [
+                  "message:cutover:snoozed:1",
+                  "message:cutover:snoozed:2",
+                  "message:cutover:snoozed:3",
+                ],
+              );
+              assert.equal(yield* importer.pendingThreadCount, 0);
+              for (const threadId of ALL_THREADS) {
+                assert.deepStrictEqual(yield* importer.ensureTranscript(ThreadId.make(threadId)), {
+                  importedThreadCount: 0,
+                  importedMessageCount: 0,
+                });
+              }
+              const migrationEventCount = yield* sql<{ readonly count: number }>`
+              SELECT COUNT(*) AS count
+              FROM orchestration_events
+              WHERE application_event_version = 2
+                AND event_id LIKE 'migration:v1:%'
+            `;
+              // The snoozed transcript hydration above appends its own two
+              // migration events (message + turn item); nothing else repeats.
+              assert.equal(migrationEventCount[0]?.count, firstBoot.migrationEventCount + 2);
+
+              const threads = yield* ThreadManagementService.ThreadManagementService;
+              const outbox = yield* EffectOutbox.EffectOutboxV2;
+              const restarted = yield* projections.getThreadProjection(longThreadId);
+              assert.equal(restarted.thread.historyOrigin, "v1_import");
+              assert.equal(restarted.contextHandoffs.length, 1);
+              // Explicit Start links its prepared SQL thread before any native
+              // effect. Restart preserves that exact prepared row.
+              assert.equal(
+                restarted.thread.activeProviderThreadId,
+                firstBoot.longProjection.thread.activeProviderThreadId,
+              );
+              assert.deepStrictEqual(
+                restarted.providerThreads,
+                firstBoot.longProjection.providerThreads,
+              );
+              assert.isNull(restarted.providerThreads[0]?.nativeThreadRef);
+              assert.isNull(restarted.providerThreads[0]?.providerSessionId);
+              assert.isNull(restarted.providerThreads[0]?.nativeConversationHeadRef);
+              const sink = yield* EventSink.EventSinkV2;
+              assert.isNull(yield* sink.readProviderRuntimeEvidence(longThreadId));
+              assert.isEmpty(restarted.providerSessions);
+              assert.isEmpty(restarted.providerTurns);
+              assert.deepStrictEqual(
+                yield* threads.observeImportedHistoryStart({
+                  threadId: longThreadId,
+                  commandId: firstBoot.importedCommand.commandId,
+                }),
+                firstBoot.heldReceipt,
+              );
+              assert.deepStrictEqual(
+                yield* threads.startWithImportedHistory(firstBoot.importedCommand),
+                firstBoot.heldReceipt,
+              );
+              assert.deepStrictEqual(
+                yield* projections.getThreadProjection(longThreadId),
+                restarted,
+              );
+              assert.equal(
+                (yield* outbox.listByCommandId(firstBoot.importedCommand.commandId)).length,
+                1,
+              );
+              assert.equal((yield* outbox.listHeldByThreadId(longThreadId)).length, 1);
+              const restartReview = yield* threads.reviewImportedHistoryStart({
+                threadId: longThreadId,
+                delivery: importedDelivery("message:cutover:restart-held"),
+              });
+              assert.equal(restartReview.nativeEffects.type, "unknown");
+              assert.isNull(restartReview.reviewedBasis);
+              assert.deepStrictEqual(
+                restarted.runs.map((run) => run.status),
+                firstBoot.longProjection.runs.map((run) => run.status),
+              );
+
+              // The v1 projection tables remain the untouched, read-only
+              // recovery source after migration and restart.
+              const legacyMessageCount = yield* sql<{ readonly count: number }>`
+              SELECT COUNT(*) AS count FROM projection_thread_messages
+            `;
+              const legacyThreadCount = yield* sql<{ readonly count: number }>`
+              SELECT COUNT(*) AS count FROM projection_threads
+            `;
+              assert.equal(legacyMessageCount[0]?.count, firstBoot.legacyMessageCount);
+              assert.equal(legacyThreadCount[0]?.count, firstBoot.legacyThreadCount);
+              const quickCheck = yield* sql<{ readonly quick_check: string }>`
+              PRAGMA quick_check
+            `;
+              assert.deepStrictEqual(
+                quickCheck.map((row) => row.quick_check),
+                ["ok"],
+              );
+            }).pipe(
+              Effect.provide(
+                makeBootLayer({
+                  name: "legacy-v1-cutover-restart",
+                  dbPath: copyPath,
+                  workspace,
+                }),
+              ),
+              Effect.provideService(
+                Logger.CurrentLoggers,
+                new Set([makeCapturingLogger(boot2Logs)]),
+              ),
+            ),
+          );
+
+          // The recorded-name divergence persists across restarts; the warning
+          // fires again so it cannot be missed between upgrades.
+          assert.isTrue(
+            boot2Logs.some((log) => String(log.message).includes("migration history diverges")),
+          );
+        }).pipe(
+          Effect.provideService(EnvironmentAuthenticatedPrincipal, principal),
+          Effect.provide(NodeServices.layer),
+        ),
+      ),
+  );
+});

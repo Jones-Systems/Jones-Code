@@ -21,9 +21,9 @@ import * as Schema from "effect/Schema";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as T3ProjectFileLoader from "./T3ProjectFileLoader.ts";
 
-// Resolution walks up to 12 well-known paths plus 7 source files, so a miss
-// costs ~20 filesystem probes. AssetAccess resolves on every project-favicon
-// asset URL, and a project's icon does not move, so the answer is cached.
+// Resolution walks well-known paths and source files, so misses are costly.
+// AssetAccess resolves on every project-favicon asset URL; cache the answer
+// until workspace invalidation or TTL expiry.
 const FAVICON_CACHE_CAPACITY = 512;
 const FAVICON_POSITIVE_CACHE_TTL = Duration.minutes(10);
 const FAVICON_NEGATIVE_CACHE_TTL = Duration.minutes(1);
@@ -114,6 +114,8 @@ export class ProjectFaviconResolutionError extends Schema.TaggedError<ProjectFav
 export class ProjectFaviconResolver extends Context.Service<
   ProjectFaviconResolver,
   {
+    /** Clear cached discoveries for one workspace, including icon overrides. */
+    readonly invalidate: (cwd: string) => Effect.Effect<void>;
     /**
      * Resolve a favicon or icon file path for the provided workspace root.
      *
@@ -341,7 +343,16 @@ export const make = Effect.gen(function* () {
     return yield* Cache.get(faviconCache, key);
   });
 
-  return ProjectFaviconResolver.of({ resolvePath });
+  const invalidate: ProjectFaviconResolver["Service"]["invalidate"] = Effect.fn(
+    "ProjectFaviconResolver.invalidate",
+  )(function* (cwd) {
+    const keys = Array.from(yield* Cache.keys(faviconCache)).filter(
+      (key) => parseFaviconCacheKey(key).cwd === cwd,
+    );
+    yield* Effect.forEach(keys, (key) => Cache.invalidate(faviconCache, key), { discard: true });
+  });
+
+  return ProjectFaviconResolver.of({ resolvePath, invalidate });
 });
 
 export const layer = Layer.effect(ProjectFaviconResolver, make);

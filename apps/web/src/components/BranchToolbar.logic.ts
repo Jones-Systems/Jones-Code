@@ -64,6 +64,8 @@ export function shouldShowEnvironmentIndicator(input: {
 }
 
 export function shouldShowComposerContextStrip(input: {
+  isDraftHeroState: boolean;
+  persistInActiveThreads: boolean;
   hasActiveProject: boolean;
   isGitRepo: boolean;
   showEnvironmentIndicator: boolean;
@@ -72,6 +74,7 @@ export function shouldShowComposerContextStrip(input: {
 }): boolean {
   return (
     input.hasActiveProject &&
+    (input.isDraftHeroState || input.persistInActiveThreads) &&
     (input.isGitRepo || input.showEnvironmentIndicator || input.hostsRestingComposerControls)
   );
 }
@@ -112,6 +115,13 @@ export function resolveLockedWorkspaceLabel(
 ): string {
   if (activeWorktreePath) return "Worktree";
   return effectiveEnvMode === "worktree" ? resolveEnvModeLabel("worktree") : "Local checkout";
+}
+
+export function resolveWorkspaceDisplayName(path: string | null): string | null {
+  if (!path) return null;
+  const normalizedPath = path.replace(/[\\/]+$/, "");
+  if (normalizedPath.length === 0) return path;
+  return normalizedPath.split(/[\\/]/).at(-1) ?? normalizedPath;
 }
 
 export interface PreviousWorktreeSeed {
@@ -322,4 +332,45 @@ export function shouldIncludeBranchPickerItem(input: {
     sanitizedQuery !== normalizedQuery &&
     lowerItemValue.includes(sanitizedQuery)
   );
+}
+
+export type BranchContextChangeResult =
+  | { readonly status: "complete"; readonly branch: string }
+  | { readonly status: "blocked"; readonly reason: string }
+  | { readonly status: "stale"; readonly checkoutCompleted: boolean }
+  | { readonly status: "failed" | "partial"; readonly error: unknown };
+
+// This orders this client's mutations; another device can still start a runtime before checkout.
+export async function runBranchContextChange(input: {
+  readonly branch: string;
+  readonly confirmStopped: () => Promise<{
+    readonly confirmed: boolean;
+    readonly reason: string | null;
+  }>;
+  readonly isCurrent: () => boolean;
+  readonly checkout?: () => Promise<string>;
+  readonly onCheckout: (branch: string) => void;
+  readonly updateMetadata: (branch: string) => Promise<void>;
+}): Promise<BranchContextChangeResult> {
+  let checkoutCompleted = false;
+  try {
+    if (!input.isCurrent()) return { status: "stale", checkoutCompleted };
+    const stop = await input.confirmStopped();
+    if (!input.isCurrent()) return { status: "stale", checkoutCompleted };
+    if (!stop.confirmed) {
+      return {
+        status: "blocked",
+        reason: stop.reason ?? "The current runtime has not been confirmed stopped.",
+      };
+    }
+    const branch = input.checkout ? await input.checkout() : input.branch;
+    checkoutCompleted = input.checkout !== undefined;
+    if (!input.isCurrent()) return { status: "stale", checkoutCompleted };
+    if (checkoutCompleted) input.onCheckout(branch);
+    await input.updateMetadata(branch);
+    if (!input.isCurrent()) return { status: "stale", checkoutCompleted };
+    return { status: "complete", branch };
+  } catch (error) {
+    return { status: checkoutCompleted ? "partial" : "failed", error };
+  }
 }

@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
+import { ExecutionEnvironmentDescriptor, ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -10,14 +10,22 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
+import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import {
   PUBLISH_AGENT_ACTIVITY_SECRET,
   RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
   RELAY_URL_SECRET,
 } from "../cloud/config.ts";
+import { ServiceLauncherHostProcess } from "../cloud/serviceLauncherClient.ts";
+import {
+  SERVICE_LAUNCHER_CONTEXT_ENV,
+  SERVICE_LAUNCHER_PROTOCOL,
+  type ServiceLauncherContext,
+} from "../cloud/serviceProtocol.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "./ServerEnvironment.ts";
 
@@ -78,7 +86,29 @@ const makeServerConfig = Effect.fn(function* (baseDir: string) {
   } satisfies ServerConfig.ServerConfig["Service"];
 });
 
-it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
+const launcherContext = {
+  protocol: SERVICE_LAUNCHER_PROTOCOL,
+  childVersion: packageJson.version,
+} satisfies ServiceLauncherContext;
+
+const unexpectedLauncherIpc = (): never => {
+  throw new Error("Descriptor construction must not use launcher IPC.");
+};
+
+const testServices = Layer.mergeAll(
+  NodeServices.layer,
+  Layer.succeed(HostProcessEnvironment, {
+    [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(launcherContext),
+  }),
+  Layer.succeed(ServiceLauncherHostProcess, {
+    connected: true,
+    send: unexpectedLauncherIpc,
+    on: unexpectedLauncherIpc,
+    off: unexpectedLauncherIpc,
+  }),
+);
+
+it.layer(testServices)("ServerEnvironmentLive", (it) => {
   it.effect.each([
     { name: "missing", content: undefined },
     { name: "empty", content: "" },
@@ -168,6 +198,17 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
 
       expect(first.environmentId).toBe(second.environmentId);
       expect(first.orchestrationProtocolVersion).toBe(ORCHESTRATION_PROTOCOL_VERSION);
+      // Descriptor construction needs no native authority service: this is endpoint support.
+      expect(second.capabilities.nativeBootstrapCreation).toEqual({
+        submissionSchema: "t3.native-bootstrap-submission/v1",
+        preparationSchema: "voice.t3-bootstrap-preparation/v1",
+        observationSchema: "t3.native-creation-observation/v2",
+        guardRequired: true,
+      });
+      expect(
+        Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor)(second).capabilities
+          .nativeBootstrapCreation,
+      ).toEqual(second.capabilities.nativeBootstrapCreation);
       expect(second.capabilities.repositoryIdentity).toBe(true);
       expect(second.capabilities.connectionProbe).toBe(true);
       expect(second.capabilities.attachmentUploads).toBe(true);
@@ -179,6 +220,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       expect(second.capabilities.threadTitleRegeneration).toBe(true);
       expect(second.capabilities.threadPullRequests).toBe(true);
       expect(second.capabilities.threadPullRequestLinking).toBe(true);
+      expect(second.capabilities.serverResolvedCommandContext).toBe(true);
       expect(second.capabilities.agentActivityPublishing).toBe(false);
     }),
   );
@@ -255,7 +297,9 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       expect(withFd.capabilities.serverSelfUpdate).toBe("desktop-managed");
       expect(withFd.capabilities.desktopAppUpdate).toBe(true);
       expect(withFd.capabilities.serverSelfUpdateProgress).toBe(true);
-      expect(withFd.capabilities.serverUpdateThreadContinuation).toBe(true);
+      // v2 recovery terminalizes running runs on restart, so continuation
+      // stays unadvertised until the v2 runtime carries the markers.
+      expect(withFd.capabilities.serverUpdateThreadContinuation).toBeUndefined();
 
       const withoutFd = yield* describeWith({ mode: "desktop" });
       expect(withoutFd.capabilities.serverSelfUpdate).toBe("desktop-managed");

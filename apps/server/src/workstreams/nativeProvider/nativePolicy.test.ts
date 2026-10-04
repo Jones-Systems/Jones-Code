@@ -1,109 +1,145 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  EventId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  type OrchestrationCommand,
+  EnvironmentAuthenticatedPrincipal,
+  type OrchestrationV2AppThread,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import { decideOrchestrationCommand } from "../../orchestration/decider.ts";
-import { createEmptyReadModel, projectEvent } from "../../orchestration/projector.ts";
-import { OrchestrationThreadSettleBlockedError } from "../../orchestration/Errors.ts";
+import * as Layer from "effect/Layer";
+import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as EventStore from "../../orchestration-v2/EventStore.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import { dispatchNativeWorkstreamSettlement } from "../../orchestration-v2/Orchestrator.ts";
 import { makeWorkstreamsNativeProvider } from "./service.ts";
-import { makeProviderFixture, binding, request, requestBytesSha256, now } from "./testFixtures.ts";
+import {
+  makeProviderFixture,
+  binding,
+  request,
+  requestBytesSha256,
+  now,
+  nativeTestPrincipal,
+} from "./testFixtures.ts";
 
-const crypto = Crypto.make({
-  randomBytes: (size) => new Uint8Array(size).fill(1),
-  digest: (_algorithm, bytes) => Effect.succeed(bytes),
-});
+const stores = Layer.mergeAll(
+  SqlitePersistenceMemory,
+  EventStore.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+  ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+);
+const testLayer = EventSink.layer.pipe(Layer.provideMerge(stores));
 
 it.effect(
-  "native policy denial retains pins, snooze and history and produces only a rejected receipt",
+  "unavailable native V2 authority retains pins, snooze and history without producing a receipt or events",
   () =>
     Effect.gen(function* () {
-      let model = createEmptyReadModel(now);
-      const projectId = ProjectId.make("project-synthetic");
+      const sink = yield* EventSink.EventSinkV2;
+      const projection = yield* ProjectionStore.ProjectionStoreV2;
       const threadId = ThreadId.make(request.identity.native_id);
-      const commands: OrchestrationCommand[] = [
-        {
-          type: "project.create",
-          commandId: CommandId.make("project-create-synthetic"),
-          projectId,
-          title: "Synthetic project",
-          workspaceRoot: "/synthetic/project",
-          createdAt: now,
-        },
-        {
-          type: "thread.create",
-          commandId: CommandId.make("thread-create-synthetic"),
-          threadId,
-          projectId,
-          title: "Synthetic thread",
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
-          interactionMode: "default",
-          runtimeMode: "full-access",
-          branch: null,
-          worktreePath: null,
-          createdAt: now,
-        },
-      ];
-      for (const command of commands) {
-        const decided = yield* decideOrchestrationCommand({ command, readModel: model });
-        for (const event of Array.isArray(decided) ? decided : [decided])
-          model = yield* projectEvent(model, { ...event, sequence: model.snapshotSequence + 1 });
-      }
-      model = {
-        ...model,
-        threads: model.threads.map((thread) => ({
-          ...thread,
-          pinnedAt: now,
-          pinOrderKey: "synthetic-order",
-          snoozedAt: now,
-          snoozedUntil: "2030-01-01T00:00:00.000Z",
-          session: {
-            threadId,
-            status: "running" as const,
-            providerName: "codex" as const,
-            runtimeMode: "full-access" as const,
-            activeTurnId: null,
-            lastError: null,
-            updatedAt: now,
-          },
-        })),
+      const instanceId = ProviderInstanceId.make("synthetic-codex");
+      const occurredAt = DateTime.makeUnsafe(now);
+      const thread: OrchestrationV2AppThread = {
+        createdBy: "user",
+        creationSource: "web",
+        id: threadId,
+        projectId: ProjectId.make("project-synthetic"),
+        title: "Synthetic thread",
+        providerInstanceId: instanceId,
+        modelSelection: { instanceId, model: "synthetic-model" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "synthetic-branch",
+        worktreePath: null,
+        activeProviderThreadId: null,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+        forkedFrom: null,
+        createdAt: occurredAt,
+        updatedAt: occurredAt,
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        lastVisitedAt: null,
+        deletedAt: null,
+        pinnedAt: occurredAt,
+        pinOrderKey: "synthetic-order",
+        snoozedAt: occurredAt,
+        snoozedUntil: DateTime.makeUnsafe("2030-01-01T00:00:00.000Z"),
       };
-      const before = structuredClone(model);
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("event-synthetic-birth"),
+            threadId,
+            providerInstanceId: instanceId,
+            type: "thread.created",
+            occurredAt,
+            payload: thread,
+          },
+          {
+            id: EventId.make("event-synthetic-history"),
+            threadId,
+            providerInstanceId: instanceId,
+            type: "message.updated",
+            occurredAt,
+            payload: {
+              id: MessageId.make("message-synthetic-history"),
+              threadId,
+              runId: null,
+              nodeId: null,
+              createdBy: "user",
+              creationSource: "web",
+              role: "user",
+              text: "Synthetic retained history",
+              attachments: [],
+              streaming: false,
+              createdAt: occurredAt,
+              updatedAt: occurredAt,
+            },
+          },
+        ],
+      });
+      const before = yield* projection.getThreadProjection(threadId);
+      const sequenceBefore = yield* (yield* EventStore.EventStoreV2).latestApplicationSequence;
       const fixture = makeProviderFixture();
+      let calls = 0;
       const provider = makeWorkstreamsNativeProvider({
         ...fixture.ports,
-        engine: {
-          dispatch: (command) =>
+        eventSink: sink,
+        threadExists: (id) =>
+          projection.getThreadShell(id).pipe(Effect.map((value) => value !== null)),
+        orchestrator: {
+          dispatchNativeWorkstreamSettlement: (input) =>
             Effect.gen(function* () {
-              const outcome = yield* decideOrchestrationCommand({ command, readModel: model }).pipe(
-                Effect.result,
-              );
-              assert.strictEqual(outcome._tag, "Failure");
-              if (outcome._tag !== "Failure") throw new Error("Expected native rejection.");
-              assert.strictEqual(outcome.failure._tag, "OrchestrationThreadSettleBlockedError");
-              fixture.receipts.set(command.commandId, {
-                commandId: command.commandId,
-                aggregateKind: "thread",
-                aggregateId: threadId,
-                acceptedAt: now,
-                resultSequence: model.snapshotSequence,
-                status: "rejected",
-                error: "synthetic policy denial",
-              });
-              return yield* new OrchestrationThreadSettleBlockedError({ threadId });
-            }).pipe(Effect.provideService(Crypto.Crypto, crypto)),
+              calls += 1;
+              assert.notStrictEqual(input.attempt.dispatchStartedAt, null);
+              return yield* dispatchNativeWorkstreamSettlement(input);
+            }),
         },
       });
       const result = yield* provider.settle(binding, request, requestBytesSha256);
-      assert.strictEqual(result.state, "terminal");
-      if (result.state === "terminal") assert.strictEqual(result.result.native_outcome, "denied");
-      assert.deepEqual(model, before);
-      assert.strictEqual(fixture.events.size, 0);
-      assert.strictEqual(fixture.receipts.size, 1);
-    }).pipe(Effect.provideService(Crypto.Crypto, crypto)),
+      assert.strictEqual(result.state, "unknown");
+      if (result.state === "unknown") assert.strictEqual(result.reason, "authority_unavailable");
+      const attempt = fixture.attempts.get(fixture.key(request))!;
+      const facts = yield* sink.readNativeCommandFacts({
+        threadId,
+        commandId: CommandId.make(attempt.nativeCommandId),
+      });
+      assert.isNull(facts.receipt);
+      assert.isNull(facts.identity);
+      assert.deepEqual(facts.eventMetadata, []);
+      assert.deepEqual(facts.events, []);
+      assert.strictEqual(facts.snapshotSequence, sequenceBefore);
+      assert.deepEqual(yield* projection.getThreadProjection(threadId), before);
+      yield* provider.settle(binding, request, requestBytesSha256);
+      yield* provider.lookup(binding, request, requestBytesSha256);
+      assert.strictEqual(calls, 1);
+    }).pipe(
+      Effect.provide(Layer.fresh(testLayer)),
+      Effect.provideService(EnvironmentAuthenticatedPrincipal, nativeTestPrincipal),
+    ),
 );

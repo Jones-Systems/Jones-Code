@@ -13,7 +13,9 @@ export type McpCapability =
   | "device"
   | "pull-requests"
   | "organization"
-  | "decision-snapshot";
+  | "decision-snapshot"
+  | "orchestration"
+  | "worktree";
 
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;

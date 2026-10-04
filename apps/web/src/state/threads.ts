@@ -8,15 +8,31 @@ import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadState,
   createThreadEnvironmentAtoms,
-  isThreadSessionRunning,
 } from "@t3tools/client-runtime/state/threads";
-import type { EnvironmentId, OrchestrationThreadShell, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationV2OperatingCountsResult,
+  OrchestrationV2ShellSnapshot,
+  OrchestrationV2ThreadRuntimeObservationResult,
+  OrchestrationV2ThreadShell,
+  ScopedProjectRef,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
-import { environmentSnapshotAtom } from "./shell";
+import { environmentShell, environmentSnapshotAtom } from "./shell";
+import {
+  createThreadContinuationAtoms,
+  resolveOperatingCounts,
+  resolveThreadOperatingState,
+  resolveThreadRuntimeObservation,
+} from "@t3tools/client-runtime/state/thread-continuation";
 
 export const threadEnvironment = createThreadEnvironmentAtoms(
   connectionAtomRuntime,
@@ -31,6 +47,123 @@ export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   snapshotAtom: threadEnvironment.snapshotAtom,
 });
 
+export const threadContinuation = createThreadContinuationAtoms(connectionAtomRuntime, {
+  threadRefreshAtom: environmentThreadShells.threadShellAtom,
+  snapshotAtom: environmentSnapshotAtom,
+});
+
+export type ThreadOperatingState = ReturnType<typeof resolveThreadOperatingState>;
+
+export function createThreadOperatingStatesAtom<E>(input: {
+  readonly threadsAtom: Atom.Atom<ReadonlyArray<EnvironmentThreadShell>>;
+  readonly isCurrentAtom: (environmentId: EnvironmentId) => Atom.Atom<boolean>;
+  readonly observationAtom: (
+    ref: ScopedThreadRef,
+  ) => Atom.Atom<AsyncResult.AsyncResult<OrchestrationV2ThreadRuntimeObservationResult, E>>;
+}) {
+  return Atom.make((get): ReadonlyMap<string, ThreadOperatingState> => {
+    const states = new Map<string, ThreadOperatingState>();
+    for (const thread of get(input.threadsAtom)) {
+      if (thread.archivedAt !== null) continue;
+      const ref = { environmentId: thread.environmentId, threadId: thread.id };
+      const current = get(input.isCurrentAtom(thread.environmentId));
+      const observation = current
+        ? resolveThreadRuntimeObservation(get(input.observationAtom(ref)), thread)
+        : { status: "unknown" as const, reason: "Current shell projection is unavailable." };
+      states.set(
+        scopedThreadKey(ref),
+        resolveThreadOperatingState(current ? thread : { ...thread, runtime: null }, observation),
+      );
+    }
+    return states;
+  }).pipe(Atom.withLabel("web-thread-operating-states"));
+}
+
+const currentShellAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.map(
+    environmentShell.stateValueAtom(environmentId),
+    (state) => state.status === "live" && Option.isNone(state.error),
+  ),
+);
+export const threadOperatingStatesAtom = createThreadOperatingStatesAtom({
+  threadsAtom: environmentThreadShells.threadShellsAtom,
+  isCurrentAtom: currentShellAtom,
+  observationAtom: (ref) =>
+    threadContinuation.runtimeObservation({
+      environmentId: ref.environmentId,
+      input: { threadId: ref.threadId },
+    }),
+});
+
+export function useThreadOperatingStates() {
+  return useAtomValue(threadOperatingStatesAtom);
+}
+
+type OperatingCountRequest = {
+  readonly environmentId: EnvironmentId;
+  readonly projectId?: ScopedProjectRef["projectId"];
+};
+
+export function createOperatingCountAtom<E>(input: {
+  readonly requestsAtom: Atom.Atom<ReadonlyArray<OperatingCountRequest>>;
+  readonly isCurrentAtom: (environmentId: EnvironmentId) => Atom.Atom<boolean>;
+  readonly snapshotAtom: (
+    environmentId: EnvironmentId,
+  ) => Atom.Atom<OrchestrationV2ShellSnapshot | null>;
+  readonly countsAtom: (
+    ref: OperatingCountRequest,
+  ) => Atom.Atom<AsyncResult.AsyncResult<OrchestrationV2OperatingCountsResult, E>>;
+}) {
+  return Atom.make((get): number | null => {
+    const requests = get(input.requestsAtom);
+    let total = 0;
+    for (const ref of requests) {
+      if (!get(input.isCurrentAtom(ref.environmentId))) return null;
+      const snapshot = get(input.snapshotAtom(ref.environmentId));
+      if (snapshot === null) return null;
+      const state = resolveOperatingCounts(get(input.countsAtom(ref)), snapshot.snapshotSequence);
+      if (state.counts === null) return null;
+      total += state.counts.operating;
+    }
+    return requests.length === 0 ? null : total;
+  });
+}
+
+const operatingCountAtom = Atom.family((scope: string) => {
+  const refs = JSON.parse(scope) as ReadonlyArray<ScopedProjectRef> | null;
+  return createOperatingCountAtom({
+    requestsAtom: Atom.make(
+      (get) =>
+        refs ??
+        Array.from(
+          enabledEnvironmentIds(get(environmentCatalog.catalogValueAtom)),
+          (environmentId) => ({ environmentId }),
+        ),
+    ),
+    isCurrentAtom: currentShellAtom,
+    snapshotAtom: environmentSnapshotAtom,
+    countsAtom: (ref) =>
+      threadContinuation.operatingCounts({
+        environmentId: ref.environmentId,
+        input: ref.projectId === undefined ? {} : { projectId: ref.projectId },
+      }),
+  }).pipe(Atom.withLabel(`web-operating-count:${scope}`));
+});
+
+export function useOperatingCount(refs: ReadonlyArray<ScopedProjectRef> | null = null) {
+  const scope =
+    refs === null
+      ? "null"
+      : JSON.stringify(
+          [
+            ...new Map(refs.map((ref) => [`${ref.environmentId}:${ref.projectId}`, ref])).values(),
+          ].sort((a, b) =>
+            `${a.environmentId}:${a.projectId}`.localeCompare(`${b.environmentId}:${b.projectId}`),
+          ),
+        );
+  return useAtomValue(operatingCountAtom(scope));
+}
+
 const EMPTY_THREAD_STATE_ATOM = Atom.make(AsyncResult.success(EMPTY_ENVIRONMENT_THREAD_STATE)).pipe(
   Atom.withLabel("web-environment-thread:empty"),
 );
@@ -44,11 +177,15 @@ export function useEnvironmentThread(
       ? environmentThreads.stateAtom(environmentId, threadId)
       : EMPTY_THREAD_STATE_ATOM,
   );
-  return Option.getOrElse(
+  const state = Option.getOrElse(
     AsyncResult.value(result),
     () => EMPTY_ENVIRONMENT_THREAD_STATE,
   ) as EnvironmentThreadState;
+  return state;
 }
+
+const isRunning = (status: string) =>
+  status === "preparing" || status === "starting" || status === "running";
 
 type KeptThreads = ReadonlyMap<EnvironmentId, ReadonlySet<ThreadId>>;
 
@@ -60,7 +197,8 @@ function isDetailDone<E>(result: AsyncResult.AsyncResult<EnvironmentThreadState,
   const { status, data, error } = result.value;
   if (status === "deleted" || Option.isSome(error)) return true;
   return (
-    status === "live" && !Option.exists(data, (thread) => isThreadSessionRunning(thread.session))
+    status === "live" &&
+    !Option.exists(data, (thread) => thread.runs.some((run) => isRunning(run.status)))
   );
 }
 
@@ -77,7 +215,7 @@ export function createRunningThreadKeepAliveAtom<E>(input: {
   readonly environmentIdsAtom: Atom.Atom<ReadonlyArray<EnvironmentId>>;
   readonly threadsAtom: (
     environmentId: EnvironmentId,
-  ) => Atom.Atom<ReadonlyArray<Pick<OrchestrationThreadShell, "id" | "session">>>;
+  ) => Atom.Atom<ReadonlyArray<Pick<OrchestrationV2ThreadShell, "id" | "status">>>;
   readonly stateAtom: (
     environmentId: EnvironmentId,
     threadId: ThreadId,
@@ -89,7 +227,7 @@ export function createRunningThreadKeepAliveAtom<E>(input: {
     let previous: ReadonlyArray<ThreadId> = [];
     return Atom.make((get) => {
       const running = get(input.threadsAtom(environmentId)).flatMap((thread) =>
-        isThreadSessionRunning(thread.session) ? [thread.id] : [],
+        isRunning(thread.status) ? [thread.id] : [],
       );
       if (arrayElementsEqual(previous, running)) return previous;
       previous = running;

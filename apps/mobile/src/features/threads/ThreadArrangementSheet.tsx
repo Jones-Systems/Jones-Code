@@ -159,7 +159,7 @@ function DragHandle(props: {
 
 export function ThreadArrangementSheet(props: { onClose: () => void }) {
   const insets = useSafeAreaInsets();
-  const threads = useAtomValue(environmentThreadShells.threadShellsAtom);
+  const threads = useAtomValue(environmentThreadShells.navigationThreadShellsAtom);
   const workstreams = useMobileWorkstreams(threads);
   const configs = useAtomValue(environmentServerConfigsAtom);
   const queuedThreadKeys = useAtomValue(queuedThreadKeysAtom);

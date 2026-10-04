@@ -5,10 +5,11 @@ import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 import { chatGptModels } from "../CodexChatGptModels.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
 import { ProviderDriverError } from "../Errors.ts";
-import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
+import { createCodexAdapterV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
@@ -29,6 +30,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const http = yield* HttpClient.HttpClient;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const settings = yield* ServerSettingsService;
+  const processAttribution = yield* ProcessAttribution.ProcessAttribution;
   const runtime = yield* makeCodexManagedRuntime({
     instanceId,
     enabled,
@@ -209,15 +211,35 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   yield* runtime.auth.controller.subscribe("managed-codex-snapshot").pipe(
     // Disconnect also publishes idle when a saved account has no active sign-in flow.
     Stream.filter((state) => ["idle", "succeeded", "failed", "cancelled"].includes(state.phase)),
-    Stream.runForEach(() => snapshot.refresh.pipe(Effect.asVoid)),
+    // Sign-out closes the scope of an in-flight probe, which fails that refresh
+    // with an interrupt. Keep listening so the sign-out's own idle still refreshes.
+    Stream.runForEach(() => snapshot.refresh.pipe(Effect.ignoreCause({ log: true }))),
     Effect.forkScoped,
   );
   const resolveRuntime = runtime.auth.controller.withAccess!(runtime.resolve);
-  const adapter = yield* makeCodexAdapter(config, {
-    instanceId,
-    resolveRuntime,
-    onManagedConnectionRevoked: runtime.auth.revoke.pipe(Effect.ignore),
-  });
+  // The registry already protects openSession with withAccess, so its resolver
+  // stays raw. Later sends use the separately protected current-token resolver.
+  const orchestrationAdapter = yield* createCodexAdapterV2(input, {
+    processAttribution,
+    onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+    getModelCatalog: () => snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+    resolveRuntime: runtime.resolve,
+    readRuntimeRevisionForSend: runtime.auth.controller.withAccess!(
+      runtime.auth.access.pipe(Effect.map((credentials) => credentials.accessToken)),
+    ),
+    resolveRuntimeForSend: resolveRuntime,
+    continuationHomeLayout: runtime.homeLayout,
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ProviderDriverError({
+          driver: DRIVER,
+          instanceId,
+          detail: "Failed to build Codex orchestration adapter.",
+          cause,
+        }),
+    ),
+  );
   const nativeGeneration = yield* makeCodexTextGeneration(
     config,
     undefined,
@@ -253,7 +275,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     accentColor,
     enabled,
     snapshot,
-    adapter,
+    orchestrationAdapter,
     textGeneration,
     auth: runtime.auth.controller,
     snapshotForCwd: (cwd: string) =>

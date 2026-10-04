@@ -1,6 +1,7 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
+import { makeThreadShellFixture } from "../../test-fixtures";
 import { nativeWorkstreamThreadKey } from "@t3tools/client-runtime/state/workstreams";
 import {
   buildThreadListV2Items,
@@ -12,10 +13,10 @@ import { projectMobileWorkstreamList, mobileWorkstreamMoveDestination } from "./
 
 const now = "2026-10-01T12:00:00Z";
 function thread(id: string, pinned: boolean, activeOrderKey: string): EnvironmentThreadShell {
-  return {
+  return makeThreadShellFixture({
     environmentId: EnvironmentId.make("env:one"),
     id: ThreadId.make(id),
-    projectId: "repo",
+    projectId: ProjectId.make("repo"),
     title: id,
     archivedAt: null,
     createdAt: "2026-09-30T12:00:00Z",
@@ -24,12 +25,10 @@ function thread(id: string, pinned: boolean, activeOrderKey: string): Environmen
     pinnedAt: pinned ? "2026-09-29T12:00:00Z" : null,
     pinOrderKey: pinned ? "zz" : null,
     activeOrderKey,
-    session: null,
-    latestTurn: null,
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
-  } as EnvironmentThreadShell;
+  });
 }
 const pin = thread("same:id", true, "aa");
 const member = thread("member", false, "bb");

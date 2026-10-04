@@ -1,4 +1,5 @@
 import { resolveSidebarThreadStatus } from "../Sidebar.logic";
+import type { ThreadOperatingState } from "../../state/threads";
 import {
   nativeWorkstreamThreadKey,
   type NativeWorkstreamThreadGrouping,
@@ -23,8 +24,9 @@ type StatusThread = Parameters<typeof resolveSidebarThreadStatus>[0] & {
   readonly id: string;
 };
 
-export function summarizeWorkstreamThreadStatuses(
-  grouping: Pick<NativeWorkstreamThreadGrouping<StatusThread>, "groups">,
+export function summarizeWorkstreamThreadStatuses<T extends StatusThread>(
+  grouping: Pick<NativeWorkstreamThreadGrouping<T>, "groups">,
+  getOperatingState?: (thread: T) => ThreadOperatingState | undefined,
 ): ReadonlyMap<string, WorkstreamThreadStatusSummary> {
   const summaries = new Map<string, WorkstreamThreadStatusSummary>();
   for (const group of grouping.groups) {
@@ -36,7 +38,15 @@ export function summarizeWorkstreamThreadStatuses(
       const key = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
       if (seen.has(key)) continue;
       seen.add(key);
-      const status = resolveSidebarThreadStatus(thread);
+      const current = getOperatingState?.(thread);
+      const status = resolveSidebarThreadStatus(thread, current);
+      if (getOperatingState !== undefined) {
+        if (current?.workstreamRunning === true) running += 1;
+        if (current?.foregroundAttention !== null && current?.foregroundAttention !== undefined)
+          waiting += 1;
+        if (status === "failed") failed += 1;
+        continue;
+      }
       if (status === "working") running += 1;
       else if (status === "approval" || status === "input") waiting += 1;
       else if (status === "failed") failed += 1;

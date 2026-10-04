@@ -1,6 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   EnvironmentId as EnvironmentIdSchema,
+  CommandId,
+  ThreadId,
+  MessageId,
+  RunId,
   ModelSelection as ModelSelectionSchema,
   ComposerContextId,
   ComposerContextRecord,
@@ -10,11 +14,13 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProjectId as ProjectIdSchema,
   ProviderInteractionMode as ProviderInteractionModeSchema,
+  ProviderOptionSelection as ProviderOptionSelectionSchema,
   RuntimeMode as RuntimeModeSchema,
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
   type ProviderInteractionMode,
+  type ProviderOptionSelection,
   type RuntimeMode,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -23,6 +29,7 @@ import { Atom } from "effect/unstable/reactivity";
 
 import { writeFileAtomically } from "../lib/atomic-file";
 import { createComposerContextHistory, referencedComposerContext } from "../lib/composerContext";
+import { isQueuedEditDraftKey } from "./queued-edit-draft-key";
 import {
   collectComposerContextReferences,
   formatComposerContextReference,
@@ -321,11 +328,24 @@ export class ComposerDraftPersistenceError extends Schema.TaggedError<ComposerDr
   }
 }
 
+export const ImportedContinuationPointerSchema = Schema.Struct({
+  environmentId: EnvironmentIdSchema,
+  threadId: ThreadId,
+  commandId: CommandId,
+  target: Schema.Union([
+    Schema.Struct({ type: Schema.Literal("message"), messageId: MessageId }),
+    Schema.Struct({ type: Schema.Literal("queued_run"), runId: RunId, messageId: MessageId }),
+  ]),
+});
+export type ImportedContinuationPointer = typeof ImportedContinuationPointerSchema.Type;
+
 export interface ComposerDraft {
   readonly text: string;
   readonly context?: OrchestrationMessageContext;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly importedShareIds?: ReadonlyArray<string>;
+  /** Receipt lookup correlation only; the server owns admission and execution. */
+  readonly importedContinuation?: ImportedContinuationPointer;
   readonly modelSelection?: ModelSelection;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: ProviderInteractionMode;
@@ -388,6 +408,7 @@ const ComposerDraftSchema = Schema.Struct({
   context: Schema.optional(PersistedComposerContextSchema),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   importedShareIds: Schema.optional(Schema.Array(Schema.String)),
+  importedContinuation: Schema.optional(ImportedContinuationPointerSchema),
   modelSelection: Schema.optional(ModelSelectionSchema),
   runtimeMode: Schema.optional(RuntimeModeSchema),
   interactionMode: Schema.optional(ProviderInteractionModeSchema),
@@ -399,6 +420,12 @@ const PersistedComposerDraftsSchema = Schema.Struct({
   schemaVersion: Schema.Literal(COMPOSER_DRAFTS_SCHEMA_VERSION),
   drafts: Schema.Record(Schema.String, ComposerDraftSchema),
   stickyModelSelection: Schema.optional(ModelSelectionSchema),
+  modelOptionMemory: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Record(Schema.String, Schema.Array(ProviderOptionSelectionSchema)),
+    ),
+  ),
   cloudAccountId: Schema.optional(Schema.String),
   signedOutDrafts: Schema.optional(
     Schema.Record(
@@ -428,6 +455,15 @@ export const composerDraftsAtom = Atom.make<Record<string, ComposerDraft>>({}).p
 export const stickyComposerModelSelectionAtom = Atom.make<ModelSelection | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("mobile:sticky-composer-model-selection"),
+);
+
+export type ModelOptionMemoryState = Readonly<
+  Record<string, Readonly<Record<string, ReadonlyArray<ProviderOptionSelection>>>>
+>;
+
+export const modelOptionMemoryAtom = Atom.make<ModelOptionMemoryState>({}).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("mobile:model-option-memory"),
 );
 
 interface SignedOutDrafts {
@@ -546,7 +582,8 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.modelSelection === undefined &&
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
-    draft.workspaceSelection === undefined
+    draft.workspaceSelection === undefined &&
+    draft.importedContinuation === undefined
   );
 }
 
@@ -608,6 +645,7 @@ export function migrateLegacyNewTaskDraft(
 export function decodePersistedComposerState(value: unknown): {
   readonly drafts: Record<string, ComposerDraft>;
   readonly stickyModelSelection: ModelSelection | null;
+  readonly modelOptionMemory: ModelOptionMemoryState;
   readonly cloudDrafts: ComposerCloudDraftState;
 } {
   const parsed = decodePersistedComposerDraftsDocument(value);
@@ -639,9 +677,14 @@ export function decodePersistedComposerState(value: unknown): {
         // importedShareIds are share-import receipts: a contentless draft
         // carrying one is not empty, or the same native share would be
         // re-imported after restart.
-        .filter(([, draft]) => !isEmptyDraft(draft) || (draft.importedShareIds?.length ?? 0) > 0),
+        .filter(([, draft]) => !isEmptyDraft(draft) || (draft.importedShareIds?.length ?? 0) > 0)
+        // Queued-message edits are in-memory sessions. Their draft outlives a
+        // restart on disk, but the edit record that says which run it belongs
+        // to does not, so the draft would be unreachable and invisible.
+        .filter(([key]) => !isQueuedEditDraftKey(key)),
     ),
     stickyModelSelection: parsed.stickyModelSelection ?? null,
+    modelOptionMemory: parsed.modelOptionMemory ?? {},
     cloudDrafts: {
       accountId: parsed.cloudAccountId ?? null,
       signedOut: Object.fromEntries(
@@ -680,6 +723,7 @@ async function loadPersistedComposerState(): Promise<
       return {
         drafts: {},
         stickyModelSelection: null,
+        modelOptionMemory: {},
         cloudDrafts: { accountId: null, signedOut: {} },
       };
     }
@@ -713,6 +757,9 @@ async function writePersistedComposerState(
       schemaVersion: COMPOSER_DRAFTS_SCHEMA_VERSION,
       drafts: nonEmptyDrafts,
       ...(stickyModelSelection ? { stickyModelSelection } : {}),
+      ...(Object.keys(appAtomRegistry.get(modelOptionMemoryAtom)).length > 0
+        ? { modelOptionMemory: appAtomRegistry.get(modelOptionMemoryAtom) }
+        : {}),
       ...(cloudDrafts.accountId ? { cloudAccountId: cloudDrafts.accountId } : {}),
       ...(Object.keys(cloudDrafts.signedOut).length > 0
         ? {
@@ -969,7 +1016,7 @@ registerComposerAttachmentUnusedHandler((attachment) => {
   scheduleUnusedComposerAttachmentCleanup([attachment]);
 });
 
-function schedulePersistComposerState(): void {
+export function schedulePersistComposerState(): void {
   if (persistTimer !== null) {
     clearTimeout(persistTimer);
   }
@@ -1014,6 +1061,18 @@ export function ensureComposerDraftsLoaded(): void {
       appAtomRegistry.get(stickyComposerModelSelectionAtom) === null
     ) {
       appAtomRegistry.set(stickyComposerModelSelectionAtom, persisted.stickyModelSelection);
+    }
+    if (Object.keys(persisted.modelOptionMemory).length > 0) {
+      const current = appAtomRegistry.get(modelOptionMemoryAtom);
+      appAtomRegistry.set(modelOptionMemoryAtom, {
+        ...persisted.modelOptionMemory,
+        ...Object.fromEntries(
+          Object.entries(current).map(([instanceId, models]) => [
+            instanceId,
+            { ...(persisted.modelOptionMemory[instanceId] ?? {}), ...models },
+          ]),
+        ),
+      });
     }
   });
   loadPromise = loading;
@@ -1454,6 +1513,40 @@ export function setComposerDraftAttachmentUpload(
   });
   if (previous) scheduleUnusedComposerAttachmentCleanup([previous]);
   return previous !== undefined;
+}
+
+export async function saveComposerImportedContinuationPointer(
+  draftKey: string,
+  pointer: ImportedContinuationPointer,
+): Promise<void> {
+  await waitForComposerDraftsLoaded();
+  if (draftKey !== `${pointer.environmentId}:${pointer.threadId}`) {
+    throw new Error("Imported continuation belongs to another draft.");
+  }
+  const previous = getComposerDraftSnapshot(draftKey).importedContinuation;
+  if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(pointer)) {
+    throw new Error("Observe the existing imported continuation before starting another.");
+  }
+  updateComposerDrafts((current) => ({
+    ...current,
+    [draftKey]: { ...normalizeDraft(current[draftKey]), importedContinuation: pointer },
+  }));
+  await flushComposerDrafts();
+}
+
+export function clearComposerImportedContinuationPointer(
+  draftKey: string,
+  expected: ImportedContinuationPointer,
+): boolean {
+  const draft = getComposerDraftSnapshot(draftKey);
+  if (
+    draftKey !== `${expected.environmentId}:${expected.threadId}` ||
+    JSON.stringify(draft.importedContinuation) !== JSON.stringify(expected)
+  )
+    return false;
+  const { importedContinuation: _pointer, ...retained } = draft;
+  updateComposerDrafts((current) => withComposerDraft(current, draftKey, retained));
+  return true;
 }
 
 export function updateComposerDraftSettings(

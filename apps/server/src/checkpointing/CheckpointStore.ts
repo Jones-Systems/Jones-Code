@@ -22,12 +22,14 @@ import type { CheckpointStoreError } from "./Errors.ts";
 import type { VcsCheckpointOps } from "../vcs/VcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
-export interface CaptureCheckpointInput {
+export interface CaptureCheckpointInput<E = never, R = never> {
+  readonly revalidateMutation?: Effect.Effect<void, E, R>;
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
 }
 
-export interface RestoreCheckpointInput {
+export interface RestoreCheckpointInput<E = never, R = never> {
+  readonly revalidateMutation?: Effect.Effect<void, E, R>;
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
   readonly fallbackToHead?: boolean;
@@ -42,7 +44,8 @@ export interface DiffCheckpointsInput {
   readonly format?: "patch" | "numstat";
 }
 
-export interface DeleteCheckpointRefsInput {
+export interface DeleteCheckpointRefsInput<E = never, R = never> {
+  readonly revalidateMutation?: Effect.Effect<void, E, R>;
   readonly cwd: string;
   readonly checkpointRefs: ReadonlyArray<CheckpointRef>;
 }
@@ -59,9 +62,9 @@ export class CheckpointStore extends Context.Service<
      *
      * Uses an isolated temporary Git index and writes a hidden ref.
      */
-    readonly captureCheckpoint: (
-      input: CaptureCheckpointInput,
-    ) => Effect.Effect<void, CheckpointStoreError>;
+    readonly captureCheckpoint: <E = never, R = never>(
+      input: CaptureCheckpointInput<E, R>,
+    ) => Effect.Effect<void, CheckpointStoreError | E, R>;
 
     /** Check whether a checkpoint ref exists. */
     readonly hasCheckpointRef: (
@@ -73,9 +76,9 @@ export class CheckpointStore extends Context.Service<
      *
      * Optionally falls back to current `HEAD` when the checkpoint ref is missing.
      */
-    readonly restoreCheckpoint: (
-      input: RestoreCheckpointInput,
-    ) => Effect.Effect<boolean, CheckpointStoreError>;
+    readonly restoreCheckpoint: <E = never, R = never>(
+      input: RestoreCheckpointInput<E, R>,
+    ) => Effect.Effect<boolean, CheckpointStoreError | E, R>;
 
     /**
      * Compute a diff between two checkpoint refs. Defaults to a full patch.
@@ -92,9 +95,9 @@ export class CheckpointStore extends Context.Service<
      *
      * Best-effort delete: missing refs are tolerated.
      */
-    readonly deleteCheckpointRefs: (
-      input: DeleteCheckpointRefsInput,
-    ) => Effect.Effect<void, CheckpointStoreError>;
+    readonly deleteCheckpointRefs: <E = never, R = never>(
+      input: DeleteCheckpointRefsInput<E, R>,
+    ) => Effect.Effect<void, CheckpointStoreError | E, R>;
   }
 >()("t3/checkpointing/CheckpointStore") {}
 
@@ -124,7 +127,9 @@ export const make = Effect.gen(function* () {
 
   const captureCheckpoint: CheckpointStore["Service"]["captureCheckpoint"] = Effect.fn(
     "captureCheckpoint",
-  )(function* (input) {
+  )(function* <E = never, R = never>(
+    input: CaptureCheckpointInput<E, R>,
+  ): Effect.fn.Return<void, CheckpointStoreError | E, R> {
     const checkpoints = yield* resolveCheckpoints("CheckpointStore.captureCheckpoint", input.cwd);
     return yield* checkpoints.captureCheckpoint(input);
   });
@@ -138,7 +143,9 @@ export const make = Effect.gen(function* () {
 
   const restoreCheckpoint: CheckpointStore["Service"]["restoreCheckpoint"] = Effect.fn(
     "restoreCheckpoint",
-  )(function* (input) {
+  )(function* <E = never, R = never>(
+    input: RestoreCheckpointInput<E, R>,
+  ): Effect.fn.Return<boolean, CheckpointStoreError | E, R> {
     const checkpoints = yield* resolveCheckpoints("CheckpointStore.restoreCheckpoint", input.cwd);
     return yield* checkpoints.restoreCheckpoint(input);
   });
@@ -152,7 +159,9 @@ export const make = Effect.gen(function* () {
 
   const deleteCheckpointRefs: CheckpointStore["Service"]["deleteCheckpointRefs"] = Effect.fn(
     "deleteCheckpointRefs",
-  )(function* (input) {
+  )(function* <E = never, R = never>(
+    input: DeleteCheckpointRefsInput<E, R>,
+  ): Effect.fn.Return<void, CheckpointStoreError | E, R> {
     const checkpoints = yield* resolveCheckpoints(
       "CheckpointStore.deleteCheckpointRefs",
       input.cwd,

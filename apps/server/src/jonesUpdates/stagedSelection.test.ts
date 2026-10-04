@@ -76,6 +76,19 @@ async function fixture() {
 }
 
 describe("durable native staging selection", () => {
+  it("rejects a retained legacy stage when the running store selects V2", async () => {
+    const f = await fixture();
+    await retainStagedSelection(f.selection);
+    const selected = NodePath.join(f.root, "userdata", "statev2.sqlite");
+    await NodeFSP.writeFile(selected, "unqualified-selected-state");
+    await expect(restoreStagedSelection(f.root, f.baseline, selected)).rejects.toThrow(
+      "selected database",
+    );
+    expect(await restoreStagedSelection(f.root, f.baseline, f.selection.binding.dbPath)).toEqual(
+      f.selection,
+    );
+    expect(await NodeFSP.readFile(selected, "utf8")).toBe("unqualified-selected-state");
+  });
   it("restores the exact handle after checker restart without changing live state", async () => {
     const f = await fixture();
     await retainStagedSelection(f.selection);

@@ -9,22 +9,26 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { annotateEnvironmentRequest, requireEnvironmentScope } from "../../auth/http.ts";
 import { NativeStoreAuthority } from "../../environment/NativeStoreAuthority.ts";
-import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
-import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { EventSinkV2 } from "../../orchestration-v2/EventSink.ts";
+import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
+import { ProjectionStoreV2 } from "../../orchestration-v2/ProjectionStore.ts";
 import { NativeEnrollmentsLive, NativeProviderEnrollmentLive } from "../enrollment/service.ts";
 import {
   NativeProviderAttempts,
   NativeProviderAttemptsLive,
 } from "../nativeProvider/attemptRepository.ts";
-import { NativeProviderEnrollment, NATIVE_PROVIDER_SCOPES } from "../nativeProvider/enrollment.ts";
+import {
+  NativeProviderBuild,
+  NativeProviderEnrollment,
+  NATIVE_PROVIDER_SCOPES,
+} from "../nativeProvider/enrollment.ts";
 import {
   createNativeProviderHandlers,
   type NativeProviderOperation,
 } from "../nativeProvider/http.ts";
 import {
   makeWorkstreamsNativeProvider,
+  NativeProviderBuildLive,
   type WorkstreamsNativeProvider,
 } from "../nativeProvider/service.ts";
 
@@ -36,32 +40,54 @@ export class NativeWorkstreamsRuntime extends Context.Service<
   }
 >()("t3/workstreams/runtimeIntegration/native/NativeWorkstreamsRuntime") {}
 
+export const makeNativeWorkstreamsRuntime = Effect.gen(function* () {
+  const authority = yield* NativeStoreAuthority;
+  const query = yield* ProjectionStoreV2;
+  const orchestrator = yield* ThreadManagementService;
+  const eventSink = yield* EventSinkV2;
+  const attempts = yield* NativeProviderAttempts;
+  const enrollments = yield* NativeProviderEnrollment;
+  const build = yield* NativeProviderBuild;
+  return NativeWorkstreamsRuntime.of({
+    enrollments,
+    provider: makeWorkstreamsNativeProvider({
+      authority,
+      threadExists: (threadId) =>
+        query.getThreadShell(threadId).pipe(Effect.map((thread) => thread !== null)),
+      orchestrator: {
+        dispatchNativeWorkstreamSettlement: (input) =>
+          orchestrator
+            .dispatchNativeWorkstreamSettlement(input)
+            .pipe(
+              Effect.provideService(NativeStoreAuthority, authority),
+              Effect.provideService(NativeProviderEnrollment, enrollments),
+              Effect.provideService(NativeProviderAttempts, attempts),
+              Effect.provideService(NativeProviderBuild, build),
+            ),
+        observeNativeWorkstreamSettlementBinding: (input) =>
+          orchestrator
+            .observeNativeWorkstreamSettlementBinding(input)
+            .pipe(
+              Effect.provideService(NativeStoreAuthority, authority),
+              Effect.provideService(NativeProviderEnrollment, enrollments),
+              Effect.provideService(NativeProviderAttempts, attempts),
+              Effect.provideService(NativeProviderBuild, build),
+            ),
+      },
+      eventSink,
+      attempts,
+      build: build.readCurrent,
+    }),
+  });
+});
+
 export const nativeWorkstreamsRuntimeLayer = Layer.effect(
   NativeWorkstreamsRuntime,
-  Effect.gen(function* () {
-    const authority = yield* NativeStoreAuthority;
-    const query = yield* ProjectionSnapshotQuery;
-    const engine = yield* OrchestrationEngineService;
-    const receipts = yield* OrchestrationCommandReceiptRepository;
-    const events = yield* OrchestrationEventStore;
-    const attempts = yield* NativeProviderAttempts;
-    const enrollments = yield* NativeProviderEnrollment;
-    return NativeWorkstreamsRuntime.of({
-      enrollments,
-      provider: makeWorkstreamsNativeProvider({
-        authority,
-        threadExists: (threadId) =>
-          query.getThreadShellById(threadId).pipe(Effect.map(Option.isSome)),
-        engine,
-        receipts,
-        events,
-        attempts,
-      }),
-    });
-  }),
+  makeNativeWorkstreamsRuntime,
 ).pipe(
   Layer.provide(NativeProviderAttemptsLive),
   Layer.provide(NativeProviderEnrollmentLive.pipe(Layer.provide(NativeEnrollmentsLive))),
+  Layer.provide(NativeProviderBuildLive),
 );
 
 const scopes = Object.values(NATIVE_PROVIDER_SCOPES);

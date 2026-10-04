@@ -35,6 +35,7 @@ import {
 export interface NativeEnrollmentCliLocation {
   readonly baseDir: string;
   readonly authorityDir: string;
+  readonly dbPath: string;
 }
 export class NativeEnrollmentCliContextError extends Schema.TaggedError<NativeEnrollmentCliContextError>()(
   "NativeEnrollmentCliContextError",
@@ -148,7 +149,7 @@ const capture = async (
   access: NativeEnrollmentSqliteAccess,
   phase: DatabaseReadPhase,
 ) => {
-  const { baseDir, authorityDir } = location;
+  const { baseDir, authorityDir, dbPath } = location;
   if (
     !NodePath.isAbsolute(baseDir) ||
     !NodePath.isAbsolute(authorityDir) ||
@@ -178,6 +179,7 @@ const capture = async (
     baseDir,
     SERVICE_LAUNCHER_PROTOCOL,
     packageJson.version,
+    dbPath,
   );
   const authority = readExistingNativeStoreAuthorityState(authorityDir);
   if (
@@ -189,7 +191,12 @@ const capture = async (
   const build = Schema.decodeUnknownSync(WorkstreamsNativeBuild)(
     (packageJson as { readonly jonesSource?: unknown }).jonesSource,
   );
-  const installed = await currentQualifiedRuntimeBinding(baseDir, launcher.activeVersion);
+  const installed = await currentQualifiedRuntimeBinding(
+    baseDir,
+    launcher.activeVersion,
+    undefined,
+    dbPath,
+  );
   const receipt = await readQualifiedRuntimeReceipt(baseDir, launcher.activeVersion);
   if (
     installed.activeVersion !== packageJson.version ||
@@ -198,7 +205,8 @@ const capture = async (
     receipt.sourceSha !== build.sha ||
     receipt.sourceTree !== build.tree ||
     installed.environmentId !== environmentId ||
-    installed.baseDir !== baseDir
+    installed.baseDir !== baseDir ||
+    installed.dbPath !== dbPath
   )
     fail("source_mismatch");
   const receiptText = ownedFile(

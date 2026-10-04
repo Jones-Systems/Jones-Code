@@ -41,6 +41,19 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Operating threads
+
+The **Operating** filter shows threads with a running or starting turn, current
+background work, or current monitoring. Settled and snoozed threads can still be
+Operating; archived threads are excluded. Approval, input, and plan prompts stay
+visible as attention states even when background work continues.
+
+The count covers the selected project or environment. A **—** count means the
+current count is unavailable. **Unknown** means current background activity
+could not be confirmed. Changing the selected account does not change which
+runtime is currently working. Workstream **Running** counts include confirmed
+work; monitoring alone does not add to Running.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it in Pinned when it is outside a Workstream. A pinned Workstream member stays pinned while appearing inside its group.
@@ -102,6 +115,15 @@ If dragging is unavailable for one environment, update the T3 Code server runnin
 environment. Pinned and active reordering require server support. Threads from older servers keep
 their default order until the server is updated.
 
+To generate a fresh title from the conversation, open a thread's menu and choose
+**Regenerate title**. The action is unavailable while title generation is in progress
+or when the connected environment needs a server update.
+
+Agents connected through T3 Code can use the same server-owned metadata workflow to
+rename a thread, regenerate its title, or link and unlink a pull request. These changes
+appear on web, desktop, and mobile without requiring the originating browser to remain
+open.
+
 ### Fold working threads (beta)
 
 On web and desktop, turn on **Settings → General → Working section (beta)** to move threads that
@@ -123,8 +145,15 @@ terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
 Choose **Kill Thread** from the same menu to stop the thread's current agent
-session without settling or moving the thread. Its conversation stays available;
-sending another message starts a session again. This action leaves terminals open.
+runtime. It is available when the environment supports the action and identifies
+an attached runtime, including an idle runtime or one reporting an error. The
+conversation, sidebar position, and terminals stay available.
+
+A pending stop does not mean the runtime has stopped. Use **Check status** on
+the notification, or **Check saved stop** after reloading, to check the original
+request. An unknown outcome keeps that request on hold; checking status does not
+send another stop or target a replacement runtime. Saved queued work remains
+held until you explicitly resume it.
 
 By default, environments settle inactive threads after three days and settle
 threads whose pull request merged. A closed pull request can also settle an idle
@@ -170,7 +199,34 @@ for custom configuration.
 
 ## Inspect agent work
 
+**Limited** means the provider stopped on a usage or rate limit. The conversation
+keeps the provider's explanation. Retry after the limit resets, or switch to
+another provider instance.
+On web and desktop, press **Resume** in an empty composer to continue a limited
+or interrupted turn manually.
+Queued messages stay saved while the limit blocks the thread. They run after
+the continuation finishes. If the queue was held by a restart, resume it then.
+
+When the provider reports a reset time, choose **Resume at reset** to schedule a
+continuation. You can cancel it from the thread. Enable **Auto-resume limited
+threads** in **Settings → General** on web and desktop, or **Settings → Thread
+behavior** on mobile, to schedule limit stops by default.
+The environment must be running when the reset arrives; it resumes overdue
+continuations after a restart. Sending a new message, archiving, or settling the
+thread prevents a pending continuation from starting.
+
+Choose **Snooze until reset** to hide the thread until its allowance returns.
+Snooze and auto-resume are independent: snooze alone wakes the thread without
+sending a message; enabling both wakes and continues it. **Wake now** cancels
+the snooze. Enable **Snooze limited threads** in thread behavior settings to
+snooze limit stops by default. Providers without a reset time offer manual
+retry and the normal snooze choices.
+
 On web and desktop, use **Agents** to follow work delegated to subagents.
+
+Subagent threads started by the agent can't take messages; message the parent
+thread instead. When such a subagent needs an approval or an answer, the parent
+thread asks for it.
 
 Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it

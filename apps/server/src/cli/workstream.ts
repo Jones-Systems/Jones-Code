@@ -19,7 +19,11 @@ const authorityEnrollCommand = Command.make("enroll", projectLocationFlags).pipe
       const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel);
       const state = yield* Effect.try({
         try: () =>
-          initializeNativeStoreAuthorityForBaseDir(config.baseDir, SERVICE_LAUNCHER_PROTOCOL),
+          initializeNativeStoreAuthorityForBaseDir(
+            config.baseDir,
+            SERVICE_LAUNCHER_PROTOCOL,
+            config.dbPath,
+          ),
         catch: (cause) =>
           cause instanceof NativeStoreAuthorityPersistenceError
             ? cause

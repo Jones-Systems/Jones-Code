@@ -14,6 +14,7 @@ import {
   SessionCredentialIssueError,
 } from "../auth/SessionStore.ts";
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
+import { deriveServerPaths } from "../config.ts";
 import { makeNativeCredentialWriter } from "../workstreams/enrollment/credentialFile.ts";
 import {
   makeNativeEnrollmentOperations,
@@ -214,10 +215,18 @@ export const runWorkstreamProviderCliOperation = Effect.fn("runWorkstreamProvide
   },
 );
 
-const showReceipt = (input: WorkstreamProviderCliInput) =>
-  runWorkstreamProviderCliOperation(input).pipe(
-    Effect.flatMap((receipt) => Console.log(JSON.stringify(receipt))),
-  );
+const showReceipt = Effect.fn("workstreamProvider.showReceipt")(function* (
+  input:
+    | Omit<Extract<WorkstreamProviderCliInput, { readonly operation: "plan" }>, "dbPath">
+    | Omit<Extract<WorkstreamProviderCliInput, { readonly operation: "apply" }>, "dbPath">
+    | Omit<Extract<WorkstreamProviderCliInput, { readonly operation: "readback" }>, "dbPath">,
+) {
+  const { dbPath } = yield* deriveServerPaths(input.baseDir, undefined, {
+    baseDirIsExplicit: true,
+  });
+  const receipt = yield* runWorkstreamProviderCliOperation({ ...input, dbPath });
+  yield* Console.log(JSON.stringify(receipt));
+});
 const planCommand = Command.make("plan", { ...locationFlags, sqliteSidecarEffects }).pipe(
   Command.withDescription(
     "Inspect existing qualification, records and credential hash; operational inspection may write SQLite sidecars when explicitly selected.",

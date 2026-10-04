@@ -32,6 +32,8 @@ import {
 import {
   type DesktopWslState,
   type EnvironmentId,
+  type ScopedThreadRef,
+  type OrchestrationV2CurrentThreadRuntimeTarget,
   type EnvironmentMachineKind,
   type FilesystemBrowseResult,
   type ProjectId,
@@ -101,7 +103,11 @@ import { filesystemEnvironment } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
-import { threadEnvironment } from "../state/threads";
+import {
+  useCurrentRuntimeStop,
+  type CurrentRuntimeStopOperation,
+  type CurrentRuntimeStopOutcome,
+} from "../hooks/useCurrentRuntimeStop";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
@@ -191,7 +197,11 @@ import {
 } from "./ThreadCommandSubtitle";
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
 import { primaryServerKeybindingsAtom, primaryServerProvidersAtom } from "../state/server";
-import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../providerInstances";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+  type ProviderInstanceEntry,
+} from "../providerInstances";
 import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindings";
 import { CommandDialog, CommandDialogPopup, CommandFooterAction } from "./ui/command";
 import { Button } from "./ui/button";
@@ -211,58 +221,6 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
-
-const APPEARANCE_OPTIONS = [
-  { mode: "system", label: "System", icon: MonitorIcon },
-  { mode: "light", label: "Light", icon: SunIcon },
-  { mode: "dark", label: "Dark", icon: MoonIcon },
-] as const;
-
-function notifyThemeSaveFailure(): void {
-  toastManager.add(
-    stackedThreadToast({
-      type: "error",
-      title: "Couldn't save theme selection",
-      description: "Try again.",
-    }),
-  );
-}
-
-function projectFavicon(project: Project) {
-  return <ProjectFavicon project={project} className="size-4" />;
-}
-
-function ProjectSearchDescription(props: {
-  readonly environmentLabels: ReadonlyArray<string>;
-  readonly grouped: boolean;
-  readonly location: {
-    readonly kind: "local" | "remote";
-    readonly label: string;
-    readonly machine: EnvironmentMachineKind;
-  };
-  readonly workspaceRoot: string;
-}) {
-  if (!props.grouped) {
-    return (
-      <span className="flex min-w-0 items-center gap-1">
-        <span className="inline-flex min-w-0 items-center gap-1">
-          {props.location.kind === "remote" ? (
-            <EnvironmentMachineIcon
-              aria-hidden
-              kind={props.location.machine}
-              className={COMMAND_PALETTE_META_ICON_CLASS}
-            />
-          ) : null}
-          <span className="truncate">{props.location.label}</span>
-        </span>
-        <CommandPaletteMetaDot />
-        <span className="truncate">{props.workspaceRoot}</span>
-      </span>
-    );
-  }
-
-  return <span className="truncate">{props.environmentLabels.join(" · ")}</span>;
-}
 
 function getEnvironmentBrowsePlatform(os: string | null | undefined): string {
   if (os === "windows") {
@@ -379,6 +337,10 @@ function remoteProjectSourceIcon(source: AddProjectRemoteSource, className: stri
   }
 }
 
+function projectFaviconIcon(project: Project): ReactNode {
+  return <ProjectFavicon project={project} className={ITEM_ICON_CLASS} />;
+}
+
 function remoteProjectInputPlaceholder(flow: AddProjectCloneFlow | null): string | null {
   if (!flow) return null;
   if (flow.step === "confirm") return null;
@@ -480,6 +442,100 @@ function overlayModeForCommand(command: string | null): SearchOverlayMode | null
   return command in OVERLAY_MODE_BY_COMMAND
     ? OVERLAY_MODE_BY_COMMAND[command as keyof typeof OVERLAY_MODE_BY_COMMAND]
     : null;
+}
+
+const APPEARANCE_OPTIONS = [
+  { mode: "system", label: "System", icon: MonitorIcon },
+  { mode: "light", label: "Light", icon: SunIcon },
+  { mode: "dark", label: "Dark", icon: MoonIcon },
+] as const;
+
+function notifyThemeSaveFailure(): void {
+  toastManager.add(
+    stackedThreadToast({
+      type: "error",
+      title: "Couldn't save theme selection",
+      description: "Try again.",
+    }),
+  );
+}
+
+function projectFavicon(project: Project) {
+  return <ProjectFavicon project={project} className="size-4" />;
+}
+
+export type CommandPaletteRestartNotice = {
+  readonly status: CurrentRuntimeStopOutcome["status"] | "known-stopped" | "unavailable";
+  readonly reason: string | null;
+  readonly checkStatus?: () => Promise<void>;
+};
+
+export async function restartCommandPaletteRuntime(options: {
+  readonly threadRef: ScopedThreadRef;
+  readonly runtimeStop: ReturnType<typeof useCurrentRuntimeStop>;
+  readonly refresh: (target: OrchestrationV2CurrentThreadRuntimeTarget) => Promise<void>;
+  readonly notify: (notice: CommandPaletteRestartNotice) => void;
+}): Promise<void> {
+  const { threadRef, runtimeStop, refresh, notify } = options;
+  const finish = async (
+    outcome: CurrentRuntimeStopOutcome,
+    expectedOperation?: CurrentRuntimeStopOperation,
+  ): Promise<void> => {
+    const correlatedOperation =
+      outcome.commandId !== null && outcome.target !== null
+        ? { commandId: outcome.commandId, target: outcome.target }
+        : undefined;
+    const hasCorrelation = correlatedOperation !== undefined;
+    const operation = correlatedOperation ?? expectedOperation;
+    const status =
+      !hasCorrelation && (outcome.status === "stopped" || outcome.status === "pending")
+        ? "unknown"
+        : outcome.status;
+    if (status === "stopped" && outcome.target !== null) {
+      await refresh(outcome.target);
+      notify({ status: "stopped", reason: outcome.reason });
+      return;
+    }
+    notify({
+      status,
+      reason:
+        !hasCorrelation && outcome.status !== "unknown" && outcome.status !== "rejected"
+          ? "The original stop correlation is unavailable. No provider refresh was performed."
+          : outcome.reason,
+      ...(operation && (status === "pending" || status === "unknown")
+        ? {
+            checkStatus: async () => {
+              const observed = await runtimeStop.observe(threadRef, operation);
+              await finish(
+                observed ?? {
+                  status: "unknown",
+                  commandAccepted: false,
+                  queueFenceInstalled: false,
+                  reason: "The original stop observation is unavailable. No new stop was sent.",
+                  commandId: null,
+                  target: null,
+                },
+                operation,
+              );
+            },
+          }
+        : {}),
+    });
+  };
+  const savedOutcome = await runtimeStop.observe(threadRef);
+  if (savedOutcome !== null) {
+    await finish(savedOutcome);
+    return;
+  }
+  const captured = await runtimeStop.capture(threadRef);
+  if (captured.status !== "current") {
+    notify({
+      status: captured.status,
+      reason: captured.status === "unavailable" ? captured.reason : null,
+    });
+    return;
+  }
+  await finish(await runtimeStop.request(threadRef, captured.target));
 }
 
 export function CommandPalette({ children }: { children: ReactNode }) {
@@ -736,9 +792,7 @@ function OpenCommandPaletteDialog(props: {
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
     reportFailure: false,
   });
-  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
-    reportFailure: false,
-  });
+  const runtimeStop = useCurrentRuntimeStop();
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -826,10 +880,17 @@ function OpenCommandPaletteDialog(props: {
   const providerEntryByEnvironmentAndInstanceId = useMemo(() => {
     const map = new Map<string, ProviderInstanceEntry>();
     for (const environment of environments) {
+      const serverConfig = environment.serverConfig;
       const environmentProviders =
-        environment.serverConfig?.providers ??
+        serverConfig?.providers ??
         (environment.environmentId === primaryEnvironmentId ? providers : []);
-      for (const entry of deriveProviderInstanceEntries(environmentProviders)) {
+      const derived = deriveProviderInstanceEntries(environmentProviders);
+      // Settings fill the ACP registry identity (agent id, icon URL) the
+      // derived entries alone do not carry.
+      const entries = serverConfig
+        ? applyProviderInstanceSettings(derived, serverConfig.settings)
+        : derived;
+      for (const entry of entries) {
         map.set(`${environment.environmentId}:${entry.instanceId}`, entry);
       }
     }
@@ -1300,7 +1361,7 @@ function OpenCommandPaletteDialog(props: {
             />
           );
         },
-        icon: projectFavicon,
+        icon: projectFaviconIcon,
         runProject: openProjectFromSearch,
       }),
     [
@@ -1352,7 +1413,7 @@ function OpenCommandPaletteDialog(props: {
               </span>
             );
           },
-          icon: projectFavicon,
+          icon: projectFaviconIcon,
           runProject: async (project) => {
             const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
             const contextualRefBelongsToGroup =
@@ -1407,7 +1468,7 @@ function OpenCommandPaletteDialog(props: {
         renderTrailingContent: (thread) => <ThreadRowTrailingStatus thread={thread} />,
         renderDescription: (thread, { projectTitle }) => {
           const modelInstanceId =
-            thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
+            thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId;
           const providerEntry =
             providerEntryByEnvironmentAndInstanceId.get(
               `${thread.environmentId}:${modelInstanceId}`,
@@ -1424,8 +1485,10 @@ function OpenCommandPaletteDialog(props: {
               isCurrent={thread.id === activeThreadId}
               driverKind={providerEntry?.driverKind ?? null}
               providerDisplayName={
-                thread.session?.providerName ?? providerEntry?.displayName ?? modelInstanceId
+                thread.runtime?.providerName ?? providerEntry?.displayName ?? modelInstanceId
               }
+              acpRegistryAgentId={providerEntry?.acpRegistryAgentId}
+              acpRegistryIconUrl={providerEntry?.acpRegistryIconUrl}
             />
           );
         },
@@ -1455,6 +1518,7 @@ function OpenCommandPaletteDialog(props: {
       activeThreadId,
       clientSettings.sidebarThreadSortOrder,
       navigate,
+      projectCwdById,
       projectByKey,
       projectEnvironmentLocationById,
       projectTitleById,
@@ -1981,37 +2045,83 @@ function OpenCommandPaletteDialog(props: {
       searchTerms: ["restart", "reset", "reload", "agent", "session", "skills", "plugins", "mcp"],
       title: "Restart agent session",
       icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
-      // Stopping the provider process keeps the conversation: the next message
-      // spawns a fresh one that resumes it and reloads skills, plugins, and MCP
-      // servers. The fresh workspace scan updates the composer's slash menu.
-      // Failures throw into executeItem's error toast.
+      // The conversation survives a restart; its next message starts the
+      // replacement session and reloads skills, plugins, and MCP servers.
+      // Provider refresh updates the composer's workspace slash-command scan.
       run: async () => {
         const { environmentId } = thread;
-        if (thread.session && thread.session.status !== "stopped") {
-          const stopped = await stopThreadSession({
-            environmentId,
-            input: { threadId: thread.id },
-          });
-          if (stopped._tag === "Failure") throw squashAtomCommandFailure(stopped);
-        }
-        // The server stops the process after accepting the command. A failed
-        // stop shows in the thread.
-        toastManager.add({
-          type: "success",
-          title: "Agent session will restart",
-          description: "Your next message starts a fresh session.",
-        });
-        const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
-        if (!project) return;
-        const refreshed = await refreshProviders({
-          environmentId,
-          input: {
-            instanceId: thread.session?.providerInstanceId ?? thread.modelSelection.instanceId,
-            cwd: thread.worktreePath ?? project.workspaceRoot,
-            fresh: true,
+        const threadRef = scopeThreadRef(environmentId, thread.id);
+        await restartCommandPaletteRuntime({
+          threadRef,
+          runtimeStop,
+          refresh: async (target) => {
+            const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
+            if (!project) {
+              throw new Error(
+                "The current runtime stopped, but its project is unavailable for provider refresh.",
+              );
+            }
+            const refreshed = await refreshProviders({
+              environmentId,
+              input: {
+                instanceId: target.binding.instanceId,
+                cwd: thread.worktreePath ?? project.workspaceRoot,
+                fresh: true,
+              },
+            });
+            if (refreshed._tag === "Failure") {
+              throw new Error(
+                `The current runtime stopped, but provider refresh failed: ${errorMessage(squashAtomCommandFailure(refreshed))}`,
+              );
+            }
+          },
+          notify: (notice) => {
+            toastManager.add({
+              type:
+                notice.status === "stopped"
+                  ? "success"
+                  : notice.status === "rejected"
+                    ? "error"
+                    : "info",
+              title:
+                notice.status === "stopped"
+                  ? "Agent session will restart"
+                  : notice.status === "known-stopped"
+                    ? "No current agent session"
+                    : notice.status === "unavailable"
+                      ? "Restart unavailable"
+                      : notice.status === "rejected"
+                        ? "Restart stop rejected"
+                        : notice.status === "unknown"
+                          ? "Restart outcome unknown"
+                          : "Restart waiting for runtime stop",
+              description:
+                notice.reason ??
+                (notice.status === "stopped"
+                  ? "Your next message starts a fresh session."
+                  : notice.status === "known-stopped"
+                    ? "No current runtime was stopped by this action."
+                    : "The current runtime has not been confirmed stopped."),
+              ...(notice.checkStatus
+                ? {
+                    timeout: 0,
+                    actionProps: {
+                      children: "Check status",
+                      onClick: () => {
+                        void notice.checkStatus?.().catch((error) => {
+                          toastManager.add({
+                            type: "error",
+                            title: "Couldn't check restart status",
+                            description: errorMessage(error),
+                          });
+                        });
+                      },
+                    },
+                  }
+                : {}),
+            });
           },
         });
-        if (refreshed._tag === "Failure") throw squashAtomCommandFailure(refreshed);
       },
     });
   }
@@ -3467,4 +3577,36 @@ function OpenCommandPaletteDialog(props: {
       />
     </CommandPaletteContent>
   );
+}
+
+function ProjectSearchDescription(props: {
+  readonly environmentLabels: ReadonlyArray<string>;
+  readonly grouped: boolean;
+  readonly location: {
+    readonly kind: "local" | "remote";
+    readonly label: string;
+    readonly machine: EnvironmentMachineKind;
+  };
+  readonly workspaceRoot: string;
+}) {
+  if (!props.grouped) {
+    return (
+      <span className="flex min-w-0 items-center gap-1">
+        <span className="inline-flex min-w-0 items-center gap-1">
+          {props.location.kind === "remote" ? (
+            <EnvironmentMachineIcon
+              aria-hidden
+              kind={props.location.machine}
+              className={COMMAND_PALETTE_META_ICON_CLASS}
+            />
+          ) : null}
+          <span className="truncate">{props.location.label}</span>
+        </span>
+        <CommandPaletteMetaDot />
+        <span className="truncate">{props.workspaceRoot}</span>
+      </span>
+    );
+  }
+
+  return <span className="truncate">{props.environmentLabels.join(" · ")}</span>;
 }

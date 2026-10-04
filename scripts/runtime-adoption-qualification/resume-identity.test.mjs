@@ -3,12 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it } from "@effect/vitest";
-import {
-  ClaudeSettings,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ThreadId,
-} from "../../packages/contracts/src/index.ts";
+import { ThreadId } from "../../packages/contracts/src/index.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -19,13 +14,13 @@ import * as RuntimeRepository from "../../apps/server/src/persistence/ProviderSe
 import {
   CodexResumeCursorSchema,
   openCodexThread,
-} from "../../apps/server/src/provider/Layers/CodexSessionRuntime.ts";
-import { makeClaudeAdapter } from "../../apps/server/src/provider/Layers/ClaudeAdapter.ts";
+} from "../../apps/server/src/provider/codexThreadOpen.ts";
+import { makeClaudeQueryOptions } from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { qualifyLegacyV1ImportContinuation } from "../../apps/server/src/orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import { makePopulatedFixture, readFixture, withDatabaseEffect } from "./fixture.mjs";
 import { withRunScratchEffect } from "./support.mjs";
 
 const decodeCodexCursor = Schema.decodeUnknownSync(CodexResumeCursorSchema);
-const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
 const migratedRuntimes = Effect.fn("qualification.migratedRuntimes")(function* (root) {
   const fixture = yield* Effect.promise(() =>
@@ -95,29 +90,6 @@ function codexClient(response, resumeFailure) {
   };
 }
 
-function syntheticClaudeQuery() {
-  let closed = false;
-  const pending = new Set();
-  return {
-    close: () => {
-      closed = true;
-      for (const resolve of pending) resolve({ done: true, value: undefined });
-      pending.clear();
-    },
-    setModel: async () => {},
-    setPermissionMode: async () => {},
-    setMaxThinkingTokens: async () => {},
-    [Symbol.asyncIterator]: () => ({
-      next: () =>
-        closed
-          ? Promise.resolve({ done: true, value: undefined })
-          : new Promise((resolve) => {
-              pending.add(resolve);
-            }),
-    }),
-  };
-}
-
 const environmentIdentity = Effect.fn("qualification.environmentIdentity")(function* (baseDir) {
   return yield* Effect.gen(function* () {
     const identity = yield* ServerEnvironment.ServerEnvironmentIdentity;
@@ -142,7 +114,7 @@ function assertDistinctEnvironmentIds(identities) {
   );
 }
 
-describe("T4 persisted identity and provider resume production seams", () => {
+describe("T4 persisted identity and historical provider request compatibility", () => {
   it.effect(
     "passes the migrated Codex native thread ID to thread/resume without downloading turns",
     () =>
@@ -194,7 +166,7 @@ describe("T4 persisted identity and provider resume production seams", () => {
           ]);
           record({
             checkId: "codex-resume",
-            proofKind: "historical-sqlite-production-repository-and-resume-request",
+            proofKind: "historical-sqlite-repository-and-codex-request-compatibility",
             result: "passed",
             readback: {
               canonicalThreadId: runtime.threadId,
@@ -204,7 +176,7 @@ describe("T4 persisted identity and provider resume production seams", () => {
               excludeTurns: fake.calls[0].payload.excludeTurns,
             },
             limits: [
-              "fake app-server client; native Codex CLI resume and provider-side transcript availability unproved",
+              "injected historical request helper; active V2 runtime adoption, native Codex CLI resume and provider-side transcript availability unproved",
             ],
           });
         }),
@@ -257,21 +229,23 @@ describe("T4 persisted identity and provider resume production seams", () => {
           );
           record({
             checkId: "codex-resume-guards",
-            proofKind: "production-openCodexThread-injected-failures",
+            proofKind: "historical-codex-request-compatibility-injected-failures",
             result: "passed",
             readback: {
               invalidMetadataFreshStarts: 0,
               requiredRecoverableFailureFreshStarts: 0,
               absentCursorMethod: "thread/start",
             },
-            limits: ["synthetic request failures; no provider process"],
+            limits: [
+              "synthetic historical request failures; no provider process or active V2 runtime adoption proof",
+            ],
           });
         }),
       ),
   );
 
   it.effect(
-    "passes the migrated Claude durable session UUID to SDK resume without a stale checkpoint",
+    "preserves the historical Claude durable UUID in SDK resume options while qualification stays unknown",
     () =>
       withRunScratchEffect({ label: "claude-resume" }, ({ root, record }) =>
         Effect.gen(function* () {
@@ -282,56 +256,63 @@ describe("T4 persisted identity and provider resume production seams", () => {
           const identity = fixture.expected.identities.find(
             (entry) => entry.threadId === runtime.threadId,
           );
-          let captured;
-          const query = syntheticClaudeQuery();
-          const session = yield* Effect.gen(function* () {
-            const adapter = yield* makeClaudeAdapter(
-              decodeClaudeSettings({
-                binaryPath: NodePath.join(root, "synthetic-never-executed-claude"),
-                homePath: NodePath.join(root, "synthetic-claude-home"),
-              }),
-              {
-                environment: {},
-                instanceId: ProviderInstanceId.make(runtime.providerInstanceId),
-                createQuery: (input) => {
-                  captured = input;
-                  return query;
-                },
-              },
-            );
-            return yield* adapter.startSession({
-              threadId: runtime.threadId,
-              provider: ProviderDriverKind.make("claudeAgent"),
-              resumeCursor: runtime.resumeCursor,
-              cwd: identity.worktree,
-              runtimeMode: runtime.runtimeMode,
-            });
-          }).pipe(
-            Effect.provide(ServerConfig.layerTest(root, NodePath.join(root, "adapter-home"))),
-            Effect.provide(NodeServices.layer),
-            Effect.scoped,
-          );
-          NodeAssert.ok(captured);
-          NodeAssert.equal(captured.options.resume, runtime.resumeCursor.resume);
-          NodeAssert.equal(captured.options.resumeSessionAt, undefined);
-          NodeAssert.equal(captured.options.sessionId, undefined);
-          NodeAssert.equal(captured.options.cwd, identity.worktree);
-          NodeAssert.equal(session.threadId, runtime.threadId);
-          NodeAssert.equal(session.providerInstanceId, runtime.providerInstanceId);
-          NodeAssert.equal(session.resumeCursor.resume, runtime.resumeCursor.resume);
+          NodeAssert.ok(identity);
+          NodeAssert.equal(runtime.threadId, identity.threadId);
+          NodeAssert.equal(runtime.providerInstanceId, identity.providerInstanceId);
+          NodeAssert.equal(runtime.resumeCursor.resume, identity.durableSessionId);
+          NodeAssert.equal(runtime.resumeCursor.resumeSessionAt, "synthetic-stale-assistant");
+          const continuation = qualifyLegacyV1ImportContinuation({
+            threadId: runtime.threadId,
+            provenance: "legacy_row",
+            sourceRow: runtime,
+            source: "persisted_runtime_row",
+          });
+          NodeAssert.deepEqual(continuation.qualification, {
+            type: "unknown",
+            reason: "target_identity_missing",
+          });
+          const evidence = continuation.evidence;
+          NodeAssert.ok(evidence);
+          NodeAssert.equal(evidence.threadId, runtime.threadId);
+          NodeAssert.equal(evidence.providerInstanceId, runtime.providerInstanceId);
+          NodeAssert.equal(evidence.driver, "claudeAgent");
+          NodeAssert.deepEqual(evidence.resumeCursor, runtime.resumeCursor);
+          NodeAssert.equal(evidence.nativeThreadId, runtime.resumeCursor.resume);
+          NodeAssert.notEqual(evidence.nativeThreadId, runtime.threadId);
+          NodeAssert.notEqual(evidence.nativeThreadId, runtime.resumeCursor.threadId);
+          NodeAssert.equal(evidence.historicalSourceIdentity, null);
+          NodeAssert.equal(evidence.accessibility, null);
+          NodeAssert.equal(evidence.continuationKey, null);
+          // The historical cursor's checkpoint does not establish a V2 resume anchor.
+          const options = makeClaudeQueryOptions({
+            modelSelection: {
+              instanceId: runtime.providerInstanceId,
+              model: "claude-sonnet-4-6",
+            },
+            nativeThreadId: evidence.nativeThreadId,
+            resume: true,
+            cwd: identity.worktree,
+            environment: {},
+          });
+          NodeAssert.equal(options.resume, runtime.resumeCursor.resume);
+          NodeAssert.equal(options.resumeSessionAt, undefined);
+          NodeAssert.equal(options.sessionId, undefined);
+          NodeAssert.equal(options.cwd, identity.worktree);
           record({
             checkId: "claude-resume",
-            proofKind: "historical-sqlite-production-repository-and-adapter-sdk-options",
+            proofKind: "historical-persisted-cursor-and-sdk-option-compatibility",
             result: "passed",
             readback: {
-              canonicalThreadId: session.threadId,
-              durableSessionId: captured.options.resume,
-              providerInstanceId: session.providerInstanceId,
+              canonicalThreadId: evidence.threadId,
+              durableSessionId: options.resume,
+              providerInstanceId: evidence.providerInstanceId,
+              qualification: continuation.qualification,
               staleCheckpointExcluded: true,
               freshSessionIdExcluded: true,
             },
             limits: [
-              "injected SDK query; native Claude CLI resume, account state and provider-side transcript availability unproved",
+              "persisted-cursor qualification and SDK options only; no session start, active V2 resume or native adoption proof",
+              "historical source identity, accessibility, account state and provider-side transcript availability unproved",
             ],
           });
         }),
