@@ -10,11 +10,15 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
+import * as ProviderSessions from "./ProviderSessionManager.ts";
+import { nativeCommandCanonicalJsonV2 } from "./DispatchGuard.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -39,6 +43,7 @@ export class ProviderRuntimeRecoveryError extends Schema.TaggedError<ProviderRun
 }
 
 export interface ProviderRuntimeRecoverySummary {
+  readonly failedThreadIds: ReadonlyArray<ThreadId>;
   readonly terminalizedRuns: number;
   readonly stoppedSessions: number;
   readonly closedRequests: number;
@@ -54,9 +59,25 @@ export interface ProviderRuntimeReconciliationSummary {
   readonly requeuedEffects: number;
 }
 
+export interface ProviderStartupRecoveryStage {
+  readonly continuationMarkers: ReadonlyArray<EventSink.RestartContinuationMarkerV2>;
+}
+
+export interface ProviderStartupRecoveryResult extends ProviderRuntimeRecoverySummary {
+  readonly releasedContinuationMarkerIds: ReadonlyArray<string>;
+  readonly heldContinuationMarkers: ReadonlyArray<{
+    readonly marker: EventSink.RestartContinuationMarkerV2;
+    readonly reason: EventSink.RestartContinuationMarkerError["reason"] | "recovery_failed";
+  }>;
+}
+
 export class ProviderRuntimeRecoveryService extends Context.Service<
   ProviderRuntimeRecoveryService,
   {
+    readonly stageStartupRecovery: Effect.Effect<ProviderStartupRecoveryStage, ProviderRuntimeRecoveryError>;
+    readonly reconcileAfterStartupTrial: (stage: ProviderStartupRecoveryStage) => Effect.Effect<ProviderStartupRecoveryResult, ProviderRuntimeRecoveryError>;
+    readonly prepareForServerUpdate: (options: { readonly respectProjectPreference: boolean }) => Effect.Effect<ReadonlyArray<EventSink.RestartContinuationMarkerV2>, ProviderRuntimeRecoveryError>;
+    readonly clearServerUpdatePreparation: (markers: ReadonlyArray<EventSink.RestartContinuationMarkerV2>) => Effect.Effect<void, ProviderRuntimeRecoveryError>;
     readonly reconcile: (
       trigger: "startup" | "shutdown",
     ) => Effect.Effect<ProviderRuntimeReconciliationSummary, ProviderRuntimeRecoveryError>;
@@ -173,7 +194,15 @@ function latestStartedRun(
   );
 }
 
+function isTransientSqliteRead(cause: unknown, depth = 0): boolean {
+  if (depth > 8 || cause === null || typeof cause !== "object") return false;
+  const value = cause as { code?: unknown; cause?: unknown; reason?: unknown };
+  return value.code === "SQLITE_BUSY" || value.code === "SQLITE_LOCKED" ||
+    isTransientSqliteRead(value.cause, depth + 1) || isTransientSqliteRead(value.reason, depth + 1);
+}
+
 export const make = Effect.gen(function* () {
+  const sessionsOption = yield* Effect.serviceOption(ProviderSessions.ProviderSessionManagerV2);
   const settings = yield* ServerSettings.ServerSettingsService;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const eventSink = yield* EventSink.EventSinkV2;
@@ -704,7 +733,7 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  const reconcile = (trigger: "startup" | "shutdown") =>
+  const reconcileAll = (trigger: "startup" | "shutdown", isolated = false, allowContinuation = true) =>
     Effect.gen(function* () {
       const continueAfterRestart = yield* settings.getSettings.pipe(
         Effect.orElseSucceed(() => null),
@@ -720,8 +749,14 @@ export const make = Effect.gen(function* () {
       let stoppedSessions = 0;
       let closedRequests = 0;
       let retiredEffects = 0;
+      const failedThreadIds: ThreadId[] = [];
       for (const threadId of threadIds) {
-        const projection = yield* projections.getRuntimeRecoveryProjection(threadId).pipe(
+        const read = projections.getRuntimeRecoveryProjection(threadId);
+        // Only retry a read, never a possibly committed reconciliation write.
+        const loaded = yield* read.pipe(Effect.catch((cause) =>
+          isTransientSqliteRead(cause) ? read : Effect.fail(cause)), Effect.result);
+        if (Result.isFailure(loaded) && isolated) { failedThreadIds.push(threadId); continue; }
+        const projection = yield* (Result.isSuccess(loaded) ? Effect.succeed(loaded.success) : Effect.fail(loaded.failure)).pipe(
           Effect.mapError(
             (cause) =>
               new ProviderRuntimeRecoveryError({
@@ -732,7 +767,7 @@ export const make = Effect.gen(function* () {
           ),
         );
         const enabled =
-          continueAfterRestart !== null &&
+          allowContinuation && continueAfterRestart !== null &&
           resolveProjectSettings(continueAfterRestart, projection.thread.projectId).settings
             .continueThreadsAfterServerUpdate;
         const result = yield* reconcileProjection(projection, trigger, enabled);
@@ -741,19 +776,26 @@ export const make = Effect.gen(function* () {
         closedRequests += result.closedRequests;
         retiredEffects += result.retiredEffects;
       }
-      const outboxReconciliation = yield* outbox.reconcileAfterProcessLoss.pipe(
+      const outboxReconciliation = yield* (failedThreadIds.length === 0
+        ? outbox.reconcileAfterProcessLoss
+        : outbox.reconcileAfterProcessLossExcluding({ excludeThreadIds: failedThreadIds })).pipe(
         Effect.mapError(
           (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
         ),
       );
       return {
+        failedThreadIds,
         terminalizedRuns,
         stoppedSessions,
         closedRequests,
         retiredEffects: retiredEffects + outboxReconciliation.cancelled,
         requeuedEffects: outboxReconciliation.requeued,
-      } satisfies ProviderRuntimeReconciliationSummary;
+      } satisfies ProviderRuntimeRecoverySummary;
     });
+
+  const reconcile = (trigger: "startup" | "shutdown") => reconcileAll(trigger).pipe(
+    Effect.map(({ failedThreadIds: _failed, ...summary }) => summary),
+  );
 
   // Snapshot intent only while providers are live. A provider may finish while
   // this commits; reconciliation reads fresh state after shutdown, and delivery
@@ -795,10 +837,107 @@ export const make = Effect.gen(function* () {
   );
 
   const recover = Effect.gen(function* () {
-    return (yield* reconcile("startup")) satisfies ProviderRuntimeRecoverySummary;
+    return yield* reconcileAll("startup", true);
   });
 
-  return ProviderRuntimeRecoveryService.of({ reconcile, prepareForShutdown, recover });
+  const stageStartupRecovery = Effect.suspend(() => eventSink.readDormantRestartContinuations).pipe(
+    Effect.map((continuationMarkers) => ({ continuationMarkers })),
+    Effect.mapError((cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause })),
+  );
+
+  const clearServerUpdatePreparation = (markers: ReadonlyArray<EventSink.RestartContinuationMarkerV2>) =>
+    Effect.forEach(markers, (marker) => eventSink.clearRestartContinuation(marker), { discard: true }).pipe(
+      Effect.mapError((cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", cause })),
+    );
+
+  const prepareForServerUpdate = (options: { readonly respectProjectPreference: boolean }) => Effect.gen(function* () {
+    const preferences = options.respectProjectPreference ? yield* settings.getSettings : null;
+    if (preferences !== null && !preferences.continueThreadsAfterServerUpdate &&
+      !Object.values(preferences.projectSettingsOverrides).some((value) => value.continueThreadsAfterServerUpdate === true)) return [];
+    const prepared: EventSink.RestartContinuationMarkerV2[] = [];
+    const created: EventSink.RestartContinuationMarkerV2[] = [];
+    return yield* Effect.gen(function* () {
+      const threadIds = yield* projections.getRecoveryThreadIds("runtime");
+      for (const threadId of threadIds) {
+        const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
+        if (preferences !== null && !resolveProjectSettings(preferences, projection.thread.projectId).settings.continueThreadsAfterServerUpdate) continue;
+        const run = restartContinuationRun(projection, providerThreadsWithOpenBackgroundWork(projection));
+        if (run?.activeAttemptId == null) continue;
+        const evidence = yield* eventSink.readProviderRuntimeEvidence(threadId);
+        const provider = projection.providerThreads.find((value) => value.id === run.providerThreadId);
+        const input = evidence === null ? null : { threadId, projectId: projection.thread.projectId, sourceRunId: run.id,
+          sourceRunAttemptId: run.activeAttemptId, expectedBinding: evidence.binding, expectedEvidenceRevision: evidence.evidenceRevision };
+        if (input !== null) {
+          const existing = yield* eventSink.findDormantRestartContinuation(input);
+          if (existing !== null) { prepared.push(existing); continue; }
+        }
+        if (Option.isNone(sessionsOption)) return yield* new EventSink.RestartContinuationMarkerError({ reason: "qualification_unavailable" });
+        const sessions = sessionsOption.value;
+        const observation = yield* sessions.observeCurrentThreadRuntime(threadId);
+        if (observation.status === "unknown") {
+          if (observation.reason === "runtime_not_resident") continue;
+          return yield* new EventSink.RestartContinuationMarkerError({ reason: "qualification_unavailable" });
+        }
+        if (observation.status !== "busy" && observation.status !== "working" && observation.status !== "monitoring") continue;
+        if (input === null || evidence === null || provider === undefined ||
+          evidence.binding.threadId !== threadId || evidence.binding.providerThreadId !== provider.id ||
+          evidence.binding.providerSessionId !== provider.providerSessionId || evidence.binding.instanceId !== run.providerInstanceId ||
+          evidence.binding.driver !== provider.driver || evidence.binding.nativeThreadId !== provider.nativeThreadRef?.nativeId ||
+          evidence.binding.runtimeGeneration === null ||
+          observation.binding.threadId !== evidence.binding.threadId || observation.binding.providerThreadId !== evidence.binding.providerThreadId ||
+          observation.binding.providerSessionId !== evidence.binding.providerSessionId || observation.binding.instanceId !== evidence.binding.instanceId ||
+          observation.binding.nativeThreadId !== evidence.binding.nativeThreadId || observation.binding.runtimeGeneration !== evidence.binding.runtimeGeneration)
+          return yield* new EventSink.RestartContinuationMarkerError({ reason: "binding_changed" });
+        const marker = yield* eventSink.prepareRestartContinuation({ ...input, markerId: yield* ids.allocate.event({ threadId }) });
+        created.push(marker);
+        prepared.push(marker);
+      }
+      return prepared;
+    }).pipe(Effect.catchCause((cause) => clearServerUpdatePreparation(created).pipe(Effect.andThen(Effect.failCause(cause)))));
+  }).pipe(Effect.mapError((cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", cause })));
+
+  // The startup owner invokes this only after its exact trial commits. Re-read
+  // the captured source inside release; a staged marker is not a release grant.
+  const reconcileAfterStartupTrial = (stage: ProviderStartupRecoveryStage) => Effect.gen(function* () {
+    const summary = yield* reconcileAll("startup", true, false);
+    const releasedContinuationMarkerIds: string[] = [];
+    const heldContinuationMarkers: Array<ProviderStartupRecoveryResult["heldContinuationMarkers"][number]> = [];
+    for (const marker of stage.continuationMarkers) {
+      if (summary.failedThreadIds.includes(marker.threadId)) {
+        heldContinuationMarkers.push({ marker, reason: "recovery_failed" });
+        continue;
+      }
+      const revalidate = Effect.gen(function* () {
+        const projection = yield* projections.getThreadProjection(marker.threadId);
+        const run = projection.runs.find((value) => value.id === marker.sourceRunId);
+        const provider = projection.providerThreads.find((value) => value.id === marker.binding.providerThreadId);
+        if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null ||
+          projection.thread.projectId !== marker.projectId || projection.thread.providerInstanceId !== marker.binding.instanceId ||
+          projection.thread.modelSelection.instanceId !== marker.binding.instanceId ||
+          run === undefined || run.activeAttemptId !== marker.sourceRunAttemptId || run.providerThreadId !== marker.binding.providerThreadId ||
+          projection.runs.some((value) => value.ordinal > run.ordinal) || provider === undefined ||
+          provider.providerSessionId !== marker.binding.providerSessionId || provider.nativeThreadRef?.nativeId !== marker.binding.nativeThreadId)
+          return yield* new EventSink.RestartContinuationMarkerError({ reason: "source_changed" });
+        const evidence = yield* eventSink.readProviderRuntimeEvidence(marker.threadId);
+        if (evidence === null || evidence.evidenceRevision !== marker.evidenceRevision ||
+          nativeCommandCanonicalJsonV2(evidence.binding) !== nativeCommandCanonicalJsonV2(marker.binding))
+          return yield* new EventSink.RestartContinuationMarkerError({ reason: "binding_changed" });
+      });
+      const release = yield* Effect.gen(function* () {
+        yield* revalidate;
+        const facts = yield* eventSink.readNativeCommandFacts({ threadId: marker.threadId,
+          commandId: CommandId.make(`command:restart-continuation:${marker.markerId}`) });
+        return yield* eventSink.releaseRestartContinuation({ marker, currentSnapshot: facts.commitSnapshot, revalidateAfterTrial: revalidate });
+      }).pipe(Effect.result);
+      if (Result.isSuccess(release) && release.success) releasedContinuationMarkerIds.push(marker.markerId);
+      else heldContinuationMarkers.push({ marker, reason: Result.isFailure(release) && Schema.is(EventSink.RestartContinuationMarkerError)(release.failure)
+        ? release.failure.reason : "qualification_unavailable" });
+    }
+    return { ...summary, releasedContinuationMarkerIds, heldContinuationMarkers } satisfies ProviderStartupRecoveryResult;
+  });
+
+  return ProviderRuntimeRecoveryService.of({ reconcile, prepareForShutdown, recover, stageStartupRecovery,
+    reconcileAfterStartupTrial, prepareForServerUpdate, clearServerUpdatePreparation });
 });
 
 export const layer = Layer.effect(ProviderRuntimeRecoveryService, make);

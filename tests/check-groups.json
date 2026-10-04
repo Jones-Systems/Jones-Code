@@ -1134,6 +1134,21 @@
         "packages/client-runtime/src/remotePerformance.bench.ts",
         "apps/mobile/src/lib/threadActivity.bench.ts"
       ]
+    },
+    {
+      "group_id": "t3-v2-startup-recovery",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/serverRuntimeStartup.reconcile.test.ts apps/server/src/serverRuntimeStartup.storeIntegration.test.ts apps/server/integration/orphanedProviderSessionStartup.integration.test.ts",
+      "modules": [
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/serverRuntimeStartup.reconcile.test.ts",
+        "apps/server/src/serverRuntimeStartup.storeIntegration.test.ts",
+        "apps/server/integration/orphanedProviderSessionStartup.integration.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts"
+      ]
     }
   ]
 }
