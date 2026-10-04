@@ -71,7 +71,7 @@ function cursorSandboxUnsupported(cause: unknown): boolean {
 
 /**
  * Build a Cursor text-generation closure bound to a specific `CursorSettings`
- * payload. See `makeCodexAdapter` for the overall per-instance rationale.
+ * payload.
  */
 export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(function* (
   cursorSettings: CursorSettings,

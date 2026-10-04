@@ -145,7 +145,9 @@ it("keeps absent capabilities and historical observations decodable while requir
   const acceptsCapability = acceptsWire(NativeBootstrapCreationCapability);
   assert.isFalse(acceptsCapability({ ...capability, extra: true }));
   assert.isFalse(acceptsCapability({ ...capability, guardRequired: false }));
-  assert.isFalse(acceptsCapability({ ...capability, observationSchema: "t3.native-creation-observation/v1" }));
+  assert.isFalse(
+    acceptsCapability({ ...capability, observationSchema: "t3.native-creation-observation/v1" }),
+  );
   for (const field of ["submissionSchema", "preparationSchema", "observationSchema"]) {
     assert.isFalse(acceptsCapability({ ...capability, [field]: "unsupported/v2" }));
   }

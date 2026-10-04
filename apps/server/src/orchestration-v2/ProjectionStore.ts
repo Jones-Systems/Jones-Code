@@ -74,6 +74,16 @@ import type * as Statement from "effect/unstable/sql/Statement";
 
 import { attachmentRelativePath } from "../attachmentStore.ts";
 import { normalizeAttachmentRelativePath } from "../attachmentPaths.ts";
+import {
+  ImportedApplicationAttachmentBirthV1,
+  ImportedApplicationAttachmentEventBasisV1,
+  type ImportedApplicationAttachmentForkBasisV1,
+  type ImportedApplicationAttachmentRetentionEvidenceV1,
+  type ImportedApplicationAttachmentSnapshotV1,
+  importedApplicationAttachmentSha256V1,
+  makeImportedApplicationAttachmentRetentionEvidenceV1,
+  visibleImportedApplicationAttachmentSegments,
+} from "./ImportedApplicationAttachmentInventory.ts";
 
 import {
   isThreadHistoryUserTurn,
@@ -147,10 +157,14 @@ const ProjectionOperatingCountsCandidate = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   archivedAt: Schema.Null,
   deletedAt: Schema.Null,
-  pendingRuntimeRequest: Schema.NullOr(Schema.Struct({
-    kind: OrchestrationV2RuntimeRequestJsonSchema.fields.kind,
-  })),
-  activityRunStatus: Schema.NullOr(Schema.Literals(["preparing", "starting", "running", "waiting"])),
+  pendingRuntimeRequest: Schema.NullOr(
+    Schema.Struct({
+      kind: OrchestrationV2RuntimeRequestJsonSchema.fields.kind,
+    }),
+  ),
+  activityRunStatus: Schema.NullOr(
+    Schema.Literals(["preparing", "starting", "running", "waiting"]),
+  ),
   interactionMode: OrchestrationV2AppThreadJsonSchema.fields.interactionMode,
   hasActionableProposedPlan: Schema.Boolean,
   latestRunCompletedAt: OrchestrationV2RunJsonSchema.fields.completedAt,
@@ -328,14 +342,40 @@ export interface ProjectionTimelinePage {
   readonly hasMore: boolean;
 }
 
+export interface ProjectionImportedApplicationAttachmentRetentionInputV1 {
+  readonly targetBirth: ImportedApplicationAttachmentBirthV1;
+  readonly visibleImportedBirths: ReadonlyArray<ImportedApplicationAttachmentBirthV1>;
+  readonly inventories: ReadonlyArray<{
+    readonly inventory: ImportedApplicationAttachmentSnapshotV1;
+    readonly forkBasis: ReadonlyArray<ImportedApplicationAttachmentForkBasisV1>;
+  }>;
+  readonly baselineCopies: ReadonlyArray<{
+    readonly applicationBirth: ImportedApplicationAttachmentBirthV1;
+    readonly messageId: MessageId;
+    readonly itemId: TurnItemId;
+    readonly messageEvent: ImportedApplicationAttachmentEventBasisV1;
+    readonly itemEvent: ImportedApplicationAttachmentEventBasisV1;
+    readonly messagePayloadSha256: string;
+    readonly itemPayloadSha256: string;
+  }>;
+}
+export class ImportedApplicationAttachmentRetentionInputV1 extends Context.Reference<ProjectionImportedApplicationAttachmentRetentionInputV1 | null>(
+  "t3/orchestration-v2/ImportedApplicationAttachmentRetentionInputV1",
+  { defaultValue: () => null },
+) {}
+
 export type ProjectionThreadRetainedAttachmentPaths =
-  | { readonly status: "complete"; readonly relativePaths: ReadonlyArray<string> }
+  | {
+      readonly status: "complete";
+      readonly relativePaths: ReadonlyArray<string>;
+      readonly sourceEvidence: ImportedApplicationAttachmentRetentionEvidenceV1;
+    }
   | { readonly status: "unavailable"; readonly reason: string };
 
 export interface ProjectionStoreV2Shape {
-  readonly getOperatingCountsCandidates: (
-    input?: { readonly projectId?: ProjectId },
-  ) => Effect.Effect<ProjectionOperatingCountsCandidates, ProjectionStoreV2Error>;
+  readonly getOperatingCountsCandidates: (input?: {
+    readonly projectId?: ProjectId;
+  }) => Effect.Effect<ProjectionOperatingCountsCandidates, ProjectionStoreV2Error>;
   readonly getThreadAttachmentIds: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<string>, ProjectionStoreV2Error>;
@@ -1180,16 +1220,47 @@ function activeLocalTurnItems(
 function retainedAttachmentPathsForProjection(
   projection: OrchestrationV2ThreadProjection,
   sources: ReadonlyMap<ThreadId, OrchestrationV2ThreadProjection>,
+  imported: Extract<
+    ReturnType<typeof visibleImportedApplicationAttachmentSegments>,
+    { status: "complete" }
+  >,
+  baselineCopies: ProjectionImportedApplicationAttachmentRetentionInputV1["baselineCopies"],
 ): ProjectionThreadRetainedAttachmentPaths {
-  const paths = new Set<string>();
+  const paths = new Set<string>(imported.relativePaths);
+  const visibleCarriers = new Map<string, unknown>();
+  const baselineMessage = (message: OrchestrationV2ConversationMessage) =>
+    baselineCopies.some(
+      (copy) =>
+        copy.applicationBirth.threadId === message.threadId &&
+        copy.messageId === message.id &&
+        copy.messagePayloadSha256 ===
+          importedApplicationAttachmentSha256V1(
+            Schema.encodeSync(OrchestrationV2ConversationMessageJsonSchema)(message),
+          ),
+    );
+  const baselineItem = (item: OrchestrationV2TurnItem) =>
+    baselineCopies.some(
+      (copy) =>
+        copy.applicationBirth.threadId === item.threadId &&
+        copy.itemId === item.id &&
+        copy.itemPayloadSha256 ===
+          importedApplicationAttachmentSha256V1(
+            Schema.encodeSync(OrchestrationV2TurnItemJsonSchema)(item),
+          ),
+    );
   const attachments: Array<unknown> = [];
   const visibilityFor = (source: OrchestrationV2ThreadProjection) =>
     createOrchestrationV2TurnItemVisibility({
-      runs: source.runs, attempts: source.attempts, items: source.turnItems,
+      runs: source.runs,
+      attempts: source.attempts,
+      items: source.turnItems,
     });
   const visibility = new Map([...sources].map(([id, source]) => [id, visibilityFor(source)]));
   const messagesBySource = new Map(
-    [...sources].map(([id, source]) => [id, new Map(source.messages.map((message) => [message.id, message]))]),
+    [...sources].map(([id, source]) => [
+      id,
+      new Map(source.messages.map((message) => [message.id, message])),
+    ]),
   );
   const isVisible = visibilityFor(projection);
   const representedMessages = new Set<string>();
@@ -1205,12 +1276,21 @@ function retainedAttachmentPathsForProjection(
   for (const message of projection.messages) {
     if (
       (message.runId !== null && rolledBack.has(message.runId)) ||
-      (representedMessages.has(message.id) && !visibleMessages.has(message.id))
-    ) continue;
+      (representedMessages.has(message.id) && !visibleMessages.has(message.id)) ||
+      baselineMessage(message)
+    )
+      continue;
     if (!Array.isArray(message.attachments)) {
       return { status: "unavailable", reason: "attachment_representation_unavailable" };
     }
     attachments.push(...message.attachments);
+    visibleCarriers.set(`message:${message.threadId}:${message.id}`, {
+      kind: "message",
+      sourceThreadId: message.threadId,
+      messageId: message.id,
+      runId: message.runId,
+      attachments: message.attachments,
+    });
   }
   for (const { item } of projection.visibleTurnItems) {
     const source = sources.get(item.threadId);
@@ -1220,24 +1300,48 @@ function retainedAttachmentPathsForProjection(
     }
     if (!sourceVisibility(item)) continue;
     if (item.type === "user_message" || item.type === "assistant_message") {
-      if (item.attachments !== undefined) {
-        if (!Array.isArray(item.attachments)) {
-          return { status: "unavailable", reason: "attachment_representation_unavailable" };
+      if (!baselineItem(item)) {
+        if (item.attachments !== undefined) {
+          if (!Array.isArray(item.attachments)) {
+            return { status: "unavailable", reason: "attachment_representation_unavailable" };
+          }
+          attachments.push(...item.attachments);
         }
-        attachments.push(...item.attachments);
+        visibleCarriers.set(`item:${item.threadId}:${item.id}`, {
+          kind: item.type,
+          sourceThreadId: item.threadId,
+          itemId: item.id,
+          messageId: item.messageId,
+          runId: item.runId,
+          attachments: item.attachments,
+        });
       }
       const message = messagesBySource.get(item.threadId)?.get(item.messageId);
-      if (message !== undefined) {
+      if (message !== undefined && !baselineMessage(message)) {
         if (!Array.isArray(message.attachments)) {
           return { status: "unavailable", reason: "attachment_representation_unavailable" };
         }
         attachments.push(...message.attachments);
+        visibleCarriers.set(`message:${message.threadId}:${message.id}`, {
+          kind: "message",
+          sourceThreadId: message.threadId,
+          messageId: message.id,
+          runId: message.runId,
+          attachments: message.attachments,
+        });
       }
     } else if (item.type === "user_input_request" && item.questionAnswer !== undefined) {
       if (!Schema.is(UserInputAttachmentAnswerPayload)(item.questionAnswer)) {
         return { status: "unavailable", reason: "answer_representation_unavailable" };
       }
       attachments.push(...Object.values(item.questionAnswer.attachmentsByQuestionId).flat());
+      visibleCarriers.set(`answer:${item.threadId}:${item.id}`, {
+        kind: "question_answer",
+        sourceThreadId: item.threadId,
+        itemId: item.id,
+        runId: item.runId,
+        questionAnswer: item.questionAnswer,
+      });
     }
   }
   for (const attachment of attachments) {
@@ -1250,7 +1354,20 @@ function retainedAttachmentPathsForProjection(
     }
     paths.add(relativePath);
   }
-  return { status: "complete", relativePaths: [...paths].sort() };
+  const relativePaths = [...paths].sort();
+  return {
+    status: "complete",
+    relativePaths,
+    sourceEvidence: makeImportedApplicationAttachmentRetentionEvidenceV1({
+      segments: imported.segments,
+      relativePaths,
+      visibleV2CarrierSetSha256: importedApplicationAttachmentSha256V1(
+        [...visibleCarriers].toSorted(([left], [right]) =>
+          left < right ? -1 : left > right ? 1 : 0,
+        ),
+      ),
+    }),
+  };
 }
 
 const readRetainedAttachmentPaths = (
@@ -1260,6 +1377,7 @@ const readRetainedAttachmentPaths = (
 ): Effect.Effect<ProjectionThreadRetainedAttachmentPaths, ProjectionStoreV2Error> =>
   Effect.gen(function* () {
     const seen = new Set<ThreadId>();
+    const importedThreads = new Set<ThreadId>();
     let currentThreadId = threadId;
     while (true) {
       if (seen.has(currentThreadId)) {
@@ -1267,19 +1385,87 @@ const readRetainedAttachmentPaths = (
       }
       seen.add(currentThreadId);
       const thread = yield* getThread(currentThreadId);
-      // V1 answers retain files in activity payloads; neither historical importer
-      // copies that carrier. A projected message subset cannot prove its absence.
-      if (thread.historyOrigin === "v1_import") {
-        return { status: "unavailable", reason: "imported_answer_representation_unavailable" } as const;
-      }
+      // The materialized imported baseline needs its separately qualified carrier
+      // inventory; projected message rows cannot prove that answer files are absent.
+      if (thread.historyOrigin === "v1_import") importedThreads.add(currentThreadId);
       if (thread.forkedFrom?.type !== "run") break;
       currentThreadId = thread.forkedFrom.threadId;
     }
     const sources = new Map<ThreadId, OrchestrationV2ThreadProjection>();
     for (const id of seen) sources.set(id, yield* getProjection(id));
-    return retainedAttachmentPathsForProjection(sources.get(threadId)!, sources);
+    const input = yield* ImportedApplicationAttachmentRetentionInputV1;
+    let imported: Extract<
+      ReturnType<typeof visibleImportedApplicationAttachmentSegments>,
+      { status: "complete" }
+    > = { status: "complete", relativePaths: [], segments: [] };
+    if (importedThreads.size > 0 || (input !== null && input.visibleImportedBirths.length > 0)) {
+      if (input === null)
+        return { status: "unavailable", reason: "imported_inventory_unavailable" } as const;
+      if (
+        !Array.isArray(input.baselineCopies) ||
+        input.baselineCopies.some(
+          (copy) =>
+            !Schema.is(ImportedApplicationAttachmentBirthV1)(copy.applicationBirth) ||
+            !Schema.is(ImportedApplicationAttachmentEventBasisV1)(copy.messageEvent) ||
+            !Schema.is(ImportedApplicationAttachmentEventBasisV1)(copy.itemEvent) ||
+            copy.messageEvent.sequence <= copy.applicationBirth.sequence ||
+            copy.itemEvent.sequence <= copy.messageEvent.sequence ||
+            !/^[0-9a-f]{64}$/.test(copy.messagePayloadSha256) ||
+            !/^[0-9a-f]{64}$/.test(copy.itemPayloadSha256) ||
+            !input.visibleImportedBirths.some(
+              (birth) =>
+                importedApplicationAttachmentSha256V1(birth) ===
+                importedApplicationAttachmentSha256V1(copy.applicationBirth),
+            ),
+        )
+      ) {
+        return {
+          status: "unavailable",
+          reason: "imported_baseline_copy_evidence_unavailable",
+        } as const;
+      }
+      if (
+        input.targetBirth.threadId !== threadId ||
+        input.visibleImportedBirths.length !== importedThreads.size ||
+        new Set(input.visibleImportedBirths.map((birth) => birth.threadId)).size !==
+          importedThreads.size ||
+        input.visibleImportedBirths.some((birth) => !importedThreads.has(birth.threadId)) ||
+        input.inventories.some(({ inventory }) => {
+          const source = sources.get(inventory.header.applicationBirth.threadId);
+          return source !== undefined && source.thread.projectId !== inventory.header.projectId;
+        })
+      )
+        return { status: "unavailable", reason: "imported_source_binding_unavailable" } as const;
+      const qualified = visibleImportedApplicationAttachmentSegments(input);
+      if (qualified.status !== "complete") return qualified;
+      imported = qualified;
+      for (const { forkBasis } of imported.segments) {
+        for (const edge of forkBasis) {
+          const target = sources.get(edge.targetBirth.threadId);
+          const source = sources.get(edge.sourceBirth.threadId);
+          const fork = target?.thread.forkedFrom;
+          const run = source?.runs.find((run) => run.id === edge.sourceRunId);
+          if (
+            fork?.type !== "run" ||
+            fork.threadId !== edge.sourceBirth.threadId ||
+            fork.runId !== edge.sourceRunId ||
+            run?.ordinal !== edge.sourceRunOrdinal
+          ) {
+            return { status: "unavailable", reason: "fork_basis_unavailable" } as const;
+          }
+        }
+      }
+    }
+    return retainedAttachmentPathsForProjection(
+      sources.get(threadId)!,
+      sources,
+      imported,
+      importedThreads.size === 0 ? [] : input!.baselineCopies,
+    );
   }).pipe(
-    Effect.catch(() => Effect.succeed({ status: "unavailable", reason: "projection_unavailable" } as const)),
+    Effect.catch(() =>
+      Effect.succeed({ status: "unavailable", reason: "projection_unavailable" } as const),
+    ),
   );
 
 function localVisibleTurnItems(
@@ -4635,10 +4821,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError((cause) => new ProjectionStoreReadError({ threadId, cause })),
       );
 
-    const getThreadRetainedAttachmentPaths: ProjectionStoreV2Shape["getThreadRetainedAttachmentPaths"] = (threadId) =>
-      sql.withTransaction(readRetainedAttachmentPaths(threadId, getThread, getThreadProjection)).pipe(
-        Effect.catch(() => Effect.succeed({ status: "unavailable", reason: "projection_unavailable" } as const)),
-      );
+    const getThreadRetainedAttachmentPaths: ProjectionStoreV2Shape["getThreadRetainedAttachmentPaths"] =
+      (threadId) =>
+        sql
+          .withTransaction(readRetainedAttachmentPaths(threadId, getThread, getThreadProjection))
+          .pipe(
+            Effect.catch(() =>
+              Effect.succeed({ status: "unavailable", reason: "projection_unavailable" } as const),
+            ),
+          );
 
     const getThreadRecords: ProjectionStoreV2Shape["getThreadRecords"] = (
       threadId,
@@ -4913,14 +5104,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ),
         );
 
-    const getOperatingCountsCandidates: ProjectionStoreV2Shape["getOperatingCountsCandidates"] = (input) =>
-      sql.withTransaction(Effect.gen(function* () {
-        const rows = yield* sql<{
-          readonly id: string; readonly projectId: string; readonly activeProviderThreadId: string | null;
-          readonly interactionMode: string; readonly activityRunStatus: string | null;
-          readonly pendingRequestKind: string | null; readonly hasActionableProposedPlan: number;
-          readonly latestRunCompletedAt: string | null;
-        }>`
+    const getOperatingCountsCandidates: ProjectionStoreV2Shape["getOperatingCountsCandidates"] = (
+      input,
+    ) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{
+              readonly id: string;
+              readonly projectId: string;
+              readonly activeProviderThreadId: string | null;
+              readonly interactionMode: string;
+              readonly activityRunStatus: string | null;
+              readonly pendingRequestKind: string | null;
+              readonly hasActionableProposedPlan: number;
+              readonly latestRunCompletedAt: string | null;
+            }>`
           SELECT t.thread_id AS id, t.project_id AS projectId,
             t.active_provider_thread_id AS activeProviderThreadId, t.interaction_mode AS interactionMode,
             (SELECT r.status FROM orchestration_v2_projection_runs r
@@ -4941,21 +5140,38 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             ${input?.projectId === undefined ? sql`` : sql`AND t.project_id = ${input.projectId}`}
           ORDER BY t.thread_id ASC
         `;
-        const threads = yield* Effect.forEach(rows, (row) => Schema.decodeUnknownEffect(ProjectionOperatingCountsCandidate)({
-          id: row.id, projectId: row.projectId, activeProviderThreadId: row.activeProviderThreadId,
-          archivedAt: null, deletedAt: null, interactionMode: row.interactionMode,
-          activityRunStatus: row.activityRunStatus,
-          pendingRuntimeRequest: row.pendingRequestKind === null ? null : { kind: row.pendingRequestKind },
-          hasActionableProposedPlan: row.hasActionableProposedPlan === 1,
-          latestRunCompletedAt: row.latestRunCompletedAt,
-        }));
-        const sequences = yield* sql<{ readonly snapshotSequence: number | null }>`
+            const threads = yield* Effect.forEach(rows, (row) =>
+              Schema.decodeUnknownEffect(ProjectionOperatingCountsCandidate)({
+                id: row.id,
+                projectId: row.projectId,
+                activeProviderThreadId: row.activeProviderThreadId,
+                archivedAt: null,
+                deletedAt: null,
+                interactionMode: row.interactionMode,
+                activityRunStatus: row.activityRunStatus,
+                pendingRuntimeRequest:
+                  row.pendingRequestKind === null ? null : { kind: row.pendingRequestKind },
+                hasActionableProposedPlan: row.hasActionableProposedPlan === 1,
+                latestRunCompletedAt: row.latestRunCompletedAt,
+              }),
+            );
+            const sequences = yield* sql<{ readonly snapshotSequence: number | null }>`
           SELECT MAX(sequence) AS snapshotSequence
           FROM orchestration_events INDEXED BY idx_orchestration_events_application_high_water
           WHERE aggregate_kind = 'project' OR (application_event_version = 2 AND aggregate_kind = 'thread')
         `;
-        return { threads, snapshotSequence: sequences[0]?.snapshotSequence ?? 0 };
-      })).pipe(Effect.mapError((cause) => new ProjectionStoreReadError({ threadId: ThreadId.make("thread:operating-counts"), cause })));
+            return { threads, snapshotSequence: sequences[0]?.snapshotSequence ?? 0 };
+          }),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProjectionStoreReadError({
+                threadId: ThreadId.make("thread:operating-counts"),
+                cause,
+              }),
+          ),
+        );
 
     const selectShellThreadRows = (
       threadId?: ThreadId,
@@ -5697,27 +5913,46 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
     const sequence = yield* Ref.make(0);
 
     const service: ProjectionStoreV2Shape = {
-      getOperatingCountsCandidates: (input) => Effect.gen(function* () {
-        const existing = (yield* Ref.get(replayState)).projections;
-        const threads = [...existing.values()]
-          .filter(({ thread }) => thread.archivedAt === null && thread.deletedAt === null &&
-            (input?.projectId === undefined || thread.projectId === input.projectId))
-          .map((projection): ProjectionOperatingCountsCandidate => {
-            const pending = projection.runtimeRequests.filter((request) => request.status === "pending")
-              .toSorted((left, right) => DateTime.toEpochMillis(right.createdAt) - DateTime.toEpochMillis(left.createdAt) ||
-                String(right.id).localeCompare(String(left.id)))[0];
-            const active = projection.runs.filter(isActivityRunForShell)
-              .toSorted((left, right) => right.ordinal - left.ordinal)[0];
-            return { id: projection.thread.id, projectId: projection.thread.projectId,
-              activeProviderThreadId: projection.thread.activeProviderThreadId,
-              archivedAt: null, deletedAt: null, interactionMode: projection.thread.interactionMode,
-              activityRunStatus: active?.status ?? null,
-              pendingRuntimeRequest: pending === undefined ? null : { kind: pending.kind },
-              hasActionableProposedPlan: projection.plans.some((plan) => plan.kind === "proposed_plan" && plan.status === "active"),
-              latestRunCompletedAt: latestUnheldRun(projection.runs)?.completedAt ?? null };
-          }).toSorted((left, right) => String(left.id).localeCompare(String(right.id)));
-        return { threads, snapshotSequence: yield* Ref.get(sequence) };
-      }),
+      getOperatingCountsCandidates: (input) =>
+        Effect.gen(function* () {
+          const existing = (yield* Ref.get(replayState)).projections;
+          const threads = [...existing.values()]
+            .filter(
+              ({ thread }) =>
+                thread.archivedAt === null &&
+                thread.deletedAt === null &&
+                (input?.projectId === undefined || thread.projectId === input.projectId),
+            )
+            .map((projection): ProjectionOperatingCountsCandidate => {
+              const pending = projection.runtimeRequests
+                .filter((request) => request.status === "pending")
+                .toSorted(
+                  (left, right) =>
+                    DateTime.toEpochMillis(right.createdAt) -
+                      DateTime.toEpochMillis(left.createdAt) ||
+                    String(right.id).localeCompare(String(left.id)),
+                )[0];
+              const active = projection.runs
+                .filter(isActivityRunForShell)
+                .toSorted((left, right) => right.ordinal - left.ordinal)[0];
+              return {
+                id: projection.thread.id,
+                projectId: projection.thread.projectId,
+                activeProviderThreadId: projection.thread.activeProviderThreadId,
+                archivedAt: null,
+                deletedAt: null,
+                interactionMode: projection.thread.interactionMode,
+                activityRunStatus: active?.status ?? null,
+                pendingRuntimeRequest: pending === undefined ? null : { kind: pending.kind },
+                hasActionableProposedPlan: projection.plans.some(
+                  (plan) => plan.kind === "proposed_plan" && plan.status === "active",
+                ),
+                latestRunCompletedAt: latestUnheldRun(projection.runs)?.completedAt ?? null,
+              };
+            })
+            .toSorted((left, right) => String(left.id).localeCompare(String(right.id)));
+          return { threads, snapshotSequence: yield* Ref.get(sequence) };
+        }),
       apply: (event) =>
         Effect.gen(function* () {
           const result = yield* Ref.modify(replayState, (existing) => {

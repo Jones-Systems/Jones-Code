@@ -214,6 +214,13 @@ export const make = Effect.gen(function* () {
     serverVersion: packageJson.version,
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     capabilities: {
+      // The bundled RPC registers this guarded endpoint; execution still requires current authority.
+      nativeBootstrapCreation: {
+        submissionSchema: "t3.native-bootstrap-submission/v1",
+        preparationSchema: "voice.t3-bootstrap-preparation/v1",
+        observationSchema: "t3.native-creation-observation/v2",
+        guardRequired: true,
+      },
       repositoryIdentity: true,
       connectionProbe: true,
       attachmentUploads: true,

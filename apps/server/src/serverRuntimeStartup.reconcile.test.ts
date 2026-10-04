@@ -1,7 +1,14 @@
 import { assert, it } from "@effect/vitest";
 import {
-  ProjectId, ProviderDriverKind, ProviderInstanceId, ProviderSessionId, ProviderThreadId,
-  RunAttemptId, RunId, ThreadId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ProviderThreadId,
+  RunAttemptId,
+  RunId,
+  ServerSettingsError,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -27,73 +34,133 @@ const source = (id: string) => {
   const runId = RunId.make(`run-${id}`);
   const attemptId = RunAttemptId.make(`attempt-${id}`);
   const binding = {
-    threadId, providerThreadId, providerSessionId, instanceId, driver,
-    nativeThreadId: `native-${id}`, runtimeGeneration: `generation-${id}`,
+    threadId,
+    providerThreadId,
+    providerSessionId,
+    instanceId,
+    driver,
+    nativeThreadId: `native-${id}`,
+    runtimeGeneration: `generation-${id}`,
   } satisfies EventSink.ProviderBindingExpectationV2;
   const projection = {
-    thread: { id: threadId, projectId: ProjectId.make(id), providerInstanceId: instanceId, archivedAt: null, deletedAt: null },
-    runs: [{ id: runId, ordinal: 1, status: "running", providerInstanceId: instanceId, providerThreadId, activeAttemptId: attemptId }],
-    providerThreads: [{ id: providerThreadId, appThreadId: threadId, ownerNodeId: null, providerInstanceId: instanceId,
-      providerSessionId, driver, status: "active", nativeThreadRef: { nativeId: binding.nativeThreadId, strength: "strong", driver } }],
-    providerSessions: [{ id: providerSessionId, driver, providerInstanceId: instanceId, status: "running" }],
+    thread: {
+      id: threadId,
+      projectId: ProjectId.make(id),
+      providerInstanceId: instanceId,
+      archivedAt: null,
+      deletedAt: null,
+    },
+    runs: [
+      {
+        id: runId,
+        ordinal: 1,
+        status: "running",
+        providerInstanceId: instanceId,
+        providerThreadId,
+        activeAttemptId: attemptId,
+      },
+    ],
+    providerThreads: [
+      {
+        id: providerThreadId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        providerInstanceId: instanceId,
+        providerSessionId,
+        driver,
+        status: "active",
+        nativeThreadRef: { nativeId: binding.nativeThreadId, strength: "strong", driver },
+      },
+    ],
+    providerSessions: [
+      { id: providerSessionId, driver, providerInstanceId: instanceId, status: "running" },
+    ],
     providerTurns: [{ providerThreadId, runAttemptId: attemptId, status: "running" }],
-    attempts: [], nodes: [], turnItems: [], subagents: [], runtimeRequests: [], messages: [],
+    attempts: [],
+    nodes: [],
+    turnItems: [],
+    subagents: [],
+    runtimeRequests: [],
+    messages: [],
   } as unknown as ProjectionStore.ProjectionRuntimeRecoveryState;
   const marker: EventSink.RestartContinuationMarkerV2 = {
-    markerId: `marker-${id}`, threadId, projectId: projection.thread.projectId, sourceRunId: runId,
-    sourceRunAttemptId: attemptId, binding, evidenceRevision: 7, createdAt: timestamp,
+    markerId: `marker-${id}`,
+    threadId,
+    projectId: projection.thread.projectId,
+    sourceRunId: runId,
+    sourceRunAttemptId: attemptId,
+    binding,
+    evidenceRevision: 7,
+    createdAt: timestamp,
   };
   return { threadId, projection, binding, marker };
 };
 
 const recoveryLayer = (input: {
-  readonly settings?: Layer.Layer<ServerSettings.ServerSettingsService, ServerSettings.ServerSettingsError>;
+  readonly settings?: Layer.Layer<ServerSettings.ServerSettingsService, ServerSettingsError>;
   readonly projections?: Partial<ProjectionStore.ProjectionStoreV2["Service"]>;
   readonly events?: Partial<EventSink.EventSinkV2["Service"]>;
   readonly sessions?: Partial<ProviderSessions.ProviderSessionManagerV2["Service"]>;
   readonly outbox?: Partial<EffectOutbox.EffectOutboxV2["Service"]>;
-}) => Recovery.layer.pipe(Layer.provide(Layer.mergeAll(
-  input.settings ?? ServerSettings.layerTest(),
-  Layer.mock(ProjectionStore.ProjectionStoreV2)({
-    getRecoveryThreadIds: () => Effect.die("preparation must not scan projections"),
-    getRuntimeRecoveryProjection: () => Effect.die("preparation must not read runtime state"),
-    ...input.projections,
-  }),
-  Layer.mock(EventSink.EventSinkV2)({
-    readDormantRestartContinuations: Effect.die("unexpected marker inventory read"),
-    readProviderRuntimeEvidence: () => Effect.succeed(null),
-    findDormantRestartContinuation: () => Effect.succeed(null),
-    prepareRestartContinuation: () => Effect.die("unexpected marker mutation"),
-    clearRestartContinuation: () => Effect.die("unexpected marker clear"),
-    ...input.events,
-  }),
-  Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
-    observeCurrentThreadRuntime: () => Effect.die("unexpected provider observation"),
-    ...input.sessions,
-  }),
-  Layer.mock(EffectOutbox.EffectOutboxV2)({
-    reconcileAfterProcessLoss: Effect.die("staging must not reconcile the outbox"),
-    enqueue: () => Effect.die("staging must not enqueue provider work"),
-    ...input.outbox,
-  }),
-  IdAllocator.layer,
-)));
+}) =>
+  Recovery.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        input.settings ?? ServerSettings.layerTest(),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getRecoveryThreadIds: () => Effect.die("preparation must not scan projections"),
+          getRuntimeRecoveryProjection: () => Effect.die("preparation must not read runtime state"),
+          ...input.projections,
+        }),
+        Layer.mock(EventSink.EventSinkV2)({
+          readDormantRestartContinuations: Effect.die("unexpected marker inventory read"),
+          readProviderRuntimeEvidence: () => Effect.succeed(null),
+          findDormantRestartContinuation: () => Effect.succeed(null),
+          prepareRestartContinuation: () => Effect.die("unexpected marker mutation"),
+          clearRestartContinuation: () => Effect.die("unexpected marker clear"),
+          ...input.events,
+        }),
+        Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
+          observeCurrentThreadRuntime: () => Effect.die("unexpected provider observation"),
+          ...input.sessions,
+        }),
+        Layer.mock(EffectOutbox.EffectOutboxV2)({
+          reconcileAfterProcessLoss: Effect.die("staging must not reconcile the outbox"),
+          enqueue: () => Effect.die("staging must not enqueue provider work"),
+          ...input.outbox,
+        }),
+        IdAllocator.layer,
+      ),
+    ),
+  );
 
 it.effect("desktop preparation with default-off continuation writes no resume markers", () =>
   Effect.gen(function* () {
     assert.deepEqual(yield* Startup.markOptedInProviderSessionsForContinuation, []);
-  }).pipe(Effect.provide(recoveryLayer({
-    projections: { getRecoveryThreadIds: () => Effect.succeed([]) },
-  }))),
+  }).pipe(
+    Effect.provide(
+      recoveryLayer({
+        projections: { getRecoveryThreadIds: () => Effect.succeed([]) },
+      }),
+    ),
+  ),
 );
 
-it.effect("desktop preparation refuses unreadable continuation preferences before touching sessions", () =>
-  Effect.gen(function* () {
-    const result = yield* Startup.markOptedInProviderSessionsForContinuation.pipe(Effect.exit);
-    assert.isTrue(Exit.isFailure(result));
-  }).pipe(Effect.provide(recoveryLayer({ settings: Layer.mock(ServerSettings.ServerSettingsService)({
-    getSettings: Effect.fail(new Error("preferences unavailable") as never),
-  }) }))),
+it.effect(
+  "desktop preparation refuses unreadable continuation preferences before touching sessions",
+  () =>
+    Effect.gen(function* () {
+      const result = yield* Startup.markOptedInProviderSessionsForContinuation.pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(result));
+    }).pipe(
+      Effect.provide(
+        recoveryLayer({
+          settings: Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: Effect.fail(new Error("preferences unavailable") as never),
+          }),
+        }),
+      ),
+    ),
 );
 
 it.effect.each([false, true])(
@@ -104,32 +171,50 @@ it.effect.each([false, true])(
     const layer = recoveryLayer({
       settings: ServerSettings.layerTest({
         continueThreadsAfterServerUpdate: environmentOptIn,
-        projectSettingsOverrides: { [ProjectId.make("enabled")]: { continueThreadsAfterServerUpdate: true }, [ProjectId.make("disabled")]: { continueThreadsAfterServerUpdate: false } },
+        projectSettingsOverrides: {
+          [ProjectId.make("enabled")]: { continueThreadsAfterServerUpdate: true },
+          [ProjectId.make("disabled")]: { continueThreadsAfterServerUpdate: false },
+        },
       }),
       projections: {
         getRecoveryThreadIds: () => Effect.succeed(values.map((value) => value.threadId)),
-        getRuntimeRecoveryProjection: (id) => Effect.succeed(values.find((value) => value.threadId === id)!.projection),
+        getRuntimeRecoveryProjection: (id) =>
+          Effect.succeed(values.find((value) => value.threadId === id)!.projection),
       },
-      sessions: { observeCurrentThreadRuntime: (id) => Effect.succeed({
-        status: "busy", binding: values.find((value) => value.threadId === id)!.binding, observedAt: timestamp,
-      }) },
+      sessions: {
+        observeCurrentThreadRuntime: (id) =>
+          Effect.succeed({
+            status: "busy",
+            binding: values.find((value) => value.threadId === id)!.binding,
+            observedAt: timestamp,
+          }),
+      },
       events: {
-        readProviderRuntimeEvidence: (id) => Effect.succeed({ binding: values.find((value) => value.threadId === id)!.binding,
-          evidenceRevision: 7, observation: null, registeredAt: timestamp }),
-        prepareRestartContinuation: (input) => Effect.gen(function* () {
-          const value = values.find((value) => value.threadId === input.threadId)!;
-          assert.deepEqual(input.expectedBinding, value.marker.binding);
-          assert.equal(input.expectedEvidenceRevision, value.marker.evidenceRevision);
-          const markerId = typeof input.markerId === "string" ? input.markerId : yield* input.markerId;
-          value.marker = { ...value.marker, markerId };
-          prepared.push(value.marker);
-          return value.marker;
-        }),
+        readProviderRuntimeEvidence: (id) =>
+          Effect.succeed({
+            binding: values.find((value) => value.threadId === id)!.binding,
+            evidenceRevision: 7,
+            observation: null,
+            registeredAt: timestamp,
+          }),
+        prepareRestartContinuation: (input) =>
+          Effect.gen(function* () {
+            const value = values.find((value) => value.threadId === input.threadId)!;
+            assert.deepEqual(input.expectedBinding, value.marker.binding);
+            assert.equal(input.expectedEvidenceRevision, value.marker.evidenceRevision);
+            const markerId =
+              typeof input.markerId === "string" ? input.markerId : yield* input.markerId;
+            value.marker = { ...value.marker, markerId };
+            prepared.push(value.marker);
+            return value.marker;
+          }),
       },
     });
     return Effect.gen(function* () {
       const markers = yield* Startup.markOptedInProviderSessionsForContinuation;
-      const expected = environmentOptIn ? [values[0]!.marker, values[1]!.marker] : [values[1]!.marker];
+      const expected = environmentOptIn
+        ? [values[0]!.marker, values[1]!.marker]
+        : [values[1]!.marker];
       assert.deepEqual(markers, expected);
       assert.deepEqual(prepared, expected);
     }).pipe(Effect.provide(layer));
@@ -141,7 +226,11 @@ it.effect("startup stages immutable dormant markers without projection or outbox
   return Effect.gen(function* () {
     const stage = yield* (yield* Recovery.ProviderRuntimeRecoveryService).stageStartupRecovery;
     assert.strictEqual(stage.continuationMarkers, markers);
-  }).pipe(Effect.provide(recoveryLayer({ events: { readDormantRestartContinuations: Effect.succeed(markers) } })));
+  }).pipe(
+    Effect.provide(
+      recoveryLayer({ events: { readDormantRestartContinuations: Effect.succeed(markers) } }),
+    ),
+  );
 });
 
 it.effect("clear delegates the captured full marker reference without thread-wide mutation", () => {
@@ -150,72 +239,127 @@ it.effect("clear delegates the captured full marker reference without thread-wid
   return Effect.gen(function* () {
     yield* Startup.clearProviderSessionContinuationMarkers([marker]);
     assert.strictEqual(cleared[0], marker);
-  }).pipe(Effect.provide(recoveryLayer({ events: {
-    clearRestartContinuation: (value) => Effect.sync(() => { cleared.push(value); return true; }),
-  } })));
+  }).pipe(
+    Effect.provide(
+      recoveryLayer({
+        events: {
+          clearRestartContinuation: (value) =>
+            Effect.sync(() => {
+              cleared.push(value);
+              return true;
+            }),
+        },
+      }),
+    ),
+  );
 });
 
-it.effect.each(["archived", "deleted", "missing native ref", "stopped session", "wrong instance", "no live turn"] as const)(
-  "does not prepare an interrupted source with %s",
-  (reason) => {
-    const value = source(`excluded-${reason}`);
-    const projection: ProjectionStore.ProjectionRuntimeRecoveryState = {
-      ...value.projection,
-      thread: {
-        ...value.projection.thread,
-        archivedAt: reason === "archived" ? DateTime.makeUnsafe(timestamp) : null,
-        deletedAt: reason === "deleted" ? DateTime.makeUnsafe(timestamp) : null,
-        providerInstanceId: reason === "wrong instance" ? ProviderInstanceId.make("other") : instanceId,
-      },
-      providerThreads: value.projection.providerThreads.map((thread) => ({
-        ...thread, nativeThreadRef: reason === "missing native ref" ? null : thread.nativeThreadRef,
-      })),
-      providerSessions: value.projection.providerSessions.map((session) => ({
-        ...session, status: reason === "stopped session" ? "stopped" as const : session.status,
-      })),
-      providerTurns: value.projection.providerTurns.map((turn) => ({
-        ...turn, status: reason === "no live turn" ? "completed" as const : turn.status,
-      })),
-    };
-    return Effect.gen(function* () {
-      assert.deepEqual(yield* Startup.markRunningProviderSessionsForContinuation, []);
-    }).pipe(Effect.provide(recoveryLayer({
-      projections: { getRecoveryThreadIds: () => Effect.succeed([value.threadId]), getRuntimeRecoveryProjection: () => Effect.succeed(projection) },
-      sessions: { observeCurrentThreadRuntime: () => Effect.succeed({ status: "busy", binding: value.binding, observedAt: timestamp }) },
-    })));
-  },
-);
-
-it.effect.each(["runtime_not_resident", "runtime_binding_unavailable", "native_observation_incomplete"] as const)(
-  "update preparation never substitutes persisted running state for %s",
-  (reason) => {
-    const value = source(`unknown-${reason}`);
-    return Effect.gen(function* () {
-      const result = yield* Startup.markRunningProviderSessionsForContinuation.pipe(Effect.exit);
-      if (reason === "runtime_not_resident") {
-        assert.isTrue(Exit.isSuccess(result));
-        if (Exit.isSuccess(result)) assert.deepEqual(result.value, []);
-      } else {
-        assert.isTrue(Exit.isFailure(result));
-      }
-    }).pipe(Effect.provide(recoveryLayer({
-      projections: { getRecoveryThreadIds: () => Effect.succeed([value.threadId]), getRuntimeRecoveryProjection: () => Effect.succeed(value.projection) },
-      sessions: { observeCurrentThreadRuntime: () => Effect.succeed({ status: "unknown", reason }) },
-    })));
-  },
-);
-
-it.effect("startup reports an actual dormant marker inventory failure without enumerating providers", () => {
-  const failure = new EventSink.EventSinkWriteError({ eventCount: 0, cause: "marker inventory unavailable" });
+it.effect.each([
+  "archived",
+  "deleted",
+  "missing native ref",
+  "stopped session",
+  "wrong instance",
+  "no live turn",
+] as const)("does not prepare an interrupted source with %s", (reason) => {
+  const value = source(`excluded-${reason}`);
+  const projection: ProjectionStore.ProjectionRuntimeRecoveryState = {
+    ...value.projection,
+    thread: {
+      ...value.projection.thread,
+      archivedAt: reason === "archived" ? DateTime.makeUnsafe(timestamp) : null,
+      deletedAt: reason === "deleted" ? DateTime.makeUnsafe(timestamp) : null,
+      providerInstanceId:
+        reason === "wrong instance" ? ProviderInstanceId.make("other") : instanceId,
+    },
+    providerThreads: value.projection.providerThreads.map((thread) => ({
+      ...thread,
+      nativeThreadRef: reason === "missing native ref" ? null : thread.nativeThreadRef,
+    })),
+    providerSessions: value.projection.providerSessions.map((session) => ({
+      ...session,
+      status: reason === "stopped session" ? ("stopped" as const) : session.status,
+    })),
+    providerTurns: value.projection.providerTurns.map((turn) => ({
+      ...turn,
+      status: reason === "no live turn" ? ("completed" as const) : turn.status,
+    })),
+  };
   return Effect.gen(function* () {
-    const error = yield* (yield* Recovery.ProviderRuntimeRecoveryService).stageStartupRecovery.pipe(Effect.flip);
-    assert.equal(error.operation, "read-projections");
-    assert.strictEqual(error.cause, failure);
-  }).pipe(Effect.provide(recoveryLayer({ events: { readDormantRestartContinuations: Effect.fail(failure) } })));
+    assert.deepEqual(yield* Startup.markRunningProviderSessionsForContinuation, []);
+  }).pipe(
+    Effect.provide(
+      recoveryLayer({
+        projections: {
+          getRecoveryThreadIds: () => Effect.succeed([value.threadId]),
+          getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+        },
+        sessions: {
+          observeCurrentThreadRuntime: () =>
+            Effect.succeed({ status: "busy", binding: value.binding, observedAt: timestamp }),
+        },
+      }),
+    ),
+  );
 });
+
+it.effect.each([
+  "runtime_not_resident",
+  "runtime_binding_unavailable",
+  "native_observation_incomplete",
+] as const)("update preparation never substitutes persisted running state for %s", (reason) => {
+  const value = source(`unknown-${reason}`);
+  return Effect.gen(function* () {
+    const result = yield* Startup.markRunningProviderSessionsForContinuation.pipe(Effect.exit);
+    if (reason === "runtime_not_resident") {
+      assert.isTrue(Exit.isSuccess(result));
+      if (Exit.isSuccess(result)) assert.deepEqual(result.value, []);
+    } else {
+      assert.isTrue(Exit.isFailure(result));
+    }
+  }).pipe(
+    Effect.provide(
+      recoveryLayer({
+        projections: {
+          getRecoveryThreadIds: () => Effect.succeed([value.threadId]),
+          getRuntimeRecoveryProjection: () => Effect.succeed(value.projection),
+        },
+        sessions: {
+          observeCurrentThreadRuntime: () => Effect.succeed({ status: "unknown", reason }),
+        },
+      }),
+    ),
+  );
+});
+
+it.effect(
+  "startup reports an actual dormant marker inventory failure without enumerating providers",
+  () => {
+    const failure = new EventSink.EventSinkWriteError({
+      eventCount: 0,
+      cause: "marker inventory unavailable",
+    });
+    return Effect.gen(function* () {
+      const error =
+        yield* (yield* Recovery.ProviderRuntimeRecoveryService).stageStartupRecovery.pipe(
+          Effect.flip,
+        );
+      assert.equal(error.operation, "read-projections");
+      assert.strictEqual(error.cause, failure);
+    }).pipe(
+      Effect.provide(
+        recoveryLayer({ events: { readDormantRestartContinuations: Effect.fail(failure) } }),
+      ),
+    );
+  },
+);
 
 const emptyRecoveryProjection = (id: string): ProjectionStore.ProjectionRuntimeRecoveryState => ({
-  ...source(id).projection, runs: [], providerThreads: [], providerSessions: [], providerTurns: [],
+  ...source(id).projection,
+  runs: [],
+  providerThreads: [],
+  providerSessions: [],
+  providerTurns: [],
 });
 const idleRecoveryOutbox = {
   listHeldByThreadId: () => Effect.succeed([]),
@@ -229,21 +373,39 @@ it.effect("retries a transient projection recovery read before completing startu
   const threadId = ThreadId.make("transient-recovery-read");
   let reads = 0;
   return Effect.gen(function* () {
-    const result = yield* (yield* Recovery.ProviderRuntimeRecoveryService).recover.pipe(Effect.exit);
+    const result = yield* (yield* Recovery.ProviderRuntimeRecoveryService).recover.pipe(
+      Effect.exit,
+    );
     assert.isTrue(Exit.isSuccess(result));
     if (Exit.isSuccess(result)) assert.deepEqual(result.value.failedThreadIds, []);
     assert.equal(reads, 2);
-  }).pipe(Effect.provide(recoveryLayer({
-    projections: {
-      getRecoveryThreadIds: () => Effect.succeed([threadId]),
-      getRuntimeRecoveryProjection: () => Effect.suspend(() => ++reads === 1
-        ? Effect.fail(new ProjectionStore.ProjectionStoreReadError({ threadId, cause: new SqlError.SqlError({ reason: new SqlError.LockTimeoutError({
-            cause: { code: "SQLITE_BUSY" }, operation: "read", message: "Synthetic transient read lock",
-          }) }) }))
-        : Effect.succeed(emptyRecoveryProjection(threadId))),
-    },
-    outbox: idleRecoveryOutbox,
-  })));
+  }).pipe(
+    Effect.provide(
+      recoveryLayer({
+        projections: {
+          getRecoveryThreadIds: () => Effect.succeed([threadId]),
+          getRuntimeRecoveryProjection: () =>
+            Effect.suspend(() =>
+              ++reads === 1
+                ? Effect.fail(
+                    new ProjectionStore.ProjectionStoreReadError({
+                      threadId,
+                      cause: new SqlError.SqlError({
+                        reason: new SqlError.LockTimeoutError({
+                          cause: { code: "SQLITE_BUSY" },
+                          operation: "read",
+                          message: "Synthetic transient read lock",
+                        }),
+                      }),
+                    }),
+                  )
+                : Effect.succeed(emptyRecoveryProjection(threadId)),
+            ),
+        },
+        outbox: idleRecoveryOutbox,
+      }),
+    ),
+  );
 });
 
 it.effect("continues recovering later threads after a persistent projection read failure", () => {
@@ -253,7 +415,9 @@ it.effect("continues recovering later threads after a persistent projection read
   let unrelatedOutboxProgress = 0;
   let exclusions: ReadonlyArray<ThreadId> | undefined;
   return Effect.gen(function* () {
-    const result = yield* (yield* Recovery.ProviderRuntimeRecoveryService).recover.pipe(Effect.exit);
+    const result = yield* (yield* Recovery.ProviderRuntimeRecoveryService).recover.pipe(
+      Effect.exit,
+    );
     assert.isTrue(Exit.isSuccess(result));
     if (Exit.isSuccess(result)) {
       assert.deepEqual(result.value.failedThreadIds, [failed]);
@@ -263,22 +427,38 @@ it.effect("continues recovering later threads after a persistent projection read
     assert.equal(laterReads, 1);
     assert.deepEqual(exclusions, [failed]);
     assert.equal(unrelatedOutboxProgress, 1);
-  }).pipe(Effect.provide(recoveryLayer({
-    projections: {
-      getRecoveryThreadIds: () => Effect.succeed([failed, later]),
-      getRuntimeRecoveryProjection: (id) => id === failed
-        ? Effect.fail(new ProjectionStore.ProjectionStoreReadError({ threadId: id, cause: "persistent read failure" }))
-        : Effect.sync(() => { laterReads += 1; return emptyRecoveryProjection(id); }),
-    },
-    outbox: {
-      ...idleRecoveryOutbox,
-      reconcileAfterProcessLoss: Effect.die("failed thread requires scoped outbox reconciliation"),
-      reconcileAfterProcessLossExcluding: ({ excludeThreadIds }) => Effect.sync(() => {
-        exclusions = excludeThreadIds;
-        assert.deepEqual(excludeThreadIds, [failed]);
-        unrelatedOutboxProgress += 1;
-        return { requeued: 1, cancelled: 0 };
+  }).pipe(
+    Effect.provide(
+      recoveryLayer({
+        projections: {
+          getRecoveryThreadIds: () => Effect.succeed([failed, later]),
+          getRuntimeRecoveryProjection: (id) =>
+            id === failed
+              ? Effect.fail(
+                  new ProjectionStore.ProjectionStoreReadError({
+                    threadId: id,
+                    cause: "persistent read failure",
+                  }),
+                )
+              : Effect.sync(() => {
+                  laterReads += 1;
+                  return emptyRecoveryProjection(id);
+                }),
+        },
+        outbox: {
+          ...idleRecoveryOutbox,
+          reconcileAfterProcessLoss: Effect.die(
+            "failed thread requires scoped outbox reconciliation",
+          ),
+          reconcileAfterProcessLossExcluding: ({ excludeThreadIds }) =>
+            Effect.sync(() => {
+              exclusions = excludeThreadIds;
+              assert.deepEqual(excludeThreadIds, [failed]);
+              unrelatedOutboxProgress += 1;
+              return { requeued: 1, cancelled: 0 };
+            }),
+        },
       }),
-    },
-  })));
+    ),
+  );
 });

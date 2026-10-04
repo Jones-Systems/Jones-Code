@@ -1,7 +1,11 @@
 import { assert, it } from "@effect/vitest";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { ObservedRuntimeIdentity, RuntimeIdentityAttestation, RuntimeIdentityObservation } from "./runtimeIdentity.ts";
+import {
+  ObservedRuntimeIdentity,
+  RuntimeIdentityAttestation,
+  RuntimeIdentityObservation,
+} from "./runtimeIdentity.ts";
 
 const observed = {
   backend: { status: "observed", value: "openai", sourceEvent: "codex.thread/open" },
@@ -32,7 +36,11 @@ it("preserves omitted generations and nullable requested service tiers", () => {
   assert.strictEqual(decoded.requested.serviceTier, null);
   assert.deepEqual<unknown>(Schema.encodeSync(RuntimeIdentityAttestation)(decoded), wire);
   for (const runtimeGeneration of [1, null, "", "   "]) {
-    assert.isTrue(Option.isNone(Schema.decodeUnknownOption(RuntimeIdentityAttestation)({ ...wire, runtimeGeneration })));
+    assert.isTrue(
+      Option.isNone(
+        Schema.decodeUnknownOption(RuntimeIdentityAttestation)({ ...wire, runtimeGeneration }),
+      ),
+    );
   }
 });
 
@@ -41,5 +49,7 @@ it("requires source evidence for observed dimensions and reasons for unavailable
   assert.isTrue(Option.isNone(decode({ status: "observed", value: "model-1" })));
   assert.isTrue(Option.isNone(decode({ status: "unavailable" })));
   assert.isTrue(Option.isNone(decode({ status: "qualified", value: "model-1" })));
-  assert.isTrue(Option.isNone(Schema.decodeUnknownOption(ObservedRuntimeIdentity)({ model: observed.model })));
+  assert.isTrue(
+    Option.isNone(Schema.decodeUnknownOption(ObservedRuntimeIdentity)({ model: observed.model })),
+  );
 });

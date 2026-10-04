@@ -37,22 +37,30 @@ describe("historical HTTP dispatch rejection contract", () => {
     expect(endpoint.method).toBe("POST");
     expect(endpoint.path).toBe("/api/orchestration/dispatch");
     expect(endpoint.middlewares.has(EnvironmentAuthenticatedAuth)).toBe(true);
-    if (endpoint.headers === undefined) throw new Error("dispatch must declare optional bearer headers");
-    const headers = descriptorCodec(endpoint.headers, Schema.toCodecStringTree(Schema.Struct({
-      authorization: Schema.optionalKey(Schema.String),
-      dpop: Schema.optionalKey(Schema.String),
-    })));
+    if (endpoint.headers === undefined)
+      throw new Error("dispatch must declare optional bearer headers");
+    const headers = descriptorCodec(
+      endpoint.headers,
+      Schema.toCodecStringTree(
+        Schema.Struct({
+          authorization: Schema.optionalKey(Schema.String),
+          dpop: Schema.optionalKey(Schema.String),
+        }),
+      ),
+    );
     const decode = Schema.decodeUnknownSync(headers);
     expect(decode({})).toEqual({});
     expect(decode({ authorization: "Bearer credential", dpop: "proof" })).toEqual({
-      authorization: "Bearer credential", dpop: "proof",
+      authorization: "Bearer credential",
+      dpop: "proof",
     });
     expect(() => decode({ authorization: 4 })).toThrow();
   });
 
   it("preserves the narrow historical turn-start payload for rejection without accepting a retired command union", () => {
     const descriptor = endpoint.payload.get("application/json")?.schemas[0];
-    if (descriptor === undefined) throw new Error("dispatch must declare the historical JSON payload");
+    if (descriptor === undefined)
+      throw new Error("dispatch must declare the historical JSON payload");
     const payloadSchema = descriptorCodec(descriptor, Schema.toCodecJson(ThreadTurnStartCommand));
     const wire = {
       type: "thread.turn.start",
@@ -74,7 +82,12 @@ describe("historical HTTP dispatch rejection contract", () => {
     };
     const decoded = Schema.decodeUnknownSync(payloadSchema)(wire);
     expect(Schema.encodeSync(payloadSchema)(decoded)).toEqual(wire);
-    for (const type of ["thread.create", "thread.delete", "message.dispatch", "thread.imported-history.start"]) {
+    for (const type of [
+      "thread.create",
+      "thread.delete",
+      "message.dispatch",
+      "thread.imported-history.start",
+    ]) {
       expect(() => Schema.decodeUnknownSync(payloadSchema)({ ...wire, type })).toThrow();
     }
   });
@@ -95,15 +108,35 @@ describe("historical HTTP dispatch rejection contract", () => {
       Schema.toCodecJson(EnvironmentInternalError),
       Schema.toCodecJson(EnvironmentAuthInvalidError),
     ] as const;
-    expect(errorSchemas.map((schema) => schema.ast)).toEqual(knownErrorSchemas.map((schema) => schema.ast));
+    expect(errorSchemas.map((schema) => schema.ast)).toEqual(
+      knownErrorSchemas.map((schema) => schema.ast),
+    );
     for (const error of [
-      new EnvironmentRequestInvalidError({ code: "invalid_request", reason: "dispatch_guard_bootstrap_unsupported", traceId }),
-      new EnvironmentRequestInvalidError({ code: "invalid_request", reason: "invalid_command", traceId }),
-      new EnvironmentScopeRequiredError({ code: "insufficient_scope", requiredScope: "orchestration:operate", traceId }),
-      new EnvironmentAuthInvalidError({ code: "auth_invalid", reason: "missing_credential", traceId }),
+      new EnvironmentRequestInvalidError({
+        code: "invalid_request",
+        reason: "dispatch_guard_bootstrap_unsupported",
+        traceId,
+      }),
+      new EnvironmentRequestInvalidError({
+        code: "invalid_request",
+        reason: "invalid_command",
+        traceId,
+      }),
+      new EnvironmentScopeRequiredError({
+        code: "insufficient_scope",
+        requiredScope: "orchestration:operate",
+        traceId,
+      }),
+      new EnvironmentAuthInvalidError({
+        code: "auth_invalid",
+        reason: "missing_credential",
+        traceId,
+      }),
       new EnvironmentInternalError({ code: "internal_error", reason: "internal_error", traceId }),
     ]) {
-      expect(knownErrorSchemas.some((schema) => Exit.isSuccess(Schema.decodeUnknownExit(schema)(error)))).toBe(true);
+      expect(
+        knownErrorSchemas.some((schema) => Exit.isSuccess(Schema.decodeUnknownExit(schema)(error))),
+      ).toBe(true);
     }
   });
 });
@@ -167,7 +200,10 @@ describe("command observation HTTP response codecs", () => {
     if (v1Descriptor === undefined || v2Descriptor === undefined) {
       throw new Error("Both command observation endpoints must declare a success codec");
     }
-    const v1Schema = descriptorCodec(v1Descriptor, Schema.toCodecJson(OrchestrationCommandObservation));
+    const v1Schema = descriptorCodec(
+      v1Descriptor,
+      Schema.toCodecJson(OrchestrationCommandObservation),
+    );
     const v2Schema = descriptorCodec(v2Descriptor, Schema.toCodecJson(NativeCommandObservationV2));
     const decodeV1 = Schema.decodeUnknownSync(v1Schema);
     const decodeV2 = Schema.decodeUnknownSync(v2Schema);
@@ -211,8 +247,13 @@ describe("command observation HTTP response codecs", () => {
 describe("native provider observation codecs", () => {
   it("preserves existing live goal states, reasons, native cursor and millisecond evidence", () => {
     const observation = {
-      schema: "t3.provider-goal-state/v1", threadId: "thread-1", providerInstanceId: "codex_work",
-      nativeThreadId: null, observedAtMs: 0, state: "unknown", reasonCode: "unsupported",
+      schema: "t3.provider-goal-state/v1",
+      threadId: "thread-1",
+      providerInstanceId: "codex_work",
+      nativeThreadId: null,
+      observedAtMs: 0,
+      state: "unknown",
+      reasonCode: "unsupported",
     };
     const decode = Schema.decodeUnknownSync(ProviderGoalStateObservation);
     for (const state of ["active", "inactive", "unknown"]) {
@@ -225,19 +266,34 @@ describe("native provider observation codecs", () => {
 
   it("preserves qualified quota nulls, omissions and separate unsupported evidence", () => {
     const quota = {
-      schemaVersion: "codex.t3-qualified-quota/v1", instanceId: "codex_work",
-      probeId: "123e4567-e89b-42d3-a456-426614174000", status: "unsupported",
-      attemptedAt: "2026-10-02T12:00:00Z", quotaReceivedAt: null, probeCompletedAt: "2026-10-02T12:00:01Z",
-      complete: false, rateLimitsByLimitId: null, windowProvenance: [], failureCode: "unsupported_account", capabilityRefs: [],
+      schemaVersion: "codex.t3-qualified-quota/v1",
+      instanceId: "codex_work",
+      probeId: "123e4567-e89b-42d3-a456-426614174000",
+      status: "unsupported",
+      attemptedAt: "2026-10-02T12:00:00Z",
+      quotaReceivedAt: null,
+      probeCompletedAt: "2026-10-02T12:00:01Z",
+      complete: false,
+      rateLimitsByLimitId: null,
+      windowProvenance: [],
+      failureCode: "unsupported_account",
+      capabilityRefs: [],
     };
     const decode = Schema.decodeUnknownSync(QualifiedQuota);
     expect(Schema.encodeSync(QualifiedQuota)(decode(quota))).toEqual(quota);
     const windows = {
-      ...quota, rateLimitsByLimitId: {
-        main: { primary: { usedPercent: 12, resetsAt: null }, secondary: null, spendControlReached: false },
+      ...quota,
+      rateLimitsByLimitId: {
+        main: {
+          primary: { usedPercent: 12, resetsAt: null },
+          secondary: null,
+          spendControlReached: false,
+        },
       },
     };
     expect(Schema.encodeSync(QualifiedQuota)(decode(windows))).toEqual(windows);
-    expect(() => decode({ ...quota, rateLimitsByLimitId: { main: { primary: { usedPercent: Infinity } } } })).toThrow();
+    expect(() =>
+      decode({ ...quota, rateLimitsByLimitId: { main: { primary: { usedPercent: Infinity } } } }),
+    ).toThrow();
   });
 });

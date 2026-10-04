@@ -8,6 +8,7 @@ import * as NodePath from "node:path";
 import * as NodeModule from "node:module";
 import * as NodeSqlite from "node:sqlite";
 import type { JonesStagedArtifact } from "@t3tools/shared/jonesActions";
+import { requireNativeStoreAuthoritySelectedStoreForBaseDir } from "../environment/nativeStoreAuthorityPersistence.ts";
 
 const nodeRequire = NodeModule.createRequire(import.meta.url);
 
@@ -377,9 +378,20 @@ export async function currentQualifiedRuntimeBinding(
   baseDir: string,
   activeVersion: string,
   host?: { readonly platform: string; readonly architecture: string },
+  selectedDatabasePath?: string,
 ): Promise<QualifiedRuntimeBinding> {
   const resolvedBase = await NodeFSP.realpath(baseDir);
-  const dbPath = NodePath.join(resolvedBase, "userdata", "state.sqlite");
+  const dbPath = NodePath.resolve(
+    selectedDatabasePath ?? NodePath.join(resolvedBase, "userdata", "state.sqlite"),
+  );
+  try {
+    requireNativeStoreAuthoritySelectedStoreForBaseDir(resolvedBase, dbPath);
+  } catch {
+    return blocked(
+      "binding-mismatch",
+      "The selected database has no qualified native store binding.",
+    );
+  }
   const database = await NodeFSP.lstat(dbPath);
   const environment = await NodeFSP.lstat(
     NodePath.join(resolvedBase, "userdata", "environment-id"),
@@ -420,6 +432,7 @@ export async function stageQualifiedRuntime(input: {
       input.binding.baseDir,
       input.binding.activeVersion,
       input.host,
+      input.binding.dbPath,
     );
     if (JSON.stringify(current) !== JSON.stringify(input.binding))
       return blocked("binding-mismatch", "The selected native environment changed before staging.");
@@ -513,11 +526,17 @@ export async function verifyStagedQualifiedRuntime(
   activeVersion: string,
   handle: string,
   host?: { readonly platform: string; readonly architecture: string },
+  selectedDatabasePath?: string,
 ): Promise<StagedQualifiedRuntime> {
   const staged = decodeStagedQualifiedRuntime(await readRegularJson(stagedPath(baseDir, handle)));
   if (staged === undefined)
     return blocked("invalid-artifact", "Staged handle has no valid durable receipt.");
-  const current = await currentQualifiedRuntimeBinding(baseDir, activeVersion, host);
+  const current = await currentQualifiedRuntimeBinding(
+    baseDir,
+    activeVersion,
+    host,
+    selectedDatabasePath ?? staged.binding.dbPath,
+  );
   if (JSON.stringify(current) !== JSON.stringify(staged.binding))
     return blocked(
       "binding-mismatch",

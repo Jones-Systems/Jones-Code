@@ -10,4 +10,11 @@ export * from "./providerPolicy.ts";
 export * from "./runtimeIdentity.ts";
 export * from "./threadPullRequest.ts";
 export * from "./threadSearch.ts";
-export { ProjectIconOverride, ProjectScript, ProjectScriptIcon, ProjectMonogramText, ProjectFaviconPath, ProjectIconColor } from "./project.ts";
+export {
+  ProjectIconOverride,
+  ProjectScript,
+  ProjectScriptIcon,
+  ProjectMonogramText,
+  ProjectFaviconPath,
+  ProjectIconColor,
+} from "./project.ts";

@@ -210,10 +210,15 @@ const makeEventStore = Effect.gen(function* () {
       ORDER BY sequence ASC LIMIT 257`,
   });
   const readMetadataByCommandId: OrchestrationEventStore.OrchestrationEventStoreShape["readMetadataByCommandId"] =
-    (commandId) => readCommandMetadataRows(commandId).pipe(Effect.mapError(
-      toPersistenceSqlOrDecodeError("OrchestrationEventStore.readMetadataByCommandId:query",
-        "OrchestrationEventStore.readMetadataByCommandId:decodeRows"),
-    ));
+    (commandId) =>
+      readCommandMetadataRows(commandId).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "OrchestrationEventStore.readMetadataByCommandId:query",
+            "OrchestrationEventStore.readMetadataByCommandId:decodeRows",
+          ),
+        ),
+      );
 
   const appendProjectEventRow = SqlSchema.findOne({
     Request: AppendProjectEventRequestSchema,
@@ -632,7 +637,6 @@ const makeEventStore = Effect.gen(function* () {
     streamApplicationEvents,
     streamProjectedApplicationEvents,
   } satisfies OrchestrationEventStore.OrchestrationEventStoreShape;
-
 });
 
 export const OrchestrationEventStoreLive = Layer.effect(

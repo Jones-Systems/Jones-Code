@@ -1,9 +1,12 @@
 import {
   CheckpointId,
   CheckpointScopeId,
-  type OrchestrationV2DomainEvent,
+  CommandId,
+  OrchestrationV2DomainEvent,
+  OrchestrationV2StoredEvent,
   ProviderThreadId,
   ThreadId,
+  WorktreeOwnershipConflictError,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -19,7 +22,10 @@ import {
 } from "./CheckpointRestoreSafety.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
+import { OrchestrationEffectRequestV2 } from "./EffectOutbox.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
+import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
+import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import type { ProviderAdapterV2RollbackTarget } from "./ProviderAdapter.ts";
@@ -63,14 +69,76 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
 
 const isCheckpointRollbackExecutionError = Schema.is(CheckpointRollbackExecutionError);
 
+export interface CheckpointRollbackObservationV1 {
+  readonly version: 1;
+  readonly kind: "rolled_back";
+  readonly sourceEffect: { readonly effectId: string; readonly commandId: CommandId };
+  readonly threadId: ThreadId;
+  readonly providerThreadId: ProviderThreadId;
+  readonly checkpointId: CheckpointId;
+  readonly scopeId: CheckpointScopeId;
+  readonly completedAt: string;
+  readonly pruneEffectId: string;
+  readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
+  readonly execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
+}
+const issuedRollbackObservations = new WeakMap<
+  object,
+  { readonly observation: CheckpointRollbackObservationV1; readonly snapshot: string }
+>();
+const issuedExecutionObservations = new WeakMap<
+  OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+  CheckpointRollbackObservationV1
+>();
+const rollbackObservationSnapshot = (observation: CheckpointRollbackObservationV1) =>
+  nativeCreationCanonicalJson({
+    ...observation,
+    storedEvents: observation.storedEvents.map((event) =>
+      Schema.encodeSync(OrchestrationV2StoredEvent)(event),
+    ),
+    execution: Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
+      observation.execution,
+    ),
+  });
+
+// Only the completed physical path and its returned durable batch can issue this observation.
+export function readIssuedCheckpointRollbackObservation(
+  observation: unknown,
+): CheckpointRollbackObservationV1 | null {
+  if (typeof observation !== "object" || observation === null) return null;
+  const issued = issuedRollbackObservations.get(observation);
+  if (issued === undefined) return null;
+  try {
+    return rollbackObservationSnapshot(issued.observation) === issued.snapshot
+      ? issued.observation
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readIssuedCheckpointRollbackObservationForExecution(
+  execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+): CheckpointRollbackObservationV1 | null {
+  const observation = issuedExecutionObservations.get(execution);
+  return observation === undefined ? null : readIssuedCheckpointRollbackObservation(observation);
+}
+
 export interface CheckpointRollbackServiceV2Shape {
   readonly execute: (input: {
     readonly threadId: ThreadId;
     readonly providerThreadId: ProviderThreadId;
     readonly checkpointId: CheckpointId;
     readonly scopeId: CheckpointScopeId;
+    readonly sourceEffect: { readonly effectId: string; readonly commandId: CommandId };
+    readonly ordinaryCheckoutExecution?: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
     readonly restoreFiles?: boolean;
-  }) => Effect.Effect<void, CheckpointRollbackExecutionError>;
+  }) => Effect.Effect<
+    void,
+    | CheckpointRollbackExecutionError
+    | OrdinaryCheckout.OrdinaryCheckoutOwnershipError
+    | WorktreeOwnershipConflictError
+  >;
 }
 
 export class CheckpointRollbackServiceV2 extends Context.Service<
@@ -108,8 +176,48 @@ export const layer: Layer.Layer<
       readonly providerThreadId: ProviderThreadId;
       readonly checkpointId: CheckpointId;
       readonly scopeId: CheckpointScopeId;
+      readonly sourceEffect: { readonly effectId: string; readonly commandId: CommandId };
+      readonly ordinaryCheckoutExecution?: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
       readonly restoreFiles?: boolean;
     }) {
+      const sourceEffect = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({
+          effectId: Schema.NonEmptyString,
+          commandId: CommandId,
+        }),
+      )(input.sourceEffect, { onExcessProperty: "error" });
+      if (
+        sourceEffect.effectId !== input.sourceEffect.effectId ||
+        sourceEffect.commandId !== input.sourceEffect.commandId
+      ) {
+        return yield* new CheckpointRollbackExecutionError({
+          reason: "rollback-target-invalid",
+          threadId: input.threadId,
+          providerThreadId: input.providerThreadId,
+          checkpointId: input.checkpointId,
+        });
+      }
+      const pruneEffectId = `${sourceEffect.effectId}:attachment.cleanup:prune`;
+      const previousTask = yield* eventSink.readAttachmentNamespaceCleanupTask(pruneEffectId);
+      if (previousTask !== null) {
+        if (
+          previousTask.effectId !== pruneEffectId ||
+          previousTask.commandId !== sourceEffect.commandId ||
+          previousTask.threadId !== input.threadId ||
+          previousTask.reference.mode !== "prune_thread" ||
+          previousTask.reference.rollbackEffectId !== sourceEffect.effectId ||
+          previousTask.reference.ownerBirth.threadId !== input.threadId
+        ) {
+          return yield* new CheckpointRollbackExecutionError({
+            reason: "rollback-target-invalid",
+            threadId: input.threadId,
+            providerThreadId: input.providerThreadId,
+            checkpointId: input.checkpointId,
+          });
+        }
+        // A qualified task proves completion already committed; retries must not repeat physical work.
+        return;
+      }
       const projection = yield* projections.getThreadRecords(input.threadId, [
         "providerThreads",
         "providerSessions",
@@ -171,6 +279,85 @@ export const layer: Layer.Layer<
         });
       }
 
+      const birth = yield* eventSink.readApplicationBirthRecord(input.threadId);
+      const original = yield* eventSink.readCommandReceiptIdentity(sourceEffect.commandId);
+      const receipt = original.receipt;
+      if (
+        birth === null ||
+        birth.threadId !== input.threadId ||
+        receipt === null ||
+        receipt.status !== "accepted" ||
+        receipt.commandId !== sourceEffect.commandId ||
+        receipt.threadId !== input.threadId ||
+        receipt.commandType !== "checkpoint.rollback" ||
+        birth.sequence > receipt.resultSequence
+      ) {
+        return yield* new CheckpointRollbackExecutionError({
+          reason: "rollback-target-invalid",
+          threadId: input.threadId,
+          providerThreadId: input.providerThreadId,
+          checkpointId: input.checkpointId,
+        });
+      }
+
+      const ordinaryLink = yield* eventSink.readOrdinaryCheckoutEffectLink(sourceEffect.effectId);
+      const execution =
+        input.ordinaryCheckoutExecution === undefined
+          ? undefined
+          : yield* Schema.decodeUnknownEffect(
+              Schema.toType(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1),
+            )(input.ordinaryCheckoutExecution, { onExcessProperty: "error" });
+      const ordinaryRequest = {
+        type: "provider-thread.rollback" as const,
+        providerThreadId: input.providerThreadId,
+        checkpointId: input.checkpointId,
+        scopeId: input.scopeId,
+        ...(input.restoreFiles === undefined ? {} : { restoreFiles: input.restoreFiles }),
+      };
+      const requiresExecution =
+        ordinaryLink !== null ||
+        original.ordinaryCheckoutCommands.some((binding) => binding.threadId === input.threadId);
+      if (
+        (requiresExecution && execution === undefined) ||
+        (execution !== undefined &&
+          (ordinaryLink === null ||
+            execution.executor.kind !== "actual_outbox_claim" ||
+            ordinaryLink.commandId !== sourceEffect.commandId ||
+            ordinaryLink.threadId !== input.threadId ||
+            ordinaryLink.requestSha256 !==
+              nativeCreationSha256(
+                nativeCreationCanonicalJson(
+                  yield* Schema.encodeEffect(OrchestrationEffectRequestV2)(ordinaryRequest).pipe(
+                    Effect.orDie,
+                  ),
+                ),
+              ) ||
+            nativeCreationCanonicalJson(
+              yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+                execution.executor.source.link,
+              ).pipe(Effect.orDie),
+            ) !==
+              nativeCreationCanonicalJson(
+                yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+                  ordinaryLink,
+                ).pipe(Effect.orDie),
+              ) ||
+            execution.originalUse.lease.ownerThreadId !== input.threadId ||
+            execution.originalUse.lease.resourcePath !== scope.cwd))
+      ) {
+        return yield* new CheckpointRollbackExecutionError({
+          reason: "rollback-target-invalid",
+          threadId: input.threadId,
+          providerThreadId: input.providerThreadId,
+          checkpointId: input.checkpointId,
+        });
+      }
+      const revalidateExecution =
+        execution === undefined
+          ? Effect.void
+          : eventSink.revalidateOrdinaryCheckoutExecution(execution).pipe(Effect.asVoid);
+      yield* revalidateExecution;
+
       const modelSelection = projection.thread.modelSelection;
       const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
         thread: projection.thread,
@@ -179,6 +366,7 @@ export const layer: Layer.Layer<
       const existingSession = projection.providerSessions.find(
         (candidate) => candidate.id === providerThread.providerSessionId,
       );
+      yield* revalidateExecution;
       const session = yield* sessions.open({
         threadId: input.threadId,
         providerSessionId: providerThread.providerSessionId,
@@ -193,6 +381,18 @@ export const layer: Layer.Layer<
           : {
               initialProviderItemIdentityVersion: providerThread.nativeMetadata.itemIdentityVersion,
             }),
+      });
+      const attachment =
+        execution === undefined
+          ? undefined
+          : yield* sessions.captureOrdinaryExecutionAttachment({
+              runtime: session,
+              threadId: input.threadId,
+              providerThread,
+            });
+      const revalidateCapturedExecution = Effect.gen(function* () {
+        yield* revalidateExecution;
+        if (attachment !== undefined) yield* attachment.revalidateCaptured;
       });
 
       const targetOrdinal = checkpoint.appRunOrdinal ?? 0;
@@ -254,6 +454,7 @@ export const layer: Layer.Layer<
               };
             });
 
+      yield* revalidateCapturedExecution;
       const snapshot =
         runsToRollback.length === 0
           ? { providerThread }
@@ -262,7 +463,15 @@ export const layer: Layer.Layer<
               target: rollbackTarget,
               providerThreadTurns,
             });
-      if (input.restoreFiles !== false) yield* checkpoints.restore({ scope, checkpoint });
+      const checkoutContext =
+        execution === undefined
+          ? {}
+          : {
+              ordinaryCheckoutExecution: execution,
+              ordinaryCheckoutUse: execution.originalUse,
+            };
+      if (input.restoreFiles !== false)
+        yield* checkpoints.restore({ scope, checkpoint, ...checkoutContext });
       const staleCheckpoints = projection.checkpoints.filter(
         (candidate) =>
           candidate.scopeId === scope.id &&
@@ -271,8 +480,13 @@ export const layer: Layer.Layer<
           candidate.status === "ready",
       );
       if (staleCheckpoints.length > 0) {
-        yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpoints });
+        yield* checkpoints.deleteStaleRefs({
+          scope,
+          checkpoints: staleCheckpoints,
+          ...checkoutContext,
+        });
       }
+      yield* revalidateCapturedExecution;
 
       const now = yield* DateTime.now;
       const makeEvent = <Event extends OrchestrationV2DomainEvent>(event: Omit<Event, "id">) =>
@@ -285,20 +499,19 @@ export const layer: Layer.Layer<
             }) as Event,
         );
       const events: Array<OrchestrationV2DomainEvent> = [];
-      events.push(
-        yield* makeEvent({
-          type: "provider-thread.updated",
-          threadId: input.threadId,
-          driver: providerThread.driver,
-          providerInstanceId: providerThread.providerInstanceId,
-          occurredAt: now,
-          payload: {
-            ...snapshot.providerThread,
-            lastRunOrdinal: targetOrdinal === 0 ? null : targetOrdinal,
-            updatedAt: now,
-          },
-        }),
-      );
+      const rollbackEvent = yield* makeEvent({
+        type: "provider-thread.updated",
+        threadId: input.threadId,
+        driver: providerThread.driver,
+        providerInstanceId: providerThread.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...snapshot.providerThread,
+          lastRunOrdinal: targetOrdinal === 0 ? null : targetOrdinal,
+          updatedAt: now,
+        },
+      });
+      events.push(rollbackEvent);
       for (const staleCheckpoint of staleCheckpoints) {
         events.push(
           yield* makeEvent({
@@ -339,14 +552,75 @@ export const layer: Layer.Layer<
           );
         }
       }
-      yield* eventSink.write({ events });
+      const storedEvents = yield* eventSink.writeWithEffects({
+        commandId: sourceEffect.commandId,
+        events,
+        effects: [
+          {
+            id: pruneEffectId,
+            commandId: sourceEffect.commandId,
+            threadId: input.threadId,
+            request: { type: "attachment.cleanup", attachmentIds: [] },
+            attachmentNamespaceCleanup: {
+              version: 1,
+              mode: "prune_thread",
+              ownerBirth: birth,
+              triggerEventId: rollbackEvent.id,
+              rollbackEffectId: sourceEffect.effectId,
+            },
+          },
+        ],
+      });
+      const matchingCompletion =
+        storedEvents.length === events.length &&
+        storedEvents.every(
+          (stored, index) =>
+            stored.commandId === sourceEffect.commandId &&
+            stored.sequence > 0 &&
+            (index === 0 || stored.sequence > storedEvents[index - 1]!.sequence) &&
+            nativeCreationCanonicalJson(
+              Schema.encodeSync(OrchestrationV2DomainEvent)(stored.event),
+            ) ===
+              nativeCreationCanonicalJson(
+                Schema.encodeSync(OrchestrationV2DomainEvent)(events[index]!),
+              ),
+        );
+      if (
+        execution !== undefined &&
+        input.ordinaryCheckoutExecution !== undefined &&
+        matchingCompletion
+      ) {
+        const observation = Object.freeze({
+          version: 1 as const,
+          kind: "rolled_back" as const,
+          sourceEffect: Object.freeze({ ...sourceEffect }),
+          threadId: input.threadId,
+          providerThreadId: input.providerThreadId,
+          checkpointId: input.checkpointId,
+          scopeId: input.scopeId,
+          completedAt: DateTime.formatIso(now),
+          pruneEffectId,
+          storedEvents,
+          execution,
+        });
+        const snapshot = rollbackObservationSnapshot(observation);
+        const originalExecution = input.ordinaryCheckoutExecution;
+        yield* eventSink.onCommit(
+          Effect.sync(() => {
+            issuedRollbackObservations.set(observation, { observation, snapshot });
+            issuedExecutionObservations.set(originalExecution, observation);
+          }),
+        );
+      }
     });
 
     return CheckpointRollbackServiceV2.of({
       execute: (input) =>
         execute(input).pipe(
           Effect.mapError((cause) =>
-            isCheckpointRollbackExecutionError(cause)
+            isCheckpointRollbackExecutionError(cause) ||
+            Schema.is(OrdinaryCheckout.OrdinaryCheckoutOwnershipError)(cause) ||
+            Schema.is(WorktreeOwnershipConflictError)(cause)
               ? cause
               : new CheckpointRollbackExecutionError({
                   reason: "unexpected-failure",

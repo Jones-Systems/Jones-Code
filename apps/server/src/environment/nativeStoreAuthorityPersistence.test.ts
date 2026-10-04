@@ -75,7 +75,11 @@ describe("native store authority persistence", () => {
         { mode: 0o600 },
       );
       const dbPath = NodePath.join(root, "userdata", "state.sqlite");
-      const state = initializeNativeStoreAuthorityForBaseDir(root, SERVICE_LAUNCHER_PROTOCOL, dbPath);
+      const state = initializeNativeStoreAuthorityForBaseDir(
+        root,
+        SERVICE_LAUNCHER_PROTOCOL,
+        dbPath,
+      );
       expect(state.environment_id).toBe("environment-native-enrollment");
       expect(state.state).toBe("active");
       expect(() =>
@@ -173,7 +177,9 @@ describe("native store authority persistence", () => {
       expect(() => requireNativeStoreAuthoritySelectedStoreForBaseDir(root, dbPath)).toThrow(
         "separate native store qualification",
       );
-      expect(() => decodeNativeStoreAuthorityState({ ...initial, dbPath })).toThrow("schema checks");
+      expect(() => decodeNativeStoreAuthorityState({ ...initial, dbPath })).toThrow(
+        "schema checks",
+      );
     } finally {
       NodeFS.rmSync(root, { recursive: true, force: true });
     }

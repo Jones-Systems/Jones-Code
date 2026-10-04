@@ -3,6 +3,7 @@ import type { ModelTotals, ProviderTotals } from "@t3tools/shared/usageMerge";
 import { XIcon } from "lucide-react";
 
 import { Button } from "../ui/button";
+import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
 
 export const USAGE_PROVIDER_DETAILS_ID = "usage-provider-details";
@@ -75,7 +76,6 @@ export function UsageProviderDetails({
   readonly onClose: () => void;
 }) {
   const presentation = PROVIDER_PRESENTATION[provider.provider];
-  const Mark = presentation.mark;
   return (
     <section
       id={USAGE_PROVIDER_DETAILS_ID}
@@ -87,7 +87,11 @@ export function UsageProviderDetails({
           id={`${USAGE_PROVIDER_DETAILS_ID}-title`}
           className="flex items-center gap-2 text-sm font-medium text-foreground"
         >
-          <Mark className="size-4 shrink-0" aria-hidden />
+          <ProviderInstanceIcon
+            driverKind={presentation.driverKind}
+            displayName={presentation.label}
+            iconClassName="size-4 shrink-0"
+          />
           {presentation.label} details
         </h2>
         <Button

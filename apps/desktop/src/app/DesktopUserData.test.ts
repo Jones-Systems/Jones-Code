@@ -83,9 +83,7 @@ for (const platform of ["darwin", "linux", "win32"] as const) {
       platform,
       userDataDirectoryOverride: Option.some(" /isolated/other/../profile "),
     }).pipe(
-      Effect.tap((directory) =>
-        Effect.sync(() => assert.equal(directory, "/isolated/profile")),
-      ),
+      Effect.tap((directory) => Effect.sync(() => assert.equal(directory, "/isolated/profile"))),
       Effect.provideService(
         FileSystem.FileSystem,
         FileSystem.makeNoop({

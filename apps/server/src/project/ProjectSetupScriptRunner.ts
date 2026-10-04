@@ -302,20 +302,19 @@ export const make = Effect.gen(function* () {
     };
     const suppliedProject = input.project;
     const requestedProjectId = input.projectId ?? suppliedProject?.id;
-    const projectById =
-      (requestedProjectId
-        ? yield* projects.getById(ProjectId.make(requestedProjectId)).pipe(
-            Effect.map(Option.getOrUndefined),
-            Effect.mapError(
-              (cause) =>
-                new ProjectSetupScriptOperationError({
-                  ...errorContext,
-                  operation: "resolveProject",
-                  cause,
-                }),
-            ),
-          )
-        : null);
+    const projectById = requestedProjectId
+      ? yield* projects.getById(ProjectId.make(requestedProjectId)).pipe(
+          Effect.map(Option.getOrUndefined),
+          Effect.mapError(
+            (cause) =>
+              new ProjectSetupScriptOperationError({
+                ...errorContext,
+                operation: "resolveProject",
+                cause,
+              }),
+          ),
+        )
+      : null;
     const project =
       projectById ??
       (requestedProjectId === undefined && input.projectCwd
@@ -335,7 +334,8 @@ export const make = Effect.gen(function* () {
     if (
       !project ||
       (suppliedProject !== undefined &&
-        (project.id !== suppliedProject.id || project.workspaceRoot !== suppliedProject.workspaceRoot))
+        (project.id !== suppliedProject.id ||
+          project.workspaceRoot !== suppliedProject.workspaceRoot))
     ) {
       return yield* new ProjectSetupScriptProjectNotFoundError(errorContext);
     }

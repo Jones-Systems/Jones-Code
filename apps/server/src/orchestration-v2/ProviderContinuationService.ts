@@ -2,6 +2,7 @@ import { CommandId, type OrchestrationV2ThreadProjection } from "@t3tools/contra
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import { forkParked } from "../serverActivation.ts";
 
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProviderContinuationRequests from "./ProviderContinuationRequests.ts";
@@ -227,7 +228,7 @@ export const workerLive = Layer.effectDiscard(
         ),
       ),
       Effect.forever,
-      Effect.forkScoped,
+      forkParked,
     );
   }),
 );

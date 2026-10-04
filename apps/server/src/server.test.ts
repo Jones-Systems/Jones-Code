@@ -51,6 +51,8 @@ import {
   TerminalNotRunningError,
   ORCHESTRATION_V2_WS_METHODS,
   ORCHESTRATION_PROTOCOL_VERSION,
+  ORCHESTRATION_PROTOCOL_HEADER,
+  ORCHESTRATION_PROTOCOL_VERSION_TEXT,
   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
   OrchestrationV2Command,
   type ThreadTurnDispatchGuardV2,
@@ -138,22 +140,21 @@ const SUCCESSFUL_GIT_EXECUTION = {
   stdoutTruncated: false,
   stderrTruncated: false,
 };
+// HTTP bodies use the JSON codec, which carries V2 DateTime.Utc fields as ISO strings.
 const decodeTransferThreadSnapshot = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(OrchestrationV2ThreadDetailSnapshot),
+  Schema.fromJsonString(Schema.toCodecJson(OrchestrationV2ThreadDetailSnapshot)),
 );
 const decodeTransferShellSnapshot = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(OrchestrationV2ShellSnapshot),
+  Schema.fromJsonString(Schema.toCodecJson(OrchestrationV2ShellSnapshot)),
 );
 const encodeTestJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const encodeTestJsonEffect = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { HTTP_ROUTER_CONFIG, makeRoutesLayer } from "./server.ts";
-import {
-  resolveAvailableEditorsForConfig,
-  resolveFileManagerRevealKindForConfig,
-} from "./ws.ts";
+import { resolveAvailableEditorsForConfig, resolveFileManagerRevealKindForConfig } from "./ws.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
@@ -190,14 +191,20 @@ import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import { CodexProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import { OrchestrationV2ProductionLayerLive, OrchestrationV2EventSinkLayerLive } from "./orchestration-v2/runtimeLayer.ts";
+import {
+  OrchestrationV2ProductionLayerLive,
+  OrchestrationV2EventSinkLayerLive,
+} from "./orchestration-v2/runtimeLayer.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { SessionStore, type SessionCredentialInternalError } from "./auth/SessionStore.ts";
 import { OrchestrationEventStore } from "./persistence/Services/OrchestrationEventStore.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
-import { ProviderAdapterProtocolError, type ProviderAdapterV2SessionRuntime } from "./orchestration-v2/ProviderAdapter.ts";
+import {
+  ProviderAdapterProtocolError,
+  type ProviderAdapterV2SessionRuntime,
+} from "./orchestration-v2/ProviderAdapter.ts";
 import { ProviderAuthService } from "./provider/Services/ProviderAuthService.ts";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
 import {
@@ -338,30 +345,55 @@ const providerSetupInstance: ProviderInstance = {
   },
 };
 
-const makeRouterProviderInstance = (driver = ProviderDriverKind.make("codex")): ProviderInstance => {
+const makeRouterProviderInstance = (
+  driver = ProviderDriverKind.make("codex"),
+): ProviderInstance => {
   const instanceId = ProviderInstanceId.make(driver);
   return {
-  instanceId: instanceId,
-  driverKind: driver,
-  enabled: true,
-  displayName: "Synthetic router provider",
-  continuationIdentity: {
-    driverKind: driver,
-    continuationKey: "router-test-synthetic",
-  },
-  orchestrationAdapter: {
     instanceId: instanceId,
-    driver: driver,
-    getCapabilities: () => Effect.succeed(driver === "claudeAgent" ? ClaudeProviderCapabilitiesV2 : CodexProviderCapabilitiesV2),
-    planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
-    openSession: () => Effect.die("Router fixtures must not launch a live provider."),
-  },
-  get snapshot(): never {
-    throw new Error("Router fixtures must not probe a live provider.");
-  },
-  get textGeneration(): never {
-    throw new Error("Router fixtures must not generate provider text.");
-  },
+    driverKind: driver,
+    enabled: true,
+    displayName: "Synthetic router provider",
+    continuationIdentity: {
+      driverKind: driver,
+      continuationKey: "router-test-synthetic",
+    },
+    orchestrationAdapter: {
+      instanceId: instanceId,
+      driver: driver,
+      getCapabilities: () =>
+        Effect.succeed(
+          driver === "claudeAgent" ? ClaudeProviderCapabilitiesV2 : CodexProviderCapabilitiesV2,
+        ),
+      planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+      openSession: () => Effect.die("Router fixtures must not launch a live provider."),
+    },
+    snapshot: {
+      getSnapshot: Effect.succeed({
+        instanceId,
+        driver,
+        enabled: true,
+        installed: true,
+        version: null,
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        supportedRuntimeModes: ["full-access", "approval-required"],
+        models: [],
+        slashCommands: [],
+        skills: [],
+      }),
+      refresh: Effect.die("Router fixtures must not probe a live provider."),
+      streamChanges: Stream.empty,
+      applyUsageLimits: () => Effect.void,
+      resolveMaintenance: () =>
+        Effect.succeed(
+          makeManualOnlyProviderMaintenanceCapabilities({ provider: driver, packageName: null }),
+        ),
+    },
+    get textGeneration(): never {
+      throw new Error("Router fixtures must not generate provider text.");
+    },
   };
 };
 const routerProviderInstance = makeRouterProviderInstance();
@@ -379,7 +411,9 @@ const testEnvironmentDescriptor = {
     repositoryIdentity: true,
   },
 };
-const nativeRouterEnvironmentDescriptor: Effect.Success<ServerEnvironment.ServerEnvironment["Service"]["getDescriptor"]> = {
+const nativeRouterEnvironmentDescriptor: Effect.Success<
+  ServerEnvironment.ServerEnvironment["Service"]["getDescriptor"]
+> = {
   ...testEnvironmentDescriptor,
   capabilities: {
     ...testEnvironmentDescriptor.capabilities,
@@ -391,9 +425,7 @@ const nativeRouterEnvironmentDescriptor: Effect.Success<ServerEnvironment.Server
     },
   },
 };
-const makeGuardedQueueTransportCommand = (
-  suffix: string,
-) => ({
+const makeGuardedQueueTransportCommand = (suffix: string) => ({
   type: "thread.turn.start",
   commandId: CommandId.make(`cmd-queue-${suffix}`),
   threadId: defaultThreadId,
@@ -441,9 +473,13 @@ type RouterV2Services =
   | ServerConfig.ServerConfig
   | SqlClient.SqlClient;
 
-type AwaitedObservation = Effect.Success<ReturnType<Orchestrator.OrchestratorV2["Service"]["observeCommand"]>>;
+type AwaitedObservation = Effect.Success<
+  ReturnType<Orchestrator.OrchestratorV2["Service"]["observeCommand"]>
+>;
 
-const routerMessageDispatch = (suffix: string): Extract<OrchestrationV2Command, { type: "message.dispatch" }> => ({
+const routerMessageDispatch = (
+  suffix: string,
+): Extract<OrchestrationV2Command, { type: "message.dispatch" }> => ({
   type: "message.dispatch",
   commandId: CommandId.make("router:message:" + suffix),
   threadId: defaultThreadId,
@@ -456,7 +492,10 @@ const routerMessageDispatch = (suffix: string): Extract<OrchestrationV2Command, 
   creationSource: "web",
 });
 
-const routerThreadCreate = (threadId = defaultThreadId, projectId = defaultProjectId): Extract<OrchestrationV2Command, { type: "thread.create" }> => ({
+const routerThreadCreate = (
+  threadId = defaultThreadId,
+  projectId = defaultProjectId,
+): Extract<OrchestrationV2Command, { type: "thread.create" }> => ({
   type: "thread.create",
   commandId: CommandId.make("router:create:" + threadId),
   threadId,
@@ -479,7 +518,8 @@ const seedRouterProject = Effect.fnUntraced(function* (
   const projects = Context.get(context, ProjectService.ProjectService);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const root = workspaceRoot ?? (yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-project-" }));
+  const root =
+    workspaceRoot ?? (yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-project-" }));
   yield* fs.makeDirectory(root, { recursive: true });
   return yield* projects.create({
     commandId: CommandId.make("router:create:" + projectId),
@@ -492,7 +532,9 @@ const seedRouterProject = Effect.fnUntraced(function* (
 });
 
 const seedRouterThread = Effect.fnUntraced(function* (
-  context: Context.Context<ProjectService.ProjectService | ThreadManagement.ThreadManagementService>,
+  context: Context.Context<
+    ProjectService.ProjectService | ThreadManagement.ThreadManagementService
+  >,
   threadId = defaultThreadId,
   projectId = defaultProjectId,
 ) {
@@ -502,9 +544,13 @@ const seedRouterThread = Effect.fnUntraced(function* (
 });
 
 const routerLaunchInput = (suffix: string) => ({
-  commandId: CommandId.make("router:launch:" + suffix), threadId: ThreadId.make("router:launch:" + suffix),
-  projectId: defaultProjectId, title: "Synthetic launch", modelSelection: defaultModelSelection,
-  runtimeMode: "full-access" as const, interactionMode: "default" as const,
+  commandId: CommandId.make("router:launch:" + suffix),
+  threadId: ThreadId.make("router:launch:" + suffix),
+  projectId: defaultProjectId,
+  title: "Synthetic launch",
+  modelSelection: defaultModelSelection,
+  runtimeMode: "full-access" as const,
+  interactionMode: "default" as const,
   workspaceStrategy: { type: "root" as const },
   initialMessage: { text: "Synthetic first send", attachments: [] },
 });
@@ -513,52 +559,145 @@ const routerTurnItem = (
   ordinal: number,
   changes: Partial<Extract<OrchestrationV2TurnItem, { type: "command_execution" }>> = {},
 ): Extract<OrchestrationV2TurnItem, { type: "command_execution" }> => ({
-  type: "command_execution", id: TurnItemId.make("router:tool:" + ordinal),
-  threadId: defaultThreadId, runId: null, nodeId: null, providerThreadId: null,
-  providerTurnId: null, nativeItemRef: null, parentItemId: null,
-  ordinal, status: "completed", title: "Synthetic tool", startedAt: TEST_EPOCH,
-  completedAt: TEST_EPOCH, updatedAt: TEST_EPOCH, input: "synthetic command", output: "ok",
+  type: "command_execution",
+  id: TurnItemId.make("router:tool:" + ordinal),
+  threadId: defaultThreadId,
+  runId: null,
+  nodeId: null,
+  providerThreadId: null,
+  providerTurnId: null,
+  nativeItemRef: null,
+  parentItemId: null,
+  ordinal,
+  status: "completed",
+  title: "Synthetic tool",
+  startedAt: TEST_EPOCH,
+  completedAt: TEST_EPOCH,
+  updatedAt: TEST_EPOCH,
+  input: "synthetic command",
+  output: "ok",
   ...changes,
 });
 
-const routerItemEvent = (item: OrchestrationV2TurnItem, suffix: string = item.id): OrchestrationV2DomainEvent => ({
-  id: EventId.make("router:event:" + suffix), threadId: item.threadId,
-  type: "turn-item.updated", occurredAt: item.updatedAt, payload: item,
+const routerItemEvent = (
+  item: OrchestrationV2TurnItem,
+  suffix: string = item.id,
+): OrchestrationV2DomainEvent => ({
+  id: EventId.make("router:event:" + suffix),
+  threadId: item.threadId,
+  type: "turn-item.updated",
+  occurredAt: item.updatedAt,
+  payload: item,
 });
 
-const writeRouterItems = (context: Context.Context<EventSink.EventSinkV2>, items: ReadonlyArray<OrchestrationV2TurnItem>, batch = "initial") =>
-  Context.get(context, EventSink.EventSinkV2).write({ events: items.map((item, index) => routerItemEvent(item, batch + ":" + index + ":" + item.id)) });
+const writeRouterItems = (
+  context: Context.Context<EventSink.EventSinkV2>,
+  items: ReadonlyArray<OrchestrationV2TurnItem>,
+  batch = "initial",
+) =>
+  Context.get(context, EventSink.EventSinkV2).write({
+    events: items.map((item, index) => routerItemEvent(item, batch + ":" + index + ":" + item.id)),
+  });
 
-const awaitRouterRunStatus = (context: Context.Context<RouterV2Services>, threadId: ThreadId, status: "failed" | "queued" | "cancelled" | "starting") =>
-  Context.get(context, ThreadManagement.ThreadManagementService).streamStoredEventsFrom({threadId, afterSequence: 0}).pipe(
-    Stream.filter((stored) => stored.event.type === "run.updated" && stored.event.payload.status === status),
-    Stream.runHead,
-  );
+const awaitRouterRunStatus = (
+  context: Context.Context<RouterV2Services>,
+  threadId: ThreadId,
+  status: "failed" | "queued" | "cancelled" | "starting",
+) =>
+  Context.get(context, ThreadManagement.ThreadManagementService)
+    .streamStoredEventsFrom({ threadId, afterSequence: 0 })
+    .pipe(
+      Stream.filter(
+        (stored) => stored.event.type === "run.updated" && stored.event.payload.status === status,
+      ),
+      Stream.runHead,
+    );
+
+// Plays Git for one router worktree launch: the checkout happens only after the
+// caller's mutation gate passes, at exactly the requested path and branch, and
+// local status reads that branch back only at the created checkout.
+const makeRouterWorktreeGit = () => {
+  let checkout: { readonly path: string; readonly refName: string } | null = null;
+  const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = (input, options) =>
+    Effect.gen(function* () {
+      const { path, newRefName } = input;
+      assertTrue(path !== null && newRefName !== undefined);
+      yield* options?.revalidateMutation ?? Effect.void;
+      checkout = { path, refName: newRefName };
+      return { worktree: { path, refName: newRefName } };
+    });
+  const gitManager: Partial<GitManager.GitManager["Service"]> = {
+    invalidateLocalStatus: () => Effect.void,
+    localStatus: (input) =>
+      Effect.succeed({
+        isRepo: true,
+        hasPrimaryRemote: false,
+        isDefaultRef: false,
+        refName: checkout !== null && input.cwd === checkout.path ? checkout.refName : null,
+        hasWorkingTreeChanges: false,
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+      }),
+  };
+  return { createWorktree, gitManager, checkoutPath: () => checkout?.path ?? null };
+};
 
 const seedRouterProvider = Effect.fnUntraced(function* (
-  context: Context.Context<RouterV2Services>, status: "ready" | "stopped" = "ready", threadId = defaultThreadId,
+  context: Context.Context<RouterV2Services>,
+  status: "ready" | "stopped" = "ready",
+  threadId = defaultThreadId,
 ) {
-  const projection = yield* Context.get(context, Orchestrator.OrchestratorV2).getThreadProjection(threadId);
+  const projection = yield* Context.get(context, Orchestrator.OrchestratorV2).getThreadProjection(
+    threadId,
+  );
   const sessionId = ProviderSessionId.make("router:synthetic-session");
   const providerThreadId = ProviderThreadId.make("router:synthetic-provider-thread");
-  yield* Context.get(context, EventSink.EventSinkV2).write({events: [
-    {
-      id: EventId.make("router:session-attached"), threadId,
-      driver: ProviderDriverKind.make("codex"), providerInstanceId: ProviderInstanceId.make("codex"),
-      type: "provider-session.attached", occurredAt: TEST_EPOCH,
-      payload: {id: sessionId, driver: ProviderDriverKind.make("codex"), providerInstanceId: ProviderInstanceId.make("codex"), status,
-        cwd: projection.thread.worktreePath ?? "/synthetic/router-project", model: defaultModelSelection.model,
-        capabilities: CodexProviderCapabilitiesV2, createdAt: TEST_EPOCH, updatedAt: TEST_EPOCH, lastError: null},
-    },
-    {
-      id: EventId.make("router:provider-thread"), threadId,
-      type: "provider-thread.updated", occurredAt: TEST_EPOCH,
-      payload: {id: providerThreadId, driver: ProviderDriverKind.make("codex"), providerInstanceId: ProviderInstanceId.make("codex"),
-        providerSessionId: sessionId, appThreadId: threadId, ownerNodeId: null, nativeThreadRef: null,
-        nativeConversationHeadRef: null, status: "idle", firstRunOrdinal: null, lastRunOrdinal: null,
-        handoffIds: [], forkedFrom: null, createdAt: TEST_EPOCH, updatedAt: TEST_EPOCH},
-    },
-  ]});
+  yield* Context.get(context, EventSink.EventSinkV2).write({
+    events: [
+      {
+        id: EventId.make("router:session-attached"),
+        threadId,
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        type: "provider-session.attached",
+        occurredAt: TEST_EPOCH,
+        payload: {
+          id: sessionId,
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          status,
+          cwd: projection.thread.worktreePath ?? "/synthetic/router-project",
+          model: defaultModelSelection.model,
+          capabilities: CodexProviderCapabilitiesV2,
+          createdAt: TEST_EPOCH,
+          updatedAt: TEST_EPOCH,
+          lastError: null,
+        },
+      },
+      {
+        id: EventId.make("router:provider-thread"),
+        threadId,
+        type: "provider-thread.updated",
+        occurredAt: TEST_EPOCH,
+        payload: {
+          id: providerThreadId,
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerSessionId: sessionId,
+          appThreadId: threadId,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: null,
+          lastRunOrdinal: null,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: TEST_EPOCH,
+          updatedAt: TEST_EPOCH,
+        },
+      },
+    ],
+  });
   return sessionId;
 });
 
@@ -570,13 +709,32 @@ const makeRouterFeedbackRuntime = (
   const instanceId = ProviderInstanceId.make("codex");
   const unused = () => Effect.die("Feedback routing must not invoke another provider operation");
   return {
-    instanceId, driver, providerSessionId: sessionId,
-    providerSession: { id: sessionId, driver, providerInstanceId: instanceId, status: "ready",
-      cwd: "/synthetic/router-project", model: defaultModelSelection.model, capabilities: CodexProviderCapabilitiesV2,
-      createdAt: TEST_EPOCH, updatedAt: TEST_EPOCH, lastError: null },
-    events: Stream.empty, uploadFeedback, ensureThread: unused, resumeThread: unused,
-    startTurn: unused, steerTurn: unused, interruptTurn: unused, respondToRuntimeRequest: unused,
-    readThreadSnapshot: unused, rollbackThread: unused, forkThread: unused,
+    instanceId,
+    driver,
+    providerSessionId: sessionId,
+    providerSession: {
+      id: sessionId,
+      driver,
+      providerInstanceId: instanceId,
+      status: "ready",
+      cwd: "/synthetic/router-project",
+      model: defaultModelSelection.model,
+      capabilities: CodexProviderCapabilitiesV2,
+      createdAt: TEST_EPOCH,
+      updatedAt: TEST_EPOCH,
+      lastError: null,
+    },
+    events: Stream.empty,
+    uploadFeedback,
+    ensureThread: unused,
+    resumeThread: unused,
+    startTurn: unused,
+    steerTurn: unused,
+    interruptTurn: unused,
+    respondToRuntimeRequest: unused,
+    readThreadSnapshot: unused,
+    rollbackThread: unused,
+    forkThread: unused,
   };
 };
 
@@ -593,17 +751,18 @@ const routerUsagePricing: UsagePricing = {
   knownModels: 0,
 };
 const routerUsageLayer = Layer.succeed(UsageService.UsageService, {
-  readSummary: (input) => Effect.succeed({
-    contractVersion: USAGE_CONTRACT_VERSION,
-    readAt: "1970-01-01T00:00:00.000Z",
-    timeZone: input.timeZone,
-    sinceDay: input.sinceDay,
-    untilDay: input.untilDay,
-    buckets: [],
-    sources: [],
-    pricing: routerUsagePricing,
-    scanDurationMs: 0,
-  }),
+  readSummary: (input) =>
+    Effect.succeed({
+      contractVersion: USAGE_CONTRACT_VERSION,
+      readAt: "1970-01-01T00:00:00.000Z",
+      timeZone: input.timeZone,
+      sinceDay: input.sinceDay,
+      untilDay: input.untilDay,
+      buckets: [],
+      sources: [],
+      pricing: routerUsagePricing,
+      scanDurationMs: 0,
+    }),
   refreshRates: Effect.succeed(routerUsagePricing),
 });
 
@@ -718,7 +877,7 @@ const makeBrowserOtlpPayload = (spanName: string) =>
     return JSON.parse(request.body) as OtlpTracer.TraceData;
   });
 
-const buildAppUnderTest = (options?: {
+const buildAppUnderTest = <SetupError = never>(options?: {
   onPairingChangesSubscribed?: Effect.Effect<void>;
   config?: Partial<ServerConfig.ServerConfig["Service"]>;
   layers?: {
@@ -763,10 +922,25 @@ const buildAppUnderTest = (options?: {
     projectService?: Partial<ProjectService.ProjectService["Service"]>;
     providerSessionManager?: Partial<ProviderSessionManager.ProviderSessionManagerV2["Service"]>;
     providerGoalService?: Partial<ProviderSessionGoalService.ProviderSessionGoalService["Service"]>;
-    wrapThreadManagement?: (service: ThreadManagement.ThreadManagementService["Service"]) => ThreadManagement.ThreadManagementService["Service"];
-    wrapProjectService?: (service: ProjectService.ProjectService["Service"]) => ProjectService.ProjectService["Service"];
-    wrapApplicationEvents?: (service: OrchestrationEventStore["Service"]) => OrchestrationEventStore["Service"];
-    onV2Services?: (context: Context.Context<RouterV2Services>) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path | import("effect/Scope").Scope>;
+    wrapThreadManagement?: (
+      service: ThreadManagement.ThreadManagementService["Service"],
+    ) => ThreadManagement.ThreadManagementService["Service"];
+    wrapProjectService?: (
+      service: ProjectService.ProjectService["Service"],
+    ) => ProjectService.ProjectService["Service"];
+    wrapProjectEnrichment?: (
+      service: ProjectEnrichmentService.ProjectEnrichmentService["Service"],
+    ) => ProjectEnrichmentService.ProjectEnrichmentService["Service"];
+    wrapApplicationEvents?: (
+      service: OrchestrationEventStore["Service"],
+    ) => OrchestrationEventStore["Service"];
+    onV2Services?: (
+      context: Context.Context<RouterV2Services>,
+    ) => Effect.Effect<
+      void,
+      SetupError,
+      FileSystem.FileSystem | Path.Path | import("effect/Scope").Scope
+    >;
     analyticsService?: Partial<AnalyticsService.AnalyticsService["Service"]>;
     projectionStore?: Partial<ProjectionStore.ProjectionStoreV2["Service"]>;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
@@ -1032,25 +1206,71 @@ const buildAppUnderTest = (options?: {
         const threads = Context.get(context, ThreadManagement.ThreadManagementService);
         const projects = Context.get(context, ProjectService.ProjectService);
         const projections = Context.get(context, ProjectionStore.ProjectionStoreV2);
-        const providerSessions = Context.get(context, ProviderSessionManager.ProviderSessionManagerV2);
+        const providerSessions = Context.get(
+          context,
+          ProviderSessionManager.ProviderSessionManagerV2,
+        );
         const applicationEvents = Context.get(context, OrchestrationEventStore);
-        const providerGoals = Context.get(context, ProviderSessionGoalService.ProviderSessionGoalService);
-        let decorated = Context.add(context, Orchestrator.OrchestratorV2, {...orchestrator, ...options?.layers?.orchestrator});
+        const providerGoals = Context.get(
+          context,
+          ProviderSessionGoalService.ProviderSessionGoalService,
+        );
+        const providerAuth = Context.get(context, ProviderAuthService);
+        let decorated = Context.add(context, Orchestrator.OrchestratorV2, {
+          ...orchestrator,
+          ...options?.layers?.orchestrator,
+        });
         decorated = Context.add(decorated, ThreadManagement.ThreadManagementService, {
-          ...(options?.layers?.wrapThreadManagement?.(threads) ?? threads), ...options?.layers?.threadManagement,
+          ...(options?.layers?.wrapThreadManagement?.(threads) ?? threads),
+          ...options?.layers?.threadManagement,
         });
         decorated = Context.add(decorated, ProjectService.ProjectService, {
-          ...(options?.layers?.wrapProjectService?.(projects) ?? projects), ...options?.layers?.projectService,
+          ...(options?.layers?.wrapProjectService?.(projects) ?? projects),
+          ...options?.layers?.projectService,
         });
-        decorated = Context.add(decorated, ProjectionStore.ProjectionStoreV2, {...projections, ...options?.layers?.projectionStore});
-        decorated = Context.add(decorated, ProviderSessionManager.ProviderSessionManagerV2, {...providerSessions, ...options?.layers?.providerSessionManager});
-        decorated = Context.add(decorated, OrchestrationEventStore, options?.layers?.wrapApplicationEvents?.(applicationEvents) ?? applicationEvents);
-        decorated = Context.add(decorated, ProviderSessionGoalService.ProviderSessionGoalService, {...providerGoals, ...options?.layers?.providerGoalService});
+        decorated = Context.add(decorated, ProjectionStore.ProjectionStoreV2, {
+          ...projections,
+          ...options?.layers?.projectionStore,
+        });
+        decorated = Context.add(decorated, ProviderSessionManager.ProviderSessionManagerV2, {
+          ...providerSessions,
+          ...options?.layers?.providerSessionManager,
+        });
+        decorated = Context.add(
+          decorated,
+          OrchestrationEventStore,
+          options?.layers?.wrapApplicationEvents?.(applicationEvents) ?? applicationEvents,
+        );
+        decorated = Context.add(decorated, ProviderSessionGoalService.ProviderSessionGoalService, {
+          ...providerGoals,
+          ...options?.layers?.providerGoalService,
+        });
+        // The V2 graph exports ProviderAuthService, which shadows the outer mock for routes.
+        decorated = Context.add(decorated, ProviderAuthService, {
+          ...providerAuth,
+          ...options?.layers?.providerAuth,
+        });
         return Layer.succeedContext(decorated);
       }),
-      Layer.provide(ResourceCleanup.live.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive))),
+      Layer.provideMerge(
+        ResourceCleanup.live.pipe(
+          Layer.provide(OrchestrationV2EventSinkLayerLive),
+          Layer.provide(ThreadCommandExecutor.layer),
+        ),
+      ),
       Layer.provide(Layer.succeed(ServerActivation.ServerActivation, Effect.never)),
-      Layer.provideMerge(ProjectEnrichmentService.layer),
+      Layer.provideMerge(
+        ProjectEnrichmentService.layer.pipe(
+          // HTTP handlers consume exported services after route construction.
+          Layer.flatMap((context) => {
+            const service = Context.get(context, ProjectEnrichmentService.ProjectEnrichmentService);
+            return Layer.succeed(
+              ProjectEnrichmentService.ProjectEnrichmentService,
+              options?.layers?.wrapProjectEnrichment?.(service) ?? service,
+            );
+          }),
+        ),
+      ),
       Layer.provide(CheckpointStore.layer.pipe(Layer.provide(vcsDriverRegistryLayer))),
       Layer.provideMerge(ThreadSearch.layer),
       Layer.provideMerge(ProjectStore.layer),
@@ -1059,260 +1279,267 @@ const buildAppUnderTest = (options?: {
     const routerRuntimeLayer = Layer.fresh(ThreadLaunch.layer).pipe(
       Layer.provideMerge(v2RuntimeLayer),
       Layer.provideMerge(IdAllocator.layer),
-      Layer.provide(CommandReceiptStore.layerFromApplicationReceipts.pipe(Layer.provide(v2RuntimeLayer))),
-      Layer.flatMap((context) => Layer.succeedContext(Context.add(
-        context,
-        ThreadLaunch.ThreadLaunchService,
-        {...Context.get(context, ThreadLaunch.ThreadLaunchService), ...options?.layers?.threadLaunch},
-      ))),
+      Layer.provide(
+        CommandReceiptStore.layerFromApplicationReceipts.pipe(Layer.provide(v2RuntimeLayer)),
+      ),
+      Layer.flatMap((context) =>
+        Layer.succeedContext(
+          Context.add(context, ThreadLaunch.ThreadLaunchService, {
+            ...Context.get(context, ThreadLaunch.ThreadLaunchService),
+            ...options?.layers?.threadLaunch,
+          }),
+        ),
+      ),
     );
 
-    const servedRoutesLayer = HttpRouter.serve(
-      // Route repositories and auth share this in-memory database so enrollment
-      // resolves the same synthetic session records that authentication reads.
-      makeRoutesLayer.pipe(
+    const servedRoutesLayer = HttpRouter.serve(makeRoutesLayer, {
+      disableListenLog: true,
+      disableLogger: true,
+      routerConfig: HTTP_ROUTER_CONFIG,
+    })
+      .pipe(
+        // Provide after serve so route construction and deferred HTTP handlers
+        // share the same runtime services and in-memory authentication database.
         Layer.provideMerge(routerRuntimeLayer),
         Layer.provideMerge(McpSessionRegistry.layer),
         Layer.provide(Layer.mergeAll(serviceLauncherClientLayer, SqlitePersistenceMemory)),
-      ),
-      {
-        disableListenLog: true,
-        disableLogger: true,
-        routerConfig: HTTP_ROUTER_CONFIG,
-      },
-    ).pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(Keybindings.Keybindings)({
-            loadConfigState: Effect.succeed({
-              keybindings: [],
-              issues: [],
-            }),
-            streamChanges: Stream.empty,
-            ...options?.layers?.keybindings,
-          }),
-          Layer.mock(EnvironmentTheme.EnvironmentThemeService)({
-            current: Effect.succeed([]),
-            streamChanges: Stream.empty,
-            ...options?.layers?.environmentTheme,
-          }),
-          Layer.mock(UsageLimitSources.UsageLimitSources)({
-            current: Effect.succeed([]),
-            streamChanges: Stream.make([]),
-            refresh: Effect.void,
-            ...options?.layers?.usageLimitSources,
-          }),
-        ),
-      ),
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(ModelManifest.ModelManifest)({
-            forceRefresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
-            ...options?.layers?.modelManifest,
-          }),
-          Layer.mock(ProviderRegistry.ProviderRegistry)({
-            getProviders: Effect.succeed([]),
-            refresh: () => Effect.succeed([]),
-            refreshInstance: () => Effect.succeed([]),
-            getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
-              Effect.succeed(
-                makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
-              ),
-            setProviderMaintenanceActionState: () => Effect.succeed([]),
-            streamChanges: Stream.empty,
-            ...options?.layers?.providerRegistry,
-          }),
-          Layer.mock(ProviderAuthService)({
-            ...options?.layers?.providerAuth,
-          }),
-          Layer.mock(ProviderInstanceRegistry)({
-            getInstance: (id) => Effect.succeed(id === defaultModelSelection.instanceId ? routerProviderInstance : undefined),
-            listInstances: Effect.succeed([routerProviderInstance]),
-            ...options?.layers?.providerInstanceRegistry,
-          }),
-          Layer.mock(CodexInstallation)({
-            managedDirectory: "unused-test-codex-runtime",
-            ...options?.layers?.codexInstallation,
-          }),
-          Layer.mock(AntigravityInstallation)({
-            managedDirectory: "unused-test-antigravity-runtime",
-            ...options?.layers?.antigravityInstallation,
-          }),
-          Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({}),
-          Layer.mock(AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
-          Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
-          Layer.mock(DeviceService.DeviceService)({
-            state: Effect.succeed(EMPTY_DEVICE_STATE),
-            currentReadiness: () => Effect.succeed(null),
-            sessionsForThread: () => Effect.succeed([]),
-          }),
-        ),
-      ),
-      Layer.provide(serverSettingsLayer),
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(ExternalLauncher.ExternalLauncher)({
-            resolveAvailableEditors: () => Effect.succeed([]),
-            resolveFileManagerRevealKind: () => Effect.undefined,
-            ...options?.layers?.externalLauncher,
-          }),
-          Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
-            resolveTargets: () => Effect.succeed([]),
-          }),
-        ),
-      ),
-      Layer.provide(
-        Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({
-          read: Effect.succeed({
-            serverPid: process.pid,
-            readAt: TEST_EPOCH,
-            processCount: 0,
-            totalRssBytes: 0,
-            totalCpuPercent: 0,
-            processes: [],
-            error: Option.none(),
-          }),
-          signal: (input) =>
-            Effect.succeed({
-              pid: input.pid,
-              signal: input.signal,
-              signaled: true,
-              message: Option.none(),
-            }),
-        }),
-      ),
-      Layer.provide([
-        HostResources.layer,
-        Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
-          readHistory: (input) =>
-            Effect.succeed({
-              readAt: TEST_EPOCH,
-              windowMs: input.windowMs,
-              bucketMs: input.bucketMs,
-              sampleIntervalMs: 5_000,
-              retainedSampleCount: 0,
-              totalCpuSecondsApprox: 0,
-              buckets: [],
-              topProcesses: [],
-              error: Option.none(),
-            }),
-        }),
-      ]),
-      Layer.provide(
-        Layer.mock(TraceDiagnostics.TraceDiagnostics)({
-          read: () =>
-            Effect.succeed({
-              traceFilePath: "",
-              scannedFilePaths: [],
-              readAt: TEST_EPOCH,
-              recordCount: 0,
-              parseErrorCount: 0,
-              firstSpanAt: Option.none(),
-              lastSpanAt: Option.none(),
-              failureCount: 0,
-              interruptionCount: 0,
-              slowSpanThresholdMs: 1_000,
-              slowSpanCount: 0,
-              logLevelCounts: {},
-              topSpansByCount: [],
-              slowestSpans: [],
-              commonFailures: [],
-              latestFailures: [],
-              latestWarningAndErrorLogs: [],
-              partialFailure: Option.none(),
-              error: Option.none(),
-            }),
-        }),
-      ),
-      Layer.provide(gitManagerLayer),
-      Layer.provide(gitVcsDriverLayer),
-      Layer.provide(gitWorkflowLayer),
-      Layer.provide(reviewLayer),
-      Layer.provide(vcsProvisioningLayer),
-      Layer.provide(
-        Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
-          ...options?.layers?.sourceControlRepositoryService,
-        }),
-      ),
-      Layer.provideMerge(vcsStatusBroadcasterLayer),
-      Layer.provide(
-        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
-          runForThread: () => Effect.succeed({ status: "no-script" as const }),
-          ...options?.layers?.projectSetupScriptRunner,
-        }),
-      ),
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(TerminalManager.TerminalManager)({
-            ...options?.layers?.terminalManager,
-          }),
-          WorktreeSetupTracker.layer,
-          ProjectCloneTracker.layer.pipe(
-            Layer.provide(
-              Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
-                ...options?.layers?.sourceControlRepositoryService,
+      )
+      .pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(Keybindings.Keybindings)({
+              loadConfigState: Effect.succeed({
+                keybindings: [],
+                issues: [],
               }),
+              streamChanges: Stream.empty,
+              ...options?.layers?.keybindings,
+            }),
+            Layer.mock(EnvironmentTheme.EnvironmentThemeService)({
+              current: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              ...options?.layers?.environmentTheme,
+            }),
+            Layer.mock(UsageLimitSources.UsageLimitSources)({
+              current: Effect.succeed([]),
+              streamChanges: Stream.make([]),
+              refresh: Effect.void,
+              ...options?.layers?.usageLimitSources,
+            }),
+          ),
+        ),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(ModelManifest.ModelManifest)({
+              forceRefresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
+              ...options?.layers?.modelManifest,
+            }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed([]),
+              refresh: () => Effect.succeed([]),
+              refreshInstance: () => Effect.succeed([]),
+              getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+                Effect.succeed(
+                  makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
+                ),
+              setProviderMaintenanceActionState: () => Effect.succeed([]),
+              streamChanges: Stream.empty,
+              ...options?.layers?.providerRegistry,
+            }),
+            Layer.mock(ProviderAuthService)({
+              ...options?.layers?.providerAuth,
+            }),
+            Layer.mock(ProviderInstanceRegistry)({
+              getInstance: (id) =>
+                Effect.succeed(
+                  id === defaultModelSelection.instanceId ? routerProviderInstance : undefined,
+                ),
+              listInstances: Effect.succeed([routerProviderInstance]),
+              ...options?.layers?.providerInstanceRegistry,
+            }),
+            Layer.mock(CodexInstallation)({
+              managedDirectory: "unused-test-codex-runtime",
+              ...options?.layers?.codexInstallation,
+            }),
+            Layer.mock(AntigravityInstallation)({
+              managedDirectory: "unused-test-antigravity-runtime",
+              ...options?.layers?.antigravityInstallation,
+            }),
+            Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({}),
+            Layer.mock(AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
+            Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
+            Layer.mock(DeviceService.DeviceService)({
+              state: Effect.succeed(EMPTY_DEVICE_STATE),
+              currentReadiness: () => Effect.succeed(null),
+              sessionsForThread: () => Effect.succeed([]),
+            }),
+          ),
+        ),
+        Layer.provide(serverSettingsLayer),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(ExternalLauncher.ExternalLauncher)({
+              resolveAvailableEditors: () => Effect.succeed([]),
+              resolveFileManagerRevealKind: () => Effect.undefined,
+              ...options?.layers?.externalLauncher,
+            }),
+            Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
+              resolveTargets: () => Effect.succeed([]),
+            }),
+          ),
+        ),
+        Layer.provide(
+          Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({
+            read: Effect.succeed({
+              serverPid: process.pid,
+              readAt: TEST_EPOCH,
+              processCount: 0,
+              totalRssBytes: 0,
+              totalCpuPercent: 0,
+              processes: [],
+              error: Option.none(),
+            }),
+            signal: (input) =>
+              Effect.succeed({
+                pid: input.pid,
+                signal: input.signal,
+                signaled: true,
+                message: Option.none(),
+              }),
+          }),
+        ),
+        Layer.provide([
+          HostResources.layer,
+          Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
+            readHistory: (input) =>
+              Effect.succeed({
+                readAt: TEST_EPOCH,
+                windowMs: input.windowMs,
+                bucketMs: input.bucketMs,
+                sampleIntervalMs: 5_000,
+                retainedSampleCount: 0,
+                totalCpuSecondsApprox: 0,
+                buckets: [],
+                topProcesses: [],
+                error: Option.none(),
+              }),
+          }),
+        ]),
+        Layer.provide(
+          Layer.mock(TraceDiagnostics.TraceDiagnostics)({
+            read: () =>
+              Effect.succeed({
+                traceFilePath: "",
+                scannedFilePaths: [],
+                readAt: TEST_EPOCH,
+                recordCount: 0,
+                parseErrorCount: 0,
+                firstSpanAt: Option.none(),
+                lastSpanAt: Option.none(),
+                failureCount: 0,
+                interruptionCount: 0,
+                slowSpanThresholdMs: 1_000,
+                slowSpanCount: 0,
+                logLevelCounts: {},
+                topSpansByCount: [],
+                slowestSpans: [],
+                commonFailures: [],
+                latestFailures: [],
+                latestWarningAndErrorLogs: [],
+                partialFailure: Option.none(),
+                error: Option.none(),
+              }),
+          }),
+        ),
+        Layer.provide(gitManagerLayer),
+        Layer.provide(gitVcsDriverLayer),
+        Layer.provide(gitWorkflowLayer),
+        Layer.provide(reviewLayer),
+        Layer.provide(vcsProvisioningLayer),
+        Layer.provide(
+          Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+            ...options?.layers?.sourceControlRepositoryService,
+          }),
+        ),
+        Layer.provideMerge(vcsStatusBroadcasterLayer),
+        Layer.provide(
+          Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
+            runForThread: () => Effect.succeed({ status: "no-script" as const }),
+            ...options?.layers?.projectSetupScriptRunner,
+          }),
+        ),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(TerminalManager.TerminalManager)({
+              ...options?.layers?.terminalManager,
+            }),
+            WorktreeSetupTracker.layer,
+            ProjectCloneTracker.layer.pipe(
+              Layer.provide(
+                Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+                  ...options?.layers?.sourceControlRepositoryService,
+                }),
+              ),
             ),
           ),
         ),
-      ),
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(PreviewManager.PreviewManager)({
-            open: () => Effect.die("PreviewManager not stubbed in this test"),
-            navigate: () => Effect.die("PreviewManager not stubbed in this test"),
-            resize: () => Effect.die("PreviewManager not stubbed in this test"),
-            reportStatus: () => Effect.void,
-            refresh: () => Effect.void,
-            close: () => Effect.void,
-            list: () => Effect.succeed({ sessions: [], serverEpoch: "test-server", revision: 0 }),
-            events: Stream.empty,
-            subscribeEvents: Effect.flatMap(PubSub.unbounded<PreviewEvent>(), (pubsub) =>
-              PubSub.subscribe(pubsub),
-            ),
-          }),
-          Layer.mock(PortScanner.PortDiscovery)({
-            scan: () => Effect.succeed([]),
-            subscribe: () => Effect.void,
-            retain: Effect.void,
-            registerTerminalProcesses: () => Effect.void,
-            unregisterTerminal: () => Effect.void,
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(PreviewManager.PreviewManager)({
+              open: () => Effect.die("PreviewManager not stubbed in this test"),
+              navigate: () => Effect.die("PreviewManager not stubbed in this test"),
+              resize: () => Effect.die("PreviewManager not stubbed in this test"),
+              reportStatus: () => Effect.void,
+              refresh: () => Effect.void,
+              close: () => Effect.void,
+              list: () => Effect.succeed({ sessions: [], serverEpoch: "test-server", revision: 0 }),
+              events: Stream.empty,
+              subscribeEvents: Effect.flatMap(PubSub.unbounded<PreviewEvent>(), (pubsub) =>
+                PubSub.subscribe(pubsub),
+              ),
+            }),
+            Layer.mock(PortScanner.PortDiscovery)({
+              scan: () => Effect.succeed([]),
+              subscribe: () => Effect.void,
+              retain: Effect.void,
+              registerTerminalProcesses: () => Effect.void,
+              unregisterTerminal: () => Effect.void,
+            }),
+          ),
+        ),
+        Layer.provide(
+          Layer.mock(PullRequestSyncReactor.PullRequestSyncReactor)({
+            start: () => Effect.void,
+            drain: Effect.void,
+            requestSync: () => Effect.void,
           }),
         ),
-      ),
-      Layer.provide(
-        Layer.mock(PullRequestSyncReactor.PullRequestSyncReactor)({
-          start: () => Effect.void,
-          drain: Effect.void,
-          requestSync: () => Effect.void,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(TextGeneration.TextGeneration)({
-          generateBranchName: () => Effect.succeed({ branch: "router-test-branch" }),
-          generateThreadTitle: () => Effect.succeed({ title: "Router test thread" }),
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
-          getTurnDiff: () =>
-            Effect.succeed({
-              threadId: defaultThreadId,
-              fromTurnCount: 0,
-              toTurnCount: 0,
-              diff: "",
-            }),
-          getFullThreadDiff: () =>
-            Effect.succeed({
-              threadId: defaultThreadId,
-              fromTurnCount: 0,
-              toTurnCount: 0,
-              diff: "",
-            }),
-          ...options?.layers?.checkpointDiffQuery,
-        }),
-      ),
-    );
+        Layer.provide(
+          Layer.mock(TextGeneration.TextGeneration)({
+            generateBranchName: () => Effect.succeed({ branch: "router-test-branch" }),
+            generateThreadTitle: () => Effect.succeed({ title: "Router test thread" }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
+            getTurnDiff: () =>
+              Effect.succeed({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 0,
+                diff: "",
+              }),
+            getFullThreadDiff: () =>
+              Effect.succeed({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 0,
+                diff: "",
+              }),
+            ...options?.layers?.checkpointDiffQuery,
+          }),
+        ),
+      );
 
     const appLayer = servedRoutesLayer
       .pipe(
@@ -1588,12 +1815,15 @@ const withWsRpcClient = <A, E, R>(
   onMessage?: (message: string) => void,
 ) => makeWsRpcClient.pipe(Effect.flatMap(f), Effect.provide(wsRpcProtocolLayer(wsUrl, onMessage)));
 
+// Holds the first ACK after `passedAcks` earlier ACKs have been sent unchanged.
 const withFirstWsAckHeld = (
   wsUrl: string,
   held: Deferred.Deferred<void>,
   release: Deferred.Deferred<void>,
+  passedAcks = 0,
 ) => {
   let holdNextAck = true;
+  let remainingPassedAcks = passedAcks;
   return Layer.effect(RpcClient.Protocol)(
     Effect.map(RpcClient.Protocol, (protocol) =>
       RpcClient.Protocol.of({
@@ -1601,6 +1831,10 @@ const withFirstWsAckHeld = (
         send: (clientId, request, transferables) => {
           const send = protocol.send(clientId, request, transferables);
           if (request._tag !== "Ack" || !holdNextAck) {
+            return send;
+          }
+          if (remainingPassedAcks > 0) {
+            remainingPassedAcks -= 1;
             return send;
           }
           holdNextAck = false;
@@ -1974,6 +2208,7 @@ const assertBrowserApiCorsPreflightHeaders = (
     "content-type",
     "dpop",
     "traceparent",
+    ORCHESTRATION_PROTOCOL_HEADER,
   ]);
 };
 const crossOriginClientOrigin = "http://remote-client.test:3773";
@@ -1986,7 +2221,10 @@ const getWsServerUrl = (
     const server = yield* HttpServer.HttpServer;
     const address = server.address as NetAddress.InetAddress;
     const next = new URL(`ws://127.0.0.1:${address.port}${pathname}`);
-    next.searchParams.set(ORCHESTRATION_PROTOCOL_QUERY_PARAM, String(ORCHESTRATION_PROTOCOL_VERSION));
+    next.searchParams.set(
+      ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+      String(ORCHESTRATION_PROTOCOL_VERSION),
+    );
     const baseUrl = next.toString();
     if (options?.authenticated === false) {
       return baseUrl;
@@ -2485,9 +2723,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                     bearer = session.token;
                   }),
                 ),
-            onV2Services: (context) => Effect.sync(() => {
-              sql = Context.get(context, SqlClient.SqlClient);
-            }),
+            onV2Services: (context) =>
+              Effect.sync(() => {
+                sql = Context.get(context, SqlClient.SqlClient);
+              }),
           },
         });
         const cookie = yield* getAuthenticatedSessionCookieHeader();
@@ -2512,13 +2751,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           });
         }
         for (const path of [
-          "/api/orchestration/snapshot",
+          "/api/orchestration/shell",
           `/api/orchestration/threads/${defaultThreadId}`,
           "/api/workstreams",
           "/api/workstreams/registration-context",
         ]) {
           const result = yield* fetchEffect(yield* getHttpServerUrl(path), {
-            headers: { authorization: `Bearer ${bearer}` },
+            headers: {
+              authorization: `Bearer ${bearer}`,
+              [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+            },
           });
           assert.equal(result.status, 403);
         }
@@ -2527,11 +2769,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           {
             method: "POST",
             headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
-            body: jsonRequestBody(routerMessageDispatch("native-denied")),
+            // The endpoint decodes ThreadTurnStartCommand before its scope check.
+            body: jsonRequestBody(makeGuardedQueueTransportCommand("native-denied")),
           },
         );
         assert.equal(dispatch.status, 403);
-        const committed = yield* sql!<{ count: number }>`SELECT count(*) AS count FROM orchestration_events`;
+        const committed = yield* sql!<{
+          count: number;
+        }>`SELECT count(*) AS count FROM orchestration_events`;
         assert.equal(committed[0]?.count, 0);
         const registration = yield* fetchEffect(
           yield* getHttpServerUrl("/api/workstreams/registration-context"),
@@ -2596,14 +2841,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   return { ...goal, objective: "private synthetic objective" };
                 }),
             },
-            onV2Services: (context) => Effect.gen(function* () {
-              yield* seedRouterThread(context);
-              underlyingObserve = Context.get(context, Orchestrator.OrchestratorV2).observeCommand;
-              observation = yield* underlyingObserve({ threadId: command.threadId, commandId: command.commandId, messageId: command.messageId });
-            }),
+            onV2Services: (context) =>
+              Effect.gen(function* () {
+                yield* seedRouterThread(context);
+                underlyingObserve = Context.get(
+                  context,
+                  Orchestrator.OrchestratorV2,
+                ).observeCommand;
+                observation = yield* underlyingObserve({
+                  threadId: command.threadId,
+                  commandId: command.commandId,
+                  messageId: command.messageId,
+                });
+              }),
             threadManagement: {
               observeCommand: (input) =>
-                Effect.sync(() => observationReads.push(input)).pipe(Effect.andThen(underlyingObserve(input))),
+                Effect.sync(() => observationReads.push(input)).pipe(
+                  Effect.andThen(underlyingObserve(input)),
+                ),
             },
           },
         });
@@ -2756,43 +3011,72 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       let services!: Context.Context<RouterV2Services>;
       const dispatched: unknown[] = [];
       const observed: unknown[] = [];
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          services = context;
-          yield* seedRouterThread(context);
-          const observation = yield* Context.get(context, Orchestrator.OrchestratorV2).observeCommand(command);
-          const target = observation.target;
-          assertTrue(target !== null && target.incarnation !== null);
-          assert.isTrue(target.complete);
-          assert.isTrue(target.idle);
-          guard = {
-            version: 2, observedSnapshotSequence: target.snapshotSequence,
-            expectedIncarnation: target.incarnation, expectedModelSelection: target.modelSelection,
-            expectedActiveRunId: target.activeRunId, expectedLatestRunId: target.latestRunId,
-            expectedActiveRunAttemptId: target.activeRunAttemptId,
-            expectedActiveProviderThreadId: target.activeProviderThreadId,
-            expectedProviderSessionId: target.providerSessionId,
-            expectedProviderSessionStatus: target.providerSessionStatus,
-            ...(target.runtimeGeneration === undefined ? {} : {expectedRuntimeGeneration: target.runtimeGeneration}),
-            requireIdle: true,
-          };
-        }),
-        wrapThreadManagement: (service) => ({...service,
-          dispatchGuarded: (input, expected) => Effect.sync(() => dispatched.push({input, expected})).pipe(
-            Effect.andThen(service.dispatchGuarded(input, expected))),
-          observeCommand: (input) => Effect.sync(() => observed.push(input)).pipe(Effect.andThen(service.observeCommand(input))),
-        }),
-      }});
-      const receipt = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.dispatchGuarded]({command, guard})
-      ));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              services = context;
+              yield* seedRouterThread(context);
+              const observation = yield* Context.get(
+                context,
+                Orchestrator.OrchestratorV2,
+              ).observeCommand(command);
+              const target = observation.target;
+              assertTrue(target !== null && target.incarnation !== null);
+              assert.isTrue(target.complete);
+              assert.isTrue(target.idle);
+              guard = {
+                version: 2,
+                observedSnapshotSequence: target.snapshotSequence,
+                expectedIncarnation: target.incarnation,
+                expectedModelSelection: target.modelSelection,
+                expectedActiveRunId: target.activeRunId,
+                expectedLatestRunId: target.latestRunId,
+                expectedActiveRunAttemptId: target.activeRunAttemptId,
+                expectedActiveProviderThreadId: target.activeProviderThreadId,
+                expectedProviderSessionId: target.providerSessionId,
+                expectedProviderSessionStatus: target.providerSessionStatus,
+                ...(target.runtimeGeneration === undefined
+                  ? {}
+                  : { expectedRuntimeGeneration: target.runtimeGeneration }),
+                requireIdle: true,
+              };
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            dispatchGuarded: (input, expected) =>
+              Effect.sync(() => dispatched.push({ input, expected })).pipe(
+                Effect.andThen(service.dispatchGuarded(input, expected)),
+              ),
+            observeCommand: (input) =>
+              Effect.sync(() => observed.push(input)).pipe(
+                Effect.andThen(service.observeCommand(input)),
+              ),
+          }),
+        },
+      });
+      const receipt = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchGuarded]({ command, guard }),
+        ),
+      );
       assert.isAbove(receipt.sequence, guard.observedSnapshotSequence);
-      assert.deepEqual(dispatched, [{input: command, expected: guard}]);
-      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {scope: "orchestration:read"});
+      assert.deepEqual(dispatched, [{ input: command, expected: guard }]);
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "orchestration:read",
+      });
       assert.equal(token.response.status, 200);
-      const response = yield* fetchEffect(yield* getHttpServerUrl(
-        "/api/orchestration/v2/threads/" + command.threadId + "/commands/" + command.commandId + "?messageId=" + command.messageId
-      ), {headers: {authorization: "Bearer " + token.body.access_token}});
+      const response = yield* fetchEffect(
+        yield* getHttpServerUrl(
+          "/api/orchestration/v2/threads/" +
+            command.threadId +
+            "/commands/" +
+            command.commandId +
+            "?messageId=" +
+            command.messageId,
+        ),
+        { headers: { authorization: "Bearer " + token.body.access_token } },
+      );
       assert.equal(response.status, 200);
       const observation = yield* responseJsonEffect<AwaitedObservation>(response);
       assert.equal(observation.commandId, command.commandId);
@@ -2800,12 +3084,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(observation.receipt?.resultSequence, receipt.sequence);
       assert.equal(observation.commandStatus, "accepted");
       assert.equal(observation.correlation, "exact");
-      assert.deepEqual(observed, [{threadId: command.threadId, commandId: command.commandId, messageId: command.messageId}]);
-      const durable = yield* Context.get(services, Orchestrator.OrchestratorV2).observeCommand(command);
+      assert.deepEqual(observed, [
+        { threadId: command.threadId, commandId: command.commandId, messageId: command.messageId },
+      ]);
+      const durable = yield* Context.get(services, Orchestrator.OrchestratorV2).observeCommand(
+        command,
+      );
       assert.equal(durable.receipt?.resultSequence, receipt.sequence);
       assert.equal(durable.correlation, "exact");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect(
     "rejects guarded HTTP bootstrap while WebSocket prepares before final guarded dispatch",
@@ -2813,27 +3101,51 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       Effect.gen(function* () {
         const value = yield* qualifiedNativeRouterFixture("guarded-http-bootstrap", false);
         const baseCommand = makeGuardedQueueTransportCommand("bootstrap");
-        const command = { ...baseCommand, commandId: CommandId.make(value.fixture.command.commandId),
-          threadId: ThreadId.make(value.fixture.command.threadId), bootstrap: value.fixture.command.bootstrap };
-        const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {scope: "orchestration:operate"});
-        assert.equal(token.response.status, 200);
-        const rejected = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
-          method: "POST", headers: {authorization: `Bearer ${token.body.access_token}`, "content-type": "application/json"},
-          body: jsonRequestBody(command),
+        const command = {
+          ...baseCommand,
+          commandId: CommandId.make(value.fixture.command.commandId),
+          threadId: ThreadId.make(value.fixture.command.threadId),
+          bootstrap: value.fixture.command.bootstrap,
+        };
+        const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:operate",
         });
+        assert.equal(token.response.status, 200);
+        const rejected = yield* fetchEffect(
+          yield* getHttpServerUrl("/api/orchestration/dispatch"),
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token.body.access_token}`,
+              "content-type": "application/json",
+            },
+            body: jsonRequestBody(command),
+          },
+        );
         assert.equal(rejected.status, 400);
         const failure = yield* responseJsonEffect<{ reason: string }>(rejected);
         assert.equal(failure.reason, "dispatch_guard_bootstrap_unsupported");
         assert.deepEqual(value.stages, []);
         assert.deepEqual(value.detachments, []);
         assert.deepEqual(value.nativeCalls, []);
-        const receipt = yield* Effect.scoped(withWsRpcClient(value.url, (client) =>
-          client[ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap](value.fixture.submission)));
+        const receipt = yield* Effect.scoped(
+          withWsRpcClient(value.url, (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap](value.fixture.submission),
+          ),
+        );
         assert.equal(receipt.commandAcceptance, "accepted");
         assert.isAbove(receipt.creation?.finalReceipt?.resultSequence ?? 0, 0);
-        assert.deepEqual(value.stages.map((input) => input.type), ["thread.create", "message.dispatch", "prepared-run.release"]);
-        assert.deepEqual(value.order, ["thread.create", "message.dispatch", "checkout", "prepared-run.release"]);
-        assert.deepEqual(value.detachments, [{threadId: command.threadId, status: "stopped"}]);
+        assert.deepEqual(
+          value.stages.map((input) => input.type),
+          ["thread.create", "message.dispatch", "prepared-run.release"],
+        );
+        assert.deepEqual(value.order, [
+          "thread.create",
+          "message.dispatch",
+          "checkout",
+          "prepared-run.release",
+        ]);
+        assert.deepEqual(value.detachments, [{ threadId: command.threadId, status: "stopped" }]);
         const finalCommand = value.stages[2];
         assertTrue(finalCommand?.type === "prepared-run.release");
         assert.deepEqual(value.stages, value.expectedCommands());
@@ -2854,12 +3166,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.isAbove(sequences[2]!, sequences[1]!);
         assert.deepEqual(creation.incarnation, creation.stageCommands[0]!.event);
         const threads = Context.get(value.services, ThreadManagement.ThreadManagementService);
-        const birth = Option.getOrThrow(yield* threads.getThreadOwnershipIncarnation(command.threadId));
+        const birth = Option.getOrThrow(
+          yield* threads.getThreadOwnershipIncarnation(command.threadId),
+        );
         const leases = yield* threads.listWorktreeOwnershipLeases;
-        const checkout = nativeWorktreePath({worktreesDir: value.config.worktreesDir, cwd: value.fixture.binding.project_cwd,
-          branch: value.fixture.historical.requestedBranch});
-        assert.isTrue(leases.some((lease) => lease.ownerThreadId === command.threadId && lease.ownerIncarnation === birth &&
-          lease.resourcePath === checkout && lease.branch === value.fixture.historical.requestedBranch));
+        const checkout = nativeWorktreePath({
+          worktreesDir: value.config.worktreesDir,
+          cwd: value.fixture.binding.project_cwd,
+          branch: value.fixture.historical.requestedBranch,
+        });
+        assert.isTrue(
+          leases.some(
+            (lease) =>
+              lease.ownerThreadId === command.threadId &&
+              lease.ownerIncarnation === birth &&
+              lease.resourcePath === checkout &&
+              lease.branch === value.fixture.historical.requestedBranch,
+          ),
+        );
         assert.deepEqual(value.nativeCalls, []);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -2870,17 +3194,26 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "thread:mcp:abfba0d2-b591-4b7e-aad1-e943d89811fa:handoff%3A0ae5edf4-2ea3-4ee3-ba7c-48de3ac92896%3A2026-08-24T17%3A08%3A52.138Z:0",
       );
       yield* buildAppUnderTest({
-        layers: { onV2Services: (context) => seedRouterThread(context, threadId).pipe(Effect.asVoid) },
+        layers: {
+          onV2Services: (context) => seedRouterThread(context, threadId).pipe(Effect.asVoid),
+        },
       });
       const response = yield* fetchEffect(
         yield* getHttpServerUrl("/api/orchestration/threads/" + encodeURIComponent(threadId)),
-        { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
+        {
+          headers: {
+            cookie: yield* getAuthenticatedSessionCookieHeader(),
+            [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+          },
+        },
       );
-      const snapshot = yield* responseJsonEffect<{ projection: { thread: { id: ThreadId } } }>(response);
+      const snapshot = yield* responseJsonEffect<{ projection: { thread: { id: ThreadId } } }>(
+        response,
+      );
       assert.equal(response.status, 200);
       assert.equal(snapshot.projection.thread.id, threadId);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
+  );
 
   it.effect("compresses large JSON responses through the composed routes", () =>
     Effect.gen(function* () {
@@ -6087,98 +6420,135 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const fs = yield* FileSystem.FileSystem;
       let sql: SqlClient.SqlClient | undefined;
       yield* buildAppUnderTest({
-        layers: { onV2Services: (context) => Effect.sync(() => {
-          sql = Context.get(context, SqlClient.SqlClient);
-        }) },
+        layers: {
+          onV2Services: (context) =>
+            Effect.sync(() => {
+              sql = Context.get(context, SqlClient.SqlClient);
+            }),
+        },
       });
-      yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => Effect.gen(function* () {
-        const config = yield* client[WS_METHODS.serverGetConfig]({});
-        const scratchRoot = config.scratchWorkspaceRoot ?? "";
-        const first = yield* client[WS_METHODS.projectsEnsureScratch]({});
-        yield* fs.remove(scratchRoot, { recursive: true });
-        const second = yield* client[WS_METHODS.projectsEnsureScratch]({});
-        assert.isTrue(scratchRoot.endsWith("scratch"));
-        assert.equal(second.projectId, first.projectId);
-        assert.isTrue(yield* fs.exists(scratchRoot));
-        const rows = yield* sql!<{ id: string; projectIcon: string }>`
+      yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+        Effect.gen(function* () {
+          const config = yield* client[WS_METHODS.serverGetConfig]({});
+          const scratchRoot = config.scratchWorkspaceRoot ?? "";
+          const first = yield* client[WS_METHODS.projectsEnsureScratch]({});
+          yield* fs.remove(scratchRoot, { recursive: true });
+          const second = yield* client[WS_METHODS.projectsEnsureScratch]({});
+          assert.isTrue(scratchRoot.endsWith("scratch"));
+          assert.equal(second.projectId, first.projectId);
+          assert.isTrue(yield* fs.exists(scratchRoot));
+          const rows = yield* sql!<{ id: string; projectIcon: string }>`
           SELECT project_id AS id, project_icon_json AS projectIcon FROM projection_projects
           WHERE workspace_root = ${scratchRoot} AND deleted_at IS NULL
         `;
-        assert.lengthOf(rows, 1);
-        assert.equal(rows[0]?.id, first.projectId);
-        assert.deepEqual(Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(rows[0]!.projectIcon), {
-          kind: "lucide", name: "message-square-dashed", color: "gray",
-        });
-      }));
+          assert.lengthOf(rows, 1);
+          assert.equal(rows[0]?.id, first.projectId);
+          assert.deepEqual(
+            yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(rows[0]!.projectIcon),
+            {
+              kind: "lucide",
+              name: "message-square-dashed",
+              color: "gray",
+            },
+          );
+        }),
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
+  );
 
   it.effect("resolves a lost Scratch create race to the winning project", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
       const firstClient = yield* getWsServerUrl("/ws");
       const secondClient = yield* getWsServerUrl("/ws");
-      const requests = yield* Effect.all([
-        withWsRpcClient(firstClient, (client) => client[WS_METHODS.projectsEnsureScratch]({})),
-        withWsRpcClient(secondClient, (client) => client[WS_METHODS.projectsEnsureScratch]({})),
-      ], { concurrency: 2 });
+      const requests = yield* Effect.all(
+        [
+          withWsRpcClient(firstClient, (client) => client[WS_METHODS.projectsEnsureScratch]({})),
+          withWsRpcClient(secondClient, (client) => client[WS_METHODS.projectsEnsureScratch]({})),
+        ],
+        { concurrency: 2 },
+      );
       assert.equal(requests[0]!.projectId, requests[1]!.projectId);
+      // Scratch is identified by its configured root; its project title is "No project".
+      const config = yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+        client[WS_METHODS.serverGetConfig]({}),
+      );
+      assert.isString(config.scratchWorkspaceRoot);
       const cookie = yield* getAuthenticatedSessionCookieHeader();
-      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/snapshot"), {
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/projects"), {
         headers: { cookie },
       });
-      const snapshot = yield* responseJsonEffect<{ projects: ReadonlyArray<{ id: ProjectId; title: string }> }>(response);
+      const snapshot = yield* responseJsonEffect<{
+        projects: ReadonlyArray<{ id: ProjectId; workspaceRoot: string }>;
+      }>(response);
       assert.equal(response.status, 200);
-      assert.deepEqual(snapshot.projects.filter((project) => project.title === "Scratch").map((project) => project.id), [
-        requests[0]!.projectId,
-      ]);
+      assert.deepEqual(
+        snapshot.projects
+          .filter((project) => project.workspaceRoot === config.scratchWorkspaceRoot)
+          .map((project) => project.id),
+        [requests[0]!.projectId],
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
+  );
 
   it.effect("gives each new Scratch thread its own folder", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      let context: Context.Context<ProjectService.ProjectService | ThreadManagement.ThreadManagementService> | undefined;
-      yield* buildAppUnderTest({ layers: { onV2Services: (services) => Effect.sync(() => { context = services; }) } });
+      let context:
+        | Context.Context<ProjectService.ProjectService | ThreadManagement.ThreadManagementService>
+        | undefined;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.sync(() => {
+              context = services;
+            }),
+        },
+      });
       const folders: string[] = [];
-      yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => Effect.gen(function* () {
-        const config = yield* client[WS_METHODS.serverGetConfig]({});
-        const scratchRoot = config.scratchWorkspaceRoot ?? "";
-        const project = yield* client[WS_METHODS.projectsEnsureScratch]({});
-        const starts = [
-          { id: "a1b2c3d4-scratch-thread", text: "Convert these PNGs to WebP, please!" },
-          { id: "a1b2c3d4-other", text: "Convert these PNGs to WebP, please!" },
-          { id: "../../escape", text: "Convert these PNGs to WebP, please!" },
-          { id: "f00dcafe-long", text: "x".repeat(300) },
-        ];
-        for (const [index, start] of starts.entries()) {
-          const launch = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({
-            commandId: CommandId.make("scratch:launch:" + index),
-            threadId: ThreadId.make(start.id),
-            projectId: project.projectId,
-            title: "New thread",
-            modelSelection: defaultModelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            workspaceStrategy: { type: "root" },
-            initialMessage: { text: start.text, attachments: [] },
-          });
-          const projection = yield* Context.get(context!, ThreadManagement.ThreadManagementService).getThreadProjection(launch.threadId);
-          const folder = projection.thread.worktreePath ?? "";
-          assert.equal(path.dirname(folder), scratchRoot);
-          assert.isTrue(yield* fs.exists(folder));
-          folders.push(folder);
-        }
-      }));
+      yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+        Effect.gen(function* () {
+          const config = yield* client[WS_METHODS.serverGetConfig]({});
+          const scratchRoot = config.scratchWorkspaceRoot ?? "";
+          const project = yield* client[WS_METHODS.projectsEnsureScratch]({});
+          const starts = [
+            { id: "scratch-thread-a1b2c3d4", text: "Convert these PNGs to WebP, please!" },
+            { id: "other-a1b2c3d4", text: "Convert these PNGs to WebP, please!" },
+            { id: "../../escape", text: "Convert these PNGs to WebP, please!" },
+            { id: "long-f00dcafe", text: "x".repeat(300) },
+          ];
+          for (const [index, start] of starts.entries()) {
+            const launch = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+              commandId: CommandId.make("scratch:launch:" + index),
+              threadId: ThreadId.make(start.id),
+              projectId: project.projectId,
+              title: "New thread",
+              modelSelection: defaultModelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              workspaceStrategy: { type: "root" },
+              initialMessage: { text: start.text, attachments: [] },
+            });
+            const projection = yield* Context.get(
+              context!,
+              ThreadManagement.ThreadManagementService,
+            ).getThreadProjection(launch.threadId);
+            const folder = projection.thread.worktreePath ?? "";
+            assert.equal(path.dirname(folder), scratchRoot);
+            assert.isTrue(yield* fs.exists(folder));
+            folders.push(folder);
+          }
+        }),
+      );
       const names = folders.map((folder) => path.basename(folder));
       assert.match(names[0] ?? "", /^\d{4}-\d{2}-\d{2}-convert-these-pngs-to-webp-a1b2c3d4$/);
-      assert.match(names[1] ?? "", /-convert-these-pngs-to-webp-a1b2c3d4other$/);
+      assert.match(names[1] ?? "", /-convert-these-pngs-to-webp-othera1b2c3d4$/);
       assert.match(names[2] ?? "", /-convert-these-pngs-to-webp-escape$/);
       assert.match(names[3] ?? "", /^\d{4}-\d{2}-\d{2}-x{48}-f00dcafe$/);
       assert.equal(new Set(folders).size, 4);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
+  );
 
   it.effect("withholds Scratch when the data dir sits inside a work tree", () =>
     Effect.gen(function* () {
@@ -6207,9 +6577,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const gitCalls: Array<string> = [];
       yield* buildAppUnderTest({
         layers: {
-          onV2Services: (context) => Effect.sync(() => {
-            projects = Context.get(context, ProjectService.ProjectService);
-          }),
+          onV2Services: (context) =>
+            Effect.sync(() => {
+              projects = Context.get(context, ProjectService.ProjectService);
+            }),
           gitVcsDriver: {
             readConfigValue: () => Effect.succeed(null),
             execute: (input) =>
@@ -6676,6 +7047,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "content-type",
         "dpop",
         "traceparent",
+        ORCHESTRATION_PROTOCOL_HEADER,
       ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -6945,7 +7317,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               },
             }),
           },
-          onV2Services: (context) => seedRouterProject(context, projectId, workspaceRoot).pipe(Effect.asVoid),
+          onV2Services: (context) =>
+            seedRouterProject(context, projectId, workspaceRoot).pipe(Effect.asVoid),
         },
       });
 
@@ -6976,19 +7349,33 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const uploadFeedback = vi.fn<NonNullable<ProviderAdapterV2SessionRuntime["uploadFeedback"]>>(
         () => Effect.succeed({ feedbackId: "codex-thread-feedback" }),
       );
-      let providerThread: Parameters<NonNullable<ProviderAdapterV2SessionRuntime["uploadFeedback"]>>[0]["providerThread"] | undefined;
+      let providerThread:
+        | Parameters<
+            NonNullable<ProviderAdapterV2SessionRuntime["uploadFeedback"]>
+          >[0]["providerThread"]
+        | undefined;
       let sessionId: ProviderSessionId | undefined;
-      const getRuntime = vi.fn<ProviderSessionManager.ProviderSessionManagerV2["Service"]["get"]>((id) =>
-        Effect.succeed(id === sessionId ? Option.some(makeRouterFeedbackRuntime(id, uploadFeedback)) : Option.none()));
+      const getRuntime = vi.fn<ProviderSessionManager.ProviderSessionManagerV2["Service"]["get"]>(
+        (id) =>
+          Effect.succeed(
+            id === sessionId
+              ? Option.some(makeRouterFeedbackRuntime(id, uploadFeedback))
+              : Option.none(),
+          ),
+      );
       yield* buildAppUnderTest({
         layers: {
           providerSessionManager: { get: getRuntime },
-          onV2Services: (context) => Effect.gen(function* () {
-            yield* seedRouterThread(context, input.threadId);
-            sessionId = yield* seedRouterProvider(context, "ready", input.threadId);
-            const records = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadRecords(input.threadId, ["providerThreads"]);
-            providerThread = records.providerThreads.at(-1);
-          }),
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context, input.threadId);
+              sessionId = yield* seedRouterProvider(context, "ready", input.threadId);
+              const records = yield* Context.get(
+                context,
+                ThreadManagement.ThreadManagementService,
+              ).getThreadRecords(input.threadId, ["providerThreads"]);
+              providerThread = records.providerThreads.at(-1);
+            }),
         },
       });
 
@@ -7000,7 +7387,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepStrictEqual(response, { feedbackId: "codex-thread-feedback" });
       assertTrue(providerThread !== undefined);
       assert.deepStrictEqual(getRuntime.mock.calls, [[sessionId]]);
-      assert.deepStrictEqual(uploadFeedback.mock.calls, [[{ providerThread, reason: input.reason }]]);
+      assert.deepStrictEqual(uploadFeedback.mock.calls, [
+        [{ providerThread, reason: input.reason }],
+      ]);
       assert.strictEqual(providerThread?.appThreadId, input.threadId);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -7229,19 +7618,25 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           providerSessionManager: {
-            get: (sessionId) => Effect.succeed(Option.some(makeRouterFeedbackRuntime(sessionId, () =>
-              Effect.fail(
-                new ProviderAdapterProtocolError({
-                  driver: ProviderDriverKind.make("codex"),
-                  detail: "private provider detail",
-                }),
+            get: (sessionId) =>
+              Effect.succeed(
+                Option.some(
+                  makeRouterFeedbackRuntime(sessionId, () =>
+                    Effect.fail(
+                      new ProviderAdapterProtocolError({
+                        driver: ProviderDriverKind.make("codex"),
+                        detail: "private provider detail",
+                      }),
+                    ),
+                  ),
+                ),
               ),
-            ))),
           },
-          onV2Services: (context) => Effect.gen(function* () {
-            yield* seedRouterThread(context, threadId);
-            yield* seedRouterProvider(context, "ready", threadId);
-          }),
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context, threadId);
+              yield* seedRouterProvider(context, "ready", threadId);
+            }),
         },
       });
 
@@ -7433,6 +7828,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       let flowOwner = "";
       yield* buildAppUnderTest({
         layers: {
+          providerInstanceRegistry: {
+            getInstance: (id) =>
+              Effect.succeed(id === providerSetupInstanceId ? providerSetupInstance : undefined),
+            listInstances: Effect.succeed([providerSetupInstance]),
+          },
           providerAuth: {
             start: (input, ownerSessionId) =>
               Effect.sync(() => {
@@ -7756,8 +8156,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               streamChanges: Stream.empty,
               applyUsageLimits: () => Effect.void,
             },
-            get orchestrationAdapter(): never { throw new Error("Maintenance refresh must not open a provider runtime"); },
-            get textGeneration(): never { throw new Error("Maintenance refresh must not generate provider text"); },
+            get orchestrationAdapter(): never {
+              throw new Error("Maintenance refresh must not open a provider runtime");
+            },
+            get textGeneration(): never {
+              throw new Error("Maintenance refresh must not generate provider text");
+            },
           }) satisfies ProviderInstance,
       );
       const expected =
@@ -8707,100 +9111,205 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const parent = yield* fs.makeTempDirectoryScoped({prefix: "t3-router-clone-"});
+      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-clone-" });
       const destinationPath = path.join(parent, "repository");
       const projectId = ProjectId.make("router:clone");
       const cloneGate = yield* Deferred.make<void>();
       const updated = yield* Deferred.make<void>();
       let projects!: ProjectService.ProjectService["Service"];
-      yield* buildAppUnderTest({ layers: {
-        onV2Services: (context) => Effect.sync(() => { projects = Context.get(context, ProjectService.ProjectService); }),
-        wrapProjectService: (service) => ({ ...service, update: (input) =>
-          service.update(input).pipe(Effect.tap(() => Deferred.succeed(updated, undefined))) }),
-        sourceControlRepositoryService: {
-          prepareClone: (input) => Effect.succeed({destinationPath: input.destinationPath, remoteUrl: input.remoteUrl ?? "", cloneUrl: input.remoteUrl ?? "", repository: null}),
-          cloneRepository: (input) => Deferred.await(cloneGate).pipe(Effect.as({cwd: input.destinationPath, remoteUrl: input.remoteUrl ?? "", repository: null})),
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.sync(() => {
+              projects = Context.get(context, ProjectService.ProjectService);
+            }),
+          wrapProjectService: (service) => ({
+            ...service,
+            update: (input) =>
+              service.update(input).pipe(Effect.tap(() => Deferred.succeed(updated, undefined))),
+          }),
+          sourceControlRepositoryService: {
+            prepareClone: (input) =>
+              Effect.succeed({
+                destinationPath: input.destinationPath,
+                remoteUrl: input.remoteUrl ?? "",
+                cloneUrl: input.remoteUrl ?? "",
+                repository: null,
+              }),
+            cloneRepository: (input) =>
+              Deferred.await(cloneGate).pipe(
+                Effect.as({
+                  cwd: input.destinationPath,
+                  remoteUrl: input.remoteUrl ?? "",
+                  repository: null,
+                }),
+              ),
+          },
         },
-      }});
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => Effect.gen(function* () {
-        const started = yield* client[WS_METHODS.projectCloneStart]({projectId, title: "Clone", createdAt: "2026-01-01T00:00:00.000Z", remoteUrl: "https://example.invalid/synthetic.git", destinationPath});
-        assert.equal(started.cwd, destinationPath);
-        assertTrue(Option.isSome(yield* projects.getById(projectId)));
-        const blocked = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({...routerLaunchInput("clone-blocked"), projectId}).pipe(Effect.result);
-        assertTrue(blocked._tag === "Failure");
-        assert.include(JSON.stringify(blocked.failure), "still being cloned");
-        const snapshots = yield* client[WS_METHODS.subscribeProjectClones]({}).pipe(
-          Stream.takeUntil((clones) => clones[0]?.phase === "done"), Stream.runCollect, Effect.forkChild);
-        yield* Deferred.succeed(cloneGate, undefined);
-        assert.equal((yield* Fiber.join(snapshots)).at(-1)?.[0]?.phase, "done");
-        yield* Deferred.await(updated);
-        const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({...routerLaunchInput("clone-ready"), projectId});
-        assert.equal(launched.projection.thread.projectId, projectId);
-      })));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      });
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const started = yield* client[WS_METHODS.projectCloneStart]({
+              projectId,
+              title: "Clone",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              remoteUrl: "https://example.invalid/synthetic.git",
+              destinationPath,
+            });
+            assert.equal(started.cwd, destinationPath);
+            assertTrue(Option.isSome(yield* projects.getById(projectId)));
+            const blocked = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+              ...routerLaunchInput("clone-blocked"),
+              projectId,
+            }).pipe(Effect.result);
+            assertTrue(blocked._tag === "Failure");
+            assert.include(yield* encodeTestJsonEffect(blocked.failure), "still being cloned");
+            const snapshots = yield* client[WS_METHODS.subscribeProjectClones]({}).pipe(
+              Stream.takeUntil((clones) => clones[0]?.phase === "done"),
+              Stream.runCollect,
+              Effect.forkChild,
+            );
+            yield* Deferred.succeed(cloneGate, undefined);
+            assert.equal((yield* Fiber.join(snapshots)).at(-1)?.[0]?.phase, "done");
+            yield* Deferred.await(updated);
+            const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+              ...routerLaunchInput("clone-ready"),
+              projectId,
+            });
+            assert.equal(launched.projection.thread.projectId, projectId);
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("finds a cloned project's icon once the clone lands", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const parent = yield* fs.makeTempDirectoryScoped({prefix: "t3-router-clone-icon-"});
+      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-clone-icon-" });
       const destinationPath = path.join(parent, "repository");
       const projectId = ProjectId.make("router:clone-icon");
       const cloneGate = yield* Deferred.make<void>();
       const updated = yield* Deferred.make<void>();
-      yield* buildAppUnderTest({layers: {
-        wrapProjectService: (service) => ({...service, update: (input) =>
-          service.update(input).pipe(Effect.tap(() => Deferred.succeed(updated, undefined)))}),
-        sourceControlRepositoryService: {
-          prepareClone: (input) => Effect.succeed({destinationPath: input.destinationPath, remoteUrl: input.remoteUrl ?? "", cloneUrl: input.remoteUrl ?? "", repository: null}),
-          cloneRepository: (input) => Deferred.await(cloneGate).pipe(
-            Effect.andThen(fs.writeFileString(path.join(input.destinationPath, "favicon.svg"), "<svg/>").pipe(
-              Effect.mapError((cause) => new SourceControlRepositoryError({ operation: "cloneRepository", provider: "unknown", detail: "Synthetic clone fixture could not create favicon", cause })))),
-            Effect.as({cwd: input.destinationPath, remoteUrl: input.remoteUrl ?? "", repository: null})),
+      yield* buildAppUnderTest({
+        layers: {
+          wrapProjectService: (service) => ({
+            ...service,
+            update: (input) =>
+              service.update(input).pipe(Effect.tap(() => Deferred.succeed(updated, undefined))),
+          }),
+          sourceControlRepositoryService: {
+            prepareClone: (input) =>
+              Effect.succeed({
+                destinationPath: input.destinationPath,
+                remoteUrl: input.remoteUrl ?? "",
+                cloneUrl: input.remoteUrl ?? "",
+                repository: null,
+              }),
+            cloneRepository: (input) =>
+              Deferred.await(cloneGate).pipe(
+                Effect.andThen(
+                  fs
+                    .writeFileString(path.join(input.destinationPath, "favicon.svg"), "<svg/>")
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new SourceControlRepositoryError({
+                            operation: "cloneRepository",
+                            provider: "unknown",
+                            detail: "Synthetic clone fixture could not create favicon",
+                            cause,
+                          }),
+                      ),
+                    ),
+                ),
+                Effect.as({
+                  cwd: input.destinationPath,
+                  remoteUrl: input.remoteUrl ?? "",
+                  repository: null,
+                }),
+              ),
+          },
         },
-      }});
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => Effect.gen(function* () {
-        yield* client[WS_METHODS.projectCloneStart]({projectId, title: "Clone", createdAt: "2026-01-01T00:00:00.000Z", remoteUrl: "https://example.invalid/synthetic.git", destinationPath});
-        const resource = {_tag: "project-favicon" as const, cwd: destinationPath};
-        assert.isTrue((yield* client[WS_METHODS.assetsCreateUrl]({resource})).relativeUrl.endsWith("/project-favicon-missing"));
-        yield* Deferred.succeed(cloneGate, undefined);
-        yield* Deferred.await(updated);
-        assert.equal((yield* client[WS_METHODS.assetsCreateUrl]({resource})).sourcePath, "favicon.svg");
-      })));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      });
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            yield* client[WS_METHODS.projectCloneStart]({
+              projectId,
+              title: "Clone",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              remoteUrl: "https://example.invalid/synthetic.git",
+              destinationPath,
+            });
+            const resource = { _tag: "project-favicon" as const, cwd: destinationPath };
+            assert.isTrue(
+              (yield* client[WS_METHODS.assetsCreateUrl]({ resource })).relativeUrl.endsWith(
+                "/project-favicon-missing",
+              ),
+            );
+            yield* Deferred.succeed(cloneGate, undefined);
+            yield* Deferred.await(updated);
+            assert.equal(
+              (yield* client[WS_METHODS.assetsCreateUrl]({ resource })).sourcePath,
+              "favicon.svg",
+            );
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("records thread analytics only after a client command succeeds", () =>
     Effect.gen(function* () {
       const effects: string[] = [];
       const properties: Array<Readonly<Record<string, unknown>> | undefined> = [];
       let dispatch!: ThreadManagement.ThreadManagementService["Service"]["dispatch"];
-      yield* buildAppUnderTest({ layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          dispatch = Context.get(context, Orchestrator.OrchestratorV2).dispatch;
-        }),
-        threadManagement: { dispatch: (command) => Effect.gen(function* () {
-          effects.push("dispatch:" + command.commandId);
-          return yield* dispatch(command);
-        }) },
-        analyticsService: { record: (event, props) => Effect.sync(() => {
-          effects.push("analytics:" + event);
-          properties.push(props);
-        }) },
-      } });
-      const wsUrl = yield* getWsServerUrl("/ws?clientSurface=mobile&clientAppVersion=1.2.3&clientDeviceType=phone&clientOs=iOS&clientOsMajorVersion=18&clientDeviceModel=iPhone+15+Pro&connectionMethod=relay");
-      yield* Effect.scoped(withWsRpcClient(wsUrl, (client) => Effect.gen(function* () {
-        const failed = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
-          ...routerMessageDispatch("analytics-failed"),
-          threadId: ThreadId.make("missing-analytics-thread"),
-        }).pipe(Effect.result);
-        assert.equal(failed._tag, "Failure");
-        assert.isFalse(effects.includes("analytics:client.turn.requested"));
-        const accepted = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](routerMessageDispatch("analytics-accepted"));
-        assert.isAbove(accepted.sequence, 0);
-      })));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              dispatch = Context.get(context, Orchestrator.OrchestratorV2).dispatch;
+              yield* seedRouterThread(context);
+              effects.length = 0;
+            }),
+          threadManagement: {
+            dispatch: (command) =>
+              Effect.gen(function* () {
+                effects.push("dispatch:" + command.commandId);
+                return yield* dispatch(command);
+              }),
+          },
+          analyticsService: {
+            record: (event, props) =>
+              Effect.sync(() => {
+                effects.push("analytics:" + event);
+                properties.push(props);
+              }),
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl(
+        "/ws?clientSurface=mobile&clientAppVersion=1.2.3&clientDeviceType=phone&clientOs=iOS&clientOsMajorVersion=18&clientDeviceModel=iPhone+15+Pro&connectionMethod=relay",
+      );
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const failed = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+              ...routerMessageDispatch("analytics-failed"),
+              threadId: ThreadId.make("missing-analytics-thread"),
+            }).pipe(Effect.result);
+            assert.equal(failed._tag, "Failure");
+            assert.isFalse(effects.includes("analytics:client.turn.requested"));
+            const accepted = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+              routerMessageDispatch("analytics-accepted"),
+            );
+            assert.isAbove(accepted.sequence, 0);
+          }),
+        ),
+      );
       assert.deepEqual(effects, [
         "analytics:client.connected",
         "dispatch:router:message:analytics-failed",
@@ -8811,8 +9320,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(properties[1]?.surface, "mobile");
       assert.equal(properties[1]?.clientDeviceModel, "iPhone 15 Pro");
       assert.equal(properties[1]?.connectionMethod, "relay");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("keeps telemetry separate for simultaneous clients", () =>
     Effect.gen(function* () {
@@ -8827,12 +9336,18 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             record: (event, properties) =>
               Effect.sync(() => analyticsEvents.push({ event, properties })),
           },
-          onV2Services: (context) => Effect.gen(function* () {
-            yield* seedRouterProject(context);
-            const threads = Context.get(context, ThreadManagement.ThreadManagementService);
-            yield* threads.dispatch(routerThreadCreate(ThreadId.make("thread-web")));
-            yield* threads.dispatch(routerThreadCreate(ThreadId.make("thread-mobile")));
-          }),
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              // Each client works in its own checkout; one local checkout has one owning thread.
+              const mobileProjectId = ProjectId.make("project-mobile");
+              yield* seedRouterProject(context);
+              yield* seedRouterProject(context, mobileProjectId);
+              const threads = Context.get(context, ThreadManagement.ThreadManagementService);
+              yield* threads.dispatch(routerThreadCreate(ThreadId.make("thread-web")));
+              yield* threads.dispatch(
+                routerThreadCreate(ThreadId.make("thread-mobile"), mobileProjectId),
+              );
+            }),
         },
       });
 
@@ -8842,7 +9357,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const mobileUrl = yield* getWsServerUrl(
         "/ws?clientSurface=mobile&clientAppVersion=3.0.0&clientDeviceType=tablet&clientOs=Android&clientOsMajorVersion=15&clientDeviceModel=Pixel+Tablet&connectionMethod=relay",
       );
-      const turnCommand = (client: string): Extract<OrchestrationV2Command, { type: "message.dispatch" }> => ({
+      const turnCommand = (
+        client: string,
+      ): Extract<OrchestrationV2Command, { type: "message.dispatch" }> => ({
         ...routerMessageDispatch("telemetry-" + client),
 
         commandId: CommandId.make(`cmd-${client}-turn`),
@@ -8857,7 +9374,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         withWsRpcClient(webUrl, (webClient) =>
           withWsRpcClient(mobileUrl, (mobileClient) =>
             Effect.gen(function* () {
-              yield* mobileClient[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](turnCommand("mobile"));
+              yield* mobileClient[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+                turnCommand("mobile"),
+              );
               yield* webClient[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](turnCommand("web"));
             }),
           ),
@@ -9711,238 +10230,489 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("routes websocket rpc orchestration methods", () =>
     Effect.gen(function* () {
       let threads!: ThreadManagement.ThreadManagementService["Service"];
-      yield* buildAppUnderTest({ layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          threads = Context.get(context, ThreadManagement.ThreadManagementService);
-        }),
-        checkpointDiffQuery: {
-          getTurnDiff: () => Effect.succeed({ threadId: defaultThreadId, fromTurnCount: 0, toTurnCount: 1, diff: "turn-diff" }),
-          getFullThreadDiff: () => Effect.succeed({ threadId: defaultThreadId, fromTurnCount: 0, toTurnCount: 1, diff: "full-diff" }),
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              threads = Context.get(context, ThreadManagement.ThreadManagementService);
+            }),
+          checkpointDiffQuery: {
+            getTurnDiff: () =>
+              Effect.succeed({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 1,
+                diff: "turn-diff",
+              }),
+            getFullThreadDiff: () =>
+              Effect.succeed({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 1,
+                diff: "full-diff",
+              }),
+          },
         },
-      } });
+      });
       const wsUrl = yield* getWsServerUrl("/ws");
-      yield* Effect.scoped(withWsRpcClient(wsUrl, (client) => Effect.gen(function* () {
-        const accepted = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
-          type: "thread.metadata.update", commandId: CommandId.make("router:rename"), threadId: defaultThreadId, title: "RPC persisted title",
-        });
-        assert.isAbove(accepted.sequence, 0);
-        yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({...routerMessageDispatch("search"), text: "Search reached the final response."});
-        const matches = yield* client[ORCHESTRATION_V2_WS_METHODS.searchThreads]({query: "final response"});
-        assert.equal(matches.matches[0]?.threadId, defaultThreadId);
-        assert.equal(matches.matches[0]?.source, "user");
-        assert.include(matches.matches[0]?.snippet ?? "", "final response");
-        const projection = yield* client[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: defaultThreadId });
-        assert.equal(projection.thread.title, "RPC persisted title");
-        assert.equal((yield* threads.getThreadProjection(defaultThreadId)).thread.title, "RPC persisted title");
-        const shell = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({ requestCompletionMarker: true }).pipe(Stream.runHead);
-        assertTrue(Option.isSome(shell) && shell.value.kind === "snapshot");
-        if (Option.isSome(shell) && shell.value.kind === "snapshot") assert.equal(shell.value.snapshot.threads[0]?.id, defaultThreadId);
-        assert.equal((yield* client[ORCHESTRATION_V2_WS_METHODS.getTurnDiff]({threadId: defaultThreadId, fromTurnCount: 0, toTurnCount: 1})).diff, "turn-diff");
-        assert.equal((yield* client[ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff]({threadId: defaultThreadId, toTurnCount: 1})).diff, "full-diff");
-      })));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const accepted = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+              type: "thread.metadata.update",
+              commandId: CommandId.make("router:rename"),
+              threadId: defaultThreadId,
+              title: "RPC persisted title",
+            });
+            assert.isAbove(accepted.sequence, 0);
+            yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+              ...routerMessageDispatch("search"),
+              text: "Search reached the final response.",
+            });
+            const matches = yield* client[ORCHESTRATION_V2_WS_METHODS.searchThreads]({
+              query: "final response",
+            });
+            assert.equal(matches.matches[0]?.threadId, defaultThreadId);
+            assert.equal(matches.matches[0]?.source, "user");
+            assert.include(matches.matches[0]?.snippet ?? "", "final response");
+            const projection = yield* client[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+              threadId: defaultThreadId,
+            });
+            assert.equal(projection.thread.title, "RPC persisted title");
+            assert.equal(
+              (yield* threads.getThreadProjection(defaultThreadId)).thread.title,
+              "RPC persisted title",
+            );
+            const shell = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+              requestCompletionMarker: true,
+            }).pipe(Stream.runHead);
+            assertTrue(Option.isSome(shell) && shell.value.kind === "snapshot");
+            if (Option.isSome(shell) && shell.value.kind === "snapshot")
+              assert.equal(shell.value.snapshot.threads[0]?.id, defaultThreadId);
+            assert.equal(
+              (yield* client[ORCHESTRATION_V2_WS_METHODS.getTurnDiff]({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 1,
+              })).diff,
+              "turn-diff",
+            );
+            assert.equal(
+              (yield* client[ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff]({
+                threadId: defaultThreadId,
+                toTurnCount: 1,
+              })).diff,
+              "full-diff",
+            );
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("routes websocket rpc orchestration shell snapshot errors", () =>
     Effect.gen(function* () {
       const cause = new Orchestrator.OrchestratorProjectionError({
-        threadId: defaultThreadId, cause: new Error("synthetic shell read failure"),
+        threadId: defaultThreadId,
+        cause: new Error("synthetic shell read failure"),
       });
-      yield* buildAppUnderTest({ layers: { threadManagement: { getShellSnapshot: () => Effect.fail(cause) } } });
-      const result = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}).pipe(Stream.runCollect)
-      )).pipe(Effect.result);
+      yield* buildAppUnderTest({
+        layers: { threadManagement: { getShellSnapshot: () => Effect.fail(cause) } },
+      });
+      const result = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}).pipe(Stream.runCollect),
+        ),
+      ).pipe(Effect.result);
       assertTrue(result._tag === "Failure");
       assert.equal(result.failure._tag, "OrchestrationV2GetShellSnapshotError");
-      assert.include(JSON.stringify(result.failure), "synthetic shell read failure");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.include(yield* encodeTestJsonEffect(result.failure), "synthetic shell read failure");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("marks an empty shell catch-up replay as synchronized when requested", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({ afterSequence: 0, requestCompletionMarker: true }).pipe(Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect)
-      ));
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence: 0,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+      );
       assert.deepEqual(items.at(-1), { kind: "synchronized" });
-      assert.isFalse(items.some((item) => item.kind === "thread.updated" || item.kind === "thread.removed"));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.isFalse(
+        items.some((item) => item.kind === "thread.updated" || item.kind === "thread.removed"),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   for (const reasoningMessages of [undefined, true] as const) {
     it.effect(`preserves reasoning wire compatibility with opt-in ${reasoningMessages}`, () =>
-    Effect.gen(function* () {
-      yield* buildAppUnderTest({layers: {onV2Services: (context) => Effect.gen(function* () {
-        yield* seedRouterThread(context);
-        const tool = routerTurnItem(1);
-        const {input: _input, output: _output, exitCode: _exit, outputIndicatesFailure: _failed, ...base} = tool;
-        yield* writeRouterItems(context, [{...base, type: "reasoning", text: "Checking the available evidence.", streaming: false}]);
-      })}});
-      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/threads/" + defaultThreadId + (reasoningMessages ? "?reasoningMessages=true" : "")), {
-        headers: {cookie: yield* getAuthenticatedSessionCookieHeader()},
-      });
-      assert.equal(response.status, 200);
-      const snapshot = yield* responseJsonEffect<{projection: {turnItems: ReadonlyArray<{type: string; text?: string}>}}>(response);
-      assert.equal(snapshot.projection.turnItems[0]?.type, "reasoning");
-      assert.equal(snapshot.projection.turnItems[0]?.text, "Checking the available evidence.");
-      const first = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId}).pipe(Stream.runHead)
-      ));
-      assertTrue(Option.isSome(first) && first.value.kind === "snapshot");
-      if (Option.isSome(first) && first.value.kind === "snapshot") assert.equal(first.value.projection.turnItems[0]?.type, "reasoning");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      Effect.gen(function* () {
+        yield* buildAppUnderTest({
+          layers: {
+            onV2Services: (context) =>
+              Effect.gen(function* () {
+                yield* seedRouterThread(context);
+                const tool = routerTurnItem(1);
+                const {
+                  input: _input,
+                  output: _output,
+                  exitCode: _exit,
+                  outputIndicatesFailure: _failed,
+                  ...base
+                } = tool;
+                yield* writeRouterItems(context, [
+                  {
+                    ...base,
+                    type: "reasoning",
+                    text: "Checking the available evidence.",
+                    streaming: false,
+                  },
+                ]);
+              }),
+          },
+        });
+        const response = yield* fetchEffect(
+          yield* getHttpServerUrl(
+            "/api/orchestration/threads/" +
+              defaultThreadId +
+              (reasoningMessages ? "?reasoningMessages=true" : ""),
+          ),
+          {
+            headers: {
+              cookie: yield* getAuthenticatedSessionCookieHeader(),
+              [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+            },
+          },
+        );
+        assert.equal(response.status, 200);
+        const snapshot = yield* responseJsonEffect<{
+          projection: { turnItems: ReadonlyArray<{ type: string; text?: string }> };
+        }>(response);
+        assert.equal(snapshot.projection.turnItems[0]?.type, "reasoning");
+        assert.equal(snapshot.projection.turnItems[0]?.text, "Checking the available evidence.");
+        const first = yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: defaultThreadId }).pipe(
+              Stream.runHead,
+            ),
+          ),
+        );
+        assertTrue(Option.isSome(first) && first.value.kind === "snapshot");
+        if (Option.isSome(first) && first.value.kind === "snapshot")
+          assert.equal(first.value.projection.turnItems[0]?.type, "reasoning");
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
   }
 
   it.effect("marks a socket thread snapshot as synchronized when requested", () =>
     Effect.gen(function* () {
-      yield* buildAppUnderTest({ layers: { onV2Services: (context) => seedRouterThread(context).pipe(Effect.asVoid) } });
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: defaultThreadId, requestCompletionMarker: true }).pipe(Stream.take(2), Stream.runCollect)
-      ));
+      yield* buildAppUnderTest({
+        layers: { onV2Services: (context) => seedRouterThread(context).pipe(Effect.asVoid) },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
       assertTrue(items[0]?.kind === "snapshot");
-      if (items[0]?.kind === "snapshot") assert.equal(items[0].projection.thread.id, defaultThreadId);
-      assert.deepEqual(items[1], {kind: "synchronized"});
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      if (items[0]?.kind === "snapshot")
+        assert.equal(items[0].projection.thread.id, defaultThreadId);
+      assert.deepEqual(items[1], { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("buffers shell events published while the fallback snapshot loads", () =>
     Effect.gen(function* () {
-      let snapshot!: Effect.Success<ReturnType<ThreadManagement.ThreadManagementService["Service"]["getShellSnapshot"]>>;
-      let events!: OrchestrationEventStore["Service"];
-      let removed!: ReadonlyArray<OrchestrationV2StoredEvent>;
-      yield* buildAppUnderTest({ layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          const threads = Context.get(context, Orchestrator.OrchestratorV2);
-          snapshot = yield* threads.getShellSnapshot({location: "active"});
-          events = Context.get(context, OrchestrationEventStore);
-          removed = (yield* threads.dispatch({type: "thread.delete", commandId: CommandId.make("router:delete-race"), threadId: defaultThreadId})).storedEvents;
-        }),
-        threadManagement: { getShellSnapshot: () => events.publishCommitted(removed).pipe(Effect.as(snapshot)) },
-      }});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({requestCompletionMarker: true}).pipe(
-          Stream.takeUntil((item) => item.kind === "thread.removed"), Stream.runCollect)
-      )).pipe(Effect.timeout("2 seconds"));
+      let threads!: Orchestrator.OrchestratorV2["Service"];
+      let snapshotSequence = 0;
+      let snapshotLoaded = false;
+      let deletionSequence = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              threads = Context.get(context, Orchestrator.OrchestratorV2);
+              snapshotSequence = yield* Context.get(context, OrchestrationEventStore)
+                .latestApplicationSequence;
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            getShellSnapshot: (options) =>
+              service.getShellSnapshot(options).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    snapshotLoaded = true;
+                  }),
+                ),
+              ),
+          }),
+          wrapProjectEnrichment: (service) => ({
+            ...service,
+            getAvailable: (workspaceRoot) =>
+              Effect.gen(function* () {
+                const enrichment = yield* service.getAvailable(workspaceRoot);
+                if (!snapshotLoaded || deletionSequence !== 0) return enrichment;
+                snapshotLoaded = false;
+                // Shell rows and their sequence share one SQL transaction. Delete
+                // during the following enrichment read, before the snapshot is sent.
+                const deleted = yield* threads
+                  .dispatch({
+                    type: "thread.delete",
+                    commandId: CommandId.make("router:delete-race"),
+                    threadId: defaultThreadId,
+                  })
+                  .pipe(Effect.orDie);
+                const removal = deleted.storedEvents.find(
+                  (stored) => stored.event.type === "thread.deleted",
+                );
+                assertTrue(removal !== undefined);
+                deletionSequence = removal.sequence;
+                return enrichment;
+              }),
+          }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence: snapshotSequence + 1,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "thread.removed"),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
       assert.equal(items[0]?.kind, "snapshot");
+      assertTrue(items[0]?.kind === "snapshot");
+      assert.equal(items[0].snapshot.snapshotSequence, snapshotSequence);
+      assert.isTrue(items[0].snapshot.threads.some((thread) => thread.id === defaultThreadId));
       const removal = items.find((item) => item.kind === "thread.removed");
       assertTrue(removal?.kind === "thread.removed");
       assert.equal(removal.threadId, defaultThreadId);
+      assert.equal(removal.sequence, deletionSequence);
+      assert.isAbove(deletionSequence, snapshotSequence);
       assert.isTrue(items.some((item) => item.kind === "synchronized"));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive)
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
 
   it.effect("buffers thread events published while the initial snapshot loads", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
       let eventSequence = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {
-          context = services;
-          yield* seedRouterThread(services);
-        }),
-        wrapThreadManagement: (service) => ({...service, getThreadSnapshot: (threadId) =>
-          service.getThreadSnapshot(threadId).pipe(Effect.tap(() =>
-            writeRouterItems(context, [routerTurnItem(1)]).pipe(
-              Effect.mapError((cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause })),
-              Effect.tap((events) => Effect.sync(() => {eventSequence = events[0]!.sequence;})))
-          ))}),
-      }});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId, requestCompletionMarker: true}).pipe(Stream.take(3), Stream.runCollect)
-      ));
-      assert.deepEqual(items.map((item) => item.kind), ["snapshot", "synchronized", "event"]);
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            getThreadSnapshot: (threadId) =>
+              service.getThreadSnapshot(threadId).pipe(
+                Effect.tap(() =>
+                  writeRouterItems(context, [routerTurnItem(1)]).pipe(
+                    Effect.mapError(
+                      (cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause }),
+                    ),
+                    Effect.tap((events) =>
+                      Effect.sync(() => {
+                        eventSequence = events[0]!.sequence;
+                      }),
+                    ),
+                  ),
+                ),
+              ),
+          }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      );
+      assert.deepEqual(
+        items.map((item) => item.kind),
+        ["snapshot", "synchronized", "event"],
+      );
       assertTrue(items[2]?.kind === "event");
       assert.equal(items[2].sequence, eventSequence);
       assert.equal(items[2].event.type, "turn-item.updated");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   for (const subscription of ["thread", "shell"] as const) {
     it.effect("delivers large raw tool results through the " + subscription + " stream", () =>
-    Effect.gen(function* () {
-      const output = "Build complete\n" + "x".repeat(9 * 1024 * 1024);
-      let afterSequence = 0;
-      let threads!: ThreadManagement.ThreadManagementService["Service"];
-      yield* buildAppUnderTest({ layers: { onV2Services: (context) => Effect.gen(function* () {
-        yield* seedRouterThread(context);
-        threads = Context.get(context, ThreadManagement.ThreadManagementService);
-        afterSequence = (yield* threads.getThreadSnapshot(defaultThreadId)).snapshotSequence;
-        yield* writeRouterItems(context, [routerTurnItem(1, {output})]);
-      }) } });
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        (subscription === "thread"
-          ? client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId, afterSequence, requestCompletionMarker: true}).pipe(Stream.map((item): OrchestrationV2ThreadStreamItem | OrchestrationV2ShellStreamItem => item))
-          : client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({afterSequence, requestCompletionMarker: true}).pipe(Stream.map((item): OrchestrationV2ThreadStreamItem | OrchestrationV2ShellStreamItem => item))
-        ).pipe(Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect)
-      ));
-      assert.deepEqual(items.at(-1), {kind: "synchronized"});
-      assert.isBelow(Buffer.byteLength(JSON.stringify(items)), 128 * 1024);
-      assert.isFalse(JSON.stringify(items).includes(output));
-      assert.isTrue(items.some((item) => item.kind === "snapshot"));
-      const persisted = (yield* threads.getThreadProjection(defaultThreadId)).turnItems[0];
-      assertTrue(persisted?.type === "command_execution");
-      assert.equal(persisted.output, output);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      Effect.gen(function* () {
+        const output = "Build complete\n" + "x".repeat(9 * 1024 * 1024);
+        let afterSequence = 0;
+        let threads!: ThreadManagement.ThreadManagementService["Service"];
+        yield* buildAppUnderTest({
+          layers: {
+            onV2Services: (context) =>
+              Effect.gen(function* () {
+                yield* seedRouterThread(context);
+                threads = Context.get(context, ThreadManagement.ThreadManagementService);
+                afterSequence = (yield* threads.getThreadSnapshot(defaultThreadId))
+                  .snapshotSequence;
+                yield* writeRouterItems(context, [routerTurnItem(1, { output })]);
+              }),
+          },
+        });
+        const items = yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            Effect.gen(function* () {
+              if (subscription === "thread") {
+                return yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                  threadId: defaultThreadId,
+                  afterSequence,
+                  requestCompletionMarker: true,
+                }).pipe(
+                  Stream.takeUntil((item) => item.kind === "synchronized"),
+                  Stream.runCollect,
+                );
+              }
+              return yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+                afterSequence,
+                requestCompletionMarker: true,
+              }).pipe(
+                Stream.takeUntil((item) => item.kind === "synchronized"),
+                Stream.runCollect,
+              );
+            }),
+          ),
+        );
+        const encodedItems = yield* encodeTestJsonEffect(items);
+        assert.deepEqual(items.at(-1), { kind: "synchronized" });
+        assert.isBelow(Buffer.byteLength(encodedItems), 128 * 1024);
+        assert.isFalse(encodedItems.includes(output));
+        assert.isTrue(items.some((item) => item.kind === "snapshot"));
+        const persisted = (yield* threads.getThreadProjection(defaultThreadId)).turnItems[0];
+        assertTrue(persisted?.type === "command_execution");
+        assert.equal(persisted.output, output);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
   }
 
   it.effect("coalesces buffered live tool updates to the latest state", () =>
     Effect.gen(function* () {
-      let snapshot!: Effect.Success<ReturnType<ThreadManagement.ThreadManagementService["Service"]["getThreadSnapshot"]>>;
+      let snapshot!: Effect.Success<
+        ReturnType<ThreadManagement.ThreadManagementService["Service"]["getThreadSnapshot"]>
+      >;
       let lastSequence = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          snapshot = yield* Context.get(context, Orchestrator.OrchestratorV2).getThreadSnapshot(defaultThreadId);
-          const written = yield* writeRouterItems(context, [1, 2, 3].map((version) => routerTurnItem(1, {status: "running", completedAt: null, output: String(version)})));
-          lastSequence = written.at(-1)!.sequence;
-        }),
-        threadManagement: {getThreadSnapshot: () => Effect.succeed(snapshot)},
-      }});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId}).pipe(Stream.take(2), Stream.runCollect)
-      )).pipe(Effect.timeout("2 seconds"));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              snapshot = yield* Context.get(context, Orchestrator.OrchestratorV2).getThreadSnapshot(
+                defaultThreadId,
+              );
+              const written = yield* writeRouterItems(
+                context,
+                [1, 2, 3].map((version) =>
+                  routerTurnItem(1, {
+                    status: "running",
+                    completedAt: null,
+                    output: String(version),
+                  }),
+                ),
+              );
+              lastSequence = written.at(-1)!.sequence;
+            }),
+          threadManagement: { getThreadSnapshot: () => Effect.succeed(snapshot) },
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: defaultThreadId }).pipe(
+            Stream.take(2),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
       assert.equal(items[0]?.kind, "snapshot");
       assertTrue(items[1]?.kind === "event");
       assert.equal(items[1].sequence, lastSequence);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive)
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
 
   it.effect("flushes more than one tool chunk before the synchronization marker", () =>
     Effect.gen(function* () {
       const coalescer = yield* makeThreadLiveEventCoalescer();
-      const events: Array<Extract<OrchestrationV2ThreadStreamItem, {kind: "event"}>> =
-        Array.from({length: 514}, (_, index) => ({
-          kind: "event", sequence: index + 1,
-          event: routerItemEvent(routerTurnItem(index, {status: "running", completedAt: null})),
-        }));
-      yield* coalescer.offerAll([...events, {kind: "synchronized"}]);
-      const items = yield* coalescer.stream.pipe(Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect);
+      const events: Array<Extract<OrchestrationV2ThreadStreamItem, { kind: "event" }>> = Array.from(
+        { length: 514 },
+        (_, index) => ({
+          kind: "event",
+          sequence: index + 1,
+          event: routerItemEvent(routerTurnItem(index, { status: "running", completedAt: null })),
+        }),
+      );
+      yield* coalescer.offerAll([...events, { kind: "synchronized" }]);
+      const items = yield* coalescer.stream.pipe(
+        Stream.takeUntil((item) => item.kind === "synchronized"),
+        Stream.runCollect,
+      );
       assert.equal(items.filter((item) => item.kind === "event").length, 514);
-      assert.deepEqual(items.at(-1), {kind: "synchronized"});
-      assert.deepEqual(items.flatMap((item) => item.kind === "event" ? [item.sequence] : []), events.map((event) => event.sequence));
-    }).pipe(Effect.scoped)
-);
+      assert.deepEqual(items.at(-1), { kind: "synchronized" });
+      assert.deepEqual(
+        items.flatMap((item) => (item.kind === "event" ? [item.sequence] : [])),
+        events.map((event) => event.sequence),
+      );
+    }).pipe(Effect.scoped),
+  );
 
   it.effect("flushes a tool update before an interleaved message", () =>
     Effect.gen(function* () {
-      let snapshot!: Effect.Success<ReturnType<ThreadManagement.ThreadManagementService["Service"]["getThreadSnapshot"]>>;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          snapshot = yield* Context.get(context, Orchestrator.OrchestratorV2).getThreadSnapshot(defaultThreadId);
-          const tool = routerTurnItem(1, {status: "running", completedAt: null});
-          const message = {...tool, type: "assistant_message" as const, id: TurnItemId.make("router:answer"), messageId: MessageId.make("router:answer"), text: "An interleaved answer", streaming: false};
-          yield* writeRouterItems(context, [tool, message]);
-        }),
-        threadManagement: {getThreadSnapshot: () => Effect.succeed(snapshot)},
-      }});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId}).pipe(Stream.take(3), Stream.runCollect)
-      ));
+      let snapshot!: Effect.Success<
+        ReturnType<ThreadManagement.ThreadManagementService["Service"]["getThreadSnapshot"]>
+      >;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              snapshot = yield* Context.get(context, Orchestrator.OrchestratorV2).getThreadSnapshot(
+                defaultThreadId,
+              );
+              const tool = routerTurnItem(1, { status: "running", completedAt: null });
+              const message = {
+                ...tool,
+                type: "assistant_message" as const,
+                id: TurnItemId.make("router:answer"),
+                messageId: MessageId.make("router:answer"),
+                text: "An interleaved answer",
+                streaming: false,
+              };
+              yield* writeRouterItems(context, [tool, message]);
+            }),
+          threadManagement: { getThreadSnapshot: () => Effect.succeed(snapshot) },
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: defaultThreadId }).pipe(
+            Stream.take(3),
+            Stream.runCollect,
+          ),
+        ),
+      );
       const events = items.filter((item) => item.kind === "event");
       assert.equal(events.length, 2);
       assertTrue(events[0]?.event.type === "turn-item.updated");
@@ -9950,84 +10720,157 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertTrue(events[1]?.event.type === "turn-item.updated");
       assert.equal(events[1].event.payload.type, "assistant_message");
       assert.isBelow(events[0].sequence, events[1].sequence);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
-  it.effect("subscribeThread sends a fresh snapshot when its event count exceeds the replay limit", () =>
-    Effect.gen(function* () {
-      let afterSequence = 0;
-      let decodeCalls = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          afterSequence = (yield* Context.get(context, Orchestrator.OrchestratorV2).getThreadSnapshot(defaultThreadId)).snapshotSequence;
-          yield* writeRouterItems(context, Array.from({length: 129}, (_, index) => routerTurnItem(index)));
-        }),
-        wrapApplicationEvents: (service) => ({...service, readAgentEvents: (input) => {
-          decodeCalls += 1;
-          return service.readAgentEvents(input);
-        }}),
-      }});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId, afterSequence, requestCompletionMarker: true}).pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect)
-      ));
-      assert.equal(items[0]?.kind, "snapshot");
-      assert.deepEqual(items.at(-1), {kind: "synchronized"});
-      assert.equal(decodeCalls, 0);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+  it.effect(
+    "subscribeThread sends a fresh snapshot when its event count exceeds the replay limit",
+    () =>
+      Effect.gen(function* () {
+        let afterSequence = 0;
+        let decodeCalls = 0;
+        yield* buildAppUnderTest({
+          layers: {
+            onV2Services: (context) =>
+              Effect.gen(function* () {
+                yield* seedRouterThread(context);
+                afterSequence = (yield* Context.get(
+                  context,
+                  Orchestrator.OrchestratorV2,
+                ).getThreadSnapshot(defaultThreadId)).snapshotSequence;
+                yield* writeRouterItems(
+                  context,
+                  Array.from({ length: 129 }, (_, index) => routerTurnItem(index)),
+                );
+              }),
+            wrapApplicationEvents: (service) => ({
+              ...service,
+              readAgentEvents: (input) => {
+                decodeCalls += 1;
+                return service.readAgentEvents(input);
+              },
+            }),
+          },
+        });
+        const items = yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+              threadId: defaultThreadId,
+              afterSequence,
+              requestCompletionMarker: true,
+            }).pipe(
+              Stream.takeUntil((item) => item.kind === "synchronized"),
+              Stream.runCollect,
+            ),
+          ),
+        );
+        assert.equal(items[0]?.kind, "snapshot");
+        assert.deepEqual(items.at(-1), { kind: "synchronized" });
+        assert.equal(decodeCalls, 0);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
-  it.effect("stops an overflowing thread producer without an ACK and replays the missing events", () =>
-    Effect.gen(function* () {
-      const ackHeld = yield* Deferred.make<void>();
-      const releaseAck = yield* Deferred.make<void>();
-      const attached = yield* Deferred.make<void>();
-      const detached = yield* Deferred.make<void>();
-      const firstApplied = yield* Deferred.make<void>();
-      let context!: Context.Context<RouterV2Services>;
-      let cursor = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {
-          context = services;
-          yield* seedRouterThread(services);
-          cursor = yield* Context.get(services, OrchestrationEventStore).latestAgentSequence(defaultThreadId);
-        }),
-        wrapThreadManagement: (service) => ({...service, streamStoredEventsFrom: (input) =>
-          Stream.unwrap(Deferred.succeed(attached, undefined).pipe(Effect.as(service.streamStoredEventsFrom(input)))).pipe(
-            Stream.ensuring(Deferred.succeed(detached, undefined)))}),
-      }});
-      const answer = (ordinal: number, text: string): OrchestrationV2TurnItem => {
-        const base = routerTurnItem(ordinal);
-        return {...base, type: "assistant_message", messageId: MessageId.make("router:answer:" + ordinal), text, streaming: false};
-      };
-      const wsUrl = yield* getWsServerUrl("/ws");
-      yield* makeWsRpcClient.pipe(Effect.flatMap((client) => Effect.gen(function* () {
-        const received: number[] = [];
-        const attempt = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId, afterSequence: cursor}).pipe(
-          Stream.tap((item) => item.kind === "event" ? Effect.sync(() => {
-            cursor = item.sequence;
-            received.push(cursor);
-          }).pipe(Effect.andThen(Deferred.succeed(firstApplied, undefined))) : Effect.void),
-          Stream.runDrain, Effect.result, Effect.forkScoped);
-        yield* Deferred.await(attached);
-        yield* writeRouterItems(context, [answer(1, "a".repeat(8 * 1024 * 1024 - 2048))], "first-held");
-        yield* Deferred.await(ackHeld);
-        yield* Deferred.await(firstApplied);
-        const missing = yield* writeRouterItems(context, [2, 3, 4].map((ordinal) => answer(ordinal, "b".repeat(4096))), "after-held");
-        yield* Deferred.await(detached);
-        assert.equal(received.length, 1);
-        yield* Deferred.succeed(releaseAck, undefined);
-        const failed = yield* Fiber.join(attempt);
-        assertTrue(failed._tag === "Failure");
-        assert.equal(failed.failure._tag, "OrchestrationV2GetThreadProjectionError");
-        const recovered = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId, afterSequence: cursor, requestCompletionMarker: true}).pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect);
-        assert.deepEqual(recovered.flatMap((item) => item.kind === "event" ? [item.sequence] : []), missing.map((stored) => stored.sequence));
-        assert.deepEqual(recovered.at(-1), {kind: "synchronized"});
-      })), Effect.provide(withFirstWsAckHeld(wsUrl, ackHeld, releaseAck)));
-    }).pipe(Effect.scoped, Effect.provide(NodeHttpServer.layerTest))
-);
+  it.effect(
+    "stops an overflowing thread producer without an ACK and replays the missing events",
+    () =>
+      Effect.gen(function* () {
+        const ackHeld = yield* Deferred.make<void>();
+        const releaseAck = yield* Deferred.make<void>();
+        const attached = yield* Deferred.make<void>();
+        const detached = yield* Deferred.make<void>();
+        const firstApplied = yield* Deferred.make<void>();
+        let context!: Context.Context<RouterV2Services>;
+        let cursor = 0;
+        yield* buildAppUnderTest({
+          layers: {
+            onV2Services: (services) =>
+              Effect.gen(function* () {
+                context = services;
+                yield* seedRouterThread(services);
+                cursor = yield* Context.get(services, OrchestrationEventStore).latestAgentSequence(
+                  defaultThreadId,
+                );
+              }),
+            wrapThreadManagement: (service) => ({
+              ...service,
+              streamStoredEventsFrom: (input) =>
+                Stream.unwrap(
+                  Deferred.succeed(attached, undefined).pipe(
+                    Effect.as(service.streamStoredEventsFrom(input)),
+                  ),
+                ).pipe(Stream.ensuring(Deferred.succeed(detached, undefined))),
+            }),
+          },
+        });
+        const answer = (ordinal: number, text: string): OrchestrationV2TurnItem => {
+          const base = routerTurnItem(ordinal);
+          return {
+            ...base,
+            type: "assistant_message",
+            messageId: MessageId.make("router:answer:" + ordinal),
+            text,
+            streaming: false,
+          };
+        };
+        const wsUrl = yield* getWsServerUrl("/ws");
+        yield* makeWsRpcClient.pipe(
+          Effect.flatMap((client) =>
+            Effect.gen(function* () {
+              const received: number[] = [];
+              const attempt = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                threadId: defaultThreadId,
+                afterSequence: cursor,
+              }).pipe(
+                Stream.tap((item) =>
+                  item.kind === "event"
+                    ? Effect.sync(() => {
+                        cursor = item.sequence;
+                        received.push(cursor);
+                      }).pipe(Effect.andThen(Deferred.succeed(firstApplied, undefined)))
+                    : Effect.void,
+                ),
+                Stream.runDrain,
+                Effect.result,
+                Effect.forkScoped,
+              );
+              yield* Deferred.await(attached);
+              yield* writeRouterItems(
+                context,
+                [answer(1, "a".repeat(8 * 1024 * 1024 - 2048))],
+                "first-held",
+              );
+              yield* Deferred.await(ackHeld);
+              yield* Deferred.await(firstApplied);
+              const missing = yield* writeRouterItems(
+                context,
+                [2, 3, 4].map((ordinal) => answer(ordinal, "b".repeat(4096))),
+                "after-held",
+              );
+              yield* Deferred.await(detached);
+              assert.equal(received.length, 1);
+              yield* Deferred.succeed(releaseAck, undefined);
+              const failed = yield* Fiber.join(attempt);
+              assertTrue(failed._tag === "Failure");
+              assert.equal(failed.failure._tag, "OrchestrationV2GetThreadProjectionError");
+              const recovered = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                threadId: defaultThreadId,
+                afterSequence: cursor,
+                requestCompletionMarker: true,
+              }).pipe(
+                Stream.takeUntil((item) => item.kind === "synchronized"),
+                Stream.runCollect,
+              );
+              assert.deepEqual(
+                recovered.flatMap((item) => (item.kind === "event" ? [item.sequence] : [])),
+                missing.map((stored) => stored.sequence),
+              );
+              assert.deepEqual(recovered.at(-1), { kind: "synchronized" });
+            }),
+          ),
+          Effect.provide(withFirstWsAckHeld(wsUrl, ackHeld, releaseAck)),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("stops an overflowing shell producer without an ACK and recovers deleted entries", () =>
     Effect.gen(function* () {
@@ -10038,121 +10881,211 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const releaseAck = yield* Deferred.make<void>();
       let context!: Context.Context<RouterV2Services>;
       let head = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {
-          context = services;
-          yield* seedRouterThread(services);
-          head = yield* Context.get(services, OrchestrationEventStore).latestApplicationSequence;
-        }),
-        wrapApplicationEvents: (service) => ({...service,
-          latestApplicationSequence: Effect.sync(() => head),
-          streamProjectedApplicationEvents: (input) => Stream.unwrap(Effect.gen(function* () {
-            const subscription = yield* PubSub.subscribe(liveEvents);
-            yield* Deferred.succeed(attached, undefined);
-            return Stream.fromSubscription(subscription).pipe(Stream.map(input.project));
-          })).pipe(Stream.ensuring(Deferred.succeed(detached, undefined))),
-        }),
-      }});
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              head = yield* Context.get(services, OrchestrationEventStore)
+                .latestApplicationSequence;
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            latestApplicationSequence: Effect.sync(() => head),
+            streamProjectedApplicationEvents: (input) =>
+              Stream.unwrap(
+                Effect.gen(function* () {
+                  const subscription = yield* PubSub.subscribe(liveEvents);
+                  yield* Deferred.succeed(attached, undefined);
+                  return Stream.fromSubscription(subscription).pipe(Stream.map(input.project));
+                }),
+              ).pipe(Stream.ensuring(Deferred.succeed(detached, undefined))),
+          }),
+        },
+      });
       const wsUrl = yield* getWsServerUrl("/ws");
-      yield* makeWsRpcClient.pipe(Effect.flatMap((client) => Effect.gen(function* () {
-        const received: OrchestrationV2ShellStreamItem[] = [];
-        const attempt = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}).pipe(
-          Stream.tap((item) => Effect.sync(() => {received.push(item);})), Stream.runDrain, Effect.result, Effect.forkScoped);
-        yield* Deferred.await(ackHeld);
-        yield* Deferred.await(attached);
-        yield* Context.get(context, Orchestrator.OrchestratorV2).dispatch({type: "thread.delete", commandId: CommandId.make("router:overflow-delete"), threadId: defaultThreadId});
-        yield* Context.get(context, ProjectService.ProjectService).delete({commandId: CommandId.make("router:overflow-project-delete"), projectId: defaultProjectId, force: true});
-        head += 1004;
-        const burst = Array.from({length: 1001}, (_, index) => ({
-          sequence: head - 1001 + index,
-          commandId: null,
-          event: routerItemEvent(routerTurnItem(index, {threadId: ThreadId.make("router:overflow:" + index)})),
-        }));
-        yield* PubSub.publishAll(liveEvents, burst);
-        yield* Deferred.await(detached);
-        assert.equal(yield* PubSub.size(liveEvents), 0);
-        yield* Deferred.succeed(releaseAck, undefined);
-        const failed = yield* Fiber.join(attempt);
-        assertTrue(failed._tag === "Failure");
-        assert.equal(failed.failure._tag, "OrchestrationV2GetShellSnapshotError");
-        assert.equal(received[0]?.kind, "snapshot");
-        const initial = received[0];
-        assertTrue(initial?.kind === "snapshot");
-        const recovered = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
-          afterSequence: initial.snapshot.snapshotSequence, requestCompletionMarker: true,
-        }).pipe(Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect);
-        const snapshot = recovered[0];
-        assertTrue(snapshot?.kind === "snapshot");
-        assert.deepEqual(snapshot.snapshot.projects, []);
-        assert.deepEqual(snapshot.snapshot.threads, []);
-        assert.deepEqual(recovered.at(-1), {kind: "synchronized"});
-      })), Effect.provide(withFirstWsAckHeld(wsUrl, ackHeld, releaseAck)));
-    }).pipe(Effect.scoped, Effect.provide(NodeHttpServer.layerTest), TestClock.withLive)
-);
+      yield* makeWsRpcClient.pipe(
+        Effect.flatMap((client) =>
+          Effect.gen(function* () {
+            const received: OrchestrationV2ShellStreamItem[] = [];
+            // The live producer attaches only after the snapshot's ACK, so the
+            // completion marker's ACK is the one held while the burst arrives.
+            const attempt = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+              requestCompletionMarker: true,
+            }).pipe(
+              Stream.tap((item) =>
+                Effect.sync(() => {
+                  received.push(item);
+                }),
+              ),
+              Stream.runDrain,
+              Effect.result,
+              Effect.forkScoped,
+            );
+            yield* Deferred.await(ackHeld);
+            yield* Deferred.await(attached);
+            yield* Context.get(context, Orchestrator.OrchestratorV2).dispatch({
+              type: "thread.delete",
+              commandId: CommandId.make("router:overflow-delete"),
+              threadId: defaultThreadId,
+            });
+            yield* Context.get(context, ProjectService.ProjectService).delete({
+              commandId: CommandId.make("router:overflow-project-delete"),
+              projectId: defaultProjectId,
+              force: true,
+            });
+            head += 1004;
+            const burst = Array.from({ length: 1001 }, (_, index) => ({
+              sequence: head - 1001 + index,
+              commandId: null,
+              event: routerItemEvent(
+                routerTurnItem(index, { threadId: ThreadId.make("router:overflow:" + index) }),
+              ),
+            }));
+            yield* PubSub.publishAll(liveEvents, burst);
+            yield* Deferred.await(detached);
+            assert.equal(yield* PubSub.size(liveEvents), 0);
+            yield* Deferred.succeed(releaseAck, undefined);
+            const failed = yield* Fiber.join(attempt);
+            assertTrue(failed._tag === "Failure");
+            assert.equal(failed.failure._tag, "OrchestrationV2GetShellSnapshotError");
+            assert.equal(received[0]?.kind, "snapshot");
+            const initial = received[0];
+            assertTrue(initial?.kind === "snapshot");
+            const recovered = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+              afterSequence: initial.snapshot.snapshotSequence,
+              requestCompletionMarker: true,
+            }).pipe(
+              Stream.takeUntil((item) => item.kind === "synchronized"),
+              Stream.runCollect,
+            );
+            const snapshot = recovered[0];
+            assertTrue(snapshot?.kind === "snapshot");
+            assert.deepEqual(snapshot.snapshot.projects, []);
+            assert.deepEqual(snapshot.snapshot.threads, []);
+            assert.deepEqual(recovered.at(-1), { kind: "synchronized" });
+          }),
+        ),
+        Effect.provide(withFirstWsAckHeld(wsUrl, ackHeld, releaseAck, 1)),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
 
   it.effect("subscribeThread replaces a cursor ahead of the authoritative head", () =>
     Effect.gen(function* () {
       let head = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          head = yield* Context.get(context, OrchestrationEventStore).latestAgentSequence(defaultThreadId);
-        }),
-        wrapApplicationEvents: (service) => ({...service,
-          getAgentReplayStats: () => Effect.die("A cursor ahead of the head must not measure replay"),
-          readAgentEvents: () => Stream.die("A cursor ahead of the head must not decode replay"),
-        }),
-      }});
-      const first = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId, afterSequence: head + 10}).pipe(Stream.runHead)
-      ));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              head = yield* Context.get(context, OrchestrationEventStore).latestAgentSequence(
+                defaultThreadId,
+              );
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            getAgentReplayStats: () =>
+              Effect.die("A cursor ahead of the head must not measure replay"),
+            readAgentEvents: () => Stream.die("A cursor ahead of the head must not decode replay"),
+          }),
+        },
+      });
+      const first = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: head + 10,
+          }).pipe(Stream.runHead),
+        ),
+      );
       assert.equal(Option.getOrThrow(first).kind, "snapshot");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("subscribeThread replays a small thread range across a large global gap", () =>
     Effect.gen(function* () {
       let afterSequence = 0;
       let sequence = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          afterSequence = yield* Context.get(context, OrchestrationEventStore).latestAgentSequence(defaultThreadId);
-          sequence = (yield* writeRouterItems(context, [routerTurnItem(1)]))[0]!.sequence;
-        }),
-        wrapApplicationEvents: (service) => ({...service,
-          latestApplicationSequence: Effect.succeed(100_000),
-          getReplayStats: () => Effect.die("Thread replay must not measure the global log"),
-          readApplicationEvents: () => Stream.die("Thread replay must not decode the global log"),
-        }),
-      }});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId, afterSequence, requestCompletionMarker: true}).pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect)
-      ));
-      assert.deepEqual(items.map((item) => item.kind === "event" ? item.sequence : item.kind), [sequence, "synchronized"]);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              afterSequence = yield* Context.get(
+                context,
+                OrchestrationEventStore,
+              ).latestAgentSequence(defaultThreadId);
+              sequence = (yield* writeRouterItems(context, [routerTurnItem(1)]))[0]!.sequence;
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            latestApplicationSequence: Effect.succeed(100_000),
+            getReplayStats: () => Effect.die("Thread replay must not measure the global log"),
+            readApplicationEvents: () => Stream.die("Thread replay must not decode the global log"),
+          }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+      );
+      assert.deepEqual(
+        items.map((item) => (item.kind === "event" ? item.sequence : item.kind)),
+        [sequence, "synchronized"],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("subscribeThread resets cached history when its ID is created again", () =>
     Effect.gen(function* () {
       let afterSequence = 0;
-      yield* buildAppUnderTest({layers: {onV2Services: (context) => Effect.gen(function* () {
-        yield* seedRouterThread(context);
-        const threads = Context.get(context, Orchestrator.OrchestratorV2);
-        afterSequence = (yield* threads.getThreadSnapshot(defaultThreadId)).snapshotSequence;
-        yield* threads.dispatch({type: "thread.delete", commandId: CommandId.make("router:delete"), threadId: defaultThreadId});
-        yield* threads.dispatch({...routerThreadCreate(), commandId: CommandId.make("router:recreate"), title: "Recreated thread"});
-      })}});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId, afterSequence, requestCompletionMarker: true}).pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect)
-      ));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              const threads = Context.get(context, Orchestrator.OrchestratorV2);
+              afterSequence = (yield* threads.getThreadSnapshot(defaultThreadId)).snapshotSequence;
+              yield* threads.dispatch({
+                type: "thread.delete",
+                commandId: CommandId.make("router:delete"),
+                threadId: defaultThreadId,
+              });
+              yield* threads.dispatch({
+                ...routerThreadCreate(),
+                commandId: CommandId.make("router:recreate"),
+                title: "Recreated thread",
+              });
+            }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+      );
       assertTrue(items[0]?.kind === "snapshot");
       assert.equal(items[0].projection.thread.title, "Recreated thread");
-      assert.deepEqual(items.at(-1), {kind: "synchronized"});
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.deepEqual(items.at(-1), { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   for (const { createBeforeDelete, oversized } of [
     { createBeforeDelete: false, oversized: false },
@@ -10163,30 +11096,102 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       oversized
         ? "keeps the missing-snapshot error when an absent thread exceeds the replay limit"
         : `synchronizes an absent thread and removes its shell after ${createBeforeDelete ? "creation and deletion" : "deletion"}`,
-      () => Effect.gen(function* () {
-        let afterSequence = 0;
-        yield* buildAppUnderTest({layers: {onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          const threads = Context.get(context, Orchestrator.OrchestratorV2);
-          if (!createBeforeDelete) afterSequence = yield* Context.get(context, OrchestrationEventStore).latestAgentSequence(defaultThreadId);
-          if (oversized) yield* writeRouterItems(context, Array.from({length: 129}, (_, index) => routerTurnItem(index)));
-          yield* threads.dispatch({type: "thread.delete", commandId: CommandId.make("router:final-delete"), threadId: defaultThreadId});
-        })}});
-        yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => Effect.gen(function* () {
-          const result = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId, afterSequence, requestCompletionMarker: true}).pipe(
-            Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect, Effect.result);
-          if (oversized) {
-            assertTrue(result._tag === "Failure");
-            assert.equal(result.failure._tag, "OrchestrationV2GetThreadProjectionError");
-            return;
-          }
-          assertTrue(result._tag === "Success");
-          assert.deepEqual(result.success.at(-1), {kind: "synchronized"});
-          const shell = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({afterSequence, requestCompletionMarker: true}).pipe(
-            Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect);
-          assert.isTrue(shell.some((item) => item.kind === "thread.removed" && item.threadId === defaultThreadId));
-        })));
-      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+      () =>
+        Effect.gen(function* () {
+          let afterSequence = 0;
+          let missingSnapshotReads = 0;
+          yield* buildAppUnderTest({
+            layers: {
+              // V2 deletion retains a tombstone projection. Only this fallback-error
+              // case supplies a missing snapshot; replay still reads real events.
+              ...(oversized
+                ? {
+                    threadManagement: {
+                      getThreadSnapshot: (threadId: ThreadId) =>
+                        Effect.gen(function* () {
+                          missingSnapshotReads += 1;
+                          return yield* new Orchestrator.OrchestratorProjectionError({
+                            threadId,
+                            cause: new ProjectionStore.ProjectionStoreThreadNotFoundError({
+                              threadId,
+                            }),
+                          });
+                        }),
+                    },
+                  }
+                : {}),
+              onV2Services: (context) =>
+                Effect.gen(function* () {
+                  yield* seedRouterThread(context);
+                  const threads = Context.get(context, Orchestrator.OrchestratorV2);
+                  if (!createBeforeDelete)
+                    afterSequence = yield* Context.get(
+                      context,
+                      OrchestrationEventStore,
+                    ).latestAgentSequence(defaultThreadId);
+                  if (oversized)
+                    yield* writeRouterItems(
+                      context,
+                      Array.from({ length: 129 }, (_, index) => routerTurnItem(index)),
+                    );
+                  yield* threads.dispatch({
+                    type: "thread.delete",
+                    commandId: CommandId.make("router:final-delete"),
+                    threadId: defaultThreadId,
+                  });
+                  if (oversized) {
+                    const tombstone = yield* threads.getThreadSnapshot(defaultThreadId);
+                    assert.isNotNull(tombstone.projection.thread.deletedAt);
+                    const stats = yield* Context.get(
+                      context,
+                      OrchestrationEventStore,
+                    ).getAgentReplayStats({
+                      threadId: defaultThreadId,
+                      afterSequence,
+                      throughSequence: tombstone.snapshotSequence,
+                      maxEvents: 128,
+                    });
+                    assert.isAbove(stats.eventCount, 128);
+                  }
+                }),
+            },
+          });
+          yield* Effect.scoped(
+            withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+              Effect.gen(function* () {
+                const result = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                  threadId: defaultThreadId,
+                  afterSequence,
+                  requestCompletionMarker: true,
+                }).pipe(
+                  Stream.takeUntil((item) => item.kind === "synchronized"),
+                  Stream.runCollect,
+                  Effect.result,
+                );
+                if (oversized) {
+                  assertTrue(result._tag === "Failure");
+                  assert.equal(result.failure._tag, "OrchestrationV2GetThreadProjectionError");
+                  assert.equal(missingSnapshotReads, 1);
+                  return;
+                }
+                assertTrue(result._tag === "Success");
+                assert.deepEqual(result.success.at(-1), { kind: "synchronized" });
+                const shell = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+                  afterSequence,
+                  requestCompletionMarker: true,
+                }).pipe(
+                  Stream.takeUntil((item) => item.kind === "synchronized"),
+                  Stream.runCollect,
+                );
+                assert.isTrue(
+                  shell.some(
+                    (item) => item.kind === "thread.removed" && item.threadId === defaultThreadId,
+                  ),
+                );
+              }),
+            ),
+          );
+        }).pipe(Effect.provide(NodeHttpServer.layerTest)),
     );
   }
 
@@ -10196,712 +11201,1516 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       let afterSequence = 0;
       let capturedHead = 0;
       let queriedHead: number | undefined;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {
-          context = services;
-          yield* seedRouterThread(services);
-          afterSequence = yield* Context.get(services, OrchestrationEventStore).latestAgentSequence(defaultThreadId);
-          capturedHead = (yield* writeRouterItems(services, [routerTurnItem(1)]))[0]!.sequence;
-        }),
-        wrapApplicationEvents: (service) => ({...service, readAgentEvents: (input) => {
-          queriedHead = input?.throughSequence;
-          return Stream.fromEffect(writeRouterItems(context, [routerTurnItem(2)], "arrives-after-head").pipe(
-            Effect.mapError((cause) => new PersistenceSqlError({ operation: "fixture.readAgentEvents", cause })))).pipe(
-            Stream.flatMap(() => service.readAgentEvents(input)));
-        }}),
-      }});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId, afterSequence, requestCompletionMarker: true}).pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect)
-      ));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              afterSequence = yield* Context.get(
+                services,
+                OrchestrationEventStore,
+              ).latestAgentSequence(defaultThreadId);
+              capturedHead = (yield* writeRouterItems(services, [routerTurnItem(1)]))[0]!.sequence;
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            readAgentEvents: (input) => {
+              queriedHead = input?.throughSequence;
+              return Stream.fromEffect(
+                writeRouterItems(context, [routerTurnItem(2)], "arrives-after-head").pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new PersistenceSqlError({ operation: "fixture.readAgentEvents", cause }),
+                  ),
+                ),
+              ).pipe(Stream.flatMap(() => service.readAgentEvents(input)));
+            },
+          }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+      );
       assert.equal(queriedHead, capturedHead);
-      assert.deepEqual(items.map((item) => item.kind === "event" ? item.sequence : item.kind), [capturedHead, "synchronized"]);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.deepEqual(
+        items.map((item) => (item.kind === "event" ? item.sequence : item.kind)),
+        [capturedHead, "synchronized"],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("subscribeShell sends a fresh snapshot instead of replaying a large gap", () =>
     Effect.gen(function* () {
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (context) => seedRouterThread(context).pipe(Effect.asVoid),
-        wrapApplicationEvents: (service) => ({...service,
-          latestApplicationSequence: Effect.succeed(100_000),
-          getReplayStats: () => Effect.die("A large gap must not measure replay"),
-          readApplicationEvents: () => Stream.die("A large gap must not decode replay"),
-        }),
-      }});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({afterSequence: 5, requestCompletionMarker: true}).pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect)
-      ));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) => seedRouterThread(context).pipe(Effect.asVoid),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            latestApplicationSequence: Effect.succeed(100_000),
+            getReplayStats: () => Effect.die("A large gap must not measure replay"),
+            readApplicationEvents: () => Stream.die("A large gap must not decode replay"),
+          }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence: 5,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+      );
       assertTrue(items[0]?.kind === "snapshot");
       assert.equal(items[0].snapshot.snapshotSequence, 100_000);
       assert.equal(items[0].snapshot.threads[0]?.id, defaultThreadId);
-      assert.deepEqual(items.at(-1), {kind: "synchronized"});
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.deepEqual(items.at(-1), { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("subscriptions snapshot instead of decoding an oversized replay range", () =>
     Effect.gen(function* () {
       let afterSequence = 0;
       let measurements = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          afterSequence = yield* Context.get(context, OrchestrationEventStore).latestApplicationSequence;
-          yield* writeRouterItems(context, [routerTurnItem(1, {output: "x".repeat(8 * 1024 * 1024 + 1)})]);
-        }),
-        wrapApplicationEvents: (service) => ({...service,
-          getAgentReplayStats: (input) => service.getAgentReplayStats(input).pipe(Effect.tap(() => Effect.sync(() => {measurements += 1;}))),
-          getReplayStats: (input) => service.getReplayStats(input).pipe(Effect.tap(() => Effect.sync(() => {measurements += 1;}))),
-          readAgentEvents: () => Stream.die("Oversized thread replay must not decode"),
-          readApplicationEvents: () => Stream.die("Oversized shell replay must not decode"),
-        }),
-      }});
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => Effect.gen(function* () {
-        const thread = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({threadId: defaultThreadId, afterSequence}).pipe(Stream.runHead);
-        const shell = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({afterSequence}).pipe(Stream.runHead);
-        assert.equal(Option.getOrThrow(thread).kind, "snapshot");
-        assert.equal(Option.getOrThrow(shell).kind, "snapshot");
-      })));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              afterSequence = yield* Context.get(context, OrchestrationEventStore)
+                .latestApplicationSequence;
+              yield* writeRouterItems(context, [
+                routerTurnItem(1, { output: "x".repeat(8 * 1024 * 1024 + 1) }),
+              ]);
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            getAgentReplayStats: (input) =>
+              service.getAgentReplayStats(input).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    measurements += 1;
+                  }),
+                ),
+              ),
+            getReplayStats: (input) =>
+              service.getReplayStats(input).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    measurements += 1;
+                  }),
+                ),
+              ),
+            readAgentEvents: () => Stream.die("Oversized thread replay must not decode"),
+            readApplicationEvents: () => Stream.die("Oversized shell replay must not decode"),
+          }),
+        },
+      });
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const thread = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+              threadId: defaultThreadId,
+              afterSequence,
+            }).pipe(Stream.runHead);
+            const shell = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+              afterSequence,
+            }).pipe(Stream.runHead);
+            assert.equal(Option.getOrThrow(thread).kind, "snapshot");
+            assert.equal(Option.getOrThrow(shell).kind, "snapshot");
+          }),
+        ),
+      );
       assert.equal(measurements, 2);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("subscribeShell replaces a cursor ahead of the authoritative head", () =>
     Effect.gen(function* () {
       let head = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          head = yield* Context.get(context, OrchestrationEventStore).latestApplicationSequence;
-        }),
-        wrapApplicationEvents: (service) => ({...service,
-          getReplayStats: () => Effect.die("A cursor ahead of the shell head must not measure replay"),
-          readApplicationEvents: () => Stream.die("A cursor ahead of the shell head must not decode replay"),
-        }),
-      }});
-      const first = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({afterSequence: head + 10}).pipe(Stream.runHead)
-      ));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              head = yield* Context.get(context, OrchestrationEventStore).latestApplicationSequence;
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            getReplayStats: () =>
+              Effect.die("A cursor ahead of the shell head must not measure replay"),
+            readApplicationEvents: () =>
+              Stream.die("A cursor ahead of the shell head must not decode replay"),
+          }),
+        },
+      });
+      const first = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({ afterSequence: head + 10 }).pipe(
+            Stream.runHead,
+          ),
+        ),
+      );
       assert.equal(Option.getOrThrow(first).kind, "snapshot");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("subscribeShell coalesces a per-thread burst without stalling other threads", () =>
     Effect.gen(function* () {
       const other = ThreadId.make("router:other");
       let afterSequence = 0;
       const reads: ThreadId[] = [];
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          yield* Context.get(context, Orchestrator.OrchestratorV2).dispatch(routerThreadCreate(other));
-          afterSequence = yield* Context.get(context, OrchestrationEventStore).latestApplicationSequence;
-          yield* writeRouterItems(context, [
-            ...Array.from({length: 200}, (_, index) => routerTurnItem(index)),
-            routerTurnItem(201, {threadId: other}),
-          ]);
-        }),
-        wrapThreadManagement: (service) => ({...service, getThreadShell: (threadId) =>
-          Effect.sync(() => reads.push(threadId)).pipe(Effect.andThen(service.getThreadShell(threadId)))}),
-      }});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({afterSequence, requestCompletionMarker: true}).pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect)
-      ));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              yield* Context.get(context, Orchestrator.OrchestratorV2).dispatch(
+                routerThreadCreate(other),
+              );
+              afterSequence = yield* Context.get(context, OrchestrationEventStore)
+                .latestApplicationSequence;
+              yield* writeRouterItems(context, [
+                ...Array.from({ length: 200 }, (_, index) => routerTurnItem(index)),
+                routerTurnItem(201, { threadId: other }),
+              ]);
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            getThreadShell: (threadId) =>
+              Effect.sync(() => reads.push(threadId)).pipe(
+                Effect.andThen(service.getThreadShell(threadId)),
+              ),
+          }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+      );
       const updates = items.filter((item) => item.kind === "thread.updated");
-      assert.deepEqual(updates.map((item) => item.thread.id).sort(), [defaultThreadId, other].sort());
+      assert.deepEqual(
+        updates.map((item) => item.thread.id).sort(),
+        [defaultThreadId, other].sort(),
+      );
       assert.equal(reads.length, 2);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("subscribeShell coalesces live bursts after the synchronization marker", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
       let afterSequence = 0;
       const reads: ThreadId[] = [];
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {
-          context = services;
-          yield* seedRouterThread(services);
-          afterSequence = yield* Context.get(services, OrchestrationEventStore).latestApplicationSequence;
-        }),
-        wrapThreadManagement: (service) => ({...service, getThreadShell: (threadId) =>
-          Effect.sync(() => reads.push(threadId)).pipe(Effect.andThen(service.getThreadShell(threadId)))}),
-      }});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({afterSequence, requestCompletionMarker: true}).pipe(
-          Stream.tap((item) => item.kind === "synchronized" ? writeRouterItems(context, Array.from({length: 20}, (_, index) => routerTurnItem(index))).pipe(Effect.asVoid) : Effect.void),
-          Stream.takeUntil((item) => item.kind === "thread.updated"), Stream.runCollect)
-      )).pipe(Effect.timeout("2 seconds"));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              afterSequence = yield* Context.get(services, OrchestrationEventStore)
+                .latestApplicationSequence;
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            getThreadShell: (threadId) =>
+              Effect.sync(() => reads.push(threadId)).pipe(
+                Effect.andThen(service.getThreadShell(threadId)),
+              ),
+          }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.tap((item) =>
+              item.kind === "synchronized"
+                ? writeRouterItems(
+                    context,
+                    Array.from({ length: 20 }, (_, index) => routerTurnItem(index)),
+                  ).pipe(Effect.asVoid)
+                : Effect.void,
+            ),
+            Stream.takeUntil((item) => item.kind === "thread.updated"),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
       assert.isTrue(items.some((item) => item.kind === "synchronized"));
       assert.equal(items.at(-1)?.kind, "thread.updated");
       assert.equal(reads.length, 1);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive)
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
 
   it.effect("subscribeShell coalescing still emits a removal for a deleted thread", () =>
     Effect.gen(function* () {
       let afterSequence = 0;
-      yield* buildAppUnderTest({layers: {onV2Services: (context) => Effect.gen(function* () {
-        yield* seedRouterThread(context);
-        afterSequence = yield* Context.get(context, OrchestrationEventStore).latestApplicationSequence;
-        yield* Context.get(context, Orchestrator.OrchestratorV2).dispatch({type: "thread.delete", commandId: CommandId.make("router:delete-trailing"), threadId: defaultThreadId});
-        yield* writeRouterItems(context, [routerTurnItem(1)]);
-      })}});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({afterSequence, requestCompletionMarker: true}).pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect)
-      ));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              afterSequence = yield* Context.get(context, OrchestrationEventStore)
+                .latestApplicationSequence;
+              yield* Context.get(context, Orchestrator.OrchestratorV2).dispatch({
+                type: "thread.delete",
+                commandId: CommandId.make("router:delete-trailing"),
+                threadId: defaultThreadId,
+              });
+              yield* writeRouterItems(context, [routerTurnItem(1)]);
+            }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+      );
       const removals = items.filter((item) => item.kind === "thread.removed");
       assert.equal(removals.length, 1);
       assert.equal(removals[0]?.threadId, defaultThreadId);
       assert.isFalse(items.some((item) => item.kind === "thread.updated"));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("subscribeShell retries a transient shell projection refetch failure", () =>
     Effect.gen(function* () {
       let afterSequence = 0;
       let attempts = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (context) => Effect.gen(function* () {
-          yield* seedRouterThread(context);
-          afterSequence = yield* Context.get(context, OrchestrationEventStore).latestApplicationSequence;
-          yield* writeRouterItems(context, [routerTurnItem(1)]);
-        }),
-        wrapThreadManagement: (service) => ({...service, getThreadShell: (threadId) => Effect.suspend(() => {
-          attempts += 1;
-          return attempts === 1
-            ? Effect.fail(new Orchestrator.OrchestratorProjectionError({threadId, cause: new Error("synthetic transient shell refetch")}))
-            : service.getThreadShell(threadId);
-        })}),
-      }});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({afterSequence, requestCompletionMarker: true}).pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect)
-      ));
-      assert.isTrue(items.some((item) => item.kind === "thread.updated" && item.thread.id === defaultThreadId));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              afterSequence = yield* Context.get(context, OrchestrationEventStore)
+                .latestApplicationSequence;
+              yield* writeRouterItems(context, [routerTurnItem(1)]);
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            getThreadShell: (threadId) =>
+              Effect.suspend(() => {
+                attempts += 1;
+                return attempts === 1
+                  ? Effect.fail(
+                      new Orchestrator.OrchestratorProjectionError({
+                        threadId,
+                        cause: new Error("synthetic transient shell refetch"),
+                      }),
+                    )
+                  : service.getThreadShell(threadId);
+              }),
+          }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+      );
+      assert.isTrue(
+        items.some((item) => item.kind === "thread.updated" && item.thread.id === defaultThreadId),
+      );
       assert.equal(attempts, 2);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("subscribeShell coalescing still removes a project after a trailing update", () =>
     Effect.gen(function* () {
       let afterSequence = 0;
-      yield* buildAppUnderTest({layers: {onV2Services: (context) => Effect.gen(function* () {
-        yield* seedRouterProject(context);
-        const projects = Context.get(context, ProjectService.ProjectService);
-        const events = Context.get(context, OrchestrationEventStore);
-        afterSequence = yield* events.latestApplicationSequence;
-        yield* projects.delete({commandId: CommandId.make("router:project-delete"), projectId: defaultProjectId});
-        const retained = yield* events.readApplicationEvents({afterSequence, throughSequence: yield* events.latestApplicationSequence}).pipe(Stream.runCollect);
-        const deleted = retained[0];
-        assertTrue(deleted !== undefined && "aggregateKind" in deleted && deleted.aggregateKind === "project");
-        if (deleted !== undefined && "aggregateKind" in deleted && deleted.aggregateKind === "project") {
-          yield* events.appendProjectEvent({...deleted, type: "project.meta-updated", eventId: EventId.make("router:trailing-project-update"), payload: {projectId: defaultProjectId, title: "Still deleted", updatedAt: "2026-01-01T00:00:01.000Z"}});
-        }
-      })}});
-      const items = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({afterSequence, requestCompletionMarker: true}).pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"), Stream.runCollect)
-      ));
-      assert.isTrue(items.some((item) => item.kind === "project.removed" && item.projectId === defaultProjectId));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterProject(context);
+              const projects = Context.get(context, ProjectService.ProjectService);
+              const events = Context.get(context, OrchestrationEventStore);
+              afterSequence = yield* events.latestApplicationSequence;
+              yield* projects.delete({
+                commandId: CommandId.make("router:project-delete"),
+                projectId: defaultProjectId,
+              });
+              const retained = yield* events
+                .readApplicationEvents({
+                  afterSequence,
+                  throughSequence: yield* events.latestApplicationSequence,
+                })
+                .pipe(Stream.runCollect);
+              const deleted = retained[0];
+              assertTrue(
+                deleted !== undefined &&
+                  "aggregateKind" in deleted &&
+                  deleted.aggregateKind === "project",
+              );
+              if (
+                deleted !== undefined &&
+                "aggregateKind" in deleted &&
+                deleted.aggregateKind === "project"
+              ) {
+                yield* events.appendProjectEvent({
+                  ...deleted,
+                  type: "project.meta-updated",
+                  eventId: EventId.make("router:trailing-project-update"),
+                  payload: {
+                    projectId: defaultProjectId,
+                    title: "Still deleted",
+                    updatedAt: "2026-01-01T00:00:01.000Z",
+                  },
+                });
+              }
+            }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+      );
+      assert.isTrue(
+        items.some(
+          (item) => item.kind === "project.removed" && item.projectId === defaultProjectId,
+        ),
+      );
       assert.isFalse(items.some((item) => item.kind === "project.updated"));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("persists V2 provider detach and terminal cleanup when archiving", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
       const closed: string[] = [];
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterThread(services); yield* seedRouterProvider(services);}),
-        terminalManager: {close: (input) => Effect.sync(() => {closed.push(input.threadId);})},
-      }});
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              yield* seedRouterProvider(services);
+            }),
+          terminalManager: {
+            close: (input) =>
+              Effect.sync(() => {
+                closed.push(input.threadId);
+              }),
+          },
+        },
+      });
       const commandId = CommandId.make("router:archive");
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({type: "thread.archive", commandId, threadId: defaultThreadId})
-      ));
-      const queued = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(commandId);
-      assert.deepEqual(queued.map((effect) => effect.request.type).sort(), ["provider-session.detach", "terminal.cleanup"]);
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.archive",
+            commandId,
+            threadId: defaultThreadId,
+          }),
+        ),
+      );
+      const queued = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
+      );
+      assert.deepEqual(queued.map((effect) => effect.request.type).sort(), [
+        "provider-session.detach",
+        "terminal.cleanup",
+      ]);
       assert.deepEqual(closed, []);
       yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
       assert.deepEqual(closed, [defaultThreadId]);
-      assert.isNotNull((yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(defaultThreadId)).thread.archivedAt);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.isNotNull(
+        (yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(
+          defaultThreadId,
+        )).thread.archivedAt,
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("captures the V2 attached session before archive removes the active shell", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
       let sessionId!: ProviderSessionId;
-      yield* buildAppUnderTest({layers: {onV2Services: (services) => Effect.gen(function* () {
-        context = services; yield* seedRouterThread(services); sessionId = yield* seedRouterProvider(services);
-      })}});
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              sessionId = yield* seedRouterProvider(services);
+            }),
+        },
+      });
       const commandId = CommandId.make("router:archive-attached");
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({type: "thread.archive", commandId, threadId: defaultThreadId})
-      ));
-      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(commandId);
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.archive",
+            commandId,
+            threadId: defaultThreadId,
+          }),
+        ),
+      );
+      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
+      );
       const detach = effects.find((effect) => effect.request.type === "provider-session.detach");
       assertTrue(detach?.request.type === "provider-session.detach");
       assert.equal(detach.request.providerSessionId, sessionId);
       assert.isTrue(detach.request.revokeMcpCredential);
-      const active = yield* Context.get(context, ThreadManagement.ThreadManagementService).getShellSnapshot({location: "active"});
+      const active = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getShellSnapshot({ location: "active" });
       assert.isFalse(active.threads.some((thread) => thread.id === defaultThreadId));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("archives without dispatching session stop when the thread has no session", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
       const closed: string[] = [];
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterThread(services); }),
-        terminalManager: {close: (input) => Effect.sync(() => {closed.push(input.threadId);})},
-      }});
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+            }),
+          terminalManager: {
+            close: (input) =>
+              Effect.sync(() => {
+                closed.push(input.threadId);
+              }),
+          },
+        },
+      });
       const commandId = CommandId.make("router:archive-no-detach");
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({type: "thread.archive", commandId, threadId: defaultThreadId})
-      ));
-      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(commandId);
-      assert.deepEqual(effects.map((effect) => effect.request.type), ["terminal.cleanup"]);
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.archive",
+            commandId,
+            threadId: defaultThreadId,
+          }),
+        ),
+      );
+      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
+      );
+      assert.deepEqual(
+        effects.map((effect) => effect.request.type),
+        ["terminal.cleanup"],
+      );
       yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
       assert.deepEqual(closed, [defaultThreadId]);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
-  it.effect("archives without dispatching session stop when the thread session is already stopped", () =>
-    Effect.gen(function* () {
-      let context!: Context.Context<RouterV2Services>;
-      const closed: string[] = [];
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterThread(services); yield* seedRouterProvider(services, "stopped");}),
-        terminalManager: {close: (input) => Effect.sync(() => {closed.push(input.threadId);})},
-      }});
-      const commandId = CommandId.make("router:archive-no-detach");
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({type: "thread.archive", commandId, threadId: defaultThreadId})
-      ));
-      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(commandId);
-      assert.deepEqual(effects.map((effect) => effect.request.type), ["terminal.cleanup"]);
-      yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
-      assert.deepEqual(closed, [defaultThreadId]);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+  it.effect(
+    "archives without dispatching session stop when the thread session is already stopped",
+    () =>
+      Effect.gen(function* () {
+        let context!: Context.Context<RouterV2Services>;
+        const closed: string[] = [];
+        yield* buildAppUnderTest({
+          layers: {
+            onV2Services: (services) =>
+              Effect.gen(function* () {
+                context = services;
+                yield* seedRouterThread(services);
+                yield* seedRouterProvider(services, "stopped");
+              }),
+            terminalManager: {
+              close: (input) =>
+                Effect.sync(() => {
+                  closed.push(input.threadId);
+                }),
+            },
+          },
+        });
+        const commandId = CommandId.make("router:archive-no-detach");
+        yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+              type: "thread.archive",
+              commandId,
+              threadId: defaultThreadId,
+            }),
+          ),
+        );
+        const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+          commandId,
+        );
+        assert.deepEqual(
+          effects.map((effect) => effect.request.type),
+          ["terminal.cleanup"],
+        );
+        yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
+        assert.deepEqual(closed, [defaultThreadId]);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("leaves V2 settle provider detach to the durable effect worker", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
       const closed: string[] = [];
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterThread(services); yield* seedRouterProvider(services);}),
-        terminalManager: {close: (input) => Effect.sync(() => {closed.push(input.threadId);})},
-      }});
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              yield* seedRouterProvider(services);
+            }),
+          terminalManager: {
+            close: (input) =>
+              Effect.sync(() => {
+                closed.push(input.threadId);
+              }),
+          },
+        },
+      });
       const commandId = CommandId.make("router:settle");
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({type: "thread.settle", commandId, threadId: defaultThreadId})
-      ));
-      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(commandId);
-      assert.deepEqual(effects.map((effect) => effect.request.type), ["provider-session.detach"]);
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.settle",
+            commandId,
+            threadId: defaultThreadId,
+          }),
+        ),
+      );
+      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
+      );
+      assert.deepEqual(
+        effects.map((effect) => effect.request.type),
+        ["provider-session.detach"],
+      );
       assert.deepEqual(closed, []);
       yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
       assert.deepEqual(closed, []);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("forwards the friendly blocked-settlement message over websocket rpc", () =>
     Effect.gen(function* () {
-      yield* buildAppUnderTest({layers: {onV2Services: (context) => Effect.gen(function* () {
-        yield* seedRouterThread(context);
-        yield* Context.get(context, ThreadManagement.ThreadManagementService).dispatch({...routerMessageDispatch("blocked-settle"), dispatchMode: {type: "defer_start"}});
-      })}});
-      const failed = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({type: "thread.settle", commandId: CommandId.make("router:settle-blocked"), threadId: defaultThreadId})
-      )).pipe(Effect.result);
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              yield* Context.get(context, ThreadManagement.ThreadManagementService).dispatch({
+                ...routerMessageDispatch("blocked-settle"),
+                dispatchMode: { type: "defer_start" },
+              });
+            }),
+        },
+      });
+      const failed = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.settle",
+            commandId: CommandId.make("router:settle-blocked"),
+            threadId: defaultThreadId,
+          }),
+        ),
+      ).pipe(Effect.result);
       assertTrue(failed._tag === "Failure");
       assert.equal(failed.failure._tag, "OrchestrationV2DispatchCommandError");
-      assert.equal(failed.failure.message, "Thread " + defaultThreadId + " has active or blocked work and cannot be settled.");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.equal(
+        failed.failure.message,
+        "Thread " + defaultThreadId + " has active or blocked work and cannot be settled.",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("keeps V2 archive committed when terminal cleanup fails", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
       let attempts = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterThread(services);}),
-        terminalManager: {close: () => Effect.sync(() => {attempts += 1;}).pipe(Effect.andThen(Effect.fail(new TerminalNotRunningError({threadId: defaultThreadId, terminalId: "default"}))))},
-      }});
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+            }),
+          terminalManager: {
+            close: () =>
+              Effect.sync(() => {
+                attempts += 1;
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new TerminalNotRunningError({
+                      threadId: defaultThreadId,
+                      terminalId: "default",
+                    }),
+                  ),
+                ),
+              ),
+          },
+        },
+      });
       const commandId = CommandId.make("router:archive-cleanup-failure");
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({type: "thread.archive", commandId, threadId: defaultThreadId})
-      ));
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.archive",
+            commandId,
+            threadId: defaultThreadId,
+          }),
+        ),
+      );
       yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
-      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(commandId);
+      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
+      );
       assert.equal(attempts, 1);
       assert.equal(effects[0]?.request.type, "terminal.cleanup");
       assert.isFalse(effects[0]?.status === "succeeded");
-      assert.isNotNull((yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(defaultThreadId)).thread.archivedAt);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.isNotNull(
+        (yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(
+          defaultThreadId,
+        )).thread.archivedAt,
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("keeps V2 archive committed when terminal cleanup defects", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
       let attempts = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterThread(services);}),
-        terminalManager: {close: () => Effect.sync(() => {attempts += 1;}).pipe(Effect.andThen(Effect.die(new Error("synthetic terminal cleanup defect"))))},
-      }});
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+            }),
+          terminalManager: {
+            close: () =>
+              Effect.sync(() => {
+                attempts += 1;
+              }).pipe(Effect.andThen(Effect.die(new Error("synthetic terminal cleanup defect")))),
+          },
+        },
+      });
       const commandId = CommandId.make("router:archive-cleanup-failure");
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({type: "thread.archive", commandId, threadId: defaultThreadId})
-      ));
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.archive",
+            commandId,
+            threadId: defaultThreadId,
+          }),
+        ),
+      );
       yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
-      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(commandId);
+      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
+      );
       assert.equal(attempts, 1);
       assert.equal(effects[0]?.request.type, "terminal.cleanup");
       assert.isFalse(effects[0]?.status === "succeeded");
-      assert.isNotNull((yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(defaultThreadId)).thread.archivedAt);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.isNotNull(
+        (yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(
+          defaultThreadId,
+        )).thread.archivedAt,
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("prepares a visible V2 worktree thread before releasing its first run", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const worktreePath = yield* fs.makeTempDirectoryScoped({prefix: "t3-router-worktree-"});
+      const worktreeGit = makeRouterWorktreeGit();
       const setupStarted = yield* Deferred.make<void>();
       const setupReleased = yield* Deferred.make<void>();
       let context!: Context.Context<RouterV2Services>;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterProject(services);}),
-        vcsDriver: {isInsideWorkTree: () => Effect.succeed(true)},
-        gitVcsDriver: {execute: () => Effect.succeed({...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef"}), createWorktree: () => Effect.succeed({worktree: {path: worktreePath, refName: "feature/router"}})},
-        projectSetupScriptRunner: {runForThread: () => Deferred.succeed(setupStarted, undefined).pipe(Effect.andThen(Deferred.await(setupReleased)), Effect.as({status: "no-script" as const}))},
-      }});
-      const input = {...routerLaunchInput("prepared"), workspaceStrategy: {type: "worktree" as const, baseRef: "main", branch: "feature/router"}};
-      const launched = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => client[ORCHESTRATION_V2_WS_METHODS.launchThread](input)));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+          gitVcsDriver: {
+            execute: () =>
+              Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
+            createWorktree: worktreeGit.createWorktree,
+          },
+          gitManager: worktreeGit.gitManager,
+          projectSetupScriptRunner: {
+            runForThread: () =>
+              Deferred.succeed(setupStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(setupReleased)),
+                Effect.as({ status: "no-script" as const }),
+              ),
+          },
+        },
+      });
+      const input = {
+        ...routerLaunchInput("prepared"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
+        ),
+      );
       yield* Deferred.await(setupStarted);
-      const before = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
+      const before = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
       assert.equal(before.messages[0]?.text, input.initialMessage.text);
       assert.equal(before.runs[0]?.status, "preparing");
-      assert.equal(before.thread.worktreePath, worktreePath);
+      assert.equal(before.thread.worktreePath, worktreeGit.checkoutPath());
       yield* Deferred.succeed(setupReleased, undefined);
       yield* awaitRouterRunStatus(context, launched.threadId, "starting");
-      const after = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
+      const after = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
       assert.equal(after.runs[0]?.status, "starting");
       assert.equal(after.messages.length, 1);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect.each([
     { caseName: "the origin remote is missing", hasOrigin: false },
     { caseName: "the base branch exists only locally", hasOrigin: true },
-  ])("uses the local V2 worktree base when $caseName", ({hasOrigin}) =>
+  ])("uses the local V2 worktree base when $caseName", ({ hasOrigin }) =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const worktreePath = yield* fs.makeTempDirectoryScoped({prefix: "t3-router-local-base-"});
+      const worktreeGit = makeRouterWorktreeGit();
       let context!: Context.Context<RouterV2Services>;
       let fetches = 0;
       let remoteChecks = 0;
-      let createInput: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0] | undefined;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterProject(services);}),
-        vcsDriver: {isInsideWorkTree: () => Effect.succeed(true)},
-        gitVcsDriver: {
-          execute: () => Effect.succeed({...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef"}),
-          remoteExists: () => Effect.succeed(hasOrigin),
-          fetchRemote: () => Effect.sync(() => {fetches += 1;}),
-          remoteBranchExists: () => Effect.sync(() => {remoteChecks += 1; return false;}),
-          resolveRemoteTrackingCommit: () => Effect.die("An absent remote branch must not be resolved"),
-          createWorktree: (input) => Effect.sync(() => {createInput = input; return {worktree: {path: worktreePath, refName: "feature/router"}};}),
+      let createInput:
+        | Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]
+        | undefined;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+          gitVcsDriver: {
+            execute: () =>
+              Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
+            remoteExists: () => Effect.succeed(hasOrigin),
+            fetchRemote: () =>
+              Effect.sync(() => {
+                fetches += 1;
+              }),
+            remoteBranchExists: () =>
+              Effect.sync(() => {
+                remoteChecks += 1;
+                return false;
+              }),
+            resolveRemoteTrackingCommit: () =>
+              Effect.die("An absent remote branch must not be resolved"),
+            createWorktree: (input, options) =>
+              Effect.sync(() => {
+                createInput = input;
+              }).pipe(Effect.andThen(worktreeGit.createWorktree(input, options))),
+          },
+          gitManager: worktreeGit.gitManager,
         },
-      }});
-      const input = {...routerLaunchInput("local-base"), workspaceStrategy: {type: "worktree" as const, baseRef: "main", branch: "feature/router", startFromOrigin: true}};
-      const launched = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => client[ORCHESTRATION_V2_WS_METHODS.launchThread](input)));
+      });
+      const input = {
+        ...routerLaunchInput("local-base"),
+        workspaceStrategy: {
+          type: "worktree" as const,
+          baseRef: "main",
+          branch: "feature/router",
+          startFromOrigin: true,
+        },
+      };
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
+        ),
+      );
       yield* awaitRouterRunStatus(context, launched.threadId, "starting");
       assert.equal(fetches, hasOrigin ? 1 : 0);
       assert.equal(remoteChecks, hasOrigin ? 1 : 0);
       assert.equal(createInput?.refName, "main");
       assert.equal(createInput?.baseRefName, "main");
-      assert.equal((yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId)).thread.worktreePath, worktreePath);
+      assert.equal(
+        (yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(
+          launched.threadId,
+        )).thread.worktreePath,
+        worktreeGit.checkoutPath(),
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect.each([
-    {caseName: "a non-repository", isRepository: false, failFetch: false},
-    {caseName: "a base without a commit", isRepository: true, failFetch: false},
-    {caseName: "a fetch failure", isRepository: true, failFetch: true},
-  ])("keeps the V2 failed worktree request visible and prevents provider start for $caseName", ({isRepository, failFetch}) =>
-    Effect.gen(function* () {
-      let context!: Context.Context<RouterV2Services>;
-      let worktrees = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterProject(services);}),
-        vcsDriver: {isInsideWorkTree: () => Effect.succeed(isRepository)},
-        gitVcsDriver: {
-          execute: () => Effect.succeed(failFetch ? {...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef"} : {...SUCCESSFUL_GIT_EXECUTION, exitCode: ChildProcessSpawner.ExitCode(128), stderr: "fatal: Needed a single revision"}),
-          remoteExists: () => Effect.succeed(true),
-          fetchRemote: (input) => Effect.fail(new GitCommandError({operation: "synthetic.fetch", command: "git", cwd: input.cwd, detail: "synthetic fetch failed"})),
-          createWorktree: () => Effect.sync(() => {worktrees += 1;}).pipe(Effect.andThen(Effect.die("Invalid worktree base must not provision"))),
-        },
-      }});
-      const input = {...routerLaunchInput("required-worktree"), workspaceStrategy: {type: "worktree" as const, baseRef: "main", branch: "feature/router", startFromOrigin: failFetch}};
-      const launched = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => client[ORCHESTRATION_V2_WS_METHODS.launchThread](input)));
-      yield* awaitRouterRunStatus(context, launched.threadId, "failed");
-      const projection = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
-      assert.equal(projection.messages[0]?.text, input.initialMessage.text);
-      assert.equal(projection.runs[0]?.status, "failed");
-      assert.isNull(projection.thread.deletedAt);
-      assert.isNull(projection.thread.worktreePath);
-      const outbox = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(CommandId.make(input.commandId + ":release"));
-      assert.isFalse(outbox.some((effect) => effect.request.type === "provider-turn.start"));
-      assert.equal(worktrees, 0);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    { caseName: "a non-repository", isRepository: false, failFetch: false },
+    { caseName: "a base without a commit", isRepository: true, failFetch: false },
+    { caseName: "a fetch failure", isRepository: true, failFetch: true },
+  ])(
+    "keeps the V2 failed worktree request visible and prevents provider start for $caseName",
+    ({ isRepository, failFetch }) =>
+      Effect.gen(function* () {
+        let context!: Context.Context<RouterV2Services>;
+        let worktrees = 0;
+        yield* buildAppUnderTest({
+          layers: {
+            onV2Services: (services) =>
+              Effect.gen(function* () {
+                context = services;
+                yield* seedRouterProject(services);
+              }),
+            vcsDriver: { isInsideWorkTree: () => Effect.succeed(isRepository) },
+            gitVcsDriver: {
+              execute: () =>
+                Effect.succeed(
+                  failFetch
+                    ? { ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }
+                    : {
+                        ...SUCCESSFUL_GIT_EXECUTION,
+                        exitCode: ChildProcessSpawner.ExitCode(128),
+                        stderr: "fatal: Needed a single revision",
+                      },
+                ),
+              remoteExists: () => Effect.succeed(true),
+              fetchRemote: (input) =>
+                Effect.fail(
+                  new GitCommandError({
+                    operation: "synthetic.fetch",
+                    command: "git",
+                    cwd: input.cwd,
+                    detail: "synthetic fetch failed",
+                  }),
+                ),
+              createWorktree: () =>
+                Effect.sync(() => {
+                  worktrees += 1;
+                }).pipe(Effect.andThen(Effect.die("Invalid worktree base must not provision"))),
+            },
+          },
+        });
+        const input = {
+          ...routerLaunchInput("required-worktree"),
+          workspaceStrategy: {
+            type: "worktree" as const,
+            baseRef: "main",
+            branch: "feature/router",
+            startFromOrigin: failFetch,
+          },
+        };
+        const launched = yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
+          ),
+        );
+        yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+        const projection = yield* Context.get(
+          context,
+          ThreadManagement.ThreadManagementService,
+        ).getThreadProjection(launched.threadId);
+        assert.equal(projection.messages[0]?.text, input.initialMessage.text);
+        assert.equal(projection.runs[0]?.status, "failed");
+        assert.isNull(projection.thread.deletedAt);
+        if (failFetch) {
+          // A transient fetch failure proves no base defect: the accepted planned target
+          // stays visible for diagnosis and retry, while nothing was created there.
+          assert.isNotNull(launched.projection.thread.worktreePath);
+          assert.equal(projection.thread.worktreePath, launched.projection.thread.worktreePath);
+        } else assert.isNull(projection.thread.worktreePath);
+        const outbox = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+          CommandId.make(input.commandId + ":release"),
+        );
+        assert.isFalse(outbox.some((effect) => effect.request.type === "provider-turn.start"));
+        assert.equal(worktrees, 0);
+        if (failFetch) {
+          const replay = yield* Effect.scoped(
+            withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+              client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
+            ),
+          );
+          assert.isTrue(replay.resumed);
+          assert.equal(replay.projection.runs[0]?.id, projection.runs[0]?.id);
+          assert.equal(replay.projection.runs[0]?.status, "failed");
+          assert.equal(
+            replay.projection.thread.worktreePath,
+            launched.projection.thread.worktreePath,
+          );
+          const replayed = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+            CommandId.make(input.commandId + ":release"),
+          );
+          assert.isFalse(replayed.some((effect) => effect.request.type === "provider-turn.start"));
+          assert.equal(worktrees, 0);
+        }
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("keeps the V2 failed thread visible when worktree mode targets a non-repository", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
       let worktrees = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterProject(services);}),
-        vcsDriver: {isInsideWorkTree: () => Effect.succeed(false)},
-        gitVcsDriver: {execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION), createWorktree: () => Effect.sync(() => {worktrees += 1;}).pipe(Effect.andThen(Effect.die("Invalid worktree base must not create a worktree")))},
-      }});
-      const input = {...routerLaunchInput("invalid-base"), workspaceStrategy: {type: "worktree" as const, baseRef: "main", branch: "feature/router"}};
-      const launched = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => client[ORCHESTRATION_V2_WS_METHODS.launchThread](input)));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(false) },
+          gitVcsDriver: {
+            execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
+            createWorktree: () =>
+              Effect.sync(() => {
+                worktrees += 1;
+              }).pipe(
+                Effect.andThen(Effect.die("Invalid worktree base must not create a worktree")),
+              ),
+          },
+        },
+      });
+      const input = {
+        ...routerLaunchInput("invalid-base"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
+        ),
+      );
       yield* awaitRouterRunStatus(context, launched.threadId, "failed");
-      const projection = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
+      const projection = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
       assert.equal(projection.messages[0]?.text, input.initialMessage.text);
       assert.equal(projection.runs[0]?.status, "failed");
       assert.isNull(projection.thread.deletedAt);
       assert.isNull(projection.thread.worktreePath);
       assert.equal(worktrees, 0);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("keeps the V2 failed thread visible when the worktree base has no commit", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
       let worktrees = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterProject(services);}),
-        vcsDriver: {isInsideWorkTree: () => Effect.succeed(true)},
-        gitVcsDriver: {execute: () => Effect.succeed({...SUCCESSFUL_GIT_EXECUTION, exitCode: ChildProcessSpawner.ExitCode(128), stderr: "fatal: Needed a single revision"}), createWorktree: () => Effect.sync(() => {worktrees += 1;}).pipe(Effect.andThen(Effect.die("Invalid worktree base must not create a worktree")))},
-      }});
-      const input = {...routerLaunchInput("invalid-base"), workspaceStrategy: {type: "worktree" as const, baseRef: "main", branch: "feature/router"}};
-      const launched = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => client[ORCHESTRATION_V2_WS_METHODS.launchThread](input)));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+          gitVcsDriver: {
+            execute: () =>
+              Effect.succeed({
+                ...SUCCESSFUL_GIT_EXECUTION,
+                exitCode: ChildProcessSpawner.ExitCode(128),
+                stderr: "fatal: Needed a single revision",
+              }),
+            createWorktree: () =>
+              Effect.sync(() => {
+                worktrees += 1;
+              }).pipe(
+                Effect.andThen(Effect.die("Invalid worktree base must not create a worktree")),
+              ),
+          },
+        },
+      });
+      const input = {
+        ...routerLaunchInput("invalid-base"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
+        ),
+      );
       yield* awaitRouterRunStatus(context, launched.threadId, "failed");
-      const projection = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
+      const projection = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
       assert.equal(projection.messages[0]?.text, input.initialMessage.text);
       assert.equal(projection.runs[0]?.status, "failed");
       assert.isNull(projection.thread.deletedAt);
       assert.isNull(projection.thread.worktreePath);
       assert.equal(worktrees, 0);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("keeps the V2 first message visible and fails its run when setup cannot start", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterProject(services);}),
-        projectSetupScriptRunner: {runForThread: (input) => Effect.fail(new ProjectSetupScriptRunner.ProjectSetupScriptOperationError({
-          threadId: input.threadId, worktreePath: input.worktreePath, operation: "openTerminal", cause: new Error("synthetic pty unavailable"),
-        }))},
-      }});
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          projectSetupScriptRunner: {
+            runForThread: (input) =>
+              Effect.fail(
+                new ProjectSetupScriptRunner.ProjectSetupScriptOperationError({
+                  threadId: input.threadId,
+                  worktreePath: input.worktreePath,
+                  operation: "openTerminal",
+                  cause: new Error("synthetic pty unavailable"),
+                }),
+              ),
+          },
+        },
+      });
       const input = routerLaunchInput("setup-failure");
-      const launched = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => client[ORCHESTRATION_V2_WS_METHODS.launchThread](input)));
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
+        ),
+      );
       yield* awaitRouterRunStatus(context, launched.threadId, "failed");
-      const projection = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
+      const projection = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
       assert.equal(projection.runs[0]?.status, "failed");
       assert.equal(projection.messages[0]?.text, input.initialMessage.text);
       assert.isNull(projection.thread.deletedAt);
-      assert.isTrue(JSON.stringify(projection.turnItems).includes("synthetic pty unavailable"));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.isTrue(
+        (yield* encodeTestJsonEffect(projection.turnItems)).includes("synthetic pty unavailable"),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("keeps V2 preparation progress failure distinct from setup launch failure", () =>
     Effect.gen(function* () {
       let context!: Context.Context<RouterV2Services>;
       let setupCalls = 0;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterProject(services);}),
-        wrapThreadManagement: (service) => ({...service, dispatch: (command) =>
-          command.type === "prepared-run.progress" && command.phase === "setup"
-            ? Effect.fail(new Orchestrator.OrchestratorDispatchError({commandId: command.commandId, commandType: command.type, cause: "synthetic preparation progress refused"}))
-            : service.dispatch(command)}),
-        projectSetupScriptRunner: {runForThread: () => Effect.sync(() => {setupCalls += 1; return {status: "no-script" as const};})},
-      }});
-      const launched = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-        client[ORCHESTRATION_V2_WS_METHODS.launchThread](routerLaunchInput("progress-failure"))
-      ));
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            dispatch: (command) =>
+              command.type === "prepared-run.progress" && command.phase === "setup"
+                ? Effect.fail(
+                    new Orchestrator.OrchestratorDispatchError({
+                      commandId: command.commandId,
+                      commandType: command.type,
+                      cause: "synthetic preparation progress refused",
+                    }),
+                  )
+                : service.dispatch(command),
+          }),
+          projectSetupScriptRunner: {
+            runForThread: () =>
+              Effect.sync(() => {
+                setupCalls += 1;
+                return { status: "no-script" as const };
+              }),
+          },
+        },
+      });
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](routerLaunchInput("progress-failure")),
+        ),
+      );
       yield* awaitRouterRunStatus(context, launched.threadId, "failed");
-      const projection = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
+      const projection = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
       assert.equal(setupCalls, 0);
       assert.equal(projection.runs[0]?.status, "failed");
-      assert.isTrue(JSON.stringify(projection.turnItems).includes("synthetic preparation progress refused"));
-      assert.isTrue(JSON.stringify(projection.turnItems).includes("update thread"));
-      assert.isFalse(JSON.stringify(projection.turnItems).includes("run setup script"));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
-
-  it.effect.each([
-    {caseName: "async setup scripts let the turn start before the script exits", async: true, cancel: false},
-    {caseName: "sync setup scripts hold the turn until the script exits", async: false, cancel: false},
-    {caseName: "cancelling worktree setup publishes its outcome and keeps the failed thread visible", async: false, cancel: true},
-  ])("$caseName", ({async, cancel}) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const worktreePath = yield* fs.makeTempDirectoryScoped({prefix: "t3-router-setup-timing-"});
-      const completionEntered = yield* Deferred.make<void>();
-      const scriptExit = yield* Deferred.make<void>();
-      let context!: Context.Context<RouterV2Services>;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterProject(services);}),
-        vcsDriver: {isInsideWorkTree: () => Effect.succeed(true)},
-        gitVcsDriver: {
-          execute: () => Effect.succeed({...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef"}),
-          createWorktree: () => Effect.succeed({worktree: {path: worktreePath, refName: "feature/router"}}),
-          removeWorktree: () => Effect.void,
-        },
-        terminalManager: {close: () => Effect.void},
-        projectSetupScriptRunner: {runForThread: (input) => Effect.succeed({
-          status: "started" as const, scriptId: "router:setup", scriptName: "Synthetic setup", scriptCommand: "synthetic",
-          terminalId: "router:setup", cwd: input.worktreePath, async,
-          completion: Deferred.succeed(completionEntered, undefined).pipe(Effect.andThen(Deferred.await(scriptExit)), Effect.as({exitCode: 0, durationMs: 0})),
-        })},
-      }});
-      const input = {...routerLaunchInput("setup-timing"), workspaceStrategy: {type: "worktree" as const, baseRef: "main", branch: "feature/router"}};
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => Effect.gen(function* () {
-        const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread](input);
-        yield* Deferred.await(completionEntered);
-        const before = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
-        assert.equal(before.runs[0]?.status, async ? "starting" : "preparing");
-        if (cancel) {
-          assert.deepEqual(yield* client[WS_METHODS.worktreeSetupCancel]({threadId: launched.threadId}), {cancelled: true});
-          yield* awaitRouterRunStatus(context, launched.threadId, "failed");
-        } else {
-          yield* Deferred.succeed(scriptExit, undefined);
-          yield* awaitRouterRunStatus(context, launched.threadId, "starting");
-        }
-        const after = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
-        assert.isNull(after.thread.deletedAt);
-        assert.equal(after.messages.length, 1);
-        assert.equal(after.runs[0]?.status, cancel ? "failed" : "starting");
-      })));
+      assert.isTrue(
+        (yield* encodeTestJsonEffect(projection.turnItems)).includes(
+          "synthetic preparation progress refused",
+        ),
+      );
+      assert.isTrue((yield* encodeTestJsonEffect(projection.turnItems)).includes("update thread"));
+      assert.isFalse(
+        (yield* encodeTestJsonEffect(projection.turnItems)).includes("run setup script"),
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("keeps a V2 failed worktree thread and its first message visible after a preparation defect", () =>
+  it.effect.each([
+    {
+      caseName: "async setup scripts let the turn start before the script exits",
+      async: true,
+      cancel: false,
+    },
+    {
+      caseName: "sync setup scripts hold the turn until the script exits",
+      async: false,
+      cancel: false,
+    },
+    {
+      caseName:
+        "cancelling worktree setup publishes its outcome and keeps the failed thread visible",
+      async: false,
+      cancel: true,
+    },
+  ])("$caseName", ({ async, cancel }) =>
     Effect.gen(function* () {
+      const worktreeGit = makeRouterWorktreeGit();
+      const completionEntered = yield* Deferred.make<void>();
+      const scriptExit = yield* Deferred.make<void>();
       let context!: Context.Context<RouterV2Services>;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterProject(services);}),
-        vcsDriver: {isInsideWorkTree: () => Effect.succeed(true)},
-        gitVcsDriver: {execute: () => Effect.succeed({...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef"}), createWorktree: () => Effect.die(new Error("synthetic worktree exploded"))},
-      }});
-      const input = {...routerLaunchInput("worktree-defect"), workspaceStrategy: {type: "worktree" as const, baseRef: "main", branch: "feature/router"}};
-      const launched = yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => client[ORCHESTRATION_V2_WS_METHODS.launchThread](input)));
-      yield* awaitRouterRunStatus(context, launched.threadId, "failed");
-      const projection = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
-      assert.equal(projection.messages[0]?.text, input.initialMessage.text);
-      assert.equal(projection.runs[0]?.status, "failed");
-      assert.isNull(projection.thread.deletedAt);
-      assert.isTrue(JSON.stringify(projection.turnItems).includes("synthetic worktree exploded"));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+          gitVcsDriver: {
+            execute: () =>
+              Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
+            createWorktree: worktreeGit.createWorktree,
+            removeWorktree: () => Effect.void,
+          },
+          gitManager: worktreeGit.gitManager,
+          terminalManager: { close: () => Effect.void },
+          projectSetupScriptRunner: {
+            runForThread: (input) =>
+              Effect.succeed({
+                status: "started" as const,
+                scriptId: "router:setup",
+                scriptName: "Synthetic setup",
+                scriptCommand: "synthetic",
+                terminalId: "router:setup",
+                cwd: input.worktreePath,
+                async,
+                completion: Deferred.succeed(completionEntered, undefined).pipe(
+                  Effect.andThen(Deferred.await(scriptExit)),
+                  Effect.as({ exitCode: 0, durationMs: 0 }),
+                ),
+              }),
+          },
+        },
+      });
+      const input = {
+        ...routerLaunchInput("setup-timing"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread](input);
+            yield* Deferred.await(completionEntered);
+            const before = yield* Context.get(
+              context,
+              ThreadManagement.ThreadManagementService,
+            ).getThreadProjection(launched.threadId);
+            assert.equal(before.runs[0]?.status, async ? "starting" : "preparing");
+            if (cancel) {
+              assert.deepEqual(
+                yield* client[WS_METHODS.worktreeSetupCancel]({ threadId: launched.threadId }),
+                { cancelled: true },
+              );
+              yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+            } else {
+              yield* Deferred.succeed(scriptExit, undefined);
+              yield* awaitRouterRunStatus(context, launched.threadId, "starting");
+            }
+            const after = yield* Context.get(
+              context,
+              ThreadManagement.ThreadManagementService,
+            ).getThreadProjection(launched.threadId);
+            assert.isNull(after.thread.deletedAt);
+            assert.equal(after.messages.length, 1);
+            assert.equal(after.runs[0]?.status, cancel ? "failed" : "starting");
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "keeps a V2 failed worktree thread and its first message visible after a preparation defect",
+    () =>
+      Effect.gen(function* () {
+        let context!: Context.Context<RouterV2Services>;
+        yield* buildAppUnderTest({
+          layers: {
+            onV2Services: (services) =>
+              Effect.gen(function* () {
+                context = services;
+                yield* seedRouterProject(services);
+              }),
+            vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+            gitVcsDriver: {
+              execute: () =>
+                Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
+              createWorktree: () => Effect.die(new Error("synthetic worktree exploded")),
+            },
+          },
+        });
+        const input = {
+          ...routerLaunchInput("worktree-defect"),
+          workspaceStrategy: {
+            type: "worktree" as const,
+            baseRef: "main",
+            branch: "feature/router",
+          },
+        };
+        const launched = yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
+          ),
+        );
+        yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+        const projection = yield* Context.get(
+          context,
+          ThreadManagement.ThreadManagementService,
+        ).getThreadProjection(launched.threadId);
+        assert.equal(projection.messages[0]?.text, input.initialMessage.text);
+        assert.equal(projection.runs[0]?.status, "failed");
+        assert.isNull(projection.thread.deletedAt);
+        assert.isTrue(
+          (yield* encodeTestJsonEffect(projection.turnItems)).includes(
+            "synthetic worktree exploded",
+          ),
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("cancels V2 preparation and releases its created worktree and setup terminal", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const worktreePath = yield* fs.makeTempDirectoryScoped({prefix: "t3-router-cancel-"});
+      const worktreeGit = makeRouterWorktreeGit();
       const completionEntered = yield* Deferred.make<void>();
       const closes: string[] = [];
       const removals: string[] = [];
       let context!: Context.Context<RouterV2Services>;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterProject(services);}),
-        vcsDriver: {isInsideWorkTree: () => Effect.succeed(true)},
-        gitVcsDriver: {
-          execute: () => Effect.succeed({...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef"}),
-          createWorktree: () => Effect.succeed({worktree: {path: worktreePath, refName: "feature/router"}}),
-          removeWorktree: (input) => Effect.sync(() => {removals.push(input.path);}).pipe(Effect.andThen(Effect.void)),
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+          gitVcsDriver: {
+            execute: () =>
+              Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
+            createWorktree: worktreeGit.createWorktree,
+            removeWorktree: (input) =>
+              Effect.sync(() => {
+                removals.push(input.path);
+              }).pipe(Effect.andThen(Effect.void)),
+          },
+          gitManager: worktreeGit.gitManager,
+          terminalManager: {
+            close: (input) =>
+              Effect.sync(() => {
+                closes.push(input.terminalId ?? "all");
+              }),
+          },
+          projectSetupScriptRunner: {
+            runForThread: (input) =>
+              Effect.succeed({
+                status: "started" as const,
+                scriptId: "router:setup",
+                scriptName: "Synthetic setup",
+                scriptCommand: "synthetic",
+                terminalId: "router:setup",
+                cwd: input.worktreePath,
+                async: false,
+                completion: Deferred.succeed(completionEntered, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                ),
+              }),
+          },
         },
-        terminalManager: {close: (input) => Effect.sync(() => {closes.push(input.terminalId ?? "all");})},
-        projectSetupScriptRunner: {runForThread: (input) => Effect.succeed({
-          status: "started" as const, scriptId: "router:setup", scriptName: "Synthetic setup", scriptCommand: "synthetic",
-          terminalId: "router:setup", cwd: input.worktreePath, async: false,
-          completion: Deferred.succeed(completionEntered, undefined).pipe(Effect.andThen(Effect.never)),
-        })},
-      }});
-      const input = {...routerLaunchInput("cancel"), workspaceStrategy: {type: "worktree" as const, baseRef: "main", branch: "feature/router"}};
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => Effect.gen(function* () {
-        const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread](input);
-        yield* Deferred.await(completionEntered);
-        assert.deepEqual(yield* client[WS_METHODS.worktreeSetupCancel]({threadId: launched.threadId}), {cancelled: true});
-        yield* awaitRouterRunStatus(context, launched.threadId, "failed");
-        const projection = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
-        assert.equal(projection.messages[0]?.text, input.initialMessage.text);
-        assert.equal(projection.runs[0]?.status, "failed");
-        assert.isNull(projection.thread.deletedAt);
-        assert.isNull(projection.thread.worktreePath);
-      })));
+      });
+      const input = {
+        ...routerLaunchInput("cancel"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread](input);
+            yield* Deferred.await(completionEntered);
+            assert.deepEqual(
+              yield* client[WS_METHODS.worktreeSetupCancel]({ threadId: launched.threadId }),
+              { cancelled: true },
+            );
+            yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+            const projection = yield* Context.get(
+              context,
+              ThreadManagement.ThreadManagementService,
+            ).getThreadProjection(launched.threadId);
+            assert.equal(projection.messages[0]?.text, input.initialMessage.text);
+            assert.equal(projection.runs[0]?.status, "failed");
+            assert.isNull(projection.thread.deletedAt);
+            assert.isNull(projection.thread.worktreePath);
+          }),
+        ),
+      );
       assert.deepEqual(closes, ["router:setup"]);
-      assert.deepEqual(removals, [worktreePath]);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.deepEqual(removals, [worktreeGit.checkoutPath()]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("keeps the V2 failed thread visible when cancelled worktree cleanup fails", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const worktreePath = yield* fs.makeTempDirectoryScoped({prefix: "t3-router-cancel-"});
+      const worktreeGit = makeRouterWorktreeGit();
       const completionEntered = yield* Deferred.make<void>();
       const closes: string[] = [];
       const removals: string[] = [];
       let context!: Context.Context<RouterV2Services>;
-      yield* buildAppUnderTest({layers: {
-        onV2Services: (services) => Effect.gen(function* () {context = services; yield* seedRouterProject(services);}),
-        vcsDriver: {isInsideWorkTree: () => Effect.succeed(true)},
-        gitVcsDriver: {
-          execute: () => Effect.succeed({...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef"}),
-          createWorktree: () => Effect.succeed({worktree: {path: worktreePath, refName: "feature/router"}}),
-          removeWorktree: (input) => Effect.sync(() => {removals.push(input.path);}).pipe(Effect.andThen(Effect.fail(new GitCommandError({operation: "synthetic.removeWorktree", command: "git", cwd: input.cwd, detail: "synthetic cleanup refused"})))),
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+          gitVcsDriver: {
+            execute: () =>
+              Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
+            createWorktree: worktreeGit.createWorktree,
+            removeWorktree: (input) =>
+              Effect.sync(() => {
+                removals.push(input.path);
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new GitCommandError({
+                      operation: "synthetic.removeWorktree",
+                      command: "git",
+                      cwd: input.cwd,
+                      detail: "synthetic cleanup refused",
+                    }),
+                  ),
+                ),
+              ),
+          },
+          gitManager: worktreeGit.gitManager,
+          terminalManager: {
+            close: (input) =>
+              Effect.sync(() => {
+                closes.push(input.terminalId ?? "all");
+              }),
+          },
+          projectSetupScriptRunner: {
+            runForThread: (input) =>
+              Effect.succeed({
+                status: "started" as const,
+                scriptId: "router:setup",
+                scriptName: "Synthetic setup",
+                scriptCommand: "synthetic",
+                terminalId: "router:setup",
+                cwd: input.worktreePath,
+                async: false,
+                completion: Deferred.succeed(completionEntered, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                ),
+              }),
+          },
         },
-        terminalManager: {close: (input) => Effect.sync(() => {closes.push(input.terminalId ?? "all");})},
-        projectSetupScriptRunner: {runForThread: (input) => Effect.succeed({
-          status: "started" as const, scriptId: "router:setup", scriptName: "Synthetic setup", scriptCommand: "synthetic",
-          terminalId: "router:setup", cwd: input.worktreePath, async: false,
-          completion: Deferred.succeed(completionEntered, undefined).pipe(Effect.andThen(Effect.never)),
-        })},
-      }});
-      const input = {...routerLaunchInput("cancel"), workspaceStrategy: {type: "worktree" as const, baseRef: "main", branch: "feature/router"}};
-      yield* Effect.scoped(withWsRpcClient(yield* getWsServerUrl("/ws"), (client) => Effect.gen(function* () {
-        const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread](input);
-        yield* Deferred.await(completionEntered);
-        assert.deepEqual(yield* client[WS_METHODS.worktreeSetupCancel]({threadId: launched.threadId}), {cancelled: true});
-        yield* awaitRouterRunStatus(context, launched.threadId, "failed");
-        const projection = yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(launched.threadId);
-        assert.equal(projection.messages[0]?.text, input.initialMessage.text);
-        assert.equal(projection.runs[0]?.status, "failed");
-        assert.isNull(projection.thread.deletedAt);
-        assert.isNull(projection.thread.worktreePath);
-      })));
+      });
+      const input = {
+        ...routerLaunchInput("cancel"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread](input);
+            yield* Deferred.await(completionEntered);
+            assert.deepEqual(
+              yield* client[WS_METHODS.worktreeSetupCancel]({ threadId: launched.threadId }),
+              { cancelled: true },
+            );
+            yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+            const projection = yield* Context.get(
+              context,
+              ThreadManagement.ThreadManagementService,
+            ).getThreadProjection(launched.threadId);
+            assert.equal(projection.messages[0]?.text, input.initialMessage.text);
+            assert.equal(projection.runs[0]?.status, "failed");
+            assert.isNull(projection.thread.deletedAt);
+            assert.isNull(projection.thread.worktreePath);
+          }),
+        ),
+      );
       assert.deepEqual(closes, ["router:setup"]);
-      assert.deepEqual(removals, [worktreePath]);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-);
+      assert.deepEqual(removals, [worktreeGit.checkoutPath()]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
   it.effect("routes websocket rpc terminal methods", () =>
     Effect.gen(function* () {
-      const acquired: ThreadId[] = [];
+      const threadId = ThreadId.make("thread-1");
+      type OwnershipLease = Effect.Success<
+        ReturnType<
+          ThreadManagement.ThreadManagementService["Service"]["acquireOrdinaryWorktreeOwnership"]
+        >
+      >;
+      const acquired: Array<{
+        threadId: ThreadId;
+        cwd: string | undefined;
+        lease: OwnershipLease;
+      }> = [];
+      let workspaceRoot!: string;
       const snapshot = {
         threadId: "thread-1",
         terminalId: "default",
-        cwd: "/tmp/project",
+        cwd: "",
         worktreePath: null,
         status: "running" as const,
         pid: 1234,
@@ -10914,28 +12723,47 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       yield* buildAppUnderTest({
         layers: {
-          threadManagement: {
-            acquireWorktreeOwnership: (threadId) =>
-              Effect.sync(() => {
-                acquired.push(threadId);
-                return {
-                  resourcePath: "/tmp/project",
-                  leaseId: `lease-${acquired.length}`,
-                  ownerThreadId: threadId,
-                  ownerIncarnation: "event-thread-1-created",
-                  branch: null,
-                  acquiredAtMs: 0,
-                  renewedAtMs: 0,
-                  expiresAtMs: 300_000,
-                };
-              }),
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              const project = yield* seedRouterProject(context);
+              workspaceRoot = project.workspaceRoot;
+              snapshot.cwd = workspaceRoot;
+              yield* Context.get(context, ThreadManagement.ThreadManagementService).dispatch(
+                routerThreadCreate(threadId),
+              );
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            acquireOrdinaryWorktreeOwnership: (ownerThreadId, cwd) =>
+              service.acquireOrdinaryWorktreeOwnership(ownerThreadId, cwd).pipe(
+                Effect.tap((lease) =>
+                  Effect.sync(() => {
+                    acquired.push({ threadId: ownerThreadId, cwd, lease });
+                  }),
+                ),
+              ),
+          }),
           terminalManager: {
-            open: () => Effect.succeed(snapshot),
+            open: () =>
+              Effect.sync(() => {
+                assert.equal(acquired.length, 1);
+                return snapshot;
+              }),
+            attachStream: (input, listener) =>
+              Effect.gen(function* () {
+                assert.equal(acquired.length, 3);
+                assert.equal(input.cwd, input.restartIfNotRunning ? undefined : workspaceRoot);
+                yield* listener({ type: "snapshot", snapshot });
+                return () => {};
+              }),
             write: () => Effect.void,
             resize: () => Effect.void,
             clear: () => Effect.void,
-            restart: () => Effect.succeed(snapshot),
+            restart: () =>
+              Effect.sync(() => {
+                assert.equal(acquired.length, 2);
+                return snapshot;
+              }),
             close: () => Effect.void,
           },
         },
@@ -10948,7 +12776,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           client[WS_METHODS.terminalOpen]({
             threadId: "thread-1",
             terminalId: "default",
-            cwd: "/tmp/project",
+            cwd: workspaceRoot,
           }),
         ),
       );
@@ -10989,14 +12817,57 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           client[WS_METHODS.terminalRestart]({
             threadId: "thread-1",
             terminalId: "default",
-            cwd: "/tmp/project",
+            cwd: workspaceRoot,
             cols: 120,
             rows: 40,
           }),
         ),
       );
       assert.equal(restarted.terminalId, "default");
-      assert.deepEqual(acquired, [ThreadId.make("thread-1"), ThreadId.make("thread-1")]);
+      assert.deepEqual(
+        acquired.map((entry) => entry.threadId),
+        [threadId, threadId],
+      );
+
+      const attached = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.terminalAttach]({
+            threadId,
+            terminalId: "default",
+            cwd: workspaceRoot,
+          }).pipe(Stream.runHead),
+        ),
+      );
+      assertTrue(Option.isSome(attached) && attached.value.type === "snapshot");
+      assert.equal(attached.value.snapshot.terminalId, "default");
+      const attachedWithoutCwd = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.terminalAttach]({
+            threadId,
+            terminalId: "default",
+            restartIfNotRunning: true,
+          }).pipe(Stream.runHead),
+        ),
+      );
+      assertTrue(Option.isSome(attachedWithoutCwd) && attachedWithoutCwd.value.type === "snapshot");
+      assert.equal(attachedWithoutCwd.value.snapshot.terminalId, "default");
+      assert.deepEqual(
+        acquired.map(({ threadId, cwd }) => ({ threadId, cwd })),
+        [
+          { threadId, cwd: workspaceRoot },
+          { threadId, cwd: workspaceRoot },
+          { threadId, cwd: workspaceRoot },
+        ],
+      );
+      const firstLease = acquired[0]!.lease;
+      for (const { lease } of acquired) {
+        assert.equal(lease.resourcePath, workspaceRoot);
+        assert.equal(lease.ownerThreadId, threadId);
+        assert.equal(lease.leaseId, firstLease.leaseId);
+        assert.equal(lease.ownerIncarnation, firstLease.ownerIncarnation);
+        assert.equal(lease.acquiredAtMs, firstLease.acquiredAtMs);
+        assert.equal(lease.branch, null);
+      }
 
       yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
@@ -11041,143 +12912,292 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
 it.live(
   "reports thread HTTP and WebSocket transfer budgets",
-  () => Effect.gen(function* () {
-    const runs = yield* Effect.forEach(
-      [ProviderDriverKind.make("codex"), ProviderDriverKind.make("claudeAgent")],
-      (provider) => {
-        const sqlCounter = makeSqlStatementCounter();
-        const providerInstance = makeRouterProviderInstance(provider);
-        const modelSelection = {instanceId: providerInstance.instanceId, model: provider === "codex" ? "gpt-5-codex" : "claude-sonnet-4"};
-        return Effect.gen(function* () {
-          let services!: Context.Context<RouterV2Services>;
-          const dynamicResult = (ordinal: number, bytes: number): OrchestrationV2TurnItem => {
-            const {input: _input, output: _output, ...base} = routerTurnItem(ordinal);
-            return {...base, type: "dynamic_tool", toolName: "synthetic.result", input: {},
-              output: diagnosticOutput({provider, turnIndex: ordinal, toolIndex: 0, targetBytes: bytes})};
+  () =>
+    Effect.gen(function* () {
+      const runs = yield* Effect.forEach(
+        [ProviderDriverKind.make("codex"), ProviderDriverKind.make("claudeAgent")],
+        (provider) => {
+          const sqlCounter = makeSqlStatementCounter();
+          const providerInstance = makeRouterProviderInstance(provider);
+          const modelSelection = {
+            instanceId: providerInstance.instanceId,
+            model: provider === "codex" ? "gpt-5-codex" : "claude-sonnet-4",
           };
-          const history: Array<OrchestrationV2TurnItem> = [];
-          for (let turn = 0; turn < TRANSFER_HISTORY_TURN_COUNT; turn += 1) {
-            for (let tool = 0; tool < TRANSFER_HISTORY_TOOLS_PER_TURN; tool += 1) {
-              history.push(routerTurnItem(history.length, {title: "History command", output: "Retained command output"}));
+          return Effect.gen(function* () {
+            let services!: Context.Context<RouterV2Services>;
+            const dynamicResult = (ordinal: number, bytes: number): OrchestrationV2TurnItem => {
+              const { input: _input, output: _output, ...base } = routerTurnItem(ordinal);
+              return {
+                ...base,
+                type: "dynamic_tool",
+                toolName: "synthetic.result",
+                input: {},
+                output: diagnosticOutput({
+                  provider,
+                  turnIndex: ordinal,
+                  toolIndex: 0,
+                  targetBytes: bytes,
+                }),
+              };
+            };
+            const history: Array<OrchestrationV2TurnItem> = [];
+            for (let turn = 0; turn < TRANSFER_HISTORY_TURN_COUNT; turn += 1) {
+              for (let tool = 0; tool < TRANSFER_HISTORY_TOOLS_PER_TURN; tool += 1) {
+                history.push(
+                  routerTurnItem(history.length, {
+                    title: "History command",
+                    output: "Retained command output",
+                  }),
+                );
+              }
+              history.push(dynamicResult(history.length, TRANSFER_HISTORY_MCP_RESULT_BYTES));
             }
-            history.push(dynamicResult(history.length, TRANSFER_HISTORY_MCP_RESULT_BYTES));
-          }
-          yield* buildAppUnderTest({layers: {providerInstanceRegistry: {
-            getInstance: (id) => Effect.succeed(id === providerInstance.instanceId ? providerInstance : undefined),
-            listInstances: Effect.succeed([providerInstance]),
-          }, onV2Services: (context) => Effect.gen(function* () {
-            services = context;
-            yield* seedRouterProject(context);
-            yield* Context.get(context, ThreadManagement.ThreadManagementService).dispatch({...routerThreadCreate(), modelSelection});
-            yield* writeRouterItems(context, history, "transfer-history");
-          })}});
-          const threads = Context.get(services, ThreadManagement.ThreadManagementService);
-          const baseUrl = yield* getHttpServerUrl();
-          const {cookie, url} = parseSessionCookieFromWsUrl(yield* getWsServerUrl("/ws"));
-          assert.isDefined(cookie);
-          const threadSnapshot = yield* measureHttpGet({
-            url: `${baseUrl}/api/orchestration/threads/${defaultThreadId}`, headers: {cookie: cookie!},
-          });
-          assert.equal(threadSnapshot.status, 200);
-          assert.equal(threadSnapshot.contentEncoding, "gzip");
-          const decodedThread = yield* decodeTransferThreadSnapshot(Buffer.from(threadSnapshot.decodedBody).toString("utf8"));
-          assert.equal(decodedThread.projection.turnItems.length, history.length);
-          const shellSnapshot = yield* measureHttpGet({url: `${baseUrl}/api/orchestration/snapshot`, headers: {cookie: cookie!}});
-          assert.equal(shellSnapshot.status, 200);
-          const decodedShell = yield* decodeTransferShellSnapshot(Buffer.from(shellSnapshot.decodedBody).toString("utf8"));
-          assert.equal(decodedShell.threads.length, 1);
-          const threadClient = yield* openMeasuredWsClient({url, cookie: cookie!});
-          const shellClient = yield* openMeasuredWsClient({url, cookie: cookie!});
-          const secondClient = yield* openMeasuredWsClient({url, cookie: cookie!});
-          assert.include(threadClient.recorder.negotiatedExtensions(), "permessage-deflate");
-          const subscribeThread = Effect.fnUntraced(function* (measured: typeof threadClient, afterSequence: number) {
-            const queue = yield* Queue.unbounded<OrchestrationV2ThreadStreamItem>();
-            yield* measured.client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
-              threadId: defaultThreadId, afterSequence, requestCompletionMarker: true,
-            }).pipe(Stream.runForEach((item) => Queue.offer(queue, item)), Effect.forkIn(measured.scope));
-            return queue;
-          });
-          const subscribeShell = Effect.fnUntraced(function* (measured: typeof shellClient, afterSequence: number) {
-            const queue = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
-            yield* measured.client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
-              afterSequence, requestCompletionMarker: true,
-            }).pipe(Stream.runForEach((item) => Queue.offer(queue, item)), Effect.forkIn(measured.scope));
-            return queue;
-          });
-          const synchronized = <A extends {readonly kind: string}>(queue: Queue.Queue<A>) => Effect.gen(function* () {
-            let mode: "replay" | "snapshot" = "replay";
-            while (true) {
-              const item = yield* Queue.take(queue);
-              if (item.kind === "snapshot") mode = "snapshot";
-              if (item.kind === "synchronized") return mode;
+            yield* buildAppUnderTest({
+              layers: {
+                providerInstanceRegistry: {
+                  getInstance: (id) =>
+                    Effect.succeed(
+                      id === providerInstance.instanceId ? providerInstance : undefined,
+                    ),
+                  listInstances: Effect.succeed([providerInstance]),
+                },
+                onV2Services: (context) =>
+                  Effect.gen(function* () {
+                    services = context;
+                    yield* seedRouterProject(context);
+                    yield* Context.get(context, ThreadManagement.ThreadManagementService).dispatch({
+                      ...routerThreadCreate(),
+                      modelSelection,
+                    });
+                    yield* writeRouterItems(context, history, "transfer-history");
+                  }),
+              },
+            });
+            const threads = Context.get(services, ThreadManagement.ThreadManagementService);
+            const baseUrl = yield* getHttpServerUrl();
+            const { cookie, url } = parseSessionCookieFromWsUrl(yield* getWsServerUrl("/ws"));
+            assert.isDefined(cookie);
+            const threadSnapshot = yield* measureHttpGet({
+              url: `${baseUrl}/api/orchestration/threads/${defaultThreadId}`,
+              headers: {
+                cookie: cookie!,
+                [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+              },
+            });
+            assert.equal(threadSnapshot.status, 200);
+            assert.equal(threadSnapshot.contentEncoding, "gzip");
+            const decodedThread = yield* decodeTransferThreadSnapshot(
+              Buffer.from(threadSnapshot.decodedBody).toString("utf8"),
+            );
+            assert.equal(decodedThread.projection.turnItems.length, history.length);
+            const shellSnapshot = yield* measureHttpGet({
+              url: `${baseUrl}/api/orchestration/shell`,
+              headers: {
+                cookie: cookie!,
+                [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+              },
+            });
+            assert.equal(shellSnapshot.status, 200);
+            const decodedShell = yield* decodeTransferShellSnapshot(
+              Buffer.from(shellSnapshot.decodedBody).toString("utf8"),
+            );
+            assert.equal(decodedShell.threads.length, 1);
+            const threadClient = yield* openMeasuredWsClient({ url, cookie: cookie! });
+            const shellClient = yield* openMeasuredWsClient({ url, cookie: cookie! });
+            const secondClient = yield* openMeasuredWsClient({ url, cookie: cookie! });
+            assert.include(threadClient.recorder.negotiatedExtensions(), "permessage-deflate");
+            const subscribeThread = Effect.fnUntraced(function* (
+              measured: typeof threadClient,
+              afterSequence: number,
+            ) {
+              const queue = yield* Queue.unbounded<OrchestrationV2ThreadStreamItem>();
+              yield* measured.client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                threadId: defaultThreadId,
+                afterSequence,
+                requestCompletionMarker: true,
+              }).pipe(
+                Stream.runForEach((item) => Queue.offer(queue, item)),
+                Effect.forkIn(measured.scope),
+              );
+              return queue;
+            });
+            const subscribeShell = Effect.fnUntraced(function* (
+              measured: typeof shellClient,
+              afterSequence: number,
+            ) {
+              const queue = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
+              yield* measured.client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+                afterSequence,
+                requestCompletionMarker: true,
+              }).pipe(
+                Stream.runForEach((item) => Queue.offer(queue, item)),
+                Effect.forkIn(measured.scope),
+              );
+              return queue;
+            });
+            const synchronized = <A extends { readonly kind: string }>(
+              queue: Queue.Queue<A>,
+              isSnapshotReset: (item: A) => boolean = (item) => item.kind === "snapshot",
+            ) =>
+              Effect.gen(function* () {
+                let mode: "replay" | "snapshot" = "replay";
+                while (true) {
+                  const item = yield* Queue.take(queue);
+                  if (isSnapshotReset(item)) mode = "snapshot";
+                  if (item.kind === "synchronized") return mode;
+                }
+              }).pipe(Effect.timeout("10 seconds"));
+            // A shell cursor resume leads with a metadata-only refresh for repository
+            // identities that already resolved. Only an authoritative shell body, which
+            // omits resolved roots, resets the cursor.
+            const isShellSnapshotReset = (item: OrchestrationV2ShellStreamItem) =>
+              item.kind === "snapshot" &&
+              (item.resolvedRepositoryIdentityRoots === undefined ||
+                item.snapshot.threads.length > 0 ||
+                item.snapshot.archivedThreads.length > 0);
+            const reach = <A>(queue: Queue.Queue<A>, predicate: (item: A) => boolean) =>
+              Effect.gen(function* () {
+                while (!predicate(yield* Queue.take(queue))) {}
+              }).pipe(Effect.timeout("10 seconds"));
+            const threadItems = yield* subscribeThread(
+              threadClient,
+              decodedThread.snapshotSequence,
+            );
+            const shellItems = yield* subscribeShell(shellClient, decodedShell.snapshotSequence);
+            const secondThreadItems = yield* subscribeThread(
+              secondClient,
+              decodedThread.snapshotSequence,
+            );
+            const secondShellItems = yield* subscribeShell(
+              secondClient,
+              decodedShell.snapshotSequence,
+            );
+            for (const queue of [threadItems, secondThreadItems])
+              assert.equal(yield* synchronized(queue), "replay");
+            for (const queue of [shellItems, secondShellItems])
+              assert.equal(yield* synchronized(queue, isShellSnapshotReset), "replay");
+            const threadStart = threadClient.recorder.totals();
+            const shellStart = shellClient.recorder.totals();
+            const secondStart = secondClient.recorder.totals();
+            const sqlStart = sqlCounter.count();
+            const measured: Array<OrchestrationV2TurnItem> = Array.from(
+              { length: TRANSFER_MEASURED_TOOLS },
+              (_, tool) =>
+                routerTurnItem(history.length + tool, {
+                  title: "Measured command",
+                  output: "Retained measured output",
+                }),
+            );
+            measured.push(
+              dynamicResult(history.length + measured.length, TRANSFER_MEASURED_MCP_RESULT_BYTES),
+            );
+            const committed = yield* writeRouterItems(services, measured, "transfer-measured");
+            const sequence = committed.at(-1)!.sequence;
+            for (const queue of [threadItems, secondThreadItems]) {
+              yield* reach(queue, (item) => item.kind === "event" && item.sequence === sequence);
             }
-          }).pipe(Effect.timeout("10 seconds"));
-          const reach = <A>(queue: Queue.Queue<A>, predicate: (item: A) => boolean) => Effect.gen(function* () {
-            while (!predicate(yield* Queue.take(queue))) {}
-          }).pipe(Effect.timeout("10 seconds"));
-          const threadItems = yield* subscribeThread(threadClient, decodedThread.snapshotSequence);
-          const shellItems = yield* subscribeShell(shellClient, decodedShell.snapshotSequence);
-          const secondThreadItems = yield* subscribeThread(secondClient, decodedThread.snapshotSequence);
-          const secondShellItems = yield* subscribeShell(secondClient, decodedShell.snapshotSequence);
-          for (const queue of [threadItems, secondThreadItems]) assert.equal(yield* synchronized(queue), "replay");
-          for (const queue of [shellItems, secondShellItems]) assert.equal(yield* synchronized(queue), "replay");
-          const threadStart = threadClient.recorder.totals();
-          const shellStart = shellClient.recorder.totals();
-          const secondStart = secondClient.recorder.totals();
-          const sqlStart = sqlCounter.count();
-          const measured: Array<OrchestrationV2TurnItem> = Array.from({length: TRANSFER_MEASURED_TOOLS}, (_, tool) =>
-            routerTurnItem(history.length + tool, {title: "Measured command", output: "Retained measured output"}));
-          measured.push(dynamicResult(history.length + measured.length, TRANSFER_MEASURED_MCP_RESULT_BYTES));
-          const committed = yield* writeRouterItems(services, measured, "transfer-measured");
-          const sequence = committed.at(-1)!.sequence;
-          for (const queue of [threadItems, secondThreadItems]) {
-            yield* reach(queue, (item) => item.kind === "event" && item.sequence === sequence);
-          }
-          for (const queue of [shellItems, secondShellItems]) {
-            yield* reach(queue, (item) => item.kind === "thread.updated" && item.sequence >= sequence);
-          }
-          const delta = (start: ReturnType<typeof threadClient.recorder.totals>, end: ReturnType<typeof threadClient.recorder.totals>) => ({
-            wireBytes: end.wireBytes - start.wireBytes, decodedBytes: end.decodedBytes - start.decodedBytes, messages: end.messages - start.messages,
-          });
-          const measuredTurnWebSocket = delta(threadStart, threadClient.recorder.totals());
-          const measuredTurnShellWebSocket = delta(shellStart, shellClient.recorder.totals());
-          const measuredTurnSecondClientWebSocket = delta(secondStart, secondClient.recorder.totals());
-          const measuredTurnSqlStatements = sqlCounter.count() - sqlStart;
-          yield* secondClient.close;
-          const reconnectSqlStart = sqlCounter.count();
-          const reconnected = yield* openMeasuredWsClient({url, cookie: cookie!});
-          const reconnectStart = reconnected.recorder.totals();
-          const reconnectThreadMode = yield* synchronized(yield* subscribeThread(reconnected, decodedThread.snapshotSequence));
-          const reconnectThreadEnd = reconnected.recorder.totals();
-          const reconnectShellMode = yield* synchronized(yield* subscribeShell(reconnected, decodedShell.snapshotSequence));
-          const reconnectShellEnd = reconnected.recorder.totals();
-          const finalProjection = yield* threads.getThreadProjection(defaultThreadId);
-          assert.equal(finalProjection.thread.modelSelection.instanceId, providerInstance.instanceId);
-          assert.equal(finalProjection.turnItems.length, history.length + measured.length);
-          const retained = finalProjection.turnItems.find((item) => item.id === measured.at(-1)!.id);
-          assertTrue(retained?.type === "dynamic_tool");
-          assert.equal(Buffer.byteLength(String(retained.output), "utf8"), TRANSFER_MEASURED_MCP_RESULT_BYTES);
-          assert.isBelow(measuredTurnWebSocket.decodedBytes, TRANSFER_MEASURED_MCP_RESULT_BYTES);
-          return {provider, threadSnapshot, shellSnapshot, measuredTurnWebSocket, measuredTurnShellWebSocket,
-            measuredTurnSecondClientWebSocket, measuredTurnSqlStatements,
-            reconnectThread: {mode: reconnectThreadMode, ...delta(reconnectStart, reconnectThreadEnd)},
-            reconnectShell: {mode: reconnectShellMode, ...delta(reconnectThreadEnd, reconnectShellEnd)},
-            reconnectSqlStatements: sqlCounter.count() - reconnectSqlStart,
-          } satisfies TransferBudgetRun;
-        }).pipe(Effect.scoped, Effect.provideService(Tracer.Tracer, sqlCounter.tracer), Effect.provide(NodeHttpServerTestWithWsDeflate));
-      }, {concurrency: 1},
-    );
-    yield* Effect.logInfo("\n" + formatTransferBudgetReport(runs));
-    const reportPath = yield* Config.String("T3CODE_TRANSFER_BUDGET_REPORT_PATH").pipe(Config.option);
-    if (Option.isSome(reportPath)) yield* (yield* FileSystem.FileSystem).writeFileString(reportPath.value, formatTransferBudgetReport(runs));
-    const resultPath = yield* Config.String("T3CODE_TRANSFER_BUDGET_RESULT_PATH").pipe(Config.option);
-    if (Option.isSome(resultPath)) yield* (yield* FileSystem.FileSystem).writeFileString(resultPath.value, formatTransferBudgetResult(runs));
-    assert.deepEqual(transferBudgetViolations(runs), []);
-  }).pipe(Effect.provide(NodeServices.layer)),
+            for (const queue of [shellItems, secondShellItems]) {
+              yield* reach(
+                queue,
+                (item) => item.kind === "thread.updated" && item.sequence >= sequence,
+              );
+            }
+            const delta = (
+              start: ReturnType<typeof threadClient.recorder.totals>,
+              end: ReturnType<typeof threadClient.recorder.totals>,
+            ) => ({
+              wireBytes: end.wireBytes - start.wireBytes,
+              decodedBytes: end.decodedBytes - start.decodedBytes,
+              messages: end.messages - start.messages,
+            });
+            const measuredTurnWebSocket = delta(threadStart, threadClient.recorder.totals());
+            const measuredTurnShellWebSocket = delta(shellStart, shellClient.recorder.totals());
+            const measuredTurnSecondClientWebSocket = delta(
+              secondStart,
+              secondClient.recorder.totals(),
+            );
+            const measuredTurnSqlStatements = sqlCounter.count() - sqlStart;
+            yield* secondClient.close;
+            const reconnectSqlStart = sqlCounter.count();
+            const reconnected = yield* openMeasuredWsClient({ url, cookie: cookie! });
+            const reconnectStart = reconnected.recorder.totals();
+            const reconnectThreadMode = yield* synchronized(
+              yield* subscribeThread(reconnected, decodedThread.snapshotSequence),
+            );
+            const reconnectThreadEnd = reconnected.recorder.totals();
+            const reconnectShellMode = yield* synchronized(
+              yield* subscribeShell(reconnected, decodedShell.snapshotSequence),
+              isShellSnapshotReset,
+            );
+            const reconnectShellEnd = reconnected.recorder.totals();
+            const finalProjection = yield* threads.getThreadProjection(defaultThreadId);
+            assert.equal(
+              finalProjection.thread.modelSelection.instanceId,
+              providerInstance.instanceId,
+            );
+            assert.equal(finalProjection.turnItems.length, history.length + measured.length);
+            const retained = finalProjection.turnItems.find(
+              (item) => item.id === measured.at(-1)!.id,
+            );
+            assertTrue(retained?.type === "dynamic_tool");
+            assert.equal(
+              Buffer.byteLength(String(retained.output), "utf8"),
+              TRANSFER_MEASURED_MCP_RESULT_BYTES,
+            );
+            assert.isBelow(measuredTurnWebSocket.decodedBytes, TRANSFER_MEASURED_MCP_RESULT_BYTES);
+            return {
+              provider,
+              threadSnapshot,
+              shellSnapshot,
+              measuredTurnWebSocket,
+              measuredTurnShellWebSocket,
+              measuredTurnSecondClientWebSocket,
+              measuredTurnSqlStatements,
+              reconnectThread: {
+                mode: reconnectThreadMode,
+                ...delta(reconnectStart, reconnectThreadEnd),
+              },
+              reconnectShell: {
+                mode: reconnectShellMode,
+                ...delta(reconnectThreadEnd, reconnectShellEnd),
+              },
+              reconnectSqlStatements: sqlCounter.count() - reconnectSqlStart,
+            } satisfies TransferBudgetRun;
+          }).pipe(
+            Effect.scoped,
+            Effect.provideService(Tracer.Tracer, sqlCounter.tracer),
+            Effect.provide(NodeHttpServerTestWithWsDeflate),
+          );
+        },
+        { concurrency: 1 },
+      );
+      yield* Effect.logInfo("\n" + formatTransferBudgetReport(runs));
+      const reportPath = yield* Config.String("T3CODE_TRANSFER_BUDGET_REPORT_PATH").pipe(
+        Config.option,
+      );
+      if (Option.isSome(reportPath))
+        yield* (yield* FileSystem.FileSystem).writeFileString(
+          reportPath.value,
+          formatTransferBudgetReport(runs),
+        );
+      const resultPath = yield* Config.String("T3CODE_TRANSFER_BUDGET_RESULT_PATH").pipe(
+        Config.option,
+      );
+      if (Option.isSome(resultPath))
+        yield* (yield* FileSystem.FileSystem).writeFileString(
+          resultPath.value,
+          formatTransferBudgetResult(runs),
+        );
+      assert.deepEqual(transferBudgetViolations(runs), []);
+    }).pipe(Effect.provide(NodeServices.layer)),
   120_000,
 );
 
-const nativeCreationWsFixture = (runSetupScript = false, projectCwd = "/synthetic/project", operationId = "synthetic-native-ws") => {
+const nativeCreationWsFixture = (
+  runSetupScript = false,
+  projectCwd = "/synthetic/project",
+  operationId = "synthetic-native-ws",
+) => {
   const binding = Schema.decodeUnknownSync(NativePreparationBinding)({
     backend_instance: "synthetic-backend",
     environment_id: "synthetic-env",
@@ -11240,10 +13260,17 @@ const nativeCreationWsFixture = (runSetupScript = false, projectCwd = "/syntheti
     },
   };
 };
-const qualifiedNativeRouterFixture = Effect.fnUntraced(function* (name: string, runSetupScript: boolean) {
+const qualifiedNativeRouterFixture = Effect.fnUntraced(function* (
+  name: string,
+  runSetupScript: boolean,
+) {
   const fs = yield* FileSystem.FileSystem;
   const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-native-" });
-  const fixture = nativeCreationWsFixture(runSetupScript, workspaceRoot, `synthetic-native-${name}`);
+  const fixture = nativeCreationWsFixture(
+    runSetupScript,
+    workspaceRoot,
+    `synthetic-native-${name}`,
+  );
   let config!: ServerConfig.ServerConfig["Service"];
   let services!: Context.Context<RouterV2Services>;
   let repository!: NativeCreationRepository["Service"];
@@ -11252,173 +13279,409 @@ const qualifiedNativeRouterFixture = Effect.fnUntraced(function* (name: string, 
   const order: string[] = [];
   const nativeCalls: string[] = [];
   const detachments: Array<{ threadId: ThreadId; status: string }> = [];
-  const closeCalls: Array<{ threadId: string; terminalId?: string }> = [];
+  const closeCalls: Array<Parameters<TerminalManager.TerminalManager["Service"]["close"]>[0]> = [];
   const expectedCommands = () => {
     const original = fixture.command;
     const initial = original.bootstrap.createThread;
-    const worktreePath = nativeWorktreePath({ worktreesDir: config.worktreesDir, cwd: workspaceRoot,
-      branch: fixture.historical.requestedBranch });
+    const worktreePath = nativeWorktreePath({
+      worktreesDir: config.worktreesDir,
+      cwd: workspaceRoot,
+      branch: fixture.historical.requestedBranch,
+    });
     return [
-      Schema.decodeUnknownSync(OrchestrationV2Command)({ type: "thread.create", commandId: `${original.commandId}:native:v2:create`,
-        threadId: original.threadId, projectId: initial.projectId, title: initial.title, modelSelection: initial.modelSelection,
-        runtimeMode: initial.runtimeMode, interactionMode: initial.interactionMode, branch: fixture.historical.requestedBranch,
-        worktreePath, createdBy: "user", creationSource: "server" }),
-      Schema.decodeUnknownSync(OrchestrationV2Command)({ type: "message.dispatch", commandId: `${original.commandId}:native:v2:message`,
-        threadId: original.threadId, messageId: original.message.messageId, text: original.message.text, attachments: [],
-        modelSelection: initial.modelSelection, dispatchMode: { type: "defer_start" }, createdBy: "user", creationSource: "server" }),
-      Schema.decodeUnknownSync(OrchestrationV2Command)({ type: "prepared-run.release", commandId: original.commandId,
-        threadId: original.threadId, runId: Context.get(services, IdAllocator.IdAllocatorV2).derive.run({threadId: ThreadId.make(original.threadId), ordinal: 1}) }),
+      Schema.decodeUnknownSync(OrchestrationV2Command)({
+        type: "thread.create",
+        commandId: `${original.commandId}:native:v2:create`,
+        threadId: original.threadId,
+        projectId: initial.projectId,
+        title: initial.title,
+        modelSelection: initial.modelSelection,
+        runtimeMode: initial.runtimeMode,
+        interactionMode: initial.interactionMode,
+        branch: fixture.historical.requestedBranch,
+        worktreePath,
+        createdBy: "user",
+        creationSource: "server",
+      }),
+      Schema.decodeUnknownSync(OrchestrationV2Command)({
+        type: "message.dispatch",
+        commandId: `${original.commandId}:native:v2:message`,
+        threadId: original.threadId,
+        messageId: original.message.messageId,
+        text: original.message.text,
+        attachments: [],
+        modelSelection: initial.modelSelection,
+        dispatchMode: { type: "defer_start" },
+        createdBy: "user",
+        creationSource: "server",
+      }),
+      Schema.decodeUnknownSync(OrchestrationV2Command)({
+        type: "prepared-run.release",
+        commandId: original.commandId,
+        threadId: original.threadId,
+        runId: Context.get(services, IdAllocator.IdAllocatorV2).derive.run({
+          threadId: ThreadId.make(original.threadId),
+          ordinal: 1,
+        }),
+      }),
     ];
   };
   const assertReservedInventory = Effect.fnUntraced(function* () {
     const expected = expectedCommands();
     const identities = yield* sql<{ command_id: string; claim_id: string; thread_id: string }>`
       SELECT command_id, claim_id, thread_id FROM native_creation_reserved_command_identities ORDER BY command_id`;
-    assert.deepEqual(identities.map((row) => row.command_id), expected.map((command) => command.commandId).sort());
-    assert.isTrue(identities.every((row) => row.claim_id === `native:v2:${fixture.command.commandId}` && row.thread_id === fixture.command.threadId));
+    assert.deepEqual(
+      identities.map((row) => row.command_id),
+      expected.map((command) => command.commandId).sort(),
+    );
+    assert.isTrue(
+      identities.every(
+        (row) =>
+          row.claim_id === `native:v2:${fixture.command.commandId}` &&
+          row.thread_id === fixture.command.threadId,
+      ),
+    );
     for (const command of expected) {
       const reservation = yield* repository.getReservedCommand(command.commandId);
       assertTrue(Option.isSome(reservation));
       assert.equal(reservation.value.claimId, `native:v2:${fixture.command.commandId}`);
       assert.equal(reservation.value.threadId, fixture.command.threadId);
       assert.equal(reservation.value.commandDigest, nativeCreationV2CommandDigest(command));
-      assert.deepEqual(yield* Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2Command))(reservation.value.canonicalCommand), command);
+      assert.deepEqual(
+        yield* Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2Command))(
+          reservation.value.canonicalCommand,
+        ),
+        command,
+      );
     }
   });
   const checkNativeStart = (
     operation: string,
-    execution: Parameters<ProviderInstance["orchestrationAdapter"]["openSession"]>[0]["nativeCreationExecution"],
-  ) => Effect.gen(function* () {
-    assertTrue(execution !== undefined);
-    const reference = getNativeCreationExecutionReference(execution.context);
-    assertTrue(reference !== null);
-    assert.equal(reference.claimId, `native:v2:${fixture.command.commandId}`);
-    assert.equal(reference.stageCommandId, fixture.command.commandId);
-    const history = yield* repository.readHistoryByClaim(reference.claimId);
-    const starts = history.effectsV2.filter((fact) => fact.effectId === reference.effectId && fact.phase === "started");
-    assert.equal(starts.length, 1);
-    assert.equal(starts[0]!.commandId, reference.stageCommandId);
-    assert.equal(starts[0]!.commandDigest, nativeCreationV2CommandDigest(expectedCommands()[2]!));
-    assert.isFalse(history.effectsV2.some((fact) => fact.effectId === reference.effectId && fact.phase === "completed"));
-    yield* authorizeNativeCreationExecution(execution.context, { stage: "native_command", resources: execution.resources });
-    nativeCalls.push(operation);
-  }).pipe(Effect.mapError((cause) => new ProviderAdapterProtocolError({ driver: ProviderDriverKind.make("codex"),
-    detail: "Synthetic native callee could not validate its original committed start", cause })));
+    execution: Parameters<
+      ProviderInstance["orchestrationAdapter"]["openSession"]
+    >[0]["nativeCreationExecution"],
+  ) =>
+    Effect.gen(function* () {
+      assertTrue(execution !== undefined);
+      const reference = getNativeCreationExecutionReference(execution.context);
+      assertTrue(reference !== null);
+      assert.equal(reference.claimId, `native:v2:${fixture.command.commandId}`);
+      assert.equal(reference.stageCommandId, fixture.command.commandId);
+      const history = yield* repository.readHistoryByClaim(reference.claimId);
+      const starts = history.effectsV2.filter(
+        (fact) => fact.effectId === reference.effectId && fact.phase === "started",
+      );
+      assert.equal(starts.length, 1);
+      assert.equal(starts[0]!.commandId, reference.stageCommandId);
+      assert.equal(starts[0]!.commandDigest, nativeCreationV2CommandDigest(expectedCommands()[2]!));
+      assert.isFalse(
+        history.effectsV2.some(
+          (fact) => fact.effectId === reference.effectId && fact.phase === "completed",
+        ),
+      );
+      yield* authorizeNativeCreationExecution(execution.context, {
+        stage: "native_command",
+        resources: execution.resources,
+      });
+      nativeCalls.push(operation);
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderAdapterProtocolError({
+            driver: ProviderDriverKind.make("codex"),
+            detail: "Synthetic native callee could not validate its original committed start",
+            cause,
+          }),
+      ),
+    );
   const baseInstance = makeRouterProviderInstance();
-  const nativeSnapshot = Schema.decodeUnknownSync(ServerProvider)({
-    instanceId: baseInstance.instanceId, driver: baseInstance.driverKind, enabled: true,
-    installed: false, version: null, status: "ready", auth: {status: "unknown"},
-    checkedAt: "2026-10-02T12:00:00Z", supportedRuntimeModes: ["full-access", "approval-required"],
-    models: [{slug: fixture.binding.provider_model_selection.model, name: "Synthetic native fixture model",
-      isCustom: true, capabilities: null}], skills: [], slashCommands: [],
+  const nativeSnapshot = yield* Schema.decodeEffect(ServerProvider)({
+    instanceId: baseInstance.instanceId,
+    driver: baseInstance.driverKind,
+    enabled: true,
+    installed: false,
+    version: null,
+    status: "ready",
+    auth: { status: "unknown" },
+    checkedAt: "2026-10-02T12:00:00Z",
+    supportedRuntimeModes: ["full-access", "approval-required"],
+    models: [
+      {
+        slug: fixture.binding.provider_model_selection.model,
+        name: "Synthetic native fixture model",
+        isCustom: true,
+        capabilities: null,
+      },
+    ],
+    skills: [],
+    slashCommands: [],
   });
   const nativeInstance: ProviderInstance = {
-    instanceId: baseInstance.instanceId, driverKind: baseInstance.driverKind, enabled: true,
-    displayName: baseInstance.displayName, continuationIdentity: baseInstance.continuationIdentity,
+    instanceId: baseInstance.instanceId,
+    driverKind: baseInstance.driverKind,
+    enabled: true,
+    displayName: baseInstance.displayName,
+    continuationIdentity: baseInstance.continuationIdentity,
     snapshot: {
       getSnapshot: Effect.succeed(nativeSnapshot),
       refresh: Effect.die("Native fixture must not probe a live provider"),
       streamChanges: Stream.die("Native fixture must not watch a live provider"),
       applyUsageLimits: () => Effect.die("Native fixture must not mutate provider usage limits"),
-      resolveMaintenance: () => Effect.die("Native fixture must not resolve live provider maintenance"),
+      resolveMaintenance: () =>
+        Effect.die("Native fixture must not resolve live provider maintenance"),
     },
-    get textGeneration(): never { throw new Error("Native fixture must not generate provider text"); },
+    get textGeneration(): never {
+      throw new Error("Native fixture must not generate provider text");
+    },
     orchestrationAdapter: {
-    ...baseInstance.orchestrationAdapter,
-    openSession: (input) => Effect.gen(function* () {
-      yield* checkNativeStart("open_session", input.nativeCreationExecution);
-      const now = yield* DateTime.now;
-      const runtime: ProviderAdapterV2SessionRuntime = {
-        ...(input.nativeOperation?.runtimeGeneration === undefined ? {} : {runtimeGeneration: input.nativeOperation.runtimeGeneration}),
-        instanceId: input.modelSelection.instanceId, driver: ProviderDriverKind.make("codex"), providerSessionId: input.providerSessionId,
-        providerSession: { id: input.providerSessionId, driver: ProviderDriverKind.make("codex"), providerInstanceId: input.modelSelection.instanceId,
-          status: "ready", cwd: input.runtimePolicy.cwd ?? workspaceRoot, model: input.modelSelection.model,
-          capabilities: CodexProviderCapabilitiesV2, createdAt: now, updatedAt: now, lastError: null },
-        events: Stream.never,
-        ensureThread: (request) => checkNativeStart("ensure_thread", request.nativeCreationExecution).pipe(Effect.andThen(Effect.sync(() => {
-          assertTrue(request.existingProviderThread !== undefined);
-          return { ...request.existingProviderThread, providerSessionId: input.providerSessionId,
-            nativeThreadRef: { driver: ProviderDriverKind.make("codex"), nativeId: `synthetic-native-thread:${name}`, strength: "strong" as const } };
-        }))),
-        resumeThread: (request) => checkNativeStart("resume_thread", request.nativeCreationExecution).pipe(Effect.as(request.providerThread)),
-        startTurn: (request) => checkNativeStart("start_turn", request.nativeCreationExecution),
-        steerTurn: () => Effect.die("Native bootstrap must not steer a turn"),
-        interruptTurn: () => Effect.void,
-        respondToRuntimeRequest: () => Effect.die("Native bootstrap must not respond to a provider request"),
-        readThreadSnapshot: () => Effect.die("Native bootstrap must not read native history"),
-        rollbackThread: () => Effect.die("Native bootstrap must not roll back native history"),
-        forkThread: () => Effect.die("Native bootstrap must not fork native history"),
-      };
-      return runtime;
-    }),
-  }};
-  config = yield* buildAppUnderTest({config: {cwd: workspaceRoot}, layers: {
-    serverEnvironment: {getDescriptor: Effect.succeed(nativeRouterEnvironmentDescriptor)},
-    onNativeCreationServices: (current, database) => Effect.sync(() => { repository = current; sql = database; }),
-    onV2Services: (context) => Effect.gen(function* () {
-      services = context;
-      yield* seedRouterProject(context, defaultProjectId, workspaceRoot);
-    }),
-    nativeCreationGrantResolver: {resolveCurrent: ({actorSessionId, guard}) => Effect.succeed({
-      enrolledSessionId: actorSessionId, trustedIssuerId: "synthetic-issuer",
-      grant: { grantId: guard.grantId, revision: guard.grantRevision, actorSessionId, issuerId: "synthetic-issuer",
-        expiresAt: DateTime.makeUnsafe("2099-01-01T00:00:00Z"), revoked: false,
-        operationId: `synthetic-native-${name}`, preparationId: fixture.command.commandId.replace("voice-command-", "voice-bootstrap-"),
-        preparationSha256: nativeCreationSha256(fixture.preparation), bindingDigest: nativeCreationSha256(nativeCreationCanonicalJson(fixture.binding)),
-        binding: fixture.historical, resources: {projectCwd: workspaceRoot, branch: fixture.historical.requestedBranch,
-          worktreePath: nativeWorktreePath({worktreesDir: config.worktreesDir, cwd: workspaceRoot, branch: fixture.historical.requestedBranch})},
-        allowedStages: ["claim", "normalization", "tracker_registration", "bootstrap_detachment", "fetch", "worktree", "worktree_ownership", "native_command", "setup", "setup_detachment", "setup_completion_detachment", "cleanup", "deletion_drain", "git_status_refresh"], recoveryScopes: [],
-      },
-    })},
-    nativeCreationBindingResolver: {resolveCurrent: () => Effect.succeed(fixture.historical)},
-    providerInstanceRegistry: {getInstance: (id) => Effect.succeed(id === nativeInstance.instanceId ? nativeInstance : undefined), listInstances: Effect.succeed([nativeInstance])},
-    providerAuth: {tryHandlePromptCommand: () => Effect.succeed(false)},
-    terminalManager: {close: (input) => Effect.sync(() => {closeCalls.push(input);})},
-    projectSetupScriptRunner: {runForThread: ({worktreePath}) => Effect.sync(() => {
-      order.push("setup");
-      return {status: "started" as const, scriptId: "synthetic-setup", scriptName: "Synthetic setup", scriptCommand: "synthetic",
-        terminalId: "synthetic-setup-terminal", cwd: worktreePath, async: false,
-        completion: Effect.succeed({exitCode: 0, durationMs: 1})};
-    })},
-    vcsDriver: {isInsideWorkTree: () => Effect.succeed(true)},
-    gitVcsDriver: {
-      execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
-      createWorktree: (input) => Effect.gen(function* () {
-        yield* assertReservedInventory();
-        const history = Option.getOrThrow(yield* repository.readHistory(fixture.command.commandId));
-        assert.isTrue(history.effects.some((fact) => fact.kind === "worktree" && fact.phase === "started" && fact.worktreePath === input.path));
-        assert.deepEqual(nativeCalls, []);
-        order.push("checkout");
-        assertTrue(typeof input.path === "string");
-        yield* fs.makeDirectory(input.path, {recursive: true});
-        return {worktree: {refName: fixture.historical.requestedBranch, path: input.path}};
-      }).pipe(Effect.mapError((cause) => new GitCommandError({operation: "createWorktree", command: "synthetic fixture checkout",
-        cwd: workspaceRoot, detail: "Synthetic SQL or fixture checkout failed", cause}))),
+      ...baseInstance.orchestrationAdapter,
+      openSession: (input) =>
+        Effect.gen(function* () {
+          yield* checkNativeStart("open_session", input.nativeCreationExecution);
+          const now = yield* DateTime.now;
+          const runtime: ProviderAdapterV2SessionRuntime = {
+            ...(input.nativeOperation?.runtimeGeneration === undefined
+              ? {}
+              : { runtimeGeneration: input.nativeOperation.runtimeGeneration }),
+            instanceId: input.modelSelection.instanceId,
+            driver: ProviderDriverKind.make("codex"),
+            providerSessionId: input.providerSessionId,
+            providerSession: {
+              id: input.providerSessionId,
+              driver: ProviderDriverKind.make("codex"),
+              providerInstanceId: input.modelSelection.instanceId,
+              status: "ready",
+              cwd: input.runtimePolicy.cwd ?? workspaceRoot,
+              model: input.modelSelection.model,
+              capabilities: CodexProviderCapabilitiesV2,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
+            },
+            events: Stream.never,
+            ensureThread: (request) =>
+              checkNativeStart("ensure_thread", request.nativeCreationExecution).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    assertTrue(request.existingProviderThread !== undefined);
+                    return {
+                      ...request.existingProviderThread,
+                      providerSessionId: input.providerSessionId,
+                      nativeThreadRef: {
+                        driver: ProviderDriverKind.make("codex"),
+                        nativeId: `synthetic-native-thread:${name}`,
+                        strength: "strong" as const,
+                      },
+                    };
+                  }),
+                ),
+              ),
+            resumeThread: (request) =>
+              checkNativeStart("resume_thread", request.nativeCreationExecution).pipe(
+                Effect.as(request.providerThread),
+              ),
+            startTurn: (request) => checkNativeStart("start_turn", request.nativeCreationExecution),
+            steerTurn: () => Effect.die("Native bootstrap must not steer a turn"),
+            interruptTurn: () => Effect.void,
+            respondToRuntimeRequest: () =>
+              Effect.die("Native bootstrap must not respond to a provider request"),
+            readThreadSnapshot: () => Effect.die("Native bootstrap must not read native history"),
+            rollbackThread: () => Effect.die("Native bootstrap must not roll back native history"),
+            forkThread: () => Effect.die("Native bootstrap must not fork native history"),
+          };
+          return runtime;
+        }),
     },
-    wrapThreadManagement: (service) => ({...service,
-      readCurrentThreadRuntimeAttachment: (threadId) => service.readCurrentThreadRuntimeAttachment(threadId).pipe(
-        Effect.tap((attachment) => Effect.sync(() => {detachments.push({threadId, status: attachment.status});}))),
-      dispatchNativeCreationStage: (command, input) => Effect.gen(function* () {
-        yield* assertReservedInventory();
-        assert.deepEqual(command, expectedCommands()[stages.length]);
-        const before = yield* repository.readHistoryByClaim(input.claimId);
-        assert.deepEqual(before.effectsV2, []);
-        assert.deepEqual(nativeCalls, []);
-        stages.push(command); order.push(command.type);
-        const result = yield* service.dispatchNativeCreationStage(command, input);
-        const receipt = (yield* Context.get(services, EventSink.EventSinkV2).readCommandReceiptIdentity(command.commandId)).receipt;
-        assert.equal(receipt?.status, "accepted"); assert.equal(receipt?.commandType, command.type);
-        assert.equal(receipt?.resultSequence, result.sequence);
-        return result;
-      }).pipe(Effect.mapError((cause) => cause instanceof NativeCreationAuthorityError ? cause :
-        new NativeCreationAuthorityError({code: "unresolved_claim", message: "Synthetic stage reservation or acceptance observer failed"}))),
-    }),
-  }});
+  };
+  config = yield* buildAppUnderTest({
+    config: { cwd: workspaceRoot },
+    layers: {
+      serverEnvironment: { getDescriptor: Effect.succeed(nativeRouterEnvironmentDescriptor) },
+      onNativeCreationServices: (current, database) =>
+        Effect.sync(() => {
+          repository = current;
+          sql = database;
+        }),
+      onV2Services: (context) =>
+        Effect.gen(function* () {
+          services = context;
+          yield* seedRouterProject(context, defaultProjectId, workspaceRoot);
+        }),
+      nativeCreationGrantResolver: {
+        resolveCurrent: ({ actorSessionId, guard }) =>
+          Effect.succeed({
+            enrolledSessionId: actorSessionId,
+            trustedIssuerId: "synthetic-issuer",
+            grant: {
+              grantId: guard.grantId,
+              revision: guard.grantRevision,
+              actorSessionId,
+              issuerId: "synthetic-issuer",
+              expiresAt: DateTime.makeUnsafe("2099-01-01T00:00:00Z"),
+              revoked: false,
+              operationId: `synthetic-native-${name}`,
+              preparationId: fixture.command.commandId.replace(
+                "voice-command-",
+                "voice-bootstrap-",
+              ),
+              preparationSha256: nativeCreationSha256(fixture.preparation),
+              bindingDigest: nativeCreationSha256(nativeCreationCanonicalJson(fixture.binding)),
+              binding: fixture.historical,
+              resources: {
+                projectCwd: workspaceRoot,
+                branch: fixture.historical.requestedBranch,
+                worktreePath: nativeWorktreePath({
+                  worktreesDir: config.worktreesDir,
+                  cwd: workspaceRoot,
+                  branch: fixture.historical.requestedBranch,
+                }),
+              },
+              allowedStages: [
+                "claim",
+                "normalization",
+                "tracker_registration",
+                "bootstrap_detachment",
+                "fetch",
+                "worktree",
+                "worktree_ownership",
+                "native_command",
+                "setup",
+                "setup_detachment",
+                "setup_completion_detachment",
+                "cleanup",
+                "deletion_drain",
+                "git_status_refresh",
+              ],
+              recoveryScopes: [],
+            },
+          }),
+      },
+      nativeCreationBindingResolver: { resolveCurrent: () => Effect.succeed(fixture.historical) },
+      providerInstanceRegistry: {
+        getInstance: (id) =>
+          Effect.succeed(id === nativeInstance.instanceId ? nativeInstance : undefined),
+        listInstances: Effect.succeed([nativeInstance]),
+      },
+      providerAuth: { tryHandlePromptCommand: () => Effect.succeed(false) },
+      terminalManager: {
+        close: (input) =>
+          Effect.sync(() => {
+            closeCalls.push(input);
+          }),
+      },
+      projectSetupScriptRunner: {
+        runForThread: ({ worktreePath }) =>
+          Effect.sync(() => {
+            order.push("setup");
+            return {
+              status: "started" as const,
+              scriptId: "synthetic-setup",
+              scriptName: "Synthetic setup",
+              scriptCommand: "synthetic",
+              terminalId: "synthetic-setup-terminal",
+              cwd: worktreePath,
+              async: false,
+              completion: Effect.succeed({ exitCode: 0, durationMs: 1 }),
+            };
+          }),
+      },
+      vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+      gitVcsDriver: {
+        execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
+        createWorktree: (input) =>
+          Effect.gen(function* () {
+            yield* assertReservedInventory();
+            const history = Option.getOrThrow(
+              yield* repository.readHistory(fixture.command.commandId),
+            );
+            assert.isTrue(
+              history.effects.some(
+                (fact) =>
+                  fact.kind === "worktree" &&
+                  fact.phase === "started" &&
+                  fact.worktreePath === input.path,
+              ),
+            );
+            assert.deepEqual(nativeCalls, []);
+            order.push("checkout");
+            assertTrue(typeof input.path === "string");
+            yield* fs.makeDirectory(input.path, { recursive: true });
+            return { worktree: { refName: fixture.historical.requestedBranch, path: input.path } };
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitCommandError({
+                  operation: "createWorktree",
+                  command: "synthetic fixture checkout",
+                  cwd: workspaceRoot,
+                  detail: "Synthetic SQL or fixture checkout failed",
+                  cause,
+                }),
+            ),
+          ),
+      },
+      wrapThreadManagement: (service) => ({
+        ...service,
+        readCurrentThreadRuntimeAttachment: (threadId) =>
+          service.readCurrentThreadRuntimeAttachment(threadId).pipe(
+            Effect.tap((attachment) =>
+              Effect.sync(() => {
+                detachments.push({ threadId, status: attachment.status });
+              }),
+            ),
+          ),
+        dispatchNativeCreationStage: (command, input) =>
+          Effect.gen(function* () {
+            yield* assertReservedInventory();
+            assert.deepEqual(command, expectedCommands()[stages.length]);
+            const before = yield* repository.readHistoryByClaim(input.claimId);
+            assert.deepEqual(before.effectsV2, []);
+            assert.deepEqual(nativeCalls, []);
+            stages.push(command);
+            order.push(command.type);
+            const result = yield* service.dispatchNativeCreationStage(command, input);
+            const receipt = (yield* Context.get(
+              services,
+              EventSink.EventSinkV2,
+            ).readCommandReceiptIdentity(command.commandId)).receipt;
+            assert.equal(receipt?.status, "accepted");
+            assert.equal(receipt?.commandType, command.type);
+            assert.equal(receipt?.resultSequence, result.sequence);
+            return result;
+          }).pipe(
+            Effect.mapError((cause) =>
+              Schema.is(NativeCreationAuthorityError)(cause)
+                ? cause
+                : new NativeCreationAuthorityError({
+                    code: "unresolved_claim",
+                    message: "Synthetic stage reservation or acceptance observer failed",
+                  }),
+            ),
+          ),
+      }),
+    },
+  });
   const url = yield* getWsServerUrl("/ws");
-  const sessions = yield* sql<{ sessionId: string }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
+  const sessions = yield* sql<{
+    sessionId: string;
+  }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
   assert.equal(sessions.length, 1);
   yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessions[0]!.sessionId}, '2026-10-02T12:00:00Z')`;
-  return {fixture, config, services, repository, sql, url, stages, order, nativeCalls, detachments, closeCalls, expectedCommands, assertReservedInventory};
+  return {
+    fixture,
+    config,
+    services,
+    repository,
+    sql,
+    url,
+    stages,
+    order,
+    nativeCalls,
+    detachments,
+    closeCalls,
+    expectedCommands,
+    assertReservedInventory,
+  };
 });
 
 const nativeWsFixture = nativeCreationWsFixture();
@@ -11430,23 +13693,28 @@ it.effect(
       let capturedSql!: SqlClient.SqlClient;
       yield* buildAppUnderTest({
         layers: {
-          serverEnvironment: {getDescriptor: Effect.succeed(nativeRouterEnvironmentDescriptor)},
-          onNativeCreationServices: (_repository, sql) => Effect.sync(() => { capturedSql = sql; }),
+          serverEnvironment: { getDescriptor: Effect.succeed(nativeRouterEnvironmentDescriptor) },
+          onNativeCreationServices: (_repository, sql) =>
+            Effect.sync(() => {
+              capturedSql = sql;
+            }),
           wrapThreadManagement: (service) => ({
             ...service,
             dispatch: (command) =>
-              Effect.sync(() => { dispatches++; }).pipe(
-                Effect.andThen(service.dispatch(command)),
-              ),
+              Effect.sync(() => {
+                dispatches++;
+              }).pipe(Effect.andThen(service.dispatch(command))),
             dispatchNativeCreationStage: (command, input) =>
-              Effect.sync(() => { dispatches++; }).pipe(
-                Effect.andThen(service.dispatchNativeCreationStage(command, input)),
-              ),
+              Effect.sync(() => {
+                dispatches++;
+              }).pipe(Effect.andThen(service.dispatchNativeCreationStage(command, input))),
           }),
         },
       });
       const url = yield* getWsServerUrl("/ws");
-      const sessions = yield* capturedSql<{ sessionId: string }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
+      const sessions = yield* capturedSql<{
+        sessionId: string;
+      }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
       assert.equal(sessions.length, 1);
       yield* capturedSql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessions[0]!.sessionId}, '2026-10-02T12:00:00Z')`;
       yield* withWsRpcClient(url, (client) =>
@@ -11464,7 +13732,8 @@ it.effect(
           assert.equal(result._tag, "Failure");
           assertTrue(result._tag === "Failure");
           assert.equal(result.failure._tag, "OrchestrationDispatchCommandError");
-          if (result.failure._tag === "OrchestrationDispatchCommandError") assert.equal(result.failure.creationRejectionCode, "unsupported_authority");
+          if (result.failure._tag === "OrchestrationDispatchCommandError")
+            assert.equal(result.failure.creationRejectionCode, "unsupported_authority");
           assert.equal(dispatches, 0);
         }),
       );
@@ -11487,13 +13756,13 @@ it.effect(
           wrapThreadManagement: (service) => ({
             ...service,
             dispatch: (command) =>
-              Effect.sync(() => { dispatches++; }).pipe(
-                Effect.andThen(service.dispatch(command)),
-              ),
+              Effect.sync(() => {
+                dispatches++;
+              }).pipe(Effect.andThen(service.dispatch(command))),
             dispatchNativeCreationStage: (command, input) =>
-              Effect.sync(() => { dispatches++; }).pipe(
-                Effect.andThen(service.dispatchNativeCreationStage(command, input)),
-              ),
+              Effect.sync(() => {
+                dispatches++;
+              }).pipe(Effect.andThen(service.dispatchNativeCreationStage(command, input))),
           }),
         },
       });
@@ -11504,16 +13773,27 @@ it.effect(
       }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
       assert.equal(sessions.length, 1);
       yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessions[0]!.sessionId}, '2026-10-02T12:00:00Z')`;
+      const legacy = routerThreadCreate(ThreadId.make(nativeWsFixture.command.threadId));
+      yield* Schema.decodeUnknownEffect(OrchestrationV2Command)(legacy);
       yield* withWsRpcClient(url, (client) =>
         Effect.gen(function* () {
-          const legacy = routerThreadCreate(ThreadId.make(nativeWsFixture.command.threadId));
-          yield* Schema.decodeUnknownEffect(OrchestrationV2Command)(legacy);
           const result = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](legacy).pipe(
             Effect.result,
           );
           assert.equal(result._tag, "Failure");
           assert.equal(dispatches, 0);
-          yield* sql`DELETE FROM native_creation_automation_enrollments WHERE session_id = ${sessions[0]!.sessionId}`;
+        }),
+      );
+      // The marker is permanent, so a second, unenrolled session shows the same
+      // command is otherwise accepted.
+      const markers = yield* sql<{
+        count: number;
+      }>`SELECT count(*) AS count FROM native_creation_automation_enrollments WHERE session_id = ${sessions[0]!.sessionId}`;
+      assert.equal(markers[0]?.count, 1);
+      const unenrolledUrl = yield* getWsServerUrl("/ws");
+      assert.lengthOf(yield* sql`SELECT session_id FROM auth_sessions`, 2);
+      yield* withWsRpcClient(unenrolledUrl, (client) =>
+        Effect.gen(function* () {
           const allowed = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](legacy);
           assert.isAbove(allowed.sequence, 0);
           assert.equal(dispatches, 1);
@@ -11527,56 +13807,113 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const value = yield* qualifiedNativeRouterFixture("qualified-reservations", true);
-      yield* withWsRpcClient(value.url, (client) => Effect.gen(function* () {
-        const accepted = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap](value.fixture.submission);
-        assert.equal(accepted.commandAcceptance, "accepted");
-        assert.isAbove(accepted.creation?.finalReceipt?.resultSequence ?? 0, 0);
-        assert.deepEqual(value.stages, value.expectedCommands());
-        assert.deepEqual(value.order, ["thread.create", "message.dispatch", "checkout", "setup", "prepared-run.release"]);
-        assert.deepEqual(value.nativeCalls, []);
-        yield* value.assertReservedInventory();
-        const history = yield* value.repository.readHistory(value.fixture.command.commandId);
-        assert.isTrue(Option.isSome(history));
-        assertTrue(Option.isSome(history));
-        assert.isNotNull(history.value.normalizedCommandDigest);
-        assert.isAbove(history.value.effects.length, 0);
-        assert.isTrue(history.value.effects.some((fact) => fact.kind === "setup" && fact.phase === "completed" &&
-          fact.terminalId === "synthetic-setup-terminal" && fact.exitCode === 0));
-        assert.deepEqual(history.value.effectsV2, []);
-        assert.isTrue(value.closeCalls.some((input) => input.terminalId === "synthetic-setup-terminal"));
-        yield* Context.get(value.services, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
-        assert.deepEqual(value.nativeCalls, ["open_session", "ensure_thread", "start_turn"]);
-        const execution = yield* value.repository.readHistoryByClaim(history.value.intent.claimId);
-        assert.equal(execution.effectsV2.filter((fact) => fact.phase === "started").length, 1);
-        const effectsBeforeDuplicate = {stages: value.stages.length, native: value.nativeCalls.length,
-          order: [...value.order], history: execution};
-        const duplicate = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap](value.fixture.submission).pipe(Effect.result);
-        assertTrue(duplicate._tag === "Success");
-        assert.equal(duplicate.success.commandAcceptance, "accepted");
-        assert.equal(duplicate.success.commandId, accepted.commandId);
-        assert.equal(duplicate.success.threadId, accepted.threadId);
-        assert.equal(duplicate.success.messageId, accepted.messageId);
-        const originalCreation = accepted.creation;
-        const replayCreation = duplicate.success.creation;
-        assertTrue(originalCreation !== null && replayCreation !== null);
-        for (const field of ["version", "schema", "preparationId", "operationId", "preparationSha256",
-          "bindingDigest", "promptDigest", "commandDigest", "normalizedCommandDigest", "claimId",
-          "claimedBootId", "claimedAt", "actorSessionId", "grantId", "grantRevision", "binding", "incarnation"] as const) {
-          assert.deepEqual(replayCreation[field], originalCreation[field]);
-        }
-        assert.deepEqual(replayCreation.stageCommands, originalCreation.stageCommands);
-        assert.deepEqual(replayCreation.finalReceipt, originalCreation.finalReceipt);
-        assert.equal(replayCreation.finalReceipt?.resultSequence, originalCreation.finalReceipt?.resultSequence);
-        assert.deepEqual(replayCreation.stageCommands.map((stage) => ({commandId: stage.commandId,
-          commandType: stage.commandType, commandDigest: stage.commandDigest})), value.expectedCommands().map((command) => ({
-          commandId: command.commandId, commandType: command.type, commandDigest: nativeCreationV2CommandDigest(command),
-        })));
-        yield* value.assertReservedInventory();
-        assert.equal(value.stages.length, effectsBeforeDuplicate.stages);
-        assert.equal(value.nativeCalls.length, effectsBeforeDuplicate.native);
-        assert.deepEqual(value.order, effectsBeforeDuplicate.order);
-        assert.deepEqual(yield* value.repository.readHistoryByClaim(history.value.intent.claimId), effectsBeforeDuplicate.history);
-      }));
+      yield* withWsRpcClient(value.url, (client) =>
+        Effect.gen(function* () {
+          const accepted = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap](
+            value.fixture.submission,
+          );
+          assert.equal(accepted.commandAcceptance, "accepted");
+          assert.isAbove(accepted.creation?.finalReceipt?.resultSequence ?? 0, 0);
+          assert.deepEqual(value.stages, value.expectedCommands());
+          assert.deepEqual(value.order, [
+            "thread.create",
+            "message.dispatch",
+            "checkout",
+            "setup",
+            "prepared-run.release",
+          ]);
+          assert.deepEqual(value.nativeCalls, []);
+          yield* value.assertReservedInventory();
+          const history = yield* value.repository.readHistory(value.fixture.command.commandId);
+          assert.isTrue(Option.isSome(history));
+          assertTrue(Option.isSome(history));
+          assert.isNotNull(history.value.normalizedCommandDigest);
+          assert.isAbove(history.value.effects.length, 0);
+          assert.isTrue(
+            history.value.effects.some(
+              (fact) =>
+                fact.kind === "setup" &&
+                fact.phase === "completed" &&
+                fact.terminalId === "synthetic-setup-terminal" &&
+                fact.exitCode === 0,
+            ),
+          );
+          assert.deepEqual(history.value.effectsV2, []);
+          assert.isTrue(
+            value.closeCalls.some((input) => input.terminalId === "synthetic-setup-terminal"),
+          );
+          yield* Context.get(value.services, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
+          assert.deepEqual(value.nativeCalls, ["open_session", "ensure_thread", "start_turn"]);
+          const execution = yield* value.repository.readHistoryByClaim(
+            history.value.intent.claimId,
+          );
+          assert.equal(execution.effectsV2.filter((fact) => fact.phase === "started").length, 1);
+          const effectsBeforeDuplicate = {
+            stages: value.stages.length,
+            native: value.nativeCalls.length,
+            order: [...value.order],
+            history: execution,
+          };
+          const duplicate = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap](
+            value.fixture.submission,
+          ).pipe(Effect.result);
+          assertTrue(duplicate._tag === "Success");
+          assert.equal(duplicate.success.commandAcceptance, "accepted");
+          assert.equal(duplicate.success.commandId, accepted.commandId);
+          assert.equal(duplicate.success.threadId, accepted.threadId);
+          assert.equal(duplicate.success.messageId, accepted.messageId);
+          const originalCreation = accepted.creation;
+          const replayCreation = duplicate.success.creation;
+          assertTrue(originalCreation !== null && replayCreation !== null);
+          for (const field of [
+            "version",
+            "schema",
+            "preparationId",
+            "operationId",
+            "preparationSha256",
+            "bindingDigest",
+            "promptDigest",
+            "commandDigest",
+            "normalizedCommandDigest",
+            "claimId",
+            "claimedBootId",
+            "claimedAt",
+            "actorSessionId",
+            "grantId",
+            "grantRevision",
+            "binding",
+            "incarnation",
+          ] as const) {
+            assert.deepEqual(replayCreation[field], originalCreation[field]);
+          }
+          assert.deepEqual(replayCreation.stageCommands, originalCreation.stageCommands);
+          assert.deepEqual(replayCreation.finalReceipt, originalCreation.finalReceipt);
+          assert.equal(
+            replayCreation.finalReceipt?.resultSequence,
+            originalCreation.finalReceipt?.resultSequence,
+          );
+          assert.deepEqual(
+            replayCreation.stageCommands.map((stage) => ({
+              commandId: stage.commandId,
+              commandType: stage.commandType,
+              commandDigest: stage.commandDigest,
+            })),
+            value.expectedCommands().map((command) => ({
+              commandId: command.commandId,
+              commandType: command.type,
+              commandDigest: nativeCreationV2CommandDigest(command),
+            })),
+          );
+          yield* value.assertReservedInventory();
+          assert.equal(value.stages.length, effectsBeforeDuplicate.stages);
+          assert.equal(value.nativeCalls.length, effectsBeforeDuplicate.native);
+          assert.deepEqual(value.order, effectsBeforeDuplicate.order);
+          assert.deepEqual(
+            yield* value.repository.readHistoryByClaim(history.value.intent.claimId),
+            effectsBeforeDuplicate.history,
+          );
+        }),
+      );
     }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
 );
 
@@ -11616,20 +13953,20 @@ it.effect(
           wrapProjectService: (service) => ({
             ...service,
             create: (input) =>
-              Effect.sync(() => { commands++; }).pipe(
-                Effect.andThen(service.create(input)),
-              ),
+              Effect.sync(() => {
+                commands++;
+              }).pipe(Effect.andThen(service.create(input))),
           }),
           wrapThreadManagement: (service) => ({
             ...service,
             dispatch: (command) =>
-              Effect.sync(() => { commands++; }).pipe(
-                Effect.andThen(service.dispatch(command)),
-              ),
+              Effect.sync(() => {
+                commands++;
+              }).pipe(Effect.andThen(service.dispatch(command))),
             dispatchNativeCreationStage: (command, input) =>
-              Effect.sync(() => { commands++; }).pipe(
-                Effect.andThen(service.dispatchNativeCreationStage(command, input)),
-              ),
+              Effect.sync(() => {
+                commands++;
+              }).pipe(Effect.andThen(service.dispatchNativeCreationStage(command, input))),
           }),
           gitVcsDriver: {
             createWorktree: () =>
@@ -11707,158 +14044,324 @@ it.effect(
     ),
 );
 
-it.effect("observes actual pending and unknown deletion cleanup under Read scope without effects", () =>
-  Effect.gen(function* () {
-    let services!: Context.Context<RouterV2Services>;
-    const effects: string[] = [];
-    yield* buildAppUnderTest({layers: {
-      onV2Services: (context) => Effect.gen(function* () {
-        services = context;
-        yield* seedRouterProject(context);
-        const threads = Context.get(context, ThreadManagement.ThreadManagementService);
-        yield* threads.dispatch({...routerThreadCreate(), branch: "feature/deletion-observer",
-          worktreePath: "/synthetic/router-project/deletion-observer"});
-        yield* threads.acquireWorktreeOwnership(defaultThreadId);
-      }),
-      serverRuntimeStartup: {enqueueCommand: () => Effect.sync(() => {effects.push("startup");}).pipe(Effect.andThen(Effect.die("Read observation must not enqueue a command")))},
-      terminalManager: {close: () => Effect.sync(() => {effects.push("terminal");})},
-      gitVcsDriver: {removeWorktree: () => Effect.sync(() => {effects.push("worktree");}).pipe(Effect.andThen(Effect.die("Read observation must not remove a worktree")))},
-      threadLaunch: {dispatchNativeBootstrap: () => Effect.sync(() => {effects.push("native");}).pipe(Effect.andThen(Effect.die("Read observation must not dispatch native bootstrap")))},
-    }});
-    const threads = Context.get(services, ThreadManagement.ThreadManagementService);
-    const sink = Context.get(services, EventSink.EventSinkV2);
-    const sql = Context.get(services, SqlClient.SqlClient);
-    const lease = (yield* threads.listWorktreeOwnershipLeases).find((entry) => entry.ownerThreadId === defaultThreadId);
-    assertTrue(lease !== undefined);
-    const input = {threadId: defaultThreadId, commandId: CommandId.make("router:observe-deletion")};
-    const deletion = yield* threads.dispatch({type: "thread.delete", ...input,
-      worktreeRemoval: {projectId: defaultProjectId, path: lease.resourcePath, branch: lease.branch, force: true}});
-    const pending = yield* sink.observeThreadDeletionCleanup(input);
-    assert.equal(pending.state, "pending");
-    assert.equal(pending.receipt?.status, "accepted");
-    assert.equal(pending.receipt?.resultSequence, deletion.sequence);
-    assert.equal(pending.removalOutcome, null);
-    const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {scope: "orchestration:read"});
-    assert.equal(token.response.status, 200);
-    const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {headers: {authorization: `Bearer ${token.body.access_token ?? ""}`}});
-    assert.equal(ticketResponse.status, 200);
-    const ticket = yield* ticketResponse.json;
-    const wsUrl = `${yield* getWsServerUrl("/ws", {authenticated: false})}&wsTicket=${encodeURIComponent(Schema.decodeUnknownSync(Schema.Struct({ticket: Schema.String}))(ticket).ticket)}`;
-    const before = {
-      events: yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`,
-      receipts: yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`,
-      outbox: yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
-      leases: yield* threads.listWorktreeOwnershipLeases,
-    };
-    const original = yield* sink.readThreadDeletionCommand(input.commandId);
-    let unknownOutbox!: typeof before.outbox;
-    yield* Effect.scoped(withWsRpcClient(wsUrl, (client) => Effect.gen(function* () {
-      assert.deepEqual(yield* client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input), pending);
-      assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`, before.outbox);
-      const outbox = Context.get(services, EffectOutbox.EffectOutboxV2);
-      const effectId = EventSink.deletionWorktreeEffectIdV1(input.commandId, input.threadId);
-      const binding = yield* sink.readDeletionWorktreeTask(effectId);
-      assertTrue(binding !== null);
-      assert.equal(binding.threadId, input.threadId);
-      const workerId = "router:deletion-observation-unknown";
-      const queued = yield* outbox.listByCommandId(input.commandId);
-      assert.isTrue(queued.every((effect) => effect.status === "pending" && effect.leaseOwner === null));
-      assert.isTrue(queued.some((effect) => effect.id === effectId && effect.request.type === "worktree.cleanup"));
-      assert.deepEqual(yield* outbox.listHeldByThreadId(input.threadId), []);
-      const siblings = queued.filter((effect) => effect.id !== effectId);
-      assert.isTrue(siblings.every((effect) => effect.request.type !== "worktree.cleanup"));
-      const cancelled = yield* outbox.cancelUnsettled({threadId: input.threadId,
-        effectTypes: [...new Set(siblings.map((effect) => effect.request.type))],
-        reason: "Fixture isolates an unexecuted worktree cleanup observation claim"});
-      assert.deepEqual([...cancelled].sort(), siblings.map((effect) => effect.id).sort());
-      assert.deepEqual(yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${input.threadId} AND status = 'running'`, []);
-      const claimed = Option.getOrUndefined(yield* outbox.claimNext({workerId, leaseDurationMs: 60_000}));
-      assertTrue(claimed !== undefined);
-      assert.equal(claimed.id, effectId);
-      assert.equal(claimed.commandId, input.commandId);
-      assert.equal(claimed.threadId, input.threadId);
-      assert.equal(claimed.request.type, "worktree.cleanup");
-      const expectedAttempt = claimed.attemptCount;
-      yield* sink.recordLeaseCleanupTaskOutcome({effectId, workerId, expectedAttempt,
-        outcome: {taskId: effectId, result: null, effect: "unknown"},
-        evidence: {reason: "fixture_has_no_physical_completion_observation"}});
-      const unknown = yield* sink.observeThreadDeletionCleanup(input);
-      assert.equal(unknown.state, "unknown");
-      assert.equal(unknown.reason, "complete_worktree_removal_proof_unavailable");
-      assert.deepEqual(unknown.receipt, pending.receipt);
-      assert.deepEqual(unknown.deletion, pending.deletion);
-      assert.deepEqual(unknown.worktree, pending.worktree);
-      assert.deepEqual(unknown.removalOutcome, {result: null, effect: "unknown"});
-      unknownOutbox = yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
-      const holds = yield* outbox.listHeldByThreadId(input.threadId);
-      assert.isTrue(holds.some((hold) => hold.effectId === binding.effectId && hold.expectedAttempt === expectedAttempt));
-      const outcomes = yield* sql`SELECT * FROM orchestration_v2_lease_cleanup_task_outcomes WHERE effect_id = ${effectId} ORDER BY ordinal`;
-      assert.deepEqual(yield* client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input), unknown);
-      assert.deepEqual(yield* outbox.listHeldByThreadId(input.threadId), holds);
-      assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_lease_cleanup_task_outcomes WHERE effect_id = ${effectId} ORDER BY ordinal`, outcomes);
-    })));
-    assert.deepEqual(yield* sink.readThreadDeletionCommand(input.commandId), original);
-    assert.deepEqual(yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`, before.events);
-    assert.deepEqual(yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`, before.receipts);
-    assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`, unknownOutbox);
-    assert.deepEqual(yield* threads.listWorktreeOwnershipLeases, before.leases);
-    assert.deepEqual(effects, []);
-  }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+it.effect(
+  "observes actual pending and unknown deletion cleanup under Read scope without effects",
+  () =>
+    Effect.gen(function* () {
+      let services!: Context.Context<RouterV2Services>;
+      const effects: string[] = [];
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              services = context;
+              yield* seedRouterProject(context);
+              const threads = Context.get(context, ThreadManagement.ThreadManagementService);
+              yield* threads.dispatch({
+                ...routerThreadCreate(),
+                branch: "feature/deletion-observer",
+                worktreePath: "/synthetic/router-project/deletion-observer",
+              });
+              yield* threads.acquireWorktreeOwnership(defaultThreadId);
+            }),
+          serverRuntimeStartup: {
+            enqueueCommand: () =>
+              Effect.sync(() => {
+                effects.push("startup");
+              }).pipe(Effect.andThen(Effect.die("Read observation must not enqueue a command"))),
+          },
+          terminalManager: {
+            close: () =>
+              Effect.sync(() => {
+                effects.push("terminal");
+              }),
+          },
+          gitVcsDriver: {
+            removeWorktree: () =>
+              Effect.sync(() => {
+                effects.push("worktree");
+              }).pipe(Effect.andThen(Effect.die("Read observation must not remove a worktree"))),
+          },
+          threadLaunch: {
+            dispatchNativeBootstrap: () =>
+              Effect.sync(() => {
+                effects.push("native");
+              }).pipe(
+                Effect.andThen(Effect.die("Read observation must not dispatch native bootstrap")),
+              ),
+          },
+        },
+      });
+      const threads = Context.get(services, ThreadManagement.ThreadManagementService);
+      const sink = Context.get(services, EventSink.EventSinkV2);
+      const sql = Context.get(services, SqlClient.SqlClient);
+      const lease = (yield* threads.listWorktreeOwnershipLeases).find(
+        (entry) => entry.ownerThreadId === defaultThreadId,
+      );
+      assertTrue(lease !== undefined);
+      const input = {
+        threadId: defaultThreadId,
+        commandId: CommandId.make("router:observe-deletion"),
+      };
+      const deletion = yield* threads.dispatch({
+        type: "thread.delete",
+        ...input,
+        worktreeRemoval: {
+          projectId: defaultProjectId,
+          path: lease.resourcePath,
+          branch: lease.branch,
+          force: true,
+        },
+      });
+      const pending = yield* sink.observeThreadDeletionCleanup(input);
+      assert.equal(pending.state, "pending");
+      assert.equal(pending.receipt?.status, "accepted");
+      assert.equal(pending.receipt?.resultSequence, deletion.sequence);
+      assert.equal(pending.removalOutcome, null);
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "orchestration:read",
+      });
+      assert.equal(token.response.status, 200);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+      });
+      assert.equal(ticketResponse.status, 200);
+      const ticket = yield* ticketResponse.json;
+      const decodedTicket = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ ticket: Schema.String }),
+      )(ticket);
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&wsTicket=${encodeURIComponent(decodedTicket.ticket)}`;
+      const before = {
+        events: yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`,
+        receipts: yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`,
+        outbox: yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
+        leases: yield* threads.listWorktreeOwnershipLeases,
+      };
+      const original = yield* sink.readThreadDeletionCommand(input.commandId);
+      let unknownOutbox!: typeof before.outbox;
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            assert.deepEqual(
+              yield* client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input),
+              pending,
+            );
+            assert.deepEqual(
+              yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
+              before.outbox,
+            );
+            const outbox = Context.get(services, EffectOutbox.EffectOutboxV2);
+            const effectId = EventSink.deletionWorktreeEffectIdV1(input.commandId, input.threadId);
+            const binding = yield* sink.readDeletionWorktreeTask(effectId);
+            assertTrue(binding !== null);
+            assert.equal(binding.threadId, input.threadId);
+            const workerId = "router:deletion-observation-unknown";
+            const queued = yield* outbox.listByCommandId(input.commandId);
+            assert.isTrue(
+              queued.every((effect) => effect.status === "pending" && effect.leaseOwner === null),
+            );
+            assert.isTrue(
+              queued.some(
+                (effect) => effect.id === effectId && effect.request.type === "worktree.cleanup",
+              ),
+            );
+            assert.deepEqual(yield* outbox.listHeldByThreadId(input.threadId), []);
+            const siblings = queued.filter((effect) => effect.id !== effectId);
+            assert.isTrue(siblings.every((effect) => effect.request.type !== "worktree.cleanup"));
+            const cancelled = yield* outbox.cancelUnsettled({
+              threadId: input.threadId,
+              effectTypes: [...new Set(siblings.map((effect) => effect.request.type))],
+              reason: "Fixture isolates an unexecuted worktree cleanup observation claim",
+            });
+            assert.deepEqual([...cancelled].sort(), siblings.map((effect) => effect.id).sort());
+            assert.deepEqual(
+              yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${input.threadId} AND status = 'running'`,
+              [],
+            );
+            const claimed = Option.getOrUndefined(
+              yield* outbox.claimNext({ workerId, leaseDurationMs: 60_000 }),
+            );
+            assertTrue(claimed !== undefined);
+            assert.equal(claimed.id, effectId);
+            assert.equal(claimed.commandId, input.commandId);
+            assert.equal(claimed.threadId, input.threadId);
+            assert.equal(claimed.request.type, "worktree.cleanup");
+            const expectedAttempt = claimed.attemptCount;
+            yield* sink.recordLeaseCleanupTaskOutcome({
+              effectId,
+              workerId,
+              expectedAttempt,
+              outcome: { taskId: effectId, result: null, effect: "unknown" },
+              evidence: { reason: "fixture_has_no_physical_completion_observation" },
+            });
+            const unknown = yield* sink.observeThreadDeletionCleanup(input);
+            assert.equal(unknown.state, "unknown");
+            assert.equal(unknown.reason, "complete_worktree_removal_proof_unavailable");
+            assert.deepEqual(unknown.receipt, pending.receipt);
+            assert.deepEqual(unknown.deletion, pending.deletion);
+            assert.deepEqual(unknown.worktree, pending.worktree);
+            assert.deepEqual(unknown.removalOutcome, { result: null, effect: "unknown" });
+            unknownOutbox =
+              yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
+            const holds = yield* outbox.listHeldByThreadId(input.threadId);
+            assert.isTrue(
+              holds.some(
+                (hold) =>
+                  hold.effectId === binding.effectId && hold.expectedAttempt === expectedAttempt,
+              ),
+            );
+            const outcomes =
+              yield* sql`SELECT * FROM orchestration_v2_lease_cleanup_task_outcomes WHERE effect_id = ${effectId} ORDER BY ordinal`;
+            assert.deepEqual(
+              yield* client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input),
+              unknown,
+            );
+            assert.deepEqual(yield* outbox.listHeldByThreadId(input.threadId), holds);
+            assert.deepEqual(
+              yield* sql`SELECT * FROM orchestration_v2_lease_cleanup_task_outcomes WHERE effect_id = ${effectId} ORDER BY ordinal`,
+              outcomes,
+            );
+          }),
+        ),
+      );
+      assert.deepEqual(yield* sink.readThreadDeletionCommand(input.commandId), original);
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`,
+        before.events,
+      );
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`,
+        before.receipts,
+      );
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
+        unknownOutbox,
+      );
+      assert.deepEqual(yield* threads.listWorktreeOwnershipLeases, before.leases);
+      assert.deepEqual(effects, []);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
 );
 
 it.effect("denies deletion cleanup observation before its SQL read without Read scope", () =>
   Effect.gen(function* () {
     let services!: Context.Context<RouterV2Services>;
-    yield* buildAppUnderTest({layers: {onV2Services: (context) => Effect.sync(() => {services = context;})}});
+    yield* buildAppUnderTest({
+      layers: {
+        onV2Services: (context) =>
+          Effect.sync(() => {
+            services = context;
+          }),
+      },
+    });
     const sink = Context.get(services, EventSink.EventSinkV2);
     const originalRead = sink.observeThreadDeletionCleanup;
     const reads: Array<Parameters<typeof originalRead>[0]> = [];
-    Object.defineProperty(sink, "observeThreadDeletionCleanup", {configurable: true, value: (input: Parameters<typeof originalRead>[0]) =>
-      Effect.sync(() => {reads.push(input);}).pipe(Effect.andThen(originalRead(input)))});
-    yield* Effect.addFinalizer(() => Effect.sync(() => {Object.defineProperty(sink, "observeThreadDeletionCleanup", {value: originalRead});}));
-    const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {scope: "orchestration:operate"});
+    Object.defineProperty(sink, "observeThreadDeletionCleanup", {
+      configurable: true,
+      value: (input: Parameters<typeof originalRead>[0]) =>
+        Effect.sync(() => {
+          reads.push(input);
+        }).pipe(Effect.andThen(originalRead(input))),
+    });
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        Object.defineProperty(sink, "observeThreadDeletionCleanup", { value: originalRead });
+      }),
+    );
+    const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+      scope: "orchestration:operate",
+    });
     assert.equal(token.response.status, 200);
-    const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {headers: {authorization: `Bearer ${token.body.access_token ?? ""}`}});
+    const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+      headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+    });
     assert.equal(ticketResponse.status, 200);
-    const ticket = Schema.decodeUnknownSync(Schema.Struct({ticket: Schema.String}))(yield* ticketResponse.json);
-    const wsUrl = `${yield* getWsServerUrl("/ws", {authenticated: false})}&wsTicket=${encodeURIComponent(ticket.ticket)}`;
-    const input = {threadId: ThreadId.make("router:denied-delete-thread"), commandId: CommandId.make("router:denied-delete-command")};
+    const ticket = yield* Schema.decodeUnknownEffect(Schema.Struct({ ticket: Schema.String }))(
+      yield* ticketResponse.json,
+    );
+    const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&wsTicket=${encodeURIComponent(ticket.ticket)}`;
+    const input = {
+      threadId: ThreadId.make("router:denied-delete-thread"),
+      commandId: CommandId.make("router:denied-delete-command"),
+    };
     const sql = Context.get(services, SqlClient.SqlClient);
     const before = yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`;
-    const failure = yield* Effect.scoped(withWsRpcClient(wsUrl, (client) => client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input))).pipe(Effect.flip);
+    const failure = yield* Effect.scoped(
+      withWsRpcClient(wsUrl, (client) =>
+        client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input),
+      ),
+    ).pipe(Effect.flip);
     assert.equal(failure._tag, "EnvironmentAuthorizationError");
     assertTrue(failure._tag === "EnvironmentAuthorizationError");
     assert.equal(failure.requiredScope, "orchestration:read");
     assert.deepEqual(reads, []);
     assert.deepEqual(yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`, before);
-  }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
 );
 
-it.effect("returns requested deletion IDs and null proofs when the actual SQL observation fails", () =>
-  Effect.gen(function* () {
-    let services!: Context.Context<RouterV2Services>;
-    yield* buildAppUnderTest({layers: {onV2Services: (context) => Effect.sync(() => {services = context;})}});
-    const sql = Context.get(services, SqlClient.SqlClient);
-    const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {scope: "orchestration:read"});
-    assert.equal(token.response.status, 200);
-    const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {headers: {authorization: `Bearer ${token.body.access_token ?? ""}`}});
-    assert.equal(ticketResponse.status, 200);
-    const ticket = Schema.decodeUnknownSync(Schema.Struct({ticket: Schema.String}))(yield* ticketResponse.json);
-    const wsUrl = `${yield* getWsServerUrl("/ws", {authenticated: false})}&wsTicket=${encodeURIComponent(ticket.ticket)}`;
-    const input = {threadId: ThreadId.make("router:unavailable-delete-thread"), commandId: CommandId.make("router:unavailable-delete-command")};
-    const before = yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`;
-    const outbox = yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
-    yield* Effect.acquireUseRelease(
-      sql`ALTER TABLE orchestration_command_receipts RENAME TO router_unavailable_deletion_receipts`,
-      () => Effect.scoped(withWsRpcClient(wsUrl, (client) => Effect.gen(function* () {
-        const result = yield* client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input);
-        assert.deepEqual(result, {...input, state: "unknown", receipt: null, deletion: null, worktree: null,
-          removalOutcome: null, currentLease: "unavailable", reason: "deletion_cleanup_observation_unavailable"});
-      }))),
-      () => sql`ALTER TABLE router_unavailable_deletion_receipts RENAME TO orchestration_command_receipts`.pipe(Effect.orDie),
-    );
-    assert.deepEqual(yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`, before);
-    assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`, outbox);
-    assert.deepEqual(yield* sql`SELECT * FROM orchestration_command_receipts`, []);
-  }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+it.effect(
+  "returns requested deletion IDs and null proofs when the actual SQL observation fails",
+  () =>
+    Effect.gen(function* () {
+      let services!: Context.Context<RouterV2Services>;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.sync(() => {
+              services = context;
+            }),
+        },
+      });
+      const sql = Context.get(services, SqlClient.SqlClient);
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "orchestration:read",
+      });
+      assert.equal(token.response.status, 200);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+      });
+      assert.equal(ticketResponse.status, 200);
+      const ticket = yield* Schema.decodeUnknownEffect(Schema.Struct({ ticket: Schema.String }))(
+        yield* ticketResponse.json,
+      );
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&wsTicket=${encodeURIComponent(ticket.ticket)}`;
+      const input = {
+        threadId: ThreadId.make("router:unavailable-delete-thread"),
+        commandId: CommandId.make("router:unavailable-delete-command"),
+      };
+      const before = yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`;
+      const outbox = yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
+      yield* Effect.acquireUseRelease(
+        sql`ALTER TABLE orchestration_command_receipts RENAME TO router_unavailable_deletion_receipts`,
+        () =>
+          Effect.scoped(
+            withWsRpcClient(wsUrl, (client) =>
+              Effect.gen(function* () {
+                const result =
+                  yield* client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input);
+                assert.deepEqual(result, {
+                  ...input,
+                  state: "unknown",
+                  receipt: null,
+                  deletion: null,
+                  worktree: null,
+                  removalOutcome: null,
+                  currentLease: "unavailable",
+                  reason: "deletion_cleanup_observation_unavailable",
+                });
+              }),
+            ),
+          ),
+        () =>
+          sql`ALTER TABLE router_unavailable_deletion_receipts RENAME TO orchestration_command_receipts`.pipe(
+            Effect.orDie,
+          ),
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`, before);
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
+        outbox,
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM orchestration_command_receipts`, []);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
 );

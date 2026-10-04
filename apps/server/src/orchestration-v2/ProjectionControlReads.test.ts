@@ -3,6 +3,7 @@ import {
   EventId,
   MessageId,
   NodeId,
+  PlanId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -22,9 +23,12 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as EventStore from "./EventStore.ts";
+import * as EventSink from "./EventSink.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
+import { providerThreadActivityObservation } from "./ProviderThreadRuntimeObservation.ts";
 
 const threadId = ThreadId.make("thread:control-reads");
 const providerThreadId = ProviderThreadId.make("provider-thread:control-reads");
@@ -132,6 +136,29 @@ function fixtureEvents(now: DateTime.Utc): ReadonlyArray<OrchestrationV2DomainEv
         completedAt: null,
       },
     },
+    // A runtime reply resolves the request's recorded node and the run it belongs to.
+    {
+      ...common,
+      id: EventId.make("control:node"),
+      type: "node.updated",
+      payload: {
+        id: nodeId,
+        threadId,
+        runId,
+        parentNodeId: null,
+        rootNodeId: nodeId,
+        kind: "root_turn",
+        status: "running",
+        countsForRun: true,
+        providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: now,
+        completedAt: null,
+      },
+    },
     {
       ...common,
       id: EventId.make("control:turn"),
@@ -191,6 +218,220 @@ for (const storage of ["sqlite", "memory"] as const) {
     storage === "sqlite"
       ? ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory))
       : ProjectionStore.layerMemory;
+  const countsLayer =
+    storage === "sqlite"
+      ? Layer.merge(storeLayer, EventStore.layer.pipe(Layer.provide(SqlitePersistenceMemory)))
+      : storeLayer;
+  it.effect(
+    `${storage}: operating candidates read only scoped foreground facts and retain completed snoozed threads`,
+    () =>
+      Effect.gen(function* () {
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        // Only the SQLite case has an event store and SQL client beside its projection store.
+        const sqliteEventStore = yield* Effect.serviceOption(EventStore.EventStoreV2);
+        const sqliteClient = yield* Effect.serviceOption(SqlClient.SqlClient);
+        assert.equal(Option.isSome(sqliteEventStore), storage === "sqlite");
+        assert.equal(Option.isSome(sqliteClient), storage === "sqlite");
+        const now = yield* DateTime.now;
+        const threadEvent = fixtureEvents(now).find((event) => event.type === "thread.created")!;
+        const runEvent = fixtureEvents(now).find((event) => event.type === "run.created")!;
+        const requestEvent = fixtureEvents(now).find(
+          (event) => event.type === "runtime-request.updated",
+        )!;
+        const countsProjectId = ProjectId.make("project:operating-counts");
+        const completedId = ThreadId.make("thread:operating-counts:completed-snoozed");
+        for (const [name, projectId, archivedAt, deletedAt, completed] of [
+          ["running", countsProjectId, null, null, false],
+          ["approval", countsProjectId, null, null, false],
+          ["input", countsProjectId, null, null, false],
+          ["plan", countsProjectId, null, null, true],
+          ["completed-snoozed", countsProjectId, null, null, true],
+          ["archived", countsProjectId, now, null, false],
+          ["deleted", countsProjectId, null, now, false],
+          ["other-project", ProjectId.make("project:operating-counts-other"), null, null, false],
+        ] as const) {
+          const id = ThreadId.make(`thread:operating-counts:${name}`);
+          const createdEvent = {
+            ...threadEvent,
+            id: EventId.make(`event:${id}:thread`),
+            threadId: id,
+            payload: {
+              ...threadEvent.payload,
+              id,
+              projectId,
+              archivedAt,
+              deletedAt,
+              interactionMode: name === "plan" ? ("plan" as const) : ("default" as const),
+              settledAt: completed ? now : null,
+              snoozedUntil: completed ? DateTime.add(now, { hours: 1 }) : null,
+              lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
+            },
+          };
+          yield* store.apply(createdEvent);
+          if (storage === "sqlite") {
+            yield* Option.getOrThrow(sqliteEventStore).append({ events: [createdEvent] });
+          }
+          const scopedRunId = RunId.make(`run:operating-counts:${name}`);
+          yield* store.apply({
+            ...runEvent,
+            id: EventId.make(`event:${id}:run`),
+            threadId: id,
+            runId: scopedRunId,
+            payload: {
+              ...runEvent.payload,
+              id: scopedRunId,
+              threadId: id,
+              status: completed ? "completed" : "running",
+              completedAt: completed ? now : null,
+            },
+          });
+          if (name === "approval" || name === "input") {
+            yield* store.apply({
+              ...requestEvent,
+              id: EventId.make(`event:${id}:request`),
+              threadId: id,
+              payload: {
+                ...requestEvent.payload,
+                id: RuntimeRequestId.make(`request:${id}`),
+                status: "pending",
+                kind: name === "approval" ? "command" : "user_input",
+                resolvedAt: null,
+              },
+            });
+          }
+          if (name === "plan") {
+            yield* store.apply({
+              id: EventId.make(`event:${id}:plan`),
+              type: "plan.updated",
+              threadId: id,
+              occurredAt: now,
+              payload: {
+                id: PlanId.make(`plan:${id}`),
+                threadId: id,
+                runId: scopedRunId,
+                nodeId,
+                status: "active",
+                kind: "proposed_plan",
+                markdown: "Synthetic plan",
+              },
+            });
+          }
+        }
+        if (storage === "sqlite") {
+          yield* Option.getOrThrow(sqliteEventStore).appendProjectEvent({
+            eventId: EventId.make("event:operating-counts:project-update"),
+            aggregateKind: "project",
+            aggregateId: countsProjectId,
+            occurredAt: DateTime.formatIso(now),
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "project.meta-updated",
+            payload: { projectId: countsProjectId, updatedAt: DateTime.formatIso(now) },
+          });
+        }
+        const before = yield* store.getOperatingCountsCandidates({ projectId: countsProjectId });
+        assert.isAbove(before.snapshotSequence, 0);
+        if (storage === "sqlite") {
+          const eventStore = Option.getOrThrow(sqliteEventStore);
+          assert.equal(before.snapshotSequence, yield* eventStore.latestApplicationSequence);
+          assert.isAbove(before.snapshotSequence, yield* eventStore.latestSequence());
+        }
+        assert.deepEqual(
+          before.threads.map((thread) => thread.id),
+          ["approval", "completed-snoozed", "input", "plan", "running"].map((name) =>
+            ThreadId.make(`thread:operating-counts:${name}`),
+          ),
+        );
+        const completed = before.threads.find((thread) => thread.id === completedId)!;
+        assert.deepEqual(completed, {
+          id: completedId,
+          projectId: countsProjectId,
+          activeProviderThreadId: providerThreadId,
+          archivedAt: null,
+          deletedAt: null,
+          pendingRuntimeRequest: null,
+          activityRunStatus: null,
+          interactionMode: "default",
+          hasActionableProposedPlan: false,
+          latestRunCompletedAt: now,
+        });
+        assert.equal(
+          before.threads.find(
+            (thread) => thread.id === ThreadId.make("thread:operating-counts:running"),
+          )?.activityRunStatus,
+          "running",
+        );
+        assert.deepEqual(before.threads[0]?.pendingRuntimeRequest, { kind: "command" });
+        assert.deepEqual(before.threads[2]?.pendingRuntimeRequest, { kind: "user_input" });
+        assert.equal(before.threads[3]?.hasActionableProposedPlan, true);
+        assert.equal(before.threads[3]?.interactionMode, "plan");
+        assert.deepEqual(
+          providerThreadActivityObservation(
+            completed,
+            {
+              status: "monitoring",
+              binding: {
+                threadId: completedId,
+                providerThreadId,
+                providerSessionId,
+                instanceId: providerInstanceId,
+                runtimeGeneration: "synthetic-counts-generation",
+              },
+              observedAt: DateTime.formatIso(now),
+            },
+            DateTime.toEpochMillis(now),
+          ),
+          { foreground: null, background: "monitoring", backgroundStatus: "known" },
+        );
+        assert.deepEqual(
+          providerThreadActivityObservation(
+            completed,
+            { status: "unknown", reason: "runtime_not_resident" },
+            DateTime.toEpochMillis(now),
+          ),
+          {
+            foreground: null,
+            background: null,
+            backgroundStatus: "known",
+            reason: "runtime_not_resident",
+          },
+        );
+        assert.deepEqual(
+          (yield* store.getOperatingCountsCandidates({
+            projectId: ProjectId.make("project:absent"),
+          })).threads,
+          [],
+        );
+        assert.lengthOf((yield* store.getOperatingCountsCandidates()).threads, 6);
+        if (storage === "sqlite") {
+          const sql = Option.getOrThrow(sqliteClient);
+          // Candidate columns remain readable when unrelated shell and history JSON cannot decode.
+          yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = '{broken'`;
+          yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = '{broken'`;
+          yield* sql`UPDATE orchestration_v2_projection_runtime_requests SET payload_json = '{broken'`;
+          yield* sql`UPDATE orchestration_v2_projection_plans SET payload_json = '{broken'`;
+          assert.equal(
+            (yield* store.getThreadProjection(completedId).pipe(Effect.result))._tag,
+            "Failure",
+          );
+          assert.deepEqual(
+            yield* store.getOperatingCountsCandidates({ projectId: countsProjectId }),
+            before,
+          );
+          yield* sql`UPDATE orchestration_v2_projection_threads SET interaction_mode = 'invalid-mode'
+          WHERE thread_id = ${completedId}`;
+          assert.equal(
+            (yield* store
+              .getOperatingCountsCandidates({ projectId: countsProjectId })
+              .pipe(Effect.result))._tag,
+            "Failure",
+          );
+        }
+      }).pipe(Effect.provide(Layer.fresh(countsLayer))),
+  );
+
   it.effect(`${storage}: finds the active root turn without an attempt reverse link`, () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;
@@ -214,6 +455,7 @@ for (const storage of ["sqlite", "memory"] as const) {
   it.effect(`${storage}: controls and replies read only their exact durable targets`, () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;
+      const fixtureSql = yield* SqlClient.SqlClient;
       const now = yield* DateTime.now;
       const events = fixtureEvents(now);
       yield* Effect.forEach(events, (event) => store.apply(event), { discard: true });
@@ -339,7 +581,26 @@ for (const storage of ["sqlite", "memory"] as const) {
       }).pipe(
         Effect.provide(
           Layer.merge(ProviderTurnControlService.layer, RuntimeRequestService.layer).pipe(
-            Layer.provide(sessions),
+            Layer.provide(
+              Layer.merge(
+                sessions,
+                Layer.mock(EventSink.EventSinkV2)({
+                  readOrdinaryCheckoutAdmissionForRun: () =>
+                    Effect.gen(function* () {
+                      const rows =
+                        yield* fixtureSql`SELECT admission_id FROM orchestration_v2_ordinary_checkout_admissions WHERE thread_id = ${threadId}`;
+                      assert.deepEqual(rows, []);
+                      return null;
+                    }).pipe(
+                      Effect.mapError(
+                        (cause) => new EventSink.EventSinkWriteError({ eventCount: 0, cause }),
+                      ),
+                    ),
+                  revalidateOrdinaryCheckoutExecution: () =>
+                    Effect.die("Projection-only control fixture has no checkout execution actor."),
+                }),
+              ),
+            ),
           ),
         ),
       );

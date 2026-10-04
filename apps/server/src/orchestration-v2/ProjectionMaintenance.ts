@@ -149,7 +149,8 @@ export const layer: Layer.Layer<
               .read({ afterSequence: lastSequence, throughSequence, limit: pageSize })
               .pipe(Stream.runCollect);
             for (const stored of page) {
-              yield* projectionStore.apply(stored.event);
+              if (stored.event.type !== "provider-session.detach-requested")
+                yield* projectionStore.apply(stored.event);
               if (stored.event.type === "turn-item.updated") {
                 yield* sql`
                 INSERT INTO orchestration_v2_turn_item_positions (
@@ -292,6 +293,12 @@ export const layer: Layer.Layer<
         `;
         const obsolete: number[] = [];
         for (const row of rows) {
+          // The request is durable STOP acceptance evidence, not supersedable session state.
+          if (
+            row.application_event_version === 2 &&
+            row.event_type === "provider-session.detach-requested"
+          )
+            continue;
           if (row.imported_legacy_thread === 1) {
             obsolete.push(row.sequence);
           } else if (row.application_event_version === 2) {

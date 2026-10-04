@@ -18,58 +18,131 @@ import * as CheckpointCapture from "./CheckpointCaptureService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as RunFinalization from "./RunFinalizationService.ts";
 import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
+import type { OrdinaryFinalCheckpointCompletionBasisV1 } from "./EventSink.ts";
 
 function finalizationUse(threadId: ThreadId): OrdinaryCheckout.OrdinaryCheckoutUseV1 {
   const now = DateTime.makeUnsafe("2026-10-03T00:00:00.000Z");
-  const admission = { version: 1 as const, admissionId: "a".repeat(64), admissionSha256: "b".repeat(64) };
-  const applicationBirth = { kind: "application_v2_thread_birth" as const, threadId,
-    eventId: EventId.make("event:finalization-birth"), sequence: 1 };
-  return { version: 1, kind: "ordinary_checkout_use", operationId: "operation:finalization", admission,
-    lease: { resourcePath: "/repo", leaseId: "lease:finalization", ownerThreadId: threadId,
-      ownerIncarnation: OrdinaryCheckout.ordinaryApplicationIncarnationV1(applicationBirth), branch: null,
-      acquiredAtMs: 1, renewedAtMs: 1, expiresAtMs: 9999999999999 },
-    source: { kind: "outbox", workerId: "worker:finalization", expectedAttempt: 1, leaseExpiresAt: DateTime.add(now, { hours: 1 }),
-      link: { version: 1, effectId: "effect:finalization", commandId: CommandId.make("command:finalization"),
-        threadId, requestSha256: "c".repeat(64), admission, recordedAt: now } } };
+  const admission = {
+    version: 1 as const,
+    admissionId: "a".repeat(64),
+    admissionSha256: "b".repeat(64),
+  };
+  const applicationBirth = {
+    kind: "application_v2_thread_birth" as const,
+    threadId,
+    eventId: EventId.make("event:finalization-birth"),
+    sequence: 1,
+  };
+  return {
+    version: 1,
+    kind: "ordinary_checkout_use",
+    operationId: "operation:finalization",
+    admission,
+    lease: {
+      resourcePath: "/repo",
+      leaseId: "lease:finalization",
+      ownerThreadId: threadId,
+      ownerIncarnation: OrdinaryCheckout.ordinaryApplicationIncarnationV1(applicationBirth),
+      branch: null,
+      acquiredAtMs: 1,
+      renewedAtMs: 1,
+      expiresAtMs: 9999999999999,
+    },
+    source: {
+      kind: "outbox",
+      workerId: "worker:finalization",
+      expectedAttempt: 1,
+      leaseExpiresAt: DateTime.add(now, { hours: 1 }),
+      link: {
+        version: 1,
+        effectId: "effect:finalization",
+        commandId: CommandId.make("command:finalization"),
+        threadId,
+        requestSha256: "c".repeat(64),
+        admission,
+        recordedAt: now,
+      },
+    },
+  };
 }
 
-it.effect.each([false, true])("refreshes workspace after checkpoint capture without reading history, ordinary=%s", (ordinary) => {
-  const threadId = ThreadId.make("thread_finalize");
-  const runId = RunId.make("run_finalize");
-  const scopeId = CheckpointScopeId.make("scope_finalize");
-  const use = finalizationUse(threadId);
-  const capture = vi.fn((_input: Parameters<CheckpointCapture.CheckpointCaptureServiceV2Shape["execute"]>[0]) => Effect.void);
-  const refresh = vi.fn(() => Effect.void);
-  const checkpointContext = {
-    runs: [],
-    checkpointScopes: [{ id: scopeId, runId, kind: "root_run" as const, cwd: "/repo" }],
-    checkpoints: [],
-  };
-  const layer = RunFinalization.layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({ execute: capture }),
-        Layer.mock(ProjectionStore.ProjectionStoreV2)({
-          getThreadProjection: () =>
-            Effect.die("workspace refresh must not load transcript history"),
-          getCheckpointContext: () => Effect.succeed(checkpointContext),
-        }),
-        Layer.succeed(RunFinalization.RunFinalizationObserver, {
-          refresh,
-          refreshAfterTurn: () => Effect.void,
-        }),
+it.effect.each(["none", "plain", "execution", "final-basis"] as const)(
+  "refreshes workspace after checkpoint capture without reading history, ordinary=%s",
+  (ordinary) => {
+    const threadId = ThreadId.make("thread_finalize");
+    const runId = RunId.make("run_finalize");
+    const scopeId = CheckpointScopeId.make("scope_finalize");
+    const use = finalizationUse(threadId);
+    const captured: CheckpointCapture.CheckpointCaptureObservationV1 = {
+      version: 1,
+      kind: "skipped",
+      reason: "settled",
+    };
+    if (use.source.kind !== "outbox") throw new Error("Fixture requires an outbox source.");
+    const execution = OrdinaryCheckout.makeOrdinaryCheckoutExecutionRefV1({
+      originalUse: use,
+      executor: { kind: "actual_outbox_claim", source: use.source },
+    });
+    const basis: OrdinaryFinalCheckpointCompletionBasisV1 = {
+      version: 1,
+      schema: "t3.ordinary-final-checkpoint-basis/v1",
+      checkpointExecution: execution,
+      effectId: "effect:finalization",
+      runId,
+      scopeId,
+      joinOrdinal: 2,
+      managedRetirements: [],
+    };
+    const capture = vi.fn(
+      (_input: Parameters<CheckpointCapture.CheckpointCaptureServiceV2Shape["execute"]>[0]) =>
+        Effect.succeed(captured),
+    );
+    const refresh = vi.fn(() => Effect.void);
+    const checkpointContext = {
+      runs: [],
+      checkpointScopes: [{ id: scopeId, runId, kind: "root_run" as const, cwd: "/repo" }],
+      checkpoints: [],
+    };
+    const layer = RunFinalization.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({ execute: capture }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThreadProjection: () =>
+              Effect.die("workspace refresh must not load transcript history"),
+            getCheckpointContext: () => Effect.succeed(checkpointContext),
+          }),
+          Layer.succeed(RunFinalization.RunFinalizationObserver, {
+            refresh,
+            refreshAfterTurn: () => Effect.void,
+          }),
+        ),
       ),
-    ),
-  );
-  return Effect.gen(function* () {
-    const service = yield* RunFinalization.RunFinalizationService;
-    yield* service.finalize({ threadId, runId, scopeId,
-      ...(ordinary ? { ordinaryCheckoutUse: use } : {}) });
-    assert.equal(capture.mock.calls.length, 1);
-    if (ordinary) assert.strictEqual(capture.mock.calls[0]?.[0].ordinaryCheckoutUse, use);
-    assert.deepEqual(refresh.mock.calls[0], [{ cwd: "/repo", threadId, runId }]);
-  }).pipe(Effect.provide(layer));
-});
+    );
+    return Effect.gen(function* () {
+      const service = yield* RunFinalization.RunFinalizationService;
+      const result = yield* service.finalize({
+        threadId,
+        runId,
+        scopeId,
+        ...(ordinary === "none" ? {} : { ordinaryCheckoutUse: use }),
+        ...(ordinary === "execution" || ordinary === "final-basis"
+          ? { ordinaryCheckoutExecution: execution }
+          : {}),
+        ...(ordinary === "final-basis" ? { ordinaryFinalCheckpointBasis: basis } : {}),
+      });
+      assert.strictEqual(result, captured);
+      assert.equal(capture.mock.calls.length, 1);
+      if (ordinary !== "none")
+        assert.strictEqual(capture.mock.calls[0]?.[0].ordinaryCheckoutUse, use);
+      if (ordinary === "execution" || ordinary === "final-basis")
+        assert.strictEqual(capture.mock.calls[0]?.[0].ordinaryCheckoutExecution, execution);
+      if (ordinary === "final-basis")
+        assert.strictEqual(capture.mock.calls[0]?.[0].ordinaryFinalCheckpointBasis, basis);
+      assert.deepEqual(refresh.mock.calls[0], [{ cwd: "/repo", threadId, runId }]);
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 it.effect.each(["stale_admission", "claim_mismatch", "unknown_use"] as const)(
   "finalization preserves %s and stops before workspace refresh",
@@ -77,22 +150,42 @@ it.effect.each(["stale_admission", "claim_mismatch", "unknown_use"] as const)(
     const threadId = ThreadId.make("thread:rejected-finalization");
     const use = finalizationUse(threadId);
     const error = new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
-      reason, threadId, path: "/repo", message: "Durable checkpoint ownership revalidation rejected entry.",
+      reason,
+      threadId,
+      path: "/repo",
+      message: "Durable checkpoint ownership revalidation rejected entry.",
     });
     const refresh = vi.fn(() => Effect.void);
-    const projection = vi.fn(() => Effect.die("Rejected checkpoint must not refresh the workspace."));
-    const layer = RunFinalization.layer.pipe(Layer.provide(Layer.mergeAll(
-      Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({ execute: (input) => {
-        assert.strictEqual(input.ordinaryCheckoutUse, use);
-        return Effect.fail(error);
-      } }),
-      Layer.mock(ProjectionStore.ProjectionStoreV2)({ getCheckpointContext: projection }),
-      Layer.succeed(RunFinalization.RunFinalizationObserver, { refresh, refreshAfterTurn: () => Effect.void }),
-    )));
+    const projection = vi.fn(() =>
+      Effect.die("Rejected checkpoint must not refresh the workspace."),
+    );
+    const layer = RunFinalization.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({
+            execute: (input) => {
+              assert.strictEqual(input.ordinaryCheckoutUse, use);
+              return Effect.fail(error);
+            },
+          }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({ getCheckpointContext: projection }),
+          Layer.succeed(RunFinalization.RunFinalizationObserver, {
+            refresh,
+            refreshAfterTurn: () => Effect.void,
+          }),
+        ),
+      ),
+    );
     return Effect.gen(function* () {
       const service = yield* RunFinalization.RunFinalizationService;
-      const actual = yield* service.finalize({ threadId, runId: RunId.make("run:rejected-finalization"),
-        scopeId: CheckpointScopeId.make("scope:rejected-finalization"), ordinaryCheckoutUse: use }).pipe(Effect.flip);
+      const actual = yield* service
+        .finalize({
+          threadId,
+          runId: RunId.make("run:rejected-finalization"),
+          scopeId: CheckpointScopeId.make("scope:rejected-finalization"),
+          ordinaryCheckoutUse: use,
+        })
+        .pipe(Effect.flip);
       assert.strictEqual(actual, error);
       assert.equal(projection.mock.calls.length, 0);
       assert.equal(refresh.mock.calls.length, 0);

@@ -94,10 +94,16 @@ beforeEach(() => {
   vi.stubGlobal("window", {
     localStorage: {
       getItem: (key: string) => storage.get(key) ?? null,
-      setItem: (key: string, value: string) => { storage.set(key, value); },
-      removeItem: (key: string) => { storage.delete(key); },
+      setItem: (key: string, value: string) => {
+        storage.set(key, value);
+      },
+      removeItem: (key: string) => {
+        storage.delete(key);
+      },
       key: (index: number) => [...storage.keys()][index] ?? null,
-      get length() { return storage.size; },
+      get length() {
+        return storage.size;
+      },
     },
   });
   vi.useFakeTimers();

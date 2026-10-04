@@ -5,51 +5,62 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  type OrchestrationCommand,
-  type OrchestrationThreadShell,
+  type OrchestrationV2ServerCommand,
+  type OrchestrationV2ThreadShell,
   type WorkstreamCommand,
   type WorkstreamDetail,
   type WorkstreamReceipt,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Tool } from "effect/unstable/ai";
 import { McpInvocationContext, type McpCapability } from "../../McpInvocationContext.ts";
-import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import {
   WorkstreamGateway,
   WorkstreamGatewayError,
 } from "../../../workstreams/WorkstreamGateway.ts";
-import { PersistenceSqlError } from "../../../persistence/Errors.ts";
+import { OrchestratorProjectionError } from "../../../orchestration-v2/Orchestrator.ts";
 import { OrganizationToolkitHandlersLive } from "./handlers.ts";
 import { OrganizationCommand, OrganizationToolkit, OrderKey } from "./tools.ts";
 
 const threadId = ThreadId.make("thread-1");
 const commandId = CommandId.make("organization-command-1");
-const thread: OrchestrationThreadShell = {
+const thread: OrchestrationV2ThreadShell = {
   id: threadId,
   projectId: ProjectId.make("project-1"),
   title: "Thread",
+  createdBy: "user",
+  creationSource: "web",
   modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
   runtimeMode: "full-access",
   interactionMode: "default",
   branch: null,
   worktreePath: null,
   pullRequests: [],
-  latestTurn: null,
-  createdAt: "2026-08-01T00:00:00.000Z",
-  updatedAt: "2026-08-01T00:00:00.000Z",
+  providerInstanceId: ProviderInstanceId.make("codex"),
+  lineage: { relationshipToParent: null, parentThreadId: null, rootThreadId: threadId },
+  forkedFrom: null,
+  activeProviderThreadId: null,
+  latestRunId: null,
+  activeRunId: null,
+  status: "idle",
+  pendingRuntimeRequest: null,
+  latestVisibleMessage: null,
+  pendingBackgroundTasks: [],
+  providerInstanceHistory: [],
+  itemCount: 0,
+  visibleItemCount: 0,
+  createdAt: DateTime.makeUnsafe("2026-08-01T00:00:00.000Z"),
+  updatedAt: DateTime.makeUnsafe("2026-08-01T00:00:00.000Z"),
   archivedAt: null,
+  deletedAt: null,
   settledOverride: null,
   settledAt: null,
-  session: null,
   latestUserMessageAt: null,
-  hasPendingApprovals: false,
-  hasPendingUserInput: false,
   hasActionableProposedPlan: false,
 };
 const pendingReceipt: WorkstreamReceipt = {
@@ -76,7 +87,7 @@ const command: typeof OrganizationCommand.Type = {
 };
 const makeHarness = Effect.fn("organizationTestHarness")(function* (
   options: {
-    thread?: OrchestrationThreadShell | null;
+    thread?: OrchestrationV2ThreadShell | null;
     gatewayFailure?: WorkstreamGatewayError;
     receipt?: WorkstreamReceipt;
     detail?: WorkstreamDetail;
@@ -84,35 +95,35 @@ const makeHarness = Effect.fn("organizationTestHarness")(function* (
     dispatchFails?: boolean;
   } = {},
 ) {
-  const commands: OrchestrationCommand[] = [];
+  const commands: OrchestrationV2ServerCommand[] = [];
   const submitted: WorkstreamCommand[] = [];
   let placementCalls = 0;
   let shellCalls = 0;
   const target = options.thread === undefined ? thread : options.thread;
   const dependencies = Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
-      getThreadShellById: (id) =>
+    Layer.mock(ThreadManagementService)({
+      getThreadShell: (id) =>
         options.readbackFails && commands.length > 0
-          ? Effect.fail(new PersistenceSqlError({ operation: "synthetic-readback" }))
-          : Effect.succeed(id === threadId ? Option.fromNullishOr(target) : Option.none()),
+          ? Effect.fail(new OrchestratorProjectionError({ threadId, cause: "synthetic-readback" }))
+          : Effect.succeed(id === threadId ? target : null),
       getShellSnapshot: () =>
         Effect.sync(() => {
           shellCalls++;
           return {
+            schemaVersion: 2 as const,
             snapshotSequence: 1,
-            updatedAt: thread.updatedAt,
-            projects: [],
+            archivedThreads: [],
             threads: target ? [{ ...target, messages: [{ text: "PRIVATE CONTENT" }] }] : [],
           };
         }),
-    }),
-    Layer.mock(OrchestrationEngineService)({
       dispatch: (input) =>
         Effect.gen(function* () {
           commands.push(input);
           if (options.dispatchFails)
-            return yield* Effect.fail(new PersistenceSqlError({ operation: "synthetic-dispatch" }));
-          return { sequence: 42 };
+            return yield* Effect.fail(
+              new OrchestratorProjectionError({ threadId, cause: "synthetic-dispatch" }),
+            );
+          return { sequence: 42, storedEvents: [] };
         }),
     }),
     Layer.mock(WorkstreamGateway)({
@@ -221,7 +232,11 @@ it.effect("dispatches active ordering for a pinned thread without changing its p
       commandId,
       sequence: 42,
       readback: "pending",
-      thread: { pinnedAt: thread.createdAt, pinOrderKey: "a2", activeOrderKey: "a0" },
+      thread: {
+        pinnedAt: DateTime.formatIso(thread.createdAt),
+        pinOrderKey: "a2",
+        activeOrderKey: "a0",
+      },
     });
     expect(h.commands).toEqual([
       { type: "thread.active.reorder", commandId, threadId, orderKey: "a1" },
@@ -232,9 +247,10 @@ it.effect("refuses missing, parked and mismatched targets without dispatch", () 
   Effect.gen(function* () {
     for (const target of [
       null,
+      { ...thread, deletedAt: thread.createdAt },
       { ...thread, archivedAt: thread.createdAt },
       { ...thread, settledOverride: "settled" as const },
-      { ...thread, snoozedUntil: "2099-01-01T00:00:00.000Z" },
+      { ...thread, snoozedUntil: DateTime.makeUnsafe("2099-01-01T00:00:00.000Z") },
     ]) {
       const h = yield* makeHarness({ thread: target });
       yield* h.call("set_thread_pinned", { commandId, threadId, pinned: true }).pipe(Effect.flip);
@@ -361,7 +377,10 @@ it.effect("reports observed native state only after a matching shell readback", 
       thread: { ...thread, pinnedAt: thread.createdAt, pinOrderKey: "a0" },
     });
     expect(yield* h.call("set_thread_pinned", { commandId, threadId, pinned: true })).toMatchObject(
-      { readback: "observed", thread: { threadId, pinnedAt: thread.createdAt } },
+      {
+        readback: "observed",
+        thread: { threadId, pinnedAt: DateTime.formatIso(thread.createdAt) },
+      },
     );
     expect(
       yield* h.call("reorder_thread", { commandId, threadId, list: "pinned", orderKey: "a0" }),

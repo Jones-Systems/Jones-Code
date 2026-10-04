@@ -67,10 +67,10 @@ export class GitWorkflowService extends Context.Service<
     readonly listRefs: (
       input: VcsListRefsInput,
     ) => Effect.Effect<VcsListRefsResult, GitCommandError>;
-    readonly createWorktree: (
+    readonly createWorktree: <E = never, R = never>(
       input: VcsCreateWorktreeInput,
-      options?: GitVcsDriver.CreateWorktreeOptions,
-    ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
+      options?: GitVcsDriver.CreateWorktreeOptions<E, R>,
+    ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError | E, R>;
     readonly listLocalBranchNames: (cwd: string) => Effect.Effect<string[], GitCommandError>;
     readonly fetchRemote: (input: {
       readonly cwd: string;
@@ -97,9 +97,9 @@ export class GitWorkflowService extends Context.Service<
     readonly removeWorktree: (
       input: VcsRemoveWorktreeInput,
     ) => Effect.Effect<void, GitCommandError>;
-    readonly pruneWorktrees: (input: {
-      readonly cwd: string;
-    }) => Effect.Effect<void, GitCommandError>;
+    readonly pruneWorktrees: <E = never, R = never>(
+      input: GitVcsDriver.PruneWorktreesInput<E, R>,
+    ) => Effect.Effect<void, GitCommandError | E, R>;
     readonly deleteLocalBranch: (
       input: GitVcsDriver.GitDeleteLocalBranchInput,
     ) => Effect.Effect<void, GitCommandError>;

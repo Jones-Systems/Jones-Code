@@ -16,10 +16,50 @@ import {
   makeProviderFailureTurnItem,
   MAX_PROVIDER_FAILURE_CODE_LENGTH,
   MAX_PROVIDER_FAILURE_MESSAGE_LENGTH,
+  nativeEffectEvidenceFor,
 } from "./ProviderFailure.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import { ContextHandoffBudgetError } from "./ContextHandoffDelivery.ts";
 import { ProviderAdapterTurnStartError } from "./ProviderAdapter.ts";
+
+it("requires complete operation correlation before allowing a no-effect fallback", () => {
+  const operation = {
+    operationId: "resume-attempt",
+    operation: "resume_thread" as const,
+    runtimeGeneration: "current-process",
+  };
+  assert.equal(
+    nativeEffectEvidenceFor(
+      { cause: { nativeEffect: { ...operation, outcome: "known_no_effect" } } },
+      operation,
+    ).outcome,
+    "known_no_effect",
+  );
+  assert.equal(
+    nativeEffectEvidenceFor(
+      {
+        nativeEffect: {
+          ...operation,
+          runtimeGeneration: "old-process",
+          outcome: "known_no_effect",
+        },
+      },
+      operation,
+    ).outcome,
+    "unknown",
+  );
+  assert.equal(
+    nativeEffectEvidenceFor(
+      {
+        nativeEffect: { ...operation, outcome: "unknown" },
+        cause: { nativeEffect: { ...operation, outcome: "known_no_effect" } },
+      },
+      operation,
+    ).outcome,
+    "unknown",
+  );
+  assert.equal(nativeEffectEvidenceFor(new Error("lost reply"), operation).outcome, "unknown");
+});
 
 it("redacts credentials and URL secrets from provider failures", () => {
   const failure = makeProviderFailure({

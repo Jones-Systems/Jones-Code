@@ -9,13 +9,31 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import type { ProjectionRuntimeRecoveryState } from "./ProjectionStore.ts";
+import type { RestartContinuationDispatchContextV2 } from "./Orchestrator.ts";
 
 import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as EventSink from "./EventSink.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
+import type { RestartContinuationMarkerV2 } from "./EventSink.ts";
+import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
 import {
   isRestartNoteSource,
   restartCancelledBackgroundWorkNote,
 } from "./RestartBackgroundNote.ts";
+
+export function capturedRestartContinuationIds(input: {
+  readonly effectId: string;
+  readonly marker: RestartContinuationMarkerV2;
+}): { readonly commandId: CommandId; readonly messageId: MessageId } {
+  const digest = nativeCreationSha256(
+    nativeCreationCanonicalJson({ version: 1, effectId: input.effectId, marker: input.marker }),
+  );
+  return {
+    commandId: CommandId.make(`command:restart-continuation:captured:${digest}`),
+    messageId: MessageId.make(`message:restart-continuation:${input.marker.sourceRunId}`),
+  };
+}
 
 /**
  * The run a restart continuation resumes, if any: an unfinished root run, or a
@@ -89,19 +107,33 @@ export function restartContinuationRun(
   return run;
 }
 
+export interface RestartContinuationInput {
+  readonly threadId: ThreadId;
+  readonly sourceRunId: RunId;
+  readonly capturedContinuation?: RestartContinuationDispatchContextV2;
+}
+
 export const continueRestartedRun = Effect.fn("RestartContinuation.continueRestartedRun")(
-  function* (input: { readonly threadId: ThreadId; readonly sourceRunId: RunId }) {
-    const settings = yield* ServerSettings.ServerSettingsService;
-    const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
-    if (!enabled) return;
+  function* (input: RestartContinuationInput) {
+    const captured = input.capturedContinuation;
+    const enabled =
+      captured === undefined
+        ? yield* ServerSettings.ServerSettingsService.pipe(
+            Effect.flatMap((settings) => settings.getSettings),
+            Effect.orElseSucceed(() => null),
+          )
+        : null;
+    if (captured === undefined && enabled === null) return;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const messageId = MessageId.make(`message:restart-continuation:${input.sourceRunId}`);
     const projection = yield* threads.getThreadRecords(
       input.threadId,
-      ["messages", "runs", "providerTurns"],
+      ["messages", "runs", "providerTurns", "providerThreads", "attempts"],
       { messageIds: [messageId] },
     );
     if (
+      captured === undefined &&
+      enabled !== null &&
       !resolveProjectSettings(enabled, projection.thread.projectId).settings
         .continueThreadsAfterServerUpdate
     )
@@ -110,16 +142,77 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
 
     if (projection.messages.some((message) => message.id === messageId)) return;
     const source = projection.runs.find((run) => run.id === input.sourceRunId);
-    // A settled source prompts with the note of the background work it lost.
+    // Unmarked settled sources require saved work labels. A captured source
+    // can use the generic prompt after its full released marker is rechecked.
     const noteSource =
       source !== undefined && isRestartNoteSource(source, projection.providerTurns);
-    if (!source || (source.status !== "cancelled" && !noteSource)) return;
+    const capturedSettledSource =
+      captured !== undefined && (source?.status === "completed" || source?.status === "waiting");
+    if (!source || (source.status !== "cancelled" && !noteSource && !capturedSettledSource)) return;
     // A user submission after reconciliation takes precedence over an automatic prompt.
     if (projection.runs.some((run) => run.ordinal > source.ordinal)) return;
     if (projection.thread.providerInstanceId !== source.providerInstanceId) return;
-    yield* threads.dispatch({
+    if (captured !== undefined) {
+      const sink = yield* EventSink.EventSinkV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const marker = yield* sink.readReleasedRestartContinuation({
+        effectId: captured.effectId,
+        threadId: input.threadId,
+        sourceRunId: input.sourceRunId,
+      });
+      const expected = captured.marker;
+      if (
+        marker === null ||
+        nativeCreationCanonicalJson(marker) !== nativeCreationCanonicalJson(expected)
+      )
+        return;
+      const registered = yield* sink.readProviderRuntimeEvidence(input.threadId);
+      const providerThread = projection.providerThreads.find(
+        (candidate) => candidate.id === marker.binding.providerThreadId,
+      );
+      const attempt = projection.attempts.find(
+        (candidate) => candidate.id === marker.sourceRunAttemptId,
+      );
+      if (
+        marker.threadId !== input.threadId ||
+        marker.projectId !== projection.thread.projectId ||
+        marker.sourceRunId !== source.id ||
+        source.activeAttemptId !== marker.sourceRunAttemptId ||
+        source.providerThreadId !== marker.binding.providerThreadId ||
+        source.providerInstanceId !== marker.binding.instanceId ||
+        attempt?.runId !== source.id ||
+        attempt.providerThreadId !== marker.binding.providerThreadId ||
+        projection.thread.activeProviderThreadId !== marker.binding.providerThreadId ||
+        providerThread?.appThreadId !== input.threadId ||
+        providerThread.providerSessionId !== marker.binding.providerSessionId ||
+        providerThread.providerInstanceId !== marker.binding.instanceId ||
+        providerThread.driver !== marker.binding.driver ||
+        providerThread.nativeThreadRef?.nativeId !== marker.binding.nativeThreadId ||
+        registered === null ||
+        registered.evidenceRevision !== marker.evidenceRevision ||
+        (
+          [
+            "threadId",
+            "providerThreadId",
+            "providerSessionId",
+            "instanceId",
+            "driver",
+            "nativeThreadId",
+            "runtimeGeneration",
+          ] as const
+        ).some((key) => registered.binding[key] !== marker.binding[key]) ||
+        (yield* outbox.listHeldByThreadId(input.threadId)).length > 0
+      )
+        return;
+    }
+    // A captured command is bound to the full released marker and real effect.
+    // Its source-stable message ID also catches an earlier ordinary delivery.
+    const command = {
       type: "message.dispatch",
-      commandId: CommandId.make(`command:restart-continuation:${input.sourceRunId}`),
+      commandId:
+        captured === undefined
+          ? CommandId.make(`command:restart-continuation:${input.sourceRunId}`)
+          : capturedRestartContinuationIds(captured).commandId,
       threadId: input.threadId,
       messageId,
       text: noteSource
@@ -131,6 +224,10 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       createdBy: "agent",
       creationSource: "server",
       restartContinuationOfRunId: input.sourceRunId,
-    });
+    } satisfies Parameters<
+      ThreadManagementService.ThreadManagementService["Service"]["dispatchRestartContinuation"]
+    >[0];
+    if (captured === undefined) yield* threads.dispatch(command);
+    else yield* threads.dispatchRestartContinuation(command, captured);
   },
 );

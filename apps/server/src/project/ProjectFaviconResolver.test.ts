@@ -110,6 +110,28 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
       }).pipe(Effect.provide(TestClock.layer())),
     );
 
+    it.effect("invalidates cached misses and overrides only for the selected workspace", () =>
+      Effect.gen(function* () {
+        const resolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        const otherCwd = yield* makeTempDir;
+
+        expect(yield* resolver.resolvePath(cwd)).toBeNull();
+        expect(yield* resolver.resolvePath(cwd, "custom.svg")).toBeNull();
+        expect(yield* resolver.resolvePath(otherCwd)).toBeNull();
+        yield* writeTextFile(cwd, "favicon.svg", "<svg>favicon</svg>");
+        yield* writeTextFile(cwd, "custom.svg", "<svg>custom</svg>");
+        yield* writeTextFile(otherCwd, "favicon.svg", "<svg>other</svg>");
+
+        yield* resolver.invalidate(cwd);
+
+        expect(yield* resolver.resolvePath(cwd)).toBe(path.join(cwd, "favicon.svg"));
+        expect(yield* resolver.resolvePath(cwd, "custom.svg")).toBe(path.join(cwd, "custom.svg"));
+        expect(yield* resolver.resolvePath(otherCwd)).toBeNull();
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
+
     it.effect("prefers well-known favicon files", () =>
       Effect.gen(function* () {
         const resolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;

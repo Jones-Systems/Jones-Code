@@ -30,6 +30,13 @@ export const NativeProviderEnrollmentBinding = Schema.Struct({
 });
 export type NativeProviderEnrollmentBinding = typeof NativeProviderEnrollmentBinding.Type;
 
+export class NativeProviderBuild extends Context.Service<
+  NativeProviderBuild,
+  {
+    readonly readCurrent: Effect.Effect<Option.Option<WorkstreamsNativeBuild>>;
+  }
+>()("t3/workstreams/nativeProvider/enrollment/NativeProviderBuild") {}
+
 export class NativeProviderEnrollmentError extends Schema.TaggedError<NativeProviderEnrollmentError>()(
   "NativeProviderEnrollmentError",
   {},

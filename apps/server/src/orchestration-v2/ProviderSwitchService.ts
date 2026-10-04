@@ -111,7 +111,8 @@ export const layer: Layer.Layer<
               thread.nativeThreadRef !== null,
           );
           const stoppedCodexSource =
-            instanceChanged && Option.isSome(currentInstance) &&
+            instanceChanged &&
+            Option.isSome(currentInstance) &&
             currentInstance.value.driver === CODEX_DRIVER &&
             currentSessions[0]?.driver === CODEX_DRIVER &&
             currentSessions[0]?.status === "stopped";
@@ -136,7 +137,9 @@ export const layer: Layer.Layer<
               : decideProviderSessionTransition({
                   current:
                     Option.isNone(currentInstance) ||
-                    (currentSession === undefined && currentProviderThread === undefined && !stoppedCodexSource)
+                    (currentSession === undefined &&
+                      currentProviderThread === undefined &&
+                      !stoppedCodexSource)
                       ? null
                       : {
                           driver: currentInstance.value.driver,
@@ -154,7 +157,9 @@ export const layer: Layer.Layer<
                           capabilities:
                             negotiatedCapabilities ?? currentInstance.value.capabilities,
                           stoppedWithoutNativeThread:
-                            stoppedCodexSource && currentSession === undefined && currentProviderThread === undefined,
+                            stoppedCodexSource &&
+                            currentSession === undefined &&
+                            currentProviderThread === undefined,
                         },
                   target: {
                     driver: targetInstance.value.driver,

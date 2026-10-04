@@ -14,12 +14,21 @@ import type { PreviewMiniPlayerObstacles } from "../preview/previewMiniPlayerLay
 /** Owns the available conversation space. Floating cards never reserve it themselves. */
 export function ChatCanvas({
   composerOverlayElement,
+  onElementChange,
   children,
   ...props
 }: Omit<ComponentProps<"div">, "className" | "style" | "ref"> & {
   composerOverlayElement: HTMLElement | null;
+  onElementChange?: (element: HTMLDivElement | null) => void;
 }) {
   const elementRef = useRef<HTMLDivElement | null>(null);
+  const attachElement = useCallback(
+    (element: HTMLDivElement | null) => {
+      elementRef.current = element;
+      onElementChange?.(element);
+    },
+    [onElementChange],
+  );
   const widthProbeRef = useRef<HTMLDivElement | null>(null);
   const [timelineElement, registerTimeline] = useState<HTMLElement | null>(null);
   const [preview, setPreview] = useState<ChatCanvasPreview | null>(null);
@@ -109,7 +118,7 @@ export function ChatCanvas({
     <ChatCanvasContext value={context}>
       <div
         {...props}
-        ref={elementRef}
+        ref={attachElement}
         data-chat-canvas
         data-preview-overlaps-chat={layout.overlapsChat || undefined}
         className="relative flex min-h-0 min-w-0 flex-1 flex-col"

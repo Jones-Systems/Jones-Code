@@ -101,7 +101,8 @@ export function resolveImportedContinuationReceipt(
     intentAccepted,
     reason,
   });
-  if (receipt == null) return unknown("The start response is unavailable; observe the same command.");
+  if (receipt == null)
+    return unknown("The start response is unavailable; observe the same command.");
   if (
     receipt.threadId !== expected.threadId ||
     receipt.commandId !== expected.commandId ||
@@ -122,7 +123,10 @@ export function resolveImportedContinuationReceipt(
   }
   const intentAccepted = receipt.intentStatus === "accepted" && observation?.status === "accepted";
   if (receipt.execution.status === "unknown" || receipt.execution.effectOutcome === "unknown") {
-    return unknown(receipt.execution.error ?? "Native execution needs reconciliation.", intentAccepted);
+    return unknown(
+      receipt.execution.error ?? "Native execution needs reconciliation.",
+      intentAccepted,
+    );
   }
   if (
     receipt.intentStatus === "rejected" &&
@@ -165,7 +169,9 @@ export function createThreadContinuationAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
   options: {
     readonly threadRefreshAtom?: (ref: ScopedThreadRef) => Atom.Atom<unknown>;
-    readonly snapshotAtom?: (environmentId: EnvironmentId) => Atom.Atom<OrchestrationV2ShellSnapshot | null>;
+    readonly snapshotAtom?: (
+      environmentId: EnvironmentId,
+    ) => Atom.Atom<OrchestrationV2ShellSnapshot | null>;
   } = {},
 ) {
   return {
@@ -245,7 +251,10 @@ export function resolveCurrentThreadRuntimeStop(
     commandAccepted = false,
     queueFenceInstalled = false,
   ): CurrentThreadRuntimeStopState => ({
-    status: "unknown", commandAccepted, queueFenceInstalled, reason,
+    status: "unknown",
+    commandAccepted,
+    queueFenceInstalled,
+    reason,
   });
   if (result == null) return unknown("The stop response is unavailable; observe the same command.");
   if (
@@ -258,16 +267,22 @@ export function resolveCurrentThreadRuntimeStop(
     return unknown("The stop response does not match the captured current runtime.");
   }
   const receipt = result.receipt;
-  if (receipt !== null && (
-    receipt.commandId !== expected.commandId || receipt.threadId !== expected.threadId ||
-    receipt.commandType !== "provider-session.detach"
-  )) {
+  if (
+    receipt !== null &&
+    (receipt.commandId !== expected.commandId ||
+      receipt.threadId !== expected.threadId ||
+      receipt.commandType !== "provider-session.detach")
+  ) {
     return unknown("The stop receipt belongs to another command.");
   }
   const commandAccepted = result.commandStatus === "accepted" && receipt?.status === "accepted";
   const queueFenceInstalled = result.queueFence.status === "installed";
   if (result.queueFence.status === "unknown" || result.runtimeStop.status === "unknown") {
-    return unknown(result.reason ?? "Runtime stop needs reconciliation.", commandAccepted, queueFenceInstalled);
+    return unknown(
+      result.reason ?? "Runtime stop needs reconciliation.",
+      commandAccepted,
+      queueFenceInstalled,
+    );
   }
   if (
     result.commandStatus === "rejected" &&
@@ -276,14 +291,22 @@ export function resolveCurrentThreadRuntimeStop(
     receipt?.status !== "accepted"
   ) {
     return {
-      status: "rejected", commandAccepted: false, queueFenceInstalled: false,
+      status: "rejected",
+      commandAccepted: false,
+      queueFenceInstalled: false,
       reason: result.reason ?? receipt?.error ?? "The captured runtime stop was rejected.",
     };
   }
-  if (!commandAccepted) return unknown("Runtime stop admission has not been confirmed.", false, queueFenceInstalled);
+  if (!commandAccepted)
+    return unknown("Runtime stop admission has not been confirmed.", false, queueFenceInstalled);
   if (result.runtimeStop.status === "stopped") {
     return queueFenceInstalled
-      ? { status: "stopped", commandAccepted: true, queueFenceInstalled: true, reason: result.reason }
+      ? {
+          status: "stopped",
+          commandAccepted: true,
+          queueFenceInstalled: true,
+          reason: result.reason,
+        }
       : unknown("Runtime stop has no confirmed queue fence.", true);
   }
   return { status: "pending", commandAccepted: true, queueFenceInstalled, reason: result.reason };
@@ -308,9 +331,9 @@ export function resolveThreadRuntimeObservation<E>(
   const binding = result.observation.binding;
   if (
     result.threadId !== thread.id ||
-    (binding !== undefined && (
-      binding.threadId !== thread.id || binding.providerThreadId !== thread.activeProviderThreadId
-    ))
+    (binding !== undefined &&
+      (binding.threadId !== thread.id ||
+        binding.providerThreadId !== thread.activeProviderThreadId))
   ) {
     return { status: "unknown", reason: "runtime_binding_changed" };
   }
@@ -318,40 +341,54 @@ export function resolveThreadRuntimeObservation<E>(
 }
 
 type ThreadOperatingSource =
-  | Pick<OrchestrationV2ThreadShell,
-      "id" | "activeProviderThreadId" | "status" | "pendingRuntimeRequest" |
-      "hasActionableProposedPlan" | "archivedAt">
-  | Pick<EnvironmentThreadShell,
-      "id" | "activeProviderThreadId" | "runtime" | "hasPendingApprovals" |
-      "hasPendingUserInput" | "hasActionableProposedPlan" | "archivedAt">;
+  | Pick<
+      OrchestrationV2ThreadShell,
+      | "id"
+      | "activeProviderThreadId"
+      | "status"
+      | "pendingRuntimeRequest"
+      | "hasActionableProposedPlan"
+      | "archivedAt"
+    >
+  | Pick<
+      EnvironmentThreadShell,
+      | "id"
+      | "activeProviderThreadId"
+      | "runtime"
+      | "hasPendingApprovals"
+      | "hasPendingUserInput"
+      | "hasActionableProposedPlan"
+      | "archivedAt"
+    >;
 
 export function resolveThreadOperatingState(
   thread: ThreadOperatingSource,
   observation: OrchestrationV2ThreadRuntimeObservation,
 ) {
   const request = "pendingRuntimeRequest" in thread ? thread.pendingRuntimeRequest : null;
-  const hasPendingApprovals = "hasPendingApprovals" in thread
-    ? thread.hasPendingApprovals
-    : request !== null && request.kind !== "user_input" && request.kind !== "auth_refresh";
-  const hasPendingInput = "hasPendingUserInput" in thread
-    ? thread.hasPendingUserInput
-    : request?.kind === "user_input";
+  const hasPendingApprovals =
+    "hasPendingApprovals" in thread
+      ? thread.hasPendingApprovals
+      : request !== null && request.kind !== "user_input" && request.kind !== "auth_refresh";
+  const hasPendingInput =
+    "hasPendingUserInput" in thread ? thread.hasPendingUserInput : request?.kind === "user_input";
   const foregroundAttention = hasPendingApprovals
-    ? "approval" as const
+    ? ("approval" as const)
     : hasPendingInput
-      ? "input" as const
+      ? ("input" as const)
       : thread.hasActionableProposedPlan
-        ? "plan" as const
+        ? ("plan" as const)
         : null;
   const foregroundStatus = "status" in thread ? thread.status : thread.runtime?.status;
   const foregroundWorking = foregroundStatus === "starting" || foregroundStatus === "running";
-  const backgroundStatus = observation.status !== "unknown" && (
-    observation.binding.threadId !== thread.id ||
-    observation.binding.providerThreadId !== thread.activeProviderThreadId
-  ) ? "unknown" as const : observation.status;
-  const backgroundDisplay = backgroundStatus === "working" || backgroundStatus === "monitoring"
-    ? backgroundStatus
-    : null;
+  const backgroundStatus =
+    observation.status !== "unknown" &&
+    (observation.binding.threadId !== thread.id ||
+      observation.binding.providerThreadId !== thread.activeProviderThreadId)
+      ? ("unknown" as const)
+      : observation.status;
+  const backgroundDisplay =
+    backgroundStatus === "working" || backgroundStatus === "monitoring" ? backgroundStatus : null;
   const visible = thread.archivedAt === null;
   return {
     foregroundAttention,

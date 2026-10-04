@@ -3,6 +3,7 @@ import {
   CheckpointRef,
   CheckpointScopeId,
   CommandId,
+  ComposerContextId,
   EnvironmentId,
   MessageId,
   NodeId,
@@ -133,63 +134,77 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
   const client = {
     [ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup]: (
       observation: OrchestrationV2ObserveThreadDeletionCleanupInput,
-    ) => Effect.sync(() => {
-      input.deletionObservations?.push(observation);
-      if (input.deletionObservation === undefined) throw new Error("Unexpected deletion observation.");
-      return input.deletionObservation;
-    }),
+    ) =>
+      Effect.sync(() => {
+        input.deletionObservations?.push(observation);
+        if (input.deletionObservation === undefined)
+          throw new Error("Unexpected deletion observation.");
+        return input.deletionObservation;
+      }),
     [ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation]: (
       observationInput: OrchestrationV2GetThreadRuntimeObservationInput,
-    ) => Effect.sync(() => {
-      input.runtimeObservationRequests?.push(observationInput);
-      if (input.runtimeObservation === undefined) throw new Error("Unexpected runtime observation.");
-      return input.runtimeObservation;
-    }),
+    ) =>
+      Effect.sync(() => {
+        input.runtimeObservationRequests?.push(observationInput);
+        if (input.runtimeObservation === undefined)
+          throw new Error("Unexpected runtime observation.");
+        return input.runtimeObservation;
+      }),
     [ORCHESTRATION_V2_WS_METHODS.getOperatingCounts]: (
       countsInput: OrchestrationV2GetOperatingCountsInput,
-    ) => Effect.sync(() => {
-      input.operatingCountRequests?.push(countsInput);
-      if (input.failOperatingCounts) throw new Error("Operating counts manager unavailable.");
-      if (input.operatingCounts === undefined) throw new Error("Unexpected Operating counts read.");
-      return input.operatingCounts;
-    }),
+    ) =>
+      Effect.sync(() => {
+        input.operatingCountRequests?.push(countsInput);
+        if (input.failOperatingCounts) throw new Error("Operating counts manager unavailable.");
+        if (input.operatingCounts === undefined)
+          throw new Error("Unexpected Operating counts read.");
+        return input.operatingCounts;
+      }),
     [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: (
       stopInput: OrchestrationV2StopCurrentThreadRuntimeInput,
-    ) => Effect.sync(() => {
-      input.runtimeStops?.push(stopInput);
-      if (input.loseRuntimeStopResponse) throw new Error("Stop response was lost.");
-      if (input.runtimeStopResult === undefined) throw new Error("Unexpected current runtime stop.");
-      return input.runtimeStopResult;
-    }),
+    ) =>
+      Effect.sync(() => {
+        input.runtimeStops?.push(stopInput);
+        if (input.loseRuntimeStopResponse) throw new Error("Stop response was lost.");
+        if (input.runtimeStopResult === undefined)
+          throw new Error("Unexpected current runtime stop.");
+        return input.runtimeStopResult;
+      }),
     [ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop]: (
       observation: OrchestrationV2ObserveCurrentThreadRuntimeStopInput,
-    ) => Effect.sync(() => {
-      input.runtimeStopObservations?.push(observation);
-      if (input.runtimeStopResult === undefined) throw new Error("Unexpected runtime stop observation.");
-      return input.runtimeStopResult;
-    }),
+    ) =>
+      Effect.sync(() => {
+        input.runtimeStopObservations?.push(observation);
+        if (input.runtimeStopResult === undefined)
+          throw new Error("Unexpected runtime stop observation.");
+        return input.runtimeStopResult;
+      }),
     [ORCHESTRATION_V2_WS_METHODS.reviewImportedHistoryStart]: (
       reviewInput: OrchestrationV2ReviewImportedHistoryStartInput,
-    ) => Effect.sync(() => {
-      input.importedReviews?.push(reviewInput);
-      if (input.importedReview === undefined) throw new Error("Unexpected imported review.");
-      return input.importedReview;
-    }),
+    ) =>
+      Effect.sync(() => {
+        input.importedReviews?.push(reviewInput);
+        if (input.importedReview === undefined) throw new Error("Unexpected imported review.");
+        return input.importedReview;
+      }),
     [ORCHESTRATION_V2_WS_METHODS.startWithImportedHistory]: (
       command: OrchestrationV2StartWithImportedHistoryCommand,
-    ) => Effect.sync(() => {
-      input.importedStarts?.push(command);
-      if (input.loseImportedStartResponse) throw new Error("Start response was lost.");
-      if (input.importedReceipt === undefined) throw new Error("Unexpected imported start.");
-      return input.importedReceipt;
-    }),
+    ) =>
+      Effect.sync(() => {
+        input.importedStarts?.push(command);
+        if (input.loseImportedStartResponse) throw new Error("Start response was lost.");
+        if (input.importedReceipt === undefined) throw new Error("Unexpected imported start.");
+        return input.importedReceipt;
+      }),
     [ORCHESTRATION_V2_WS_METHODS.observeImportedHistoryStart]: (
       observation: OrchestrationV2ObserveImportedHistoryStartInput,
-    ) => Effect.sync(() => {
-      input.importedObservations?.push(observation);
-      if (input.importedReceipt === undefined) throw new Error("Unexpected imported observation.");
-      return input.importedReceipt;
-    }),
+    ) =>
+      Effect.sync(() => {
+        input.importedObservations?.push(observation);
+        if (input.importedReceipt === undefined)
+          throw new Error("Unexpected imported observation.");
+        return input.importedReceipt;
+      }),
     [WS_METHODS.assetsPersistChatAttachments]: (attachmentInput: PersistChatAttachmentsInput) =>
       Effect.sync(() => {
         input.attachmentRequests?.push(attachmentInput);
@@ -198,7 +213,8 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
     [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) =>
       Effect.sync(() => {
         input.commands.push(command);
-        if (input.loseDeleteResponse && command.type === "thread.delete") throw new Error("Delete response was lost.");
+        if (input.loseDeleteResponse && command.type === "thread.delete")
+          throw new Error("Delete response was lost.");
         return { sequence: input.commands.length };
       }),
     [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (requestInput: {
@@ -271,9 +287,8 @@ const importedReview = (
 ): OrchestrationV2ImportedHistoryReviewResult => ({
   version: 2,
   threadId: v2ThreadId,
-  target: delivery.type === "queued_run"
-    ? delivery
-    : { type: "message", messageId: delivery.messageId },
+  target:
+    delivery.type === "queued_run" ? delivery : { type: "message", messageId: delivery.messageId },
   capability: { startWithImportedHistory: true },
   applicability: "imported",
   qualification: { type: "unsupported", reason: "Use the explicit imported action." },
@@ -318,7 +333,15 @@ describe("unified imported continuation commands", () => {
       type: "message",
       messageId: IMPORTED_MESSAGE,
       text: "Continue this reviewed conversation.",
-      attachments: [{ type: "image", id: "stored-image", name: "image.png", mimeType: "image/png", sizeBytes: 10 }],
+      attachments: [
+        {
+          type: "image",
+          id: "stored-image",
+          name: "image.png",
+          mimeType: "image/png",
+          sizeBytes: 10,
+        },
+      ],
       context: { version: 1, records: [] },
       modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "claude-sonnet-4" },
       runtimeMode: "full-access",
@@ -326,141 +349,180 @@ describe("unified imported continuation commands", () => {
       sourcePlanRef: { threadId: v2ThreadId, planId: PlanId.make("reviewed-plan") },
       titleSeed: "Reviewed title",
       dispatchMode: { type: "start_immediately" },
-      deliveryIntent: "start",
+      deliveryIntent: "auto",
     },
     { type: "queued_run", runId: RunId.make("held-run"), messageId: IMPORTED_MESSAGE },
   ];
 
   for (const delivery of deliveries) {
-    it.effect(`delivers the reviewed ${delivery.type} through one unified RPC without ordinary dispatch`, () =>
+    it.effect(
+      `delivers the reviewed ${delivery.type} through one unified RPC without ordinary dispatch`,
+      () =>
+        Effect.gen(function* () {
+          const commands: OrchestrationV2Command[] = [];
+          const importedReviews: OrchestrationV2ReviewImportedHistoryStartInput[] = [];
+          const importedStarts: OrchestrationV2StartWithImportedHistoryCommand[] = [];
+          const receipt = importedReceipt(delivery);
+          const supervisor = yield* makeSupervisor({
+            commands,
+            projects: [],
+            importedReviews,
+            importedStarts,
+            importedReview: importedReview(delivery),
+            importedReceipt: receipt,
+          });
+          const input = { threadId: v2ThreadId, delivery };
+          const prepared = yield* prepareImportedContinuation(input).pipe(
+            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          );
+          const review = yield* reviewImportedHistoryStart(prepared).pipe(
+            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          );
+          expect(importedStarts).toEqual([]);
+          const result = yield* deliverImportedContinuation({
+            ...prepared,
+            commandId: IMPORTED_COMMAND,
+            reviewedBasis: review.reviewedBasis!,
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+          expect(importedReviews).toEqual([input]);
+          expect(importedStarts).toEqual([
+            {
+              type: "thread.imported-history.start",
+              commandId: IMPORTED_COMMAND,
+              reviewedBasis: IMPORTED_BASIS,
+              ...input,
+            },
+          ]);
+          expect(commands).toEqual([]);
+          expect(result).toBe(receipt);
+          if (delivery.type === "queued_run") expect(importedStarts[0]!.delivery).toBe(delivery);
+        }),
+    );
+  }
+
+  it.effect(
+    "persists uploads against the reviewed message before review and preserves context correlation",
+    () =>
       Effect.gen(function* () {
         const commands: OrchestrationV2Command[] = [];
-        const importedReviews: OrchestrationV2ReviewImportedHistoryStartInput[] = [];
+        const attachmentRequests: PersistChatAttachmentsInput[] = [];
+        const stored: ChatAttachment = {
+          type: "image",
+          id: "already-stored",
+          name: "stored.png",
+          mimeType: "image/png",
+          sizeBytes: 10,
+        };
+        const persisted: ChatAttachment = {
+          type: "image",
+          id: "persisted-upload",
+          name: "upload.png",
+          mimeType: "image/png",
+          sizeBytes: 12,
+        };
+        const upload = {
+          type: "image" as const,
+          id: "draft-upload",
+          name: "upload.png",
+          mimeType: "image/png",
+          sizeBytes: 12,
+          dataUrl: "data:image/png;base64,AQ==",
+        };
+        const delivery = {
+          ...deliveries[0]!,
+          type: "message" as const,
+          messageId: IMPORTED_MESSAGE,
+          text: "Reviewed text",
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          dispatchMode: { type: "start_immediately" as const },
+          attachments: [stored, upload],
+          context: {
+            version: 1 as const,
+            records: [
+              {
+                version: 1 as const,
+                kind: "image" as const,
+                contextId: ComposerContextId.make("upload-context"),
+                label: "Uploaded image",
+                attachmentId: "draft-upload",
+                name: "upload.png",
+                mimeType: "image/png",
+                sizeBytes: 12,
+              },
+            ],
+          },
+        };
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          attachmentRequests,
+          persistedAttachments: [persisted],
+        });
+        const prepared = yield* prepareImportedContinuation({
+          threadId: v2ThreadId,
+          delivery,
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+        expect(attachmentRequests).toEqual([
+          {
+            threadId: v2ThreadId,
+            messageId: IMPORTED_MESSAGE,
+            attachments: [upload],
+          },
+        ]);
+        expect(prepared.delivery).toEqual({
+          ...delivery,
+          attachments: [stored, persisted],
+          context: {
+            ...delivery.context,
+            records: [{ ...delivery.context.records[0]!, attachmentId: persisted.id }],
+          },
+        });
+        expect(commands).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "observes the original command after a lost start response without resending or allocating an ID",
+    () =>
+      Effect.gen(function* () {
+        const delivery = deliveries[1]!;
+        const commands: OrchestrationV2Command[] = [];
         const importedStarts: OrchestrationV2StartWithImportedHistoryCommand[] = [];
+        const importedObservations: OrchestrationV2ObserveImportedHistoryStartInput[] = [];
         const receipt = importedReceipt(delivery);
         const supervisor = yield* makeSupervisor({
           commands,
           projects: [],
-          importedReviews,
           importedStarts,
-          importedReview: importedReview(delivery),
+          importedObservations,
           importedReceipt: receipt,
+          loseImportedStartResponse: true,
         });
-        const input = { threadId: v2ThreadId, delivery };
-        const prepared = yield* prepareImportedContinuation(input).pipe(
-          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        const result = yield* Effect.exit(
+          deliverImportedContinuation({
+            threadId: v2ThreadId,
+            commandId: IMPORTED_COMMAND,
+            reviewedBasis: IMPORTED_BASIS,
+            delivery,
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor)),
         );
-        const review = yield* reviewImportedHistoryStart(prepared).pipe(
-          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        );
-        expect(importedStarts).toEqual([]);
-        const result = yield* deliverImportedContinuation({
-          ...prepared,
+        expect(result._tag).toBe("Failure");
+        const observed = yield* observeImportedHistoryStart({
+          threadId: v2ThreadId,
           commandId: IMPORTED_COMMAND,
-          reviewedBasis: review.reviewedBasis!,
         }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
 
-        expect(importedReviews).toEqual([input]);
-        expect(importedStarts).toEqual([{
-          type: "thread.imported-history.start",
-          commandId: IMPORTED_COMMAND,
-          reviewedBasis: IMPORTED_BASIS,
-          ...input,
-        }]);
+        expect(importedStarts).toHaveLength(1);
+        expect(importedStarts[0]!.commandId).toBe(IMPORTED_COMMAND);
+        expect(importedObservations).toEqual([
+          { threadId: v2ThreadId, commandId: IMPORTED_COMMAND },
+        ]);
+        expect(observed).toBe(receipt);
         expect(commands).toEqual([]);
-        expect(result).toBe(receipt);
-        if (delivery.type === "queued_run") expect(importedStarts[0]!.delivery).toBe(delivery);
       }),
-    );
-  }
-
-  it.effect("persists uploads against the reviewed message before review and preserves context correlation", () =>
-    Effect.gen(function* () {
-      const commands: OrchestrationV2Command[] = [];
-      const attachmentRequests: PersistChatAttachmentsInput[] = [];
-      const stored: ChatAttachment = {
-        type: "image", id: "already-stored", name: "stored.png", mimeType: "image/png", sizeBytes: 10,
-      };
-      const persisted: ChatAttachment = {
-        type: "image", id: "persisted-upload", name: "upload.png", mimeType: "image/png", sizeBytes: 12,
-      };
-      const upload = {
-        type: "image" as const, id: "draft-upload", name: "upload.png", mimeType: "image/png", sizeBytes: 12,
-        dataUrl: "data:image/png;base64,AQ==",
-      };
-      const delivery = {
-        ...deliveries[0]!,
-        type: "message" as const,
-        messageId: IMPORTED_MESSAGE,
-        text: "Reviewed text",
-        runtimeMode: "full-access" as const,
-        interactionMode: "default" as const,
-        dispatchMode: { type: "start_immediately" as const },
-        attachments: [stored, upload],
-        context: {
-          version: 1 as const,
-          records: [{
-            version: 1 as const, kind: "image" as const, contextId: "upload-context", label: "Uploaded image",
-            attachmentId: "draft-upload", name: "upload.png", mimeType: "image/png", sizeBytes: 12,
-          }],
-        },
-      };
-      const supervisor = yield* makeSupervisor({
-        commands,
-        projects: [],
-        attachmentRequests,
-        persistedAttachments: [persisted],
-      });
-      const prepared = yield* prepareImportedContinuation({
-        threadId: v2ThreadId,
-        delivery,
-      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
-
-      expect(attachmentRequests).toEqual([{
-        threadId: v2ThreadId, messageId: IMPORTED_MESSAGE, attachments: [upload],
-      }]);
-      expect(prepared.delivery).toEqual({
-        ...delivery,
-        attachments: [stored, persisted],
-        context: { ...delivery.context, records: [{ ...delivery.context.records[0]!, attachmentId: persisted.id }] },
-      });
-      expect(commands).toEqual([]);
-    }),
-  );
-
-  it.effect("observes the original command after a lost start response without resending or allocating an ID", () =>
-    Effect.gen(function* () {
-      const delivery = deliveries[1]!;
-      const commands: OrchestrationV2Command[] = [];
-      const importedStarts: OrchestrationV2StartWithImportedHistoryCommand[] = [];
-      const importedObservations: OrchestrationV2ObserveImportedHistoryStartInput[] = [];
-      const receipt = importedReceipt(delivery);
-      const supervisor = yield* makeSupervisor({
-        commands,
-        projects: [],
-        importedStarts,
-        importedObservations,
-        importedReceipt: receipt,
-        loseImportedStartResponse: true,
-      });
-      const result = yield* Effect.exit(deliverImportedContinuation({
-        threadId: v2ThreadId,
-        commandId: IMPORTED_COMMAND,
-        reviewedBasis: IMPORTED_BASIS,
-        delivery,
-      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor)));
-      expect(result._tag).toBe("Failure");
-      const observed = yield* observeImportedHistoryStart({
-        threadId: v2ThreadId,
-        commandId: IMPORTED_COMMAND,
-      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
-
-      expect(importedStarts).toHaveLength(1);
-      expect(importedStarts[0]!.commandId).toBe(IMPORTED_COMMAND);
-      expect(importedObservations).toEqual([{ threadId: v2ThreadId, commandId: IMPORTED_COMMAND }]);
-      expect(observed).toBe(receipt);
-      expect(commands).toEqual([]);
-    }),
   );
 });
 
@@ -499,62 +561,70 @@ describe("dedicated current runtime stop commands", () => {
     reason: null,
   };
 
-  it.effect("stops only the captured current tuple through the dedicated RPC without reading historical sessions", () =>
-    Effect.gen(function* () {
-      const commands: OrchestrationV2Command[] = [];
-      const projectionRequests: ThreadId[] = [];
-      const runtimeStops: OrchestrationV2StopCurrentThreadRuntimeInput[] = [];
-      const supervisor = yield* makeSupervisor({
-        commands,
-        projects: [],
-        projectionRequests,
-        runtimeStops,
-        runtimeStopResult: result,
-      });
-      const actual = yield* stopCurrentThreadRuntime(input).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      );
+  it.effect(
+    "stops only the captured current tuple through the dedicated RPC without reading historical sessions",
+    () =>
+      Effect.gen(function* () {
+        const commands: OrchestrationV2Command[] = [];
+        const projectionRequests: ThreadId[] = [];
+        const runtimeStops: OrchestrationV2StopCurrentThreadRuntimeInput[] = [];
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          projectionRequests,
+          runtimeStops,
+          runtimeStopResult: result,
+        });
+        const actual = yield* stopCurrentThreadRuntime(input).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
 
-      expect(runtimeStops).toEqual([input]);
-      expect(actual).toBe(result);
-      expect(actual.runtimeStop.status).toBe("pending");
-      expect(commands).toEqual([]);
-      expect(projectionRequests).toEqual([]);
-    }),
+        expect(runtimeStops).toEqual([input]);
+        expect(actual).toBe(result);
+        expect(actual.runtimeStop.status).toBe("pending");
+        expect(commands).toEqual([]);
+        expect(projectionRequests).toEqual([]);
+      }),
   );
 
-  it.effect("observes the same stop command after a lost response without issuing another stop", () =>
-    Effect.gen(function* () {
-      const commands: OrchestrationV2Command[] = [];
-      const runtimeStops: OrchestrationV2StopCurrentThreadRuntimeInput[] = [];
-      const runtimeStopObservations: OrchestrationV2ObserveCurrentThreadRuntimeStopInput[] = [];
-      const unknownResult: OrchestrationV2StopCurrentThreadRuntimeResult = {
-        ...result,
-        runtimeStop: { status: "unknown" },
-        reason: "Native stop needs reconciliation.",
-      };
-      const supervisor = yield* makeSupervisor({
-        commands,
-        projects: [],
-        runtimeStops,
-        runtimeStopObservations,
-        runtimeStopResult: unknownResult,
-        loseRuntimeStopResponse: true,
-      });
-      const lost = yield* Effect.exit(stopCurrentThreadRuntime(input).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      ));
-      expect(lost._tag).toBe("Failure");
-      const observed = yield* observeCurrentThreadRuntimeStop({
-        threadId: v2ThreadId,
-        commandId: input.commandId,
-      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+  it.effect(
+    "observes the same stop command after a lost response without issuing another stop",
+    () =>
+      Effect.gen(function* () {
+        const commands: OrchestrationV2Command[] = [];
+        const runtimeStops: OrchestrationV2StopCurrentThreadRuntimeInput[] = [];
+        const runtimeStopObservations: OrchestrationV2ObserveCurrentThreadRuntimeStopInput[] = [];
+        const unknownResult: OrchestrationV2StopCurrentThreadRuntimeResult = {
+          ...result,
+          runtimeStop: { status: "unknown" },
+          reason: "Native stop needs reconciliation.",
+        };
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          runtimeStops,
+          runtimeStopObservations,
+          runtimeStopResult: unknownResult,
+          loseRuntimeStopResponse: true,
+        });
+        const lost = yield* Effect.exit(
+          stopCurrentThreadRuntime(input).pipe(
+            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          ),
+        );
+        expect(lost._tag).toBe("Failure");
+        const observed = yield* observeCurrentThreadRuntimeStop({
+          threadId: v2ThreadId,
+          commandId: input.commandId,
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
 
-      expect(runtimeStops).toEqual([input]);
-      expect(runtimeStopObservations).toEqual([{ threadId: v2ThreadId, commandId: input.commandId }]);
-      expect(observed).toBe(unknownResult);
-      expect(commands).toEqual([]);
-    }),
+        expect(runtimeStops).toEqual([input]);
+        expect(runtimeStopObservations).toEqual([
+          { threadId: v2ThreadId, commandId: input.commandId },
+        ]);
+        expect(observed).toBe(unknownResult);
+        expect(commands).toEqual([]);
+      }),
   );
 });
 
@@ -572,51 +642,59 @@ describe("current runtime observation reads", () => {
     backgroundSampledAt: "2026-10-03T02:28:30Z",
   };
 
-  it.effect("reads runtime and scoped Operating counts through dedicated read ports without hydration or dispatch", () =>
-    Effect.gen(function* () {
-      const commands: OrchestrationV2Command[] = [];
-      const projectionRequests: ThreadId[] = [];
-      const runtimeObservationRequests: OrchestrationV2GetThreadRuntimeObservationInput[] = [];
-      const operatingCountRequests: OrchestrationV2GetOperatingCountsInput[] = [];
-      const runtimeObservation: OrchestrationV2ThreadRuntimeObservationResult = {
-        threadId: v2ThreadId,
-        observation: { status: "unknown", reason: "Current registration is unavailable." },
-      };
-      const supervisor = yield* makeSupervisor({
-        commands,
-        projects: [],
-        projectionRequests,
-        runtimeObservationRequests,
-        operatingCountRequests,
-        runtimeObservation,
-        operatingCounts: counts,
-      });
-      const observation = yield* getThreadRuntimeObservation({ threadId: v2ThreadId }).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      );
-      const allCounts = yield* getOperatingCounts({}).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      );
-      const scopedCounts = yield* getOperatingCounts({ projectId: ProjectId.make("selected-project") }).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      );
+  it.effect(
+    "reads runtime and scoped Operating counts through dedicated read ports without hydration or dispatch",
+    () =>
+      Effect.gen(function* () {
+        const commands: OrchestrationV2Command[] = [];
+        const projectionRequests: ThreadId[] = [];
+        const runtimeObservationRequests: OrchestrationV2GetThreadRuntimeObservationInput[] = [];
+        const operatingCountRequests: OrchestrationV2GetOperatingCountsInput[] = [];
+        const runtimeObservation: OrchestrationV2ThreadRuntimeObservationResult = {
+          threadId: v2ThreadId,
+          observation: { status: "unknown", reason: "Current registration is unavailable." },
+        };
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          projectionRequests,
+          runtimeObservationRequests,
+          operatingCountRequests,
+          runtimeObservation,
+          operatingCounts: counts,
+        });
+        const observation = yield* getThreadRuntimeObservation({ threadId: v2ThreadId }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
+        const allCounts = yield* getOperatingCounts({}).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
+        const scopedCounts = yield* getOperatingCounts({
+          projectId: ProjectId.make("selected-project"),
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
 
-      expect(observation).toBe(runtimeObservation);
-      expect(allCounts).toBe(counts);
-      expect(scopedCounts).toBe(counts);
-      expect(runtimeObservationRequests).toEqual([{ threadId: v2ThreadId }]);
-      expect(operatingCountRequests).toEqual([{}, { projectId: "selected-project" }]);
-      expect(commands).toEqual([]);
-      expect(projectionRequests).toEqual([]);
-    }),
+        expect(observation).toBe(runtimeObservation);
+        expect(allCounts).toBe(counts);
+        expect(scopedCounts).toBe(counts);
+        expect(runtimeObservationRequests).toEqual([{ threadId: v2ThreadId }]);
+        expect(operatingCountRequests).toEqual([{}, { projectId: "selected-project" }]);
+        expect(commands).toEqual([]);
+        expect(projectionRequests).toEqual([]);
+      }),
   );
 
   it.effect("propagates count-read failures without synthesizing healthy zeros", () =>
     Effect.gen(function* () {
-      const supervisor = yield* makeSupervisor({ commands: [], projects: [], failOperatingCounts: true });
-      const result = yield* Effect.exit(getOperatingCounts({}).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      ));
+      const supervisor = yield* makeSupervisor({
+        commands: [],
+        projects: [],
+        failOperatingCounts: true,
+      });
+      const result = yield* Effect.exit(
+        getOperatingCounts({}).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        ),
+      );
       expect(result._tag).toBe("Failure");
     }),
   );
@@ -1448,14 +1526,18 @@ describe("V2 environment commands", () => {
   );
 });
 
-
 describe("correlated thread deletion cleanup", () => {
   it.effect("forwards exact optional consent with the caller's stable command ID", () =>
     Effect.gen(function* () {
       const commands: OrchestrationV2Command[] = [];
       const supervisor = yield* makeSupervisor({ commands, projects: [] });
       const commandId = CommandId.make("delete-original");
-      const worktreeRemoval = { projectId: ProjectId.make("project-1"), path: "/worktree/exact", branch: "task", force: true } as const;
+      const worktreeRemoval = {
+        projectId: ProjectId.make("project-1"),
+        path: "/worktree/exact",
+        branch: "task",
+        force: true,
+      } as const;
       yield* deleteThread({ threadId: v2ThreadId, commandId, worktreeRemoval }).pipe(
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
       );
@@ -1466,34 +1548,50 @@ describe("correlated thread deletion cleanup", () => {
         { type: "thread.delete", commandId, threadId: v2ThreadId, worktreeRemoval },
         { type: "thread.delete", commandId: "delete-only", threadId: v2ThreadId },
       ]);
-    }),
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 
-  it.effect("observes the original delete after response loss without dispatching or hydrating again", () =>
-    Effect.gen(function* () {
-      const commands: OrchestrationV2Command[] = [];
-      const deletionObservations: OrchestrationV2ObserveThreadDeletionCleanupInput[] = [];
-      const projectionRequests: ThreadId[] = [];
-      const commandId = CommandId.make("delete-lost");
-      const observation: OrchestrationV2ThreadDeletionCleanupObservation = {
-        threadId: v2ThreadId, commandId, receipt: null, deletion: null, worktree: null,
-        state: "unknown", removalOutcome: null, currentLease: "unavailable", reason: "Readback unavailable",
-      };
-      const supervisor = yield* makeSupervisor({
-        commands, projects: [], deletionObservations, projectionRequests,
-        deletionObservation: observation, loseDeleteResponse: true,
-      });
-      const result = yield* Effect.exit(deleteThread({ threadId: v2ThreadId, commandId }).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      ));
-      expect(result._tag).toBe("Failure");
-      const observed = yield* observeThreadDeletionCleanup({ threadId: v2ThreadId, commandId }).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      );
-      expect(observed).toBe(observation);
-      expect(deletionObservations).toEqual([{ threadId: v2ThreadId, commandId }]);
-      expect(commands).toHaveLength(1);
-      expect(projectionRequests).toEqual([]);
-    }),
+  it.effect(
+    "observes the original delete after response loss without dispatching or hydrating again",
+    () =>
+      Effect.gen(function* () {
+        const commands: OrchestrationV2Command[] = [];
+        const deletionObservations: OrchestrationV2ObserveThreadDeletionCleanupInput[] = [];
+        const projectionRequests: ThreadId[] = [];
+        const commandId = CommandId.make("delete-lost");
+        const observation: OrchestrationV2ThreadDeletionCleanupObservation = {
+          threadId: v2ThreadId,
+          commandId,
+          receipt: null,
+          deletion: null,
+          worktree: null,
+          state: "unknown",
+          removalOutcome: null,
+          currentLease: "unavailable",
+          reason: "Readback unavailable",
+        };
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          deletionObservations,
+          projectionRequests,
+          deletionObservation: observation,
+          loseDeleteResponse: true,
+        });
+        const result = yield* Effect.exit(
+          deleteThread({ threadId: v2ThreadId, commandId }).pipe(
+            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          ),
+        );
+        expect(result._tag).toBe("Failure");
+        const observed = yield* observeThreadDeletionCleanup({
+          threadId: v2ThreadId,
+          commandId,
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        expect(observed).toBe(observation);
+        expect(deletionObservations).toEqual([{ threadId: v2ThreadId, commandId }]);
+        expect(commands).toHaveLength(1);
+        expect(projectionRequests).toEqual([]);
+      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 });

@@ -161,13 +161,17 @@ it("requires the missing native thread of a stopped compatible Codex account swi
       current: { ...base, stoppedWithoutNativeThread: true },
       target: {
         ...base,
-        modelSelection: { ...base.modelSelection, instanceId: ProviderInstanceId.make("codex_other") },
+        modelSelection: {
+          ...base.modelSelection,
+          instanceId: ProviderInstanceId.make("codex_other"),
+        },
         available: true,
       },
     }),
     {
       type: "reject",
-      reason: "Switching this stopped Codex conversation to a compatible account requires its saved native thread.",
+      reason:
+        "Switching this stopped Codex conversation to a compatible account requires its saved native thread.",
     },
   );
 });
@@ -182,7 +186,10 @@ it("preserves first starts and incompatible handoff when a stopped native thread
       current: { ...base, stoppedWithoutNativeThread: true },
       target: {
         ...base,
-        modelSelection: { ...base.modelSelection, instanceId: ProviderInstanceId.make("codex_other") },
+        modelSelection: {
+          ...base.modelSelection,
+          instanceId: ProviderInstanceId.make("codex_other"),
+        },
         continuationIdentity: { driverKind: driver, continuationKey: "codex:account:other" },
         available: true,
       },

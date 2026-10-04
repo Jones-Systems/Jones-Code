@@ -109,8 +109,7 @@ export function makeProviderDeclaredHandoffDelivery(
   return Object.freeze({
     canConsumeHandoffSummaries: capabilities.context.canConsumeHandoffSummaries,
     supportsFullThreadHandoff: capabilities.context.supportsFullThreadHandoff,
-    supportsProviderSwitchingViaHandoff:
-      capabilities.sessions.supportsProviderSwitchingViaHandoff,
+    supportsProviderSwitchingViaHandoff: capabilities.sessions.supportsProviderSwitchingViaHandoff,
   });
 }
 
@@ -141,6 +140,13 @@ export interface ProviderPendingStartStopInput {
 
 /** Logical cancellation and provider-session cleanup only; no OS descendant-exit claim. */
 export type ProviderPendingStartStopResult =
+  | {
+      readonly status: "not_pending";
+      readonly binding: ProviderPendingStartStopInput["binding"];
+      readonly runId: RunId;
+      readonly attemptId: RunAttemptId;
+      readonly startOperationId: string;
+    }
   | {
       readonly status: "cancelled";
       readonly binding: ProviderPendingStartStopInput["binding"];
@@ -549,21 +555,26 @@ export function authorizeProviderNativeCreation(
     actualDirectory.trim().length === 0 ||
     actualDirectory !== execution.resources.worktreePath
   ) {
-    return Effect.fail(new ProviderAdapterProtocolError({
-      driver,
-      detail: "Native creation resources do not match the actual runtime directory.",
-    }));
+    return Effect.fail(
+      new ProviderAdapterProtocolError({
+        driver,
+        detail: "Native creation resources do not match the actual runtime directory.",
+      }),
+    );
   }
   return authorizeNativeCreationExecution(execution.context, {
     stage: "native_command",
     resources: execution.resources,
   }).pipe(
     Effect.asVoid,
-    Effect.mapError((cause) => new ProviderAdapterProtocolError({
-      driver,
-      detail: "Native creation authorization failed at the actual native callee.",
-      cause,
-    })),
+    Effect.mapError(
+      (cause) =>
+        new ProviderAdapterProtocolError({
+          driver,
+          detail: "Native creation authorization failed at the actual native callee.",
+          cause,
+        }),
+    ),
   );
 }
 
@@ -580,14 +591,16 @@ export function withProviderNativeEffect<A, E extends ProviderAdapterV2Error, R>
         Schema.is(ProviderNativeEffectEvidence)(evidence) &&
         evidence.operationId === nativeOperation.operationId &&
         evidence.operation === nativeOperation.operation &&
-        ([
-          "instanceId",
-          "threadId",
-          "providerSessionId",
-          "providerThreadId",
-          "runtimeGeneration",
-          "attemptId",
-        ] as const).every(
+        (
+          [
+            "instanceId",
+            "threadId",
+            "providerSessionId",
+            "providerThreadId",
+            "runtimeGeneration",
+            "attemptId",
+          ] as const
+        ).every(
           (key) => nativeOperation[key] === undefined || nativeOperation[key] === evidence[key],
         )
       ) {

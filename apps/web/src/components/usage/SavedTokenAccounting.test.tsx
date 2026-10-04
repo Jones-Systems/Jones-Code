@@ -200,7 +200,7 @@ function report(): TokenAccountingReport {
 }
 
 function ready(saved = report()): TokenAccountingReadResult {
-  return Schema.decodeUnknownSync(TokenAccountingReadResult)({
+  return Schema.decodeSync(TokenAccountingReadResult)({
     state: "ready",
     report: saved,
     readAt: READ_AT,

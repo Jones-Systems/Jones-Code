@@ -56,10 +56,15 @@ export function decideProviderSessionTransition(input: {
   }
 
   const instanceChanged = current.modelSelection.instanceId !== target.modelSelection.instanceId;
-  if (instanceChanged && current.driver === CODEX_DRIVER && current.stoppedWithoutNativeThread === true) {
+  if (
+    instanceChanged &&
+    current.driver === CODEX_DRIVER &&
+    current.stoppedWithoutNativeThread === true
+  ) {
     return {
       type: "reject",
-      reason: "Switching this stopped Codex conversation to a compatible account requires its saved native thread.",
+      reason:
+        "Switching this stopped Codex conversation to a compatible account requires its saved native thread.",
     };
   }
   const runtimeChanged = current.runtimeMode !== target.runtimeMode;

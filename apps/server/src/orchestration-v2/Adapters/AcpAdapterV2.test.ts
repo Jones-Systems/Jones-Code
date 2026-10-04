@@ -1191,8 +1191,12 @@ describe("AcpAdapterV2", () => {
         assert.isDefined(origin);
         assert.strictEqual(origin.producer.token, terminalOrigin.producer.token);
         assert.equal(origin.producer.runtimeGeneration, runtime.runtimeGeneration);
-        const conversation = event.type === "message.updated" ? event.message
-          : event.type === "turn_item.updated" ? event.turnItem : undefined;
+        const conversation =
+          event.type === "message.updated"
+            ? event.message
+            : event.type === "turn_item.updated"
+              ? event.turnItem
+              : undefined;
         if (conversation !== undefined && conversation.threadId !== threadId) {
           childConversationEvents++;
           assert.isNull(conversation.runId);
@@ -1506,77 +1510,99 @@ describe("AcpAdapterV2", () => {
       }).pipe(Effect.provide(testLayer), Effect.scoped),
   );
 
-  it.live("rejects unproved native resume before attachment and keeps complete effects unknown", () =>
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
-      const instanceId = ProviderInstanceId.make("acp-test-resume-proof-gate");
-      const adapter = makeAcpAdapterV2({
-        crypto: yield* Crypto.Crypto,
-        instanceId,
-        flavor: {
-          driver: ACP_TEST_DRIVER,
-          capabilities: AcpProviderCapabilitiesV2,
-          makeRuntime: makeMockRuntime({
-            childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
-            mockAgentPath: yield* path.fromFileUrl(
-              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
-            ),
-            protocolEvents,
-          }),
-        },
-        fileSystem: yield* FileSystem.FileSystem,
-        idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ServerConfig.ServerConfig,
-        selfInvocation: yield* resolveSelfInvocation(),
-      });
-      const threadId = ThreadId.make("thread-acp-resume-proof-gate");
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access", interactionMode: "default", cwd: process.cwd(),
-      });
-      const modelSelection = { instanceId, model: "default" } as const;
-      const runtime = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("provider-session-acp-resume-proof-gate"),
-        modelSelection,
-        runtimePolicy,
-      });
-      const thread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
-      yield* pollProtocolMethods(protocolEvents);
-      const providerThread = {
-        ...thread,
-        nativeThreadRef: { driver: ACP_TEST_DRIVER, nativeId: "persisted-target", strength: "strong" as const },
-      };
-      const nativeOperation = {
-        operationId: "acp-proof-gated-resume",
-        operation: "resume_thread" as const,
-        instanceId, threadId,
-        providerThreadId: providerThread.id,
-        providerSessionId: runtime.providerSessionId,
-        runtimeGeneration: runtime.runtimeGeneration!,
-      };
-      let gated = false;
-      const result = yield* runtime.resumeThread({
-        providerThread, modelSelection, runtimePolicy, nativeOperation,
-        beforeNativeResume: (actual) => Effect.gen(function* () {
-          assert.isUndefined(actual);
-          gated = true;
-          yield* Effect.yieldNow;
-          return yield* new ProviderAdapterProtocolError({
-            driver: ACP_TEST_DRIVER, detail: "Native source proof is unavailable.",
+  it.live(
+    "rejects unproved native resume before attachment and keeps complete effects unknown",
+    () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+        const instanceId = ProviderInstanceId.make("acp-test-resume-proof-gate");
+        const adapter = makeAcpAdapterV2({
+          crypto: yield* Crypto.Crypto,
+          instanceId,
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+              mockAgentPath: yield* path.fromFileUrl(
+                new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+              ),
+              protocolEvents,
+            }),
+          },
+          fileSystem: yield* FileSystem.FileSystem,
+          idAllocator: yield* IdAllocator.IdAllocatorV2,
+          serverConfig: yield* ServerConfig.ServerConfig,
+          selfInvocation: yield* resolveSelfInvocation(),
+        });
+        const threadId = ThreadId.make("thread-acp-resume-proof-gate");
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-acp-resume-proof-gate"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const thread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+        yield* pollProtocolMethods(protocolEvents);
+        const providerThread = {
+          ...thread,
+          nativeThreadRef: {
+            driver: ACP_TEST_DRIVER,
+            nativeId: "persisted-target",
+            strength: "strong" as const,
+          },
+        };
+        const nativeOperation = {
+          operationId: "acp-proof-gated-resume",
+          operation: "resume_thread" as const,
+          instanceId,
+          threadId,
+          providerThreadId: providerThread.id,
+          providerSessionId: runtime.providerSessionId,
+          runtimeGeneration: runtime.runtimeGeneration!,
+        };
+        let gated = false;
+        const result = yield* runtime
+          .resumeThread({
+            providerThread,
+            modelSelection,
+            runtimePolicy,
+            nativeOperation,
+            beforeNativeResume: (actual) =>
+              Effect.gen(function* () {
+                assert.isUndefined(actual);
+                gated = true;
+                yield* Effect.yieldNow;
+                return yield* new ProviderAdapterProtocolError({
+                  driver: ACP_TEST_DRIVER,
+                  detail: "Native source proof is unavailable.",
+                });
+              }),
+          })
+          .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
+        assert.isTrue(gated);
+        assert.isFalse(
+          (yield* pollProtocolMethods(protocolEvents)).some(
+            (method) =>
+              method === "session/load" || method === "session/resume" || method === "session/new",
+          ),
+        );
+        assert.isDefined(result);
+        if (result !== undefined) {
+          assert.equal(result._tag, "ProviderAdapterResumeThreadError");
+          assert.deepEqual("nativeEffect" in result ? result.nativeEffect : undefined, {
+            ...nativeOperation,
+            outcome: "unknown",
           });
-        }),
-      }).pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
-      assert.isTrue(gated);
-      assert.isFalse((yield* pollProtocolMethods(protocolEvents)).some((method) =>
-        method === "session/load" || method === "session/resume" || method === "session/new"));
-      assert.isDefined(result);
-      if (result !== undefined) {
-        assert.equal(result._tag, "ProviderAdapterResumeThreadError");
-        assert.deepEqual("nativeEffect" in result ? result.nativeEffect : undefined,
-          { ...nativeOperation, outcome: "unknown" });
-      }
-    }).pipe(Effect.provide(testLayer), Effect.scoped),
+        }
+      }).pipe(Effect.provide(testLayer), Effect.scoped),
   );
 
   it.live("holds failed eager ACP resume without creating a fresh native session", () =>
@@ -1627,17 +1653,21 @@ describe("AcpAdapterV2", () => {
         providerSessionId,
         runtimeGeneration: "acp-eager-runtime-generation",
       };
-      const error = yield* adapter.openSession({
-        threadId,
-        providerSessionId,
-        modelSelection,
-        runtimePolicy,
-        initialNativeThreadId: "stale-session",
-        nativeOperation,
-      }).pipe(Effect.flip);
+      const error = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+          initialNativeThreadId: "stale-session",
+          nativeOperation,
+        })
+        .pipe(Effect.flip);
       assert.equal(error._tag, "ProviderAdapterOpenSessionError");
-      assert.deepEqual("nativeEffect" in error ? error.nativeEffect : undefined,
-        { ...nativeOperation, outcome: "unknown" });
+      assert.deepEqual("nativeEffect" in error ? error.nativeEffect : undefined, {
+        ...nativeOperation,
+        outcome: "unknown",
+      });
       const startupMethods = yield* pollProtocolMethods(protocolEvents);
       assert.equal(startupMethods.filter((method) => method === "session/resume").length, 1);
       assert.equal(startupMethods.filter((method) => method === "session/new").length, 0);
@@ -13059,7 +13089,10 @@ describe("AcpAdapterV2", () => {
       while (queuedOldMessage === undefined) {
         const event = yield* Queue.take(adapterEvents);
         assert.isDefined(readProviderEventOrigin(event));
-        if (event.type === "message.updated" && event.message.text.includes("queued generation 1")) {
+        if (
+          event.type === "message.updated" &&
+          event.message.text.includes("queued generation 1")
+        ) {
           queuedOldMessage = event;
         }
       }
@@ -13113,9 +13146,7 @@ describe("AcpAdapterV2", () => {
       assert.notInclude(responseLifecycle, "watcher_started");
       const beforeReplacementEvents = yield* Queue.takeAll(adapterEvents);
       assert.isFalse(
-        beforeReplacementEvents.some(
-          (event) => event.type === "runtime_request.updated",
-        ),
+        beforeReplacementEvents.some((event) => event.type === "runtime_request.updated"),
         "post-drain inbound callback must not emit a runtime request",
       );
       assert.equal(runtimeOrdinalSeen, 1);
@@ -13168,8 +13199,10 @@ describe("AcpAdapterV2", () => {
         const queued = yield* Queue.poll(adapterEvents);
         if (Option.isNone(queued)) break;
         // Discard generation 1 terminal and generation 2 startup projection.
-        assert.isFalse(queued.value.type === "message.updated" &&
-          queued.value.message.text.includes("suspended generation 1"));
+        assert.isFalse(
+          queued.value.type === "message.updated" &&
+            queued.value.message.text.includes("suspended generation 1"),
+        );
       }
 
       yield* oldHandlers.sessionUpdate!({
@@ -13254,10 +13287,13 @@ describe("AcpAdapterV2", () => {
           assert.notStrictEqual(origin.producer.token, originalToken);
           assert.equal(origin.producer.runtimeGeneration, runtime.runtimeGeneration);
           assert.equal(origin.turn?.binding.nativeThreadId, "mock-session-1");
-          assert.equal(origin.turn?.providerTurnId, idAllocator.derive.providerTurn({
-            driver: ACP_TEST_DRIVER,
-            nativeTurnId: acpScopedNativeId(instanceId, "mock-session-1:turn:2"),
-          }));
+          assert.equal(
+            origin.turn?.providerTurnId,
+            idAllocator.derive.providerTurn({
+              driver: ACP_TEST_DRIVER,
+              nativeTurnId: acpScopedNativeId(instanceId, "mock-session-1:turn:2"),
+            }),
+          );
           yield* origin.producer.revalidateCurrent;
         }
       }
@@ -13340,9 +13376,9 @@ describe("AcpAdapterV2", () => {
     }).pipe(
       Effect.provide(testLayer),
       Effect.scoped,
-      Effect.onInterrupt(() => Effect.sync(() => {
-        console.error(`ACP callback quarantine interrupted during: ${phase}`);
-      })),
+      Effect.onInterrupt(() =>
+        Effect.logError(`ACP callback quarantine interrupted during: ${phase}`),
+      ),
     );
   });
 

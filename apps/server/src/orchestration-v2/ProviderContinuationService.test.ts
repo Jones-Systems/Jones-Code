@@ -22,6 +22,7 @@ import * as IdAllocator from "./IdAllocator.ts";
 import * as ProviderContinuationRequests from "./ProviderContinuationRequests.ts";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import { ServerActivation } from "../serverActivation.ts";
 
 const threadId = ThreadId.make("thread-provider-continuation");
 const providerThreadId = ProviderThreadId.make("provider-thread-continuation");
@@ -103,6 +104,34 @@ function testLayer(input: {
 }
 
 describe("ProviderContinuationService", () => {
+  it.effect("parks continuation dispatch until server activation", () =>
+    Effect.gen(function* () {
+      const activated = yield* Deferred.make<void>();
+      const dispatched = yield* Queue.unbounded<unknown>();
+      const reads = yield* Ref.make(0);
+      yield* Effect.gen(function* () {
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        yield* requests.offer(request());
+        yield* Effect.yieldNow;
+        assert.equal(yield* Ref.get(reads), 0);
+        assert.equal(yield* Queue.size(dispatched), 0);
+        yield* Deferred.succeed(activated, undefined);
+        yield* Queue.take(dispatched);
+        assert.equal(yield* Ref.get(reads), 1);
+      }).pipe(
+        Effect.provide(
+          testLayer({
+            dispatched,
+            getThreadRecords: () =>
+              Ref.update(reads, (count) => count + 1).pipe(Effect.as(projection)),
+          }),
+        ),
+        Effect.provideService(ServerActivation, Deferred.await(activated)),
+        Effect.scoped,
+      );
+    }),
+  );
+
   it.effect("recovers an unaccepted persisted steer using the same delivery identity", () =>
     Effect.gen(function* () {
       const dispatched = yield* Queue.unbounded<unknown>();

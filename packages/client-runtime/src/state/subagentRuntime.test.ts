@@ -74,10 +74,7 @@ describe("projectedSubagentsToRuntime observed reasoning effort", () => {
 
   it("keeps a sibling's unknown effort independent of another child's observed value", () => {
     const sibling = { ...child, id: NodeId.make("unknown-child") };
-    const rows = projectedSubagentsToRuntime([
-      { ...child, reasoningEffort: "high" },
-      sibling,
-    ]);
+    const rows = projectedSubagentsToRuntime([{ ...child, reasoningEffort: "high" }, sibling]);
 
     expect(rows.map(({ id, effort }) => ({ id, effort }))).toEqual([
       { id: child.id, effort: "high" },

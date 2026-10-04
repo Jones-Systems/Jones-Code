@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -65,7 +66,7 @@ function makeSpawner(
 
 const runWith =
   (spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) =>
-  (input: ProcessRunner.ProcessRunInput) =>
+  <E = never, R = never>(input: ProcessRunner.ProcessRunInput<E, R>) =>
     Effect.service(ProcessRunner.ProcessRunner).pipe(
       Effect.flatMap((runner) =>
         runner.run({
@@ -420,3 +421,71 @@ describe("commandName", () => {
     expect(ProcessRunner.commandName("git")).toBe("git");
   });
 });
+
+class MutationCurrentness extends Context.Service<
+  MutationCurrentness,
+  { readonly current: boolean }
+>()("t3/processRunner.test/MutationCurrentness") {}
+
+it.effect("revalidates mutation after executable resolution and preserves the guard failure", () =>
+  Effect.gen(function* () {
+    const reached = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const stale = { _tag: "StaleMutation" } as const;
+    let resolved = false;
+    let starts = 0;
+    const spawner = makeSpawner(() =>
+      Effect.sync(() => {
+        starts++;
+        return makeHandle({});
+      }),
+    );
+    const guarded = runWith(spawner)({
+      command: "native.cmd",
+      args: [],
+      revalidateMutation: Effect.gen(function* () {
+        expect(resolved).toBe(true);
+        yield* Deferred.succeed(reached, undefined);
+        yield* Deferred.await(release);
+        const state = yield* MutationCurrentness;
+        if (!state.current) return yield* Effect.fail(stale);
+      }),
+    }).pipe(
+      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(SpawnExecutableResolution, () => {
+        resolved = true;
+        return "C:\\native.cmd";
+      }),
+      Effect.provideService(MutationCurrentness, { current: false }),
+      Effect.flip,
+      Effect.forkChild,
+    );
+    const fiber = yield* guarded;
+    yield* Deferred.await(reached);
+    expect(starts).toBe(0);
+    yield* Deferred.succeed(release, undefined);
+    expect(yield* Fiber.join(fiber)).toBe(stale);
+    expect(starts).toBe(0);
+  }),
+);
+
+it.effect("interrupts a waiting mutation guard without spawning a process", () =>
+  Effect.gen(function* () {
+    const reached = yield* Deferred.make<void>();
+    let starts = 0;
+    const spawner = makeSpawner(() =>
+      Effect.sync(() => {
+        starts++;
+        return makeHandle({});
+      }),
+    );
+    const fiber = yield* runWith(spawner)({
+      command: "fake",
+      args: [],
+      revalidateMutation: Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never)),
+    }).pipe(Effect.forkChild);
+    yield* Deferred.await(reached);
+    yield* Fiber.interrupt(fiber);
+    expect(starts).toBe(0);
+  }),
+);

@@ -19,16 +19,26 @@ Transcript import reads user and assistant rows from `projection_thread_messages
 message identifiers, text, supported attachments, timestamps, role, and ordering. A message that was
 still streaming becomes an interrupted turn item.
 
-The importer does not translate provider session identity, native provider runs, checkpoints and
-diffs, activities and tool calls, approvals, or proposed plans. V2 therefore must not present those
-records as migrated history.
+The importer does not translate current provider process identity, native provider runs, checkpoints
+and diffs, activities and tool calls, approvals, or proposed plans into executable V2 state. Historical
+native continuation evidence is retained separately; it cannot register a running replacement process.
 
 ## First continuation
 
-A migrated thread has no active provider thread. Its first continuation creates a fresh provider
-session and sends a legacy handoff built only from user and assistant messages. The handoff selects
-the newest transcript suffix within a 32,000-character budget, including section labels and the
-import notice. This budget is separate from portable provider handoffs.
+A genuine stopped source runtime row can retain a native conversation cursor only when its
+historical provider, account, driver, native reference, continuation key and source-store accessibility
+agree. Qualification creates an unloaded provider-thread binding without a live session or run.
+An importer-created stopped row is not stopped-source proof. Missing or ambiguous evidence remains
+unknown; proved incompatibility remains unsupported. Neither outcome silently starts a fresh session.
+
+An explicit fresh handoff uses only user and assistant messages. It selects the newest transcript
+suffix within a 32,000-character budget, including section labels and the import notice. This budget
+is separate from portable provider handoffs.
+
+Copying `state.sqlite` to `statev2.sqlite` does not qualify the selected store for native operations.
+The existing authority generation belongs to its original database binding. V2 and other selected
+stores remain unavailable to qualified native callers until separately qualified; rejection does
+not rewrite the original authority or its rollback state.
 
 ## Client and server cutover
 

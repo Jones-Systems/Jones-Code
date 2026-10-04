@@ -437,6 +437,7 @@ export const make = Effect.gen(function* () {
       acceptedAt: now,
       events: plan.events,
       effects: plan.effects,
+      attachmentNamespaceCleanupPlans: plan.attachmentNamespaceCleanupPlans,
     });
     if (
       committed.receipt.threadId !== command.threadId ||

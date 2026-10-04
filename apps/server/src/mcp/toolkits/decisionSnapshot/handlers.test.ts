@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpInvocationContext, type McpCapability } from "../../McpInvocationContext.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderSessionManagerV2 } from "../../../orchestration-v2/ProviderSessionManager.ts";
 import {
   WorkstreamGateway,
   WorkstreamGatewayError,
@@ -14,12 +14,12 @@ import { CollectorFailure, DecisionSnapshotCollector } from "./collector.ts";
 import { DecisionSnapshotToolkitHandlersLive } from "./handlers.ts";
 import { DecisionSnapshotToolkit } from "./tools.ts";
 
-const harness = Effect.fnUntraced(function* (invalidOutput = false) {
+const harness = Effect.fnUntraced(function* (invalidOutput = false, backgroundUnknown = 0) {
   let reads = 0;
   let launches = 0;
   let envelope = "";
   const dependencies = Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
+    Layer.mock(ProviderSessionManagerV2)({
       getOperatingCounts: () => {
         reads++;
         return Effect.succeed({
@@ -29,6 +29,7 @@ const harness = Effect.fnUntraced(function* (invalidOutput = false) {
           foregroundWaitingInput: 2,
           foregroundWaitingPlan: 1,
           backgroundOperating: 2,
+          backgroundUnknown,
           snapshotSequence: 42,
           backgroundSampledAt: "2026-10-02T00:00:00Z",
           observedAt: "2026-10-02T00:00:01Z",
@@ -127,4 +128,29 @@ it.effect("rejects invalid composer output while preserving independent native o
       },
     });
   }),
+);
+
+it.effect(
+  "preserves incomplete native activity as partial rather than claiming an exact count",
+  () =>
+    Effect.gen(function* () {
+      const h = yield* harness(false, 2);
+      const result = yield* h.call(["decision-snapshot"]);
+      expect(result).toMatchObject({
+        coverage: "partial",
+        sources: {
+          threads: {
+            status: "partial",
+            reason: "native_activity_incomplete",
+            values: { operating: 3, total: 9, background_operating: 2, background_unknown: 2 },
+          },
+        },
+      });
+      const envelope = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
+        h.state().envelope,
+      );
+      expect(envelope).toMatchObject({
+        sources: { threads: { status: "partial", reason: "native_activity_incomplete" } },
+      });
+    }),
 );

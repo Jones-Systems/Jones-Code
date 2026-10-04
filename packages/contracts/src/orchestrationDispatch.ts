@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NativeCreationRejectionCode } from "./nativeCreation.ts";
 
 /**
  * A command dispatch failure. `bootstrapThreadDisposition` tells a client whether the
@@ -12,5 +13,6 @@ export class OrchestrationDispatchCommandError extends Schema.TaggedError<Orches
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),
     bootstrapThreadDisposition: Schema.optional(Schema.Literals(["deleted", "not-created"])),
+    creationRejectionCode: Schema.optionalKey(NativeCreationRejectionCode),
   },
 ) {}

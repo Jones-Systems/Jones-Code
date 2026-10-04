@@ -16,6 +16,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { resolveThreadOperatingState } from "@t3tools/client-runtime/state/thread-continuation";
 import { resolveThreadProviderStack } from "@t3tools/client-runtime/state/models";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import {
@@ -24,7 +25,11 @@ import {
   sortPinnedThreadsByOrderKey,
   sortSettledThreads,
 } from "@t3tools/client-runtime/state/thread-sort";
-import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProjectId,
+  OrchestrationV2ThreadRuntimeObservation,
+} from "@t3tools/contracts";
 
 import type { ThreadListProvider } from "../../state/thread-list-environments";
 import type { ThreadMoveAvailability } from "./threadOrder";
@@ -65,19 +70,19 @@ export function resolveThreadListV2ProviderDrivers(
  * Thread List v2 model, ported from the web sidebar v2
  * (apps/web/src/components/Sidebar.logic.ts + SidebarV2.tsx).
  *
- * Six visual states. Color distinguishes approval, input, active work, and
- * failures. Ready is the unlabeled resting state; waiting (runtime status "idle") is the agent
- * parked on open background tasks, grey like working rather than a false Done.
- * The orchestrator v2 presentation bridge parks runtime at idle when the
- * post-settlement background roster is nonempty.
+ * Foreground requests outrank work labels. Waiting requires current monitoring
+ * from the active owner; an idle runtime or historical task roster does not
+ * establish background liveness. Ready is the unlabeled resting state.
  */
 export type ThreadListV2Status =
   | "approval"
   | "input"
+  | "plan"
   | "working"
   | "waiting"
   | "failed"
   | "limited"
+  | "unknown"
   | "ready";
 export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze" | "unsnooze";
 
@@ -178,26 +183,42 @@ export function threadHasUnseenCompletion(
 }
 
 export function resolveThreadListV2Status(
-  thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "runtime">,
+  thread: Pick<
+    EnvironmentThreadShell,
+    | "id"
+    | "activeProviderThreadId"
+    | "archivedAt"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "hasActionableProposedPlan"
+    | "runtime"
+  >,
+  observation?: OrchestrationV2ThreadRuntimeObservation,
+  options: { readonly foregroundCurrent?: boolean } = {},
 ): ThreadListV2Status {
-  if (thread.hasPendingApprovals) {
-    return "approval";
-  }
-  if (thread.hasPendingUserInput) {
-    return "input";
-  }
+  const foreground = options.foregroundCurrent === false ? { ...thread, runtime: null } : thread;
+  const operating = resolveThreadOperatingState(
+    foreground,
+    observation ?? { status: "unknown", reason: "Current runtime has not been observed." },
+  );
+  if (operating.foregroundAttention !== null) return operating.foregroundAttention;
   if (
-    thread.runtime !== null &&
-    ["preparing", "queued", "starting", "running", "waiting"].includes(thread.runtime.status)
+    foreground.runtime !== null &&
+    ["preparing", "queued", "starting", "running", "waiting"].includes(foreground.runtime.status)
   ) {
     return "working";
   }
-  if (thread.runtime?.status === "idle") {
-    return "waiting";
+  if (foreground.runtime?.status === "failed") {
+    return foreground.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
   }
-  if (thread.runtime?.status === "failed") {
-    return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
-  }
+  if (operating.backgroundDisplay === "working") return "working";
+  if (operating.backgroundDisplay === "monitoring") return "waiting";
+  if (
+    observation !== undefined &&
+    operating.backgroundStatus === "unknown" &&
+    thread.activeProviderThreadId !== null
+  )
+    return "unknown";
   return "ready";
 }
 

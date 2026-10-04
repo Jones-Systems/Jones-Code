@@ -10,7 +10,9 @@ import * as TestClock from "effect/testing/TestClock";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { assert, it } from "@effect/vitest";
 
@@ -24,6 +26,7 @@ import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 import { runVcsDriverContractSuite } from "./testing/VcsDriverContractHarness.ts";
 
+const isVcsProcessExitError = Schema.is(VcsProcessExitError);
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-git-vcs-contract-",
 });
@@ -274,7 +277,7 @@ it.effect("checkpoint recovery refuses excessive candidates before probing", () 
           if (input.args.includes("add") && input.args.includes("-A")) stageAttempts++;
           return liveProcess.run(input).pipe(
             Effect.tapError((error) => {
-              if (error._tag === "VcsProcessExitError") stageError = error;
+              if (isVcsProcessExitError(error)) stageError = error;
               return Effect.void;
             }),
           );
@@ -352,8 +355,7 @@ it.effect.each([
           run: (input) =>
             captureProcess.run(input).pipe(
               Effect.tapError((error) => {
-                if (input.args.includes("add") && error._tag === "VcsProcessExitError")
-                  stageError = error;
+                if (input.args.includes("add") && isVcsProcessExitError(error)) stageError = error;
                 return Effect.void;
               }),
             ),
@@ -459,7 +461,7 @@ for (const blockedPhase of ["discovery", "probe", "retry"] as const) {
                   : Effect.void,
               ),
               Effect.tapError((error) => {
-                if (staging && error._tag === "VcsProcessExitError") stageError = error;
+                if (staging && isVcsProcessExitError(error)) stageError = error;
                 return Effect.void;
               }),
             );
@@ -812,8 +814,8 @@ for (const nested of [false, true]) {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const driver = yield* GitVcsDriver.makeVcsDriverShape();
-          const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-sparse-" });
-          const { git } = yield* makeCheckpointFixture(driver, cwd);
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-sparse-" });
+          const { cwd, git, gitDir } = yield* makeCheckpointFixture(driver, root);
           const write = Effect.fn(function* (name: string, contents: string) {
             yield* fs.makeDirectory(path.dirname(path.join(cwd, name)), { recursive: true });
             yield* fs.writeFileString(path.join(cwd, name), contents);
@@ -852,7 +854,7 @@ for (const nested of [false, true]) {
           yield* write("scope/out/new file", "new outside cone\n");
           yield* write("elsewhere/file", "working outside\n");
           yield* fs.remove(path.join(cwd, "scope/in/delete"));
-          const indexPath = path.join(cwd, ".git/index");
+          const indexPath = path.join(gitDir, "index");
           if (indexState.endsWith("missing")) yield* fs.remove(indexPath);
           const originalIndex = yield* fs
             .readFile(indexPath)
@@ -1241,3 +1243,235 @@ it.effect("GitVcsDriver flushes checkpoint objects and refs to disk before publi
     ),
   );
 });
+
+it.effect("revalidates checkpoint mutations after reads and before every restore boundary", () =>
+  Effect.gen(function* () {
+    const stale = { _tag: "StaleCheckpointMutation" } as const;
+    for (const rejectedBoundary of [1, 2, 3, 4, 5]) {
+      let checks = 0;
+      const mutations: string[] = [];
+      const guard = Effect.suspend(() => {
+        checks++;
+        return checks === rejectedBoundary ? Effect.fail(stale) : Effect.void;
+      });
+      const process: VcsProcess.VcsProcess["Service"] = {
+        run: (input) =>
+          Effect.gen(function* () {
+            yield* input.revalidateMutation ?? Effect.void;
+            const mutation = ["restore", "clean", "reset"].find((name) =>
+              input.args.includes(name),
+            );
+            if (mutation) mutations.push(mutation);
+            return {
+              exitCode: ChildProcessSpawner.ExitCode(0),
+              stdout: input.args.includes("ls-files") ? "tracked\0" : "commit\n",
+              stderr: "",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            };
+          }),
+      };
+      const driver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
+        Effect.provideService(VcsProcess.VcsProcess, process),
+        Effect.provideService(
+          FileSystem.FileSystem,
+          FileSystem.makeNoop({
+            makeDirectory: () =>
+              Effect.sync(() => {
+                mutations.push("mkdir");
+              }),
+          }),
+        ),
+      );
+      const result = yield* driver.checkpoints
+        .restoreCheckpoint({
+          cwd: "/repo",
+          checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread/turn/1"),
+          revalidateMutation: guard,
+        })
+        .pipe(Effect.exit);
+      assert.equal(checks, Math.min(rejectedBoundary, 4));
+      assert.deepStrictEqual(
+        mutations,
+        ["restore", "mkdir", "clean", "reset"].slice(0, rejectedBoundary - 1),
+      );
+      if (rejectedBoundary <= 4) {
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result))
+          assert.strictEqual(Option.getOrUndefined(Cause.findErrorOption(result.cause)), stale);
+      } else {
+        assert.isTrue(Exit.isSuccess(result));
+        if (Exit.isSuccess(result)) assert.isTrue(result.value);
+      }
+    }
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("stale checkpoint restore after the tracked-file read performs no mutation", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const stale = { _tag: "StaleCheckpointMutation" } as const;
+    let current = true;
+    let mutations = 0;
+    const process: VcsProcess.VcsProcess["Service"] = {
+      run: (input) =>
+        Effect.gen(function* () {
+          if (input.args.includes("ls-files")) {
+            yield* Deferred.succeed(started, undefined);
+            yield* Deferred.await(release);
+          }
+          yield* input.revalidateMutation ?? Effect.void;
+          if (["restore", "clean", "reset"].some((name) => input.args.includes(name))) mutations++;
+          return {
+            exitCode: ChildProcessSpawner.ExitCode(0),
+            stdout: input.args.includes("ls-files") ? "tracked\0" : "commit\n",
+            stderr: "",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          };
+        }),
+    };
+    const driver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
+      Effect.provideService(VcsProcess.VcsProcess, process),
+      Effect.provideService(
+        FileSystem.FileSystem,
+        FileSystem.makeNoop({
+          makeDirectory: () =>
+            Effect.sync(() => {
+              mutations++;
+            }),
+        }),
+      ),
+    );
+    const fiber = yield* driver.checkpoints
+      .restoreCheckpoint({
+        cwd: "/repo",
+        checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread/turn/1"),
+        revalidateMutation: Effect.suspend(() => (current ? Effect.void : Effect.fail(stale))),
+      })
+      .pipe(Effect.flip, Effect.forkChild);
+    yield* Deferred.await(started);
+    current = false;
+    yield* Deferred.succeed(release, undefined);
+    assert.strictEqual(yield* Fiber.join(fiber), stale);
+    assert.equal(mutations, 0);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "revalidates each checkpoint reference deletion and stops before the next stale update-ref",
+  () =>
+    Effect.gen(function* () {
+      const stale = { _tag: "StaleCheckpointMutation" } as const;
+      const first = CheckpointRef.make("refs/t3/checkpoints/thread/turn/1");
+      const second = CheckpointRef.make("refs/t3/checkpoints/thread/turn/2");
+      const deleted: ReadonlyArray<string>[] = [];
+      let checks = 0;
+      const driver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
+        Effect.provideService(VcsProcess.VcsProcess, {
+          run: (input) =>
+            (input.revalidateMutation ?? Effect.void).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  deleted.push(input.args);
+                  return {
+                    exitCode: ChildProcessSpawner.ExitCode(0),
+                    stdout: "",
+                    stderr: "",
+                    stdoutTruncated: false,
+                    stderrTruncated: false,
+                  };
+                }),
+              ),
+            ),
+        }),
+      );
+      const error = yield* driver.checkpoints
+        .deleteCheckpointRefs({
+          cwd: "/repo",
+          checkpointRefs: [first, second],
+          revalidateMutation: Effect.suspend(() =>
+            ++checks === 2 ? Effect.fail(stale) : Effect.void,
+          ),
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(error, stale);
+      assert.equal(checks, 2);
+      assert.deepStrictEqual(deleted, [["-C", "/repo", "update-ref", "-d", first]]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "revalidates capture writes individually and preserves guard errors through staging recovery",
+  () =>
+    Effect.gen(function* () {
+      const stale = new VcsProcessExitError({
+        operation: "guard",
+        command: "git",
+        cwd: "/repo",
+        exitCode: 1,
+        detail: "stale checkpoint capture",
+        retryable: true,
+      });
+      const writes = ["add", "write-tree", "commit-tree", "update-ref"];
+      for (const rejectedBoundary of [1, 2, 3, 4, 5]) {
+        let checks = 0;
+        let removed = 0;
+        const mutations: string[] = [];
+        const driver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
+          Effect.provideService(
+            FileSystem.FileSystem,
+            FileSystem.makeNoop({
+              remove: () =>
+                Effect.sync(() => {
+                  removed++;
+                }),
+            }),
+          ),
+          Effect.provideService(VcsProcess.VcsProcess, {
+            run: (input) =>
+              Effect.gen(function* () {
+                yield* input.revalidateMutation ?? Effect.void;
+                const mutation = writes.find((command) => input.args.includes(command));
+                if (mutation) mutations.push(mutation);
+                return {
+                  exitCode: ChildProcessSpawner.ExitCode(
+                    input.operation.endsWith("hasHeadCommit") ? 128 : 0,
+                  ),
+                  stdout: input.args.includes("--git-common-dir")
+                    ? ".git\n"
+                    : input.args.includes("--git-dir")
+                      ? ".git/worktrees/checkpoint\n"
+                      : input.args.includes("write-tree")
+                        ? "tree0000\n"
+                        : input.args.includes("commit-tree")
+                          ? "commit0000\n"
+                          : "",
+                  stderr: "",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                };
+              }),
+          }),
+        );
+        const result = yield* driver.checkpoints
+          .captureCheckpoint({
+            cwd: "/repo",
+            checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread/turn/1"),
+            revalidateMutation: Effect.suspend(() =>
+              ++checks === rejectedBoundary ? Effect.fail(stale) : Effect.void,
+            ),
+          })
+          .pipe(Effect.exit);
+        assert.equal(checks, Math.min(rejectedBoundary, 4));
+        assert.equal(removed, 2);
+        assert.deepStrictEqual(mutations, writes.slice(0, rejectedBoundary - 1));
+        if (rejectedBoundary <= 4) {
+          assert.isTrue(Exit.isFailure(result));
+          if (Exit.isFailure(result))
+            assert.strictEqual(Option.getOrUndefined(Cause.findErrorOption(result.cause)), stale);
+        } else assert.isTrue(Exit.isSuccess(result));
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+);

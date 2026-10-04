@@ -11,6 +11,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
+import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { describe } from "vite-plus/test";
@@ -107,6 +109,119 @@ describe("OpenCode2Server.verifyServer", () => {
       const error = yield* verify(FetchHttpClient.layer, "http://127.0.0.1:1").pipe(Effect.flip);
       assert.include(error.detail, "Could not reach the OpenCode server");
     }),
+  );
+});
+
+describe("OpenCode2Server owned process proof", () => {
+  it.effect("publishes only successful owned handles and blocks unfenced native replacement", () =>
+    Effect.gen(function* () {
+      let starts = 0;
+      const running: Array<Ref.Ref<boolean>> = [];
+      const mockClient = OpenCode2Client.OpenCode2Client.of({
+        connect: () =>
+          Effect.succeed({
+            client: { server: { info: () => Effect.succeed({ version: "2.0.18" }) } } as never,
+            events: Effect.succeed(Stream.never),
+          }),
+      });
+      const unused = () => Effect.die("Unexpected native method in synthetic proof fixture.");
+      const runtime: OpenCodeRuntime.OpenCodeRuntimeShape = {
+        startOpenCodeServerProcess: (input) =>
+          Effect.gen(function* () {
+            starts++;
+            const isRunning = yield* Ref.make(true);
+            running.push(isRunning);
+            yield* Effect.addFinalizer(() => Ref.set(isRunning, false));
+            const url = `http://synthetic.invalid/${starts}`;
+            const version = yield* input.verify?.(url) ?? Effect.succeed("2.0.18");
+            return { url, version, isRunning: Ref.get(isRunning), exitCode: Effect.never };
+          }),
+        connectToOpenCodeServer: unused,
+        runOpenCodeCommand: unused,
+        createOpenCodeSdkClient: () => ({}) as never,
+        loadOpenCodeInventory: unused,
+        loadOpenCodeSkills: unused,
+        loadInventoryFromCli: unused,
+        loadSkillsFromCli: unused,
+      };
+      const server = yield* OpenCode2Server.make({
+        binaryPath: "synthetic",
+        serverUrl: "",
+        serverPassword: "",
+        directory: "/synthetic",
+        environment: {},
+      }).pipe(
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+        Effect.provideService(OpenCode2Client.OpenCode2Client, mockClient),
+      );
+      let reserved: string | undefined;
+      let reject = false;
+      const failure = new OpenCodeRuntime.OpenCodeRuntimeError({
+        operation: "synthetic-registration",
+        detail: "registration failed",
+      });
+      yield* server.subscribeBeforeRuntimeReplacement!((generation) =>
+        Effect.gen(function* () {
+          reserved = generation;
+          if (reject) return yield* failure;
+          yield* Effect.yieldNow;
+        }),
+      );
+      const first = yield* server.withConnection((connection) => Effect.succeed(connection));
+      assert.isDefined(first.ownedProcess);
+      assert.equal(first.ownedProcess!.runtimeGeneration, reserved);
+      assert.isTrue(yield* first.ownedProcess!.isRunning);
+      assert.isTrue(Object.isFrozen(first.ownedProcess));
+      const same = yield* server.withConnection((connection) => Effect.succeed(connection));
+      assert.strictEqual(same, first);
+      const firstGeneration = first.ownedProcess!.runtimeGeneration;
+      yield* Ref.set(running[0]!, false);
+      reject = true;
+      const failed = yield* server.withConnection(() => Effect.void).pipe(Effect.flip);
+      assert.equal(failed.operation, "beforeRuntimeReplacement");
+      assert.strictEqual(failed.cause, failure);
+      assert.equal(starts, 1);
+      assert.notEqual(reserved, firstGeneration);
+      assert.equal(first.ownedProcess!.runtimeGeneration, firstGeneration);
+      reject = false;
+      const replacement = yield* server.withConnection((connection) => Effect.succeed(connection));
+      assert.equal(starts, 2);
+      assert.equal(replacement.ownedProcess!.runtimeGeneration, reserved);
+      assert.notEqual(replacement.ownedProcess!.runtimeGeneration, firstGeneration);
+      assert.notStrictEqual(replacement.client, first.client);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps external process incarnation unavailable", () =>
+    Effect.gen(function* () {
+      const server = yield* OpenCode2Server.make({
+        binaryPath: "unused",
+        serverUrl: "http://synthetic.invalid",
+        serverPassword: "synthetic",
+        directory: "/synthetic",
+        environment: {},
+      }).pipe(
+        Effect.provideService(OpenCode2Client.OpenCode2Client, {
+          connect: () =>
+            Effect.succeed({
+              client: { server: { info: () => Effect.succeed({ version: "2.0.18" }) } } as never,
+              events: Effect.succeed(Stream.never),
+            }),
+        }),
+      );
+      const connection = yield* server.withConnection((value) => Effect.succeed(value));
+      assert.isUndefined(connection.ownedProcess);
+      assert.isUndefined(server.subscribeBeforeRuntimeReplacement);
+      assert.isTrue(connection.external);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        OpenCodeRuntime.OpenCodeRuntimeLive.pipe(
+          Layer.provide(OpenCodeServerLedger.layerTest),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
   );
 });
 

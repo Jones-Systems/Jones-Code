@@ -180,6 +180,8 @@ import {
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as ResourceCleanupService from "./orchestration-v2/ResourceCleanupService.ts";
+import * as ThreadCommandExecutor from "./orchestration-v2/ThreadCommandExecutor.ts";
+import * as ThreadDeletion from "./orchestration-v2/ThreadDeletion.ts";
 import * as ThreadSettlementService from "./orchestration-v2/ThreadSettlementService.ts";
 import * as ThreadPullRequestService from "./orchestration-v2/ThreadPullRequestService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
@@ -484,7 +486,19 @@ const OrchestrationV2RuntimeLayerLive = OrchestrationV2ProductionLayerLive.pipe(
   Layer.provide(ProviderEventIngestor.analyticsLive),
   Layer.provide(CheckpointStoreLayerLive),
   Layer.provide(GitWorkflowLayerLive),
-  Layer.provide(ResourceCleanupService.live.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive))),
+  Layer.provideMerge(
+    ThreadDeletion.worktreeCleanupLayer.pipe(
+      Layer.provide(
+        ResourceCleanupService.live.pipe(
+          Layer.provide(OrchestrationV2EventSinkLayerLive),
+          Layer.provide(ThreadCommandExecutor.layer),
+        ),
+      ),
+      Layer.provideMerge(OrchestrationV2EventSinkLayerLive),
+      Layer.provide(ServerSettingsLayerLive),
+      Layer.provide(GitVcsDriver.layer),
+    ),
+  ),
   Layer.provide(
     RunFinalizationService.observerLive.pipe(
       Layer.provide(ProjectionStoreV2.layer),
@@ -503,11 +517,15 @@ const OrchestrationApplicationLayerLive = CheckpointDiffQuery.layer.pipe(
 // inactivity and merged pull requests, then settles through the orchestrator
 // so every client sees the same shelf.
 const ThreadSettlementWorkerLive = Layer.effectDiscard(
-  ThreadSettlementService.make.pipe(Effect.flatMap((service) => ServerActivation.forkParked(service.start()))),
+  ThreadSettlementService.make.pipe(
+    Effect.flatMap((service) => ServerActivation.forkParked(service.start())),
+  ),
 ).pipe(Layer.provide(PullRequestServiceLive), Layer.provide(ProjectionStoreV2.layer));
 
 const ThreadPullRequestWorkerLive = Layer.effectDiscard(
-  ThreadPullRequestService.make.pipe(Effect.flatMap((service) => ServerActivation.forkParked(service.start()))),
+  ThreadPullRequestService.make.pipe(
+    Effect.flatMap((service) => ServerActivation.forkParked(service.start())),
+  ),
 ).pipe(Layer.provide(PullRequestServiceLive));
 
 const ProviderInstallationRefreshLive = Layer.effectDiscard(
@@ -545,9 +563,11 @@ const ProviderInstallationRefreshLive = Layer.effectDiscard(
 const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   ThreadSettlementWorkerLive,
-  Layer.effectDiscard(StorageCleanup.make.pipe(Effect.flatMap((service) => ServerActivation.forkParked(service.start())))).pipe(
-    Layer.provide(ProjectionStoreV2.layer),
-  ),
+  Layer.effectDiscard(
+    StorageCleanup.make.pipe(
+      Effect.flatMap((service) => ServerActivation.forkParked(service.start())),
+    ),
+  ).pipe(Layer.provide(ProjectionStoreV2.layer)),
   ThreadPullRequestWorkerLive,
   Layer.effectDiscard(
     Effect.gen(function* () {

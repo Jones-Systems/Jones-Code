@@ -1,7 +1,14 @@
 import { ChatCanvas } from "./chat/ChatCanvas";
-import { ContinuationChoiceBanner, ContinuationRecoveryBanner, CurrentRuntimeStopRecoveryBanner } from "./chat/ContinuationChoiceBanner";
+import {
+  ContinuationChoiceBanner,
+  ContinuationRecoveryBanner,
+  CurrentRuntimeStopRecoveryBanner,
+} from "./chat/ContinuationChoiceBanner";
 import { resolveImportedContinuationReview } from "@t3tools/client-runtime/state/thread-continuation";
-import type { OrchestrationV2ReviewImportedHistoryStartInput, OrchestrationV2ImportedHistoryReviewResult } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ReviewImportedHistoryStartInput,
+  OrchestrationV2ImportedHistoryReviewResult,
+} from "@t3tools/contracts";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
 import {
   resolveBackgroundDraftWorkspaceOptions,
@@ -1553,10 +1560,21 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
-  const prepareImportedContinuation = useAtomCommand(threadEnvironment.prepareImportedContinuation, { reportFailure: false });
-  const reviewImportedHistoryStart = useAtomCommand(threadEnvironment.reviewImportedHistoryStart, { reportFailure: false });
-  const deliverImportedContinuation = useAtomCommand(threadEnvironment.deliverImportedContinuation, { reportFailure: false });
-  const observeImportedHistoryStart = useAtomCommand(threadEnvironment.observeImportedHistoryStart, { reportFailure: false });
+  const prepareImportedContinuation = useAtomCommand(
+    threadEnvironment.prepareImportedContinuation,
+    { reportFailure: false },
+  );
+  const reviewImportedHistoryStart = useAtomCommand(threadEnvironment.reviewImportedHistoryStart, {
+    reportFailure: false,
+  });
+  const deliverImportedContinuation = useAtomCommand(
+    threadEnvironment.deliverImportedContinuation,
+    { reportFailure: false },
+  );
+  const observeImportedHistoryStart = useAtomCommand(
+    threadEnvironment.observeImportedHistoryStart,
+    { reportFailure: false },
+  );
   const [preparedImportedContinuation, setPreparedImportedContinuation] = useState<{
     environmentId: EnvironmentId;
     input: OrchestrationV2ReviewImportedHistoryStartInput;
@@ -1629,23 +1647,34 @@ export default function ChatView(props: ChatViewProps) {
     editingQueuedRun === null
       ? baseComposerDraftTarget
       : queuedEditDraftTargetFor(editingQueuedRun.runId);
-  const currentImportedDraft = useComposerDraftStore((store) => store.getComposerDraft(composerDraftTarget));
-  const savedImportedContinuation = useComposerDraftStore((store) =>
-    store.getComposerDraft(routeThreadRef)?.importedContinuation,
+  const currentImportedDraft = useComposerDraftStore((store) =>
+    store.getComposerDraft(composerDraftTarget),
   );
-  const savedCurrentRuntimeStop = useComposerDraftStore((store) => store.getComposerDraft(routeThreadRef)?.currentRuntimeStop);
+  const savedImportedContinuation = useComposerDraftStore(
+    (store) => store.getComposerDraft(routeThreadRef)?.importedContinuation,
+  );
+  const savedCurrentRuntimeStop = useComposerDraftStore(
+    (store) => store.getComposerDraft(routeThreadRef)?.currentRuntimeStop,
+  );
   const importedDraftIsUnchanged = (captured: ComposerThreadDraftState | null) => {
     const current = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
     if (captured === current) return true;
     if (!captured || !current) return false;
-    return captured.prompt === current.prompt &&
+    return (
+      captured.prompt === current.prompt &&
       captured.activeProvider === current.activeProvider &&
       captured.modelSelectionByProvider === current.modelSelectionByProvider &&
-      captured.runtimeMode === current.runtimeMode && captured.interactionMode === current.interactionMode &&
-      captured.terminalContexts === current.terminalContexts && captured.reviewComments === current.reviewComments &&
-      captured.previewAnnotations === current.previewAnnotations && captured.threadContexts === current.threadContexts &&
-      captured.images.length === current.images.length && captured.images.every((image, index) => image === current.images[index]) &&
-      captured.files.length === current.files.length && captured.files.every((file, index) => file === current.files[index]);
+      captured.runtimeMode === current.runtimeMode &&
+      captured.interactionMode === current.interactionMode &&
+      captured.terminalContexts === current.terminalContexts &&
+      captured.reviewComments === current.reviewComments &&
+      captured.previewAnnotations === current.previewAnnotations &&
+      captured.threadContexts === current.threadContexts &&
+      captured.images.length === current.images.length &&
+      captured.images.every((image, index) => image === current.images[index]) &&
+      captured.files.length === current.files.length &&
+      captured.files.every((file, index) => file === current.files[index])
+    );
   };
   const draftThread = useComposerDraftStore((store) =>
     routeKind === "server"
@@ -8097,23 +8126,37 @@ export default function ChatView(props: ChatViewProps) {
     },
   ) => {
     e?.preventDefault();
-    const unresolvedImportedOperation = useComposerDraftStore.getState().getComposerDraft(routeThreadRef)?.importedContinuation;
+    const unresolvedImportedOperation = useComposerDraftStore
+      .getState()
+      .getComposerDraft(routeThreadRef)?.importedContinuation;
     if (unresolvedImportedOperation) {
-      setThreadError(unresolvedImportedOperation.threadId, "Check the saved imported-history operation before sending again.");
+      setThreadError(
+        unresolvedImportedOperation.threadId,
+        "Check the saved imported-history operation before sending again.",
+      );
       return;
     }
     if (useComposerDraftStore.getState().getComposerDraft(routeThreadRef)?.currentRuntimeStop) {
       setThreadError(routeThreadRef.threadId, "Check the saved runtime stop before sending again.");
       return;
     }
-    if (preparedImportedContinuation?.environmentId === environmentId &&
-      preparedImportedContinuation.input.threadId === activeThread?.id) {
+    if (
+      preparedImportedContinuation?.environmentId === environmentId &&
+      preparedImportedContinuation.input.threadId === activeThread?.id
+    ) {
       if (preparedImportedContinuation.review.nativeEffects.type === "unknown") return;
       const state = resolveImportedContinuationReview(preparedImportedContinuation.review, {
         threadId: preparedImportedContinuation.input.threadId,
-        target: { type: "message", messageId: preparedImportedContinuation.input.delivery.messageId },
+        target: {
+          type: "message",
+          messageId: preparedImportedContinuation.input.delivery.messageId,
+        },
       });
-      if (importedDraftIsUnchanged(preparedImportedContinuation.draft) && (state.status === "available" || state.status === "held" || state.status === "unknown")) return;
+      if (
+        importedDraftIsUnchanged(preparedImportedContinuation.draft) &&
+        (state.status === "available" || state.status === "held" || state.status === "unknown")
+      )
+        return;
     }
     // Typed out in full rather than picked from the menu. Attachments or contexts
     // mean the user is sending a prompt, so those go through as usual.
@@ -8598,7 +8641,9 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     const composerImagesSnapshot = [...composerImages];
-    const importedDraftSnapshot = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+    const importedDraftSnapshot = useComposerDraftStore
+      .getState()
+      .getComposerDraft(composerDraftTarget);
     const composerFilesSnapshot = [...composerFiles];
     const composerAttachmentsSnapshot = [...composerImagesSnapshot, ...composerFilesSnapshot];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
@@ -8805,28 +8850,70 @@ export default function ChatView(props: ChatViewProps) {
     if (isServerThread && multipleModelSelections === null && !directAnnotation) {
       try {
         const attachments = await turnAttachmentsPromise;
-        const context = buildOutgoingMessageContext(attachments.map((attachment, index) =>
-          "id" in attachment && attachment.id !== undefined ? attachment.id : composerAttachmentsSnapshot[index]!.id,
-        ));
-        const inlineContext = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities.inlineMessageContext === true;
-        const prepared = await prepareImportedContinuation({ environmentId, input: {
-          threadId: threadIdForSend,
-          delivery: {
-            type: "message", messageId: messageIdForSend,
-            text: context && !inlineContext ? serializeLegacyContextMessage({ text: outgoingMessageText, records: context.records }) : outgoingMessageText,
-            attachments, ...(context && inlineContext ? { context } : {}),
-            modelSelection: ctxSelectedModelSelection, runtimeMode, interactionMode: sendInteractionMode,
-            ...(dispatchMode === "auto" || dispatchMode === "steer" || dispatchMode === "restart" ? { deliveryIntent: dispatchMode } : {}),
-            dispatchMode: dispatchMode === "queue" ? { type: "queue_after_active" } : { type: "start_immediately" },
+        const context = buildOutgoingMessageContext(
+          attachments.map((attachment, index) =>
+            "id" in attachment && attachment.id !== undefined
+              ? attachment.id
+              : composerAttachmentsSnapshot[index]!.id,
+          ),
+        );
+        const inlineContext =
+          appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
+            .capabilities.inlineMessageContext === true;
+        const prepared = await prepareImportedContinuation({
+          environmentId,
+          input: {
+            threadId: threadIdForSend,
+            delivery: {
+              type: "message",
+              messageId: messageIdForSend,
+              text:
+                context && !inlineContext
+                  ? serializeLegacyContextMessage({
+                      text: outgoingMessageText,
+                      records: context.records,
+                    })
+                  : outgoingMessageText,
+              attachments,
+              ...(context && inlineContext ? { context } : {}),
+              modelSelection: ctxSelectedModelSelection,
+              runtimeMode,
+              interactionMode: sendInteractionMode,
+              ...(dispatchMode === "auto" || dispatchMode === "steer" || dispatchMode === "restart"
+                ? { deliveryIntent: dispatchMode }
+                : {}),
+              dispatchMode:
+                dispatchMode === "queue"
+                  ? { type: "queue_after_active" }
+                  : { type: "start_immediately" },
+            },
           },
-        } });
+        });
         if (prepared._tag === "Success") {
-          const reviewed = await reviewImportedHistoryStart({ environmentId, input: prepared.value });
+          const reviewed = await reviewImportedHistoryStart({
+            environmentId,
+            input: prepared.value,
+          });
           if (reviewed._tag === "Success") {
-            const state = resolveImportedContinuationReview(reviewed.value, { threadId: threadIdForSend, target: { type: "message", messageId: messageIdForSend } });
-            if (state.status === "available" || state.status === "held" || state.status === "unknown") {
-              if (currentRouteThreadKeyRef.current === routeThreadKey && importedDraftIsUnchanged(importedDraftSnapshot)) {
-                setPreparedImportedContinuation({ environmentId, input: prepared.value, review: reviewed.value, draft: importedDraftSnapshot });
+            const state = resolveImportedContinuationReview(reviewed.value, {
+              threadId: threadIdForSend,
+              target: { type: "message", messageId: messageIdForSend },
+            });
+            if (
+              state.status === "available" ||
+              state.status === "held" ||
+              state.status === "unknown"
+            ) {
+              if (
+                currentRouteThreadKeyRef.current === routeThreadKey &&
+                importedDraftIsUnchanged(importedDraftSnapshot)
+              ) {
+                setPreparedImportedContinuation({
+                  environmentId,
+                  input: prepared.value,
+                  review: reviewed.value,
+                  draft: importedDraftSnapshot,
+                });
               }
               sendInFlightRef.current = false;
               resetLocalDispatch();
@@ -10910,32 +10997,63 @@ export default function ChatView(props: ChatViewProps) {
                               }
                             />
                           ) : null}
-                          {savedImportedContinuation ? <ContinuationRecoveryBanner pointer={savedImportedContinuation} /> : null}
-                          {savedCurrentRuntimeStop ? <CurrentRuntimeStopRecoveryBanner pointer={savedCurrentRuntimeStop} /> : null}
-                          {preparedImportedContinuation?.environmentId === environmentId && preparedImportedContinuation.input.threadId === activeThread?.id ? (
+                          {savedImportedContinuation ? (
+                            <ContinuationRecoveryBanner pointer={savedImportedContinuation} />
+                          ) : null}
+                          {savedCurrentRuntimeStop ? (
+                            <CurrentRuntimeStopRecoveryBanner pointer={savedCurrentRuntimeStop} />
+                          ) : null}
+                          {preparedImportedContinuation?.environmentId === environmentId &&
+                          preparedImportedContinuation.input.threadId === activeThread?.id ? (
                             <ContinuationChoiceBanner
                               key={preparedImportedContinuation.input.delivery.messageId}
                               environmentId={environmentId}
                               threadId={preparedImportedContinuation.input.threadId}
                               delivery={preparedImportedContinuation.input.delivery}
                               snapshot={preparedImportedContinuation}
-                              review={importedDraftIsUnchanged(preparedImportedContinuation.draft) || preparedImportedContinuation.review.nativeEffects.type === "unknown" ? preparedImportedContinuation.review : null}
-                              disabled={savedImportedContinuation !== undefined || savedCurrentRuntimeStop !== undefined || isSendBusy || editingQueuedRun !== null || currentImportedDraft === null}
+                              review={
+                                importedDraftIsUnchanged(preparedImportedContinuation.draft) ||
+                                preparedImportedContinuation.review.nativeEffects.type === "unknown"
+                                  ? preparedImportedContinuation.review
+                                  : null
+                              }
+                              disabled={
+                                savedImportedContinuation !== undefined ||
+                                savedCurrentRuntimeStop !== undefined ||
+                                isSendBusy ||
+                                editingQueuedRun !== null ||
+                                currentImportedDraft === null
+                              }
                               onReserve={reserveImportedContinuationPointer}
                               onTerminal={clearImportedContinuationPointer}
                               onStart={async (input) => {
-                                if (!importedDraftIsUnchanged(preparedImportedContinuation.draft)) throw new Error("The draft changed. Review it again before starting.");
-                                const result = await deliverImportedContinuation({ environmentId, input });
-                                if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+                                if (!importedDraftIsUnchanged(preparedImportedContinuation.draft))
+                                  throw new Error(
+                                    "The draft changed. Review it again before starting.",
+                                  );
+                                const result = await deliverImportedContinuation({
+                                  environmentId,
+                                  input,
+                                });
+                                if (result._tag === "Failure")
+                                  throw squashAtomCommandFailure(result);
                                 return result.value;
                               }}
                               onObserve={async (input) => {
-                                const result = await observeImportedHistoryStart({ environmentId, input });
-                                if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+                                const result = await observeImportedHistoryStart({
+                                  environmentId,
+                                  input,
+                                });
+                                if (result._tag === "Failure")
+                                  throw squashAtomCommandFailure(result);
                                 return result.value;
                               }}
                               onIntentAccepted={() => {
-                                if (currentRouteThreadKeyRef.current !== routeThreadKey || !importedDraftIsUnchanged(preparedImportedContinuation.draft)) return;
+                                if (
+                                  currentRouteThreadKeyRef.current !== routeThreadKey ||
+                                  !importedDraftIsUnchanged(preparedImportedContinuation.draft)
+                                )
+                                  return;
                                 promptRef.current = "";
                                 clearComposerDraftContent(composerDraftTarget);
                                 composerRef.current?.resetCursorState();

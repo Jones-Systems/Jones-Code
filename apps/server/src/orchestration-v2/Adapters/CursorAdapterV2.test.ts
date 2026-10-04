@@ -4,6 +4,7 @@ import type { InteractionUpdate } from "@cursor/sdk";
 import {
   CursorSettings,
   EnvironmentId,
+  CheckpointScopeId,
   MessageId,
   NodeId,
   ProjectId,
@@ -27,13 +28,17 @@ import * as Stream from "effect/Stream";
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as IdAllocator from "../IdAllocator.ts";
+import * as ManagedCompletion from "../ProviderManagedActorCompletion.ts";
+import * as OrdinaryOwnership from "../OrdinaryCheckoutOwnership.ts";
 import { readProviderEventOrigin } from "../ProviderEventOrigin.ts";
 import {
   ProviderAdapterProtocolError,
   ProviderAdapterV2RuntimePolicy,
   type ProviderAdapterV2SessionRuntime,
+  type ProviderAdapterV2TurnInput,
 } from "../ProviderAdapter.ts";
 import {
+  CURSOR_DRIVER_KIND,
   cursorMcpServers,
   cursorRuntimeAgentPolicy,
   cursorSdkModelSelection,
@@ -41,7 +46,142 @@ import {
   makeCursorAdapterV2,
   nestedToolCallFromEnvelope,
 } from "./CursorAdapterV2.ts";
-import { isCursorCancellationError, loggedCursorAgentOptions } from "./CursorAgentSdk.ts";
+import {
+  CursorAgentSdkRunnerError,
+  isCursorCancellationError,
+  loggedCursorAgentOptions,
+} from "./CursorAgentSdk.ts";
+
+function prepareManagedFixture(
+  runtime: ProviderAdapterV2SessionRuntime,
+  turn: ProviderAdapterV2TurnInput,
+) {
+  return Effect.gen(function* () {
+    const threadId = turn.threadId;
+    const commandId = `managed-command:${turn.attemptId}`;
+    const birth = yield* Schema.decodeUnknownEffect(
+      OrdinaryOwnership.OrdinaryCheckoutCaptureV1.fields.applicationBirth,
+    )({
+      kind: "application_v2_thread_birth",
+      threadId,
+      eventId: `birth:${turn.attemptId}`,
+      sequence: 1,
+    }).pipe(Effect.orDie);
+    const command = { type: "message.send", commandId, threadId };
+    const capture = yield* Schema.decodeUnknownEffect(OrdinaryOwnership.OrdinaryCheckoutCaptureV1)({
+      version: 1,
+      commandId,
+      commandType: command.type,
+      canonicalCommand: command,
+      commandDigest: OrdinaryOwnership.ordinaryCheckoutCommandDigestV1(command),
+      origin: { kind: "command" },
+      threadId,
+      applicationBirth: birth,
+      projectId: turn.appThread.projectId,
+      canonicalProjectRoot: "/fixture/repo",
+      canonicalCheckoutPath: "/fixture/checkout",
+      branch: null,
+      lease: {
+        resourcePath: "/fixture/checkout",
+        leaseId: `lease:${turn.attemptId}`,
+        ownerThreadId: threadId,
+        ownerIncarnation: OrdinaryOwnership.ordinaryApplicationIncarnationV1(birth),
+        branch: null,
+        acquiredAtMs: 1,
+        renewedAtMs: 1,
+        expiresAtMs: 300001,
+      },
+    }).pipe(Effect.orDie);
+    const at = "2026-10-03T00:00:00.000Z";
+    const admission = yield* Schema.decodeUnknownEffect(
+      OrdinaryOwnership.OrdinaryCheckoutAdmissionV1,
+    )({
+      version: 1,
+      admissionId: OrdinaryOwnership.ordinaryCheckoutAdmissionIdV1(capture),
+      capture,
+      receipt: {
+        commandId,
+        threadId,
+        commandType: command.type,
+        acceptedAt: at,
+        resultSequence: 1,
+        status: "accepted",
+        error: null,
+      },
+      eventBasis: [
+        { eventId: birth.eventId, sequence: 1, threadId, commandId, eventType: "message.accepted" },
+      ],
+      run: {
+        runId: turn.runId,
+        runAttemptId: turn.attemptId,
+        nodeId: turn.rootNodeId,
+        messageId: turn.message.messageId,
+      },
+      recordedAt: at,
+    }).pipe(Effect.orDie);
+    const source = {
+      kind: "outbox",
+      link: {
+        version: 1,
+        effectId: `effect:${turn.attemptId}`,
+        commandId,
+        threadId,
+        requestSha256: "c".repeat(64),
+        admission: OrdinaryOwnership.ordinaryCheckoutAdmissionRefV1(admission),
+        recordedAt: at,
+      },
+      workerId: "fixture-worker",
+      expectedAttempt: 1,
+      leaseExpiresAt: "2026-10-03T00:05:00.000Z",
+    };
+    const originalUse = yield* Schema.decodeUnknownEffect(OrdinaryOwnership.OrdinaryCheckoutUseV1)({
+      version: 1,
+      kind: "ordinary_checkout_use",
+      operationId: `operation:${turn.attemptId}`,
+      admission: OrdinaryOwnership.ordinaryCheckoutAdmissionRefV1(admission),
+      source,
+      lease: capture.lease,
+    }).pipe(Effect.orDie);
+    const startExecution = OrdinaryOwnership.makeOrdinaryCheckoutExecutionRefV1({
+      originalUse,
+      executor: yield* Schema.decodeUnknownEffect(
+        OrdinaryOwnership.OrdinaryCheckoutExecutionExecutorV1,
+      )({
+        kind: "actual_outbox_claim",
+        source,
+      }).pipe(Effect.orDie),
+    });
+    const checkpointScopeId = CheckpointScopeId.make(`scope:${turn.attemptId}`);
+    const reader = yield* ManagedCompletion.prepareProviderManagedActorRun(runtime, {
+      startExecution,
+      admission,
+      checkpointScopeId,
+      providerThreadId: turn.providerThread.id,
+    });
+    yield* Effect.addFinalizer(() => reader.release);
+    const managedRef = OrdinaryOwnership.makeOrdinaryCheckoutExecutionRefV1({
+      originalUse,
+      executor: yield* Schema.decodeUnknownEffect(
+        OrdinaryOwnership.OrdinaryCheckoutExecutionExecutorV1,
+      )({
+        kind: "captured_managed_run",
+        captureId: `capture:${turn.attemptId}`,
+        run: admission.run,
+        checkpointScopeId,
+        driver: runtime.driver,
+        binding: {
+          threadId,
+          providerThreadId: turn.providerThread.id,
+          providerSessionId: runtime.providerSessionId,
+          instanceId: runtime.instanceId,
+        },
+        nativeThreadId: turn.providerThread.nativeThreadRef!.nativeId,
+      }).pipe(Effect.orDie),
+    });
+    yield* reader.bindManagedExecution(managedRef);
+    return { reader, startExecution, managedRef };
+  });
+}
 
 const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
@@ -50,149 +190,220 @@ describe("CursorAdapterV2", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-native-authority-" });
+      const workspace = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "cursor-native-authority-",
+      });
       const instanceId = ProviderInstanceId.make("cursor");
       const threadId = ThreadId.make("cursor-native-authority-thread");
       const modelSelection = { instanceId, model: "composer-2.5" };
       const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access", interactionMode: "default", cwd: workspace,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: workspace,
       });
       let opens = 0;
       let sends = 0;
       const adapter = makeCursorAdapterV2({
-        instanceId, settings: yield* decodeCursorSettings({}),
-        environment: { HOME: workspace }, fileSystem, path,
+        instanceId,
+        settings: yield* decodeCursorSettings({}),
+        environment: { HOME: workspace },
+        fileSystem,
+        path,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         serverConfig: yield* ServerConfig.ServerConfig.pipe(
-          Effect.provide(ServerConfig.layerTest(workspace, { prefix: "cursor-native-authority-config-" })),
+          Effect.provide(
+            ServerConfig.layerTest(workspace, { prefix: "cursor-native-authority-config-" }),
+          ),
         ),
         runner: {
           assertComplete: Effect.void,
-          open: (input) => Effect.sync(() => {
-            opens++;
-            return {
-              agentId: input.agentId ?? "native-cursor-authority",
-              listMessages: Effect.succeed([]), close: Effect.void,
-              send: () => { sends++; return Effect.die("Unauthorized turn reached native send."); },
-            };
-          }),
+          open: (input) =>
+            Effect.sync(() => {
+              opens++;
+              return {
+                agentId: input.agentId ?? "native-cursor-authority",
+                listMessages: Effect.succeed([]),
+                close: Effect.void,
+                send: () => {
+                  sends++;
+                  return Effect.die("Unauthorized turn reached native send.");
+                },
+              };
+            }),
         },
       });
       const runtime = yield* adapter.openSession({
-        threadId, providerSessionId: ProviderSessionId.make("cursor-native-authority-session"),
-        modelSelection, runtimePolicy,
+        threadId,
+        providerSessionId: ProviderSessionId.make("cursor-native-authority-session"),
+        modelSelection,
+        runtimePolicy,
       });
       const creation = {
         context: {} as never,
         resources: { projectCwd: workspace, branch: "feature/native", worktreePath: workspace },
       };
-      const rejected = yield* runtime.ensureThread({
-        threadId, modelSelection, runtimePolicy, nativeCreationExecution: creation,
-      }).pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
+      const rejected = yield* runtime
+        .ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+          nativeCreationExecution: creation,
+        })
+        .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
       assert.isDefined(rejected);
       assert.equal(opens, 0);
-      const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
       assert.equal(opens, 1);
       const targetDirectory = path.join(workspace, "different-worktree");
       const nativeOperation = {
-        operationId: "cursor-cached-directory", operation: "start_turn" as const,
-        instanceId, threadId, providerThreadId: providerThread.id,
-        providerSessionId: runtime.providerSessionId, runtimeGeneration: runtime.runtimeGeneration!,
+        operationId: "cursor-cached-directory",
+        operation: "start_turn" as const,
+        instanceId,
+        threadId,
+        providerThreadId: providerThread.id,
+        providerSessionId: runtime.providerSessionId,
+        runtimeGeneration: runtime.runtimeGeneration!,
       };
-      const held = yield* runtime.startTurn({
-        nativeOperation,
-        nativeCreationExecution: { ...creation, resources: { ...creation.resources, worktreePath: targetDirectory } },
-        appThread: {} as never, threadId, runId: RunId.make("cursor-authority-run"),
-        runOrdinal: 1, providerTurnOrdinal: 1, attemptId: RunAttemptId.make("cursor-authority-attempt"),
-        rootNodeId: NodeId.make("cursor-authority-root"), providerThread,
-        message: {
-          messageId: MessageId.make("cursor-authority-message"), text: "hi", attachments: [],
-          createdBy: "user", creationSource: "web",
-        },
-        modelSelection, runtimePolicy: { ...runtimePolicy, cwd: targetDirectory },
-      }).pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
+      const held = yield* runtime
+        .startTurn({
+          nativeOperation,
+          nativeCreationExecution: {
+            ...creation,
+            resources: { ...creation.resources, worktreePath: targetDirectory },
+          },
+          appThread: {} as never,
+          threadId,
+          runId: RunId.make("cursor-authority-run"),
+          runOrdinal: 1,
+          providerTurnOrdinal: 1,
+          attemptId: RunAttemptId.make("cursor-authority-attempt"),
+          rootNodeId: NodeId.make("cursor-authority-root"),
+          providerThread,
+          message: {
+            messageId: MessageId.make("cursor-authority-message"),
+            text: "hi",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+          },
+          modelSelection,
+          runtimePolicy: { ...runtimePolicy, cwd: targetDirectory },
+        })
+        .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
       assert.isDefined(held);
       if (held !== undefined) {
         assert.equal(held._tag, "ProviderAdapterTurnStartError");
         assert.include(String(held.cause), "actual runtime directory");
-        assert.deepEqual("nativeEffect" in held ? held.nativeEffect : undefined,
-          { ...nativeOperation, outcome: "unknown" });
+        assert.deepEqual("nativeEffect" in held ? held.nativeEffect : undefined, {
+          ...nativeOperation,
+          outcome: "unknown",
+        });
       }
       assert.equal(opens, 1);
       assert.equal(sends, 0);
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
   );
 
-  it.effect("holds strict resume when native initialization and attachment cannot be separated", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-strict-resume-" });
-      const instanceId = ProviderInstanceId.make("cursor");
-      const threadId = ThreadId.make("cursor-strict-resume-thread");
-      const modelSelection = { instanceId, model: "composer-2.5" };
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access", interactionMode: "default", cwd: workspace,
-      });
-      let opens = 0;
-      let closes = 0;
-      let gateCalls = 0;
-      const adapter = makeCursorAdapterV2({
-        instanceId,
-        settings: yield* decodeCursorSettings({}),
-        environment: { HOME: workspace },
-        fileSystem, path,
-        idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ServerConfig.ServerConfig.pipe(
-          Effect.provide(ServerConfig.layerTest(workspace, { prefix: "cursor-strict-resume-config-" })),
-        ),
-        runner: {
-          assertComplete: Effect.void,
-          open: (input) => Effect.sync(() => {
-            opens++;
-            return {
-              agentId: input.agentId ?? "native-cursor-first",
-              listMessages: Effect.succeed([]),
-              close: Effect.sync(() => { closes++; }),
-              send: () => Effect.die("This fixture must not send a turn."),
-            };
-          }),
-        },
-      });
-      const runtime = yield* adapter.openSession({
-        threadId, providerSessionId: ProviderSessionId.make("cursor-strict-resume-session"),
-        modelSelection, runtimePolicy,
-      });
-      const first = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
-      const providerThread = {
-        ...first,
-        nativeThreadRef: { ...first.nativeThreadRef!, nativeId: "native-cursor-target" },
-      };
-      const nativeOperation = {
-        operationId: "cursor-strict-source-resume", operation: "resume_thread" as const,
-        instanceId, threadId, providerThreadId: providerThread.id,
-        providerSessionId: runtime.providerSessionId, runtimeGeneration: runtime.runtimeGeneration!,
-      };
-      const result = yield* runtime.resumeThread({
-        providerThread, nativeOperation,
-        beforeNativeResume: () => Effect.sync(() => { gateCalls++; }),
-      }).pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
-      assert.isDefined(result);
-      if (result !== undefined) {
-        assert.equal(result._tag, "ProviderAdapterResumeThreadError");
-        assert.include(String(result.cause), "source proof before native attachment");
-        assert.deepEqual("nativeEffect" in result ? result.nativeEffect : undefined,
-          { ...nativeOperation, outcome: "unknown" });
-      }
-      assert.equal(gateCalls, 0);
-      assert.equal(opens, 1);
-      assert.equal(closes, 0);
-      assert.equal(runtime.runtimeGeneration, nativeOperation.runtimeGeneration);
-      const ungated = yield* runtime.resumeThread({ providerThread });
-      assert.equal(ungated.nativeThreadRef?.nativeId, "native-cursor-target");
-      assert.equal(opens, 2);
-      assert.equal(closes, 1);
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
+  it.effect(
+    "holds strict resume when native initialization and attachment cannot be separated",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const workspace = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "cursor-strict-resume-",
+        });
+        const instanceId = ProviderInstanceId.make("cursor");
+        const threadId = ThreadId.make("cursor-strict-resume-thread");
+        const modelSelection = { instanceId, model: "composer-2.5" };
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: workspace,
+        });
+        let opens = 0;
+        let closes = 0;
+        let gateCalls = 0;
+        const adapter = makeCursorAdapterV2({
+          instanceId,
+          settings: yield* decodeCursorSettings({}),
+          environment: { HOME: workspace },
+          fileSystem,
+          path,
+          idAllocator: yield* IdAllocator.IdAllocatorV2,
+          serverConfig: yield* ServerConfig.ServerConfig.pipe(
+            Effect.provide(
+              ServerConfig.layerTest(workspace, { prefix: "cursor-strict-resume-config-" }),
+            ),
+          ),
+          runner: {
+            assertComplete: Effect.void,
+            open: (input) =>
+              Effect.sync(() => {
+                opens++;
+                return {
+                  agentId: input.agentId ?? "native-cursor-first",
+                  listMessages: Effect.succeed([]),
+                  close: Effect.sync(() => {
+                    closes++;
+                  }),
+                  send: () => Effect.die("This fixture must not send a turn."),
+                };
+              }),
+          },
+        });
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("cursor-strict-resume-session"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const first = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+        const providerThread = {
+          ...first,
+          nativeThreadRef: { ...first.nativeThreadRef!, nativeId: "native-cursor-target" },
+        };
+        const nativeOperation = {
+          operationId: "cursor-strict-source-resume",
+          operation: "resume_thread" as const,
+          instanceId,
+          threadId,
+          providerThreadId: providerThread.id,
+          providerSessionId: runtime.providerSessionId,
+          runtimeGeneration: runtime.runtimeGeneration!,
+        };
+        const result = yield* runtime
+          .resumeThread({
+            providerThread,
+            nativeOperation,
+            beforeNativeResume: () =>
+              Effect.sync(() => {
+                gateCalls++;
+              }),
+          })
+          .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
+        assert.isDefined(result);
+        if (result !== undefined) {
+          assert.equal(result._tag, "ProviderAdapterResumeThreadError");
+          assert.include(String(result.cause), "source proof before native attachment");
+          assert.deepEqual("nativeEffect" in result ? result.nativeEffect : undefined, {
+            ...nativeOperation,
+            outcome: "unknown",
+          });
+        }
+        assert.equal(gateCalls, 0);
+        assert.equal(opens, 1);
+        assert.equal(closes, 0);
+        assert.equal(runtime.runtimeGeneration, nativeOperation.runtimeGeneration);
+        const ungated = yield* runtime.resumeThread({ providerThread });
+        assert.equal(ungated.nativeThreadRef?.nativeId, "native-cursor-target");
+        assert.equal(opens, 2);
+        assert.equal(closes, 1);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
   );
 
   it.effect("changes runtime generation only when the native agent is replaced", () =>
@@ -217,7 +428,9 @@ describe("CursorAdapterV2", () => {
         path,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         serverConfig: yield* ServerConfig.ServerConfig.pipe(
-          Effect.provide(ServerConfig.layerTest(workspace, { prefix: "cursor-generation-config-" })),
+          Effect.provide(
+            ServerConfig.layerTest(workspace, { prefix: "cursor-generation-config-" }),
+          ),
         ),
         runner: {
           assertComplete: Effect.void,
@@ -239,20 +452,27 @@ describe("CursorAdapterV2", () => {
         runtimePolicy,
       });
       const before = runtime.runtimeGeneration;
-      const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
       assert.isString(runtime.runtimeGeneration);
       assert.notEqual(runtime.runtimeGeneration, before);
       const first = runtime.runtimeGeneration;
       yield* runtime.resumeThread({ providerThread });
       assert.equal(runtime.runtimeGeneration, first);
       assert.equal(opens, 1);
+      const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+      if (nativeThreadId == null)
+        return yield* Effect.die("Cursor fixture has no native thread ID.");
       const binding = {
         threadId,
         providerThreadId: providerThread.id,
         providerSessionId: runtime.providerSessionId,
         instanceId,
         runtimeGeneration: first!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
+        nativeThreadId,
       };
       const observed = yield* runtime.observeThreadRuntime!(binding);
       assert.equal(observed.status, "unknown");
@@ -270,213 +490,26 @@ describe("CursorAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
   );
 
-  it.effect("retains the pre-ACK agent owner through replacement and accepts fresh replacement output", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-origin-ack-" });
-      const instanceId = ProviderInstanceId.make("cursor");
-      const threadId = ThreadId.make("cursor-origin-ack-thread");
-      const modelSelection = { instanceId, model: "composer-2.5" };
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access", interactionMode: "default", cwd: workspace,
-      });
-      const received = yield* Deferred.make<void>();
-      const acknowledged = yield* Deferred.make<void>();
-      let sends = 0;
-      const adapter = makeCursorAdapterV2({
-        instanceId, settings: yield* decodeCursorSettings({}), environment: { HOME: workspace },
-        fileSystem, path, idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ServerConfig.ServerConfig.pipe(
-          Effect.provide(ServerConfig.layerTest(workspace, { prefix: "cursor-origin-ack-config-" })),
-        ),
-        runner: {
-          assertComplete: Effect.void,
-          open: (opened) => Effect.succeed({
-            agentId: opened.agentId ?? "native-cursor-origin-first",
-            listMessages: Effect.succeed([]), close: Effect.void,
-            send: (sent) => Effect.gen(function* () {
-              const ordinal = ++sends;
-              yield* sent.onDelta({ type: "text-delta", text: ordinal === 1 ? "Old owner output" : "Fresh owner output" });
-              if (ordinal === 1) {
-                yield* Deferred.succeed(received, undefined);
-                yield* Deferred.await(acknowledged);
-              }
-              return { runId: `cursor-origin-run-${ordinal}`, cancel: Effect.void,
-                wait: Effect.succeed({ status: "finished" as const }) };
-            }),
-          }),
-        },
-      });
-      const runtime = yield* adapter.openSession({
-        threadId, providerSessionId: ProviderSessionId.make("cursor-origin-ack-session"), modelSelection, runtimePolicy,
-      });
-      const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
-      const oldGeneration = runtime.runtimeGeneration;
-      const turnInput = {
-        appThread: {} as never, threadId, providerThread, modelSelection, runtimePolicy,
-        runId: RunId.make("cursor-origin-old-run"), runOrdinal: 1, providerTurnOrdinal: 1,
-        attemptId: RunAttemptId.make("cursor-origin-old-attempt"), rootNodeId: NodeId.make("cursor-origin-old-root"),
-        message: { messageId: MessageId.make("cursor-origin-message"), text: "hi", attachments: [],
-          createdBy: "user" as const, creationSource: "web" as const },
-      };
-      const sending = yield* runtime.startTurn(turnInput).pipe(Effect.forkScoped);
-      yield* Deferred.await(received);
-      const replacement = yield* runtime.resumeThread({ providerThread: {
-        ...providerThread, nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId: "native-cursor-origin-next" },
-      } });
-      const newGeneration = runtime.runtimeGeneration;
-      assert.notEqual(newGeneration, oldGeneration);
-      yield* Deferred.succeed(acknowledged, undefined);
-      yield* Fiber.join(sending);
-      const oldEvents = yield* runtime.events.pipe(
-        Stream.takeUntil((event) => event.type === "turn.terminal"), Stream.runCollect,
-      );
-      assert.isTrue(oldEvents.some((event) => event.type === "message.updated" && event.message.text === "Old owner output"));
-      for (const event of oldEvents) {
-        const origin = readProviderEventOrigin(event)!;
-        assert.isDefined(origin);
-        assert.equal(origin.producer.runtimeGeneration, oldGeneration);
-        assert.equal(origin.turn?.runId, turnInput.runId);
-        assert.equal(origin.turn?.binding.nativeThreadId, "native-cursor-origin-first");
-        assert.equal((yield* Effect.exit(origin.producer.revalidateCurrent))._tag, "Failure");
-      }
-      yield* runtime.startTurn({ ...turnInput, providerThread: replacement,
-        runId: RunId.make("cursor-origin-fresh-run"), attemptId: RunAttemptId.make("cursor-origin-fresh-attempt"),
-        providerTurnOrdinal: 2 });
-      const freshEvents = yield* runtime.events.pipe(
-        Stream.takeUntil((event) => event.type === "turn.terminal"), Stream.runCollect,
-      );
-      assert.isTrue(freshEvents.some((event) => event.type === "message.updated" && event.message.text === "Fresh owner output"));
-      for (const event of freshEvents) {
-        const origin = readProviderEventOrigin(event)!;
-        assert.isDefined(origin);
-        assert.equal(origin.producer.runtimeGeneration, newGeneration);
-        assert.equal(origin.turn?.runId, RunId.make("cursor-origin-fresh-run"));
-        yield* origin.producer.revalidateCurrent;
-      }
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
-  );
-
-  it.effect("awaits registration before native replacement and blocks replacement when registration fails", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-replacement-fence-" });
-      const instanceId = ProviderInstanceId.make("cursor");
-      const threadId = ThreadId.make("cursor-replacement-fence-thread");
-      const modelSelection = { instanceId, model: "composer-2.5" };
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access", interactionMode: "default", cwd: workspace,
-      });
-      const order: string[] = [];
-      let opens = 0;
-      let closes = 0;
-      let rejectRegistration = false;
-      let runtime: ProviderAdapterV2SessionRuntime | undefined;
-      const adapter = makeCursorAdapterV2({
-        instanceId,
-        settings: yield* decodeCursorSettings({}),
-        environment: { HOME: workspace },
-        fileSystem,
-        path,
-        idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ServerConfig.ServerConfig.pipe(
-          Effect.provide(ServerConfig.layerTest(workspace, { prefix: "cursor-replacement-fence-config-" })),
-        ),
-        runner: {
-          assertComplete: Effect.void,
-          open: (input) => Effect.sync(() => {
-            opens++;
-            order.push("native_open");
-            return {
-              agentId: input.agentId ?? "native-cursor-registered",
-              listMessages: Effect.succeed([]),
-              close: Effect.sync(() => { closes++; }),
-              send: () => Effect.die("This replacement test must not submit a turn."),
-            };
-          }),
-        },
-      });
-      runtime = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("cursor-replacement-fence-session"),
-        modelSelection,
-        runtimePolicy,
-        beforeRuntimeReplacement: (nextGeneration) => Effect.gen(function* () {
-          order.push("registration_started");
-          assert.equal(runtime?.runtimeGeneration, nextGeneration);
-          if (rejectRegistration) {
-            return yield* new ProviderAdapterProtocolError({
-              driver: "cursor", detail: "replacement registration failed",
-            });
-          }
-          yield* Effect.yieldNow;
-          order.push("registration_finished");
-        }),
-      });
-      const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
-      assert.deepEqual(order, ["registration_started", "registration_finished", "native_open"]);
-      assert.equal(opens, 1);
-      yield* runtime.resumeThread({ providerThread });
-      assert.lengthOf(order, 3);
-      const oldGeneration = runtime.runtimeGeneration;
-      const nativeOperation = {
-        operationId: "cursor-replacement-registration-failure",
-        operation: "resume_thread" as const,
-        instanceId,
-        threadId,
-        providerSessionId: runtime.providerSessionId,
-        providerThreadId: providerThread.id,
-        runtimeGeneration: oldGeneration,
-      };
-      rejectRegistration = true;
-      const error = yield* runtime.resumeThread({
-        providerThread: {
-          ...providerThread,
-          nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId: "native-cursor-replacement" },
-        },
-        nativeOperation,
-      }).pipe(Effect.flip);
-      assert.equal(error._tag, "ProviderAdapterResumeThreadError");
-      assert.deepEqual("nativeEffect" in error ? error.nativeEffect : undefined,
-        { ...nativeOperation, outcome: "unknown" });
-      assert.notEqual(runtime.runtimeGeneration, oldGeneration);
-      assert.equal(opens, 1);
-      assert.equal(closes, 0);
-      assert.deepEqual(order, ["registration_started", "registration_finished", "native_open", "registration_started"]);
-      const observation = yield* runtime.observeThreadRuntime!({
-        instanceId,
-        threadId,
-        providerSessionId: runtime.providerSessionId,
-        providerThreadId: providerThread.id,
-        runtimeGeneration: runtime.runtimeGeneration!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
-      });
-      assert.equal(observation.status, "unknown");
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
-  );
-
-  for (const { status, model } of [
-    { status: "finished", model: undefined },
-    { status: "cancelled", model: "claude-opus-4-6" },
-    { status: "error", model: "custom-fable" },
-  ] as const) {
-    it.effect(`settles missing task completions when the Cursor run is ${status}`, () =>
+  it.effect(
+    "retains the pre-ACK agent owner through replacement and accepts fresh replacement output",
+    () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const workspace = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "cursor-v2-lifecycle-",
+          prefix: "cursor-origin-ack-",
         });
         const instanceId = ProviderInstanceId.make("cursor");
-        const threadId = ThreadId.make("cursor-lifecycle-thread");
+        const threadId = ThreadId.make("cursor-origin-ack-thread");
         const modelSelection = { instanceId, model: "composer-2.5" };
         const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: workspace,
         });
+        const received = yield* Deferred.make<void>();
+        const acknowledged = yield* Deferred.make<void>();
+        let sends = 0;
         const adapter = makeCursorAdapterV2({
           instanceId,
           settings: yield* decodeCursorSettings({}),
@@ -486,52 +519,42 @@ describe("CursorAdapterV2", () => {
           idAllocator: yield* IdAllocator.IdAllocatorV2,
           serverConfig: yield* ServerConfig.ServerConfig.pipe(
             Effect.provide(
-              ServerConfig.layerTest(workspace, { prefix: "cursor-v2-lifecycle-config-" }),
+              ServerConfig.layerTest(workspace, { prefix: "cursor-origin-ack-config-" }),
             ),
           ),
           runner: {
             assertComplete: Effect.void,
-            open: () =>
+            open: (opened) =>
               Effect.succeed({
-                agentId: "native-cursor-lifecycle",
+                agentId: opened.agentId ?? "native-cursor-origin-first",
                 listMessages: Effect.succeed([]),
                 close: Effect.void,
-                send: (input) =>
+                send: (sent) =>
                   Effect.gen(function* () {
-                    // Recorded Cursor task calls (see fixtures/subagent) stream a
-                    // partial-tool-call before tool-call-started with the same args.
-                    // The run then ends without tool-call-completed, which a live
-                    // run cannot produce on demand.
-                    const taskToolCall = {
-                      type: "task" as const,
-                      args: {
-                        description: "Review",
-                        prompt: "Review the code.",
-                        subagentType: { kind: "unspecified" },
-                        ...(model === undefined ? {} : { model }),
-                        agentId: "cursor-task-agent",
-                        mode: "unspecified" as const,
-                      },
-                    };
-                    for (const type of ["partial-tool-call", "tool-call-started"] as const) {
-                      yield* input.onDelta!({
-                        type,
-                        modelCallId: "model-call",
-                        callId: "task-call",
-                        toolCall: taskToolCall,
-                      }).pipe(Effect.orDie);
+                    const ordinal = ++sends;
+                    const onDelta = sent.onDelta;
+                    if (onDelta === undefined)
+                      return yield* Effect.die("Cursor fixture requires its output callback.");
+                    yield* onDelta({
+                      type: "text-delta",
+                      text: ordinal === 1 ? "Old owner output" : "Fresh owner output",
+                    }).pipe(
+                      Effect.mapError(
+                        (cause) => new CursorAgentSdkRunnerError({ method: "run.onDelta", cause }),
+                      ),
+                    );
+                    if (ordinal === 1) {
+                      yield* Deferred.succeed(received, undefined);
+                      yield* Deferred.await(acknowledged);
                     }
                     return {
-                      agentId: "native-cursor-lifecycle",
-                      runId: "native-cursor-run",
-                      wait: Effect.succeed({
-                        id: "native-cursor-run",
-                        requestId: "native-request",
-                        status,
-                        model: { id: "composer-2.5" },
-                        durationMs: 1,
-                      }),
+                      runId: `cursor-origin-run-${ordinal}`,
+                      agentId: opened.agentId ?? "native-cursor-origin-first",
                       cancel: Effect.void,
+                      wait: Effect.succeed({
+                        id: `cursor-origin-run-${ordinal}`,
+                        status: "finished" as const,
+                      }),
                     };
                   }),
               }),
@@ -539,7 +562,7 @@ describe("CursorAdapterV2", () => {
         });
         const runtime = yield* adapter.openSession({
           threadId,
-          providerSessionId: ProviderSessionId.make("cursor-lifecycle-session"),
+          providerSessionId: ProviderSessionId.make("cursor-origin-ack-session"),
           modelSelection,
           runtimePolicy,
         });
@@ -548,82 +571,471 @@ describe("CursorAdapterV2", () => {
           modelSelection,
           runtimePolicy,
         });
-        const now = yield* DateTime.now;
-        yield* runtime.startTurn({
+        const oldGeneration = runtime.runtimeGeneration;
+        const turnInput = {
+          appThread: {} as never,
           threadId,
           providerThread,
           modelSelection,
           runtimePolicy,
-          runId: RunId.make("cursor-lifecycle-run"),
+          runId: RunId.make("cursor-origin-old-run"),
           runOrdinal: 1,
           providerTurnOrdinal: 1,
-          attemptId: RunAttemptId.make("cursor-lifecycle-attempt"),
-          rootNodeId: NodeId.make("cursor-lifecycle-root"),
-          appThread: {
-            id: threadId,
-            projectId: ProjectId.make("cursor-lifecycle-project"),
-            createdBy: "user",
-            creationSource: "web",
-            title: "Cursor lifecycle",
-            providerInstanceId: instanceId,
-            modelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: null,
-            activeProviderThreadId: providerThread.id,
-            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-            forkedFrom: null,
-            createdAt: now,
-            updatedAt: now,
-            archivedAt: null,
-            settledOverride: null,
-            settledAt: null,
-            lastVisitedAt: null,
-            deletedAt: null,
-          },
+          attemptId: RunAttemptId.make("cursor-origin-old-attempt"),
+          rootNodeId: NodeId.make("cursor-origin-old-root"),
           message: {
-            messageId: MessageId.make("cursor-lifecycle-message"),
-            createdBy: "user",
-            creationSource: "web",
-            text: "Review the code.",
+            messageId: MessageId.make("cursor-origin-message"),
+            text: "hi",
             attachments: [],
+            createdBy: "user" as const,
+            creationSource: "web" as const,
+          },
+        };
+        const sending = yield* runtime.startTurn(turnInput).pipe(Effect.forkScoped);
+        yield* Deferred.await(received);
+        const replacement = yield* runtime.resumeThread({
+          providerThread: {
+            ...providerThread,
+            nativeThreadRef: {
+              ...providerThread.nativeThreadRef!,
+              nativeId: "native-cursor-origin-next",
+            },
           },
         });
-        const events = yield* runtime.events.pipe(
+        const newGeneration = runtime.runtimeGeneration;
+        assert.notEqual(newGeneration, oldGeneration);
+        yield* Deferred.succeed(acknowledged, undefined);
+        yield* Fiber.join(sending);
+        const oldEvents = yield* runtime.events.pipe(
           Stream.takeUntil((event) => event.type === "turn.terminal"),
           Stream.runCollect,
         );
-        const capturedGeneration = runtime.runtimeGeneration;
-        const origins = events.map((event) => readProviderEventOrigin(event));
-        assert.isAbove(origins.length, 0);
-        for (const origin of origins) {
-          assert.isDefined(origin);
-          assert.equal(origin?.producer.driver, "cursor");
-          assert.equal(origin?.producer.runtimeGeneration, capturedGeneration);
-          assert.equal(origin?.turn?.runId, RunId.make("cursor-lifecycle-run"));
-          assert.equal(origin?.turn?.attemptId, RunAttemptId.make("cursor-lifecycle-attempt"));
-          assert.equal(origin?.turn?.binding.nativeThreadId, "native-cursor-lifecycle");
-          assert.equal(origin?.producer.token, origins[0]?.producer.token);
-          yield* origin!.producer.revalidateCurrent;
-        }
-        yield* runtime.resumeThread({ providerThread: {
-          ...providerThread, nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId: "native-cursor-replacement" },
-        } });
-        assert.notEqual(runtime.runtimeGeneration, capturedGeneration);
-        for (const origin of origins) {
-          assert.equal((yield* Effect.exit(origin!.producer.revalidateCurrent))._tag, "Failure");
-          assert.equal(origin?.producer.runtimeGeneration, capturedGeneration);
-        }
-        const rows = events.filter((event) => event.type === "subagent.updated");
-        assert.equal(rows[0]?.subagent.status, "running");
-        assert.equal(rows[0]?.subagent.model, model ?? null);
-        assert.equal(
-          rows.at(-1)?.subagent.status,
-          status === "finished" ? "idle" : status === "cancelled" ? "cancelled" : "failed",
+        assert.isTrue(
+          oldEvents.some(
+            (event) =>
+              event.type === "message.updated" && event.message.text === "Old owner output",
+          ),
         );
-        assert.isNotNull(rows.at(-1)?.subagent.completedAt);
+        for (const event of oldEvents) {
+          const origin = readProviderEventOrigin(event)!;
+          assert.isDefined(origin);
+          assert.equal(origin.producer.runtimeGeneration, oldGeneration);
+          assert.equal(origin.turn?.runId, turnInput.runId);
+          assert.equal(origin.turn?.binding.nativeThreadId, "native-cursor-origin-first");
+          assert.equal((yield* Effect.exit(origin.producer.revalidateCurrent))._tag, "Failure");
+        }
+        yield* runtime.startTurn({
+          ...turnInput,
+          providerThread: replacement,
+          runId: RunId.make("cursor-origin-fresh-run"),
+          attemptId: RunAttemptId.make("cursor-origin-fresh-attempt"),
+          providerTurnOrdinal: 2,
+        });
+        const freshEvents = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        assert.isTrue(
+          freshEvents.some(
+            (event) =>
+              event.type === "message.updated" && event.message.text === "Fresh owner output",
+          ),
+        );
+        for (const event of freshEvents) {
+          const origin = readProviderEventOrigin(event)!;
+          assert.isDefined(origin);
+          assert.equal(origin.producer.runtimeGeneration, newGeneration);
+          assert.equal(origin.turn?.runId, RunId.make("cursor-origin-fresh-run"));
+          yield* origin.producer.revalidateCurrent;
+        }
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
+  );
+
+  it.effect(
+    "awaits registration before native replacement and blocks replacement when registration fails",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const workspace = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "cursor-replacement-fence-",
+        });
+        const instanceId = ProviderInstanceId.make("cursor");
+        const threadId = ThreadId.make("cursor-replacement-fence-thread");
+        const modelSelection = { instanceId, model: "composer-2.5" };
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: workspace,
+        });
+        const order: string[] = [];
+        let opens = 0;
+        let closes = 0;
+        let rejectRegistration = false;
+        let runtime: ProviderAdapterV2SessionRuntime | undefined;
+        const adapter = makeCursorAdapterV2({
+          instanceId,
+          settings: yield* decodeCursorSettings({}),
+          environment: { HOME: workspace },
+          fileSystem,
+          path,
+          idAllocator: yield* IdAllocator.IdAllocatorV2,
+          serverConfig: yield* ServerConfig.ServerConfig.pipe(
+            Effect.provide(
+              ServerConfig.layerTest(workspace, { prefix: "cursor-replacement-fence-config-" }),
+            ),
+          ),
+          runner: {
+            assertComplete: Effect.void,
+            open: (input) =>
+              Effect.sync(() => {
+                opens++;
+                order.push("native_open");
+                return {
+                  agentId: input.agentId ?? "native-cursor-registered",
+                  listMessages: Effect.succeed([]),
+                  close: Effect.sync(() => {
+                    closes++;
+                  }),
+                  send: () => Effect.die("This replacement test must not submit a turn."),
+                };
+              }),
+          },
+        });
+        runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("cursor-replacement-fence-session"),
+          modelSelection,
+          runtimePolicy,
+          beforeRuntimeReplacement: (nextGeneration) =>
+            Effect.gen(function* () {
+              order.push("registration_started");
+              assert.equal(runtime?.runtimeGeneration, nextGeneration);
+              if (rejectRegistration) {
+                return yield* new ProviderAdapterProtocolError({
+                  driver: CURSOR_DRIVER_KIND,
+                  detail: "replacement registration failed",
+                });
+              }
+              yield* Effect.yieldNow;
+              order.push("registration_finished");
+            }),
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.deepEqual(order, ["registration_started", "registration_finished", "native_open"]);
+        assert.equal(opens, 1);
+        yield* runtime.resumeThread({ providerThread });
+        assert.lengthOf(order, 3);
+        const oldGeneration = runtime.runtimeGeneration;
+        const nativeOperation = {
+          operationId: "cursor-replacement-registration-failure",
+          operation: "resume_thread" as const,
+          instanceId,
+          threadId,
+          providerSessionId: runtime.providerSessionId,
+          providerThreadId: providerThread.id,
+          runtimeGeneration: oldGeneration,
+        };
+        rejectRegistration = true;
+        const error = yield* runtime
+          .resumeThread({
+            providerThread: {
+              ...providerThread,
+              nativeThreadRef: {
+                ...providerThread.nativeThreadRef!,
+                nativeId: "native-cursor-replacement",
+              },
+            },
+            nativeOperation,
+          })
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "ProviderAdapterResumeThreadError");
+        assert.deepEqual("nativeEffect" in error ? error.nativeEffect : undefined, {
+          ...nativeOperation,
+          outcome: "unknown",
+        });
+        assert.notEqual(runtime.runtimeGeneration, oldGeneration);
+        assert.equal(opens, 1);
+        assert.equal(closes, 0);
+        assert.deepEqual(order, [
+          "registration_started",
+          "registration_finished",
+          "native_open",
+          "registration_started",
+        ]);
+        const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+        if (nativeThreadId == null)
+          return yield* Effect.die("Cursor fixture has no native thread ID.");
+        const observation = yield* runtime.observeThreadRuntime!({
+          instanceId,
+          threadId,
+          providerSessionId: runtime.providerSessionId,
+          providerThreadId: providerThread.id,
+          runtimeGeneration: runtime.runtimeGeneration!,
+          nativeThreadId,
+        });
+        assert.equal(observation.status, "unknown");
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
+  );
+
+  for (const { status, model, completeChild } of [
+    { status: "finished", model: undefined, completeChild: false },
+    { status: "cancelled", model: "claude-opus-4-6", completeChild: false },
+    { status: "error", model: "custom-fable", completeChild: false },
+    { status: "finished", model: undefined, completeChild: true },
+  ] as const) {
+    it.effect(
+      completeChild
+        ? "closes managed Cursor actors only after actual task completion and joined SDK wait without generation"
+        : `settles missing task completions when the Cursor run is ${status}`,
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const workspace = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "cursor-v2-lifecycle-",
+          });
+          const instanceId = ProviderInstanceId.make("cursor");
+          const threadId = ThreadId.make("cursor-lifecycle-thread");
+          const modelSelection = { instanceId, model: "composer-2.5" };
+          const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: workspace,
+          });
+          const nativeWait = yield* Deferred.make<void>();
+          let sendCalls = 0;
+          const adapter = makeCursorAdapterV2({
+            instanceId,
+            settings: yield* decodeCursorSettings({}),
+            environment: { HOME: workspace },
+            fileSystem,
+            path,
+            idAllocator: yield* IdAllocator.IdAllocatorV2,
+            serverConfig: yield* ServerConfig.ServerConfig.pipe(
+              Effect.provide(
+                ServerConfig.layerTest(workspace, { prefix: "cursor-v2-lifecycle-config-" }),
+              ),
+            ),
+            runner: {
+              assertComplete: Effect.void,
+              open: () =>
+                Effect.succeed({
+                  agentId: "native-cursor-lifecycle",
+                  listMessages: Effect.succeed([]),
+                  close: Effect.void,
+                  send: (input) =>
+                    Effect.gen(function* () {
+                      sendCalls++;
+                      // Recorded Cursor task calls (see fixtures/subagent) stream a
+                      // partial-tool-call before tool-call-started with the same args.
+                      // The run then ends without tool-call-completed, which a live
+                      // run cannot produce on demand.
+                      const taskToolCall = {
+                        type: "task" as const,
+                        args: {
+                          description: "Review",
+                          prompt: "Review the code.",
+                          subagentType: { kind: "unspecified" },
+                          ...(model === undefined ? {} : { model }),
+                          agentId: "cursor-task-agent",
+                          mode: "unspecified" as const,
+                        },
+                      };
+                      for (const type of ["partial-tool-call", "tool-call-started"] as const) {
+                        yield* input.onDelta!({
+                          type,
+                          modelCallId: "model-call",
+                          callId: "task-call",
+                          toolCall: taskToolCall,
+                        }).pipe(Effect.orDie);
+                      }
+                      if (completeChild) {
+                        yield* input.onDelta!({
+                          type: "tool-call-completed",
+                          modelCallId: "model-call",
+                          callId: "task-call",
+                          toolCall: {
+                            ...taskToolCall,
+                            result: {
+                              status: "success",
+                              value: {
+                                conversationSteps: [],
+                                resultSuffix: "Review complete.",
+                                isBackground: false,
+                                backgroundReason: "unspecified",
+                              },
+                            },
+                          },
+                        }).pipe(Effect.orDie);
+                      }
+                      return {
+                        agentId: "native-cursor-lifecycle",
+                        runId: "native-cursor-run",
+                        wait: Deferred.await(nativeWait).pipe(
+                          Effect.as({
+                            id: "native-cursor-run",
+                            requestId: "native-request",
+                            status,
+                            model: { id: "composer-2.5" },
+                            durationMs: 1,
+                          }),
+                        ),
+                        cancel: Effect.void,
+                      };
+                    }),
+                }),
+            },
+          });
+          const runtime = yield* adapter.openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make("cursor-lifecycle-session"),
+            modelSelection,
+            runtimePolicy,
+          });
+          const providerThread = yield* runtime.ensureThread({
+            threadId,
+            modelSelection,
+            runtimePolicy,
+          });
+          const now = yield* DateTime.now;
+          const turn: ProviderAdapterV2TurnInput = {
+            threadId,
+            providerThread,
+            modelSelection,
+            runtimePolicy,
+            runId: RunId.make("cursor-lifecycle-run"),
+            runOrdinal: 1,
+            providerTurnOrdinal: 1,
+            attemptId: RunAttemptId.make("cursor-lifecycle-attempt"),
+            rootNodeId: NodeId.make("cursor-lifecycle-root"),
+            appThread: {
+              id: threadId,
+              projectId: ProjectId.make("cursor-lifecycle-project"),
+              createdBy: "user",
+              creationSource: "web",
+              title: "Cursor lifecycle",
+              providerInstanceId: instanceId,
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              activeProviderThreadId: providerThread.id,
+              lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: null,
+              settledOverride: null,
+              settledAt: null,
+              lastVisitedAt: null,
+              deletedAt: null,
+            },
+            message: {
+              messageId: MessageId.make("cursor-lifecycle-message"),
+              createdBy: "user",
+              creationSource: "web",
+              text: "Review the code.",
+              attachments: [],
+            },
+          };
+          const managed = yield* prepareManagedFixture(runtime, turn);
+          assert.equal((yield* Effect.exit(runtime.startTurn({ ...turn })))._tag, "Failure");
+          assert.equal(
+            (yield* Effect.exit(
+              ManagedCompletion.withProviderManagedActorExecution(
+                managed.startExecution,
+                runtime.startTurn({ ...turn, runId: RunId.make("foreign-run") }),
+              ),
+            ))._tag,
+            "Failure",
+          );
+          assert.equal(sendCalls, 0);
+          yield* ManagedCompletion.withProviderManagedActorExecution(
+            managed.startExecution,
+            runtime.startTurn(turn),
+          );
+          assert.equal((yield* managed.reader.readClosure).status, "pending");
+          yield* Deferred.succeed(nativeWait, undefined);
+          const events = yield* runtime.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          );
+          if (completeChild) {
+            const closure = yield* managed.reader.awaitNativeClosure;
+            assert.equal(closure.status, "closed");
+            if (closure.status === "closed") {
+              assert.lengthOf(closure.observation.descriptor.actors, 2);
+              assert.isTrue(
+                closure.observation.descriptor.actors.every(
+                  (actor) => actor.source.runtimeGeneration === undefined,
+                ),
+              );
+              const executor = closure.observation.descriptor.managedExecution.executor;
+              assert.equal(executor.kind, "captured_managed_run");
+              if (executor.kind === "captured_managed_run")
+                assert.isUndefined(
+                  "runtimeGeneration" in executor.binding
+                    ? executor.binding.runtimeGeneration
+                    : undefined,
+                );
+              assert.equal(
+                closure.observation.descriptor.actors[0]?.endEvidence.kind,
+                "endpoint_and_task_joins",
+              );
+            }
+          } else assert.equal((yield* managed.reader.readClosure).status, "pending");
+          const capturedGeneration = runtime.runtimeGeneration;
+          const origins = events.map((event) => readProviderEventOrigin(event));
+          assert.isAbove(origins.length, 0);
+          for (const origin of origins) {
+            assert.isDefined(origin);
+            assert.equal(origin?.producer.driver, "cursor");
+            assert.equal(origin?.producer.runtimeGeneration, capturedGeneration);
+            assert.equal(origin?.turn?.runId, RunId.make("cursor-lifecycle-run"));
+            assert.equal(origin?.turn?.attemptId, RunAttemptId.make("cursor-lifecycle-attempt"));
+            assert.equal(origin?.turn?.binding.nativeThreadId, "native-cursor-lifecycle");
+            assert.equal(origin?.producer.token, origins[0]?.producer.token);
+            yield* origin!.producer.revalidateCurrent;
+          }
+          yield* runtime.resumeThread({
+            providerThread: {
+              ...providerThread,
+              nativeThreadRef: {
+                ...providerThread.nativeThreadRef!,
+                nativeId: "native-cursor-replacement",
+              },
+            },
+          });
+          assert.notEqual(runtime.runtimeGeneration, capturedGeneration);
+          if (completeChild) {
+            yield* managed.reader.revalidateCompletionBinding;
+            assert.equal((yield* managed.reader.readClosure).status, "closed");
+          }
+          for (const origin of origins) {
+            assert.equal((yield* Effect.exit(origin!.producer.revalidateCurrent))._tag, "Failure");
+            assert.equal(origin?.producer.runtimeGeneration, capturedGeneration);
+          }
+          const rows = events.filter((event) => event.type === "subagent.updated");
+          assert.equal(rows[0]?.subagent.status, "running");
+          assert.equal(rows[0]?.subagent.model, model ?? null);
+          assert.equal(
+            rows.at(-1)?.subagent.status,
+            completeChild
+              ? "completed"
+              : status === "finished"
+                ? "idle"
+                : status === "cancelled"
+                  ? "cancelled"
+                  : "failed",
+          );
+          assert.isNotNull(rows.at(-1)?.subagent.completedAt);
+        }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
     );
   }
 

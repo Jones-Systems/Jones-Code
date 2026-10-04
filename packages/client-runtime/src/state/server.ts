@@ -1118,7 +1118,7 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.serverReadTokenAccounting,
       execute: (input) =>
         Effect.gen(function* () {
-          const supervisor = yield* EnvironmentSupervisor;
+          const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
           const session = yield* SubscriptionRef.get(supervisor.session);
           if (Option.isSome(session)) {
             const config = yield* session.value.initialConfig;

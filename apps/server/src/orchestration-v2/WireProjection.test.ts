@@ -2,6 +2,7 @@ import {
   MessageId,
   ContextHandoffId,
   ProviderThreadId,
+  ProviderSessionId,
   NodeId,
   EventId,
   ProjectId,
@@ -10,6 +11,7 @@ import {
   ThreadId,
   TurnItemId,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2DomainEvent,
   OrchestrationV2TurnItem,
   OrchestrationV2TurnItemJson,
 } from "@t3tools/contracts";
@@ -45,6 +47,30 @@ const base = {
 };
 
 describe("orchestration V2 wire projection", () => {
+  it("preserves detach request identity and optional reason without a stopped claim", () => {
+    for (const reason of [undefined, "owner requested stop"]) {
+      const event = {
+        id: EventId.make("event:detach-request:wire"),
+        type: "provider-session.detach-requested",
+        threadId: base.threadId,
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        occurredAt: base.updatedAt,
+        payload: {
+          providerSessionId: ProviderSessionId.make("session:detach-request:wire"),
+          ...(reason === undefined ? {} : { reason }),
+        },
+      } satisfies OrchestrationV2DomainEvent;
+      const before = JSON.stringify(event);
+      const projected = projectDomainEventForWire(event);
+      expect(projected).toBe(event);
+      expect(JSON.stringify(projected)).toBe(before);
+      expect(projected.payload).not.toHaveProperty("detachedAt");
+      expect(projected.payload).not.toHaveProperty("status");
+      expect(Object.hasOwn(projected.payload, "reason")).toBe(reason !== undefined);
+    }
+  });
+
   it("keeps copied handoff transcripts out of activity items and live events", () => {
     const item = {
       ...base,

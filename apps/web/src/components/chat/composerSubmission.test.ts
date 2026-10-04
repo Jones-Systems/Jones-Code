@@ -403,6 +403,4 @@ describe("composer Enter actions", () => {
     expect(draft.handled).toBe(false);
     expect(draft.onSubmit).not.toHaveBeenCalled();
   });
-
-
 });

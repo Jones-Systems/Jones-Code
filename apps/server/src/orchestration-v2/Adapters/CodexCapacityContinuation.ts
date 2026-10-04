@@ -7,11 +7,7 @@ export interface CodexCapacityContinuationBinding {
 }
 
 export type CodexCapacityTerminalStatus = "completed" | "failed" | "interrupted";
-export type CodexCapacityCancellationReason =
-  | "stop"
-  | "superseded"
-  | "closed"
-  | "runtime_changed";
+export type CodexCapacityCancellationReason = "stop" | "superseded" | "closed" | "runtime_changed";
 
 interface CodexCapacityNativeFacts {
   readonly error?: {
@@ -97,11 +93,13 @@ function matchesBinding(
   expected: CodexCapacityContinuationBinding,
   actual: CodexCapacityContinuationBinding,
 ): boolean {
-  return expected.runId === actual.runId &&
+  return (
+    expected.runId === actual.runId &&
     expected.attemptId === actual.attemptId &&
     expected.providerThreadId === actual.providerThreadId &&
     expected.nativeThreadId === actual.nativeThreadId &&
-    expected.runtimeGeneration === actual.runtimeGeneration;
+    expected.runtimeGeneration === actual.runtimeGeneration
+  );
 }
 
 function unchanged(state: CodexCapacityContinuationState): CodexCapacityContinuationReduction {
@@ -147,10 +145,7 @@ function reduceCompletion(
         ...state,
         phase: "waiting_retry",
         retryOrdinal,
-        retiredNativeTurnIds: Object.freeze([
-          ...state.retiredNativeTurnIds,
-          state.nativeTurnId!,
-        ]),
+        retiredNativeTurnIds: Object.freeze([...state.retiredNativeTurnIds, state.nativeTurnId!]),
       }),
       actions: Object.freeze([
         Object.freeze<CodexCapacityContinuationAction>({

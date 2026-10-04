@@ -203,16 +203,24 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.commandObservation")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-          return yield* threadManagement.observeLegacyCommand({
-            ...args.params,
-            messageId: args.payload.messageId,
-          }).pipe(
-            Effect.catch((cause) =>
-              cause._tag === "CommandObservationUnsupportedError"
-                ? failEnvironmentInvalidRequest("observation_unsupported")
-                : failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
-            ),
-          );
+          return yield* threadManagement
+            .observeLegacyCommand({
+              ...args.params,
+              messageId: args.payload.messageId,
+            })
+            .pipe(
+              Effect.catch(
+                Effect.fnUntraced(function* (cause) {
+                  if (cause._tag === "CommandObservationUnsupportedError") {
+                    return yield* failEnvironmentInvalidRequest("observation_unsupported");
+                  }
+                  return yield* failEnvironmentInternal(
+                    "orchestration_thread_snapshot_failed",
+                    cause,
+                  );
+                }),
+              ),
+            );
         }),
       )
       .handle(
@@ -220,14 +228,16 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.commandObservationV2")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-          return yield* threadManagement.observeCommand({
-            ...args.params,
-            messageId: args.payload.messageId,
-          }).pipe(
-            Effect.catch((cause) =>
-              failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
-            ),
-          );
+          return yield* threadManagement
+            .observeCommand({
+              ...args.params,
+              messageId: args.payload.messageId,
+            })
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
+              ),
+            );
         }),
       )
       .handle(

@@ -463,48 +463,80 @@ const expectModelFailure = (errorMessage: string) =>
   }).pipe(Effect.scoped, Effect.provide(testLayer));
 
 describe("PiAdapterV2", () => {
-  it.effect("keeps queued Pi output on its captured session and exact turn after a fresh runtime opens", () =>
-    Effect.gen(function* () {
-      const open = Effect.fnUntraced(function* () {
-        const fake = yield* makeFakePi;
-        const opened = yield* openRuntime(fake);
-        const providerThread = yield* opened.runtime.ensureThread({ threadId: THREAD_ID,
-          modelSelection: modelSelection("default"), runtimePolicy });
-        yield* startTurn(opened.runtime, providerThread);
-        yield* fake.takeRequest("prompt");
-        yield* fake.emit({ type: "agent_start" });
-        yield* fake.emit({ type: "message_start", message: { role: "assistant" } });
-        yield* fake.emit({ type: "message_update",
-          assistantMessageEvent: { type: "text_end", contentIndex: 0, content: "Current Pi output" } });
-        yield* fake.emit({ type: "message_end", message: { role: "assistant",
-          content: [{ type: "text", text: "Current Pi output" }], stopReason: "stop" } });
-        return { ...opened, fake, providerThread };
-      });
-      const old = yield* open();
-      const fresh = yield* open();
-      const oldRunless = yield* old.takeEvent((event) => event.type === "provider_thread.updated");
-      assert.isDefined(readProviderEventOrigin(oldRunless));
-      assert.isUndefined(readProviderEventOrigin(oldRunless)?.turn);
-      const oldMessage = yield* old.takeEvent((event) => event.type === "message.updated" && event.message.role === "assistant");
-      const freshMessage = yield* fresh.takeEvent((event) => event.type === "message.updated" && event.message.role === "assistant");
-      const oldOrigin = readProviderEventOrigin(oldMessage);
-      const freshOrigin = readProviderEventOrigin(freshMessage);
-      assert.isDefined(oldOrigin?.turn);
-      assert.isDefined(freshOrigin?.turn);
-      assert.equal(oldOrigin?.turn?.runId, RunId.make(`run:${THREAD_ID}:1`));
-      assert.equal(oldOrigin?.turn?.attemptId, RunAttemptId.make(`run-attempt:run:${THREAD_ID}:1:1`));
-      assert.equal(oldOrigin?.turn?.binding.nativeThreadId, old.providerThread.nativeThreadRef?.nativeId);
-      assert.equal(oldOrigin?.producer.runtimeGeneration, old.runtime.runtimeGeneration);
-      assert.equal(freshOrigin?.producer.runtimeGeneration, fresh.runtime.runtimeGeneration);
-      assert.notEqual(oldOrigin?.producer.token, freshOrigin?.producer.token);
-      assert.notEqual(oldOrigin?.producer.runtimeGeneration, freshOrigin?.producer.runtimeGeneration);
-      yield* fresh.fake.closeStdout;
-      const terminal = yield* fresh.takeEvent((event) => event.type === "turn.terminal");
-      const terminalOrigin = readProviderEventOrigin(terminal);
-      assert.equal(terminalOrigin?.producer.token, freshOrigin?.producer.token);
-      assert.equal(terminalOrigin?.turn?.providerTurnId, freshOrigin?.turn?.providerTurnId);
-      yield* terminalOrigin!.producer.revalidateCurrent;
-    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  it.effect(
+    "keeps queued Pi output on its captured session and exact turn after a fresh runtime opens",
+    () =>
+      Effect.gen(function* () {
+        const open = Effect.fnUntraced(function* () {
+          const fake = yield* makeFakePi;
+          const opened = yield* openRuntime(fake);
+          const providerThread = yield* opened.runtime.ensureThread({
+            threadId: THREAD_ID,
+            modelSelection: modelSelection("default"),
+            runtimePolicy,
+          });
+          yield* startTurn(opened.runtime, providerThread);
+          yield* fake.takeRequest("prompt");
+          yield* fake.emit({ type: "agent_start" });
+          yield* fake.emit({ type: "message_start", message: { role: "assistant" } });
+          yield* fake.emit({
+            type: "message_update",
+            assistantMessageEvent: {
+              type: "text_end",
+              contentIndex: 0,
+              content: "Current Pi output",
+            },
+          });
+          yield* fake.emit({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Current Pi output" }],
+              stopReason: "stop",
+            },
+          });
+          return { ...opened, fake, providerThread };
+        });
+        const old = yield* open();
+        const fresh = yield* open();
+        const oldRunless = yield* old.takeEvent(
+          (event) => event.type === "provider_thread.updated",
+        );
+        assert.isDefined(readProviderEventOrigin(oldRunless));
+        assert.isUndefined(readProviderEventOrigin(oldRunless)?.turn);
+        const oldMessage = yield* old.takeEvent(
+          (event) => event.type === "message.updated" && event.message.role === "assistant",
+        );
+        const freshMessage = yield* fresh.takeEvent(
+          (event) => event.type === "message.updated" && event.message.role === "assistant",
+        );
+        const oldOrigin = readProviderEventOrigin(oldMessage);
+        const freshOrigin = readProviderEventOrigin(freshMessage);
+        assert.isDefined(oldOrigin?.turn);
+        assert.isDefined(freshOrigin?.turn);
+        assert.equal(oldOrigin?.turn?.runId, RunId.make(`run:${THREAD_ID}:1`));
+        assert.equal(
+          oldOrigin?.turn?.attemptId,
+          RunAttemptId.make(`run-attempt:run:${THREAD_ID}:1:1`),
+        );
+        assert.equal(
+          oldOrigin?.turn?.binding.nativeThreadId,
+          old.providerThread.nativeThreadRef?.nativeId,
+        );
+        assert.equal(oldOrigin?.producer.runtimeGeneration, old.runtime.runtimeGeneration);
+        assert.equal(freshOrigin?.producer.runtimeGeneration, fresh.runtime.runtimeGeneration);
+        assert.notEqual(oldOrigin?.producer.token, freshOrigin?.producer.token);
+        assert.notEqual(
+          oldOrigin?.producer.runtimeGeneration,
+          freshOrigin?.producer.runtimeGeneration,
+        );
+        yield* fresh.fake.closeStdout;
+        const terminal = yield* fresh.takeEvent((event) => event.type === "turn.terminal");
+        const terminalOrigin = readProviderEventOrigin(terminal);
+        assert.equal(terminalOrigin?.producer.token, freshOrigin?.producer.token);
+        assert.equal(terminalOrigin?.turn?.providerTurnId, freshOrigin?.turn?.providerTurnId);
+        yield* terminalOrigin!.producer.revalidateCurrent;
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("observes complete native state without activating or submitting a thread", () =>
@@ -516,13 +548,15 @@ describe("PiAdapterV2", () => {
         modelSelection: modelSelection("default"),
         runtimePolicy,
       });
+      const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+      if (nativeThreadId == null) return assert.fail("Pi ensured a thread without a native id");
       const binding = {
         threadId: THREAD_ID,
         providerThreadId: providerThread.id,
         providerSessionId: runtime.providerSessionId,
         instanceId: PI_INSTANCE_ID,
         runtimeGeneration: runtime.runtimeGeneration!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
+        nativeThreadId,
       };
       assert.isString(runtime.runtimeGeneration);
       assert.isUndefined(runtime.getGoal);
@@ -536,8 +570,13 @@ describe("PiAdapterV2", () => {
       assert.equal((yield* runtime.observeThreadRuntime!(binding)).status, "busy");
       fake.queueState({ isCompacting: true });
       assert.equal((yield* runtime.observeThreadRuntime!(binding)).status, "busy");
-      assert.deepEqual(fake.allRequests().slice(before).map((request) => request["type"]),
-        ["get_state", "get_state", "get_state", "get_state"]);
+      assert.deepEqual(
+        fake
+          .allRequests()
+          .slice(before)
+          .map((request) => request["type"]),
+        ["get_state", "get_state", "get_state", "get_state"],
+      );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
@@ -550,17 +589,21 @@ describe("PiAdapterV2", () => {
         modelSelection: modelSelection("default"),
         runtimePolicy,
       });
+      const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+      if (nativeThreadId == null) return assert.fail("Pi ensured a thread without a native id");
       const binding = {
         threadId: THREAD_ID,
         providerThreadId: providerThread.id,
         providerSessionId: runtime.providerSessionId,
         instanceId: PI_INSTANCE_ID,
         runtimeGeneration: runtime.runtimeGeneration!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
+        nativeThreadId,
       };
       for (const partial of [
-        { isStreaming: undefined }, { isCompacting: undefined },
-        { pendingMessageCount: undefined }, { pendingMessageCount: -1 },
+        { isStreaming: undefined },
+        { isCompacting: undefined },
+        { pendingMessageCount: undefined },
+        { pendingMessageCount: -1 },
         { sessionFile: "/fake/wrong-session.jsonl" },
       ]) {
         fake.queueState(partial);
@@ -569,12 +612,20 @@ describe("PiAdapterV2", () => {
       fake.failNextState();
       assert.equal((yield* runtime.observeThreadRuntime!(binding)).status, "unknown");
       const before = fake.allRequests().length;
-      assert.equal((yield* runtime.observeThreadRuntime!({
-        ...binding, runtimeGeneration: "stale-generation",
-      })).status, "unknown");
-      assert.equal((yield* runtime.observeThreadRuntime!({
-        ...binding, threadId: ThreadId.make("different-thread"),
-      })).status, "unknown");
+      assert.equal(
+        (yield* runtime.observeThreadRuntime!({
+          ...binding,
+          runtimeGeneration: "stale-generation",
+        })).status,
+        "unknown",
+      );
+      assert.equal(
+        (yield* runtime.observeThreadRuntime!({
+          ...binding,
+          threadId: ThreadId.make("different-thread"),
+        })).status,
+        "unknown",
+      );
       assert.equal(fake.allRequests().length, before);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
@@ -633,48 +684,60 @@ describe("PiAdapterV2", () => {
     ),
   );
 
-  it.effect("rejects unproved native resume before attachment and keeps complete effects unknown", () =>
-    Effect.gen(function* () {
-      const fake = yield* makeFakePi;
-      const { runtime } = yield* openRuntime(fake);
-      const providerThread = yield* runtime.ensureThread({
-        threadId: THREAD_ID,
-        modelSelection: modelSelection("default"),
-        runtimePolicy,
-      });
-      const before = fake.allRequests().length;
-      const nativeOperation = {
-        operationId: "pi-proof-gated-resume",
-        operation: "resume_thread" as const,
-        instanceId: PI_INSTANCE_ID,
-        threadId: THREAD_ID,
-        providerThreadId: providerThread.id,
-        providerSessionId: runtime.providerSessionId,
-        runtimeGeneration: runtime.runtimeGeneration!,
-      };
-      let gated = false;
-      const result = yield* runtime.resumeThread({
-        providerThread,
-        nativeOperation,
-        beforeNativeResume: (actual) => Effect.gen(function* () {
-          assert.isUndefined(actual);
-          gated = true;
-          yield* Effect.yieldNow;
-          return yield* new ProviderAdapterProtocolError({
-            driver: PI_PROVIDER, detail: "Native source proof is unavailable.",
+  it.effect(
+    "rejects unproved native resume before attachment and keeps complete effects unknown",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime } = yield* openRuntime(fake);
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        const before = fake.allRequests().length;
+        const nativeOperation = {
+          operationId: "pi-proof-gated-resume",
+          operation: "resume_thread" as const,
+          instanceId: PI_INSTANCE_ID,
+          threadId: THREAD_ID,
+          providerThreadId: providerThread.id,
+          providerSessionId: runtime.providerSessionId,
+          runtimeGeneration: runtime.runtimeGeneration!,
+        };
+        let gated = false;
+        const result = yield* runtime
+          .resumeThread({
+            providerThread,
+            nativeOperation,
+            beforeNativeResume: (actual) =>
+              Effect.gen(function* () {
+                assert.isUndefined(actual);
+                gated = true;
+                yield* Effect.yieldNow;
+                return yield* new ProviderAdapterProtocolError({
+                  driver: PI_PROVIDER,
+                  detail: "Native source proof is unavailable.",
+                });
+              }),
+          })
+          .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
+        assert.isTrue(gated);
+        assert.isFalse(
+          fake
+            .allRequests()
+            .slice(before)
+            .some((request) => request.type === "switch_session" || request.type === "new_session"),
+        );
+        assert.isDefined(result);
+        if (result !== undefined) {
+          assert.equal(result._tag, "ProviderAdapterResumeThreadError");
+          assert.deepEqual("nativeEffect" in result ? result.nativeEffect : undefined, {
+            ...nativeOperation,
+            outcome: "unknown",
           });
-        }),
-      }).pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
-      assert.isTrue(gated);
-      assert.isFalse(fake.allRequests().slice(before).some((request) =>
-        request.type === "switch_session" || request.type === "new_session"));
-      assert.isDefined(result);
-      if (result !== undefined) {
-        assert.equal(result._tag, "ProviderAdapterResumeThreadError");
-        assert.deepEqual("nativeEffect" in result ? result.nativeEffect : undefined,
-          { ...nativeOperation, outcome: "unknown" });
-      }
-    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+        }
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("rejects a resume while a turn is active", () =>

@@ -35,6 +35,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
@@ -53,8 +54,58 @@ import {
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
+import { makeProviderFailure } from "./ProviderFailure.ts";
+import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
+import {
+  ProviderSessionActivityError,
+  type ProviderOrdinaryExecutionAttachmentV1,
+} from "./ProviderSessionManager.ts";
+import * as ProviderManagedActorCompletion from "./ProviderManagedActorCompletion.ts";
 
 const driver = ProviderDriverKind.make("codex");
+
+it.effect("ignores a targeted provider terminal for a superseded turn", () =>
+  Effect.sync(() => {
+    const identity = {
+      threadId: ThreadId.make("thread:superseded-targeted-exit"),
+      runId: RunId.make("run:superseded-targeted-exit:current"),
+      attemptId: RunAttemptId.make("attempt:superseded-targeted-exit:current"),
+      providerThreadId: ProviderThreadId.make("provider-thread:superseded-targeted-exit"),
+    };
+    const currentTurnId = ProviderTurnId.make("provider-turn:superseded-targeted-exit:current");
+    const state = RunExecutionService.makeProviderEventRoutingState({
+      identity,
+      providerTurnId: currentTurnId,
+    });
+    const terminal = {
+      type: "turn.terminal" as const,
+      driver: ProviderDriverKind.make("opencode"),
+      providerThreadId: identity.providerThreadId,
+      providerTurnId: ProviderTurnId.make("provider-turn:superseded-targeted-exit:old"),
+      runOrdinal: 1,
+      status: "failed" as const,
+      failureItemOrdinal: 1,
+      failure: makeProviderFailure({ message: "Old transport closed.", class: "transport_error" }),
+      threadDisposition: "broken" as const,
+    };
+    const [accepted, afterStaleExit] = RunExecutionService.routeProviderEvent(
+      terminal,
+      identity,
+      state,
+    );
+    assert.isFalse(accepted);
+    assert.strictEqual(afterStaleExit, state);
+    assert.equal(afterStaleExit.rootProviderTurnId, currentTurnId);
+    assert.isFalse(afterStaleExit.rootTurnEnded);
+    const [currentAccepted, afterCurrentTerminal] = RunExecutionService.routeProviderEvent(
+      { ...terminal, providerTurnId: currentTurnId },
+      identity,
+      afterStaleExit,
+    );
+    assert.isTrue(currentAccepted);
+    assert.isTrue(afterCurrentTerminal.rootTurnEnded);
+  }),
+);
 
 const RunExecutionTestLayer = RunExecutionService.layer.pipe(
   Layer.provide(
@@ -1229,7 +1280,10 @@ it.effect("keeps ingesting owned child events after the root turn terminalizes",
           },
         },
       });
-    }).pipe(Effect.provide(testLayer));
+    }).pipe(
+      Effect.tap(() => Deferred.await(childMessageIngested).pipe(Effect.timeout("2 seconds"))),
+      Effect.provide(testLayer),
+    );
 
     const observed = yield* Deferred.await(childMessageIngested).pipe(
       Effect.timeoutOption("2 seconds"),
@@ -1642,7 +1696,10 @@ it.effect(
             },
           },
         });
-      }).pipe(Effect.provide(testLayer));
+      }).pipe(
+        Effect.tap(() => Deferred.await(ingestionDone).pipe(Effect.timeout("2 seconds"))),
+        Effect.provide(testLayer),
+      );
 
       const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
       assert.isTrue(Option.isSome(closed), "event subscription did not release");
@@ -1858,7 +1915,10 @@ it.effect("drops late root provider-thread writes from a superseded attempt", ()
           },
         },
       });
-    }).pipe(Effect.provide(testLayer));
+    }).pipe(
+      Effect.tap(() => Deferred.await(ingestionDone).pipe(Effect.timeout("2 seconds"))),
+      Effect.provide(testLayer),
+    );
 
     const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
     assert.isTrue(
@@ -2041,7 +2101,10 @@ it.effect(
             },
           },
         });
-      }).pipe(Effect.provide(testLayer));
+      }).pipe(
+        Effect.tap(() => Deferred.await(ingestionDone).pipe(Effect.timeout("2 seconds"))),
+        Effect.provide(testLayer),
+      );
 
       const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
       assert.isTrue(
@@ -2211,7 +2274,10 @@ it.effect(
             },
           },
         });
-      }).pipe(Effect.provide(testLayer));
+      }).pipe(
+        Effect.tap(() => Deferred.await(ingestionDone).pipe(Effect.timeout("2 seconds"))),
+        Effect.provide(testLayer),
+      );
 
       const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
       assert.isTrue(Option.isSome(closed), "event subscription did not release");
@@ -2451,7 +2517,10 @@ it.effect(
             },
           },
         });
-      }).pipe(Effect.provide(testLayer));
+      }).pipe(
+        Effect.tap(() => Deferred.await(ingestionDone).pipe(Effect.timeout("2 seconds"))),
+        Effect.provide(testLayer),
+      );
 
       const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
       assert.isTrue(Option.isSome(closed), "event ingestion fiber did not finish");
@@ -2781,7 +2850,10 @@ it.effect(
             },
           },
         });
-      }).pipe(Effect.provide(testLayer));
+      }).pipe(
+        Effect.tap(() => Deferred.await(ingestionDone).pipe(Effect.timeout("2 seconds"))),
+        Effect.provide(testLayer),
+      );
 
       const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
       assert.isTrue(Option.isSome(closed), "event ingestion fiber did not finish");
@@ -3228,6 +3300,14 @@ it.effect("refreshes pull requests only once when startup failure closes its eve
                 providerThreadId: input.providerThread.id,
                 runId: input.runId,
                 cause: "provider rejected the turn",
+                ...(input.nativeOperation === undefined
+                  ? {}
+                  : {
+                      nativeEffect: {
+                        ...input.nativeOperation,
+                        outcome: "known_no_effect" as const,
+                      },
+                    }),
               }),
             ),
           ),
@@ -3413,7 +3493,10 @@ function captureRootRunTermination(input: {
           },
         },
       });
-    }).pipe(Effect.provide(testLayer));
+    }).pipe(
+      Effect.tap(() => Deferred.await(ingestionDone).pipe(Effect.timeout("2 seconds"))),
+      Effect.provide(testLayer),
+    );
 
     yield* Deferred.await(ingestionDone);
     return { written: yield* Ref.get(writtenItems), observed: yield* Ref.get(observed) };
@@ -3859,7 +3942,10 @@ function runBackgroundItemScenario(
           },
         },
       });
-    }).pipe(Effect.provide(testLayer));
+    }).pipe(
+      Effect.tap(() => Deferred.await(ingestionDone).pipe(Effect.timeout("2 seconds"))),
+      Effect.provide(testLayer),
+    );
 
     const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
     assert.isTrue(Option.isSome(closed), "event ingestion fiber did not finish");
@@ -3888,4 +3974,718 @@ it.effect("releases ingestion after idle subagent rows and items settle", () =>
       "root-finalized",
     ]);
   }),
+);
+
+let ordinaryManagedFixtureOrdinal = 0;
+function ordinaryManagedExecutionFixture(
+  options: {
+    readonly earlyTerminal?: boolean;
+    readonly baselineOwnershipFailure?: boolean;
+    readonly nativeFailure?: boolean;
+    readonly nativeEvidence?: boolean;
+    readonly supersededBeforeDispatch?: boolean;
+    readonly nativeCompletedBeforeReturn?: boolean;
+    readonly joinedNativeTask?: boolean;
+    readonly stoppedAfterDispatch?: boolean;
+  } = {},
+) {
+  return Effect.gen(function* () {
+    const fixtureOrdinal = ++ordinaryManagedFixtureOrdinal;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:ordinary-managed-execution");
+    const runId = RunId.make("run:ordinary-managed-execution");
+    const attemptId = RunAttemptId.make("attempt:ordinary-managed-execution");
+    const rootNodeId = NodeId.make("node:ordinary-managed-execution");
+    const providerThreadId = ProviderThreadId.make("provider-thread:ordinary-managed-execution");
+    const providerSessionId = ProviderSessionId.make("session:ordinary-managed-execution");
+    const instanceId = ProviderInstanceId.make("ordinary-managed-execution");
+    const messageId = MessageId.make("message:ordinary-managed-execution");
+    const commandId = CommandId.make("command:ordinary-managed-execution");
+    const canonicalCommand = {
+      type: "message.dispatch",
+      commandId,
+      threadId,
+      text: "Continue ordinary work.",
+    };
+    const birth = {
+      kind: "application_v2_thread_birth" as const,
+      threadId,
+      eventId: EventId.make("event:ordinary-managed-execution:birth"),
+      sequence: 1,
+    };
+    const capture = yield* Schema.decodeUnknownEffect(OrdinaryCheckout.OrdinaryCheckoutCaptureV1)({
+      version: 1,
+      commandId,
+      threadId,
+      commandType: "message.dispatch",
+      canonicalCommand,
+      commandDigest: OrdinaryCheckout.ordinaryCheckoutCommandDigestV1(canonicalCommand),
+      origin: { kind: "command" },
+      applicationBirth: birth,
+      projectId: "project:ordinary-managed-execution",
+      canonicalProjectRoot: "/fixture/repository",
+      canonicalCheckoutPath: "/fixture/checkout",
+      branch: "fixture-branch",
+      lease: {
+        resourcePath: "/fixture/checkout",
+        leaseId: "lease:ordinary-managed-execution",
+        ownerThreadId: threadId,
+        ownerIncarnation: OrdinaryCheckout.ordinaryApplicationIncarnationV1(birth),
+        branch: "fixture-branch",
+        acquiredAtMs: 1,
+        renewedAtMs: 1,
+        expiresAtMs: 300001,
+      },
+    }).pipe(Effect.orDie);
+    const acceptedRun = { runId, runAttemptId: attemptId, nodeId: rootNodeId, messageId };
+    const admission = yield* Schema.decodeUnknownEffect(
+      OrdinaryCheckout.OrdinaryCheckoutAdmissionV1,
+    )({
+      version: 1,
+      admissionId: OrdinaryCheckout.ordinaryCheckoutAdmissionIdV1(capture),
+      capture: yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutCaptureV1)(capture).pipe(
+        Effect.orDie,
+      ),
+      receipt: {
+        commandId,
+        threadId,
+        commandType: "message.dispatch",
+        acceptedAt: DateTime.formatIso(now),
+        resultSequence: 2,
+        status: "accepted",
+        error: null,
+      },
+      eventBasis: [
+        {
+          eventId: "event:ordinary-managed-execution:accepted",
+          sequence: 2,
+          threadId,
+          commandId,
+          eventType: "run.updated",
+        },
+      ],
+      run: acceptedRun,
+      recordedAt: DateTime.formatIso(now),
+    }).pipe(Effect.orDie);
+    const source = {
+      kind: "outbox",
+      link: {
+        version: 1,
+        effectId: "effect:ordinary-managed-execution",
+        commandId,
+        threadId,
+        requestSha256: "c".repeat(64),
+        admission: OrdinaryCheckout.ordinaryCheckoutAdmissionRefV1(admission),
+        recordedAt: DateTime.formatIso(now),
+      },
+      workerId: "worker:ordinary-managed-execution",
+      expectedAttempt: 1,
+      leaseExpiresAt: DateTime.formatIso(DateTime.add(now, { minutes: 5 })),
+    };
+    const originalUse = yield* Schema.decodeUnknownEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)({
+      version: 1,
+      kind: "ordinary_checkout_use",
+      operationId: "effect:ordinary-managed-execution:ordinary-checkout:attempt:1",
+      admission: source.link.admission,
+      source,
+      lease: capture.lease,
+    }).pipe(Effect.orDie);
+    const startExecution = OrdinaryCheckout.makeOrdinaryCheckoutExecutionRefV1({
+      originalUse,
+      executor: yield* Schema.decodeUnknownEffect(
+        OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1,
+      )({
+        kind: "actual_outbox_claim",
+        source,
+      }).pipe(Effect.orDie),
+    });
+    const order: Array<string> = [];
+    const writes: Array<Parameters<EventSink.EventSinkV2Shape["writeWithEffects"]>[0]> = [];
+    const seenTerminal = yield* Deferred.make<void>();
+    let generation = "before-lazy-start";
+    let current = true;
+    let registeredManaged: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1 | undefined;
+    let stopCalls = 0;
+    let closeCalls = 0;
+    let captureCalls = 0;
+    let lifecycleStopped = false;
+    let issuer: ProviderManagedActorCompletion.ProviderManagedActorIssuerV1 | undefined;
+    let actor: ProviderManagedActorCompletion.ProviderManagedActorV1 | undefined;
+    const taskDone = yield* Deferred.make<void>();
+    const task = options.joinedNativeTask
+      ? yield* Deferred.await(taskDone).pipe(Effect.forkChild)
+      : undefined;
+    const nativeThreadId = `native:ordinary-managed-execution:${fixtureOrdinal}`;
+    const recordEndpoint = Effect.suspend(() =>
+      issuer === undefined || actor === undefined
+        ? Effect.die("No actual synthetic dispatch actor was admitted")
+        : issuer.recordNativeEndpoint(actor, {
+            kind: "native_endpoint",
+            endpoint: "synthetic native completion callback",
+            outcome: "completed",
+            nativeThreadId,
+            observedAt: DateTime.formatIso(now),
+          }),
+    );
+    const session = {
+      driver,
+      instanceId,
+      providerSessionId,
+      get runtimeGeneration() {
+        return generation;
+      },
+      events: Stream.never,
+      subscribeEvents: Effect.succeed({
+        events: options.earlyTerminal
+          ? Stream.fromIterable([
+              {
+                type: "turn.terminal" as const,
+                driver,
+                providerThreadId,
+                providerTurnId: ProviderTurnId.make("turn:ordinary-managed-execution"),
+                runOrdinal: 1,
+                failureItemOrdinal: 1,
+                status: "completed" as const,
+                threadDisposition: "reusable" as const,
+              },
+            ]).pipe(Stream.tap(() => Deferred.succeed(seenTerminal, undefined)))
+          : Stream.never,
+        close: Effect.sync(() => {
+          closeCalls += 1;
+        }),
+      }),
+      startTurn: () =>
+        Effect.gen(function* () {
+          const actualExecution =
+            yield* ProviderManagedActorCompletion.readProviderManagedActorExecution;
+          assert.equal(actualExecution?.associationId, startExecution.associationId);
+          assert.isDefined(issuer);
+          generation = "after-lazy-start";
+          actor = yield* issuer!.admitActor({
+            kind: "foreground",
+            completionMode:
+              task === undefined ? "native_endpoint" : "native_endpoint_and_task_join",
+            actualSource: {
+              sourceId: `source:ordinary-managed-execution:${fixtureOrdinal}`,
+              driver,
+              instanceId,
+              providerSessionId,
+              providerThreadId,
+              threadId,
+              runtimeGeneration: generation,
+              nativeThreadId,
+            },
+          });
+          if (task !== undefined)
+            yield* issuer!.requireTaskJoin(actor, {
+              taskId: "synthetic-dispatch-task",
+              fiber: task,
+            });
+          yield* issuer!.markActorEntered(actor);
+          if (options.nativeFailure) {
+            yield* issuer!.retainUnknown(actor, "Synthetic response was lost after dispatch");
+            return yield* new ProviderAdapterTurnStartError({
+              driver,
+              threadId,
+              providerThreadId,
+              runId,
+              cause: "Uncertain native dispatch.",
+            });
+          }
+          if (options.nativeCompletedBeforeReturn) yield* recordEndpoint;
+          yield* issuer!.seal;
+          order.push("native-dispatch-returned");
+          lifecycleStopped = options.stoppedAfterDispatch === true;
+        }),
+    } as unknown as ProviderAdapterV2SessionRuntime;
+    ProviderManagedActorCompletion.registerProviderManagedActorProducer(session, (prepared) =>
+      Effect.sync(() => {
+        assert.equal(prepared.admission.providerThreadId, providerThreadId);
+        assert.equal(prepared.admission.admission.run?.runAttemptId, attemptId);
+        issuer = prepared.issuer;
+        return {
+          revalidateMutation: Effect.suspend(() =>
+            current && !lifecycleStopped
+              ? Effect.void
+              : Effect.fail("Synthetic native source is no longer mutable"),
+          ),
+          revalidateCompletion: Effect.suspend(() =>
+            current ? Effect.void : Effect.fail("Synthetic captured native source was replaced"),
+          ),
+        };
+      }),
+    );
+    const captureOrdinaryAttachment = () =>
+      Effect.sync(() => {
+        captureCalls += 1;
+        order.push("actual-capture");
+        const capturedGeneration = generation;
+        return {
+          captureId: `capture:ordinary-managed-execution:${fixtureOrdinal}:${captureCalls}`,
+          driver,
+          binding: {
+            threadId,
+            providerThreadId,
+            providerSessionId,
+            instanceId,
+            ...(options.nativeEvidence === true
+              ? { runtimeGeneration: capturedGeneration, nativeThreadId, evidenceRevision: 1 }
+              : {}),
+          },
+          runId,
+          attemptId,
+          revalidateCaptured: Effect.suspend(() =>
+            current && generation === capturedGeneration && !lifecycleStopped
+              ? Effect.void
+              : Effect.fail(
+                  new ProviderSessionActivityError({
+                    providerSessionId,
+                    cause: "Captured source is no longer mutable.",
+                  }),
+                ),
+          ),
+          revalidateCompletionBinding: Effect.suspend(() =>
+            current && generation === capturedGeneration
+              ? Effect.void
+              : Effect.fail(
+                  new ProviderSessionActivityError({
+                    providerSessionId,
+                    cause: "Captured source replaced.",
+                  }),
+                ),
+          ),
+          stopCaptured: () =>
+            Effect.sync(() => {
+              stopCalls += 1;
+              return { status: "unknown" as const, reason: "No fabricated native stop proof." };
+            }),
+        } as ProviderOrdinaryExecutionAttachmentV1;
+      });
+    const layer = RunExecutionService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(CheckpointService.CheckpointServiceV2)({
+            captureBaseline: (input) =>
+              Effect.gen(function* () {
+                order.push("baseline");
+                assert.equal(
+                  input.ordinaryCheckoutExecution?.associationId,
+                  startExecution.associationId,
+                );
+                const suppliedSink = yield* Effect.serviceOption(EventSink.EventSinkV2);
+                assert.isTrue(Option.isSome(suppliedSink));
+                assert.equal(
+                  typeof Option.getOrThrow(suppliedSink).revalidateOrdinaryCheckoutExecution,
+                  "function",
+                );
+                if (options.baselineOwnershipFailure)
+                  return yield* new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
+                    reason: "unknown_use",
+                    threadId,
+                    path: "/fixture/checkout",
+                    message: "Exact original actor was lost inside the workspace lock.",
+                  });
+              }),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            readOrdinaryCheckoutAdmissionForRun: () => Effect.succeed(admission),
+            readOrdinaryCheckoutUse: () =>
+              Effect.succeed({
+                subject: {
+                  schema: "t3.ordinary-checkout-use/v1" as const,
+                  use: originalUse,
+                  source: {
+                    projectWorkspaceRoot: "/actual/retained-repository",
+                    worktreePath: "/actual/retained-checkout",
+                  },
+                },
+                state: "started" as const,
+                startedAt: DateTime.formatIso(now),
+              }),
+            revalidateOrdinaryCheckoutExecution: (ref) =>
+              ref.associationId === startExecution.associationId ||
+              ref.associationId === registeredManaged?.associationId
+                ? Effect.succeed(ref)
+                : Effect.fail(
+                    new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
+                      reason: "unknown_use",
+                      threadId,
+                      path: "/fixture/checkout",
+                      message: "Managed activation has not been committed.",
+                    }),
+                  ),
+            writeWithEffects: (input) =>
+              Effect.sync(() => {
+                writes.push(input);
+                return [];
+              }),
+            writeIfRunCurrent: () =>
+              Effect.sync(() => {
+                order.push("unexpected-terminal-write");
+                return { committed: false, storedEvents: [] };
+              }),
+          }),
+          IdAllocator.layer,
+          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+            ingestNormalized: () => Effect.succeed([]),
+          }),
+          ServerSettings.layerTest(),
+        ),
+      ),
+    );
+    const input = {
+      commandId,
+      ordinaryCheckoutUse: originalUse,
+      ordinaryCheckoutExecution: startExecution,
+      captureOrdinaryAttachment,
+      prepareOrdinaryManagedActorRun: (prepared) =>
+        ProviderManagedActorCompletion.prepareProviderManagedActorRun(session, prepared),
+      appThread: { id: threadId } as OrchestrationV2AppThread,
+      providerSessionId,
+      session,
+      run: {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId: instanceId,
+      } as OrchestrationV2Run,
+      rootNode: { id: rootNodeId } as OrchestrationV2ExecutionNode,
+      checkpointScope: {
+        id: CheckpointScopeId.make("scope:ordinary-managed-execution"),
+      } as OrchestrationV2CheckpointScope,
+      providerThread: { id: providerThreadId, driver } as OrchestrationV2ProviderThread,
+      attempt: {
+        id: attemptId,
+        providerTurnId: ProviderTurnId.make("turn:ordinary-managed-execution"),
+      } as OrchestrationV2RunAttempt,
+      attemptId,
+      providerTurnOrdinal: 1,
+      ...(options.supersededBeforeDispatch
+        ? { shouldStartProviderTurn: () => Effect.succeed(false) }
+        : {}),
+      message: {
+        messageId,
+        text: "Continue ordinary work.",
+        attachments: [],
+        createdBy: "user" as const,
+        creationSource: "web" as const,
+      },
+      modelSelection: { instanceId, model: "gpt-5.4" },
+      runtimePolicy: {
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        cwd: "/fixture/checkout",
+        approvalPolicy: "never" as const,
+        sandboxPolicy: {
+          type: "readOnly" as const,
+          access: { type: "fullAccess" as const },
+          networkAccess: false,
+        },
+      },
+    } satisfies RunExecutionService.RunExecutionServiceV2StartRootRunInput;
+    return {
+      input,
+      layer,
+      startExecution,
+      order,
+      writes,
+      seenTerminal,
+      recordEndpoint,
+      completeTask: Effect.suspend(() =>
+        task === undefined || issuer === undefined || actor === undefined
+          ? Effect.die("No actual synthetic task was registered")
+          : Deferred.succeed(taskDone, undefined).pipe(
+              Effect.andThen(issuer.joinTask(actor, "synthetic-dispatch-task")),
+              Effect.asVoid,
+            ),
+      ),
+      register: (ref: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1) => {
+        registeredManaged = ref;
+      },
+      replace: () => {
+        current = false;
+        generation = "unrelated-replacement";
+      },
+      readCounts: () => ({ stopCalls, closeCalls, captureCalls }),
+    };
+  });
+}
+
+it.effect("dispatches ordinary runs without an unprepared managed actor context", () =>
+  Effect.gen(function* () {
+    const fixture = yield* ordinaryManagedExecutionFixture();
+    const { prepareOrdinaryManagedActorRun: _prepareOrdinaryManagedActorRun, ...ordinaryInput } =
+      fixture.input;
+    let dispatched = false;
+    yield* Effect.gen(function* () {
+      const service = yield* RunExecutionService.RunExecutionServiceV2;
+      const handle = yield* service.startRootRun({
+        ...ordinaryInput,
+        session: {
+          ...ordinaryInput.session,
+          startTurn: () =>
+            Effect.gen(function* () {
+              assert.isUndefined(
+                yield* ProviderManagedActorCompletion.readProviderManagedActorExecution,
+              );
+              dispatched = true;
+            }),
+        },
+      });
+      assert.isTrue(dispatched);
+      assert.isDefined(handle);
+      if (handle === undefined) return;
+      assert.isUndefined(handle.nativeCompletion);
+      assert.equal(handle.actualStartObservation.settlementMode, "primary_terminal_checkpoint");
+      assert.deepEqual(fixture.order, ["baseline", "actual-capture"]);
+      yield* handle.revalidateCaptured;
+      yield* handle.close;
+    }).pipe(Effect.provide(fixture.layer));
+  }),
+);
+
+it.effect(
+  "issues ordinary managed starts only from actual dispatch and captured lazy replacement",
+  () =>
+    Effect.gen(function* () {
+      const fixture = yield* ordinaryManagedExecutionFixture({ nativeEvidence: true });
+      yield* Effect.gen(function* () {
+        const service = yield* RunExecutionService.RunExecutionServiceV2;
+        const handle = yield* service.startRootRun(fixture.input);
+        assert.isDefined(handle);
+        if (handle === undefined) return;
+        assert.deepEqual(fixture.order, ["baseline", "native-dispatch-returned", "actual-capture"]);
+        assert.equal(handle.managedExecutor.runtimeGeneration, "after-lazy-start");
+        const issued = RunExecutionService.readIssuedOrdinaryManagedRunStartObservation(
+          handle.actualStartObservation,
+        );
+        assert.isNotNull(issued);
+        assert.isNull(
+          RunExecutionService.readIssuedOrdinaryManagedRunStartObservation({
+            ...handle.actualStartObservation,
+          }),
+        );
+        assert.isNull(
+          RunExecutionService.readIssuedOrdinaryManagedRunStartObservation(
+            yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+              handle.actualStartObservation,
+            ).pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))),
+              Effect.orDie,
+            ),
+          ),
+        );
+        assert.isTrue(Object.isFrozen(handle.actualStartObservation));
+        assert.isTrue(Object.isFrozen(handle.managedExecutor.binding));
+        assert.isTrue(
+          Object.isFrozen(handle.actualStartObservation.startExecution.originalUse.lease),
+        );
+        yield* issued!.revalidateIssued;
+        fixture.replace();
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(issued!.revalidateIssued)));
+        yield* handle.close;
+      }).pipe(Effect.provide(fixture.layer));
+    }),
+);
+
+it.effect(
+  "ordinary early terminal checkpoint waits committed managed activation and retains original raw source",
+  () =>
+    Effect.gen(function* () {
+      const fixture = yield* ordinaryManagedExecutionFixture({ earlyTerminal: true });
+      yield* Effect.gen(function* () {
+        const service = yield* RunExecutionService.RunExecutionServiceV2;
+        const handle = yield* service.startRootRun(fixture.input);
+        assert.isDefined(handle);
+        if (handle === undefined) return;
+        yield* Deferred.await(fixture.seenTerminal);
+        assert.lengthOf(fixture.writes, 0);
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(handle.requireActivatedExecution)));
+        const managed = OrdinaryCheckout.makeOrdinaryCheckoutExecutionRefV1({
+          originalUse: fixture.startExecution.originalUse,
+          executor: handle.managedExecutor,
+        });
+        assert.isTrue(
+          Exit.isFailure(yield* Effect.exit(handle.activate(managed))),
+          "A descriptive managed ref is not a committed activation.",
+        );
+        fixture.register(managed);
+        yield* handle.activate(managed);
+        assert.equal(
+          (yield* handle.requireActivatedExecution).associationId,
+          managed.associationId,
+        );
+        yield* handle.awaitIngestionExit;
+        assert.lengthOf(fixture.writes, 1);
+        assert.equal(fixture.writes[0]!.effects[0]?.request.type, "checkpoint.capture");
+        assert.equal(
+          fixture.writes[0]!.ordinaryCheckoutEffects?.[0]?.ordinaryCheckoutExecution?.associationId,
+          managed.associationId,
+        );
+        assert.deepEqual(fixture.writes[0]!.ordinaryCheckoutEffects?.[0]?.source, {
+          projectWorkspaceRoot: "/actual/retained-repository",
+          worktreePath: "/actual/retained-checkout",
+        });
+        for (const key of [
+          "runtimeGeneration",
+          "nativeThreadId",
+          "evidenceRevision",
+          "providerTurnId",
+        ])
+          assert.isFalse(Object.hasOwn(handle.managedExecutor, key));
+        assert.equal(fixture.readCounts().stopCalls, 0);
+        yield* handle.close;
+      }).pipe(Effect.provide(fixture.layer));
+    }),
+);
+
+it.effect("ordinary baseline ownership loss escapes best effort and prevents native dispatch", () =>
+  Effect.gen(function* () {
+    const fixture = yield* ordinaryManagedExecutionFixture({ baselineOwnershipFailure: true });
+    yield* Effect.gen(function* () {
+      const service = yield* RunExecutionService.RunExecutionServiceV2;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(service.startRootRun(fixture.input))));
+      assert.deepEqual(fixture.order, ["baseline"]);
+      assert.equal(fixture.readCounts().captureCalls, 0);
+      assert.lengthOf(fixture.writes, 0);
+    }).pipe(Effect.provide(fixture.layer));
+  }),
+);
+
+it.effect("ordinary unknown native start cannot issue a managed start observation", () =>
+  Effect.gen(function* () {
+    const fixture = yield* ordinaryManagedExecutionFixture({ nativeFailure: true });
+    yield* Effect.gen(function* () {
+      const service = yield* RunExecutionService.RunExecutionServiceV2;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(service.startRootRun(fixture.input))));
+      assert.equal(fixture.readCounts().captureCalls, 0);
+      assert.lengthOf(fixture.writes, 0);
+    }).pipe(Effect.provide(fixture.layer));
+  }),
+);
+
+it.effect("ordinary superseded pre-dispatch attempt cannot report a successful managed start", () =>
+  Effect.gen(function* () {
+    const fixture = yield* ordinaryManagedExecutionFixture({ supersededBeforeDispatch: true });
+    yield* Effect.gen(function* () {
+      const service = yield* RunExecutionService.RunExecutionServiceV2;
+      const result = yield* Effect.exit(service.startRootRun(fixture.input));
+      assert.isTrue(Exit.isFailure(result));
+      assert.deepEqual(fixture.order, ["baseline"]);
+      assert.equal(fixture.readCounts().captureCalls, 0);
+      assert.equal(fixture.readCounts().closeCalls, 0);
+      assert.lengthOf(fixture.writes, 0);
+    }).pipe(Effect.provide(fixture.layer));
+  }),
+);
+
+it.effect("ordinary captured loss signals once and uses only its retained stop target", () =>
+  Effect.gen(function* () {
+    const fixture = yield* ordinaryManagedExecutionFixture();
+    yield* Effect.gen(function* () {
+      const service = yield* RunExecutionService.RunExecutionServiceV2;
+      const handle = yield* service.startRootRun(fixture.input);
+      assert.isDefined(handle);
+      if (handle === undefined) return;
+      const result = yield* handle.lose("Original ownership lost.");
+      assert.equal(result?.status, "unknown");
+      assert.isUndefined(yield* handle.lose("Repeated keeper signal."));
+      assert.equal(fixture.readCounts().stopCalls, 1);
+      assert.equal(fixture.readCounts().closeCalls, 1);
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(handle.revalidateCaptured)));
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(handle.requireActivatedExecution)));
+    }).pipe(Effect.provide(fixture.layer));
+  }),
+);
+
+it.effect(
+  "ordinary ingestion exit cannot complete a native actor whose real task has not joined",
+  () =>
+    Effect.gen(function* () {
+      const fixture = yield* ordinaryManagedExecutionFixture({
+        earlyTerminal: true,
+        joinedNativeTask: true,
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* RunExecutionService.RunExecutionServiceV2;
+        const handle = yield* service.startRootRun(fixture.input);
+        assert.isDefined(handle);
+        if (handle === undefined) return;
+        const managed = OrdinaryCheckout.makeOrdinaryCheckoutExecutionRefV1({
+          originalUse: fixture.startExecution.originalUse,
+          executor: handle.managedExecutor,
+        });
+        fixture.register(managed);
+        yield* handle.activate(managed);
+        yield* handle.awaitIngestionExit;
+        const nativeCompletion = handle.nativeCompletion;
+        assert.isDefined(nativeCompletion);
+        if (nativeCompletion === undefined) return;
+        assert.equal((yield* nativeCompletion.readClosure).status, "pending");
+        yield* fixture.recordEndpoint;
+        assert.equal((yield* nativeCompletion.readClosure).status, "pending");
+        yield* fixture.completeTask;
+        const actual = yield* nativeCompletion.awaitNativeClosure;
+        assert.equal(actual.status, "closed");
+        if (actual.status !== "closed") return;
+        const issued = ProviderManagedActorCompletion.validateIssuedProviderManagedActorClosure(
+          actual.observation,
+          managed,
+        );
+        assert.isNotNull(issued);
+        yield* issued!.revalidateIssued;
+        assert.equal(
+          actual.observation.descriptor.actors[0]?.endEvidence.kind,
+          "endpoint_and_task_joins",
+        );
+        yield* handle.close;
+        assert.equal(
+          (yield* nativeCompletion.readClosure).status,
+          "closed",
+          "Closing output scope cannot release a native completion ticket.",
+        );
+      }).pipe(Effect.provide(fixture.layer));
+    }),
+);
+
+it.effect(
+  "ordinary native completion before activation qualifies only its original stopped source",
+  () =>
+    Effect.gen(function* () {
+      const fixture = yield* ordinaryManagedExecutionFixture({
+        nativeCompletedBeforeReturn: true,
+        stoppedAfterDispatch: true,
+      });
+      yield* Effect.gen(function* () {
+        const handle = yield* (yield* RunExecutionService.RunExecutionServiceV2).startRootRun(
+          fixture.input,
+        );
+        assert.isDefined(handle);
+        if (handle === undefined) return;
+        const nativeCompletion = handle.nativeCompletion;
+        assert.isDefined(nativeCompletion);
+        if (nativeCompletion === undefined) return;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(handle.revalidateMutation)));
+        yield* handle.revalidateCompletionBinding;
+        yield* RunExecutionService.readIssuedOrdinaryManagedRunStartObservation(
+          handle.actualStartObservation,
+        )!.revalidateIssued;
+        assert.equal(
+          (yield* nativeCompletion.readClosure).status,
+          "pending",
+          "An uncommitted managed ref cannot issue a closure.",
+        );
+        const managed = OrdinaryCheckout.makeOrdinaryCheckoutExecutionRefV1({
+          originalUse: fixture.startExecution.originalUse,
+          executor: handle.managedExecutor,
+        });
+        fixture.register(managed);
+        yield* handle.activate(managed);
+        assert.equal((yield* nativeCompletion.readClosure).status, "closed");
+        fixture.replace();
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(handle.revalidateCompletionBinding)));
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(handle.revalidateCaptured)));
+        yield* handle.close;
+      }).pipe(Effect.provide(fixture.layer));
+    }),
 );

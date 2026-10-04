@@ -303,6 +303,7 @@ export function nativeQualifiedQuiescenceAdapter(platform: string): QualifiedQui
 
 export async function proveQualifiedStateQuiescence(input: {
   readonly baseDir: string;
+  readonly databasePath?: string;
   readonly allowedProcessIds?: readonly number[];
   readonly adapter?: QualifiedQuiescenceAdapter;
 }): Promise<void> {
@@ -312,12 +313,17 @@ export async function proveQualifiedStateQuiescence(input: {
     const uid = (await NodeFSP.lstat(userdata)).uid;
     if (process.getuid?.() !== uid || (await NodeFSP.realpath(userdata)) !== userdata)
       throw unavailable();
+    const databasePath = NodePath.resolve(
+      input.databasePath ?? NodePath.join(userdata, "state.sqlite"),
+    );
+    if ((await NodeFSP.realpath(NodePath.dirname(databasePath))) !== NodePath.dirname(databasePath))
+      throw unavailable();
     const paths = [
-      "state.sqlite",
-      "state.sqlite-wal",
-      "state.sqlite-shm",
-      ...QUALIFIED_STARTUP_STATE_FILES,
-    ].map((name) => NodePath.join(userdata, name));
+      databasePath,
+      `${databasePath}-wal`,
+      `${databasePath}-shm`,
+      ...QUALIFIED_STARTUP_STATE_FILES.map((name) => NodePath.join(userdata, name)),
+    ];
     const snapshot = async () =>
       Promise.all(
         paths.map(async (path) => {

@@ -56,28 +56,30 @@
     },
     {
       "group_id": "t3-provider-goal-state",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/provider/Layers/CodexProvider.test.ts apps/server/src/provider/Layers/CodexAdapter.test.ts apps/server/src/provider/Layers/ProviderService.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/provider/Layers/CodexProvider.test.ts apps/server/src/provider/providerGoal.test.ts apps/server/src/orchestration-v2/ProviderSessionGoalService.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts apps/server/src/provider/codexThreadOpen.test.ts",
       "modules": [
         "apps/server/src/provider/Layers/CodexProvider.test.ts",
-        "apps/server/src/provider/Layers/CodexAdapter.test.ts",
-        "apps/server/src/provider/Layers/ProviderService.test.ts",
-        "apps/server/src/orchestration-v2/providerGoalHttp.test.ts"
+        "apps/server/src/provider/providerGoal.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionGoalService.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/providerGoalHttp.test.ts",
+        "apps/server/src/provider/codexThreadOpen.test.ts"
       ],
       "scope": [
         "apps/server/src/provider/providerGoal.ts",
-        "apps/server/src/provider/Layers/CodexSessionRuntime.ts",
-        "apps/server/src/provider/Layers/CodexAdapter.ts",
-        "apps/server/src/provider/Services/CodexAdapter.ts",
-        "apps/server/src/provider/Services/ProviderAdapter.ts",
-        "apps/server/src/provider/Layers/ProviderService.ts",
-        "apps/server/src/provider/Services/ProviderService.ts",
+        "apps/server/src/provider/Layers/CodexProvider.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionGoalService.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+        "apps/server/src/orchestration-v2/providerGoalHttp.ts",
         "apps/server/src/orchestration-v2/http.ts",
-        "packages/contracts/src/environmentHttp.ts"
+        "packages/contracts/src/environmentHttp.ts",
+        "apps/server/src/provider/codexThreadOpen.ts"
       ]
     },
     {
       "group_id": "jones-queue-compatibility",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.test.ts apps/server/src/persistence/Migrations.test.ts packages/contracts/src/providerRuntime.test.ts packages/contracts/src/environmentHttp.test.ts packages/contracts/src/server.test.ts apps/server/src/server.test.ts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.test.ts apps/server/src/persistence/Migrations.test.ts packages/contracts/src/providerRuntime.test.ts packages/contracts/src/environmentHttp.test.ts packages/contracts/src/server.test.ts apps/server/src/server.test.ts apps/server/src/orchestration-v2/ProviderStartQueue.integration.test.ts",
       "modules": [
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
         "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
@@ -92,7 +94,8 @@
         "packages/contracts/src/providerRuntime.test.ts",
         "packages/contracts/src/environmentHttp.test.ts",
         "packages/contracts/src/server.test.ts",
-        "apps/server/src/server.test.ts"
+        "apps/server/src/server.test.ts",
+        "apps/server/src/orchestration-v2/ProviderStartQueue.integration.test.ts"
       ],
       "scope": [
         "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
@@ -113,19 +116,13 @@
     {
       "group_id": "jones-cli-release-provenance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/cli/update.test.ts",
-      "modules": [
-        "apps/server/src/cli/update.test.ts"
-      ],
-      "scope": [
-        "apps/server/src/cli/update.ts"
-      ]
+      "modules": ["apps/server/src/cli/update.test.ts"],
+      "scope": ["apps/server/src/cli/update.ts"]
     },
     {
       "group_id": "voice-native-bootstrap-conformance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/voiceNativeBootstrap.test.ts",
-      "modules": [
-        "apps/server/src/voiceNativeBootstrap.test.ts"
-      ],
+      "modules": ["apps/server/src/voiceNativeBootstrap.test.ts"],
       "scope": [
         "apps/server/src/voiceNativeBootstrap.test.ts",
         "apps/server/src/voiceNativeBootstrap.fixtures/**",
@@ -144,9 +141,7 @@
         "scripts/runtime-adoption-qualification/browser-storage.test.mjs",
         "scripts/runtime-adoption-qualification/artifact-binding.test.mjs"
       ],
-      "scope": [
-        "scripts/runtime-adoption-qualification/**"
-      ]
+      "scope": ["scripts/runtime-adoption-qualification/**"]
     },
     {
       "group_id": "t3-native-creation-contracts",
@@ -230,7 +225,7 @@
         "apps/server/src/orchestration-v2/http.test.ts",
         "apps/server/src/vcs/worktreePath.test.ts",
         "apps/server/src/vcs/GitVcsDriverCore.test.ts",
-        "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
         "apps/server/src/serverRuntimeStartup.worktreeSetup.test.ts",
         "apps/server/src/server.test.ts",
         "apps/server/src/voiceNativeBootstrap.test.ts"
@@ -620,13 +615,17 @@
     },
     {
       "group_id": "t3-v2-native-atomic",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/StoreNativeAcceptance.integration.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts apps/server/src/persistence/Layers/NativeCreationRepository.test.ts apps/server/src/persistence/Migrations/007_JonesV2NativeAcceptance.test.ts apps/server/src/persistence/Migrations/010_JonesAttachmentCleanup.test.ts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/StoreNativeAcceptance.integration.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts apps/server/src/persistence/Layers/NativeCreationRepository.test.ts apps/server/src/persistence/Migrations/007_JonesV2NativeAcceptance.test.ts apps/server/src/persistence/Migrations/010_JonesAttachmentCleanup.test.ts apps/server/src/persistence/Migrations/012_JonesImportedApplicationAttachments.test.ts apps/server/src/orchestration-v2/NormalizationWitness.test.ts apps/server/src/persistence/Migrations/013_JonesCommandNormalizationWitness.test.ts apps/server/src/orchestration-v2/EventSinkJsonCodec.test.ts",
       "modules": [
         "apps/server/src/orchestration-v2/StoreNativeAcceptance.integration.test.ts",
         "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
         "apps/server/src/persistence/Layers/NativeCreationRepository.test.ts",
         "apps/server/src/persistence/Migrations/007_JonesV2NativeAcceptance.test.ts",
-        "apps/server/src/persistence/Migrations/010_JonesAttachmentCleanup.test.ts"
+        "apps/server/src/persistence/Migrations/010_JonesAttachmentCleanup.test.ts",
+        "apps/server/src/persistence/Migrations/012_JonesImportedApplicationAttachments.test.ts",
+        "apps/server/src/orchestration-v2/NormalizationWitness.test.ts",
+        "apps/server/src/persistence/Migrations/013_JonesCommandNormalizationWitness.test.ts",
+        "apps/server/src/orchestration-v2/EventSinkJsonCodec.test.ts"
       ],
       "scope": [
         "apps/server/src/orchestration-v2/EventSink.ts",
@@ -634,12 +633,16 @@
         "apps/server/src/persistence/Layers/NativeCreationRepository.ts",
         "apps/server/src/persistence/Services/NativeCreationRepository.ts",
         "apps/server/src/persistence/Migrations/007_JonesV2NativeAcceptance.ts",
-        "apps/server/src/persistence/Migrations/010_JonesAttachmentCleanup.ts"
+        "apps/server/src/persistence/Migrations/010_JonesAttachmentCleanup.ts",
+        "apps/server/src/persistence/Migrations/012_JonesImportedApplicationAttachments.ts",
+        "apps/server/src/orchestration-v2/NormalizationWitness.ts",
+        "apps/server/src/persistence/Migrations/013_JonesCommandNormalizationWitness.ts",
+        "apps/server/src/orchestration-v2/EventSinkJsonCodec.ts"
       ]
     },
     {
       "group_id": "t3-v2-owned-cleanup",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/ThreadDeletion.test.ts apps/server/src/orchestration-v2/ResourceCleanupService.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/serverRuntimeStartup.storeIntegration.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/orchestration-v2/WorktreeOwnershipLease.test.ts apps/server/src/serverRuntimeStartup.reconcile.test.ts apps/server/src/serverRuntimeStartup.worktreeSetup.test.ts apps/server/src/git/DeletionWorktreeRemoval.test.ts apps/server/src/attachmentStore.test.ts apps/server/src/orchestration-v2/ProjectionStore.test.ts apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/ThreadDeletion.test.ts apps/server/src/orchestration-v2/ResourceCleanupService.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/serverRuntimeStartup.storeIntegration.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/orchestration-v2/WorktreeOwnershipLease.test.ts apps/server/src/serverRuntimeStartup.reconcile.test.ts apps/server/src/serverRuntimeStartup.worktreeSetup.test.ts apps/server/src/git/DeletionWorktreeRemoval.test.ts apps/server/src/attachmentStore.test.ts apps/server/src/orchestration-v2/ProjectionStore.test.ts apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts apps/server/src/orchestration-v2/ImportedApplicationAttachmentInventory.test.ts apps/server/src/orchestration-v2/LegacyLeaseCleanup.integration.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/terminal/Manager.test.ts",
       "modules": [
         "apps/server/src/orchestration-v2/ThreadDeletion.test.ts",
         "apps/server/src/orchestration-v2/ResourceCleanupService.test.ts",
@@ -652,7 +655,11 @@
         "apps/server/src/git/DeletionWorktreeRemoval.test.ts",
         "apps/server/src/attachmentStore.test.ts",
         "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
-        "apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts"
+        "apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts",
+        "apps/server/src/orchestration-v2/ImportedApplicationAttachmentInventory.test.ts",
+        "apps/server/src/orchestration-v2/LegacyLeaseCleanup.integration.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/terminal/Manager.test.ts"
       ],
       "scope": [
         "apps/server/src/orchestration-v2/ThreadDeletion.ts",
@@ -664,7 +671,11 @@
         "apps/server/src/git/DeletionWorktreeRemoval.ts",
         "apps/server/src/attachmentStore.ts",
         "apps/server/src/orchestration-v2/ProjectionStore.ts",
-        "apps/server/src/orchestration-v2/CheckpointRollbackService.ts"
+        "apps/server/src/orchestration-v2/CheckpointRollbackService.ts",
+        "apps/server/src/orchestration-v2/ImportedApplicationAttachmentInventory.ts",
+        "apps/server/src/orchestration-v2/LegacyLeaseCleanup.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+        "apps/server/src/terminal/Manager.ts"
       ]
     },
     {
@@ -766,6 +777,54 @@
         "apps/server/src/mcp/McpProviderSession.test.ts",
         "apps/server/src/mcp/McpHttpServer.test.ts",
         "apps/server/src/mcp/McpSessionRegistry.test.ts"
+      ]
+    },
+    {
+      "group_id": "t3-v2-ordinary-checkout-lifetime",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/OrdinaryCheckoutOwnership.test.ts apps/server/src/orchestration-v2/WorktreeOwnershipLease.test.ts apps/server/src/orchestration-v2/Orchestrator.guarded-dispatch.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts apps/server/src/orchestration-v2/RuntimeRequestService.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/RunFinalizationService.test.ts apps/server/src/orchestration-v2/CheckpointCaptureService.test.ts apps/server/src/orchestration-v2/CheckpointService.test.ts apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/StoreNativeAcceptance.integration.test.ts apps/server/src/persistence/Migrations/011_JonesOrdinaryCheckoutExecutionLifetime.test.ts apps/server/src/persistence/Migrations.test.ts apps/server/src/orchestration-v2/ProviderStartQueue.integration.test.ts apps/server/src/orchestration-v2/ProviderManagedActorCompletion.test.ts",
+      "modules": [
+        "apps/server/src/orchestration-v2/OrdinaryCheckoutOwnership.test.ts",
+        "apps/server/src/orchestration-v2/WorktreeOwnershipLease.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.guarded-dispatch.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "apps/server/src/orchestration-v2/RuntimeRequestService.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/RunFinalizationService.test.ts",
+        "apps/server/src/orchestration-v2/CheckpointCaptureService.test.ts",
+        "apps/server/src/orchestration-v2/CheckpointService.test.ts",
+        "apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/StoreNativeAcceptance.integration.test.ts",
+        "apps/server/src/persistence/Migrations/011_JonesOrdinaryCheckoutExecutionLifetime.test.ts",
+        "apps/server/src/persistence/Migrations.test.ts",
+        "apps/server/src/orchestration-v2/ProviderStartQueue.integration.test.ts",
+        "apps/server/src/orchestration-v2/ProviderManagedActorCompletion.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/orchestration-v2/OrdinaryCheckoutOwnership.ts",
+        "apps/server/src/orchestration-v2/WorktreeOwnershipLease.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.ts",
+        "apps/server/src/orchestration-v2/RuntimeRequestService.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.ts",
+        "apps/server/src/orchestration-v2/RunFinalizationService.ts",
+        "apps/server/src/orchestration-v2/CheckpointCaptureService.ts",
+        "apps/server/src/orchestration-v2/CheckpointService.ts",
+        "apps/server/src/orchestration-v2/CheckpointRollbackService.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+        "apps/server/src/persistence/Migrations/011_JonesOrdinaryCheckoutExecutionLifetime.ts",
+        "apps/server/src/persistence/Migrations.ts",
+        "apps/server/src/orchestration-v2/EventSink.ts",
+        "apps/server/src/orchestration-v2/EffectOutbox.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.ts",
+        "apps/server/src/orchestration-v2/ProviderManagedActorCompletion.ts"
       ]
     }
   ]

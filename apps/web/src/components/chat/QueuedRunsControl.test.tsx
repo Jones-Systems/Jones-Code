@@ -9,7 +9,7 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("@t3tools/client-runtime/environment", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@t3tools/client-runtime/environment")>(),
+  ...(await importOriginal<typeof import("@t3tools/client-runtime/environment")>()),
 }));
 
 vi.mock("@t3tools/client-runtime/state/thread-workflows", () => ({
@@ -32,7 +32,8 @@ vi.mock("../../state/threads", () => ({
 }));
 
 vi.mock("../../state/use-atom-command", () => ({
-  useAtomCommand: (command: symbol) => command.description === "promoteQueuedRun" ? state.promote : unavailableCommand,
+  useAtomCommand: (command: symbol) =>
+    command.description === "promoteQueuedRun" ? state.promote : unavailableCommand,
 }));
 
 const unavailableCommand = async () => ({ _tag: "Failure" });
@@ -180,7 +181,6 @@ describe("QueuedRunsControl attachments and edit mode", () => {
   });
 });
 
-
 describe("QueuedRunsControl promotion actions", () => {
   let root: Root;
   let container: HTMLDivElement;
@@ -210,36 +210,56 @@ describe("QueuedRunsControl promotion actions", () => {
   }
 
   async function mount(ref = createRef<QueuedRunsControlHandle>()) {
-    await act(async () => root.render(
-      <QueuedRunsControl
-        ref={ref}
-        environmentId={"environment:test" as never}
-        optimisticMessages={[]}
-        threadId={"thread:test" as never}
-        editingRunId={null}
-        onEditQueuedRun={() => undefined}
-        onCancelEdit={() => undefined}
-      />,
-    ));
+    await act(async () =>
+      root.render(
+        <QueuedRunsControl
+          ref={ref}
+          environmentId={"environment:test" as never}
+          optimisticMessages={[]}
+          threadId={"thread:test" as never}
+          editingRunId={null}
+          onEditQueuedRun={() => undefined}
+          onCancelEdit={() => undefined}
+        />,
+      ),
+    );
     return ref;
   }
 
   it("promotes one server entry through empty Enter and shares the arrow's in-flight guard", async () => {
     state.workflow = workflow();
     let finish: () => void = () => undefined;
-    state.promote.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    state.promote.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
     const ref = await mount();
-    const enter = (repeat = false) => handleComposerEnter({
-      event: { shiftKey: false, altKey: false, metaKey: false, ctrlKey: false, isComposing: false, keyCode: 13, repeat },
-      intent: { isMobileViewport: false, isDraftThread: false, isRunning: true, prompt: "" },
-      hasDraftContext: false,
-      queueActionDisabled: false,
-      onSteerNextQueuedMessage: () => ref.current?.steerNext(false) ?? false,
-      onSubmit: () => { throw new Error("An empty queued Enter must not submit a draft"); },
-    });
+    const enter = (repeat = false) =>
+      handleComposerEnter({
+        event: {
+          shiftKey: false,
+          altKey: false,
+          metaKey: false,
+          ctrlKey: false,
+          isComposing: false,
+          keyCode: 13,
+          repeat,
+        },
+        intent: { isMobileViewport: false, isDraftThread: false, isRunning: true, prompt: "" },
+        hasDraftContext: false,
+        queueActionDisabled: false,
+        onSteerNextQueuedMessage: () => ref.current?.steerNext(false) ?? false,
+        onSubmit: () => {
+          throw new Error("An empty queued Enter must not submit a draft");
+        },
+      });
     await act(async () => {
       expect(enter()).toBe(true);
-      const arrow = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Steer"));
+      const arrow = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent?.includes("Steer"),
+      );
       expect(arrow).toBeDefined();
       arrow!.click();
       expect(enter()).toBe(true);
@@ -249,7 +269,9 @@ describe("QueuedRunsControl promotion actions", () => {
       input: { threadId: "thread:test", queuedRunId: "run:first", targetRunId: "run:active" },
     });
     await act(async () => {
-      const arrow = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Steer"));
+      const arrow = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent?.includes("Steer"),
+      );
       expect(arrow).toBeDefined();
       arrow!.click();
       expect(enter()).toBe(true);
@@ -262,11 +284,15 @@ describe("QueuedRunsControl promotion actions", () => {
     await mount(ref);
     expect(container.textContent).not.toContain("first");
     expect(container.textContent).toContain("second");
-    await act(async () => { expect(enter(true)).toBe(true); });
+    await act(async () => {
+      expect(enter(true)).toBe(true);
+    });
     expect(state.promote).toHaveBeenCalledTimes(1);
     await act(async () => {
       expect(enter()).toBe(true);
-      const arrow = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Steer"));
+      const arrow = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent?.includes("Steer"),
+      );
       expect(arrow).toBeDefined();
       arrow!.click();
     });

@@ -5,6 +5,7 @@ import {
   deriveLocalBranchNameFromRemoteRef,
   resolveEnvironmentOptionLabel,
   resolveBranchSelectionTarget,
+  runBranchContextChange,
   resolveCurrentWorkspaceLabel,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
@@ -894,5 +895,231 @@ describe("sanitizeNewRefName", () => {
   it("does not collapse dashes the user typed", () => {
     expect(sanitizeNewRefName("new - branch")).toBe("new---branch");
     expect(sanitizeNewRefName("foo--bar")).toBe("foo--bar");
+  });
+});
+
+describe("runBranchContextChange", () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  it.each(["switch", "create-and-switch", "same-directory switch"])(
+    "waits for stop proof before %s and metadata",
+    async (action) => {
+      const calls: string[] = [];
+      const stopped = deferred<{ confirmed: boolean; reason: string | null }>();
+      const metadata = deferred<void>();
+      const operation = runBranchContextChange({
+        branch: "next",
+        confirmStopped: () => {
+          calls.push("stop");
+          return stopped.promise;
+        },
+        isCurrent: () => true,
+        checkout: async () => {
+          calls.push(action);
+          return "checked-out";
+        },
+        onCheckout: (branch) => {
+          calls.push(`optimistic:${branch}`);
+        },
+        updateMetadata: () => {
+          calls.push("metadata");
+          return metadata.promise;
+        },
+      });
+      expect(calls).toEqual(["stop"]);
+      stopped.resolve({ confirmed: true, reason: null });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(calls).toEqual(["stop", action, "optimistic:checked-out", "metadata"]);
+      let completed = false;
+      void operation.then(() => {
+        completed = true;
+      });
+      await Promise.resolve();
+      expect(completed).toBe(false);
+      metadata.resolve();
+      expect(await operation).toEqual({ status: "complete", branch: "checked-out" });
+    },
+  );
+
+  it.each(["pending", "unknown", "runtime_not_resident"])(
+    "keeps checkout, metadata, and optimistic state untouched on %s",
+    async (reason) => {
+      const calls: string[] = [];
+      const result = await runBranchContextChange({
+        branch: "next",
+        confirmStopped: async () => ({ confirmed: false, reason }),
+        isCurrent: () => true,
+        checkout: async () => {
+          calls.push("checkout");
+          return "next";
+        },
+        onCheckout: () => {
+          calls.push("optimistic");
+        },
+        updateMetadata: async () => {
+          calls.push("metadata");
+        },
+      });
+      expect(result).toEqual({ status: "blocked", reason });
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it("gates existing-worktree reassignment without a checkout", async () => {
+    const calls: string[] = [];
+    expect(
+      await runBranchContextChange({
+        branch: "existing",
+        confirmStopped: async () => {
+          calls.push("stop");
+          return { confirmed: false, reason: "unknown" };
+        },
+        isCurrent: () => true,
+        onCheckout: () => {
+          calls.push("optimistic");
+        },
+        updateMetadata: async () => {
+          calls.push("reassign");
+        },
+      }),
+    ).toEqual({ status: "blocked", reason: "unknown" });
+    expect(calls).toEqual(["stop"]);
+  });
+
+  it("permits draft metadata when the caller supplies the draft-only gate", async () => {
+    const calls: string[] = [];
+    expect(
+      await runBranchContextChange({
+        branch: "base",
+        confirmStopped: async () => ({ confirmed: true, reason: null }),
+        isCurrent: () => true,
+        onCheckout: () => {
+          calls.push("optimistic");
+        },
+        updateMetadata: async () => {
+          calls.push("draft");
+        },
+      }),
+    ).toEqual({ status: "complete", branch: "base" });
+    expect(calls).toEqual(["draft"]);
+  });
+
+  it("stops when context changes while stop is awaiting proof", async () => {
+    const stop = deferred<{ confirmed: boolean; reason: string | null }>();
+    const calls: string[] = [];
+    let current = true;
+    const operation = runBranchContextChange({
+      branch: "next",
+      confirmStopped: () => stop.promise,
+      isCurrent: () => current,
+      checkout: async () => {
+        calls.push("checkout");
+        return "next";
+      },
+      onCheckout: () => {
+        calls.push("optimistic");
+      },
+      updateMetadata: async () => {
+        calls.push("metadata");
+      },
+    });
+    current = false;
+    stop.resolve({ confirmed: true, reason: null });
+    expect(await operation).toEqual({ status: "stale", checkoutCompleted: false });
+    expect(calls).toEqual([]);
+  });
+
+  it("does not reassign a stale context after checkout succeeds", async () => {
+    const checkout = deferred<string>();
+    const calls: string[] = [];
+    let current = true;
+    const operation = runBranchContextChange({
+      branch: "next",
+      confirmStopped: async () => ({ confirmed: true, reason: null }),
+      isCurrent: () => current,
+      checkout: () => checkout.promise,
+      onCheckout: () => {
+        calls.push("optimistic");
+      },
+      updateMetadata: async () => {
+        calls.push("metadata");
+      },
+    });
+    await Promise.resolve();
+    current = false;
+    checkout.resolve("next");
+    expect(await operation).toEqual({ status: "stale", checkoutCompleted: true });
+    expect(calls).toEqual([]);
+  });
+
+  it("checks context again after awaiting metadata", async () => {
+    const metadata = deferred<void>();
+    let current = true;
+    const operation = runBranchContextChange({
+      branch: "next",
+      confirmStopped: async () => ({ confirmed: true, reason: null }),
+      isCurrent: () => current,
+      checkout: async () => "next",
+      onCheckout: () => {},
+      updateMetadata: () => metadata.promise,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    current = false;
+    metadata.resolve();
+    expect(await operation).toEqual({ status: "stale", checkoutCompleted: true });
+  });
+
+  it("does not update optimistic state or metadata after checkout failure", async () => {
+    const calls: string[] = [];
+    const error = new Error("checkout rejected");
+    expect(
+      await runBranchContextChange({
+        branch: "next",
+        confirmStopped: async () => ({ confirmed: true, reason: null }),
+        isCurrent: () => true,
+        checkout: async () => {
+          throw error;
+        },
+        onCheckout: () => {
+          calls.push("optimistic");
+        },
+        updateMetadata: async () => {
+          calls.push("metadata");
+        },
+      }),
+    ).toEqual({ status: "failed", error });
+    expect(calls).toEqual([]);
+  });
+
+  it("reports checkout success with metadata failure as partial and never rolls checkout back", async () => {
+    const calls: string[] = [];
+    const error = new Error("metadata unavailable");
+    expect(
+      await runBranchContextChange({
+        branch: "next",
+        confirmStopped: async () => ({ confirmed: true, reason: null }),
+        isCurrent: () => true,
+        checkout: async () => {
+          calls.push("checkout:next");
+          return "next";
+        },
+        onCheckout: (branch) => {
+          calls.push(`optimistic:${branch}`);
+        },
+        updateMetadata: async () => {
+          calls.push("metadata");
+          throw error;
+        },
+      }),
+    ).toEqual({ status: "partial", error });
+    expect(calls).toEqual(["checkout:next", "optimistic:next", "metadata"]);
   });
 });

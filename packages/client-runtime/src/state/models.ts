@@ -159,16 +159,9 @@ function terminalRunStatus(status: OrchestrationV2RunStatus): boolean {
   );
 }
 
-// Park runtime at idle when the post-settlement background roster is nonempty
-// so #4415 waiting-presentation Waiting (session.idle) can consume CTM runtime.
-// The server suppresses the roster while an interruptible activity run exists,
-// so a remaining roster is stronger than checkpoint-oriented waiting.
-// latestRun keeps the latest run's status for history presentation.
-// A failed latest run outranks the roster, so the failure stays visible.
 function shellRuntime(thread: OrchestrationV2ThreadShell): ThreadRuntimeSummary | null {
   if (thread.latestRunId === null && thread.activeProviderThreadId === null) return null;
-  const parkAtIdle = (thread.pendingBackgroundTasks?.length ?? 0) > 0 && thread.status !== "failed";
-  const status = parkAtIdle ? "idle" : (thread.activityRunStatus ?? thread.status);
+  const status = thread.activityRunStatus ?? thread.status;
   return {
     status,
     activeRunId: thread.activeRunId,

@@ -4,6 +4,7 @@ import {
   type OrchestrationV2Command,
   OrchestrationV2ProviderCapabilities,
   type OrchestrationV2Run,
+  type OrchestrationV2ServerCommand,
   OrchestrationV2ThreadProjection,
   ProviderInstanceId,
   ProviderTurnId,
@@ -14,6 +15,34 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+
+export class CommandPolicyPublicIngressError extends Schema.TaggedError<CommandPolicyPublicIngressError>()(
+  "CommandPolicyPublicIngressError",
+  {
+    commandId: CommandId,
+    commandType: Schema.Literals(["thread.pull-request.sync", "thread.imported-history.start"]),
+  },
+) {
+  override get message(): string {
+    return `Command ${this.commandType} requires its dedicated server entrypoint.`;
+  }
+}
+
+// Callers must validate public commands before transcript import or command planning.
+// Server discovery and reviewed imported-history starts use their dedicated paths.
+export function validatePublicCommand(
+  command: OrchestrationV2ServerCommand,
+): Effect.Effect<void, CommandPolicyPublicIngressError> {
+  return command.type === "thread.pull-request.sync" ||
+    command.type === "thread.imported-history.start"
+    ? Effect.fail(
+        new CommandPolicyPublicIngressError({
+          commandId: command.commandId,
+          commandType: command.type,
+        }),
+      )
+    : Effect.void;
+}
 
 export const MessageDispatchDecisionV2 = Schema.Union([
   Schema.Struct({

@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { act, cloneElement, isValidElement, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import {
-  EnvironmentId, ThreadId, ProviderInstanceId, ProviderThreadId, ProviderSessionId,
+  EnvironmentId,
+  ThreadId,
+  ProviderInstanceId,
+  ProviderThreadId,
+  ProviderSessionId,
+  ProviderDriverKind,
   type OrchestrationV2CurrentThreadRuntimeTarget,
 } from "@t3tools/contracts";
 import type { CurrentThreadRuntimeStopState } from "@t3tools/client-runtime/state/thread-continuation";
@@ -105,7 +110,7 @@ const environmentId = EnvironmentId.make("detach-environment");
 const threadId = ThreadId.make("detach-thread");
 const ref = { environmentId, threadId };
 const target = {
-  driver: "codex",
+  driver: ProviderDriverKind.make("codex"),
   evidenceRevision: 7,
   binding: {
     threadId,
@@ -140,14 +145,18 @@ afterEach(async () => {
 });
 async function mountPanel() {
   await act(async () => {
-    renderer = create(<ThreadRelationshipsPanel environmentId={environmentId} threadId={threadId} />);
+    renderer = create(
+      <ThreadRelationshipsPanel environmentId={environmentId} threadId={threadId} />,
+    );
   });
   return renderer!;
 }
 function detachButton() {
-  return renderer!.root.findAllByType("button").find((button) =>
-    button.children.some((child) => typeof child === "string" && /disconnect/i.test(child)),
-  )!;
+  return renderer!.root
+    .findAllByType("button")
+    .find((button) =>
+      button.children.some((child) => typeof child === "string" && /disconnect/i.test(child)),
+    )!;
 }
 function panelText() {
   return JSON.stringify(renderer!.toJSON());
@@ -170,7 +179,11 @@ describe("current runtime session disconnect", () => {
   });
 
   it("observes the saved operation before capturing another current owner", async () => {
-    stop.observe.mockResolvedValue({ ...pending, status: "unknown", reason: "Original stop is unknown." });
+    stop.observe.mockResolvedValue({
+      ...pending,
+      status: "unknown",
+      reason: "Original stop is unknown.",
+    });
     await mountPanel();
     await disconnect();
     await disconnect();
@@ -185,7 +198,11 @@ describe("current runtime session disconnect", () => {
     await mountPanel();
     await disconnect();
     await act(async () => renderer?.unmount());
-    stop.observe.mockResolvedValue({ ...pending, status: "unknown", reason: "Original command still unknown." });
+    stop.observe.mockResolvedValue({
+      ...pending,
+      status: "unknown",
+      reason: "Original command still unknown.",
+    });
     await mountPanel();
     await disconnect();
 
@@ -200,7 +217,9 @@ describe("current runtime session disconnect", () => {
     stop.canDetach = false;
     stop.running = false;
     await act(async () => {
-      renderer!.update(<ThreadRelationshipsPanel environmentId={environmentId} threadId={threadId} />);
+      renderer!.update(
+        <ThreadRelationshipsPanel environmentId={environmentId} threadId={threadId} />,
+      );
     });
     expect(panelText()).toContain("Disconnect pending");
     expect(panelText()).toContain("Check disconnect status");
@@ -225,10 +244,16 @@ describe("current runtime session disconnect", () => {
     await disconnect();
 
     expect(panelText()).toContain("Stop response was lost.");
-    expect(renderer!.root.findAllByType("button").find(
-      (button) => button.props["aria-label"] === "More thread actions",
-    )!.props.disabled).toBe(false);
-    stop.observe.mockResolvedValue({ ...pending, status: "unknown", reason: "Original command pending." });
+    expect(
+      renderer!.root
+        .findAllByType("button")
+        .find((button) => button.props["aria-label"] === "More thread actions")!.props.disabled,
+    ).toBe(false);
+    stop.observe.mockResolvedValue({
+      ...pending,
+      status: "unknown",
+      reason: "Original command pending.",
+    });
     await disconnect();
     expect(stop.request).toHaveBeenCalledTimes(1);
     expect(panelText()).toContain("Original command pending.");
@@ -236,7 +261,9 @@ describe("current runtime session disconnect", () => {
 
   it("shows rejection and limited attachment evidence without claiming full shutdown", async () => {
     stop.request.mockResolvedValue({
-      status: "rejected", commandAccepted: false, queueFenceInstalled: false,
+      status: "rejected",
+      commandAccepted: false,
+      queueFenceInstalled: false,
       reason: "Only the pooled attachment disconnected; native shutdown is unproved.",
     });
     await mountPanel();

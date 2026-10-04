@@ -1,7 +1,11 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { OrchestrationV2ClientCommand, OrchestrationV2Command, OrchestrationV2RpcSchemas } from "./orchestrationV2.ts";
+import {
+  OrchestrationV2ClientCommand,
+  OrchestrationV2Command,
+  OrchestrationV2RpcSchemas,
+} from "./orchestrationV2.ts";
 import { ProjectMutation } from "./project.ts";
 import { CommandId, ProjectId, ThreadId } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
@@ -16,7 +20,10 @@ import {
 } from "./orchestration.ts";
 
 const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartCommand);
-function getOptionValue(options: ReadonlyArray<{ id: string; value: unknown }> | undefined, id: string): unknown {
+function getOptionValue(
+  options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
+  id: string,
+): unknown {
   return options?.find((option) => option.id === id)?.value;
 }
 
@@ -464,14 +471,21 @@ it.effect("rejects command fields that become empty after trim", () =>
   }),
 );
 
-it.effect("preserves V2 active order keys and rejects empty reorder keys", () => Effect.gen(function* () {
-  const input = { type: "thread.active.reorder", commandId: "command-1", threadId: "thread-1", orderKey: "gm" };
-  const command = yield* decodeV2Command(input);
-  if (command.type !== "thread.active.reorder") throw new Error("Unexpected command");
-  assert.strictEqual(command.orderKey, "gm");
-  const failure = yield* Effect.exit(decodeV2Command({ ...input, orderKey: " " }));
-  assert.strictEqual(failure._tag, "Failure");
-}));
+it.effect("preserves V2 active order keys and rejects empty reorder keys", () =>
+  Effect.gen(function* () {
+    const input = {
+      type: "thread.active.reorder",
+      commandId: "command-1",
+      threadId: "thread-1",
+      orderKey: "gm",
+    };
+    const command = yield* decodeV2Command(input);
+    if (command.type !== "thread.active.reorder") throw new Error("Unexpected command");
+    assert.strictEqual(command.orderKey, "gm");
+    const failure = yield* Effect.exit(decodeV2Command({ ...input, orderKey: " " }));
+    assert.strictEqual(failure._tag, "Failure");
+  }),
+);
 
 it.effect("accepts an internal title regeneration completion", () =>
   Effect.gen(function* () {
@@ -489,7 +503,6 @@ it.effect("accepts an internal title regeneration completion", () =>
     }
   }),
 );
-
 
 it.effect("accepts pull request synchronization only as an internal command", () =>
   Effect.gen(function* () {
@@ -517,8 +530,14 @@ it.effect("accepts pull request synchronization only as an internal command", ()
     };
 
     assert.deepStrictEqual(yield* decodeV2Command(command), command);
-    assert.ok(yield* Schema.decodeUnknownEffect(OrchestrationV2ClientCommand)(command).pipe(Effect.flip));
-    assert.ok(yield* Schema.decodeUnknownEffect(OrchestrationV2RpcSchemas.dispatchCommand.input)(command).pipe(Effect.flip));
+    assert.ok(
+      yield* Schema.decodeUnknownEffect(OrchestrationV2ClientCommand)(command).pipe(Effect.flip),
+    );
+    assert.ok(
+      yield* Schema.decodeUnknownEffect(OrchestrationV2RpcSchemas.dispatchCommand.input)(
+        command,
+      ).pipe(Effect.flip),
+    );
 
     const cleared = { ...command, branchPullRequest: null };
     assert.deepStrictEqual(yield* decodeV2Command(cleared), cleared);
@@ -548,11 +567,28 @@ it.effect("rejects an explicit title combined with title regeneration", () =>
   }),
 );
 
-
 it("preserves inline images, uploaded images and uploaded files at their shared attachment codecs", () => {
-  const inline = { type: "image", name: "legacy.png", mimeType: "image/png", sizeBytes: 3, dataUrl: "data:image/png;base64,YWJj" };
-  const uploaded = { type: "image", id: "pending-00000000-0000-4000-8000-000000000001", name: "uploaded.png", mimeType: "image/png", sizeBytes: 3 };
-  const file = { type: "file", id: "pending-00000000-0000-4000-8000-000000000002-pdf", name: "report.pdf", mimeType: "application/pdf", sizeBytes: 3 };
+  const inline = {
+    type: "image",
+    name: "legacy.png",
+    mimeType: "image/png",
+    sizeBytes: 3,
+    dataUrl: "data:image/png;base64,YWJj",
+  };
+  const uploaded = {
+    type: "image",
+    id: "pending-00000000-0000-4000-8000-000000000001",
+    name: "uploaded.png",
+    mimeType: "image/png",
+    sizeBytes: 3,
+  };
+  const file = {
+    type: "file",
+    id: "pending-00000000-0000-4000-8000-000000000002-pdf",
+    name: "report.pdf",
+    mimeType: "application/pdf",
+    sizeBytes: 3,
+  };
   assert.deepEqual<unknown>(Schema.decodeUnknownSync(UploadChatAttachment)(inline), inline);
   assert.deepEqual<unknown>(Schema.decodeUnknownSync(ChatAttachment)(uploaded), uploaded);
   assert.deepEqual<unknown>(Schema.decodeUnknownSync(ChatAttachment)(file), file);

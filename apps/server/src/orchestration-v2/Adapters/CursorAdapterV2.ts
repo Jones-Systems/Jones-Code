@@ -59,6 +59,7 @@ import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanc
 import { t3OrchestrationPromptForFirstRun } from "../../provider/T3OrchestrationInstructions.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import * as IdAllocator from "../IdAllocator.ts";
+import * as ManagedCompletion from "../ProviderManagedActorCompletion.ts";
 import { makeProviderFailure } from "../ProviderFailure.ts";
 import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts";
 import {
@@ -823,11 +824,25 @@ interface ActiveCursorTextStream {
 }
 
 class CursorEventOrigin extends Context.Reference<ProviderEventOrigin | null>(
-  "t3/orchestration-v2/CursorEventOrigin", { defaultValue: () => null },
+  "t3/orchestration-v2/CursorEventOrigin",
+  { defaultValue: () => null },
 ) {}
+
+interface CursorManagedRun {
+  readonly admission: ManagedCompletion.ProviderManagedActorAdmissionV1;
+  readonly issuer: ManagedCompletion.ProviderManagedActorIssuerV1;
+  actor: ManagedCompletion.ProviderManagedActorV1 | null;
+  readonly children: Map<
+    string,
+    { readonly actor: ManagedCompletion.ProviderManagedActorV1; entered: boolean; closed: boolean }
+  >;
+  rootEnded: boolean;
+  sealed: boolean;
+}
 
 interface ActiveCursorTurn {
   readonly eventOrigin: ProviderEventOrigin;
+  readonly managed: CursorManagedRun | undefined;
   readonly runtimeGeneration: string;
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly run: CursorAgentSdk.CursorAgentSdkRun;
@@ -873,7 +888,9 @@ export function makeCursorAdapterV2(
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CursorAgentSdk.CURSOR_PROVIDER,
-    declaredHandoffDelivery: ProviderAdapter.makeProviderDeclaredHandoffDelivery(CursorProviderCapabilitiesV2),
+    declaredHandoffDelivery: ProviderAdapter.makeProviderDeclaredHandoffDelivery(
+      CursorProviderCapabilitiesV2,
+    ),
     getCapabilities: () => Effect.succeed(CursorProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("CursorAdapterV2.openSession")(
@@ -892,15 +909,32 @@ export function makeCursorAdapterV2(
         const liveAgent = yield* Ref.make<CursorLiveAgent | null>(null);
         const activeTurn = yield* Ref.make<ActiveCursorTurn | null>(null);
         const planIds = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact["id"]>());
+        const managedRuns = new Map<string, CursorManagedRun>();
+        let managedRuntimeClosed = false;
+        const managedKey = (operationId: string, attempt: string, providerThreadId: string) =>
+          JSON.stringify([operationId, attempt, providerThreadId]);
+        const sealManagedRun = (managed: CursorManagedRun) =>
+          Effect.gen(function* () {
+            if (
+              !managed.sealed &&
+              managed.rootEnded &&
+              [...managed.children.values()].every((child) => child.closed)
+            ) {
+              yield* managed.issuer.seal;
+              managed.sealed = true;
+            }
+          });
 
         const emitProviderEvent = (
           event: ProviderAdapter.ProviderAdapterV2Event,
           capturedOrigin?: ProviderEventOrigin,
-        ) => Effect.gen(function* () {
-          const origin = capturedOrigin ?? (yield* CursorEventOrigin);
-          if (origin === null) return yield* Effect.die("Cursor event has no captured send owner.");
-          yield* Queue.offer(events, stampProviderEvent(event, origin));
-        });
+        ) =>
+          Effect.gen(function* () {
+            const origin = capturedOrigin ?? (yield* CursorEventOrigin);
+            if (origin === null)
+              return yield* Effect.die("Cursor event has no captured send owner.");
+            yield* Queue.offer(events, stampProviderEvent(event, origin));
+          });
 
         const resolveItemOrdinal = (context: ActiveCursorTurn, nativeItemId: string) =>
           Effect.sync(() => {
@@ -1813,6 +1847,47 @@ export function makeCursorAdapterV2(
         ) {
           const completed = update.type === "tool-call-completed";
           const toolCall = update.toolCall;
+          const managed = context.managed;
+          if (managed !== undefined && managed.actor !== null) {
+            let child = managed.children.get(update.callId);
+            if (child === undefined) {
+              const actor = yield* managed.issuer.admitActor({
+                parent: managed.actor,
+                kind: toolCall.type === "task" ? "subagent" : "tool",
+                completionMode: "native_endpoint",
+                actualSource: {
+                  sourceId: NodeCrypto.randomUUID(),
+                  driver: CursorAgentSdk.CURSOR_PROVIDER,
+                  instanceId: adapterOptions.instanceId,
+                  providerSessionId: input.providerSessionId,
+                  providerThreadId: context.input.providerThread.id,
+                  threadId: context.input.threadId,
+                  nativeThreadId: context.run.agentId,
+                  nativeTurnId: context.run.runId,
+                  nativeRequestId: update.callId,
+                },
+              });
+              child = { actor, entered: false, closed: false };
+              managed.children.set(update.callId, child);
+            }
+            if (update.type !== "partial-tool-call" && !child.entered) {
+              yield* managed.issuer.markActorEntered(child.actor);
+              child.entered = true;
+            }
+            if (completed && !child.closed) {
+              yield* managed.issuer.recordNativeEndpoint(child.actor, {
+                kind: "native_endpoint",
+                endpoint: "cursor.tool-call-completed",
+                nativeThreadId: context.run.agentId,
+                nativeTurnId: context.run.runId,
+                nativeRequestId: update.callId,
+                outcome: cursorToolFailed(toolCall) ? "failed" : "completed",
+                observedAt: DateTime.formatIso(yield* DateTime.now),
+              });
+              child.closed = true;
+              yield* sealManagedRun(managed);
+            }
+          }
           switch (toolCall.type) {
             case "createPlan":
               yield* emitPlanArtifacts({
@@ -1868,65 +1943,66 @@ export function makeCursorAdapterV2(
           return candidates.filter((value): value is string => typeof value === "string").join("");
         };
 
-        const handleInteractionUpdate = Effect.fnUntraced(function* (
-          context: ActiveCursorTurn,
-          update: InteractionUpdate,
-        ) {
-          if (context.finalized) {
-            return;
-          }
-          switch (update.type) {
-            case "text-delta":
-              context.assistantReply.push(update.text);
-              yield* completeReasoning(context);
-              yield* appendTextSegment({
-                context,
-                stream: context.assistant,
-                kind: "assistant",
-                text: update.text,
-              });
-              yield* emitAssistant(context, false);
-              return;
-            case "thinking-delta":
-              yield* completeAssistant(context);
-              yield* appendTextSegment({
-                context,
-                stream: context.reasoning,
-                kind: "reasoning",
-                text: update.text,
-              });
-              yield* emitReasoning(context, false);
-              return;
-            case "thinking-completed":
-              yield* completeReasoning(context);
-              return;
-            case "tool-call-started":
-            case "partial-tool-call":
-            case "tool-call-completed":
-              yield* completeAssistant(context);
-              yield* completeReasoning(context);
-              yield* handleToolUpdate(context, update);
-              return;
-            case "step-completed":
-            case "turn-ended":
-              yield* completeAssistant(context);
-              yield* completeReasoning(context);
-              return;
-            case "shell-output-delta": {
-              const shell = Array.from(context.tools.values())
-                .toReversed()
-                .find((candidate) => candidate.toolCall.type === "shell");
-              if (shell === undefined) {
-                return;
-              }
-              shell.streamedOutput += shellOutputText(update.event);
-              yield* emitToolArtifacts({ active: shell, completed: false });
+        const handleInteractionUpdate = Effect.fnUntraced(
+          function* (context: ActiveCursorTurn, update: InteractionUpdate) {
+            if (context.finalized) {
               return;
             }
-            default:
-              return;
-          }
-        }, (effect, context) => effect.pipe(Effect.provideService(CursorEventOrigin, context.eventOrigin)));
+            switch (update.type) {
+              case "text-delta":
+                context.assistantReply.push(update.text);
+                yield* completeReasoning(context);
+                yield* appendTextSegment({
+                  context,
+                  stream: context.assistant,
+                  kind: "assistant",
+                  text: update.text,
+                });
+                yield* emitAssistant(context, false);
+                return;
+              case "thinking-delta":
+                yield* completeAssistant(context);
+                yield* appendTextSegment({
+                  context,
+                  stream: context.reasoning,
+                  kind: "reasoning",
+                  text: update.text,
+                });
+                yield* emitReasoning(context, false);
+                return;
+              case "thinking-completed":
+                yield* completeReasoning(context);
+                return;
+              case "tool-call-started":
+              case "partial-tool-call":
+              case "tool-call-completed":
+                yield* completeAssistant(context);
+                yield* completeReasoning(context);
+                yield* handleToolUpdate(context, update);
+                return;
+              case "step-completed":
+              case "turn-ended":
+                yield* completeAssistant(context);
+                yield* completeReasoning(context);
+                return;
+              case "shell-output-delta": {
+                const shell = Array.from(context.tools.values())
+                  .toReversed()
+                  .find((candidate) => candidate.toolCall.type === "shell");
+                if (shell === undefined) {
+                  return;
+                }
+                shell.streamedOutput += shellOutputText(update.event);
+                yield* emitToolArtifacts({ active: shell, completed: false });
+                return;
+              }
+              default:
+                return;
+            }
+          },
+          (effect, context) =>
+            effect.pipe(Effect.provideService(CursorEventOrigin, context.eventOrigin)),
+        );
 
         const providerTurnPayload = (input: {
           readonly context: ActiveCursorTurn;
@@ -1948,101 +2024,105 @@ export function makeCursorAdapterV2(
           completedAt: input.completedAt,
         });
 
-        const finalizeTurn = Effect.fnUntraced(function* (input: {
-          readonly context: ActiveCursorTurn;
-          readonly status: Extract<
-            OrchestrationV2ProviderTurn["status"],
-            "completed" | "interrupted" | "failed" | "cancelled"
-          >;
-          readonly failure?: OrchestrationV2ProviderFailure;
-          readonly threadDisposition?: "reusable" | "broken";
-        }) {
-          if (input.context.finalized) {
-            return;
-          }
-          input.context.finalized = true;
-          const completedAt = yield* DateTime.now;
-          // Tools still here never got a tool-call-completed. A stopped or
-          // failed turn cut them short, so they end with the turn's status.
-          for (const tool of input.context.tools.values()) {
-            yield* emitToolArtifacts({
-              active: tool,
-              completed: true,
-              ...(input.status === "completed" ? {} : { unfinishedStatus: input.status }),
+        const finalizeTurn = Effect.fnUntraced(
+          function* (input: {
+            readonly context: ActiveCursorTurn;
+            readonly status: Extract<
+              OrchestrationV2ProviderTurn["status"],
+              "completed" | "interrupted" | "failed" | "cancelled"
+            >;
+            readonly failure?: OrchestrationV2ProviderFailure;
+            readonly threadDisposition?: "reusable" | "broken";
+          }) {
+            if (input.context.finalized) {
+              return;
+            }
+            input.context.finalized = true;
+            const completedAt = yield* DateTime.now;
+            // Tools still here never got a tool-call-completed. A stopped or
+            // failed turn cut them short, so they end with the turn's status.
+            for (const tool of input.context.tools.values()) {
+              yield* emitToolArtifacts({
+                active: tool,
+                completed: true,
+                ...(input.status === "completed" ? {} : { unfinishedStatus: input.status }),
+              });
+            }
+            input.context.tools.clear();
+            // This interaction stops delivering updates at finalization. Tasks
+            // without a completion have an unknown outcome. Background launch
+            // acknowledgements have already settled their rows.
+            for (const subagent of input.context.subagents.values()) {
+              if (!isOrchestrationV2WorkActive(subagent.task.status)) continue;
+              yield* emitSubagent({
+                context: input.context,
+                callId: subagent.callId,
+                toolCall: subagent.toolCall,
+                completed: true,
+                status: input.status === "completed" ? "idle" : input.status,
+              });
+            }
+            yield* completeReasoning(input.context);
+            yield* completeAssistant(input.context);
+            yield* emitProviderEvent({
+              type: "provider_turn.updated",
+              driver: CursorAgentSdk.CURSOR_PROVIDER,
+              providerTurn: providerTurnPayload({
+                context: input.context,
+                status: input.status,
+                completedAt,
+              }),
             });
-          }
-          input.context.tools.clear();
-          // This interaction stops delivering updates at finalization. Tasks
-          // without a completion have an unknown outcome. Background launch
-          // acknowledgements have already settled their rows.
-          for (const subagent of input.context.subagents.values()) {
-            if (!isOrchestrationV2WorkActive(subagent.task.status)) continue;
-            yield* emitSubagent({
-              context: input.context,
-              callId: subagent.callId,
-              toolCall: subagent.toolCall,
-              completed: true,
-              status: input.status === "completed" ? "idle" : input.status,
+            yield* emitProviderEvent({
+              type: "provider_thread.updated",
+              driver: CursorAgentSdk.CURSOR_PROVIDER,
+              providerThread: {
+                ...input.context.input.providerThread,
+                providerSessionId: session.id,
+                status: "active",
+                firstRunOrdinal:
+                  input.context.input.providerThread.firstRunOrdinal ??
+                  input.context.input.runOrdinal,
+                lastRunOrdinal: input.context.input.runOrdinal,
+                updatedAt: completedAt,
+              },
             });
-          }
-          yield* completeReasoning(input.context);
-          yield* completeAssistant(input.context);
-          yield* emitProviderEvent({
-            type: "provider_turn.updated",
-            driver: CursorAgentSdk.CURSOR_PROVIDER,
-            providerTurn: providerTurnPayload({
-              context: input.context,
-              status: input.status,
-              completedAt,
-            }),
-          });
-          yield* emitProviderEvent({
-            type: "provider_thread.updated",
-            driver: CursorAgentSdk.CURSOR_PROVIDER,
-            providerThread: {
-              ...input.context.input.providerThread,
-              providerSessionId: session.id,
-              status: "active",
-              firstRunOrdinal:
-                input.context.input.providerThread.firstRunOrdinal ??
-                input.context.input.runOrdinal,
-              lastRunOrdinal: input.context.input.runOrdinal,
-              updatedAt: completedAt,
-            },
-          });
-          const threadDisposition = input.threadDisposition ?? "reusable";
-          yield* emitProviderEvent(
-            input.status === "failed"
-              ? {
-                  type: "turn.terminal",
-                  driver: CursorAgentSdk.CURSOR_PROVIDER,
-                  providerThreadId: input.context.input.providerThread.id,
-                  providerTurnId: input.context.providerTurnId,
-                  runOrdinal: input.context.input.runOrdinal,
-                  failureItemOrdinal: yield* resolveItemOrdinal(
-                    input.context,
-                    `terminal-failure:${input.context.providerTurnId}`,
-                  ),
-                  status: input.status,
-                  failure: input.failure ?? makeProviderFailure({ class: "provider_error" }),
-                  threadDisposition,
-                }
-              : {
-                  type: "turn.terminal",
-                  driver: CursorAgentSdk.CURSOR_PROVIDER,
-                  providerThreadId: input.context.input.providerThread.id,
-                  providerTurnId: input.context.providerTurnId,
-                  runOrdinal: input.context.input.runOrdinal,
-                  status: input.status,
-                  failure: null,
-                  threadDisposition,
-                },
-          );
-          yield* Ref.update(activeTurn, (current) =>
-            current?.providerTurnId === input.context.providerTurnId ? null : current,
-          );
-          yield* Deferred.succeed(input.context.completed, undefined);
-        }, (effect, input) => effect.pipe(Effect.provideService(CursorEventOrigin, input.context.eventOrigin)));
+            const threadDisposition = input.threadDisposition ?? "reusable";
+            yield* emitProviderEvent(
+              input.status === "failed"
+                ? {
+                    type: "turn.terminal",
+                    driver: CursorAgentSdk.CURSOR_PROVIDER,
+                    providerThreadId: input.context.input.providerThread.id,
+                    providerTurnId: input.context.providerTurnId,
+                    runOrdinal: input.context.input.runOrdinal,
+                    failureItemOrdinal: yield* resolveItemOrdinal(
+                      input.context,
+                      `terminal-failure:${input.context.providerTurnId}`,
+                    ),
+                    status: input.status,
+                    failure: input.failure ?? makeProviderFailure({ class: "provider_error" }),
+                    threadDisposition,
+                  }
+                : {
+                    type: "turn.terminal",
+                    driver: CursorAgentSdk.CURSOR_PROVIDER,
+                    providerThreadId: input.context.input.providerThread.id,
+                    providerTurnId: input.context.providerTurnId,
+                    runOrdinal: input.context.input.runOrdinal,
+                    status: input.status,
+                    failure: null,
+                    threadDisposition,
+                  },
+            );
+            yield* Ref.update(activeTurn, (current) =>
+              current?.providerTurnId === input.context.providerTurnId ? null : current,
+            );
+            yield* Deferred.succeed(input.context.completed, undefined);
+          },
+          (effect, input) =>
+            effect.pipe(Effect.provideService(CursorEventOrigin, input.context.eventOrigin)),
+        );
 
         const terminalStatus = (
           context: ActiveCursorTurn,
@@ -2081,16 +2161,20 @@ export function makeCursorAdapterV2(
             return existing;
           }
           runtimeGeneration = NodeCrypto.randomUUID();
-          yield* (input.beforeRuntimeReplacement?.(runtimeGeneration) ?? Effect.void);
+          yield* input.beforeRuntimeReplacement?.(runtimeGeneration) ?? Effect.void;
           yield* ProviderAdapter.authorizeProviderNativeCreation(
-            openInput.nativeCreationExecution, CursorAgentSdk.CURSOR_PROVIDER, openInput.runtimePolicy.cwd,
+            openInput.nativeCreationExecution,
+            CursorAgentSdk.CURSOR_PROVIDER,
+            openInput.runtimePolicy.cwd,
           );
           if (existing !== null) {
             yield* existing.session.close.pipe(Effect.ignore);
             yield* Ref.set(liveAgent, null);
           }
           yield* ProviderAdapter.authorizeProviderNativeCreation(
-            openInput.nativeCreationExecution, CursorAgentSdk.CURSOR_PROVIDER, openInput.runtimePolicy.cwd,
+            openInput.nativeCreationExecution,
+            CursorAgentSdk.CURSOR_PROVIDER,
+            openInput.runtimePolicy.cwd,
           );
           const agentGeneration = runtimeGeneration;
           const sdkSession = yield* runner.open({
@@ -2205,6 +2289,68 @@ export function makeCursorAdapterV2(
                 detail: `Cursor provider turn ${current.providerTurnId} is still active.`,
               });
             }
+            const execution = yield* ManagedCompletion.readProviderManagedActorExecution;
+            const managed =
+              execution === undefined
+                ? undefined
+                : managedRuns.get(
+                    managedKey(
+                      execution.originalUse.operationId,
+                      turnInput.attemptId,
+                      turnInput.providerThread.id,
+                    ),
+                  );
+            if (
+              execution === undefined &&
+              [...managedRuns.values()].some(
+                (candidate) =>
+                  candidate.admission.admission.run!.runAttemptId === turnInput.attemptId &&
+                  candidate.admission.providerThreadId === turnInput.providerThread.id,
+              )
+            ) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                detail: "Managed dispatch lost its original prepared execution.",
+              });
+            }
+            if (
+              execution !== undefined &&
+              (managed === undefined ||
+                execution.associationId !== managed.admission.startExecution.associationId)
+            ) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                detail: "Cursor managed dispatch does not match its prepared operation.",
+              });
+            }
+            if (managed !== undefined) {
+              const run = managed.admission.admission.run!;
+              if (
+                execution === undefined ||
+                run.runId !== turnInput.runId ||
+                run.nodeId !== turnInput.rootNodeId ||
+                run.messageId !== turnInput.message.messageId ||
+                managed.admission.admission.capture.threadId !== turnInput.threadId ||
+                managed.actor !== null
+              )
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CursorAgentSdk.CURSOR_PROVIDER,
+                  detail: "Cursor managed dispatch identity changed.",
+                });
+              managed.actor = yield* managed.issuer.admitActor({
+                kind: "foreground",
+                completionMode: "native_endpoint_and_task_join",
+                actualSource: {
+                  sourceId: NodeCrypto.randomUUID(),
+                  driver: CursorAgentSdk.CURSOR_PROVIDER,
+                  instanceId: adapterOptions.instanceId,
+                  providerSessionId: input.providerSessionId,
+                  providerThreadId: turnInput.providerThread.id,
+                  threadId: turnInput.threadId,
+                },
+              });
+              yield* managed.issuer.markActorEntered(managed.actor);
+            }
             const agentId = nativeThreadId(turnInput.providerThread);
             const agent = yield* openAgent({
               operation: "resume",
@@ -2223,17 +2369,25 @@ export function makeCursorAdapterV2(
               providerSessionId: input.providerSessionId,
               runtimeGeneration: agent.runtimeGeneration,
               revalidateCurrent: Effect.gen(function* () {
-                if (runtimeGeneration !== agent.runtimeGeneration || (yield* Ref.get(liveAgent)) !== agent) {
-                  return yield* Effect.fail(new ProviderAdapter.ProviderAdapterProtocolError({
-                    driver: CursorAgentSdk.CURSOR_PROVIDER, detail: "Cursor event source was replaced.",
-                  }));
+                if (
+                  runtimeGeneration !== agent.runtimeGeneration ||
+                  (yield* Ref.get(liveAgent)) !== agent
+                ) {
+                  return yield* Effect.fail(
+                    new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CursorAgentSdk.CURSOR_PROVIDER,
+                      detail: "Cursor event source was replaced.",
+                    }),
+                  );
                 }
               }),
             };
             const pendingUpdates: Array<InteractionUpdate> = [];
             let context: ActiveCursorTurn | null = null;
             yield* ProviderAdapter.authorizeProviderNativeCreation(
-              turnInput.nativeCreationExecution, CursorAgentSdk.CURSOR_PROVIDER, agent.nativeDirectory,
+              turnInput.nativeCreationExecution,
+              CursorAgentSdk.CURSOR_PROVIDER,
+              agent.nativeDirectory,
             );
             const sdkRun = yield* agent.session.send({
               message,
@@ -2251,6 +2405,12 @@ export function makeCursorAdapterV2(
                 return handleInteractionUpdate(context, update);
               },
             });
+            if (managed?.actor !== null && managed !== undefined) {
+              yield* managed.issuer.bindActorNativeIdentity(managed.actor, {
+                nativeThreadId: sdkRun.agentId,
+                nativeTurnId: sdkRun.runId,
+              });
+            }
             const startedAt = yield* DateTime.now;
             const completed = yield* Deferred.make<void, never>();
             const providerTurnId = idAllocator.derive.providerTurn({
@@ -2258,13 +2418,21 @@ export function makeCursorAdapterV2(
               nativeTurnId: sdkRun.runId,
             });
             context = {
+              managed,
               eventOrigin: {
                 producer,
                 turn: {
-                  binding: { threadId: turnInput.threadId, providerThreadId: turnInput.providerThread.id,
-                    providerSessionId: input.providerSessionId, instanceId: adapterOptions.instanceId,
-                    runtimeGeneration: agent.runtimeGeneration, nativeThreadId: agent.nativeThreadId },
-                  runId: turnInput.runId, attemptId: turnInput.attemptId, providerTurnId,
+                  binding: {
+                    threadId: turnInput.threadId,
+                    providerThreadId: turnInput.providerThread.id,
+                    providerSessionId: input.providerSessionId,
+                    instanceId: adapterOptions.instanceId,
+                    runtimeGeneration: agent.runtimeGeneration,
+                    nativeThreadId: agent.nativeThreadId,
+                  },
+                  runId: turnInput.runId,
+                  attemptId: turnInput.attemptId,
+                  providerTurnId,
                 },
               },
               runtimeGeneration: agent.runtimeGeneration,
@@ -2289,32 +2457,64 @@ export function makeCursorAdapterV2(
               finalized: false,
             };
             yield* Ref.set(activeTurn, context);
-            yield* emitProviderEvent({
-              type: "provider_turn.updated",
-              driver: CursorAgentSdk.CURSOR_PROVIDER,
-              providerTurn: providerTurnPayload({
-                context,
-                status: "running",
-                completedAt: null,
-              }),
-            }, context.eventOrigin);
-            yield* emitProviderEvent({
-              type: "provider_thread.updated",
-              driver: CursorAgentSdk.CURSOR_PROVIDER,
-              providerThread: {
-                ...turnInput.providerThread,
-                providerSessionId: session.id,
-                status: "active",
-                updatedAt: startedAt,
+            yield* emitProviderEvent(
+              {
+                type: "provider_turn.updated",
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                providerTurn: providerTurnPayload({
+                  context,
+                  status: "running",
+                  completedAt: null,
+                }),
               },
-            }, context.eventOrigin);
+              context.eventOrigin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "provider_thread.updated",
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                providerThread: {
+                  ...turnInput.providerThread,
+                  providerSessionId: session.id,
+                  status: "active",
+                  updatedAt: startedAt,
+                },
+              },
+              context.eventOrigin,
+            );
             for (const update of pendingUpdates) {
               yield* handleInteractionUpdate(context, update);
             }
 
-            yield* sdkRun.wait.pipe(
+            const completionGate = yield* Deferred.make<void>();
+            const completionFiber = yield* Deferred.await(completionGate).pipe(
+              Effect.andThen(sdkRun.wait),
               Effect.flatMap((result) =>
                 Effect.gen(function* () {
+                  if (managed !== undefined && managed.actor !== null) {
+                    yield* managed.issuer.recordNativeEndpoint(managed.actor, {
+                      kind: "native_endpoint",
+                      endpoint: "cursor.run.wait-and-callback-chain",
+                      nativeThreadId: sdkRun.agentId,
+                      nativeTurnId: sdkRun.runId,
+                      outcome:
+                        result.status === "finished"
+                          ? "completed"
+                          : result.status === "cancelled"
+                            ? "interrupted"
+                            : "failed",
+                      observedAt: DateTime.formatIso(yield* DateTime.now),
+                    });
+                    managed.rootEnded = true;
+                    for (const child of managed.children.values()) {
+                      if (!child.entered)
+                        yield* managed.issuer.retainUnknown(
+                          child.actor,
+                          "Cursor partial tool call has no actual entry or no-entry endpoint.",
+                        );
+                    }
+                    yield* sealManagedRun(managed);
+                  }
                   if (
                     context !== null &&
                     context.assistant.nextSegment === 0 &&
@@ -2354,6 +2554,12 @@ export function makeCursorAdapterV2(
               ),
               Effect.catch((cause) =>
                 Effect.gen(function* () {
+                  if (managed !== undefined && managed.actor !== null) {
+                    yield* managed.issuer.retainUnknown(
+                      managed.actor,
+                      "Cursor SDK wait or callback chain did not prove completion.",
+                    );
+                  }
                   if (context !== null) {
                     yield* finalizeTurn({
                       context,
@@ -2376,9 +2582,34 @@ export function makeCursorAdapterV2(
               Effect.provideService(CursorEventOrigin, context.eventOrigin),
               Effect.forkIn(sessionScope),
             );
+            if (managed !== undefined && managed.actor !== null) {
+              yield* managed.issuer.requireTaskJoin(managed.actor, {
+                taskId: "cursor.run.wait-and-projection",
+                fiber: completionFiber,
+              });
+              yield* managed.issuer
+                .joinTask(managed.actor, "cursor.run.wait-and-projection")
+                .pipe(Effect.forkIn(sessionScope));
+            }
+            yield* Deferred.succeed(completionGate, undefined);
           },
           (effect, turnInput) =>
             effect.pipe(
+              Effect.tapCause(() => {
+                const managed = [...managedRuns.values()].find(
+                  (candidate) =>
+                    candidate.admission.admission.run!.runAttemptId === turnInput.attemptId &&
+                    candidate.admission.providerThreadId === turnInput.providerThread.id,
+                );
+                return managed?.actor == null
+                  ? Effect.void
+                  : managed.issuer
+                      .retainUnknown(
+                        managed.actor,
+                        "Cursor native entry failed without a joined SDK endpoint.",
+                      )
+                      .pipe(Effect.ignore);
+              }),
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapter.ProviderAdapterTurnStartError({
@@ -2393,6 +2624,17 @@ export function makeCursorAdapterV2(
         );
 
         const closeSession = Effect.fnUntraced(function* () {
+          managedRuntimeClosed = true;
+          for (const managed of managedRuns.values()) {
+            if (!managed.sealed && managed.actor !== null) {
+              yield* managed.issuer
+                .retainUnknown(
+                  managed.actor,
+                  "Cursor session closed before its joined SDK endpoint.",
+                )
+                .pipe(Effect.ignore);
+            }
+          }
           const existing = yield* Ref.get(liveAgent);
           if (existing !== null) {
             yield* existing.session.close.pipe(Effect.ignore);
@@ -2431,12 +2673,22 @@ export function makeCursorAdapterV2(
                 turn.finalized ||
                 (yield* Deferred.isDone(turn.completed))
               ) {
-                return { status: "unknown" as const, reason: "Cursor has no current complete native activity probe." };
+                return {
+                  status: "unknown" as const,
+                  reason: "Cursor has no current complete native activity probe.",
+                };
               }
               const observedAt = DateTime.formatIso(yield* DateTime.now);
-              if ((yield* Ref.get(liveAgent)) !== live || (yield* Ref.get(activeTurn)) !== turn ||
-                runtimeGeneration !== binding.runtimeGeneration || turn.finalized) {
-                return { status: "unknown" as const, reason: "Cursor runtime changed during observation." };
+              if (
+                (yield* Ref.get(liveAgent)) !== live ||
+                (yield* Ref.get(activeTurn)) !== turn ||
+                runtimeGeneration !== binding.runtimeGeneration ||
+                turn.finalized
+              ) {
+                return {
+                  status: "unknown" as const,
+                  reason: "Cursor runtime changed during observation.",
+                };
               }
               return { status: "working" as const, binding, observedAt };
             }),
@@ -2477,11 +2729,16 @@ export function makeCursorAdapterV2(
               ),
           ),
           resumeThread: Effect.fn("CursorAdapterV2.resumeThread")(
-            function* (threadInput: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]>[0]) {
+            function* (
+              threadInput: Parameters<
+                ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]
+              >[0],
+            ) {
               if (threadInput.beforeNativeResume !== undefined) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CursorAgentSdk.CURSOR_PROVIDER,
-                  detail: "Cursor cannot provide source proof before native attachment because runner initialization and resume are inseparable.",
+                  detail:
+                    "Cursor cannot provide source proof before native attachment because runner initialization and resume are inseparable.",
                 });
               }
               const agentId = nativeThreadId(threadInput.providerThread);
@@ -2546,6 +2803,14 @@ export function makeCursorAdapterV2(
               );
               if (Option.isSome(stopped)) {
                 return;
+              }
+              if (context.managed?.actor != null) {
+                yield* context.managed.issuer
+                  .retainUnknown(
+                    context.managed.actor,
+                    "Cursor cancel timed out without joined SDK completion.",
+                  )
+                  .pipe(Effect.ignore);
               }
               yield* Effect.logWarning("orchestration-v2.cursor-interrupt-timeout", {
                 providerSessionId: input.providerSessionId,
@@ -2664,14 +2929,69 @@ export function makeCursorAdapterV2(
               }),
             ),
         };
-        return ProviderAdapter.withProviderNativeEffects(runtime);
+        const rawRuntime = ProviderAdapter.withProviderNativeEffects(runtime);
+        ManagedCompletion.registerProviderManagedActorProducer(
+          rawRuntime,
+          ({ admission, issuer }) =>
+            Effect.sync(() => {
+              const key = managedKey(
+                admission.startExecution.originalUse.operationId,
+                admission.admission.run!.runAttemptId,
+                admission.providerThreadId,
+              );
+              if (managedRuns.has(key))
+                throw new Error("Cursor managed actor admission already prepared.");
+              const managed: CursorManagedRun = {
+                admission,
+                issuer,
+                actor: null,
+                children: new Map(),
+                rootEnded: false,
+                sealed: false,
+              };
+              managedRuns.set(key, managed);
+              const retained = Effect.suspend(() =>
+                managedRuns.get(key) === managed
+                  ? Effect.void
+                  : Effect.fail(
+                      new ProviderAdapter.ProviderAdapterProtocolError({
+                        driver: CursorAgentSdk.CURSOR_PROVIDER,
+                        detail: "Cursor managed completion source changed.",
+                        cause: new Error("Cursor managed completion source changed."),
+                      }),
+                    ),
+              );
+              return {
+                revalidateCompletion: retained,
+                revalidateMutation: retained.pipe(
+                  Effect.andThen(
+                    Effect.suspend(() =>
+                      managedRuntimeClosed
+                        ? Effect.fail(
+                            new ProviderAdapter.ProviderAdapterProtocolError({
+                              driver: CursorAgentSdk.CURSOR_PROVIDER,
+                              detail: "Cursor managed runtime closed.",
+                              cause: new Error("Cursor managed runtime closed."),
+                            }),
+                          )
+                        : Effect.void,
+                    ),
+                  ),
+                ),
+              };
+            }),
+        );
+        return rawRuntime;
       },
       (effect, input) =>
         effect.pipe(
           Effect.mapError(
             (cause) =>
               new ProviderAdapter.ProviderAdapterOpenSessionError({
-                nativeEffect: input.nativeOperation === undefined ? undefined : { ...input.nativeOperation, outcome: "unknown" },
+                nativeEffect:
+                  input.nativeOperation === undefined
+                    ? undefined
+                    : { ...input.nativeOperation, outcome: "unknown" },
                 driver: CursorAgentSdk.CURSOR_PROVIDER,
                 providerSessionId: input.providerSessionId,
                 cause,

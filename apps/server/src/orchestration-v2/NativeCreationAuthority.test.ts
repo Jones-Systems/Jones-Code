@@ -4,6 +4,7 @@ import {
   CommandId,
   NativeCommandIdentityV2,
   NativeCreationHistoricalBinding,
+  type NativeCreationEffect,
   OrchestrationV2Command,
   RunId,
   ThreadId,
@@ -24,6 +25,8 @@ import {
   NativeCreationRepository,
   NativeCreationRepositoryError,
   type NativeCreationResolvedExecutionV2,
+  type NativeCreationHistory,
+  type NativeCreationThreadRecoveryCommandV2,
 } from "../persistence/Services/NativeCreationRepository.ts";
 import {
   NativeCreationAuthority,
@@ -32,6 +35,8 @@ import {
   NativeCreationExecutionReferenceV2,
   getNativeCreationExecutionReference,
   authorizeNativeCreationExecution,
+  authorizeNativeCreationThreadRecovery,
+  getNativeCreationThreadRecoveryReference,
   NativeCreationBindingResolver,
   NativeCreationGrantResolver,
   type NativeCreationGrant,
@@ -85,6 +90,347 @@ it.effect("execution references carry only ledger identity and cannot carry auth
       assert.isTrue(Option.isNone(decode(input)));
     }
   }),
+);
+
+it.effect(
+  "thread recovery binds original starts and rechecks both current authority stages without effects",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* fixture;
+      const claimId = "fixture-thread-recovery";
+      const command = {
+        type: "thread.delete" as const,
+        commandId: CommandId.make(`${value.preparation.command.commandId}:bootstrap-thread-delete`),
+        threadId: value.preparation.command.threadId,
+      };
+      const commandDigest = nativeCreationV2CommandDigest(command);
+      const resource = value.grant.recoveryScopes[0]!.resource;
+      if (resource.kind !== "thread")
+        return yield* Effect.die("Synthetic recovery resource changed");
+      const cleanup: Extract<NativeCreationEffect, { kind: "cleanup"; phase: "started" }> = {
+        kind: "cleanup",
+        phase: "started",
+        ordinal: 0,
+        effectId: "fixture-cleanup-start",
+        timestamp: "2026-10-02T12:00:00Z",
+        resource,
+        recoveryScopeId: "fixture-recovery",
+      };
+      const commandStart: Extract<
+        NativeCreationEffect,
+        { kind: "native_command"; phase: "started" }
+      > = {
+        kind: "native_command",
+        phase: "started",
+        ordinal: 2,
+        effectId: "fixture-delete-start",
+        timestamp: "2026-10-02T12:00:00Z",
+        commandId: command.commandId,
+        threadId: command.threadId,
+        commandType: command.type,
+        commandDigest,
+      };
+      const initialHistory: NativeCreationHistory = {
+        intent: {
+          claimId,
+          claimedBootId: "fixture-boot",
+          claimedAt: "2026-10-02T12:00:00Z",
+          actorSessionId,
+          grantId: guard.grantId,
+          grantRevision: guard.grantRevision,
+          preparationId: value.preparation.preparationId,
+          operationId: value.preparation.operationId,
+          preparationSha256: value.preparation.preparationSha256,
+          bindingDigest: value.preparation.bindingDigest,
+          promptDigest: value.preparation.promptDigest,
+          commandDigest: value.preparation.commandDigest,
+          commandId: value.preparation.command.commandId,
+          threadId: command.threadId,
+          messageId: value.preparation.command.message.messageId,
+          canonicalPreparation: value.preparation.canonicalText,
+          binding: value.historical,
+          resources: value.resources,
+        },
+        normalizedCommandDigest: null,
+        effects: [cleanup, commandStart],
+        effectsV2: [],
+        effectOverflow: false,
+      };
+      const originalReservation: NativeCreationThreadRecoveryCommandV2 = {
+        version: 2,
+        claimId,
+        commandId: command.commandId,
+        threadId: command.threadId,
+        commandType: command.type,
+        commandDigest,
+        canonicalCommand: command,
+        commandStartEffectId: commandStart.effectId,
+        cleanupStartEffectId: cleanup.effectId,
+        cleanupStartOrdinal: cleanup.ordinal,
+        recoveryScopeId: cleanup.recoveryScopeId,
+        resource,
+      };
+      let history = initialHistory;
+      let reservation = originalReservation;
+      let reservationMissing = false;
+      let currentGrant: NativeCreationGrant = {
+        ...value.grant,
+        allowedStages: [...value.grant.allowedStages, "native_command"],
+      };
+      let writes = 0;
+      const prohibitWrite = Effect.sync(() => {
+        writes++;
+      }).pipe(
+        Effect.andThen(
+          Effect.fail(
+            new NativeCreationRepositoryError({
+              code: "unresolved_claim",
+              message: "Recovery issuer attempted a durable mutation",
+            }),
+          ),
+        ),
+      );
+      const ledger = Layer.effect(
+        NativeCreationRepository,
+        Effect.gen(function* () {
+          const baseline = yield* NativeCreationRepository;
+          return NativeCreationRepository.of({
+            ...baseline,
+            hasAutomationEnrollment: () => Effect.succeed(true),
+            readHistoryByClaim: (id) =>
+              id === claimId
+                ? Effect.succeed(history)
+                : Effect.fail(
+                    new NativeCreationRepositoryError({
+                      code: "unresolved_claim",
+                      message: "Wrong synthetic claim",
+                    }),
+                  ),
+            readThreadRecoveryCommand: () =>
+              Effect.succeed(reservationMissing ? null : reservation),
+            reserveThreadRecoveryCommand: () => prohibitWrite,
+            startEffect: () => prohibitWrite,
+            completeEffect: () => prohibitWrite,
+            startEffectV2: () => prohibitWrite,
+            completeEffectV2: () => prohibitWrite,
+          });
+        }),
+      ).pipe(Layer.provide(repositoryLayer));
+      const authorityLayer = NativeCreationAuthorityLive.pipe(
+        Layer.provide(ledger),
+        Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+        Layer.provide(
+          Layer.succeed(NativeCreationGrantResolver, {
+            resolveCurrent: () =>
+              Effect.succeed({
+                enrolledSessionId: actorSessionId,
+                trustedIssuerId: "fixture-issuer",
+                grant: currentGrant,
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(NativeCreationBindingResolver, {
+            resolveCurrent: () => Effect.succeed(value.historical),
+          }),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const authority = yield* NativeCreationAuthority;
+        const authorization = {
+          actorSessionId,
+          preparation: value.preparation,
+          guard: { ...guard },
+          resources: { ...value.resources },
+          stage: "cleanup" as const,
+          recoveryScopeId: cleanup.recoveryScopeId,
+          recoveryResource: { ...resource, incarnation: { ...resource.incarnation } },
+        };
+        const input = {
+          claimId,
+          commandStartEffectId: commandStart.effectId,
+          cleanupStartEffectId: cleanup.effectId,
+          authorization,
+        };
+        const deny = (candidate = input) =>
+          authority.issueThreadRecovery(candidate).pipe(Effect.flip);
+        assert.strictEqual((yield* deny({ ...input, claimId: "" })).code, "unresolved_claim");
+        assert.strictEqual(
+          (yield* deny({ ...input, commandStartEffectId: cleanup.effectId })).code,
+          "unresolved_claim",
+        );
+        assert.strictEqual(
+          (yield* deny({ ...input, cleanupStartEffectId: "other-cleanup" })).code,
+          "unresolved_claim",
+        );
+        assert.strictEqual(
+          (yield* authority
+            .issueThreadRecovery({
+              ...input,
+              authorization: { ...authorization, stage: "native_command" },
+            })
+            .pipe(Effect.flip)).code,
+          "unresolved_claim",
+        );
+        assert.strictEqual(
+          (yield* deny({
+            ...input,
+            authorization: { ...authorization, actorSessionId: AuthSessionId.make("other-actor") },
+          })).code,
+          "unresolved_claim",
+        );
+        assert.strictEqual(
+          (yield* deny({
+            ...input,
+            authorization: {
+              ...authorization,
+              preparation: { ...value.preparation, commandDigest: "b".repeat(64) },
+            },
+          })).code,
+          "unresolved_claim",
+        );
+        assert.strictEqual(
+          (yield* deny({
+            ...input,
+            authorization: {
+              ...authorization,
+              recoveryResource: {
+                ...resource,
+                incarnation: { ...resource.incarnation, sequence: 99 },
+              },
+            },
+          })).code,
+          "unresolved_claim",
+        );
+        reservationMissing = true;
+        assert.strictEqual((yield* deny()).code, "unresolved_claim");
+        reservationMissing = false;
+        reservation = { ...originalReservation, commandDigest: "a".repeat(64) };
+        assert.strictEqual((yield* deny()).code, "unresolved_claim");
+        reservation = {
+          ...originalReservation,
+          canonicalCommand: { ...command, commandId: CommandId.make("other-delete") },
+        };
+        assert.strictEqual((yield* deny()).code, "unresolved_claim");
+        reservation = originalReservation;
+        currentGrant = { ...currentGrant, allowedStages: ["cleanup"] };
+        assert.strictEqual((yield* deny()).code, "binding_mismatch");
+        currentGrant = { ...currentGrant, allowedStages: ["native_command"] };
+        assert.strictEqual((yield* deny()).code, "binding_mismatch");
+        currentGrant = { ...currentGrant, allowedStages: ["native_command", "cleanup"] };
+        const context = yield* authority.issueThreadRecovery(input);
+        const reference = getNativeCreationThreadRecoveryReference(context);
+        if (reference === null)
+          return yield* Effect.die("Issued recovery has no immutable correlation");
+        assert.deepEqual(reference, {
+          version: 2,
+          claimId,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          commandDigest,
+          commandStartEffectId: commandStart.effectId,
+          cleanupStartEffectId: cleanup.effectId,
+          recoveryScopeId: cleanup.recoveryScopeId,
+          incarnation: resource.incarnation,
+        });
+        assert.isTrue(Object.isFrozen(reference));
+        assert.isTrue(Object.isFrozen(reference.incarnation));
+        assert.deepEqual(Reflect.ownKeys(context), []);
+        assert.isFalse(Reflect.set(reference.incarnation, "sequence", 99));
+        assert.isNull(getNativeCreationThreadRecoveryReference(Object.assign({}, context)));
+        assert.isNull(
+          getNativeCreationThreadRecoveryReference(Object.assign({}, context, reference)),
+        );
+        assert.strictEqual(
+          (yield* authorizeNativeCreationThreadRecovery(Object.assign({}, context, reference)).pipe(
+            Effect.flip,
+          )).code,
+          "unsupported_authority",
+        );
+        authorization.guard.grantRevision = 99;
+        authorization.resources.worktreePath = "/changed/caller-resource";
+        authorization.recoveryResource.incarnation.sequence = 99;
+        assert.deepEqual(yield* authorizeNativeCreationThreadRecovery(context), value.historical);
+        currentGrant = { ...currentGrant, recoveryScopes: [] };
+        assert.strictEqual(
+          (yield* authorizeNativeCreationThreadRecovery(context).pipe(Effect.flip)).code,
+          "binding_mismatch",
+        );
+        currentGrant = {
+          ...currentGrant,
+          recoveryScopes: value.grant.recoveryScopes,
+          revoked: true,
+        };
+        assert.strictEqual(
+          (yield* authorizeNativeCreationThreadRecovery(context).pipe(Effect.flip)).code,
+          "stale_grant",
+        );
+        assert.strictEqual(getNativeCreationThreadRecoveryReference(context), reference);
+        currentGrant = { ...currentGrant, revoked: false };
+        reservation = { ...originalReservation, cleanupStartOrdinal: 1 };
+        assert.strictEqual(
+          (yield* authorizeNativeCreationThreadRecovery(context).pipe(Effect.flip)).code,
+          "unresolved_claim",
+        );
+        reservation = originalReservation;
+        history = { ...initialHistory, intent: { ...initialHistory.intent, grantRevision: 2 } };
+        assert.strictEqual(
+          (yield* authorizeNativeCreationThreadRecovery(context).pipe(Effect.flip)).code,
+          "unresolved_claim",
+        );
+        history = {
+          ...initialHistory,
+          effects: [cleanup, { ...cleanup, ordinal: 1, effectId: "newer-cleanup" }, commandStart],
+        };
+        assert.strictEqual(
+          (yield* authorizeNativeCreationThreadRecovery(context).pipe(Effect.flip)).code,
+          "unresolved_claim",
+        );
+        history = {
+          ...initialHistory,
+          effects: [
+            cleanup,
+            commandStart,
+            { ...commandStart, effectId: "alternate-delete-start", ordinal: 3 },
+          ],
+        };
+        assert.strictEqual(
+          (yield* authorizeNativeCreationThreadRecovery(context).pipe(Effect.flip)).code,
+          "unresolved_claim",
+        );
+        history = {
+          ...initialHistory,
+          effects: [
+            cleanup,
+            commandStart,
+            { ...cleanup, phase: "completed", ordinal: 3, result: "succeeded" },
+          ],
+        };
+        assert.strictEqual(
+          (yield* authorizeNativeCreationThreadRecovery(context).pipe(Effect.flip)).code,
+          "unresolved_claim",
+        );
+        history = {
+          ...initialHistory,
+          effects: [
+            cleanup,
+            commandStart,
+            {
+              ...commandStart,
+              phase: "completed",
+              ordinal: 3,
+              eventId: EventId.make("fixture-deleted-event"),
+              sequence: 2,
+            },
+          ],
+        };
+        assert.strictEqual(
+          (yield* authorizeNativeCreationThreadRecovery(context).pipe(Effect.flip)).code,
+          "unresolved_claim",
+        );
+        assert.strictEqual(writes, 0);
+      }).pipe(Effect.provide(authorityLayer));
+    }),
 );
 
 const fixture = Effect.gen(function* () {
@@ -428,13 +774,13 @@ it.effect("unknown native enrollment lookup denies through the authority port", 
 it.effect("issues opaque execution only after a new start and rechecks each actual effect", () =>
   Effect.gen(function* () {
     const value = yield* fixture;
-    const reference = Schema.decodeUnknownSync(NativeCreationExecutionReferenceV2)({
+    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
       version: 2,
       claimId: "fixture-execution-claim",
       stageCommandId: `${value.preparation.command.commandId}:native:v2:create`,
       effectId: "fixture-execution-effect",
       stage: "native_command",
-    });
+    }).pipe(Effect.orDie);
     const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
       type: "thread.create",
       commandId: reference.stageCommandId,
@@ -447,7 +793,7 @@ it.effect("issues opaque execution only after a new start and rechecks each actu
       return yield* Effect.die("Synthetic create stage decoded as another command");
     }
     const commandDigest = nativeCreationV2CommandDigest(command);
-    const nativeIdentity = Schema.decodeUnknownSync(NativeCommandIdentityV2)({
+    const nativeIdentity = yield* Schema.decodeUnknownEffect(NativeCommandIdentityV2)({
       kind: "native_creation_stage",
       version: 2,
       commandId: reference.stageCommandId,
@@ -456,7 +802,7 @@ it.effect("issues opaque execution only after a new start and rechecks each actu
       aggregateId: command.threadId,
       normalizedCommandDigest: commandDigest,
       bindingDigest: value.preparation.bindingDigest,
-    });
+    }).pipe(Effect.orDie);
     const resolved: NativeCreationResolvedExecutionV2 = {
       reference,
       command,
@@ -527,14 +873,15 @@ it.effect("issues opaque execution only after a new start and rechecks each actu
           hasAutomationEnrollment: () => Effect.succeed(true),
           readExecutionReference: (input) =>
             resolutionUnavailable
-              ? Effect.fail(new NativeCreationRepositoryError({
-                  code: "unresolved_claim",
-                  message: "Synthetic accepted identity is unavailable",
-                }))
+              ? Effect.fail(
+                  new NativeCreationRepositoryError({
+                    code: "unresolved_claim",
+                    message: "Synthetic accepted identity is unavailable",
+                  }),
+                )
               : Effect.sync(() => {
-                  const stage = input.stageCommandId === command.commandId
-                    ? resolved
-                    : releaseResolved;
+                  const stage =
+                    input.stageCommandId === command.commandId ? resolved : releaseResolved;
                   return {
                     ...stage,
                     reference: input,
@@ -551,7 +898,10 @@ it.effect("issues opaque execution only after a new start and rechecks each actu
             Effect.gen(function* () {
               assert.deepEqual(yield* authorize, value.historical);
               startReferences.push(input);
-              if (startedIds.has(input.effectId) || startedStageCommands.has(input.stageCommandId)) {
+              if (
+                startedIds.has(input.effectId) ||
+                startedStageCommands.has(input.stageCommandId)
+              ) {
                 return yield* new NativeCreationRepositoryError({
                   code: "unresolved_claim",
                   message: "Synthetic effect is already started",
@@ -567,9 +917,8 @@ it.effect("issues opaque execution only after a new start and rechecks each actu
                   message: "Synthetic committed start response is lost",
                 });
               }
-              const stageCommand = input.stageCommandId === command.commandId
-                ? command
-                : releaseCommand;
+              const stageCommand =
+                input.stageCommandId === command.commandId ? command : releaseCommand;
               return {
                 status: "started" as const,
                 fact: {
@@ -592,25 +941,35 @@ it.effect("issues opaque execution only after a new start and rechecks each actu
     const authorityLayer = NativeCreationAuthorityLive.pipe(
       Layer.provide(ledger),
       Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
-      Layer.provide(Layer.succeed(NativeCreationGrantResolver, {
-        resolveCurrent: () => Effect.succeed({
-          enrolledSessionId: actorSessionId,
-          trustedIssuerId: "fixture-issuer",
-          grant: currentGrant,
+      Layer.provide(
+        Layer.succeed(NativeCreationGrantResolver, {
+          resolveCurrent: () =>
+            Effect.succeed({
+              enrolledSessionId: actorSessionId,
+              trustedIssuerId: "fixture-issuer",
+              grant: currentGrant,
+            }),
         }),
-      })),
-      Layer.provide(Layer.succeed(NativeCreationBindingResolver, {
-        resolveCurrent: () => Effect.succeed(value.historical),
-      })),
+      ),
+      Layer.provide(
+        Layer.succeed(NativeCreationBindingResolver, {
+          resolveCurrent: () => Effect.succeed(value.historical),
+        }),
+      ),
     );
     yield* Effect.gen(function* () {
       const authority = yield* NativeCreationAuthority;
       const input = { reference, timestamp: "2026-10-02T12:00:00Z" };
       const actual = { stage: "native_command" as const, resources: value.resources };
-      assert.strictEqual((yield* authority.issueExecution({
-        ...input,
-        reference: { ...reference, stage: "fetch" },
-      }).pipe(Effect.flip)).code, "unresolved_claim");
+      assert.strictEqual(
+        (yield* authority
+          .issueExecution({
+            ...input,
+            reference: { ...reference, stage: "fetch" },
+          })
+          .pipe(Effect.flip)).code,
+        "unresolved_claim",
+      );
       assert.strictEqual(starts, 0);
       resolutionUnavailable = true;
       assert.strictEqual(
@@ -638,30 +997,43 @@ it.effect("issues opaque execution only after a new start and rechecks each actu
       assert.isNull(getNativeCreationExecutionReference(Object.assign({}, context)));
       assert.isNull(getNativeCreationExecutionReference(Object.assign({}, context, reference)));
       assert.deepEqual(yield* authorizeNativeCreationExecution(context, actual), value.historical);
-      assert.deepEqual(yield* authority.authorizeExecution(context, {
-        ...actual,
-        stage: "fetch",
-      }), value.historical);
-      assert.strictEqual((yield* authority.authorizeExecution(
-        Object.assign({}, context, reference), actual,
-      ).pipe(Effect.flip)).code, "unsupported_authority");
+      assert.deepEqual(
+        yield* authority.authorizeExecution(context, {
+          ...actual,
+          stage: "fetch",
+        }),
+        value.historical,
+      );
+      assert.strictEqual(
+        (yield* authority
+          .authorizeExecution(Object.assign({}, context, reference), actual)
+          .pipe(Effect.flip)).code,
+        "unsupported_authority",
+      );
       assert.strictEqual(
         (yield* authority.issueExecution(input).pipe(Effect.flip)).code,
         "unresolved_claim",
       );
       assert.strictEqual(starts, 1);
       assert.strictEqual(
-        (yield* authority.issueExecution({
-          ...input,
-          reference: { ...reference, effectId: "fixture-alternate-effect" },
-        }).pipe(Effect.flip)).code,
+        (yield* authority
+          .issueExecution({
+            ...input,
+            reference: { ...reference, effectId: "fixture-alternate-effect" },
+          })
+          .pipe(Effect.flip)).code,
         "unresolved_claim",
       );
       assert.strictEqual(starts, 1);
-      assert.strictEqual((yield* authority.authorizeExecution(context, {
-        ...actual,
-        resources: { ...value.resources, worktreePath: "/other/worktree" },
-      }).pipe(Effect.flip)).code, "binding_mismatch");
+      assert.strictEqual(
+        (yield* authority
+          .authorizeExecution(context, {
+            ...actual,
+            resources: { ...value.resources, worktreePath: "/other/worktree" },
+          })
+          .pipe(Effect.flip)).code,
+        "binding_mismatch",
+      );
       currentGrant = { ...currentGrant, revoked: true };
       assert.deepEqual(getNativeCreationExecutionReference(context), reference);
       assert.strictEqual(
@@ -687,21 +1059,26 @@ it.effect("issues opaque execution only after a new start and rechecks each actu
         "unresolved_claim",
       );
       assert.strictEqual(
-        (yield* authority.issueExecution({
-          ...lost,
-          reference: { ...lost.reference, effectId: "fixture-lost-alternate-effect" },
-        }).pipe(Effect.flip)).code,
+        (yield* authority
+          .issueExecution({
+            ...lost,
+            reference: { ...lost.reference, effectId: "fixture-lost-alternate-effect" },
+          })
+          .pipe(Effect.flip)).code,
         "unresolved_claim",
       );
       assert.strictEqual(starts, 2);
-      assert.deepEqual(startReferences.map((entry) => entry.effectId), [
-        reference.effectId,
-        reference.effectId,
-        "fixture-alternate-effect",
-        "fixture-lost-effect",
-        "fixture-lost-effect",
-        "fixture-lost-alternate-effect",
-      ]);
+      assert.deepEqual(
+        startReferences.map((entry) => entry.effectId),
+        [
+          reference.effectId,
+          reference.effectId,
+          "fixture-alternate-effect",
+          "fixture-lost-effect",
+          "fixture-lost-effect",
+          "fixture-lost-alternate-effect",
+        ],
+      );
     }).pipe(Effect.provide(authorityLayer));
   }),
 );

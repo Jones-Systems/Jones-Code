@@ -1,15 +1,20 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  MessageId,
+  OrchestrationV2ImportedHistoryReviewBasis,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ThreadProjection,
   ProviderInstanceId,
+  ProjectId,
   ProviderSessionId,
   ProviderThreadId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { CursorProviderCapabilitiesV2 } from "./Adapters/CursorAdapterV2.ts";
@@ -19,6 +24,99 @@ import * as CommandPolicy from "./CommandPolicy.ts";
 const commandId = CommandId.make("command-policy-test");
 const threadId = ThreadId.make("command-policy-thread");
 const activeRunId = RunId.make("command-policy-active-run");
+
+it.effect(
+  "rejects pull request discovery at public ingress even with a server-looking command id",
+  () =>
+    Effect.gen(function* () {
+      const command: OrchestrationV2ServerCommand = {
+        type: "thread.pull-request.sync",
+        commandId: CommandId.make("server:thread-pull-request:forged"),
+        threadId,
+        projectId: ProjectId.make("command-policy-project"),
+        snapshotSequence: 0,
+        expected: {
+          workspaceRoot: "/workspace/project",
+          branch: "feature",
+          worktreePath: null,
+          linkedPullRequest: null,
+          branchPullRequest: null,
+        },
+        branchPullRequest: null,
+      };
+      const error = yield* CommandPolicy.validatePublicCommand(command).pipe(Effect.flip);
+      assert.equal(error._tag, "CommandPolicyPublicIngressError");
+      assert.equal(error.commandId, command.commandId);
+      assert.equal(error.commandType, command.type);
+    }),
+);
+
+it.effect("rejects imported-history consent at generic ingress before hydration and effects", () =>
+  Effect.gen(function* () {
+    let hydrationCalls = 0;
+    let effectCalls = 0;
+    const command: OrchestrationV2ServerCommand = {
+      type: "thread.imported-history.start",
+      commandId: CommandId.make("server:imported-history:forged"),
+      threadId,
+      reviewedBasis: yield* Schema.decodeUnknownEffect(OrchestrationV2ImportedHistoryReviewBasis)(
+        "reviewed-basis",
+      ).pipe(Effect.orDie),
+      delivery: {
+        type: "queued_run",
+        runId: activeRunId,
+        messageId: MessageId.make("command-policy-imported-message"),
+      },
+    };
+    const error = yield* CommandPolicy.validatePublicCommand(command).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          hydrationCalls += 1;
+        }),
+      ),
+      Effect.andThen(
+        Effect.sync(() => {
+          effectCalls += 1;
+        }),
+      ),
+      Effect.flip,
+    );
+    assert.equal(error._tag, "CommandPolicyPublicIngressError");
+    assert.equal(error.commandType, "thread.imported-history.start");
+    assert.equal(hydrationCalls, 0);
+    assert.equal(effectCalls, 0);
+  }),
+);
+
+it.effect("keeps ordinary creation and message dispatch available at public ingress", () =>
+  Effect.gen(function* () {
+    yield* CommandPolicy.validatePublicCommand({
+      type: "thread.create",
+      commandId,
+      threadId,
+      projectId: ProjectId.make("command-policy-project"),
+      title: "Ordinary thread",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.1-codex" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    yield* CommandPolicy.validatePublicCommand({
+      type: "message.dispatch",
+      commandId,
+      threadId,
+      messageId: MessageId.make("command-policy-message"),
+      text: "Continue",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+  }),
+);
 
 const baseCapabilities: OrchestrationV2ProviderCapabilities = CodexProviderCapabilitiesV2;
 

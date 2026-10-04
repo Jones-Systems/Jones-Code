@@ -7,7 +7,11 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import * as EventSink from "./EventSink.ts";
-import type { OrdinaryCheckoutUseV1 } from "./OrdinaryCheckoutOwnership.ts";
+import { encodeBirthTupleJson, jsonCause } from "./EventSinkJsonCodec.ts";
+import type {
+  OrdinaryCheckoutExecutionRefV1,
+  OrdinaryCheckoutUseV1,
+} from "./OrdinaryCheckoutOwnership.ts";
 
 export const WORKTREE_OWNERSHIP_LEASE_DURATION_MS = 5 * 60 * 1_000;
 export const WORKTREE_OWNERSHIP_LEASE_RENEW_INTERVAL_MS = 60 * 1_000;
@@ -55,10 +59,13 @@ export interface WorktreeOwnershipLeaseStore {
     readonly effectId: string;
     readonly bindingSha256: string;
     readonly expectedLatestOrdinal: number;
-  }) => Effect.Effect<{
-    readonly status: "completed" | "retained";
-    readonly reason: string | null;
-  }, PersistenceSqlError>;
+  }) => Effect.Effect<
+    {
+      readonly status: "completed" | "retained";
+      readonly reason: string | null;
+    },
+    PersistenceSqlError
+  >;
   readonly getOrdinaryThreadIncarnation: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<string>, PersistenceSqlError>;
@@ -77,8 +84,10 @@ export interface WorktreeOwnershipLeaseStore {
   readonly renew: (
     input: typeof RenewLeaseInput.Type,
   ) => Effect.Effect<boolean, PersistenceSqlError>;
-  readonly renewOrdinaryOwnUse: (input: {
+  readonly renewOrdinaryOwnUse: <E = never>(input: {
     readonly ordinaryUse: OrdinaryCheckoutUseV1;
+    readonly ordinaryCheckoutExecution?: OrdinaryCheckoutExecutionRefV1;
+    readonly revalidateCapturedOwner?: Effect.Effect<void, E>;
     readonly nowMs: number;
     readonly expiresAtMs: number;
   }) => Effect.Effect<boolean, PersistenceSqlError>;
@@ -194,9 +203,10 @@ export const makeWorktreeOwnershipLeaseStore = Effect.fn("makeWorktreeOwnershipL
       `,
     });
 
-    const releaseCapturedCleanupLease = Effect.fn("WorktreeOwnershipLeaseStore.releaseCapturedCleanupLease")(
-      function* (lease: WorktreeOwnershipLease) {
-        const deleted = yield* sql`
+    const releaseCapturedCleanupLease = Effect.fn(
+      "WorktreeOwnershipLeaseStore.releaseCapturedCleanupLease",
+    )(function* (lease: WorktreeOwnershipLease) {
+      const deleted = yield* sql`
           DELETE FROM worktree_ownership_leases
           WHERE resource_path = ${lease.resourcePath}
             AND lease_id = ${lease.leaseId}
@@ -208,13 +218,12 @@ export const makeWorktreeOwnershipLeaseStore = Effect.fn("makeWorktreeOwnershipL
             AND expires_at_ms = ${lease.expiresAtMs}
           RETURNING resource_path
         `;
-        if (deleted.length !== 1) {
-          return yield* toPersistenceSqlError("WorktreeOwnershipLeaseStore.finalizeDeletionWorktreeCleanup:release")(
-            "The complete captured cleanup lease is no longer current",
-          );
-        }
-      },
-    );
+      if (deleted.length !== 1) {
+        return yield* toPersistenceSqlError(
+          "WorktreeOwnershipLeaseStore.finalizeDeletionWorktreeCleanup:release",
+        )("The complete captured cleanup lease is no longer current");
+      }
+    });
 
     const listLeases = SqlSchema.findAll({
       Request: Schema.Void,
@@ -236,39 +245,78 @@ export const makeWorktreeOwnershipLeaseStore = Effect.fn("makeWorktreeOwnershipL
 
     return {
       finalizeDeletionWorktreeCleanup: (input) =>
-        eventSink.finalizeDeletionWorktreeCleanup({
-          ...input,
-          releaseOriginalLease: releaseCapturedCleanupLease,
-        }).pipe(
-          Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.finalizeDeletionWorktreeCleanup:transaction")),
-        ),
+        eventSink
+          .finalizeDeletionWorktreeCleanup({
+            ...input,
+            releaseOriginalLease: releaseCapturedCleanupLease,
+          })
+          .pipe(
+            Effect.mapError(
+              toPersistenceSqlError(
+                "WorktreeOwnershipLeaseStore.finalizeDeletionWorktreeCleanup:transaction",
+              ),
+            ),
+          ),
       getOrdinaryThreadIncarnation: (threadId: ThreadId) =>
         eventSink.readApplicationBirthRecord(threadId).pipe(
-          Effect.map((birth) => birth === null ? Option.none() : Option.some(JSON.stringify([
-            "t3.orchestration-v2.thread-birth/v1", birth.eventId, birth.sequence,
-          ]))),
-          Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.getOrdinaryThreadIncarnation:query")),
+          Effect.map((birth) =>
+            birth === null
+              ? Option.none()
+              : Option.some(
+                  JSON.stringify([
+                    "t3.orchestration-v2.thread-birth/v1",
+                    birth.eventId,
+                    birth.sequence,
+                  ]),
+                ),
+          ),
+          Effect.mapError(
+            toPersistenceSqlError("WorktreeOwnershipLeaseStore.getOrdinaryThreadIncarnation:query"),
+          ),
         ),
       getByResourcePath: (resourcePath: string) =>
         findLeaseByResourcePath(resourcePath).pipe(
-          Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.getByResourcePath:query")),
+          Effect.mapError(
+            toPersistenceSqlError("WorktreeOwnershipLeaseStore.getByResourcePath:query"),
+          ),
         ),
       ensureOrdinaryOwnership: (input: typeof AcquireLeaseInput.Type) =>
-        eventSink.withDeletionWorktreeSqlMutation({ path: input.resourcePath }, Effect.gen(function* () {
-          const birth = yield* eventSink.readApplicationBirthRecord(input.ownerThreadId);
-          if (birth === null || input.ownerIncarnation !== JSON.stringify([
-            "t3.orchestration-v2.thread-birth/v1", birth.eventId, birth.sequence,
-          ])) return Option.none();
-          const current = yield* findLeaseByResourcePath(input.resourcePath);
-          if (Option.isSome(current)) {
-            return current.value.ownerThreadId === input.ownerThreadId &&
-              current.value.ownerIncarnation === input.ownerIncarnation && current.value.branch === input.branch
-              ? current : Option.none();
-          }
-          return yield* acquireLease(input);
-        })).pipe(
-          Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.ensureOrdinaryOwnership:query")),
-        ),
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const birth = yield* eventSink.readApplicationBirthRecord(input.ownerThreadId);
+              if (
+                birth === null ||
+                input.ownerIncarnation !==
+                  (yield* encodeBirthTupleJson([
+                    "t3.orchestration-v2.thread-birth/v1",
+                    birth.eventId,
+                    birth.sequence,
+                  ]).pipe(Effect.catch((error) => Effect.die(jsonCause(error)))))
+              )
+                return Option.none();
+              const current = yield* findLeaseByResourcePath(input.resourcePath);
+              if (Option.isSome(current)) {
+                if (
+                  current.value.ownerThreadId !== input.ownerThreadId ||
+                  current.value.ownerIncarnation !== input.ownerIncarnation ||
+                  current.value.branch !== input.branch
+                )
+                  return Option.none();
+                yield* eventSink.revalidateOrdinaryCheckoutLeaseReuse(current.value);
+                return current;
+              }
+              return yield* eventSink.withDeletionWorktreeSqlMutation(
+                { path: input.resourcePath },
+                acquireLease(input),
+              );
+            }),
+          )
+          .pipe(
+            Effect.mapError(
+              toPersistenceSqlError("WorktreeOwnershipLeaseStore.ensureOrdinaryOwnership:query"),
+            ),
+          ),
       getThreadIncarnation: (threadId: ThreadId) =>
         eventSink.getThreadIncarnation(threadId).pipe(
           Effect.map((birth) =>
@@ -287,26 +335,47 @@ export const makeWorktreeOwnershipLeaseStore = Effect.fn("makeWorktreeOwnershipL
           ),
         ),
       acquire: (input: typeof AcquireLeaseInput.Type) =>
-        eventSink.withDeletionWorktreeSqlMutation({ path: input.resourcePath }, acquireLease(input)).pipe(
-          Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.acquire:query")),
-        ),
+        eventSink
+          .withDeletionWorktreeSqlMutation({ path: input.resourcePath }, acquireLease(input))
+          .pipe(
+            Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.acquire:query")),
+          ),
       renew: (input: typeof RenewLeaseInput.Type) =>
-        eventSink.withDeletionWorktreeSqlMutation({ path: input.resourcePath }, renewLease(input)).pipe(
-          Effect.map(Option.isSome),
-          Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.renew:query")),
-        ),
-      renewOrdinaryOwnUse: ({ ordinaryUse, nowMs, expiresAtMs }) =>
-        eventSink.withDeletionWorktreeSqlMutation({
-          path: ordinaryUse.lease.resourcePath,
-          ordinaryMutation: { mutation: "renew", ordinaryUse },
-        }, renewLease({ ...ordinaryUse.lease, nowMs, expiresAtMs })).pipe(
-          Effect.map(Option.isSome),
-          Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.renewOrdinaryOwnUse:query")),
-        ),
+        eventSink
+          .withDeletionWorktreeSqlMutation({ path: input.resourcePath }, renewLease(input))
+          .pipe(
+            Effect.map(Option.isSome),
+            Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.renew:query")),
+          ),
+      renewOrdinaryOwnUse: ({
+        ordinaryUse,
+        ordinaryCheckoutExecution,
+        revalidateCapturedOwner,
+        nowMs,
+        expiresAtMs,
+      }) =>
+        eventSink
+          .withDeletionWorktreeSqlMutation(
+            {
+              path: ordinaryUse.lease.resourcePath,
+              ordinaryMutation: { mutation: "renew", ordinaryUse },
+              ...(ordinaryCheckoutExecution === undefined ? {} : { ordinaryCheckoutExecution }),
+              ...(revalidateCapturedOwner === undefined ? {} : { revalidateCapturedOwner }),
+            },
+            renewLease({ ...ordinaryUse.lease, nowMs, expiresAtMs }),
+          )
+          .pipe(
+            Effect.map(Option.isSome),
+            Effect.mapError(
+              toPersistenceSqlError("WorktreeOwnershipLeaseStore.renewOrdinaryOwnUse:query"),
+            ),
+          ),
       release: (input: typeof ReleaseLeaseInput.Type) =>
-        eventSink.withDeletionWorktreeSqlMutation({ path: input.resourcePath }, releaseLease(input)).pipe(
-          Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.release:query")),
-        ),
+        eventSink
+          .withDeletionWorktreeSqlMutation({ path: input.resourcePath }, releaseLease(input))
+          .pipe(
+            Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.release:query")),
+          ),
       listAll: () =>
         listLeases(undefined).pipe(
           Effect.mapError(toPersistenceSqlError("WorktreeOwnershipLeaseStore.listAll:query")),

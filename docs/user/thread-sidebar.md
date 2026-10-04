@@ -41,6 +41,19 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Operating threads
+
+The **Operating** filter shows threads with a running or starting turn, current
+background work, or current monitoring. Settled and snoozed threads can still be
+Operating; archived threads are excluded. Approval, input, and plan prompts stay
+visible as attention states even when background work continues.
+
+The count covers the selected project or environment. A **—** count means the
+current count is unavailable. **Unknown** means current background activity
+could not be confirmed. Changing the selected account does not change which
+runtime is currently working. Workstream **Running** counts include confirmed
+work; monitoring alone does not add to Running.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it in Pinned when it is outside a Workstream. A pinned Workstream member stays pinned while appearing inside its group.
@@ -132,8 +145,15 @@ terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
 Choose **Kill Thread** from the same menu to stop the thread's current agent
-session without settling or moving the thread. Its conversation stays available;
-sending another message starts a session again. This action leaves terminals open.
+runtime. It is available when the environment supports the action and identifies
+an attached runtime, including an idle runtime or one reporting an error. The
+conversation, sidebar position, and terminals stay available.
+
+A pending stop does not mean the runtime has stopped. Use **Check status** on
+the notification, or **Check saved stop** after reloading, to check the original
+request. An unknown outcome keeps that request on hold; checking status does not
+send another stop or target a replacement runtime. Saved queued work remains
+held until you explicitly resume it.
 
 By default, environments settle inactive threads after three days and settle
 threads whose pull request merged. A closed pull request can also settle an idle

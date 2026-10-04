@@ -65,12 +65,21 @@ import {
 } from "./Sidebar.logic";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
-import { EnvironmentId, isOperatingThread, ProjectId, ProviderInstanceId, RunId, ThreadId, TurnId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  isOperatingThread,
+  ProjectId,
+  ProviderInstanceId,
+  RunId,
+  ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
 
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type Project,
+  type SidebarThreadSummary,
   type Thread,
 } from "../types";
 import { makeThreadFixture, type ThreadFixtureOverrides } from "../test-fixtures";
@@ -87,27 +96,49 @@ describe("current Operating row display", () => {
     const owner = ProviderThreadId.make("display-owner");
     const thread = makeThreadFixture({ activeProviderThreadId: owner, hasPendingApprovals: true });
     const monitoring = resolveThreadOperatingState(thread, {
-      status: "monitoring", observedAt: "2026-10-03T02:32:29Z",
-      binding: { threadId: thread.id, providerThreadId: owner,
+      status: "monitoring",
+      observedAt: "2026-10-03T02:32:29Z",
+      binding: {
+        threadId: thread.id,
+        providerThreadId: owner,
         providerSessionId: ProviderSessionId.make("display-session"),
-        instanceId: ProviderInstanceId.make("owner-account"), runtimeGeneration: "generation-current" },
+        instanceId: ProviderInstanceId.make("owner-account"),
+        runtimeGeneration: "generation-current",
+      },
     });
     expect(monitoring).toMatchObject({ operating: true, workstreamRunning: false });
     expect(resolveSidebarThreadStatus(thread, monitoring)).toBe("approval");
     expect(isSidebarThreadWorkingWithCurrentState(thread, monitoring)).toBe(false);
     const quiet = { ...thread, hasPendingApprovals: false };
-    expect(resolveSidebarThreadStatus(quiet, { ...monitoring, foregroundAttention: null })).toBe("waiting");
-    expect(resolveThreadStatusPill({ thread: quiet, current: { ...monitoring, foregroundAttention: null } })?.label).toBe("Monitoring");
-    const unknown = resolveThreadOperatingState(quiet, { status: "unknown", reason: "unavailable" });
+    expect(resolveSidebarThreadStatus(quiet, { ...monitoring, foregroundAttention: null })).toBe(
+      "waiting",
+    );
+    expect(
+      resolveThreadStatusPill({
+        thread: quiet,
+        current: { ...monitoring, foregroundAttention: null },
+      })?.label,
+    ).toBe("Monitoring");
+    const unknown = resolveThreadOperatingState(quiet, {
+      status: "unknown",
+      reason: "unavailable",
+    });
     expect(resolveSidebarThreadStatus(quiet, unknown)).toBe("unknown");
     expect(resolveThreadStatusPill({ thread: quiet, current: unknown })?.label).toBe("Unknown");
-    expect(resolveSidebarV2TopStatus({ status: "unknown", isUnread: true, isWoke: false })).toBeNull();
+    expect(
+      resolveSidebarV2TopStatus({ status: "unknown", isUnread: true, isWoke: false }),
+    ).toBeNull();
   });
 
   it("renders unavailable aggregate counts as a dash and names their project scope", () => {
-    const html = renderToStaticMarkup(createElement(SidebarActiveThreadsPill, {
-      count: null, activeOnly: false, scopeLabel: "project", onToggle: () => undefined,
-    }));
+    const html = renderToStaticMarkup(
+      createElement(SidebarActiveThreadsPill, {
+        count: null,
+        activeOnly: false,
+        scopeLabel: "project",
+        onToggle: () => undefined,
+      }),
+    );
     expect(html).toContain("—");
     expect(html).toContain("Operating threads in this project");
     expect(html).toContain("Show only Operating threads");
@@ -3050,38 +3081,53 @@ describe("Working shelf (beta)", () => {
 
   it("keeps operating attention states in the inbox while folding unattended work", () => {
     const owner = ProviderThreadId.make("working-shelf-current-owner");
-    const currentThread = (id: string, changes: ThreadFixtureOverrides = {}) => makeThreadFixture({
-      id: ThreadId.make(id), environmentId: localEnvironmentId, activeProviderThreadId: owner,
-      ...changes,
-    });
+    const currentThread = (id: string, changes: ThreadFixtureOverrides = {}) =>
+      makeThreadFixture({
+        id: ThreadId.make(id),
+        environmentId: localEnvironmentId,
+        activeProviderThreadId: owner,
+        ...changes,
+      });
     const candidates = [
       currentThread("working", { runtime }),
       currentThread("approval", { hasPendingApprovals: true }),
       currentThread("question", { hasPendingUserInput: true }),
-      currentThread("plan", { interactionMode: "plan", hasActionableProposedPlan: true, latestRun: makeLatestRun() }),
+      currentThread("plan", {
+        interactionMode: "plan",
+        hasActionableProposedPlan: true,
+        latestRun: makeLatestRun(),
+      }),
       currentThread("failure", { runtime: { ...runtime, status: "failed", lastError: "boom" } }),
       currentThread("idle"),
     ];
-    const current = (thread: Thread) => resolveThreadOperatingState(thread,
-      thread.id === "working" || thread.id === "idle"
-        ? { status: "unknown", reason: "No current background observation." }
-        : {
-            status: thread.id === "question" ? "monitoring" : "working",
-            observedAt: "2026-03-09T10:00:00.000Z",
-            binding: { threadId: thread.id, providerThreadId: owner,
-              providerSessionId: ProviderSessionId.make(`current-session:${thread.id}`),
-              instanceId: ProviderInstanceId.make("active-owner-account"), runtimeGeneration: "current-generation" },
-          },
-    );
+    const current = (thread: Thread) =>
+      resolveThreadOperatingState(
+        thread,
+        thread.id === "working" || thread.id === "idle"
+          ? { status: "unknown", reason: "No current background observation." }
+          : {
+              status: thread.id === "question" ? "monitoring" : "working",
+              observedAt: "2026-03-09T10:00:00.000Z",
+              binding: {
+                threadId: thread.id,
+                providerThreadId: owner,
+                providerSessionId: ProviderSessionId.make(`current-session:${thread.id}`),
+                instanceId: ProviderInstanceId.make("active-owner-account"),
+                runtimeGeneration: "current-generation",
+              },
+            },
+      );
     const isOperating = (thread: Thread) => current(thread).operating;
-    const isWorking = (thread: Thread) => isSidebarThreadWorkingWithCurrentState(thread, current(thread));
+    const isWorking = (thread: Thread) =>
+      isSidebarThreadWorkingWithCurrentState(thread, current(thread));
     const operating = filterSidebarOperatingThreads(candidates, true, isOperating);
-    expect(operating.filter(isWorking).map((thread) => thread.id)).toEqual([
-      "working",
+    expect(operating.filter(isWorking).map((thread) => thread.id)).toEqual(["working"]);
+    expect(operating.filter((thread) => !isWorking(thread)).map((thread) => thread.id)).toEqual([
+      "approval",
+      "question",
+      "plan",
+      "failure",
     ]);
-    expect(
-      operating.filter((thread) => !isWorking(thread)).map((thread) => thread.id),
-    ).toEqual(["approval", "question", "plan", "failure"]);
     expect(filterSidebarOperatingThreads(candidates, false, isOperating)).toBe(candidates);
   });
 

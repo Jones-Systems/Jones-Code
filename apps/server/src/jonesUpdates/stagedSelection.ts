@@ -74,11 +74,23 @@ export async function retainStagedSelection(selection: StagedQualifiedRuntime): 
 export async function restoreStagedSelection(
   baseDir: string,
   activeVersion: string,
+  selectedDatabasePath?: string,
 ): Promise<StagedQualifiedRuntime | undefined> {
-  const binding = await currentQualifiedRuntimeBinding(baseDir, activeVersion);
+  const binding = await currentQualifiedRuntimeBinding(
+    baseDir,
+    activeVersion,
+    undefined,
+    selectedDatabasePath,
+  );
   const stored = await readSelection(selectionPath(binding));
   if (stored === undefined) return undefined;
-  const verified = await verifyStagedQualifiedRuntime(baseDir, activeVersion, stored.stagedHandle);
+  const verified = await verifyStagedQualifiedRuntime(
+    baseDir,
+    activeVersion,
+    stored.stagedHandle,
+    undefined,
+    binding.dbPath,
+  );
   if (JSON.stringify(verified) !== JSON.stringify(stored))
     throw new Error("The retained staged selection changed; native installation is held.");
   return verified;

@@ -953,15 +953,22 @@ export function makeOpenCodeAdapterV2(
     instanceId: options.instanceId,
     driver: OPENCODE_PROVIDER,
     getCapabilities: () => Effect.succeed(OpenCodeProviderCapabilitiesV2),
-    declaredHandoffDelivery: ProviderAdapter.makeProviderDeclaredHandoffDelivery(OpenCodeProviderCapabilitiesV2),
+    declaredHandoffDelivery: ProviderAdapter.makeProviderDeclaredHandoffDelivery(
+      OpenCodeProviderCapabilitiesV2,
+    ),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("OpenCodeAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
         const scope = yield* Effect.scope;
         const cwd = input.runtimePolicy.cwd ?? serverConfig.cwd;
-        const runtimeGeneration = input.nativeOperation?.runtimeGeneration ?? NodeCrypto.randomUUID();
-        yield* (input.beforeRuntimeReplacement?.(runtimeGeneration) ?? Effect.void);
-        yield* ProviderAdapter.authorizeProviderNativeCreation(input.nativeCreationExecution, OPENCODE_PROVIDER, cwd);
+        const runtimeGeneration =
+          input.nativeOperation?.runtimeGeneration ?? NodeCrypto.randomUUID();
+        yield* input.beforeRuntimeReplacement?.(runtimeGeneration) ?? Effect.void;
+        yield* ProviderAdapter.authorizeProviderNativeCreation(
+          input.nativeCreationExecution,
+          OPENCODE_PROVIDER,
+          cwd,
+        );
         const connection = yield* runtime.connectToOpenCodeServer({
           binaryPath: options.settings.binaryPath,
           directory: cwd,
@@ -1038,23 +1045,41 @@ export function makeOpenCodeAdapterV2(
         let closing = false;
         let hasConnected = false;
 
-        const producerOrigin: ProviderEventProducerOrigin = { token: client, driver: OPENCODE_PROVIDER,
-          instanceId: options.instanceId, providerSessionId: input.providerSessionId, runtimeGeneration,
-          revalidateCurrent: Effect.void };
+        const producerOrigin: ProviderEventProducerOrigin = {
+          token: client,
+          driver: OPENCODE_PROVIDER,
+          instanceId: options.instanceId,
+          providerSessionId: input.providerSessionId,
+          runtimeGeneration,
+          revalidateCurrent: Effect.void,
+        };
         const turnOwners = new Map<string, ProviderAssistantOutputOwner>();
         const nodeOwners = new Map<string, ProviderAssistantOutputOwner>();
-        const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) => Effect.gen(function* () {
-          const providerTurnId = event.type === "provider_turn.updated" ? event.providerTurn.id
-            : event.type === "turn.terminal" ? event.providerTurnId
-            : event.type === "node.updated" ? event.node.providerTurnId
-            : event.type === "turn_item.updated" ? event.turnItem.providerTurnId : undefined;
-          const owner = providerTurnId == null ? undefined : turnOwners.get(providerTurnId);
-          if (event.type === "node.updated" && owner !== undefined) nodeOwners.set(event.node.id, owner);
-          const turn = event.type === "message.updated" && event.message.nodeId !== null
-            ? nodeOwners.get(event.message.nodeId) : owner;
-          stampProviderEvent(event, { producer: producerOrigin, ...(turn === undefined ? {} : { turn }) });
-          yield* Queue.offer(events, event);
-        });
+        const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
+          Effect.gen(function* () {
+            const providerTurnId =
+              event.type === "provider_turn.updated"
+                ? event.providerTurn.id
+                : event.type === "turn.terminal"
+                  ? event.providerTurnId
+                  : event.type === "node.updated"
+                    ? event.node.providerTurnId
+                    : event.type === "turn_item.updated"
+                      ? event.turnItem.providerTurnId
+                      : undefined;
+            const owner = providerTurnId == null ? undefined : turnOwners.get(providerTurnId);
+            if (event.type === "node.updated" && owner !== undefined)
+              nodeOwners.set(event.node.id, owner);
+            const turn =
+              event.type === "message.updated" && event.message.nodeId !== null
+                ? nodeOwners.get(event.message.nodeId)
+                : owner;
+            stampProviderEvent(event, {
+              producer: producerOrigin,
+              ...(turn === undefined ? {} : { turn }),
+            });
+            yield* Queue.offer(events, event);
+          });
 
         const logProtocolEvent = makeOpenCodeProtocolLogger({
           nativeEventLogger: options.nativeEventLogger,
@@ -1210,10 +1235,19 @@ export function makeOpenCodeAdapterV2(
           };
           const nativeThreadId = state.providerThread.nativeThreadRef?.nativeId;
           if (turn.runId !== null && turn.runAttemptId !== null && nativeThreadId != null)
-            turnOwners.set(providerTurn.id, { runId: turn.runId, attemptId: turn.runAttemptId,
-              providerTurnId: providerTurn.id, binding: { threadId: turn.threadId,
-                providerThreadId: state.providerThread.id, providerSessionId: input.providerSessionId,
-                instanceId: options.instanceId, runtimeGeneration, nativeThreadId } });
+            turnOwners.set(providerTurn.id, {
+              runId: turn.runId,
+              attemptId: turn.runAttemptId,
+              providerTurnId: providerTurn.id,
+              binding: {
+                threadId: turn.threadId,
+                providerThreadId: state.providerThread.id,
+                providerSessionId: input.providerSessionId,
+                instanceId: options.instanceId,
+                runtimeGeneration,
+                nativeThreadId,
+              },
+            });
           Object.assign(turn.providerTurn, providerTurn);
           state.providerTurns.set(String(providerTurn.id), providerTurn);
           return emitProviderEvent({
@@ -2958,7 +2992,11 @@ export function makeOpenCodeAdapterV2(
               )).find((entry) => entry.name === match[1])
             : undefined;
           if (!command) {
-            yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, OPENCODE_PROVIDER, cwd);
+            yield* ProviderAdapter.authorizeProviderNativeCreation(
+              nativeCreationExecution,
+              OPENCODE_PROVIDER,
+              cwd,
+            );
             return yield* sdkCall("session.promptAsync", payload, (signal) =>
               client.session.promptAsync(payload, {
                 signal: AbortSignal.any([signal, abortController.signal]),
@@ -2984,30 +3022,40 @@ export function makeOpenCodeAdapterV2(
             ...(payload.variant ? { variant: payload.variant } : {}),
             parts: payload.parts?.filter((part) => part.type === "file") ?? [],
           };
-          const request = yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, OPENCODE_PROVIDER, cwd).pipe(Effect.andThen(sdkCall("session.command", commandPayload, (signal) =>
-            client.session.command(commandPayload, {
-              signal: AbortSignal.any([signal, abortController.signal]),
-            }),
-          ))).pipe(
-            Effect.asVoid,
-            Effect.tapError((cause) =>
-              abortController.signal.aborted ||
-              turn.finalized ||
-              turn.admissionGeneration !== generation
-                ? Effect.void
-                : finalizeTurn(state, turn, "failed", {
-                    failure: makeProviderFailure({ cause, class: "provider_error" }),
+          const request = yield* ProviderAdapter.authorizeProviderNativeCreation(
+            nativeCreationExecution,
+            OPENCODE_PROVIDER,
+            cwd,
+          )
+            .pipe(
+              Effect.andThen(
+                sdkCall("session.command", commandPayload, (signal) =>
+                  client.session.command(commandPayload, {
+                    signal: AbortSignal.any([signal, abortController.signal]),
                   }),
-            ),
-            Effect.ensuring(
-              Effect.sync(() => {
-                commandReceipts.delete(payload.messageID);
-                controllers.delete(abortController);
-                if (controllers.size === 0) commandControllers.delete(payload.sessionID);
-              }),
-            ),
-            Effect.forkIn(scope),
-          );
+                ),
+              ),
+            )
+            .pipe(
+              Effect.asVoid,
+              Effect.tapError((cause) =>
+                abortController.signal.aborted ||
+                turn.finalized ||
+                turn.admissionGeneration !== generation
+                  ? Effect.void
+                  : finalizeTurn(state, turn, "failed", {
+                      failure: makeProviderFailure({ cause, class: "provider_error" }),
+                    }),
+              ),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  commandReceipts.delete(payload.messageID);
+                  controllers.delete(abortController);
+                  if (controllers.size === 0) commandControllers.delete(payload.sessionID);
+                }),
+              ),
+              Effect.forkIn(scope),
+            );
           yield* Effect.raceFirst(Fiber.join(request), Deferred.await(receipt)).pipe(
             Effect.timeout("10 seconds"),
             Effect.catchTag("TimeoutError", (cause) => {
@@ -3028,34 +3076,58 @@ export function makeOpenCodeAdapterV2(
           runtimeGeneration,
           observeThreadRuntime: (binding) =>
             Effect.gen(function* () {
-              const state = binding.nativeThreadId === undefined ? undefined : threads.get(binding.nativeThreadId);
+              const state =
+                binding.nativeThreadId === undefined
+                  ? undefined
+                  : threads.get(binding.nativeThreadId);
               if (
                 binding.instanceId !== options.instanceId ||
                 binding.providerSessionId !== input.providerSessionId ||
                 binding.runtimeGeneration !== runtimeGeneration ||
                 state?.providerThread.id !== binding.providerThreadId ||
                 state.providerThread.appThreadId !== binding.threadId ||
-                closing || !hasConnected || nativeStreamFailure !== null || sessionEntity.status === "error"
+                closing ||
+                !hasConnected ||
+                nativeStreamFailure !== null ||
+                sessionEntity.status === "error"
               ) {
-                return { status: "unknown" as const, reason: "OpenCode runtime binding is not current." };
+                return {
+                  status: "unknown" as const,
+                  reason: "OpenCode runtime binding is not current.",
+                };
               }
               if (connection.external) {
                 return {
                   status: "unknown" as const,
                   binding,
-                  reason: "External OpenCode servers do not report their native process incarnation.",
+                  reason:
+                    "External OpenCode servers do not report their native process incarnation.",
                 };
               }
-              const hasNativeAgent = observedNativeBusySessionIds.has(state.nativeSessionId) ||
-                [...subagentsByChildSessionId].some(([id, agent]) =>
-                  agent.parentState === state && observedNativeBusySessionIds.has(id));
-              const status = hasNativeAgent ? "working" as const : undefined;
+              const hasNativeAgent =
+                observedNativeBusySessionIds.has(state.nativeSessionId) ||
+                [...subagentsByChildSessionId].some(
+                  ([id, agent]) =>
+                    agent.parentState === state && observedNativeBusySessionIds.has(id),
+                );
+              const status = hasNativeAgent ? ("working" as const) : undefined;
               if (status === undefined) {
-                return { status: "unknown" as const, binding, reason: "OpenCode stream does not prove complete native idle state." };
+                return {
+                  status: "unknown" as const,
+                  binding,
+                  reason: "OpenCode stream does not prove complete native idle state.",
+                };
               }
               const observedAt = DateTime.formatIso(yield* DateTime.now);
-              if (closing || nativeStreamFailure !== null || threads.get(state.nativeSessionId) !== state) {
-                return { status: "unknown" as const, reason: "OpenCode runtime changed during observation." };
+              if (
+                closing ||
+                nativeStreamFailure !== null ||
+                threads.get(state.nativeSessionId) !== state
+              ) {
+                return {
+                  status: "unknown" as const,
+                  reason: "OpenCode runtime changed during observation.",
+                };
               }
               return { status, binding, observedAt };
             }),
@@ -3072,12 +3144,18 @@ export function makeOpenCodeAdapterV2(
               if (threadInput.existingProviderThread?.nativeThreadRef != null) {
                 return yield* runtimeSession.resumeThread({
                   providerThread: threadInput.existingProviderThread,
-                  nativeCreationExecution: threadInput.nativeCreationExecution,
+                  ...(threadInput.nativeCreationExecution === undefined
+                    ? {}
+                    : { nativeCreationExecution: threadInput.nativeCreationExecution }),
                 });
               }
               // No title: OpenCode generates one from the first prompt only when
               // session.create leaves it unset (SessionPrompt.ensureTitle).
-              yield* ProviderAdapter.authorizeProviderNativeCreation(threadInput.nativeCreationExecution, OPENCODE_PROVIDER, cwd);
+              yield* ProviderAdapter.authorizeProviderNativeCreation(
+                threadInput.nativeCreationExecution,
+                OPENCODE_PROVIDER,
+                cwd,
+              );
               const response = yield* sdkCall(
                 "session.create",
                 { permission: openCodePermissionRules(threadInput.runtimePolicy) },
@@ -3126,8 +3204,12 @@ export function makeOpenCodeAdapterV2(
           resumeThread: (threadInput) =>
             Effect.gen(function* () {
               const sessionId = nativeThreadId(threadInput.providerThread);
-              yield* (threadInput.beforeNativeResume?.(undefined) ?? Effect.void);
-              yield* ProviderAdapter.authorizeProviderNativeCreation(threadInput.nativeCreationExecution, OPENCODE_PROVIDER, cwd);
+              yield* threadInput.beforeNativeResume?.(undefined) ?? Effect.void;
+              yield* ProviderAdapter.authorizeProviderNativeCreation(
+                threadInput.nativeCreationExecution,
+                OPENCODE_PROVIDER,
+                cwd,
+              );
               const response = yield* sdkCall("session.get", { sessionID: sessionId }, () =>
                 client.session.get({ sessionID: sessionId }),
               );
@@ -3268,31 +3350,39 @@ export function makeOpenCodeAdapterV2(
               yield* updateProviderSession("running", null);
               if (isCompaction) {
                 yield* ProviderAdapter.authorizeProviderNativeCreation(
-                  turnInput.nativeCreationExecution, OPENCODE_PROVIDER, cwd,
-                ).pipe(Effect.andThen(sdkCall(
-                  "session.summarize",
-                  { sessionID: sessionId, ...parsedModel, auto: false },
-                  (signal) =>
-                    client.session.summarize(
-                      { sessionID: sessionId, ...parsedModel, auto: false },
-                      { signal: AbortSignal.any([signal, admissionAbortController!.signal]) },
+                  turnInput.nativeCreationExecution,
+                  OPENCODE_PROVIDER,
+                  cwd,
+                )
+                  .pipe(
+                    Effect.andThen(
+                      sdkCall(
+                        "session.summarize",
+                        { sessionID: sessionId, ...parsedModel, auto: false },
+                        (signal) =>
+                          client.session.summarize(
+                            { sessionID: sessionId, ...parsedModel, auto: false },
+                            { signal: AbortSignal.any([signal, admissionAbortController!.signal]) },
+                          ),
+                      ),
                     ),
-                ))).pipe(
-                  Effect.tap(() =>
-                    turn.interrupted || turn.finalized || nativeStreamFailure !== null
-                      ? Effect.void
-                      : emitCompactionItem(state, turn),
-                  ),
-                  Effect.tap(() =>
-                    finalizeTurn(state, turn, turn.interrupted ? "interrupted" : "completed"),
-                  ),
-                  Effect.tapError((cause) =>
-                    finalizeTurn(state, turn, turn.interrupted ? "interrupted" : "failed", {
-                      failure: makeProviderFailure({ cause, class: "provider_error" }),
-                    }),
-                  ),
-                  Effect.ensuring(Deferred.succeed(admissionSettled, undefined)),
-                );
+                  )
+                  .pipe(
+                    Effect.tap(() =>
+                      turn.interrupted || turn.finalized || nativeStreamFailure !== null
+                        ? Effect.void
+                        : emitCompactionItem(state, turn),
+                    ),
+                    Effect.tap(() =>
+                      finalizeTurn(state, turn, turn.interrupted ? "interrupted" : "completed"),
+                    ),
+                    Effect.tapError((cause) =>
+                      finalizeTurn(state, turn, turn.interrupted ? "interrupted" : "failed", {
+                        failure: makeProviderFailure({ cause, class: "provider_error" }),
+                      }),
+                    ),
+                    Effect.ensuring(Deferred.succeed(admissionSettled, undefined)),
+                  );
                 return;
               }
               const systemPrompt = [
@@ -3312,43 +3402,51 @@ export function makeOpenCodeAdapterV2(
                 "variant",
               );
               yield* ProviderAdapter.authorizeProviderNativeCreation(
-                turnInput.nativeCreationExecution, OPENCODE_PROVIDER, cwd,
-              ).pipe(Effect.andThen(submitPrompt(
-                state,
-                turn,
-                {
-                  sessionID: sessionId,
-                  messageID: turn.admissionMessageId!,
-                  model: parsedModel,
-                  ...(agent === undefined ? {} : { agent }),
-                  ...(variant === undefined ? {} : { variant }),
-                  system: systemPrompt,
-                  parts,
-                },
-                admissionAbortController!,
                 turnInput.nativeCreationExecution,
-              ))).pipe(
-                Effect.tapError((cause) =>
-                  admissionAbortController!.signal.aborted
-                    ? Effect.void
-                    : finalizeTurn(state, turn, "failed", {
-                        failure: makeProviderFailure({ cause, class: "provider_error" }),
+                OPENCODE_PROVIDER,
+                cwd,
+              )
+                .pipe(
+                  Effect.andThen(
+                    submitPrompt(
+                      state,
+                      turn,
+                      {
+                        sessionID: sessionId,
+                        messageID: turn.admissionMessageId!,
+                        model: parsedModel,
+                        ...(agent === undefined ? {} : { agent }),
+                        ...(variant === undefined ? {} : { variant }),
+                        system: systemPrompt,
+                        parts,
+                      },
+                      admissionAbortController!,
+                      turnInput.nativeCreationExecution,
+                    ),
+                  ),
+                )
+                .pipe(
+                  Effect.tapError((cause) =>
+                    admissionAbortController!.signal.aborted
+                      ? Effect.void
+                      : finalizeTurn(state, turn, "failed", {
+                          failure: makeProviderFailure({ cause, class: "provider_error" }),
+                        }),
+                  ),
+                  Effect.catch((cause) =>
+                    admissionAbortController!.signal.aborted ? Effect.void : Effect.fail(cause),
+                  ),
+                  Effect.ensuring(
+                    Effect.all([
+                      Deferred.succeed(admissionSettled, undefined).pipe(Effect.ignore),
+                      Effect.sync(() => {
+                        if (turn.admissionAbortController === admissionAbortController) {
+                          turn.admissionAbortController = null;
+                        }
                       }),
-                ),
-                Effect.catch((cause) =>
-                  admissionAbortController!.signal.aborted ? Effect.void : Effect.fail(cause),
-                ),
-                Effect.ensuring(
-                  Effect.all([
-                    Deferred.succeed(admissionSettled, undefined).pipe(Effect.ignore),
-                    Effect.sync(() => {
-                      if (turn.admissionAbortController === admissionAbortController) {
-                        turn.admissionAbortController = null;
-                      }
-                    }),
-                  ]).pipe(Effect.asVoid),
-                ),
-              );
+                    ]).pipe(Effect.asVoid),
+                  ),
+                );
               if (state.activeTurn === turn && !turn.finalized && !turn.interrupted) {
                 const admissionAction = advanceOpenCodePromptAdmission(turn, "accepted");
                 if (admissionAction === "reconcile-idle") {
@@ -3757,7 +3855,10 @@ export function makeOpenCodeAdapterV2(
           Effect.mapError(
             (cause) =>
               new ProviderAdapter.ProviderAdapterOpenSessionError({
-                nativeEffect: input.nativeOperation === undefined ? undefined : { ...input.nativeOperation, outcome: "unknown" },
+                nativeEffect:
+                  input.nativeOperation === undefined
+                    ? undefined
+                    : { ...input.nativeOperation, outcome: "unknown" },
                 driver: OPENCODE_PROVIDER,
                 providerSessionId: input.providerSessionId,
                 cause,

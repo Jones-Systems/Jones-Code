@@ -29,7 +29,48 @@ import * as ServerConfig from "../config.ts";
 import * as SelfUpdate from "../cloud/selfUpdate.ts";
 import * as Launcher from "../cloud/serviceLauncherClient.ts";
 import * as Startup from "../serverRuntimeStartup.ts";
+import type { RestartContinuationMarkerV2 } from "../orchestration-v2/EventSink.ts";
 import * as DesktopReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
+
+export const captureServerUpdateContinuations = (input: {
+  readonly prepare: Effect.Effect<
+    ReadonlyArray<RestartContinuationMarkerV2>,
+    ServerSelfUpdateError
+  >;
+  readonly clear: (
+    markers: ReadonlyArray<RestartContinuationMarkerV2>,
+  ) => Effect.Effect<void, ServerSelfUpdateError>;
+}) => {
+  const preparations = new WeakMap<
+    ReadonlyArray<ThreadId>,
+    ReadonlyArray<RestartContinuationMarkerV2>
+  >();
+  return {
+    prepare: input.prepare.pipe(
+      Effect.map((markers) => {
+        const ids = markers.map((marker) => marker.threadId);
+        preparations.set(ids, markers);
+        return ids;
+      }),
+    ),
+    clear: (ids: ReadonlyArray<ThreadId>) => {
+      // The helper returns this exact array to clear. Equal IDs from another
+      // preparation cannot authorize clearing its replacement marker.
+      const markers = preparations.get(ids);
+      if (markers === undefined)
+        return ids.length === 0
+          ? Effect.void
+          : Effect.fail(
+              new ServerSelfUpdateError({
+                reason: "Continuation preparation reference is unavailable.",
+              }),
+            );
+      return input
+        .clear(markers)
+        .pipe(Effect.tap(() => Effect.sync(() => preparations.delete(ids))));
+    },
+  };
+};
 
 export class JonesUpdates extends Context.Service<
   JonesUpdates,
@@ -83,17 +124,15 @@ export const layer = Layer.effect(
         install: () => unavailable,
       });
     }
-    const qualifiedSelfUpdate = yield* SelfUpdate.withRunningThreadContinuation({
-      mode: config.mode,
-      selfUpdate,
+    const capturedContinuations = captureServerUpdateContinuations({
       prepare: startup.markRunningProviderSessionsForContinuation.pipe(
         Effect.mapError(
           (cause) =>
             new ServerSelfUpdateError({ reason: "Could not prepare native continuations.", cause }),
         ),
       ),
-      clear: (ids) =>
-        startup.clearProviderSessionContinuationMarkers(ids).pipe(
+      clear: (markers) =>
+        startup.clearProviderSessionContinuationMarkers(markers).pipe(
           Effect.mapError(
             (cause) =>
               new ServerSelfUpdateError({
@@ -102,6 +141,13 @@ export const layer = Layer.effect(
               }),
           ),
         ),
+    });
+
+    const qualifiedSelfUpdate = yield* SelfUpdate.withRunningThreadContinuation({
+      mode: config.mode,
+      selfUpdate,
+      prepare: capturedContinuations.prepare,
+      clear: capturedContinuations.clear,
     });
 
     if (config.mode === "desktop") {
@@ -164,6 +210,7 @@ export const layer = Layer.effect(
           ) {
             return blocked("Native preparation does not match the staged desktop build.");
           }
+          let capturedMarkers: ReadonlyArray<RestartContinuationMarkerV2> | undefined;
           yield* Effect.tryPromise({
             try: () =>
               prepareNativeContinuationReceipt({
@@ -172,13 +219,22 @@ export const layer = Layer.effect(
                 environmentId: input.environmentId,
                 version: input.currentVersion,
                 handle: input.stagedHandle,
-                prepare: () => run(startup.markOptedInProviderSessionsForContinuation),
-                clear: (ids) =>
-                  run(
-                    startup.clearProviderSessionContinuationMarkers(
-                      ids.map((id) => ThreadId.make(id)),
-                    ),
-                  ),
+                prepare: async () => {
+                  capturedMarkers = await run(startup.markOptedInProviderSessionsForContinuation);
+                  return capturedMarkers.map((marker) => marker.threadId);
+                },
+                clear: async (ids) => {
+                  if (capturedMarkers === undefined) {
+                    if (ids.length === 0) return;
+                    throw new Error("Continuation preparation reference is unavailable.");
+                  }
+                  if (
+                    ids.length !== capturedMarkers.length ||
+                    ids.some((id, index) => id !== capturedMarkers![index]!.threadId)
+                  )
+                    throw new Error("Continuation receipt IDs do not match its preparation.");
+                  await run(startup.clearProviderSessionContinuationMarkers(capturedMarkers));
+                },
               }),
             catch: (cause) =>
               new ServerSelfUpdateError({
@@ -275,7 +331,11 @@ export const layer = Layer.effect(
     let restoreFailure: string | undefined;
     const restored = yield* Effect.tryPromise({
       try: () =>
-        restoreStagedSelection(config.baseDir, launcher.currentVersion ?? packageJson.version),
+        restoreStagedSelection(
+          config.baseDir,
+          launcher.currentVersion ?? packageJson.version,
+          config.dbPath,
+        ),
       catch: (cause) =>
         cause instanceof Error ? cause.message : "Native staging requires reconciliation.",
     }).pipe(

@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 import { chatGptModels } from "../CodexChatGptModels.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
 import { ProviderDriverError } from "../Errors.ts";
@@ -29,6 +30,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const http = yield* HttpClient.HttpClient;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const settings = yield* ServerSettingsService;
+  const processAttribution = yield* ProcessAttribution.ProcessAttribution;
   const runtime = yield* makeCodexManagedRuntime({
     instanceId,
     enabled,
@@ -215,11 +217,18 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     Effect.forkScoped,
   );
   const resolveRuntime = runtime.auth.controller.withAccess!(runtime.resolve);
-  // Launch settings resolve per session from the signed-in token. The registry
-  // already wraps openSession in withAccess, so resolve without re-entering it.
+  // The registry already protects openSession with withAccess, so its resolver
+  // stays raw. Later sends use the separately protected current-token resolver.
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
+    processAttribution,
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+    getModelCatalog: () => snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
     resolveRuntime: runtime.resolve,
+    readRuntimeRevisionForSend: runtime.auth.controller.withAccess!(
+      runtime.auth.access.pipe(Effect.map((credentials) => credentials.accessToken)),
+    ),
+    resolveRuntimeForSend: resolveRuntime,
+    continuationHomeLayout: runtime.homeLayout,
   }).pipe(
     Effect.mapError(
       (cause) =>

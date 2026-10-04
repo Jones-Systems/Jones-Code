@@ -55,11 +55,18 @@ const now = DateTime.makeUnsafe("2026-04-20T00:00:00.000Z");
 describe("thread deletion worktree consent", () => {
   it("keeps delete-only commands unchanged and preserves explicit removal consent on public and internal codecs", () => {
     const base = { type: "thread.delete", commandId: "delete-1", threadId: "thread-1" };
-    for (const schema of [OrchestrationV2Command, OrchestrationV2ClientCommand, OrchestrationV2RpcSchemas.dispatchCommand.input]) {
-      for (const wire of [base, ...[null, "task-branch"].map((branch) => ({
-        ...base,
-        worktreeRemoval: { projectId: "project-1", path: "/project/task", branch, force: true },
-      }))]) {
+    for (const schema of [
+      OrchestrationV2Command,
+      OrchestrationV2ClientCommand,
+      OrchestrationV2RpcSchemas.dispatchCommand.input,
+    ]) {
+      for (const wire of [
+        base,
+        ...[null, "task-branch"].map((branch) => ({
+          ...base,
+          worktreeRemoval: { projectId: "project-1", path: "/project/task", branch, force: true },
+        })),
+      ]) {
         const decoded = Schema.decodeUnknownSync(schema)(wire);
         expect(Schema.encodeSync(schema)(decoded)).toEqual(wire);
         const json = Schema.toCodecJson(schema);
@@ -71,17 +78,32 @@ describe("thread deletion worktree consent", () => {
   it("requires exact affirmative consent and rejects caller-supplied authority before fields can be discarded", () => {
     const consent = { projectId: "project-1", path: "/project/task", branch: null, force: true };
     const invalid = [
-      null, {}, { ...consent, force: false }, { ...consent, force: undefined },
-      { ...consent, projectId: undefined }, { ...consent, path: 1 }, { ...consent, branch: undefined },
-      { ...consent, lease: {} }, { ...consent, birth: {} }, { ...consent, canonicalPath: "/other" },
-      { ...consent, root: "/project" }, { ...consent, proof: undefined },
+      null,
+      {},
+      { ...consent, force: false },
+      { ...consent, force: undefined },
+      { ...consent, projectId: undefined },
+      { ...consent, path: 1 },
+      { ...consent, branch: undefined },
+      { ...consent, lease: {} },
+      { ...consent, birth: {} },
+      { ...consent, canonicalPath: "/other" },
+      { ...consent, root: "/project" },
+      { ...consent, proof: undefined },
     ];
     for (const value of invalid) {
-      expect(() => Schema.decodeUnknownSync(OrchestrationV2ThreadDeletionWorktreeRemoval)(value)).toThrow();
+      expect(() =>
+        Schema.decodeUnknownSync(OrchestrationV2ThreadDeletionWorktreeRemoval)(value),
+      ).toThrow();
       for (const schema of [OrchestrationV2Command, OrchestrationV2ClientCommand]) {
-        expect(() => Schema.decodeUnknownSync(schema)({
-          type: "thread.delete", commandId: "delete-1", threadId: "thread-1", worktreeRemoval: value,
-        })).toThrow();
+        expect(() =>
+          Schema.decodeUnknownSync(schema)({
+            type: "thread.delete",
+            commandId: "delete-1",
+            threadId: "thread-1",
+            worktreeRemoval: value,
+          }),
+        ).toThrow();
       }
     }
   });
@@ -98,11 +120,21 @@ describe("thread metadata title intents", () => {
     expectedEmpty: true,
     linkedPullRequest: null,
   };
-  const schemas = [OrchestrationV2Command, OrchestrationV2ClientCommand, OrchestrationV2RpcSchemas.dispatchCommand.input];
+  const schemas = [
+    OrchestrationV2Command,
+    OrchestrationV2ClientCommand,
+    OrchestrationV2RpcSchemas.dispatchCommand.input,
+  ];
 
   it("rejects an explicit title combined with title regeneration at every dispatch decoder", () => {
     for (const schema of schemas) {
-      expect(() => Schema.decodeUnknownSync(schema)({ ...base, title: "Explicit title", regenerateTitle: true })).toThrow();
+      expect(() =>
+        Schema.decodeUnknownSync(schema)({
+          ...base,
+          title: "Explicit title",
+          regenerateTitle: true,
+        }),
+      ).toThrow();
     }
   });
 
@@ -110,7 +142,12 @@ describe("thread metadata title intents", () => {
     for (const schema of schemas) {
       const decode = Schema.decodeUnknownSync(schema);
       const encode = Schema.encodeSync(schema);
-      for (const intent of [{ title: "Explicit title" }, { title: "Explicit title", regenerateTitle: false }, { regenerateTitle: true }, { regenerateTitle: false }]) {
+      for (const intent of [
+        { title: "Explicit title" },
+        { title: "Explicit title", regenerateTitle: false },
+        { regenerateTitle: true },
+        { regenerateTitle: false },
+      ]) {
         const command = { ...base, ...intent };
         expect(encode(decode(command))).toEqual(command);
       }
@@ -120,11 +157,20 @@ describe("thread metadata title intents", () => {
 
 it("rejects original-wire guard fields at the ordinary public command boundary", () => {
   const message = {
-    type: "message.dispatch", createdBy: "user", creationSource: "web",
-    commandId: "command-ordinary-message", threadId: "thread-1", messageId: "message-1",
-    text: "hello", attachments: [], dispatchMode: { type: "start_immediately" },
+    type: "message.dispatch",
+    createdBy: "user",
+    creationSource: "web",
+    commandId: "command-ordinary-message",
+    threadId: "thread-1",
+    messageId: "message-1",
+    text: "hello",
+    attachments: [],
+    dispatchMode: { type: "start_immediately" },
   };
-  for (const schema of [OrchestrationV2ClientCommand, OrchestrationV2RpcSchemas.dispatchCommand.input]) {
+  for (const schema of [
+    OrchestrationV2ClientCommand,
+    OrchestrationV2RpcSchemas.dispatchCommand.input,
+  ]) {
     const decode = Schema.decodeUnknownSync(schema);
     expect(Schema.encodeSync(schema)(decode(message))).toEqual(message);
     for (const extra of [{ guard: {} }, { dispatchGuard: {} }, { guard: undefined }]) {
@@ -390,13 +436,25 @@ describe("orchestration V2 contracts", () => {
     expect(explicit.runtimePolicy).toEqual({ enforcement: "native" });
 
     const session = {
-      id: "provider-session-1", driver: "codex", providerInstanceId: "codex_work",
-      status: "ready", cwd: "/workspace/project", model: "requested-model",
-      capabilities: decoded, createdAt: now, updatedAt: now, lastError: null,
+      id: "provider-session-1",
+      driver: "codex",
+      providerInstanceId: "codex_work",
+      status: "ready",
+      cwd: "/workspace/project",
+      model: "requested-model",
+      capabilities: decoded,
+      createdAt: now,
+      updatedAt: now,
+      lastError: null,
     };
     const identity = {
       runtimeGeneration: "launch-generation-1",
-      requested: { providerInstanceId: "codex_work", providerDriver: "codex", model: "requested-model", serviceTier: null },
+      requested: {
+        providerInstanceId: "codex_work",
+        providerDriver: "codex",
+        model: "requested-model",
+        serviceTier: null,
+      },
       observed: {
         backend: { status: "observed", value: "openai", sourceEvent: "codex.thread/open" },
         model: { status: "unknown" },
@@ -404,16 +462,39 @@ describe("orchestration V2 contracts", () => {
         serviceTier: { status: "unknown" },
       },
     };
-    const jsonSession = { ...session, createdAt: DateTime.formatIso(now), updatedAt: DateTime.formatIso(now) };
+    const jsonSession = {
+      ...session,
+      createdAt: DateTime.formatIso(now),
+      updatedAt: DateTime.formatIso(now),
+    };
     for (const metadata of [{}, { runtimeIdentity: identity }]) {
-      const runtime = Schema.decodeUnknownSync(OrchestrationV2ProviderSession)({ ...session, ...metadata });
-      const wire = Schema.decodeUnknownSync(OrchestrationV2ProviderSessionJson)({ ...jsonSession, ...metadata });
+      const runtime = Schema.decodeUnknownSync(OrchestrationV2ProviderSession)({
+        ...session,
+        ...metadata,
+      });
+      const wire = Schema.decodeUnknownSync(OrchestrationV2ProviderSessionJson)({
+        ...jsonSession,
+        ...metadata,
+      });
       expect(runtime.runtimeIdentity).toEqual("runtimeIdentity" in metadata ? identity : undefined);
       expect(wire.runtimeIdentity).toEqual(runtime.runtimeIdentity);
-      expect(Schema.encodeSync(OrchestrationV2ProviderSessionJson)(wire)).toEqual({ ...jsonSession, ...metadata });
+      expect(Schema.encodeSync(OrchestrationV2ProviderSessionJson)(wire)).toEqual({
+        ...jsonSession,
+        ...metadata,
+      });
     }
-    expect(() => Schema.decodeUnknownSync(OrchestrationV2ProviderSession)({ ...session, runtimeIdentity: null })).toThrow();
-    expect(() => Schema.decodeUnknownSync(OrchestrationV2ProviderSessionJson)({ ...jsonSession, runtimeIdentity: null })).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(OrchestrationV2ProviderSession)({
+        ...session,
+        runtimeIdentity: null,
+      }),
+    ).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(OrchestrationV2ProviderSessionJson)({
+        ...jsonSession,
+        runtimeIdentity: null,
+      }),
+    ).toThrow();
   });
 
   it("lets legacy snapshot decoders ignore enrichment metadata", () => {
@@ -1370,10 +1451,15 @@ const importedMessageDelivery = {
   type: "message",
   messageId: "imported-message-1",
   text: "Start deliberately with the imported transcript",
-  attachments: [{
-    type: "image", id: "pending-00000000-0000-4000-8000-000000000002",
-    name: "context.png", mimeType: "image/png", sizeBytes: 4,
-  }],
+  attachments: [
+    {
+      type: "image",
+      id: "pending-00000000-0000-4000-8000-000000000002",
+      name: "context.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+    },
+  ],
   context: { version: 1, records: [] },
   modelSelection: { instanceId: "codex_work", model: "model-1" },
   runtimeMode: "full-access",
@@ -1395,13 +1481,25 @@ describe("explicit imported history delivery codecs", () => {
   it("preserves immediate message payload, context, attachments and existing delivery codecs", () => {
     const decode = Schema.decodeUnknownSync(OrchestrationV2StartWithImportedHistoryCommand);
     const decoded = decode(importedStartCommand);
-    expect(Schema.encodeSync(OrchestrationV2StartWithImportedHistoryCommand)(decoded)).toEqual(importedStartCommand);
-    const { runtimeMode: _runtimeMode, interactionMode: _interactionMode, ...messageFields } = importedMessageDelivery;
+    expect(Schema.encodeSync(OrchestrationV2StartWithImportedHistoryCommand)(decoded)).toEqual(
+      importedStartCommand,
+    );
+    const {
+      runtimeMode: _runtimeMode,
+      interactionMode: _interactionMode,
+      ...messageFields
+    } = importedMessageDelivery;
     const ordinary = {
-      ...messageFields, type: "message.dispatch", createdBy: "user", creationSource: "web",
-      commandId: "ordinary-message-1", threadId: "thread-1",
+      ...messageFields,
+      type: "message.dispatch",
+      createdBy: "user",
+      creationSource: "web",
+      commandId: "ordinary-message-1",
+      threadId: "thread-1",
     };
-    const encoded = Schema.encodeSync(OrchestrationV2Command)(Schema.decodeUnknownSync(OrchestrationV2Command)(ordinary));
+    const encoded = Schema.encodeSync(OrchestrationV2Command)(
+      Schema.decodeUnknownSync(OrchestrationV2Command)(ordinary),
+    );
     expect(encoded).toEqual(ordinary);
     for (const dispatchMode of [
       { type: "defer_start" },
@@ -1410,19 +1508,32 @@ describe("explicit imported history delivery codecs", () => {
       { type: "queue_after_active" },
       { type: "start_immediately" },
     ]) {
-      const wire = { ...importedStartCommand, delivery: { ...importedMessageDelivery, dispatchMode } };
-      expect(Schema.encodeSync(OrchestrationV2StartWithImportedHistoryCommand)(decode(wire))).toEqual(wire);
+      const wire = {
+        ...importedStartCommand,
+        delivery: { ...importedMessageDelivery, dispatchMode },
+      };
+      expect(
+        Schema.encodeSync(OrchestrationV2StartWithImportedHistoryCommand)(decode(wire)),
+      ).toEqual(wire);
     }
   });
 
   it("carries the same held run and message identifiers and rejects queued payload or hold overrides", () => {
     const queued = { type: "queued_run", runId: "held-run-1", messageId: "held-message-1" };
     const decode = Schema.decodeUnknownSync(OrchestrationV2ImportedHistoryDelivery);
-    expect(Schema.encodeSync(OrchestrationV2ImportedHistoryDelivery)(decode(queued))).toEqual(queued);
+    expect(Schema.encodeSync(OrchestrationV2ImportedHistoryDelivery)(decode(queued))).toEqual(
+      queued,
+    );
     for (const extra of [
-      { text: "replacement" }, { attachments: [] }, { modelSelection: importedMessageDelivery.modelSelection },
-      { order: 1 }, { clearHolds: true }, { dispatchMode: { type: "start_immediately" } }, { payload: undefined },
-    ]) expect(() => decode({ ...queued, ...extra })).toThrow();
+      { text: "replacement" },
+      { attachments: [] },
+      { modelSelection: importedMessageDelivery.modelSelection },
+      { order: 1 },
+      { clearHolds: true },
+      { dispatchMode: { type: "start_immediately" } },
+      { payload: undefined },
+    ])
+      expect(() => decode({ ...queued, ...extra })).toThrow();
     expect(() => decode({ type: "queued_run", runId: "held-run-1" })).toThrow();
   });
 
@@ -1433,15 +1544,30 @@ describe("explicit imported history delivery codecs", () => {
       { ...importedStartCommand, reviewedBasis: undefined },
       { ...importedStartCommand, authority: "grant" },
       { ...importedStartCommand, delivery: { ...importedMessageDelivery, runtimeMode: undefined } },
-      { ...importedStartCommand, delivery: { ...importedMessageDelivery, interactionMode: undefined } },
-      { ...importedStartCommand, delivery: { ...importedMessageDelivery, nativeThreadId: "inferred-native-thread" } },
-      { ...importedStartCommand, delivery: { ...importedMessageDelivery, dispatchMode: { type: "resume" } } },
-    ]) expect(() => decode(wire)).toThrow();
+      {
+        ...importedStartCommand,
+        delivery: { ...importedMessageDelivery, interactionMode: undefined },
+      },
+      {
+        ...importedStartCommand,
+        delivery: { ...importedMessageDelivery, nativeThreadId: "inferred-native-thread" },
+      },
+      {
+        ...importedStartCommand,
+        delivery: { ...importedMessageDelivery, dispatchMode: { type: "resume" } },
+      },
+    ])
+      expect(() => decode(wire)).toThrow();
   });
 
   it("keeps the explicit command in the server model and excludes it from ordinary client dispatch", () => {
-    expect(() => Schema.decodeUnknownSync(OrchestrationV2Command)(importedStartCommand)).not.toThrow();
-    for (const schema of [OrchestrationV2ClientCommand, OrchestrationV2RpcSchemas.dispatchCommand.input]) {
+    expect(() =>
+      Schema.decodeUnknownSync(OrchestrationV2Command)(importedStartCommand),
+    ).not.toThrow();
+    for (const schema of [
+      OrchestrationV2ClientCommand,
+      OrchestrationV2RpcSchemas.dispatchCommand.input,
+    ]) {
       expect(() => Schema.decodeUnknownSync(schema)(importedStartCommand)).toThrow();
     }
   });
@@ -1467,28 +1593,47 @@ describe("provider session detach request acceptance event", () => {
       const wire = { ...event, occurredAt: DateTime.formatIso(now) };
       const decoded = Schema.decodeUnknownSync(OrchestrationV2DomainEventJson)(wire);
       expect(Schema.encodeSync(OrchestrationV2DomainEventJson)(decoded)).toEqual(wire);
-      expect(Schema.encodeSync(Schema.toCodecJson(OrchestrationV2DomainEvent))(runtime)).toEqual(wire);
+      expect(Schema.encodeSync(Schema.toCodecJson(OrchestrationV2DomainEvent))(runtime)).toEqual(
+        wire,
+      );
       expect(decoded.type).toBe("provider-session.detach-requested");
       expect(decoded.payload).toEqual(payload);
     }
   });
 
   it("rejects detached timestamps, stopped claims and target overrides rather than dropping them", () => {
-    for (const schema of [OrchestrationV2DomainEventJson, Schema.toCodecJson(OrchestrationV2DomainEvent)]) {
-      const event = { ...base, occurredAt: DateTime.formatIso(now), payload: { providerSessionId: "provider-session-1" } };
+    for (const schema of [
+      OrchestrationV2DomainEventJson,
+      Schema.toCodecJson(OrchestrationV2DomainEvent),
+    ]) {
+      const event = {
+        ...base,
+        occurredAt: DateTime.formatIso(now),
+        payload: { providerSessionId: "provider-session-1" },
+      };
       for (const extra of [
-        { detachedAt: DateTime.formatIso(now) }, { stopped: true }, { stoppedAt: DateTime.formatIso(now) },
-        { detachedAt: undefined }, { target: { providerSessionId: "other-session" } },
+        { detachedAt: DateTime.formatIso(now) },
+        { stopped: true },
+        { stoppedAt: DateTime.formatIso(now) },
+        { detachedAt: undefined },
+        { target: { providerSessionId: "other-session" } },
       ]) {
         expect(() => Schema.decodeUnknownSync(schema)({ ...event, ...extra })).toThrow();
-        expect(() => Schema.decodeUnknownSync(schema)({ ...event, payload: { ...event.payload, ...extra } })).toThrow();
+        expect(() =>
+          Schema.decodeUnknownSync(schema)({ ...event, payload: { ...event.payload, ...extra } }),
+        ).toThrow();
       }
       expect(() => Schema.decodeUnknownSync(schema)({ ...event, payload: {} })).toThrow();
-      expect(() => Schema.decodeUnknownSync(schema)({ ...event, payload: { ...event.payload, reason: 4 } })).toThrow();
+      expect(() =>
+        Schema.decodeUnknownSync(schema)({ ...event, payload: { ...event.payload, reason: 4 } }),
+      ).toThrow();
     }
-    expect(() => Schema.decodeUnknownSync(OrchestrationV2ProviderSessionDetachRequested)({
-      providerSessionId: "provider-session-1", detachedAt: now,
-    })).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(OrchestrationV2ProviderSessionDetachRequested)({
+        providerSessionId: "provider-session-1",
+        detachedAt: now,
+      }),
+    ).toThrow();
   });
 
   it("retains the existing detached event and its distinct actual-detachment timestamp", () => {
@@ -1496,12 +1641,23 @@ describe("provider session detach request acceptance event", () => {
       ...base,
       type: "provider-session.detached",
       occurredAt: DateTime.formatIso(now),
-      payload: { providerSessionId: "provider-session-1", detachedAt: DateTime.formatIso(now), reason: "client-requested" },
+      payload: {
+        providerSessionId: "provider-session-1",
+        detachedAt: DateTime.formatIso(now),
+        reason: "client-requested",
+      },
     };
     const runtime = Schema.decodeUnknownSync(OrchestrationV2DomainEventJson)(wire);
     expect(Schema.encodeSync(OrchestrationV2DomainEventJson)(runtime)).toEqual(wire);
-    expect(Schema.encodeSync(Schema.toCodecJson(OrchestrationV2DomainEvent))(runtime)).toEqual(wire);
-    expect(() => Schema.decodeUnknownSync(OrchestrationV2DomainEventJson)({ ...wire, type: "provider-session.detach-requested" })).toThrow();
+    expect(Schema.encodeSync(Schema.toCodecJson(OrchestrationV2DomainEvent))(runtime)).toEqual(
+      wire,
+    );
+    expect(() =>
+      Schema.decodeUnknownSync(OrchestrationV2DomainEventJson)({
+        ...wire,
+        type: "provider-session.detach-requested",
+      }),
+    ).toThrow();
   });
 });
 
@@ -1529,12 +1685,18 @@ describe("observed subagent reasoning effort compatibility", () => {
   };
 
   it("round-trips old records unchanged without filling unknown child effort from a parent request", () => {
-    for (const schema of [OrchestrationV2SubagentJson, Schema.toCodecJson(OrchestrationV2Subagent)]) {
+    for (const schema of [
+      OrchestrationV2SubagentJson,
+      Schema.toCodecJson(OrchestrationV2Subagent),
+    ]) {
       const decoded = Schema.decodeUnknownSync(schema)(oldPayload);
       expect(decoded.reasoningEffort).toBeUndefined();
       expect(Object.hasOwn(decoded, "reasoningEffort")).toBe(false);
       expect(Schema.encodeSync(schema)(decoded)).toEqual(oldPayload);
-      const parentRequested = Schema.decodeUnknownSync(schema)({ ...oldPayload, parentRequestedReasoningEffort: "high" });
+      const parentRequested = Schema.decodeUnknownSync(schema)({
+        ...oldPayload,
+        parentRequestedReasoningEffort: "high",
+      });
       expect(parentRequested.reasoningEffort).toBeUndefined();
       expect(Schema.encodeSync(schema)(parentRequested)).toEqual(oldPayload);
     }
@@ -1551,12 +1713,18 @@ describe("observed subagent reasoning effort compatibility", () => {
       expect(Schema.encodeSync(OrchestrationV2Subagent)(runtime)).toEqual(decoded);
     }
     for (const reasoningEffort of [4, true, { requested: "high" }]) {
-      expect(() => Schema.decodeUnknownSync(OrchestrationV2SubagentJson)({ ...oldPayload, reasoningEffort })).toThrow();
+      expect(() =>
+        Schema.decodeUnknownSync(OrchestrationV2SubagentJson)({ ...oldPayload, reasoningEffort }),
+      ).toThrow();
     }
   });
 
   it("carries the observed child field through existing subagent.updated events without a new event or inferred effort", () => {
-    for (const payload of [oldPayload, { ...oldPayload, reasoningEffort: "high" }, { ...oldPayload, reasoningEffort: null }]) {
+    for (const payload of [
+      oldPayload,
+      { ...oldPayload, reasoningEffort: "high" },
+      { ...oldPayload, reasoningEffort: null },
+    ]) {
       const wire = {
         id: "subagent-effort-event-1",
         type: "subagent.updated",
@@ -1566,7 +1734,9 @@ describe("observed subagent reasoning effort compatibility", () => {
       };
       const decoded = Schema.decodeUnknownSync(OrchestrationV2DomainEventJson)(wire);
       expect(Schema.encodeSync(OrchestrationV2DomainEventJson)(decoded)).toEqual(wire);
-      expect(Schema.encodeSync(Schema.toCodecJson(OrchestrationV2DomainEvent))(decoded)).toEqual(wire);
+      expect(Schema.encodeSync(Schema.toCodecJson(OrchestrationV2DomainEvent))(decoded)).toEqual(
+        wire,
+      );
       const runtime = Schema.decodeUnknownSync(OrchestrationV2DomainEvent)(decoded);
       expect(Schema.encodeSync(OrchestrationV2DomainEvent)(runtime)).toEqual(decoded);
     }

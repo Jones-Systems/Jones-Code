@@ -32,7 +32,9 @@ vi.mock("react", async (original) => ({
   useMemo: (create: () => unknown) => create(),
 }));
 vi.mock("../composerDraftStore", () => ({
-  useComposerDraftStore: { getState: () => ({ getComposerDraft: () => ({ currentRuntimeStop: hook.pointer }) }) },
+  useComposerDraftStore: {
+    getState: () => ({ getComposerDraft: () => ({ currentRuntimeStop: hook.pointer }) }),
+  },
   reserveCurrentRuntimeStopPointer: (pointer: CurrentRuntimeStopPointer) => hook.reserve(pointer),
   clearCurrentRuntimeStopPointer: (pointer: CurrentRuntimeStopPointer) => hook.clear(pointer),
 }));
@@ -81,8 +83,11 @@ const attached = (): OrchestrationV2ThreadRuntimeAttachmentResult => ({
   threadId: ref.threadId,
   stopCapability: { version: 2 },
   attachment: {
-    status: "attached", binding: target.binding, driver: target.driver,
-    evidenceRevision: target.evidenceRevision, runtimeStatus: "idle",
+    status: "attached",
+    binding: target.binding,
+    driver: target.driver,
+    evidenceRevision: target.evidenceRevision,
+    runtimeStatus: "ready",
     observedAt: "2026-10-03T07:12:27Z",
   },
 });
@@ -114,31 +119,51 @@ function harness(initial: CurrentRuntimeStopPointer | null = null) {
   let pointer = initial;
   const order: string[] = [];
   const options = {
-    readPointer: vi.fn(() => { order.push("pointer"); return pointer; }),
-    readAttachment: vi.fn(async () => { order.push("attachment"); return attached(); }),
-    reserve: vi.fn((threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => {
-      order.push("reserve");
-      pointer = { environmentId: threadRef.environmentId, ...input };
+    readPointer: vi.fn(() => {
+      order.push("pointer");
+      return pointer;
     }),
-    clear: vi.fn((_threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => {
-      if (pointer?.commandId === input.commandId) pointer = null;
+    readAttachment: vi.fn(async () => {
+      order.push("attachment");
+      return attached();
     }),
-    stop: vi.fn(async (_threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => {
-      order.push("stop");
-      expect(pointer?.commandId).toBe(input.commandId);
-      return receipt(input);
-    }),
-    observe: vi.fn(async (_threadRef: ScopedThreadRef, input: Pick<OrchestrationV2StopCurrentThreadRuntimeInput, "threadId" | "commandId">) => {
-      if (pointer === null || pointer.commandId !== input.commandId) throw new Error("Missing original operation");
-      return receipt(pointer);
-    }),
+    reserve: vi.fn(
+      (threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => {
+        order.push("reserve");
+        pointer = { environmentId: threadRef.environmentId, ...input };
+      },
+    ),
+    clear: vi.fn(
+      (_threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => {
+        if (pointer?.commandId === input.commandId) pointer = null;
+      },
+    ),
+    stop: vi.fn(
+      async (_threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => {
+        order.push("stop");
+        expect(pointer?.commandId).toBe(input.commandId);
+        return receipt(input);
+      },
+    ),
+    observe: vi.fn(
+      async (
+        _threadRef: ScopedThreadRef,
+        input: Pick<OrchestrationV2StopCurrentThreadRuntimeInput, "threadId" | "commandId">,
+      ) => {
+        if (pointer === null || pointer.commandId !== input.commandId)
+          throw new Error("Missing original operation");
+        return receipt(pointer);
+      },
+    ),
   };
   return {
     options,
     order,
     port: createCurrentRuntimeStopPort(options),
     pointer: () => pointer,
-    replace: (next: CurrentRuntimeStopPointer | null) => { pointer = next; },
+    replace: (next: CurrentRuntimeStopPointer | null) => {
+      pointer = next;
+    },
   };
 }
 
@@ -154,54 +179,100 @@ describe("current runtime stop shared port", () => {
   it.each([
     { threadId: ref.threadId, attachment: attached().attachment },
     { ...attached(), stopCapability: null },
-    { ...attached(), attachment: { status: "stopped", reason: "runtime_not_resident", observedAt: "2026-10-03T07:12:27Z" } },
-    { ...attached(), attachment: { status: "unknown", reason: "Current owner read failed", observedAt: "2026-10-03T07:12:27Z" } },
+    {
+      ...attached(),
+      attachment: {
+        status: "stopped",
+        reason: "runtime_not_resident",
+        observedAt: "2026-10-03T07:12:27Z",
+      },
+    },
+    {
+      ...attached(),
+      attachment: {
+        status: "unknown",
+        reason: "Current owner read failed",
+        observedAt: "2026-10-03T07:12:27Z",
+      },
+    },
     { ...attached(), threadId: ThreadId.make("thread:other") },
-  ] satisfies ReadonlyArray<OrchestrationV2ThreadRuntimeAttachmentResult>)("keeps absent capability, nonresidency, unknown and wrong-thread reads unavailable: %j", async (result) => {
-    const h = harness();
-    h.options.readAttachment.mockResolvedValue(result);
-    expect((await h.port.capture(ref)).status).toBe("unavailable");
-    expect(h.options.stop).not.toHaveBeenCalled();
-    expect(h.options.reserve).not.toHaveBeenCalled();
-  });
+  ] satisfies ReadonlyArray<OrchestrationV2ThreadRuntimeAttachmentResult>)(
+    "keeps absent capability, nonresidency, unknown and wrong-thread reads unavailable: %j",
+    async (result) => {
+      const h = harness();
+      h.options.readAttachment.mockResolvedValue(result);
+      expect((await h.port.capture(ref)).status).toBe("unavailable");
+      expect(h.options.stop).not.toHaveBeenCalled();
+      expect(h.options.reserve).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps failed attachment transport unavailable without manufacturing a stopped timestamp", async () => {
     const h = harness();
     h.options.readAttachment.mockRejectedValue(new Error("Disconnected"));
-    await expect(h.port.capture(ref)).resolves.toEqual({ status: "unavailable", reason: "Disconnected" });
+    await expect(h.port.capture(ref)).resolves.toEqual({
+      status: "unavailable",
+      reason: "Disconnected",
+    });
   });
 
   it.each([
     { ...target, driver: ProviderDriverKind.make("claude") },
     { ...target, evidenceRevision: 8 },
-    { ...target, binding: { ...target.binding, providerThreadId: ProviderThreadId.make("provider-thread:replacement") } },
-    { ...target, binding: { ...target.binding, providerSessionId: ProviderSessionId.make("session:replacement") } },
-    { ...target, binding: { ...target.binding, instanceId: ProviderInstanceId.make("replacement") } },
+    {
+      ...target,
+      binding: {
+        ...target.binding,
+        providerThreadId: ProviderThreadId.make("provider-thread:replacement"),
+      },
+    },
+    {
+      ...target,
+      binding: {
+        ...target.binding,
+        providerSessionId: ProviderSessionId.make("session:replacement"),
+      },
+    },
+    {
+      ...target,
+      binding: { ...target.binding, instanceId: ProviderInstanceId.make("replacement") },
+    },
     { ...target, binding: { ...target.binding, runtimeGeneration: "generation:replacement" } },
     { ...target, binding: { ...target.binding, nativeThreadId: "native:replacement" } },
-  ] satisfies ReadonlyArray<OrchestrationV2CurrentThreadRuntimeTarget>)("does not capture or retarget a saved operation to a changed full tuple: %j", async (replacement) => {
-    const h = harness(saved({ target: replacement }));
-    expect((await h.port.capture(ref)).status).toBe("unavailable");
-    expect((await h.port.request(ref, target)).status).toBe("unknown");
-    expect(h.pointer()?.target).toEqual(replacement);
-    expect(h.options.reserve).not.toHaveBeenCalled();
-    expect(h.options.stop).not.toHaveBeenCalled();
-    expect(h.options.observe).not.toHaveBeenCalled();
-  });
+  ] satisfies ReadonlyArray<OrchestrationV2CurrentThreadRuntimeTarget>)(
+    "does not capture or retarget a saved operation to a changed full tuple: %j",
+    async (replacement) => {
+      const h = harness(saved({ target: replacement }));
+      expect((await h.port.capture(ref)).status).toBe("unavailable");
+      expect((await h.port.request(ref, target)).status).toBe("unknown");
+      expect(h.pointer()?.target).toEqual(replacement);
+      expect(h.options.reserve).not.toHaveBeenCalled();
+      expect(h.options.stop).not.toHaveBeenCalled();
+      expect(h.options.observe).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     saved({ environmentId: EnvironmentId.make("environment:other") }),
     saved({ threadId: ThreadId.make("thread:other") }),
-    saved({ target: { ...target, binding: { ...target.binding, threadId: ThreadId.make("thread:other") } } }),
-  ])("blocks pointer scope mismatch without treating it as an absent operation: %j", async (pointer) => {
-    const h = harness(pointer);
-    expect((await h.port.capture(ref)).status).toBe("unavailable");
-    expect((await h.port.request(ref, target)).status).toBe("unknown");
-    expect((await h.port.observe(ref))?.status).toBe("unknown");
-    expect(h.options.readAttachment).not.toHaveBeenCalled();
-    expect(h.options.stop).not.toHaveBeenCalled();
-    expect(h.options.observe).not.toHaveBeenCalled();
-  });
+    saved({
+      target: {
+        ...target,
+        binding: { ...target.binding, threadId: ThreadId.make("thread:other") },
+      },
+    }),
+  ])(
+    "blocks pointer scope mismatch without treating it as an absent operation: %j",
+    async (pointer) => {
+      const h = harness(pointer);
+      expect((await h.port.capture(ref)).status).toBe("unavailable");
+      expect((await h.port.request(ref, target)).status).toBe("unknown");
+      expect((await h.port.observe(ref))?.status).toBe("unknown");
+      expect(h.options.readAttachment).not.toHaveBeenCalled();
+      expect(h.options.stop).not.toHaveBeenCalled();
+      expect(h.options.observe).not.toHaveBeenCalled();
+    },
+  );
 
   it("holds capture when its saved command changes during the attachment read", async () => {
     const h = harness(saved());
@@ -217,8 +288,11 @@ describe("current runtime stop shared port", () => {
     const h = harness();
     const outcome = await h.port.request(ref, target);
     expect(outcome).toMatchObject({
-      status: "pending", commandAccepted: true, queueFenceInstalled: true,
-      commandId: h.pointer()?.commandId, target,
+      status: "pending",
+      commandAccepted: true,
+      queueFenceInstalled: true,
+      commandId: h.pointer()?.commandId,
+      target,
     });
     expect(Object.isFrozen(outcome.target)).toBe(true);
     expect(Object.isFrozen(outcome.target?.binding)).toBe(true);
@@ -236,12 +310,19 @@ describe("current runtime stop shared port", () => {
     expect(original).not.toBeNull();
     expect(lost).toMatchObject({ commandId: original!.commandId, target: original!.target });
     h.options.readAttachment.mockRejectedValue(new Error("Current attachment unavailable"));
-    h.options.observe.mockImplementationOnce(async () => receipt(original!, { runtimeStop: { status: "stopped" } }));
+    h.options.observe.mockImplementationOnce(async () =>
+      receipt(original!, { runtimeStop: { status: "stopped" } }),
+    );
     const remounted = createCurrentRuntimeStopPort(h.options);
     await expect(remounted.observe(ref)).resolves.toMatchObject({
-      status: "stopped", commandId: original!.commandId, target: original!.target,
+      status: "stopped",
+      commandId: original!.commandId,
+      target: original!.target,
     });
-    expect(h.options.observe).toHaveBeenCalledWith(ref, { threadId: ref.threadId, commandId: original!.commandId });
+    expect(h.options.observe).toHaveBeenCalledWith(ref, {
+      threadId: ref.threadId,
+      commandId: original!.commandId,
+    });
     expect(h.options.stop).toHaveBeenCalledOnce();
     expect(h.options.reserve).toHaveBeenCalledOnce();
     expect(h.options.readAttachment).not.toHaveBeenCalled();
@@ -251,14 +332,22 @@ describe("current runtime stop shared port", () => {
   it("preserves the original pointer on absent receipt or wrong-target observations", async () => {
     const original = saved();
     const h = harness(original);
-    h.options.observe.mockResolvedValueOnce(receipt(original, {
-      commandStatus: "not_found", target: null, receipt: null,
-      queueFence: { status: "unknown", affectedRunIds: [] }, runtimeStop: { status: "unknown" },
-    }));
+    h.options.observe.mockResolvedValueOnce(
+      receipt(original, {
+        commandStatus: "not_found",
+        target: null,
+        receipt: null,
+        queueFence: { status: "unknown", affectedRunIds: [] },
+        runtimeStop: { status: "unknown" },
+      }),
+    );
     expect((await h.port.observe(ref))?.status).toBe("unknown");
-    h.options.observe.mockResolvedValueOnce(receipt(original, {
-      target: { ...target, evidenceRevision: 8 }, runtimeStop: { status: "stopped" },
-    }));
+    h.options.observe.mockResolvedValueOnce(
+      receipt(original, {
+        target: { ...target, evidenceRevision: 8 },
+        runtimeStop: { status: "stopped" },
+      }),
+    );
     expect((await h.port.observe(ref))?.status).toBe("unknown");
     expect(h.pointer()).toEqual(original);
     expect(h.options.clear).not.toHaveBeenCalled();
@@ -274,11 +363,15 @@ describe("current runtime stop shared port", () => {
       return receipt(original, { runtimeStop: { status: "stopped" } });
     });
     await expect(h.port.observe(ref)).resolves.toMatchObject({
-      status: "stopped", commandId: original.commandId, target: original.target,
+      status: "stopped",
+      commandId: original.commandId,
+      target: original.target,
     });
     expect(h.pointer()).toEqual(replacement);
     expect(h.options.clear).toHaveBeenCalledWith(ref, {
-      threadId: original.threadId, commandId: original.commandId, target: original.target,
+      threadId: original.threadId,
+      commandId: original.commandId,
+      target: original.target,
     });
     expect(h.options.stop).not.toHaveBeenCalled();
   });
@@ -295,13 +388,17 @@ describe("current runtime stop shared port", () => {
   it("coalesces request and status check around the same in-flight STOP", async () => {
     const h = harness();
     let reserved!: () => void;
-    const reservation = new Promise<void>((resolve) => { reserved = resolve; });
+    const reservation = new Promise<void>((resolve) => {
+      reserved = resolve;
+    });
     h.options.reserve.mockImplementationOnce((threadRef, input) => {
       h.replace({ environmentId: threadRef.environmentId, ...input });
       reserved();
     });
     let complete!: (result: OrchestrationV2StopCurrentThreadRuntimeResult) => void;
-    const response = new Promise<OrchestrationV2StopCurrentThreadRuntimeResult>((resolve) => { complete = resolve; });
+    const response = new Promise<OrchestrationV2StopCurrentThreadRuntimeResult>((resolve) => {
+      complete = resolve;
+    });
     h.options.stop.mockImplementationOnce(async () => response);
     const request = h.port.request(ref, target);
     await reservation;
@@ -315,11 +412,16 @@ describe("current runtime stop shared port", () => {
 
   it("returns a typed save failure and never retries the unsent operation through observe", async () => {
     const h = harness();
-    h.options.reserve.mockImplementationOnce(() => { throw new Error("Durable pointer unavailable; request was not sent"); });
+    h.options.reserve.mockImplementationOnce(() => {
+      throw new Error("Durable pointer unavailable; request was not sent");
+    });
     await expect(h.port.request(ref, target)).resolves.toMatchObject({
-      status: "unknown", commandAccepted: false, queueFenceInstalled: false,
+      status: "unknown",
+      commandAccepted: false,
+      queueFenceInstalled: false,
       reason: "Durable pointer unavailable; request was not sent",
-      commandId: null, target: null,
+      commandId: null,
+      target: null,
     });
     await expect(h.port.observe(ref)).resolves.toBeNull();
     expect(h.options.reserve).toHaveBeenCalledOnce();
@@ -332,7 +434,9 @@ describe("current runtime stop shared port", () => {
     const replacement = saved({ commandId: CommandId.make("command:newer-stop") });
     const h = harness(replacement);
     await expect(h.port.observe(ref, original)).resolves.toMatchObject({
-      status: "unknown", commandId: null, target: null,
+      status: "unknown",
+      commandId: null,
+      target: null,
     });
     expect(h.pointer()).toEqual(replacement);
     expect(h.options.observe).not.toHaveBeenCalled();
@@ -343,7 +447,9 @@ describe("current runtime stop shared port", () => {
   it("keeps an expected missing operation unknown instead of admitting or refreshing a replacement", async () => {
     const h = harness();
     await expect(h.port.observe(ref, saved())).resolves.toMatchObject({
-      status: "unknown", commandId: null, target: null,
+      status: "unknown",
+      commandId: null,
+      target: null,
     });
     expect(h.options.observe).not.toHaveBeenCalled();
     expect(h.options.stop).not.toHaveBeenCalled();
@@ -355,7 +461,9 @@ describe("current runtime stop shared port", () => {
     const h = harness(replacement);
     h.options.readPointer.mockReturnValueOnce(original);
     await expect(h.port.observe(ref, original)).resolves.toMatchObject({
-      status: "unknown", commandId: null, target: null,
+      status: "unknown",
+      commandId: null,
+      target: null,
     });
     expect(h.pointer()).toEqual(replacement);
     expect(h.options.observe).not.toHaveBeenCalled();
@@ -368,7 +476,9 @@ describe("current runtime stop shared port", () => {
     const h = harness(replacement);
     h.options.readPointer.mockReturnValueOnce(original);
     await expect(h.port.request(ref, target)).resolves.toMatchObject({
-      status: "unknown", commandId: null, target: null,
+      status: "unknown",
+      commandId: null,
+      target: null,
     });
     expect(h.pointer()).toEqual(replacement);
     expect(h.options.observe).not.toHaveBeenCalled();
@@ -378,12 +488,18 @@ describe("current runtime stop shared port", () => {
 
   it("does not claim correlation when draft storage cannot be read", async () => {
     const h = harness(saved());
-    h.options.readPointer.mockImplementation(() => { throw new Error("Draft storage unavailable"); });
+    h.options.readPointer.mockImplementation(() => {
+      throw new Error("Draft storage unavailable");
+    });
     await expect(h.port.observe(ref, saved())).resolves.toMatchObject({
-      status: "unknown", commandId: null, target: null,
+      status: "unknown",
+      commandId: null,
+      target: null,
     });
     await expect(h.port.request(ref, target)).resolves.toMatchObject({
-      status: "unknown", commandId: null, target: null,
+      status: "unknown",
+      commandId: null,
+      target: null,
     });
     expect(h.options.observe).not.toHaveBeenCalled();
     expect(h.options.stop).not.toHaveBeenCalled();
@@ -392,13 +508,17 @@ describe("current runtime stop shared port", () => {
   it("does not coalesce a replacement target with an in-flight original stop", async () => {
     const h = harness();
     let reserved!: () => void;
-    const reservation = new Promise<void>((resolve) => { reserved = resolve; });
+    const reservation = new Promise<void>((resolve) => {
+      reserved = resolve;
+    });
     h.options.reserve.mockImplementationOnce((threadRef, input) => {
       h.replace({ environmentId: threadRef.environmentId, ...input });
       reserved();
     });
     let complete!: (result: OrchestrationV2StopCurrentThreadRuntimeResult) => void;
-    const response = new Promise<OrchestrationV2StopCurrentThreadRuntimeResult>((resolve) => { complete = resolve; });
+    const response = new Promise<OrchestrationV2StopCurrentThreadRuntimeResult>((resolve) => {
+      complete = resolve;
+    });
     h.options.stop.mockImplementationOnce(async () => response);
     const request = h.port.request(ref, target);
     await reservation;
@@ -409,14 +529,20 @@ describe("current runtime stop shared port", () => {
     });
     h.replace(replacement);
     await expect(h.port.request(ref, replacement.target)).resolves.toMatchObject({
-      status: "unknown", commandId: null, target: null,
+      status: "unknown",
+      commandId: null,
+      target: null,
     });
     await expect(h.port.observe(ref, replacement)).resolves.toMatchObject({
-      status: "unknown", commandId: null, target: null,
+      status: "unknown",
+      commandId: null,
+      target: null,
     });
     complete(receipt(original));
     await expect(request).resolves.toMatchObject({
-      status: "pending", commandId: original.commandId, target: original.target,
+      status: "pending",
+      commandId: original.commandId,
+      target: original.target,
     });
     expect(h.options.stop).toHaveBeenCalledOnce();
     expect(h.options.observe).not.toHaveBeenCalled();
@@ -429,12 +555,22 @@ describe("current runtime stop hook adapters", () => {
     vi.clearAllMocks();
     hook.pointer = null;
     hook.readAttachment.mockImplementation(async () => ({ _tag: "Success", value: attached() }));
-    hook.reserve.mockImplementation((pointer: CurrentRuntimeStopPointer) => { hook.pointer = pointer; });
+    hook.reserve.mockImplementation((pointer: CurrentRuntimeStopPointer) => {
+      hook.pointer = pointer;
+    });
     hook.clear.mockImplementation((pointer: CurrentRuntimeStopPointer) => {
       if (hook.pointer?.commandId === pointer.commandId) hook.pointer = null;
     });
-    hook.stop.mockImplementation(async ({ input }: { input: OrchestrationV2StopCurrentThreadRuntimeInput }) => ({ _tag: "Success", value: receipt(input) }));
-    hook.observe.mockImplementation(async () => ({ _tag: "Success", value: receipt(hook.pointer!) }));
+    hook.stop.mockImplementation(
+      async ({ input }: { input: OrchestrationV2StopCurrentThreadRuntimeInput }) => ({
+        _tag: "Success",
+        value: receipt(input),
+      }),
+    );
+    hook.observe.mockImplementation(async () => ({
+      _tag: "Success",
+      value: receipt(hook.pointer!),
+    }));
   });
 
   it("carries the environment and original full tuple through the actual dedicated adapters", async () => {
@@ -445,7 +581,10 @@ describe("current runtime stop hook adapters", () => {
     const outcome = await port.request(ref, capture.target);
     expect(outcome.status).toBe("pending");
     const original = hook.pointer!;
-    expect(hook.readAttachment).toHaveBeenCalledWith({ environmentId: ref.environmentId, input: { threadId: ref.threadId } });
+    expect(hook.readAttachment).toHaveBeenCalledWith({
+      environmentId: ref.environmentId,
+      input: { threadId: ref.threadId },
+    });
     expect(hook.reserve).toHaveBeenCalledWith(original);
     expect(hook.stop).toHaveBeenCalledWith({
       environmentId: ref.environmentId,
@@ -454,7 +593,8 @@ describe("current runtime stop hook adapters", () => {
     const remounted = useCurrentRuntimeStop();
     expect((await remounted.observe(ref))?.status).toBe("pending");
     expect(hook.observe).toHaveBeenCalledWith({
-      environmentId: ref.environmentId, input: { threadId: ref.threadId, commandId: original.commandId },
+      environmentId: ref.environmentId,
+      input: { threadId: ref.threadId, commandId: original.commandId },
     });
     expect(hook.stop).toHaveBeenCalledOnce();
     expect(hook.reserve).toHaveBeenCalledOnce();

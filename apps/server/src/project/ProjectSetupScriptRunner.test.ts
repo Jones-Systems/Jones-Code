@@ -51,6 +51,9 @@ const makeTerminalManagerLayer = (overrides: TerminalOverrides) =>
     closeIdle: () => Effect.void,
     subscribe: () => Effect.succeed(() => undefined),
     subscribeMetadata: () => Effect.succeed(() => undefined),
+    withLegacyOwnerAbsent: () => Effect.die(new Error("unused")),
+    captureOwnedTargets: () => Effect.die(new Error("unused")),
+    closeOwnedTargets: () => Effect.die(new Error("unused")),
     ...overrides,
   });
 
@@ -91,12 +94,14 @@ describe("ProjectSetupScriptRunner", () => {
     );
     return Effect.gen(function* () {
       const runner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
-      const error = yield* runner.runForThread({
-        threadId: "thread-1",
-        projectId: project.id,
-        project,
-        worktreePath: "/repo/worktrees/a",
-      }).pipe(Effect.flip);
+      const error = yield* runner
+        .runForThread({
+          threadId: "thread-1",
+          projectId: project.id,
+          project,
+          worktreePath: "/repo/worktrees/a",
+        })
+        .pipe(Effect.flip);
       expect(error._tag).toBe("ProjectSetupScriptProjectNotFoundError");
       expect(open).not.toHaveBeenCalled();
       expect(write).not.toHaveBeenCalled();
@@ -239,7 +244,7 @@ describe("ProjectSetupScriptRunner", () => {
           worktreePath: "/repo/worktrees/a",
           env: {
             COLORTERM: "",
-          NO_COLOR: "1",
+            NO_COLOR: "1",
             FORCE_COLOR: "0",
             T3CODE_PROJECT_ROOT: "/repo/project",
             T3CODE_WORKTREE_PATH: "/repo/worktrees/a",

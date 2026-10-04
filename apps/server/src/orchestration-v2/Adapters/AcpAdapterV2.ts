@@ -1443,7 +1443,9 @@ export function makeAcpAdapterV2(
     instanceId: options.instanceId,
     driver,
     getCapabilities: () => Effect.succeed(flavor.capabilities),
-    declaredHandoffDelivery: ProviderAdapter.makeProviderDeclaredHandoffDelivery(flavor.capabilities),
+    declaredHandoffDelivery: ProviderAdapter.makeProviderDeclaredHandoffDelivery(
+      flavor.capabilities,
+    ),
     planSelectionTransition: (input) => Effect.succeed(acpSelectionTransition(input)),
     openSession: Effect.fn("AcpAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
@@ -1651,12 +1653,14 @@ export function makeAcpAdapterV2(
             // Exit and transport teardown still allow draining this source's terminal output.
             revalidateCurrent: Effect.suspend(() =>
               currentRuntimeProducer?.token === token &&
-                currentRuntimeProducer.runtimeGeneration === nativeGeneration
+              currentRuntimeProducer.runtimeGeneration === nativeGeneration
                 ? Effect.void
-                : Effect.fail(new ProviderAdapter.ProviderAdapterProtocolError({
-                    driver,
-                    detail: "The ACP event source has been replaced.",
-                  })),
+                : Effect.fail(
+                    new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver,
+                      detail: "The ACP event source has been replaced.",
+                    }),
+                  ),
             ),
           };
           runtimeProducers.set(callbackGeneration, producer);
@@ -1716,9 +1720,9 @@ export function makeAcpAdapterV2(
               if ((yield* Ref.get(runtimeCallbackGeneration)) !== generation) {
                 return Option.none<A>();
               }
-              return Option.some(yield* effect.pipe(
-                Effect.provideService(AcpCallbackProducer, producer),
-              ));
+              return Option.some(
+                yield* effect.pipe(Effect.provideService(AcpCallbackProducer, producer)),
+              );
             }),
           );
         };
@@ -2188,22 +2192,25 @@ export function makeAcpAdapterV2(
         ) {
           const state = context.providerRetry;
           if (state === undefined) return;
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem: makeProviderRetryTurnItem({
-              idAllocator,
+          yield* emitProviderEvent(
+            {
+              type: "turn_item.updated",
               driver,
-              threadId: context.input.threadId,
-              runId: context.input.runId,
-              nodeId: context.input.rootNodeId,
-              providerThreadId: context.input.providerThread.id,
-              providerTurnId: context.providerTurnId,
-              ...state,
-              status,
-              updatedAt: yield* DateTime.now,
-            }),
-          }, context.eventOrigin);
+              turnItem: makeProviderRetryTurnItem({
+                idAllocator,
+                driver,
+                threadId: context.input.threadId,
+                runId: context.input.runId,
+                nodeId: context.input.rootNodeId,
+                providerThreadId: context.input.providerThread.id,
+                providerTurnId: context.providerTurnId,
+                ...state,
+                status,
+                updatedAt: yield* DateTime.now,
+              }),
+            },
+            context.eventOrigin,
+          );
           if (status !== "running") context.providerRetry = undefined;
         });
 
@@ -2282,64 +2289,73 @@ export function makeAcpAdapterV2(
           const turnItemId = idAllocator.derive.turnItemFromProviderItem({ driver, nativeItemId });
           const ordinal = yield* resolveItemOrdinal(context, nativeItemId);
           const nativeItemRef = { driver, nativeId: nativeItemId, strength: "weak" as const };
-          yield* emitProviderEvent({
-            type: "node.updated",
-            driver,
-            node: {
-              id: nodeId,
-              threadId: context.input.threadId,
-              runId: context.input.runId,
-              parentNodeId: context.input.rootNodeId,
-              rootNodeId: context.input.rootNodeId,
-              kind: "plan",
-              status: "completed",
-              countsForRun: false,
-              providerThreadId: context.input.providerThread.id,
-              providerTurnId: context.providerTurnId,
-              nativeItemRef,
-              runtimeRequestId: null,
-              checkpointScopeId: null,
-              startedAt: context.startedAt,
-              completedAt: now,
+          yield* emitProviderEvent(
+            {
+              type: "node.updated",
+              driver,
+              node: {
+                id: nodeId,
+                threadId: context.input.threadId,
+                runId: context.input.runId,
+                parentNodeId: context.input.rootNodeId,
+                rootNodeId: context.input.rootNodeId,
+                kind: "plan",
+                status: "completed",
+                countsForRun: false,
+                providerThreadId: context.input.providerThread.id,
+                providerTurnId: context.providerTurnId,
+                nativeItemRef,
+                runtimeRequestId: null,
+                checkpointScopeId: null,
+                startedAt: context.startedAt,
+                completedAt: now,
+              },
             },
-          }, context.eventOrigin);
-          yield* emitProviderEvent({
-            type: "plan.updated",
-            driver,
-            plan: {
-              id: planId,
-              threadId: context.input.threadId,
-              runId: context.input.runId,
-              nodeId,
-              kind: "proposed_plan",
-              status: "completed",
-              markdown,
+            context.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "plan.updated",
+              driver,
+              plan: {
+                id: planId,
+                threadId: context.input.threadId,
+                runId: context.input.runId,
+                nodeId,
+                kind: "proposed_plan",
+                status: "completed",
+                markdown,
+              },
             },
-          }, context.eventOrigin);
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem: {
-              id: turnItemId,
-              threadId: context.input.threadId,
-              runId: context.input.runId,
-              nodeId,
-              providerThreadId: context.input.providerThread.id,
-              providerTurnId: context.providerTurnId,
-              nativeItemRef,
-              parentItemId: null,
-              ordinal,
-              status: "completed",
-              title: null,
-              startedAt: context.startedAt,
-              completedAt: now,
-              updatedAt: now,
-              type: "proposed_plan",
-              planId,
-              markdown,
-              streaming: false,
+            context.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "turn_item.updated",
+              driver,
+              turnItem: {
+                id: turnItemId,
+                threadId: context.input.threadId,
+                runId: context.input.runId,
+                nodeId,
+                providerThreadId: context.input.providerThread.id,
+                providerTurnId: context.providerTurnId,
+                nativeItemRef,
+                parentItemId: null,
+                ordinal,
+                status: "completed",
+                title: null,
+                startedAt: context.startedAt,
+                completedAt: now,
+                updatedAt: now,
+                type: "proposed_plan",
+                planId,
+                markdown,
+                streaming: false,
+              },
             },
-          }, context.eventOrigin);
+            context.eventOrigin,
+          );
         });
         const lastProposedPlanMarkdown = Effect.gen(function* () {
           const context = yield* Ref.get(activeTurn);
@@ -2390,27 +2406,30 @@ export function makeAcpAdapterV2(
             strength: "weak" as const,
           };
           if (kind !== "user") {
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver,
-              node: {
-                id: nodeId,
-                threadId: context.input.threadId,
-                runId: context.input.runId,
-                parentNodeId: context.input.rootNodeId,
-                rootNodeId: context.input.rootNodeId,
-                kind: kind === "assistant" ? "assistant_message" : "reasoning",
-                status: completed ? "completed" : "running",
-                countsForRun: false,
-                providerThreadId: context.input.providerThread.id,
-                providerTurnId: context.providerTurnId,
-                nativeItemRef,
-                runtimeRequestId: null,
-                checkpointScopeId: null,
-                startedAt: segment.startedAt,
-                completedAt: completed ? now : null,
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver,
+                node: {
+                  id: nodeId,
+                  threadId: context.input.threadId,
+                  runId: context.input.runId,
+                  parentNodeId: context.input.rootNodeId,
+                  rootNodeId: context.input.rootNodeId,
+                  kind: kind === "assistant" ? "assistant_message" : "reasoning",
+                  status: completed ? "completed" : "running",
+                  countsForRun: false,
+                  providerThreadId: context.input.providerThread.id,
+                  providerTurnId: context.providerTurnId,
+                  nativeItemRef,
+                  runtimeRequestId: null,
+                  checkpointScopeId: null,
+                  startedAt: segment.startedAt,
+                  completedAt: completed ? now : null,
+                },
               },
-            }, context.eventOrigin);
+              context.eventOrigin,
+            );
           }
           if (kind !== "reasoning") {
             const messageId = providerMessageId(segment.nativeItemId);
@@ -2429,7 +2448,10 @@ export function makeAcpAdapterV2(
               createdAt: segment.startedAt,
               updatedAt: now,
             };
-            yield* emitProviderEvent({ type: "message.updated", driver, message }, context.eventOrigin);
+            yield* emitProviderEvent(
+              { type: "message.updated", driver, message },
+              context.eventOrigin,
+            );
             yield* emitProviderEvent(
               kind === "user"
                 ? {
@@ -2488,29 +2510,32 @@ export function makeAcpAdapterV2(
             if (completed) yield* rememberSnapshotMessage(message);
             return;
           }
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem: {
-              id: turnItemId,
-              threadId: context.input.threadId,
-              runId: context.input.runId,
-              nodeId,
-              providerThreadId: context.input.providerThread.id,
-              providerTurnId: context.providerTurnId,
-              nativeItemRef,
-              parentItemId: null,
-              ordinal,
-              status: completed ? "completed" : "running",
-              title: null,
-              startedAt: segment.startedAt,
-              completedAt: completed ? now : null,
-              updatedAt: now,
-              type: "reasoning",
-              text: segment.text,
-              streaming: !completed,
+          yield* emitProviderEvent(
+            {
+              type: "turn_item.updated",
+              driver,
+              turnItem: {
+                id: turnItemId,
+                threadId: context.input.threadId,
+                runId: context.input.runId,
+                nodeId,
+                providerThreadId: context.input.providerThread.id,
+                providerTurnId: context.providerTurnId,
+                nativeItemRef,
+                parentItemId: null,
+                ordinal,
+                status: completed ? "completed" : "running",
+                title: null,
+                startedAt: segment.startedAt,
+                completedAt: completed ? now : null,
+                updatedAt: now,
+                type: "reasoning",
+                text: segment.text,
+                streaming: !completed,
+              },
             },
-          }, context.eventOrigin);
+            context.eventOrigin,
+          );
         });
 
         const closeTextStream = Effect.fnUntraced(function* (
@@ -2624,12 +2649,18 @@ export function makeAcpAdapterV2(
             now,
           });
           const childOrigin: ProviderEventOrigin = { producer: subagent.eventOrigin.producer };
-          yield* emitProviderEvent({ type: "message.updated", driver, message: artifacts.message }, childOrigin);
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem: artifacts.turnItem,
-          }, childOrigin);
+          yield* emitProviderEvent(
+            { type: "message.updated", driver, message: artifacts.message },
+            childOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "turn_item.updated",
+              driver,
+              turnItem: artifacts.turnItem,
+            },
+            childOrigin,
+          );
         });
 
         const projectSubagentNotification = Effect.fnUntraced(function* (
@@ -2756,30 +2787,33 @@ export function makeAcpAdapterV2(
           context.subagents.set(nativeTaskId, subagent);
 
           if (existing === undefined) {
-            yield* emitProviderEvent({
-              type: "app_thread.created",
-              driver,
-              appThread: makeSubagentChildThread({
-                parentThread: context.input.appThread,
-                childThreadId,
-                parentNodeId: nodeId,
-                activeProviderThreadId: null,
-                providerInstanceId: context.input.modelSelection.instanceId,
-                modelSelection: {
-                  ...context.input.modelSelection,
-                  model: update.model ?? context.input.modelSelection.model,
-                },
-                title: subagentThreadTitle({
-                  parentTitle: context.input.appThread.title,
-                  title: update.title,
-                  prompt: update.prompt,
-                  ordinal: context.subagents.size,
+            yield* emitProviderEvent(
+              {
+                type: "app_thread.created",
+                driver,
+                appThread: makeSubagentChildThread({
+                  parentThread: context.input.appThread,
+                  childThreadId,
+                  parentNodeId: nodeId,
+                  activeProviderThreadId: null,
+                  providerInstanceId: context.input.modelSelection.instanceId,
+                  modelSelection: {
+                    ...context.input.modelSelection,
+                    model: update.model ?? context.input.modelSelection.model,
+                  },
+                  title: subagentThreadTitle({
+                    parentTitle: context.input.appThread.title,
+                    title: update.title,
+                    prompt: update.prompt,
+                    ordinal: context.subagents.size,
+                  }),
+                  now,
+                  createdBy: "agent",
+                  creationSource: "provider",
                 }),
-                now,
-                createdBy: "agent",
-                creationSource: "provider",
-              }),
-            }, subagent.eventOrigin);
+              },
+              subagent.eventOrigin,
+            );
             const promptNativeItemId = `${nativeTaskId}:prompt`;
             const promptArtifacts = makeSubagentConversationArtifacts({
               senderThreadId: context.input.threadId,
@@ -2795,16 +2829,22 @@ export function makeAcpAdapterV2(
               ordinal: 100,
               now,
             });
-            yield* emitProviderEvent({
-              type: "message.updated",
-              driver,
-              message: promptArtifacts.message,
-            }, { producer: subagent.eventOrigin.producer });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver,
-              turnItem: promptArtifacts.turnItem,
-            }, { producer: subagent.eventOrigin.producer });
+            yield* emitProviderEvent(
+              {
+                type: "message.updated",
+                driver,
+                message: promptArtifacts.message,
+              },
+              { producer: subagent.eventOrigin.producer },
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver,
+                turnItem: promptArtifacts.turnItem,
+              },
+              { producer: subagent.eventOrigin.producer },
+            );
           }
 
           const childSessionId = update.childSessionId;
@@ -2829,11 +2869,14 @@ export function makeAcpAdapterV2(
             yield* Ref.update(providerThreadByNativeSessionId, (current) =>
               new Map(current).set(childSessionId, providerThread),
             );
-            yield* emitProviderEvent({
-              type: "provider_thread.updated",
-              driver,
-              providerThread: { ...providerThread, status: "idle" },
-            }, subagent.eventOrigin);
+            yield* emitProviderEvent(
+              {
+                type: "provider_thread.updated",
+                driver,
+                providerThread: { ...providerThread, status: "idle" },
+              },
+              subagent.eventOrigin,
+            );
             const buffered = context.pendingSubagentNotifications.get(childSessionId) ?? [];
             context.pendingSubagentNotifications.delete(childSessionId);
             yield* Effect.forEach(
@@ -2859,77 +2902,89 @@ export function makeAcpAdapterV2(
             updatedAt: now,
           };
           const providerThreadId = subagent.task.providerThreadId;
-          yield* emitProviderEvent({
-            type: "node.updated",
-            driver,
-            node: {
-              id: nodeId,
-              threadId: context.input.threadId,
-              runId: subagent.task.runId,
-              parentNodeId: subagent.task.parentNodeId,
-              rootNodeId: subagent.task.parentNodeId,
-              kind: "subagent",
-              status: taskStatus,
-              countsForRun: false,
-              providerThreadId: context.input.providerThread.id,
-              providerTurnId: subagent.providerTurnId,
-              nativeItemRef,
-              runtimeRequestId: null,
-              checkpointScopeId: null,
-              startedAt: subagent.task.startedAt,
-              completedAt: subagent.task.completedAt,
-            },
-          }, subagent.eventOrigin);
-          yield* emitProviderEvent({
-            type: "node.updated",
-            driver,
-            node: {
-              id: childRootNodeId,
-              threadId: childThreadId,
-              runId: null,
-              parentNodeId: null,
-              rootNodeId: childRootNodeId,
-              kind: "root_turn",
-              status: taskStatus,
-              countsForRun: false,
-              providerThreadId,
-              providerTurnId: null,
-              nativeItemRef,
-              runtimeRequestId: null,
-              checkpointScopeId: null,
-              startedAt: subagent.task.startedAt,
-              completedAt: subagent.task.completedAt,
-            },
-          }, subagent.eventOrigin);
-          yield* emitProviderEvent({ type: "subagent.updated", driver, subagent: subagent.task }, subagent.eventOrigin);
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem: {
-              id: turnItemId,
-              threadId: context.input.threadId,
-              runId: subagent.task.runId,
-              nodeId,
-              providerThreadId: context.input.providerThread.id,
-              providerTurnId: subagent.providerTurnId,
-              nativeItemRef,
-              parentItemId: null,
-              ordinal: turnItemOrdinal,
-              status: taskStatus,
-              title: subagent.task.title,
-              startedAt: subagent.task.startedAt,
-              completedAt: subagent.task.completedAt,
-              updatedAt: now,
-              type: "subagent",
-              subagentId: subagent.task.id,
-              origin: "provider_native",
+          yield* emitProviderEvent(
+            {
+              type: "node.updated",
               driver,
-              providerInstanceId: context.input.modelSelection.instanceId,
-              childThreadId,
-              prompt: subagent.task.prompt,
-              result,
+              node: {
+                id: nodeId,
+                threadId: context.input.threadId,
+                runId: subagent.task.runId,
+                parentNodeId: subagent.task.parentNodeId,
+                rootNodeId: subagent.task.parentNodeId,
+                kind: "subagent",
+                status: taskStatus,
+                countsForRun: false,
+                providerThreadId: context.input.providerThread.id,
+                providerTurnId: subagent.providerTurnId,
+                nativeItemRef,
+                runtimeRequestId: null,
+                checkpointScopeId: null,
+                startedAt: subagent.task.startedAt,
+                completedAt: subagent.task.completedAt,
+              },
             },
-          }, subagent.eventOrigin);
+            subagent.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "node.updated",
+              driver,
+              node: {
+                id: childRootNodeId,
+                threadId: childThreadId,
+                runId: null,
+                parentNodeId: null,
+                rootNodeId: childRootNodeId,
+                kind: "root_turn",
+                status: taskStatus,
+                countsForRun: false,
+                providerThreadId,
+                providerTurnId: null,
+                nativeItemRef,
+                runtimeRequestId: null,
+                checkpointScopeId: null,
+                startedAt: subagent.task.startedAt,
+                completedAt: subagent.task.completedAt,
+              },
+            },
+            subagent.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            { type: "subagent.updated", driver, subagent: subagent.task },
+            subagent.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "turn_item.updated",
+              driver,
+              turnItem: {
+                id: turnItemId,
+                threadId: context.input.threadId,
+                runId: subagent.task.runId,
+                nodeId,
+                providerThreadId: context.input.providerThread.id,
+                providerTurnId: subagent.providerTurnId,
+                nativeItemRef,
+                parentItemId: null,
+                ordinal: turnItemOrdinal,
+                status: taskStatus,
+                title: subagent.task.title,
+                startedAt: subagent.task.startedAt,
+                completedAt: subagent.task.completedAt,
+                updatedAt: now,
+                type: "subagent",
+                subagentId: subagent.task.id,
+                origin: "provider_native",
+                driver,
+                providerInstanceId: context.input.modelSelection.instanceId,
+                childThreadId,
+                prompt: subagent.task.prompt,
+                result,
+              },
+            },
+            subagent.eventOrigin,
+          );
           if (acpSubagentStatusIsTerminal(taskStatus)) {
             subagent.terminalStatusProjected = true;
           }
@@ -3209,27 +3264,30 @@ export function makeAcpAdapterV2(
           context.toolStartedAt.set(toolCall.toolCallId, startedAt);
           const completedAt = completedAtForStatus(status, now);
           const title = toolCall.title ?? null;
-          yield* emitProviderEvent({
-            type: "node.updated",
-            driver,
-            node: {
-              id: nodeId,
-              threadId: context.input.threadId,
-              runId: context.input.runId,
-              parentNodeId: context.input.rootNodeId,
-              rootNodeId: context.input.rootNodeId,
-              kind: "tool_call",
-              status: nodeStatus(status),
-              countsForRun: true,
-              providerThreadId: context.input.providerThread.id,
-              providerTurnId: context.providerTurnId,
-              nativeItemRef,
-              runtimeRequestId: null,
-              checkpointScopeId: null,
-              startedAt,
-              completedAt,
+          yield* emitProviderEvent(
+            {
+              type: "node.updated",
+              driver,
+              node: {
+                id: nodeId,
+                threadId: context.input.threadId,
+                runId: context.input.runId,
+                parentNodeId: context.input.rootNodeId,
+                rootNodeId: context.input.rootNodeId,
+                kind: "tool_call",
+                status: nodeStatus(status),
+                countsForRun: true,
+                providerThreadId: context.input.providerThread.id,
+                providerTurnId: context.providerTurnId,
+                nativeItemRef,
+                runtimeRequestId: null,
+                checkpointScopeId: null,
+                startedAt,
+                completedAt,
+              },
             },
-          }, context.eventOrigin);
+            context.eventOrigin,
+          );
 
           const base = {
             id: turnItemId,
@@ -3328,7 +3386,10 @@ export function makeAcpAdapterV2(
                 {},
               ...(rawOutput === undefined ? {} : { output: acpMcpToolCallOutput(rawOutput) }),
             };
-            yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem }, context.eventOrigin);
+            yield* emitProviderEvent(
+              { type: "turn_item.updated", driver, turnItem },
+              context.eventOrigin,
+            );
             yield* rearmDeferredFinalize(context);
             return;
           } else if (changes.length > 0) {
@@ -3449,7 +3510,10 @@ export function makeAcpAdapterV2(
                 }
             }
           }
-          yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem }, context.eventOrigin);
+          yield* emitProviderEvent(
+            { type: "turn_item.updated", driver, turnItem },
+            context.eventOrigin,
+          );
           yield* rearmDeferredFinalize(context);
         });
 
@@ -3526,61 +3590,67 @@ export function makeAcpAdapterV2(
           context.plans.set(update.nativePlanId, planState);
           const completed = plan.status === "completed" || plan.status === "superseded";
           const nodeKind = plan.kind === "todo_list" ? "todo_list" : "plan";
-          yield* emitProviderEvent({
-            type: "node.updated",
-            driver,
-            node: {
-              id: nodeId,
-              threadId: context.input.threadId,
-              runId: context.input.runId,
-              parentNodeId: context.input.rootNodeId,
-              rootNodeId: context.input.rootNodeId,
-              kind: nodeKind,
-              status: completed ? "completed" : "running",
-              countsForRun: false,
-              providerThreadId: context.input.providerThread.id,
-              providerTurnId: context.providerTurnId,
-              nativeItemRef,
-              runtimeRequestId: null,
-              checkpointScopeId: null,
-              startedAt: planState.startedAt,
-              completedAt: completed ? now : null,
+          yield* emitProviderEvent(
+            {
+              type: "node.updated",
+              driver,
+              node: {
+                id: nodeId,
+                threadId: context.input.threadId,
+                runId: context.input.runId,
+                parentNodeId: context.input.rootNodeId,
+                rootNodeId: context.input.rootNodeId,
+                kind: nodeKind,
+                status: completed ? "completed" : "running",
+                countsForRun: false,
+                providerThreadId: context.input.providerThread.id,
+                providerTurnId: context.providerTurnId,
+                nativeItemRef,
+                runtimeRequestId: null,
+                checkpointScopeId: null,
+                startedAt: planState.startedAt,
+                completedAt: completed ? now : null,
+              },
             },
-          }, context.eventOrigin);
+            context.eventOrigin,
+          );
           yield* emitProviderEvent({ type: "plan.updated", driver, plan }, context.eventOrigin);
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem: {
-              id: turnItemId,
-              threadId: context.input.threadId,
-              runId: context.input.runId,
-              nodeId,
-              providerThreadId: context.input.providerThread.id,
-              providerTurnId: context.providerTurnId,
-              nativeItemRef,
-              parentItemId: null,
-              ordinal,
-              status: completed ? "completed" : "running",
-              title: null,
-              startedAt: planState.startedAt,
-              completedAt: completed ? now : null,
-              updatedAt: now,
-              ...(plan.kind === "todo_list"
-                ? {
-                    type: "todo_list" as const,
-                    planId,
-                    steps: plan.steps,
-                    ...(plan.explanation === undefined ? {} : { explanation: plan.explanation }),
-                  }
-                : {
-                    type: "proposed_plan" as const,
-                    planId,
-                    markdown: plan.markdown,
-                    streaming: !completed,
-                  }),
+          yield* emitProviderEvent(
+            {
+              type: "turn_item.updated",
+              driver,
+              turnItem: {
+                id: turnItemId,
+                threadId: context.input.threadId,
+                runId: context.input.runId,
+                nodeId,
+                providerThreadId: context.input.providerThread.id,
+                providerTurnId: context.providerTurnId,
+                nativeItemRef,
+                parentItemId: null,
+                ordinal,
+                status: completed ? "completed" : "running",
+                title: null,
+                startedAt: planState.startedAt,
+                completedAt: completed ? now : null,
+                updatedAt: now,
+                ...(plan.kind === "todo_list"
+                  ? {
+                      type: "todo_list" as const,
+                      planId,
+                      steps: plan.steps,
+                      ...(plan.explanation === undefined ? {} : { explanation: plan.explanation }),
+                    }
+                  : {
+                      type: "proposed_plan" as const,
+                      planId,
+                      markdown: plan.markdown,
+                      streaming: !completed,
+                    }),
+              },
             },
-          }, context.eventOrigin);
+            context.eventOrigin,
+          );
         });
 
         const appendLoadedHistory = (
@@ -4092,11 +4162,16 @@ export function makeAcpAdapterV2(
               yield* Ref.update(providerThreadByNativeSessionId, (current) =>
                 new Map(current).set(notification.sessionId, providerThread),
               );
-              yield* emitProviderEvent({
-                type: "provider_thread.updated",
-                driver,
-                providerThread,
-              }, context?.nativeThreadId === notification.sessionId ? context.eventOrigin : undefined);
+              yield* emitProviderEvent(
+                {
+                  type: "provider_thread.updated",
+                  driver,
+                  providerThread,
+                },
+                context?.nativeThreadId === notification.sessionId
+                  ? context.eventOrigin
+                  : undefined,
+              );
             }
             return;
           }
@@ -4348,30 +4423,33 @@ export function makeAcpAdapterV2(
                 const startedAt = context.toolStartedAt.get(key) ?? now;
                 context.toolStartedAt.set(key, startedAt);
                 const ordinal = resolveSubagentChildOrdinal(subagent, key);
-                yield* emitProviderEvent({
-                  type: "turn_item.updated",
-                  driver,
-                  turnItem: {
-                    id: providerTurnItemId(key),
-                    threadId: subagent.childThreadId,
-                    runId: null,
-                    nodeId: subagent.childRootNodeId,
-                    providerThreadId: subagent.task.providerThreadId,
-                    providerTurnId: null,
-                    nativeItemRef: { driver, nativeId: key, strength: "strong" },
-                    parentItemId: null,
-                    ordinal,
-                    status,
-                    title: merged.title ?? merged.kind ?? "Tool",
-                    startedAt,
-                    completedAt: completedAtForStatus(status, now),
-                    updatedAt: now,
-                    type: "dynamic_tool",
-                    toolName: merged.title ?? merged.kind ?? "Tool",
-                    input: merged.data.rawInput ?? null,
-                    output: merged.data.rawOutput ?? merged.data.content ?? null,
+                yield* emitProviderEvent(
+                  {
+                    type: "turn_item.updated",
+                    driver,
+                    turnItem: {
+                      id: providerTurnItemId(key),
+                      threadId: subagent.childThreadId,
+                      runId: null,
+                      nodeId: subagent.childRootNodeId,
+                      providerThreadId: subagent.task.providerThreadId,
+                      providerTurnId: null,
+                      nativeItemRef: { driver, nativeId: key, strength: "strong" },
+                      parentItemId: null,
+                      ordinal,
+                      status,
+                      title: merged.title ?? merged.kind ?? "Tool",
+                      startedAt,
+                      completedAt: completedAtForStatus(status, now),
+                      updatedAt: now,
+                      type: "dynamic_tool",
+                      toolName: merged.title ?? merged.kind ?? "Tool",
+                      input: merged.data.rawInput ?? null,
+                      output: merged.data.rawOutput ?? merged.data.content ?? null,
+                    },
                   },
-                }, { producer: subagent.eventOrigin.producer });
+                  { producer: subagent.eventOrigin.producer },
+                );
               }
               return;
             }
@@ -4750,22 +4828,31 @@ export function makeAcpAdapterV2(
             });
             return updated;
           });
-          yield* emitProviderEvent({
-            type: "node.updated",
-            driver,
-            node,
-          }, context.eventOrigin);
-          yield* emitProviderEvent({
-            type: "runtime_request.updated",
-            driver,
-            threadId: context.input.threadId,
-            runtimeRequest,
-          }, context.eventOrigin);
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem,
-          }, context.eventOrigin);
+          yield* emitProviderEvent(
+            {
+              type: "node.updated",
+              driver,
+              node,
+            },
+            context.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "runtime_request.updated",
+              driver,
+              threadId: context.input.threadId,
+              runtimeRequest,
+            },
+            context.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "turn_item.updated",
+              driver,
+              turnItem,
+            },
+            context.eventOrigin,
+          );
           return {
             context,
             decision,
@@ -4876,22 +4963,31 @@ export function makeAcpAdapterV2(
             });
             return updated;
           });
-          yield* emitProviderEvent({
-            type: "node.updated",
-            driver,
-            node,
-          }, context.eventOrigin);
-          yield* emitProviderEvent({
-            type: "runtime_request.updated",
-            driver,
-            threadId: context.input.threadId,
-            runtimeRequest,
-          }, context.eventOrigin);
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem,
-          }, context.eventOrigin);
+          yield* emitProviderEvent(
+            {
+              type: "node.updated",
+              driver,
+              node,
+            },
+            context.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "runtime_request.updated",
+              driver,
+              threadId: context.input.threadId,
+              runtimeRequest,
+            },
+            context.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "turn_item.updated",
+              driver,
+              turnItem,
+            },
+            context.eventOrigin,
+          );
           return {
             answers,
             context,
@@ -4973,35 +5069,44 @@ export function makeAcpAdapterV2(
                   : Deferred.succeed(request.answers, null);
                 if (!cancelled) return;
 
-                yield* emitProviderEvent({
-                  type: "runtime_request.updated",
-                  driver,
-                  threadId: request.node.threadId,
-                  runtimeRequest: {
-                    ...request.runtimeRequest,
-                    status: "cancelled",
-                    resolvedAt: now,
+                yield* emitProviderEvent(
+                  {
+                    type: "runtime_request.updated",
+                    driver,
+                    threadId: request.node.threadId,
+                    runtimeRequest: {
+                      ...request.runtimeRequest,
+                      status: "cancelled",
+                      resolvedAt: now,
+                    },
                   },
-                }, request.eventOrigin);
-                yield* emitProviderEvent({
-                  type: "node.updated",
-                  driver,
-                  node: {
-                    ...request.node,
-                    status: "cancelled",
-                    completedAt: now,
+                  request.eventOrigin,
+                );
+                yield* emitProviderEvent(
+                  {
+                    type: "node.updated",
+                    driver,
+                    node: {
+                      ...request.node,
+                      status: "cancelled",
+                      completedAt: now,
+                    },
                   },
-                }, request.eventOrigin);
-                yield* emitProviderEvent({
-                  type: "turn_item.updated",
-                  driver,
-                  turnItem: {
-                    ...request.turnItem,
-                    status: "cancelled",
-                    completedAt: now,
-                    updatedAt: now,
+                  request.eventOrigin,
+                );
+                yield* emitProviderEvent(
+                  {
+                    type: "turn_item.updated",
+                    driver,
+                    turnItem: {
+                      ...request.turnItem,
+                      status: "cancelled",
+                      completedAt: now,
+                      updatedAt: now,
+                    },
                   },
-                }, request.eventOrigin);
+                  request.eventOrigin,
+                );
               }),
             { concurrency: 1, discard: true },
           );
@@ -5053,81 +5158,93 @@ export function makeAcpAdapterV2(
           const parentProviderThreadId = subagent.parentProviderThreadId;
           const result = subagent.task.result;
           const completedAt = subagent.task.completedAt;
-          yield* emitProviderEvent({
-            type: "node.updated",
-            driver,
-            node: {
-              id: subagent.task.id,
-              threadId: subagent.task.threadId,
-              runId: subagent.task.runId,
-              parentNodeId: subagent.task.parentNodeId,
-              rootNodeId: subagent.task.parentNodeId,
-              kind: "subagent",
-              status,
-              countsForRun: false,
-              providerThreadId: parentProviderThreadId,
-              providerTurnId: subagent.providerTurnId,
-              nativeItemRef,
-              runtimeRequestId: null,
-              checkpointScopeId: null,
-              startedAt: subagent.task.startedAt,
-              completedAt,
-            },
-          }, subagent.eventOrigin);
-          yield* emitProviderEvent({
-            type: "node.updated",
-            driver,
-            node: {
-              id: subagent.childRootNodeId,
-              threadId: subagent.childThreadId,
-              runId: null,
-              parentNodeId: null,
-              rootNodeId: subagent.childRootNodeId,
-              kind: "root_turn",
-              status,
-              countsForRun: false,
-              providerThreadId: subagent.task.providerThreadId,
-              providerTurnId: null,
-              nativeItemRef,
-              runtimeRequestId: null,
-              checkpointScopeId: null,
-              startedAt: subagent.task.startedAt,
-              completedAt,
-            },
-          }, subagent.eventOrigin);
-          yield* emitProviderEvent({
-            type: "subagent.updated",
-            driver,
-            subagent: subagent.task,
-          }, subagent.eventOrigin);
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem: {
-              id: subagent.turnItemId,
-              threadId: subagent.task.threadId,
-              runId: subagent.task.runId,
-              nodeId: subagent.task.id,
-              providerThreadId: parentProviderThreadId,
-              providerTurnId: subagent.providerTurnId,
-              nativeItemRef,
-              parentItemId: null,
-              ordinal: subagent.turnItemOrdinal,
-              status,
-              title: subagent.task.title,
-              startedAt: subagent.task.startedAt,
-              completedAt,
-              updatedAt: now,
-              type: "subagent",
-              subagentId: subagent.task.id,
-              origin: "provider_native",
+          yield* emitProviderEvent(
+            {
+              type: "node.updated",
               driver,
-              providerInstanceId: subagent.task.providerInstanceId,
-              childThreadId: subagent.childThreadId,
-              prompt: subagent.task.prompt,
-              result,
+              node: {
+                id: subagent.task.id,
+                threadId: subagent.task.threadId,
+                runId: subagent.task.runId,
+                parentNodeId: subagent.task.parentNodeId,
+                rootNodeId: subagent.task.parentNodeId,
+                kind: "subagent",
+                status,
+                countsForRun: false,
+                providerThreadId: parentProviderThreadId,
+                providerTurnId: subagent.providerTurnId,
+                nativeItemRef,
+                runtimeRequestId: null,
+                checkpointScopeId: null,
+                startedAt: subagent.task.startedAt,
+                completedAt,
+              },
             },
-          }, subagent.eventOrigin);
+            subagent.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "node.updated",
+              driver,
+              node: {
+                id: subagent.childRootNodeId,
+                threadId: subagent.childThreadId,
+                runId: null,
+                parentNodeId: null,
+                rootNodeId: subagent.childRootNodeId,
+                kind: "root_turn",
+                status,
+                countsForRun: false,
+                providerThreadId: subagent.task.providerThreadId,
+                providerTurnId: null,
+                nativeItemRef,
+                runtimeRequestId: null,
+                checkpointScopeId: null,
+                startedAt: subagent.task.startedAt,
+                completedAt,
+              },
+            },
+            subagent.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "subagent.updated",
+              driver,
+              subagent: subagent.task,
+            },
+            subagent.eventOrigin,
+          );
+          yield* emitProviderEvent(
+            {
+              type: "turn_item.updated",
+              driver,
+              turnItem: {
+                id: subagent.turnItemId,
+                threadId: subagent.task.threadId,
+                runId: subagent.task.runId,
+                nodeId: subagent.task.id,
+                providerThreadId: parentProviderThreadId,
+                providerTurnId: subagent.providerTurnId,
+                nativeItemRef,
+                parentItemId: null,
+                ordinal: subagent.turnItemOrdinal,
+                status,
+                title: subagent.task.title,
+                startedAt: subagent.task.startedAt,
+                completedAt,
+                updatedAt: now,
+                type: "subagent",
+                subagentId: subagent.task.id,
+                origin: "provider_native",
+                driver,
+                providerInstanceId: subagent.task.providerInstanceId,
+                childThreadId: subagent.childThreadId,
+                prompt: subagent.task.prompt,
+                result,
+              },
+            },
+            subagent.eventOrigin,
+          );
           if (acpSubagentStatusIsTerminal(status)) {
             subagent.terminalStatusProjected = true;
           }
@@ -5914,8 +6031,12 @@ export function makeAcpAdapterV2(
           nativeCreationExecution?: ProviderAdapter.ProviderAdapterV2OpenSessionInput["nativeCreationExecution"],
         ) {
           if (hasSpawnedRuntime) runtimeGeneration = NodeCrypto.randomUUID();
-          yield* (input.beforeRuntimeReplacement?.(runtimeGeneration) ?? Effect.void);
-          yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+          yield* input.beforeRuntimeReplacement?.(runtimeGeneration) ?? Effect.void;
+          yield* ProviderAdapter.authorizeProviderNativeCreation(
+            nativeCreationExecution,
+            driver,
+            input.runtimePolicy.cwd ?? process.cwd(),
+          );
           if (runtimeScope !== undefined) {
             yield* Scope.close(runtimeScope, Exit.void);
           }
@@ -5923,14 +6044,22 @@ export function makeAcpAdapterV2(
           hasSpawnedRuntime = true;
           runtimeMcpBridge = yield* makeRuntimeMcpBridge(threadId, runtimeScope);
           const callbackGeneration = yield* Ref.get(runtimeCallbackGeneration);
-          yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+          yield* ProviderAdapter.authorizeProviderNativeCreation(
+            nativeCreationExecution,
+            driver,
+            input.runtimePolicy.cwd ?? process.cwd(),
+          );
           runtime = yield* flavor
             .makeRuntime(makeRuntimeInput(callbackGeneration, threadId, resumeSessionId))
             .pipe(
               Effect.provideService(Scope.Scope, runtimeScope),
               Effect.provideService(Crypto.Crypto, options.crypto),
             );
-          currentRuntimeProducer = captureRuntimeProducer(runtime, callbackGeneration, runtimeGeneration);
+          currentRuntimeProducer = captureRuntimeProducer(
+            runtime,
+            callbackGeneration,
+            runtimeGeneration,
+          );
           for (const generation of runtimeProducers.keys()) {
             if (generation !== callbackGeneration) runtimeProducers.delete(generation);
           }
@@ -5944,7 +6073,11 @@ export function makeAcpAdapterV2(
           const startup = Effect.gen(function* () {
             yield* spawnAcpRuntime(threadId, resumeSessionId, nativeCreationExecution);
             yield* wireAcpRuntimeHandlers(runtime, yield* Ref.get(runtimeCallbackGeneration));
-            yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+            yield* ProviderAdapter.authorizeProviderNativeCreation(
+              nativeCreationExecution,
+              driver,
+              input.runtimePolicy.cwd ?? process.cwd(),
+            );
             return yield* runtime.start();
           });
           return yield* flavor.withRuntimeStartup?.(startup) ?? startup;
@@ -5975,7 +6108,7 @@ export function makeAcpAdapterV2(
           const replacementGeneration = yield* allocateRuntimeCallbackGeneration;
           const replacementRuntimeGeneration = NodeCrypto.randomUUID();
           runtimeGeneration = replacementRuntimeGeneration;
-          yield* (input.beforeRuntimeReplacement?.(runtimeGeneration) ?? Effect.void);
+          yield* input.beforeRuntimeReplacement?.(runtimeGeneration) ?? Effect.void;
           const replacementScope = yield* Scope.make();
           type CandidateLifecycle =
             | { readonly _tag: "Starting" }
@@ -6007,7 +6140,11 @@ export function makeAcpAdapterV2(
           let replacementMcpBridge: AcpMcpOverAcpBridge | undefined;
           const startup = Effect.gen(function* () {
             replacementMcpBridge = yield* makeRuntimeMcpBridge(threadId, replacementScope);
-            yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+            yield* ProviderAdapter.authorizeProviderNativeCreation(
+              nativeCreationExecution,
+              driver,
+              input.runtimePolicy.cwd ?? process.cwd(),
+            );
             const replacementRuntime = yield* flavor
               .makeRuntime(
                 makeRuntimeInput(
@@ -6033,7 +6170,11 @@ export function makeAcpAdapterV2(
               Effect.suspend(() => handleCandidateSessionUpdate(notification)),
             );
             yield* wireAcpRuntimeMcpHandlers(replacementRuntime, replacementMcpBridge);
-            yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+            yield* ProviderAdapter.authorizeProviderNativeCreation(
+              nativeCreationExecution,
+              driver,
+              input.runtimePolicy.cwd ?? process.cwd(),
+            );
             const started = yield* replacementRuntime.start();
             return { replacementRuntime, started, producer };
           });
@@ -6097,7 +6238,10 @@ export function makeAcpAdapterV2(
                       buffered,
                       (notification) =>
                         projectAcpRuntimeSessionUpdateEffect(notification).pipe(
-                          Effect.provideService(AcpCallbackProducer, replacementExit.value.producer),
+                          Effect.provideService(
+                            AcpCallbackProducer,
+                            replacementExit.value.producer,
+                          ),
                           Effect.catchCause((cause) =>
                             Effect.logError("failed to replay staged ACP session update", {
                               driver,
@@ -6138,7 +6282,11 @@ export function makeAcpAdapterV2(
           return replacementExit.value.started;
         });
 
-        const started = yield* startAcpRuntime(input.threadId, input.initialNativeThreadId, input.nativeCreationExecution);
+        const started = yield* startAcpRuntime(
+          input.threadId,
+          input.initialNativeThreadId,
+          input.nativeCreationExecution,
+        );
         yield* Ref.set(activeSessionId, started.sessionId);
         yield* Ref.set(activeSessionSetup, started);
         rememberTerminalEnvironment(started.sessionId, input.threadId);
@@ -6159,7 +6307,11 @@ export function makeAcpAdapterV2(
         ) {
           const activationOptions = acpMcpActivation(threadId, self);
           prepareTerminalEnvironment(threadId, sessionId);
-          yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+          yield* ProviderAdapter.authorizeProviderNativeCreation(
+            nativeCreationExecution,
+            driver,
+            input.runtimePolicy.cwd ?? process.cwd(),
+          );
           const activated = canLoadSession
             ? yield* runtime.loadSession(sessionId, activationOptions)
             : canResumeSession
@@ -6178,7 +6330,11 @@ export function makeAcpAdapterV2(
           runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
           nativeCreationExecution?: ProviderAdapter.ProviderAdapterV2OpenSessionInput["nativeCreationExecution"],
         ) {
-          yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+          yield* ProviderAdapter.authorizeProviderNativeCreation(
+            nativeCreationExecution,
+            driver,
+            input.runtimePolicy.cwd ?? process.cwd(),
+          );
           const requestedModel = flavor.resolveModelId?.(modelSelection) ?? modelSelection.model;
           let appliedModel: string | undefined;
           if (flavor.applyModelSelection !== undefined) {
@@ -6197,7 +6353,11 @@ export function makeAcpAdapterV2(
                 (option) => option.category === "model",
               ) === true;
             if (hasModelConfig) {
-              yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+              yield* ProviderAdapter.authorizeProviderNativeCreation(
+                nativeCreationExecution,
+                driver,
+                input.runtimePolicy.cwd ?? process.cwd(),
+              );
               yield* runtime.setModel(requestedModel);
             }
           }
@@ -6275,7 +6435,11 @@ export function makeAcpAdapterV2(
               );
               if (!advertisedValues.includes(selection.value)) continue;
             }
-            yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+            yield* ProviderAdapter.authorizeProviderNativeCreation(
+              nativeCreationExecution,
+              driver,
+              input.runtimePolicy.cwd ?? process.cwd(),
+            );
             yield* runtime.setConfigOption(selection.id, selection.value).pipe(
               Effect.catchTags({
                 AcpRequestError: (error) =>
@@ -6289,7 +6453,11 @@ export function makeAcpAdapterV2(
           }
           const policyMode = flavor.sessionModeForPolicy?.(runtimePolicy);
           if (policyMode !== undefined) {
-            yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+            yield* ProviderAdapter.authorizeProviderNativeCreation(
+              nativeCreationExecution,
+              driver,
+              input.runtimePolicy.cwd ?? process.cwd(),
+            );
             yield* runtime.setMode(policyMode);
           }
           const modeState = yield* runtime.getModeState;
@@ -6302,7 +6470,11 @@ export function makeAcpAdapterV2(
             modeState?.availableModes.some((mode) => mode.id === modeSelection.value) === true &&
             modeState.currentModeId !== modeSelection.value
           ) {
-            yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+            yield* ProviderAdapter.authorizeProviderNativeCreation(
+              nativeCreationExecution,
+              driver,
+              input.runtimePolicy.cwd ?? process.cwd(),
+            );
             yield* runtime.setMode(modeSelection.value);
           }
           const effectiveModeState = yield* runtime.getModeState;
@@ -6333,7 +6505,11 @@ export function makeAcpAdapterV2(
               (mode) => mode.id === "plan" || mode.id === "architect",
             );
             if (planMode !== undefined && effectiveModeState?.currentModeId !== planMode.id) {
-              yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+              yield* ProviderAdapter.authorizeProviderNativeCreation(
+                nativeCreationExecution,
+                driver,
+                input.runtimePolicy.cwd ?? process.cwd(),
+              );
               yield* runtime.setMode(planMode.id);
             }
             for (const option of planSensitiveOptions) {
@@ -6344,7 +6520,11 @@ export function makeAcpAdapterV2(
                 (choice) => choice === "plan" || choice === "architect",
               );
               if (requested !== undefined && option.currentValue !== requested) {
-                yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+                yield* ProviderAdapter.authorizeProviderNativeCreation(
+                  nativeCreationExecution,
+                  driver,
+                  input.runtimePolicy.cwd ?? process.cwd(),
+                );
                 yield* runtime.setConfigOption(option.id, requested);
               }
             }
@@ -6358,7 +6538,11 @@ export function makeAcpAdapterV2(
                   (mode) => mode.id === nativeBuild.modeId,
                 ) === true
               ) {
-                yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+                yield* ProviderAdapter.authorizeProviderNativeCreation(
+                  nativeCreationExecution,
+                  driver,
+                  input.runtimePolicy.cwd ?? process.cwd(),
+                );
                 yield* runtime.setMode(nativeBuild.modeId);
               }
               for (const saved of nativeBuild.configOptions) {
@@ -6370,7 +6554,11 @@ export function makeAcpAdapterV2(
                   "value" in entry ? [entry.value] : entry.options.map((choice) => choice.value),
                 );
                 if (option.currentValue !== saved.value && choices.includes(saved.value)) {
-                  yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
+                  yield* ProviderAdapter.authorizeProviderNativeCreation(
+                    nativeCreationExecution,
+                    driver,
+                    input.runtimePolicy.cwd ?? process.cwd(),
+                  );
                   yield* runtime.setConfigOption(option.id, saved.value);
                 }
               }
@@ -6385,7 +6573,12 @@ export function makeAcpAdapterV2(
           );
         });
 
-        yield* configureSession(started, input.modelSelection, input.runtimePolicy, input.nativeCreationExecution);
+        yield* configureSession(
+          started,
+          input.modelSelection,
+          input.runtimePolicy,
+          input.nativeCreationExecution,
+        );
         yield* Ref.set(activeSelection, input.modelSelection);
         yield* Ref.set(activeInteractionMode, input.runtimePolicy.interactionMode);
         const createdAt = yield* DateTime.now;
@@ -6520,28 +6713,31 @@ export function makeAcpAdapterV2(
             settledStatus === "completed"
           ) {
             const nativeItemId = `${context.nativeTurnId}:compaction`;
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver,
-              turnItem: {
-                id: idAllocator.derive.turnItemFromProviderItem({ driver, nativeItemId }),
-                threadId: context.input.threadId,
-                runId: context.input.runId,
-                nodeId: context.input.rootNodeId,
-                providerThreadId: context.input.providerThread.id,
-                providerTurnId: context.providerTurnId,
-                nativeItemRef: { driver, nativeId: nativeItemId, strength: "weak" },
-                parentItemId: null,
-                ordinal: yield* resolveItemOrdinal(context, nativeItemId),
-                type: "compaction",
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
                 driver,
-                status: "completed",
-                title: "Context compacted",
-                startedAt: context.startedAt,
-                completedAt: now,
-                updatedAt: now,
+                turnItem: {
+                  id: idAllocator.derive.turnItemFromProviderItem({ driver, nativeItemId }),
+                  threadId: context.input.threadId,
+                  runId: context.input.runId,
+                  nodeId: context.input.rootNodeId,
+                  providerThreadId: context.input.providerThread.id,
+                  providerTurnId: context.providerTurnId,
+                  nativeItemRef: { driver, nativeId: nativeItemId, strength: "weak" },
+                  parentItemId: null,
+                  ordinal: yield* resolveItemOrdinal(context, nativeItemId),
+                  type: "compaction",
+                  driver,
+                  status: "completed",
+                  title: "Context compacted",
+                  startedAt: context.startedAt,
+                  completedAt: now,
+                  updatedAt: now,
+                },
               },
-            }, context.eventOrigin);
+              context.eventOrigin,
+            );
           }
           const turn = providerTurnPayload(context, settledStatus, now);
           yield* Ref.update(providerTurns, (current) => {
@@ -6549,12 +6745,15 @@ export function makeAcpAdapterV2(
             updated.set(String(turn.id), turn);
             return updated;
           });
-          yield* emitProviderEvent({
-            type: "provider_turn.updated",
-            driver,
-            threadId: context.input.threadId,
-            providerTurn: turn,
-          }, context.eventOrigin);
+          yield* emitProviderEvent(
+            {
+              type: "provider_turn.updated",
+              driver,
+              threadId: context.input.threadId,
+              providerTurn: turn,
+            },
+            context.eventOrigin,
+          );
           const updatedProviderThread: OrchestrationV2ProviderThread = {
             ...context.input.providerThread,
             providerSessionId: input.providerSessionId,
@@ -6569,11 +6768,14 @@ export function makeAcpAdapterV2(
           yield* Ref.update(providerThreadByNativeSessionId, (current) =>
             new Map(current).set(context.nativeThreadId, updatedProviderThread),
           );
-          yield* emitProviderEvent({
-            type: "provider_thread.updated",
-            driver,
-            providerThread: updatedProviderThread,
-          }, context.eventOrigin);
+          yield* emitProviderEvent(
+            {
+              type: "provider_thread.updated",
+              driver,
+              providerThread: updatedProviderThread,
+            },
+            context.eventOrigin,
+          );
           yield* emitProviderEvent(
             settledStatus === "failed"
               ? {
@@ -6805,10 +7007,19 @@ export function makeAcpAdapterV2(
             const needsSessionActivation =
               (yield* Ref.get(activeSessionId)) !== requestedSessionId || restartAfterInterrupt;
             if (needsSessionActivation) {
-              const activated = yield* activateSession(requestedSessionId, turnInput.threadId, turnInput.nativeCreationExecution);
+              const activated = yield* activateSession(
+                requestedSessionId,
+                turnInput.threadId,
+                turnInput.nativeCreationExecution,
+              );
               yield* Ref.set(activeSessionId, activated.sessionId);
               yield* Ref.set(activeSessionSetup, activated);
-              yield* configureSession(activated, turnInput.modelSelection, turnInput.runtimePolicy, turnInput.nativeCreationExecution);
+              yield* configureSession(
+                activated,
+                turnInput.modelSelection,
+                turnInput.runtimePolicy,
+                turnInput.nativeCreationExecution,
+              );
               yield* Ref.set(activeSelection, turnInput.modelSelection);
               yield* Ref.set(activeInteractionMode, turnInput.runtimePolicy.interactionMode);
             } else {
@@ -6979,12 +7190,15 @@ export function makeAcpAdapterV2(
               updated.set(String(runningTurn.id), runningTurn);
               return updated;
             });
-            yield* emitProviderEvent({
-              type: "provider_turn.updated",
-              driver,
-              threadId: turnInput.threadId,
-              providerTurn: runningTurn,
-            }, context.eventOrigin);
+            yield* emitProviderEvent(
+              {
+                type: "provider_turn.updated",
+                driver,
+                threadId: turnInput.threadId,
+                providerTurn: runningTurn,
+              },
+              context.eventOrigin,
+            );
             const activeProviderThread: OrchestrationV2ProviderThread = {
               ...turnInput.providerThread,
               providerSessionId: input.providerSessionId,
@@ -6996,11 +7210,14 @@ export function makeAcpAdapterV2(
             yield* Ref.update(providerThreadByNativeSessionId, (current) =>
               new Map(current).set(requestedSessionId, activeProviderThread),
             );
-            yield* emitProviderEvent({
-              type: "provider_thread.updated",
-              driver,
-              providerThread: activeProviderThread,
-            }, context.eventOrigin);
+            yield* emitProviderEvent(
+              {
+                type: "provider_thread.updated",
+                driver,
+                providerThread: activeProviderThread,
+              },
+              context.eventOrigin,
+            );
             yield* rememberSnapshotMessage({
               createdBy: turnInput.message.createdBy,
               creationSource: turnInput.message.creationSource,
@@ -7045,18 +7262,25 @@ export function makeAcpAdapterV2(
                 ] as const;
               }).pipe(
                 Effect.tap((drained) =>
-                  Effect.forEach(drained, (notification) => {
-                    const producer = sessionUpdateProducers.get(notification);
-                    if (producer !== undefined && producer.token !== currentRuntimeProducer?.token) {
-                      return Effect.void;
-                    }
-                    return handleSessionUpdate(notification).pipe(
-                      Effect.provideService(AcpCallbackProducer, producer),
-                    );
-                  }, {
-                    concurrency: 1,
-                    discard: true,
-                  }),
+                  Effect.forEach(
+                    drained,
+                    (notification) => {
+                      const producer = sessionUpdateProducers.get(notification);
+                      if (
+                        producer !== undefined &&
+                        producer.token !== currentRuntimeProducer?.token
+                      ) {
+                        return Effect.void;
+                      }
+                      return handleSessionUpdate(notification).pipe(
+                        Effect.provideService(AcpCallbackProducer, producer),
+                      );
+                    },
+                    {
+                      concurrency: 1,
+                      discard: true,
+                    },
+                  ),
                 ),
                 Effect.map((drained) => drained.length),
               );
@@ -7091,88 +7315,96 @@ export function makeAcpAdapterV2(
               return;
             }
             const promptGeneration = yield* Ref.get(runtimeCallbackGeneration);
-            yield* ProviderAdapter.authorizeProviderNativeCreation(turnInput.nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd());
             yield* ProviderAdapter.authorizeProviderNativeCreation(
-              turnInput.nativeCreationExecution, driver, input.runtimePolicy.cwd ?? process.cwd(),
-            ).pipe(Effect.andThen(runtime.prompt({ prompt: promptParts!.prompt }))).pipe(
-              Effect.tap(() =>
-                Ref.update(promptInstructionStates, (current) => {
-                  if (promptParts?.instructionState === undefined) return current;
-                  const updated = new Map(current);
-                  updated.set(requestedSessionId, promptParts.instructionState);
-                  return updated;
-                }),
-              ),
-              // Wire settlement precedes the completion callback's permit request so
-              // settled-soft classification can observe the native return even when
-              // the completion fiber has not yet set promptSettled under the permit.
-              Effect.tap(() =>
-                Deferred.succeed(context.promptWireSettled, undefined).pipe(Effect.asVoid),
-              ),
-              Effect.flatMap((result) =>
-                runRuntimeCallbackAtGeneration(
-                  promptGeneration,
-                  Effect.gen(function* () {
-                    if (context.finalized) return;
-                    const status =
-                      result.stopReason === "cancelled"
-                        ? context.interrupted
-                          ? "interrupted"
-                          : "cancelled"
-                        : "completed";
-                    // Grok monitors (and async subagents) keep working after the root
-                    // prompt RPC returns. Defer finalize so their later updates and
-                    // wake-turn traffic still project onto this run.
-                    if (
-                      flavor.deferFinalizeForBackgroundWork === true &&
-                      !context.interrupted &&
-                      hasDeferredBackgroundWork(context)
-                    ) {
-                      context.promptSettled = true;
-                      context.promptSettledStatus = status;
-                      // The agent finished this prompt's reply. Background work
-                      // holds the run open, not the text it already sent.
-                      yield* closeTextStreams(context);
-                      yield* (
-                        options.testHooks?.afterPromptSettledWithBackgroundWork?.() ?? Effect.void
-                      );
-                      return;
-                    }
-                    yield* finalizeTurn(context, status);
-                  }),
-                ).pipe(Effect.asVoid),
-              ),
-              // Prompt failure is not wire-settled: only a successful resolve marks
-              // the signal. catchCause must not complete promptWireSettled.
-              Effect.catchCause((cause) =>
-                runRuntimeCallbackAtGeneration(
-                  promptGeneration,
-                  Effect.gen(function* () {
-                    if (context.finalized) return;
-                    yield* finalizeTurn(
-                      context,
-                      context.interrupted ? "interrupted" : "failed",
-                      flavor.promptFailure?.(Cause.squash(cause)) ??
-                        makeProviderFailure({
-                          cause: Cause.squash(cause),
-                          class: "provider_error",
-                        }),
-                    ).pipe(
-                      Effect.andThen(
-                        Effect.logWarning("orchestration-v2.acp-prompt-failed", {
-                          driver,
-                          providerSessionId: input.providerSessionId,
-                          providerThreadId: turnInput.providerThread.id,
-                          providerTurnId,
-                          cause,
-                        }),
-                      ),
-                    );
-                  }),
-                ).pipe(Effect.asVoid),
-              ),
-              Effect.forkIn(sessionScope),
+              turnInput.nativeCreationExecution,
+              driver,
+              input.runtimePolicy.cwd ?? process.cwd(),
             );
+            yield* ProviderAdapter.authorizeProviderNativeCreation(
+              turnInput.nativeCreationExecution,
+              driver,
+              input.runtimePolicy.cwd ?? process.cwd(),
+            )
+              .pipe(Effect.andThen(runtime.prompt({ prompt: promptParts!.prompt })))
+              .pipe(
+                Effect.tap(() =>
+                  Ref.update(promptInstructionStates, (current) => {
+                    if (promptParts?.instructionState === undefined) return current;
+                    const updated = new Map(current);
+                    updated.set(requestedSessionId, promptParts.instructionState);
+                    return updated;
+                  }),
+                ),
+                // Wire settlement precedes the completion callback's permit request so
+                // settled-soft classification can observe the native return even when
+                // the completion fiber has not yet set promptSettled under the permit.
+                Effect.tap(() =>
+                  Deferred.succeed(context.promptWireSettled, undefined).pipe(Effect.asVoid),
+                ),
+                Effect.flatMap((result) =>
+                  runRuntimeCallbackAtGeneration(
+                    promptGeneration,
+                    Effect.gen(function* () {
+                      if (context.finalized) return;
+                      const status =
+                        result.stopReason === "cancelled"
+                          ? context.interrupted
+                            ? "interrupted"
+                            : "cancelled"
+                          : "completed";
+                      // Grok monitors (and async subagents) keep working after the root
+                      // prompt RPC returns. Defer finalize so their later updates and
+                      // wake-turn traffic still project onto this run.
+                      if (
+                        flavor.deferFinalizeForBackgroundWork === true &&
+                        !context.interrupted &&
+                        hasDeferredBackgroundWork(context)
+                      ) {
+                        context.promptSettled = true;
+                        context.promptSettledStatus = status;
+                        // The agent finished this prompt's reply. Background work
+                        // holds the run open, not the text it already sent.
+                        yield* closeTextStreams(context);
+                        yield* (
+                          options.testHooks?.afterPromptSettledWithBackgroundWork?.() ?? Effect.void
+                        );
+                        return;
+                      }
+                      yield* finalizeTurn(context, status);
+                    }),
+                  ).pipe(Effect.asVoid),
+                ),
+                // Prompt failure is not wire-settled: only a successful resolve marks
+                // the signal. catchCause must not complete promptWireSettled.
+                Effect.catchCause((cause) =>
+                  runRuntimeCallbackAtGeneration(
+                    promptGeneration,
+                    Effect.gen(function* () {
+                      if (context.finalized) return;
+                      yield* finalizeTurn(
+                        context,
+                        context.interrupted ? "interrupted" : "failed",
+                        flavor.promptFailure?.(Cause.squash(cause)) ??
+                          makeProviderFailure({
+                            cause: Cause.squash(cause),
+                            class: "provider_error",
+                          }),
+                      ).pipe(
+                        Effect.andThen(
+                          Effect.logWarning("orchestration-v2.acp-prompt-failed", {
+                            driver,
+                            providerSessionId: input.providerSessionId,
+                            providerThreadId: turnInput.providerThread.id,
+                            providerTurnId,
+                            cause,
+                          }),
+                        ),
+                      );
+                    }),
+                  ).pipe(Effect.asVoid),
+                ),
+                Effect.forkIn(sessionScope),
+              );
           },
           (effect, turnInput) =>
             effect.pipe(
@@ -7254,27 +7486,34 @@ export function makeAcpAdapterV2(
             return runtimeGeneration;
           },
           observeThreadRuntime: (binding) =>
-            runtimeTransitionPermit.withPermit(Effect.gen(function* () {
-              const currentThread = binding.nativeThreadId === undefined ? undefined :
-                (yield* Ref.get(providerThreadByNativeSessionId)).get(binding.nativeThreadId);
-              if (
-                binding.instanceId !== options.instanceId ||
-                binding.providerSessionId !== input.providerSessionId ||
-                binding.runtimeGeneration !== runtimeGeneration ||
-                binding.nativeThreadId !== (yield* Ref.get(activeSessionId)) ||
-                currentThread?.id !== binding.providerThreadId ||
-                currentThread.appThreadId !== binding.threadId ||
-                (yield* Ref.get(runtimeTeardownState))._tag !== "Idle" ||
-                (yield* Ref.get(runtimeRestartRequired))
-              ) {
-                return { status: "unknown" as const, reason: "ACP runtime binding is not current." };
-              }
-              return {
-                status: "unknown" as const,
-                binding,
-                reason: "ACP does not expose a complete native thread activity probe.",
-              };
-            })),
+            runtimeTransitionPermit.withPermit(
+              Effect.gen(function* () {
+                const currentThread =
+                  binding.nativeThreadId === undefined
+                    ? undefined
+                    : (yield* Ref.get(providerThreadByNativeSessionId)).get(binding.nativeThreadId);
+                if (
+                  binding.instanceId !== options.instanceId ||
+                  binding.providerSessionId !== input.providerSessionId ||
+                  binding.runtimeGeneration !== runtimeGeneration ||
+                  binding.nativeThreadId !== (yield* Ref.get(activeSessionId)) ||
+                  currentThread?.id !== binding.providerThreadId ||
+                  currentThread.appThreadId !== binding.threadId ||
+                  (yield* Ref.get(runtimeTeardownState))._tag !== "Idle" ||
+                  (yield* Ref.get(runtimeRestartRequired))
+                ) {
+                  return {
+                    status: "unknown" as const,
+                    reason: "ACP runtime binding is not current.",
+                  };
+                }
+                return {
+                  status: "unknown" as const,
+                  binding,
+                  reason: "ACP does not expose a complete native thread activity probe.",
+                };
+              }),
+            ),
           instanceId: options.instanceId,
           driver,
           providerSessionId: input.providerSessionId,
@@ -7349,7 +7588,11 @@ export function makeAcpAdapterV2(
               ),
           ),
           resumeThread: Effect.fn("AcpAdapterV2.resumeThread")(
-            function* (threadInput: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]>[0]) {
+            function* (
+              threadInput: Parameters<
+                ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]
+              >[0],
+            ) {
               return yield* runtimeTransitionPermit.withPermit(
                 Effect.gen(function* () {
                   yield* awaitRuntimeTeardown();
@@ -7363,8 +7606,9 @@ export function makeAcpAdapterV2(
                     threadInput.providerThread.appThreadId,
                     threadInput.nativeCreationExecution,
                   ).pipe(Effect.tapError(() => restorePreviousItemIdentity));
-                  yield* (threadInput.beforeNativeResume?.(undefined) ?? Effect.void)
-                    .pipe(Effect.tapError(() => restorePreviousItemIdentity));
+                  yield* (threadInput.beforeNativeResume?.(undefined) ?? Effect.void).pipe(
+                    Effect.tapError(() => restorePreviousItemIdentity),
+                  );
                   if ((yield* Ref.get(activeSessionId)) !== sessionId || restartAfterInterrupt) {
                     yield* Ref.set(snapshot, {
                       order: [],
@@ -7382,7 +7626,12 @@ export function makeAcpAdapterV2(
                     yield* Ref.set(activeSessionSetup, activated);
                     const nextSelection = threadInput.modelSelection ?? input.modelSelection;
                     const nextRuntimePolicy = threadInput.runtimePolicy ?? input.runtimePolicy;
-                    yield* configureSession(activated, nextSelection, nextRuntimePolicy, threadInput.nativeCreationExecution);
+                    yield* configureSession(
+                      activated,
+                      nextSelection,
+                      nextRuntimePolicy,
+                      threadInput.nativeCreationExecution,
+                    );
                     yield* Ref.set(activeSelection, nextSelection);
                     yield* Ref.set(activeInteractionMode, nextRuntimePolicy.interactionMode);
                   }
@@ -8017,7 +8266,10 @@ export function makeAcpAdapterV2(
           Effect.mapError(
             (cause) =>
               new ProviderAdapter.ProviderAdapterOpenSessionError({
-                nativeEffect: input.nativeOperation === undefined ? undefined : { ...input.nativeOperation, outcome: "unknown" },
+                nativeEffect:
+                  input.nativeOperation === undefined
+                    ? undefined
+                    : { ...input.nativeOperation, outcome: "unknown" },
                 driver,
                 providerSessionId: input.providerSessionId,
                 cause,

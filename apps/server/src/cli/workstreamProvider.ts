@@ -14,6 +14,7 @@ import {
   SessionCredentialIssueError,
 } from "../auth/SessionStore.ts";
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
+import { deriveServerPaths } from "../config.ts";
 import { makeNativeCredentialWriter } from "../workstreams/enrollment/credentialFile.ts";
 import {
   makeNativeEnrollmentOperations,
@@ -47,6 +48,7 @@ const RequestFile = Argument.String("request-file").pipe(
   ),
 );
 const Sha256 = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
+const encodeReceiptJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const locationFlags = {
   baseDir: Flag.String("base-dir").pipe(
     Flag.withDescription("Explicit existing T3 home; never initialized by this command."),
@@ -214,10 +216,18 @@ export const runWorkstreamProviderCliOperation = Effect.fn("runWorkstreamProvide
   },
 );
 
-const showReceipt = (input: WorkstreamProviderCliInput) =>
-  runWorkstreamProviderCliOperation(input).pipe(
-    Effect.flatMap((receipt) => Console.log(JSON.stringify(receipt))),
-  );
+const showReceipt = Effect.fn("workstreamProvider.showReceipt")(function* (
+  input:
+    | Omit<Extract<WorkstreamProviderCliInput, { readonly operation: "plan" }>, "dbPath">
+    | Omit<Extract<WorkstreamProviderCliInput, { readonly operation: "apply" }>, "dbPath">
+    | Omit<Extract<WorkstreamProviderCliInput, { readonly operation: "readback" }>, "dbPath">,
+) {
+  const { dbPath } = yield* deriveServerPaths(input.baseDir, undefined, {
+    baseDirIsExplicit: true,
+  });
+  const receipt = yield* runWorkstreamProviderCliOperation({ ...input, dbPath });
+  yield* Console.log(yield* encodeReceiptJson(receipt).pipe(Effect.orDie));
+});
 const planCommand = Command.make("plan", { ...locationFlags, sqliteSidecarEffects }).pipe(
   Command.withDescription(
     "Inspect existing qualification, records and credential hash; operational inspection may write SQLite sidecars when explicitly selected.",

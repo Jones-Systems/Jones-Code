@@ -7,7 +7,7 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 export const layer = Layer.succeed(
   McpSessionRegistry.McpSessionRegistry,
   McpSessionRegistry.McpSessionRegistry.of({
-    issue: ({ threadId, providerInstanceId }) =>
+    issue: ({ threadId, providerInstanceId, capabilities, browserToolsAvailable }) =>
       Effect.succeed({
         config: {
           environmentId: EnvironmentId.make("environment:mcp-test"),
@@ -16,7 +16,15 @@ export const layer = Layer.succeed(
           providerInstanceId,
           endpoint: "http://127.0.0.1/mcp",
           authorizationHeader: `Bearer mcp-test:${threadId}`,
-          browserToolsAvailable: true,
+          capabilities:
+            capabilities ??
+            new Set([
+              "orchestration",
+              "worktree",
+              "pull-requests",
+              ...(browserToolsAvailable === false ? [] : ["preview"]),
+            ]),
+          browserToolsAvailable: capabilities?.has("preview") ?? browserToolsAvailable ?? true,
         },
       }),
     resolve: () => Effect.succeed(undefined),

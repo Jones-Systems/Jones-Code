@@ -63,14 +63,17 @@ for (const [index, vector] of pythonVectors.entries()) {
       assert.strictEqual(preparation.canonicalText, vector.preparation);
       assert.strictEqual(preparation.preparationSha256, vector.sha256);
       assert.strictEqual(nativeCreationSha256(preparation.canonicalText), vector.sha256);
-      const original = Schema.decodeUnknownSync(
+      const original = yield* Schema.decodeUnknownEffect(
         Schema.fromJsonString(Schema.Struct({ command: Schema.Unknown })),
-      )(vector.preparation);
+      )(vector.preparation).pipe(Effect.orDie);
       assert.strictEqual(
         nativeCreationCanonicalJson(preparation.command),
         nativeCreationCanonicalJson(original.command),
       );
-      assert.strictEqual(nativeCreationCommandDigest(preparation.command), preparation.commandDigest);
+      assert.strictEqual(
+        nativeCreationCommandDigest(preparation.command),
+        preparation.commandDigest,
+      );
     }),
   );
 }

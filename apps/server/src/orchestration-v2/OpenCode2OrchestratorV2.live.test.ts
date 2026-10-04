@@ -49,6 +49,10 @@ import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "../background/HostPowerMonitor.ts";
 import * as ServerConfig from "../config.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as NativeCreationRepositoryLayer from "../persistence/Layers/NativeCreationRepository.ts";
+import * as ProcessAttribution from "../resourceTelemetry/ProcessAttribution.ts";
+import { TerminalManager } from "../terminal/Manager.ts";
 import * as AntigravityInstallation from "../provider/AntigravityInstallation.ts";
 import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -66,6 +70,8 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import { worktreeRepairDependenciesTestLayer } from "./ProviderTurnStartService.testkit.ts";
 import { OrchestrationV2LayerLive } from "./runtimeLayer.ts";
+import { LegacyLeaseInventoryError } from "./LegacyLeaseCleanup.ts";
+import { NativeCreationAuthorityUnavailable } from "./NativeCreationAuthority.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProviderContinuationRequests from "./ProviderContinuationRequests.ts";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
@@ -112,6 +118,7 @@ const mcpRegistryLayer = Layer.succeed(
           providerInstanceId,
           endpoint: MCP_URL,
           authorizationHeader: `Bearer mcp-live:${threadId}`,
+          capabilities: new Set(["orchestration", "worktree", "pull-requests"]),
           browserToolsAvailable: false,
         },
       }),
@@ -203,15 +210,35 @@ const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe
     ),
   ),
 );
+// The server supplies these outside the orchestration runtime: native creation
+// stays unavailable as in production, and legacy terminal inventory fails closed.
+const serverSuppliedRuntimeInputs = Layer.mergeAll(
+  NativeCreationAuthorityUnavailable.pipe(
+    Layer.provide(AuthSessions.layer),
+    Layer.provideMerge(NativeCreationRepositoryLayer.layer),
+  ),
+  Layer.mock(TerminalManager)({
+    withLegacyOwnerAbsent: (owner) =>
+      Effect.fail(
+        new LegacyLeaseInventoryError({
+          threadId: owner.originalBirth.threadId,
+          reason: "Live provider fixture has no terminal inventory",
+        }),
+      ),
+  }),
+);
+
 const orchestrationLayer = OrchestrationV2LayerLive.pipe(
   Layer.provide(worktreeRepairDependenciesTestLayer),
   Layer.provide(mcpRegistryLayer),
+  Layer.provide(serverSuppliedRuntimeInputs),
   Layer.provide(SqlitePersistenceMemory),
   Layer.provide(CheckpointStore.layer.pipe(Layer.provide(vcsDriverRegistryLayer))),
   Layer.provide(serverConfigLayer),
   Layer.provide(serverSettingsLayer),
   // Merged, not only provided: the test reads the same instance the orchestrator uses.
   Layer.provideMerge(providerInstanceRegistryLayer),
+  Layer.provide(ProcessAttribution.layer),
   Layer.provide(ResetCreditCoordinator.layer),
   Layer.provide(backgroundPolicyLayer),
   Layer.provide(PlatformTestLayer),

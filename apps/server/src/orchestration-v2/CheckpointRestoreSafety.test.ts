@@ -3,6 +3,8 @@ import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
   CheckpointScopeId,
+  CommandId,
+  EventId,
   type OrchestrationV2ThreadProjection,
   ProjectId,
   ProviderInstanceId,
@@ -10,6 +12,7 @@ import {
   ProviderThreadId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -63,6 +66,12 @@ it.effect.each([
     const instanceId = ProviderInstanceId.make("restore-instance");
     const checkpointId = CheckpointId.make("restore-checkpoint");
     const scopeId = CheckpointScopeId.make("restore-scope");
+    // The rollback executes only for its original accepted checkpoint.rollback effect.
+    const sourceEffect = {
+      effectId: "restore-rollback-effect",
+      commandId: CommandId.make("restore-rollback-command"),
+    };
+    const acceptedAt = yield* DateTime.now;
     const calls: string[] = [];
     const providerThread = {
       id: providerThreadId,
@@ -162,7 +171,42 @@ it.effect.each([
                 yield* fs.remove(otherFile).pipe(Effect.orDie);
               }),
           }),
-          Layer.mock(EventSinkV2)({ write: () => Effect.succeed([]) }),
+          Layer.mock(EventSinkV2)({
+            write: () => Effect.succeed([]),
+            readAttachmentNamespaceCleanupTask: () => Effect.succeed(null),
+            readApplicationBirthRecord: () =>
+              Effect.succeed({
+                kind: "application_v2_thread_birth" as const,
+                threadId,
+                eventId: EventId.make("restore-birth"),
+                sequence: 1,
+              }),
+            readCommandReceiptIdentity: () =>
+              Effect.succeed({
+                receipt: {
+                  commandId: sourceEffect.commandId,
+                  threadId,
+                  commandType: "checkpoint.rollback",
+                  acceptedAt,
+                  resultSequence: 2,
+                  status: "accepted" as const,
+                  error: null,
+                },
+                projectReceipt: null,
+                identity: null,
+                nativeCreationReservation: null,
+                importedHistoryChoiceIdentity: null,
+                currentRuntimeStopIdentity: null,
+                capturedRestartOrigin: null,
+                threadRecovery: null,
+                threadDeletion: null,
+                ordinaryCheckoutAdmissions: [],
+                ordinaryCheckoutEffectLinks: [],
+                ordinaryCheckoutCommands: [],
+              }),
+            readOrdinaryCheckoutEffectLink: () => Effect.succeed(null),
+            writeWithEffects: () => Effect.succeed([]),
+          }),
           Layer.mock(ProviderSessionManagerV2)({
             open: () =>
               Effect.succeed({
@@ -184,13 +228,22 @@ it.effect.each([
     );
     if (rejected) {
       const error = yield* service
-        .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
+        .execute({ threadId, providerThreadId, checkpointId, scopeId, sourceEffect, restoreFiles })
         .pipe(Effect.flip);
+      assert.equal(error._tag, "CheckpointRollbackExecutionError");
+      if (error._tag !== "CheckpointRollbackExecutionError") return;
       assert.equal(error.reason, "shared-workspace");
       assert.deepEqual(calls, []);
       assert.equal(yield* fs.readFileString(otherFile), "other thread's uncommitted work");
     } else {
-      yield* service.execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles });
+      yield* service.execute({
+        threadId,
+        providerThreadId,
+        checkpointId,
+        scopeId,
+        sourceEffect,
+        restoreFiles,
+      });
       assert.deepEqual(calls, restoreFiles ? ["provider", "files"] : ["provider"]);
       assert.equal(yield* fs.exists(otherFile), !restoreFiles);
     }

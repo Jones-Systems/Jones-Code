@@ -54,9 +54,9 @@ describe("MCP provider grants", () => {
       expect(() => setMcpProviderSession({ ...config, browserToolsAvailable: true })).toThrow(
         "MCP browser availability contradicts its preview grant",
       );
-      expect(() => setMcpProviderSession({ ...config, capabilities: new Set(["preview"]) })).toThrow(
-        "MCP browser availability contradicts its preview grant",
-      );
+      expect(() =>
+        setMcpProviderSession({ ...config, capabilities: new Set(["preview"]) }),
+      ).toThrow("MCP browser availability contradicts its preview grant");
       expect(readMcpProviderSession(threadId)).toBe(config);
     } finally {
       clearMcpProviderSession(threadId);

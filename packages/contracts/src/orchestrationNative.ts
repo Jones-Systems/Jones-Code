@@ -1,21 +1,53 @@
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
-import { CommandId, EventId, IsoDateTime, MessageId, NonNegativeInt, ProjectId, ProviderSessionId, ProviderThreadId, ProviderTurnId, RunAttemptId, RunId, ThreadId, TrimmedNonEmptyString, TurnId } from "./baseSchemas.ts";
+import {
+  CommandId,
+  EventId,
+  IsoDateTime,
+  MessageId,
+  NonNegativeInt,
+  ProjectId,
+  ProviderSessionId,
+  ProviderThreadId,
+  ProviderTurnId,
+  RunAttemptId,
+  RunId,
+  ThreadId,
+  TrimmedNonEmptyString,
+  TurnId,
+} from "./baseSchemas.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
 import { ModelSelection } from "./modelSelection.ts";
-import { NativeCreationEffect, NativeCreationHistoricalBinding, NativeCreationObservation } from "./nativeCreation.ts";
-import { OrchestrationV2ImportedHistoryReviewBasis, OrchestrationV2ProviderSession, OrchestrationV2RunStatus } from "./orchestrationV2.ts";
+import {
+  NativeCreationEffect,
+  NativeCreationHistoricalBinding,
+  NativeCreationObservation,
+} from "./nativeCreation.ts";
+import {
+  OrchestrationV2ImportedHistoryReviewBasis,
+  OrchestrationV2ProviderSession,
+  OrchestrationV2RunStatus,
+} from "./orchestrationV2.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
-import { DEFAULT_PROVIDER_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
+import {
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
+  ProviderInteractionMode,
+  RuntimeMode,
+} from "./providerPolicy.ts";
 
 const closedNativeStruct = <Fields extends Schema.Struct.Fields>(fields: Fields) => {
   const schema = Schema.Struct(fields);
   // Validate original wire keys before struct decoding can discard them.
-  return Schema.flip(Schema.flip(schema).check(Schema.makeFilter(
-    (value) => Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
-  )));
+  return Schema.flip(
+    Schema.flip(schema).check(
+      Schema.makeFilter((value) =>
+        Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
+      ),
+    ),
+  );
 };
 
 const OrchestrationV2CurrentRuntimeBinding = closedNativeStruct({
@@ -54,11 +86,12 @@ export const OrchestrationV2ThreadRuntimeAttachmentResult = closedNativeStruct({
   threadId: ThreadId,
   attachment: OrchestrationV2ThreadRuntimeAttachment,
   // Feature availability does not attest authorization, currentness, or a completed stop.
-  stopCapability: Schema.optionalKey(Schema.NullOr(closedNativeStruct({ version: Schema.Literal(2) }))),
+  stopCapability: Schema.optionalKey(
+    Schema.NullOr(closedNativeStruct({ version: Schema.Literal(2) })),
+  ),
 });
 export type OrchestrationV2ThreadRuntimeAttachmentResult =
   typeof OrchestrationV2ThreadRuntimeAttachmentResult.Type;
-
 
 export const OrchestrationV2ThreadRuntimeObservation = Schema.Union([
   closedNativeStruct({
@@ -78,9 +111,13 @@ export type OrchestrationV2ThreadRuntimeObservation =
 export const OrchestrationV2ThreadRuntimeObservationResult = closedNativeStruct({
   threadId: ThreadId,
   observation: OrchestrationV2ThreadRuntimeObservation,
-}).check(Schema.makeFilter((result) =>
-  result.observation.binding === undefined || result.observation.binding.threadId === result.threadId,
-));
+}).check(
+  Schema.makeFilter(
+    (result) =>
+      result.observation.binding === undefined ||
+      result.observation.binding.threadId === result.threadId,
+  ),
+);
 export type OrchestrationV2ThreadRuntimeObservationResult =
   typeof OrchestrationV2ThreadRuntimeObservationResult.Type;
 
@@ -96,8 +133,7 @@ export const OrchestrationV2OperatingCountsResult = closedNativeStruct({
   observedAt: Schema.String,
   backgroundSampledAt: Schema.String,
 });
-export type OrchestrationV2OperatingCountsResult =
-  typeof OrchestrationV2OperatingCountsResult.Type;
+export type OrchestrationV2OperatingCountsResult = typeof OrchestrationV2OperatingCountsResult.Type;
 
 export const OrchestrationV2CurrentThreadRuntimeTarget = closedNativeStruct({
   binding: OrchestrationV2CurrentRuntimeBinding,
@@ -106,7 +142,6 @@ export const OrchestrationV2CurrentThreadRuntimeTarget = closedNativeStruct({
 });
 export type OrchestrationV2CurrentThreadRuntimeTarget =
   typeof OrchestrationV2CurrentThreadRuntimeTarget.Type;
-
 
 // V1 codecs describe historical native requests and observations; live dispatch uses V2.
 export const OrchestrationSessionStatus = Schema.Literals([
@@ -235,7 +270,6 @@ export const ThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-
 // Producer-canonical V1 strings retain Python stripping semantics; ordinary historical decoding still trims.
 export const LegacyNativeBootstrapCommandV1 = closedNativeStruct({
   type: ThreadTurnStartCommand.fields.type,
@@ -260,9 +294,12 @@ export const LegacyNativeBootstrapCommandV1 = closedNativeStruct({
 });
 export type LegacyNativeBootstrapCommandV1 = typeof LegacyNativeBootstrapCommandV1.Type;
 
-
 export const NativeCommandIdentityV2 = closedNativeStruct({
-  kind: Schema.Literals(["guarded_message_dispatch", "native_creation_stage", "workstream_settlement"]),
+  kind: Schema.Literals([
+    "guarded_message_dispatch",
+    "native_creation_stage",
+    "workstream_settlement",
+  ]),
   version: Schema.Literal(2),
   commandId: CommandId,
   commandType: TrimmedNonEmptyString,
@@ -296,10 +333,28 @@ export const ThreadTurnDispatchGuardV2 = closedNativeStruct({
 export type ThreadTurnDispatchGuardV2 = typeof ThreadTurnDispatchGuardV2.Type;
 
 export const OrchestrationDispatchBlockerV2 = Schema.Literals([
-  "archived", "deleted", "settled", "queued_run", "held_run", "active_run", "active_attempt",
-  "provider_turn", "execution_node", "provider_activity", "pending_approval", "pending_user_input",
-  "pending_tool", "pending_auth_refresh", "actionable_plan", "subagent_work", "background_work",
-  "completion_delivery", "wake_delivery", "pending_native_effect", "unknown_resume", "unresolved_start",
+  "archived",
+  "deleted",
+  "settled",
+  "queued_run",
+  "held_run",
+  "active_run",
+  "active_attempt",
+  "provider_turn",
+  "execution_node",
+  "provider_activity",
+  "pending_approval",
+  "pending_user_input",
+  "pending_tool",
+  "pending_auth_refresh",
+  "actionable_plan",
+  "subagent_work",
+  "background_work",
+  "completion_delivery",
+  "wake_delivery",
+  "pending_native_effect",
+  "unknown_resume",
+  "unresolved_start",
   "unknown_evidence",
 ]);
 export type OrchestrationDispatchBlockerV2 = typeof OrchestrationDispatchBlockerV2.Type;
@@ -320,10 +375,13 @@ export const OrchestrationDispatchTargetV2 = closedNativeStruct({
   requireIdle: Schema.Literal(true),
   idle: Schema.Boolean,
   blockers: Schema.Array(OrchestrationDispatchBlockerV2),
-}).check(Schema.makeFilter((target) =>
-  (target.complete || (!target.idle && target.blockers.includes("unknown_evidence"))) &&
-  (!target.idle || target.blockers.length === 0),
-));
+}).check(
+  Schema.makeFilter(
+    (target) =>
+      (target.complete || (!target.idle && target.blockers.includes("unknown_evidence"))) &&
+      (!target.idle || target.blockers.length === 0),
+  ),
+);
 export type OrchestrationDispatchTargetV2 = typeof OrchestrationDispatchTargetV2.Type;
 
 const NativeCommandReceiptObservationV2Fields = {
@@ -335,38 +393,56 @@ const NativeCommandReceiptObservationV2Fields = {
   status: Schema.Literals(["accepted", "rejected"]),
   error: Schema.NullOr(Schema.String),
 };
-export const NativeCommandReceiptObservationV2 = closedNativeStruct(NativeCommandReceiptObservationV2Fields);
+export const NativeCommandReceiptObservationV2 = closedNativeStruct(
+  NativeCommandReceiptObservationV2Fields,
+);
 export type NativeCommandReceiptObservationV2 = typeof NativeCommandReceiptObservationV2.Type;
 export const NativeCommandReceiptObservationV2Json = closedNativeStruct({
   ...NativeCommandReceiptObservationV2Fields,
   acceptedAt: Schema.DateTimeUtcFromString,
 });
-export type NativeCommandReceiptObservationV2Json = typeof NativeCommandReceiptObservationV2Json.Type;
+export type NativeCommandReceiptObservationV2Json =
+  typeof NativeCommandReceiptObservationV2Json.Type;
 
 const OrchestrationV2ThreadDeletionCleanupObservationFields = {
   threadId: ThreadId,
   commandId: CommandId,
   receipt: Schema.NullOr(NativeCommandReceiptObservationV2),
-  deletion: Schema.NullOr(closedNativeStruct({
-    eventId: EventId,
-    sequence: NonNegativeInt,
-    resultSequence: NonNegativeInt,
-  })),
-  worktree: Schema.NullOr(closedNativeStruct({
-    projectId: ProjectId,
-    path: Schema.String,
-    branch: Schema.NullOr(Schema.String),
-  })),
-  state: Schema.Literals(["not_found", "not_requested", "pending", "removing", "completed", "retained", "unknown"]),
-  removalOutcome: Schema.NullOr(closedNativeStruct({
-    result: Schema.NullOr(Schema.Literals(["succeeded", "failed"])),
-    effect: Schema.Literals(["confirmed", "absent", "no_effect", "unknown"]),
-  })),
+  deletion: Schema.NullOr(
+    closedNativeStruct({
+      eventId: EventId,
+      sequence: NonNegativeInt,
+      resultSequence: NonNegativeInt,
+    }),
+  ),
+  worktree: Schema.NullOr(
+    closedNativeStruct({
+      projectId: ProjectId,
+      path: Schema.String,
+      branch: Schema.NullOr(Schema.String),
+    }),
+  ),
+  state: Schema.Literals([
+    "not_found",
+    "not_requested",
+    "pending",
+    "removing",
+    "completed",
+    "retained",
+    "unknown",
+  ]),
+  removalOutcome: Schema.NullOr(
+    closedNativeStruct({
+      result: Schema.NullOr(Schema.Literals(["succeeded", "failed"])),
+      effect: Schema.Literals(["confirmed", "absent", "no_effect", "unknown"]),
+    }),
+  ),
   currentLease: Schema.Literals(["original", "absent", "replacement", "unavailable"]),
   reason: Schema.NullOr(Schema.String),
 };
-export const OrchestrationV2ThreadDeletionCleanupObservation =
-  closedNativeStruct(OrchestrationV2ThreadDeletionCleanupObservationFields);
+export const OrchestrationV2ThreadDeletionCleanupObservation = closedNativeStruct(
+  OrchestrationV2ThreadDeletionCleanupObservationFields,
+);
 export type OrchestrationV2ThreadDeletionCleanupObservation =
   typeof OrchestrationV2ThreadDeletionCleanupObservation.Type;
 export const OrchestrationV2ThreadDeletionCleanupObservationJson = closedNativeStruct({
@@ -387,19 +463,29 @@ const OrchestrationV2StopCurrentThreadRuntimeResultFields = {
     status: Schema.Literals(["installed", "not_installed", "unknown"]),
     affectedRunIds: Schema.Array(RunId),
   }),
-  runtimeStop: closedNativeStruct({ status: Schema.Literals(["not_started", "pending", "stopped", "unknown"]) }),
+  runtimeStop: closedNativeStruct({
+    status: Schema.Literals(["not_started", "pending", "stopped", "unknown"]),
+  }),
   reason: Schema.NullOr(Schema.String),
 };
-const OrchestrationV2StopCurrentThreadRuntimeResultSchema =
-  closedNativeStruct(OrchestrationV2StopCurrentThreadRuntimeResultFields);
-const currentRuntimeStopTargetIsPresent = (result: typeof OrchestrationV2StopCurrentThreadRuntimeResultSchema.Type) =>
+const OrchestrationV2StopCurrentThreadRuntimeResultSchema = closedNativeStruct(
+  OrchestrationV2StopCurrentThreadRuntimeResultFields,
+);
+const currentRuntimeStopTargetIsPresent = (
+  result: typeof OrchestrationV2StopCurrentThreadRuntimeResultSchema.Type,
+) =>
   (result.target === null || result.target.binding.threadId === result.threadId) &&
   (result.commandStatus !== "not_found" || result.target === null) &&
   (result.runtimeStop.status !== "stopped" || result.queueFence.status === "installed") &&
-  ((result.commandStatus !== "accepted" && result.queueFence.status !== "installed" && result.runtimeStop.status !== "stopped") || result.target !== null);
+  ((result.commandStatus !== "accepted" &&
+    result.queueFence.status !== "installed" &&
+    result.runtimeStop.status !== "stopped") ||
+    result.target !== null);
 
 export const OrchestrationV2StopCurrentThreadRuntimeResult =
-  OrchestrationV2StopCurrentThreadRuntimeResultSchema.check(Schema.makeFilter(currentRuntimeStopTargetIsPresent));
+  OrchestrationV2StopCurrentThreadRuntimeResultSchema.check(
+    Schema.makeFilter(currentRuntimeStopTargetIsPresent),
+  );
 export type OrchestrationV2StopCurrentThreadRuntimeResult =
   typeof OrchestrationV2StopCurrentThreadRuntimeResult.Type;
 export const OrchestrationV2StopCurrentThreadRuntimeResultJson = closedNativeStruct({
@@ -422,7 +508,10 @@ export const OrchestrationV2ImportedHistoryReviewResult = closedNativeStruct({
   applicability: Schema.Literals(["imported", "not_imported", "unknown"]),
   qualification: Schema.Union([
     closedNativeStruct({ type: Schema.Literal("qualified") }),
-    closedNativeStruct({ type: Schema.Literals(["unknown", "unsupported"]), reason: Schema.String }),
+    closedNativeStruct({
+      type: Schema.Literals(["unknown", "unsupported"]),
+      reason: Schema.String,
+    }),
   ]),
   restoredBinding: Schema.Union([
     closedNativeStruct({
@@ -434,7 +523,10 @@ export const OrchestrationV2ImportedHistoryReviewResult = closedNativeStruct({
       providerSessionId: Schema.NullOr(ProviderSessionId),
       runtimeGeneration: Schema.optional(TrimmedNonEmptyString),
     }),
-    closedNativeStruct({ type: Schema.Literals(["missing", "mismatched", "unknown"]), reason: Schema.String }),
+    closedNativeStruct({
+      type: Schema.Literals(["missing", "mismatched", "unknown"]),
+      reason: Schema.String,
+    }),
   ]),
   nativeEffects: Schema.Union([
     closedNativeStruct({ type: Schema.Literal("clear") }),
@@ -445,13 +537,17 @@ export const OrchestrationV2ImportedHistoryReviewResult = closedNativeStruct({
     closedNativeStruct({ type: Schema.Literals(["ineligible", "unknown"]), reason: Schema.String }),
   ]),
   reviewedBasis: Schema.NullOr(OrchestrationV2ImportedHistoryReviewBasis),
-}).check(Schema.makeFilter((review) => review.reviewedBasis === null || (
-  review.applicability === "imported" &&
-  review.qualification.type !== "qualified" &&
-  review.transcriptEligibility.type === "eligible" &&
-  review.nativeEffects.type === "clear" &&
-  review.capability.startWithImportedHistory
-)));
+}).check(
+  Schema.makeFilter(
+    (review) =>
+      review.reviewedBasis === null ||
+      (review.applicability === "imported" &&
+        review.qualification.type !== "qualified" &&
+        review.transcriptEligibility.type === "eligible" &&
+        review.nativeEffects.type === "clear" &&
+        review.capability.startWithImportedHistory),
+  ),
+);
 export type OrchestrationV2ImportedHistoryReviewResult =
   typeof OrchestrationV2ImportedHistoryReviewResult.Type;
 
@@ -462,13 +558,21 @@ const OrchestrationV2ImportedHistoryExecution = closedNativeStruct({
   providerSessionId: Schema.NullOr(ProviderSessionId),
   nativeThreadId: Schema.NullOr(TrimmedNonEmptyString),
   runtimeGeneration: Schema.optional(TrimmedNonEmptyString),
-  effectOutcome: Schema.NullOr(Schema.Literals(["confirmed_success", "known_no_effect", "unknown"])),
+  effectOutcome: Schema.NullOr(
+    Schema.Literals(["confirmed_success", "known_no_effect", "unknown"]),
+  ),
   error: Schema.NullOr(Schema.String),
-}).check(Schema.makeFilter((execution) => execution.status !== "started" || (
-  execution.effectOutcome === "confirmed_success" &&
-  execution.runId !== null && execution.providerThreadId !== null &&
-  execution.providerSessionId !== null && execution.nativeThreadId !== null
-)));
+}).check(
+  Schema.makeFilter(
+    (execution) =>
+      execution.status !== "started" ||
+      (execution.effectOutcome === "confirmed_success" &&
+        execution.runId !== null &&
+        execution.providerThreadId !== null &&
+        execution.providerSessionId !== null &&
+        execution.nativeThreadId !== null),
+  ),
+);
 
 const OrchestrationV2ImportedHistoryStartReceiptFields = {
   version: Schema.Literal(2),
@@ -481,18 +585,29 @@ const OrchestrationV2ImportedHistoryStartReceiptFields = {
   rejectionReason: Schema.NullOr(TrimmedNonEmptyString),
   execution: OrchestrationV2ImportedHistoryExecution,
 };
-export const OrchestrationV2ImportedHistoryStartReceipt =
-  closedNativeStruct(OrchestrationV2ImportedHistoryStartReceiptFields).check(Schema.makeFilter(
-    (receipt) => receipt.target !== null || receipt.intentStatus === "not_found" || receipt.intentStatus === "unknown",
-  ));
+export const OrchestrationV2ImportedHistoryStartReceipt = closedNativeStruct(
+  OrchestrationV2ImportedHistoryStartReceiptFields,
+).check(
+  Schema.makeFilter(
+    (receipt) =>
+      receipt.target !== null ||
+      receipt.intentStatus === "not_found" ||
+      receipt.intentStatus === "unknown",
+  ),
+);
 export type OrchestrationV2ImportedHistoryStartReceipt =
   typeof OrchestrationV2ImportedHistoryStartReceipt.Type;
 export const OrchestrationV2ImportedHistoryStartReceiptJson = closedNativeStruct({
   ...OrchestrationV2ImportedHistoryStartReceiptFields,
   receipt: Schema.NullOr(NativeCommandReceiptObservationV2Json),
-}).check(Schema.makeFilter(
-  (receipt) => receipt.target !== null || receipt.intentStatus === "not_found" || receipt.intentStatus === "unknown",
-));
+}).check(
+  Schema.makeFilter(
+    (receipt) =>
+      receipt.target !== null ||
+      receipt.intentStatus === "not_found" ||
+      receipt.intentStatus === "unknown",
+  ),
+);
 export type OrchestrationV2ImportedHistoryStartReceiptJson =
   typeof OrchestrationV2ImportedHistoryStartReceiptJson.Type;
 
@@ -589,7 +704,9 @@ export const NativeCreationObservationV2 = closedNativeStruct({
     Schema.isMaxLength(NATIVE_CREATION_OBSERVATION_V2_MAX_STAGES),
   ),
   finalReceipt: Schema.NullOr(NativeCommandReceiptObservationV2),
-}).check(Schema.makeFilter((observation) => !observation.overflow || observation.outcome === "unknown"));
+}).check(
+  Schema.makeFilter((observation) => !observation.overflow || observation.outcome === "unknown"),
+);
 export type NativeCreationObservationV2 = typeof NativeCreationObservationV2.Type;
 
 export const NativeCreationObservationV2Json = closedNativeStruct({
@@ -598,7 +715,9 @@ export const NativeCreationObservationV2Json = closedNativeStruct({
     Schema.isMaxLength(NATIVE_CREATION_OBSERVATION_V2_MAX_STAGES),
   ),
   finalReceipt: Schema.NullOr(NativeCommandReceiptObservationV2Json),
-}).check(Schema.makeFilter((observation) => !observation.overflow || observation.outcome === "unknown"));
+}).check(
+  Schema.makeFilter((observation) => !observation.overflow || observation.outcome === "unknown"),
+);
 export type NativeCreationObservationV2Json = typeof NativeCreationObservationV2Json.Type;
 
 const NativeBootstrapDispatchResultV2Fields = {
@@ -609,12 +728,21 @@ const NativeBootstrapDispatchResultV2Fields = {
   commandAcceptance: Schema.Literals(["accepted", "pending", "rejected", "unknown"]),
   creation: Schema.NullOr(NativeCreationObservationV2),
 };
-const NativeBootstrapDispatchResultV2Schema = closedNativeStruct(NativeBootstrapDispatchResultV2Fields);
+const NativeBootstrapDispatchResultV2Schema = closedNativeStruct(
+  NativeBootstrapDispatchResultV2Fields,
+);
 
-const nativeBootstrapAcceptanceIsAttributed = (result: typeof NativeBootstrapDispatchResultV2Schema.Type) => {
+const nativeBootstrapAcceptanceIsAttributed = (
+  result: typeof NativeBootstrapDispatchResultV2Schema.Type,
+) => {
   if (result.commandAcceptance !== "accepted") return true;
   const creation = result.creation;
-  if (creation === null || creation.overflow || creation.stageCommands.length !== 3 || creation.incarnation === null)
+  if (
+    creation === null ||
+    creation.overflow ||
+    creation.stageCommands.length !== 3 ||
+    creation.incarnation === null
+  )
     return false;
   const expectedIds = [
     `${result.commandId}:native:v2:create`,
@@ -628,14 +756,23 @@ const nativeBootstrapAcceptanceIsAttributed = (result: typeof NativeBootstrapDis
   for (const [index, stage] of creation.stageCommands.entries()) {
     const receipt = stage.receipt;
     const event = stage.event;
-    if (stage.commandId !== expectedIds[index] || stage.commandType !== expectedTypes[index] ||
-        stage.threadId !== result.threadId || stage.claimId !== creation.claimId ||
-        receipt === null || event === null || receipt.status !== "accepted" || receipt.error !== null ||
-        receipt.commandId !== stage.commandId || receipt.threadId !== stage.threadId ||
-        receipt.commandType !== stage.commandType ||
-        eventIds.has(event.eventId) ||
-        event.sequence !== receipt.resultSequence ||
-        event.sequence <= previousEventSequence || receipt.resultSequence <= previousReceiptSequence)
+    if (
+      stage.commandId !== expectedIds[index] ||
+      stage.commandType !== expectedTypes[index] ||
+      stage.threadId !== result.threadId ||
+      stage.claimId !== creation.claimId ||
+      receipt === null ||
+      event === null ||
+      receipt.status !== "accepted" ||
+      receipt.error !== null ||
+      receipt.commandId !== stage.commandId ||
+      receipt.threadId !== stage.threadId ||
+      receipt.commandType !== stage.commandType ||
+      eventIds.has(event.eventId) ||
+      event.sequence !== receipt.resultSequence ||
+      event.sequence <= previousEventSequence ||
+      receipt.resultSequence <= previousReceiptSequence
+    )
       return false;
     eventIds.add(event.eventId);
     previousEventSequence = event.sequence;
@@ -644,12 +781,19 @@ const nativeBootstrapAcceptanceIsAttributed = (result: typeof NativeBootstrapDis
   const birth = creation.stageCommands[0]!.event!;
   const release = creation.stageCommands[2]!.receipt!;
   const finalReceipt = creation.finalReceipt;
-  return birth.eventId === creation.incarnation.eventId && birth.sequence === creation.incarnation.sequence &&
-    finalReceipt !== null && finalReceipt.commandId === result.commandId &&
-    finalReceipt.threadId === result.threadId && finalReceipt.commandType === "prepared-run.release" &&
-    finalReceipt.status === "accepted" && finalReceipt.error === null &&
-    DateTime.toEpochMillis(finalReceipt.acceptedAt) === DateTime.toEpochMillis(release.acceptedAt) &&
-    finalReceipt.resultSequence === release.resultSequence;
+  return (
+    birth.eventId === creation.incarnation.eventId &&
+    birth.sequence === creation.incarnation.sequence &&
+    finalReceipt !== null &&
+    finalReceipt.commandId === result.commandId &&
+    finalReceipt.threadId === result.threadId &&
+    finalReceipt.commandType === "prepared-run.release" &&
+    finalReceipt.status === "accepted" &&
+    finalReceipt.error === null &&
+    DateTime.toEpochMillis(finalReceipt.acceptedAt) ===
+      DateTime.toEpochMillis(release.acceptedAt) &&
+    finalReceipt.resultSequence === release.resultSequence
+  );
 };
 
 // Ordered command acceptance is independent of the external creation outcome.
@@ -670,7 +814,13 @@ const NativeCommandObservationV2Fields = {
   messageId: MessageId,
   commandStatus: Schema.Literals(["accepted", "rejected", "not_found"]),
   identity: Schema.NullOr(NativeCommandIdentityV2),
-  identityVerification: Schema.Literals(["verified", "unbound", "missing", "mismatched", "unknown"]),
+  identityVerification: Schema.Literals([
+    "verified",
+    "unbound",
+    "missing",
+    "mismatched",
+    "unknown",
+  ]),
   correlation: Schema.Literals(["exact", "pending", "missing", "ambiguous", "mismatched"]),
   snapshot: closedNativeStruct({
     snapshotSequence: NonNegativeInt,
@@ -678,13 +828,15 @@ const NativeCommandObservationV2Fields = {
     complete: Schema.Boolean,
   }),
   correlatedMessageId: Schema.NullOr(MessageId),
-  run: Schema.NullOr(closedNativeStruct({
-    runId: RunId,
-    runAttemptId: Schema.NullOr(RunAttemptId),
-    providerThreadId: Schema.NullOr(ProviderThreadId),
-    providerTurnId: Schema.NullOr(ProviderTurnId),
-    status: OrchestrationV2RunStatus,
-  })),
+  run: Schema.NullOr(
+    closedNativeStruct({
+      runId: RunId,
+      runAttemptId: Schema.NullOr(RunAttemptId),
+      providerThreadId: Schema.NullOr(ProviderThreadId),
+      providerTurnId: Schema.NullOr(ProviderTurnId),
+      status: OrchestrationV2RunStatus,
+    }),
+  ),
   target: Schema.NullOr(OrchestrationDispatchTargetV2),
 };
 

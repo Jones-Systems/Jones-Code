@@ -1,4 +1,9 @@
-import { ProviderDriverKind, type ModelSelection, type ProviderInstanceId, type ServerProviderModel } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  type ModelSelection,
+  type ProviderInstanceId,
+  type ServerProviderModel,
+} from "@t3tools/contracts";
 import {
   codexModelFamily,
   getConfiguredReasoningEffort,
@@ -63,22 +68,27 @@ export function resolveCodexEffectiveTurnSettings(
   if (explicitEffort === undefined) {
     const models = input.models;
     const canonicalModel = normalizeModelSlug(codexModelFamily(input.selection.model), codexDriver);
-    const model = models?.find((model) => model.slug === input.selection.model) ??
-      models?.find((model) => [model.slug, ...(model.aliases ?? [])].some(
-        (slug) => normalizeModelSlug(codexModelFamily(slug), codexDriver) === canonicalModel,
-      ));
+    const model =
+      models?.find((model) => model.slug === input.selection.model) ??
+      models?.find((model) =>
+        [model.slug, ...(model.aliases ?? [])].some(
+          (slug) => normalizeModelSlug(codexModelFamily(slug), codexDriver) === canonicalModel,
+        ),
+      );
     const configured = input.configuredDefaultModelSelection;
-    effort = getConfiguredReasoningEffort({
-      modelSelection: input.selection,
-      driverKind: codexDriver,
-      capabilities: model?.capabilities ?? undefined,
-      defaultModelSelection: configured?.modelSelection,
-      defaultDriverKind: configured?.driver,
-    }) ?? getProviderOptionCurrentValue(
-      model?.capabilities?.optionDescriptors?.find(
-        (option) => option.id === "reasoningEffort" && option.type === "select",
-      ),
-    );
+    effort =
+      getConfiguredReasoningEffort({
+        modelSelection: input.selection,
+        driverKind: codexDriver,
+        capabilities: model?.capabilities ?? undefined,
+        defaultModelSelection: configured?.modelSelection,
+        defaultDriverKind: configured?.driver,
+      }) ??
+      getProviderOptionCurrentValue(
+        model?.capabilities?.optionDescriptors?.find(
+          (option) => option.id === "reasoningEffort" && option.type === "select",
+        ),
+      );
   }
   const serviceTier = input.managed ? undefined : getCodexServiceTierOptionValue(input.selection);
   const settings = {

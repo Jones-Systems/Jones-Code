@@ -17,8 +17,7 @@ import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
-import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import {
   WorkstreamGateway,
   WorkstreamGatewayError,
@@ -38,12 +37,7 @@ const failure = Schema.Union([
   WorkstreamGatewayError,
   OrganizationToolError,
 ]);
-const dependencies = [
-  McpInvocationContext,
-  OrchestrationEngineService,
-  ProjectionSnapshotQuery,
-  WorkstreamGateway,
-];
+const dependencies = [McpInvocationContext, ThreadManagementService, WorkstreamGateway];
 const limit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }));
 const offset = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }));
 const cursor = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2048));

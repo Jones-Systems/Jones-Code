@@ -7,21 +7,21 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
-import type { ScopedThreadRef, ThreadId, OrchestrationV2CurrentThreadRuntimeTarget } from "@t3tools/contracts";
+import type {
+  ScopedThreadRef,
+  ThreadId,
+  OrchestrationV2CurrentThreadRuntimeTarget,
+} from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 
 import { resolveSnoozePresets } from "../components/Sidebar.snooze";
 import {
   buildThreadActionMenuItems,
-  createCurrentRuntimeStopController,
-  currentRuntimeStopMenuTarget,
   type ThreadActionMenuId,
 } from "../components/threadActionMenu.logic";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
-import { threadContinuation, threadEnvironment } from "../state/threads";
-import { useAtomQueryRunner } from "../state/use-atom-query-runner";
-import { useComposerDraftStore, reserveCurrentRuntimeStopPointer, clearCurrentRuntimeStopPointer } from "../composerDraftStore";
+import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import {
   readEnvironmentSupportsAutoSettleOptOut,
@@ -45,6 +45,11 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { useThreadActions } from "./useThreadActions";
+import {
+  useCurrentRuntimeStop,
+  type CurrentRuntimeStopOperation,
+  type CurrentRuntimeStopOutcome,
+} from "./useCurrentRuntimeStop";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -56,50 +61,85 @@ function failureToast(title: string, error: unknown) {
   );
 }
 
-export function useCurrentRuntimeStop() {
-  const readAttachment = useAtomQueryRunner(threadContinuation.runtimeAttachment, { refresh: true, reportFailure: false });
-  const stop = useAtomCommand(threadEnvironment.stopCurrentThreadRuntime, { reportFailure: false });
-  const observe = useAtomCommand(threadEnvironment.observeCurrentThreadRuntimeStop, { reportFailure: false });
-  const run = useMemo(() => createCurrentRuntimeStopController({
-    read: (threadRef) => {
-      const pointer = useComposerDraftStore.getState().getComposerDraft(threadRef)?.currentRuntimeStop;
-      if (!pointer) return null;
-      if (pointer.environmentId !== threadRef.environmentId || pointer.threadId !== threadRef.threadId) throw new Error("The saved stop belongs to another environment or thread.");
-      return { commandId: pointer.commandId, threadId: pointer.threadId, target: pointer.target };
-    },
-    reserve: (threadRef, input) => reserveCurrentRuntimeStopPointer({ environmentId: threadRef.environmentId, ...input }),
-    clear: (threadRef, input) => clearCurrentRuntimeStopPointer({ environmentId: threadRef.environmentId, ...input }),
-    stop: async (threadRef, input) => {
-      const result = await stop({ environmentId: threadRef.environmentId, input });
-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-      return result.value;
-    },
-    observe: async (threadRef, input) => {
-      const result = await observe({ environmentId: threadRef.environmentId, input });
-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-      return result.value;
-    },
-  }), [stop, observe]);
-  const capture = useCallback(async (threadRef: ScopedThreadRef) => {
-    try {
-      const result = await readAttachment({ environmentId: threadRef.environmentId, input: { threadId: threadRef.threadId } });
-      return currentRuntimeStopMenuTarget(result._tag === "Success" ? result.value : null, threadRef.threadId);
-    } catch { return null; }
-  }, [readAttachment]);
-  const request = useCallback(async (threadRef: ScopedThreadRef, target: OrchestrationV2CurrentThreadRuntimeTarget): Promise<void> => {
-    try {
-      const outcome = await run(threadRef, target);
-      toastManager.add(stackedThreadToast({
-        type: outcome.status === "stopped" ? "success" : outcome.status === "rejected" ? "error" : "info",
-        title: outcome.status === "stopped" ? "Agent runtime stopped" : outcome.status === "rejected" ? "Stop request rejected" : outcome.status === "unknown" ? "Stop outcome unknown" : "Runtime stop pending",
-        description: outcome.reason ?? (outcome.status === "pending" ? "The runtime has not been confirmed stopped." : undefined),
-        ...(outcome.status === "pending" || outcome.status === "unknown" ? { timeout: 0, actionProps: { children: "Check status", onClick: () => { void request(threadRef, target); } } } : {}),
-      }));
-    } catch (error) {
-      failureToast("Stop request was not sent", error);
-    }
-  }, [run]);
-  return useMemo(() => ({ capture, request }), [capture, request]);
+export function useCurrentRuntimeStopMenu() {
+  const runtimeStop = useCurrentRuntimeStop();
+  return useMemo(() => {
+    const notify = (threadRef: ScopedThreadRef, outcome: CurrentRuntimeStopOutcome) => {
+      const operation =
+        outcome.commandId !== null && outcome.target !== null
+          ? Object.freeze({ commandId: outcome.commandId, target: outcome.target })
+          : null;
+      toastManager.add(
+        stackedThreadToast({
+          type:
+            outcome.status === "stopped"
+              ? "success"
+              : outcome.status === "rejected"
+                ? "error"
+                : "info",
+          title:
+            outcome.status === "stopped"
+              ? "Agent runtime stopped"
+              : outcome.status === "rejected"
+                ? "Stop request rejected"
+                : outcome.status === "unknown"
+                  ? "Stop outcome unknown"
+                  : "Runtime stop pending",
+          description:
+            outcome.reason ??
+            (outcome.status === "pending"
+              ? "The runtime has not been confirmed stopped."
+              : undefined),
+          ...(outcome.status === "pending" || outcome.status === "unknown"
+            ? {
+                timeout: 0,
+                ...(operation !== null
+                  ? {
+                      actionProps: {
+                        children: "Check status",
+                        onClick: () => {
+                          void checkStatus(threadRef, operation);
+                        },
+                      },
+                    }
+                  : {}),
+              }
+            : {}),
+        }),
+      );
+    };
+    const checkStatus = async (
+      threadRef: ScopedThreadRef,
+      operation: CurrentRuntimeStopOperation,
+    ) => {
+      try {
+        const outcome = await runtimeStop.observe(threadRef, operation);
+        if (outcome !== null) notify(threadRef, outcome);
+        else
+          toastManager.add(
+            stackedThreadToast({
+              type: "info",
+              title: "No saved runtime stop operation",
+              description:
+                "There is no saved stop command to check. This does not confirm that the runtime stopped.",
+            }),
+          );
+      } catch (error) {
+        failureToast("Unable to check runtime stop", error);
+      }
+    };
+    const request = async (
+      threadRef: ScopedThreadRef,
+      target: OrchestrationV2CurrentThreadRuntimeTarget,
+    ) => {
+      try {
+        notify(threadRef, await runtimeStop.request(threadRef, target));
+      } catch (error) {
+        failureToast("Unable to request runtime stop", error);
+      }
+    };
+    return { capture: runtimeStop.capture, request };
+  }, [runtimeStop]);
 }
 
 /**
@@ -147,7 +187,7 @@ export function useThreadActionMenu(input: {
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
-  const runtimeStop = useCurrentRuntimeStop();
+  const runtimeStop = useCurrentRuntimeStopMenu();
   const handleNewThread = useNewThreadHandler();
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
@@ -203,7 +243,7 @@ export function useThreadActionMenu(input: {
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
           isRunning: !threadRuntimeCanArchive(thread.runtime),
-          canStopSession: capturedStop !== null,
+          canStopSession: capturedStop.status === "current",
           supports,
           snoozePresets,
         });
@@ -268,7 +308,8 @@ export function useThreadActionMenu(input: {
             await reportFailure("Failed to settle thread", () => settleThread(threadRef));
             return;
           case "kill-thread":
-            if (capturedStop !== null) await runtimeStop.request(threadRef, capturedStop);
+            if (capturedStop.status === "current")
+              await runtimeStop.request(threadRef, capturedStop.target);
             return;
           case "unsettle":
             await reportFailure("Failed to un-settle thread", () => unsettleThread(threadRef));

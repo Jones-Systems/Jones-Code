@@ -3,6 +3,9 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   isOrchestrationV2WorkActive,
   CommandId,
+  RunId,
+  RunAttemptId,
+  ThreadId,
   type EventId,
   type ModelSelection,
   type NodeId,
@@ -20,18 +23,19 @@ import {
   type ProviderSessionId,
   type ProviderThreadId,
   type ProviderTurnId,
-  type RunAttemptId,
-  type ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
@@ -40,15 +44,363 @@ import * as CheckpointService from "./CheckpointService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import type {
+  ImportedHistoryStartExecutionReferenceV2,
+  QueuedRunExecutionIntentV2,
+} from "./Orchestrator.ts";
+import {
+  getNativeCreationExecutionReference,
+  type NativeCreationExecutionContextV2,
+} from "./NativeCreationAuthority.ts";
+import type {
   ProviderAdapterV2Event,
   ProviderAdapterV2RuntimePolicy,
   ProviderAdapterV2SessionRuntime,
   ProviderAdapterV2TurnMessage,
 } from "./ProviderAdapter.ts";
-import { ProviderAdapterTurnStartError } from "./ProviderAdapter.ts";
+import {
+  ProviderAdapterTurnStartError,
+  withProviderNativeEffect,
+  type ProviderNativeOperationContext,
+} from "./ProviderAdapter.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
-import { makeProviderFailure, makeProviderFailureTurnItem } from "./ProviderFailure.ts";
+import {
+  makeProviderFailure,
+  makeProviderFailureTurnItem,
+  nativeEffectEvidenceFor,
+  ProviderNativeOperationUnknownError,
+} from "./ProviderFailure.ts";
+import {
+  copyProviderEventOrigin,
+  readProviderEventOrigin,
+  type ProviderEventOrigin,
+} from "./ProviderEventOrigin.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
+import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
+import type {
+  ProviderOrdinaryExecutionAttachmentV1,
+  ProviderPinnedRuntimeStopResultV1,
+  ProviderSessionActivityError,
+} from "./ProviderSessionManager.ts";
+import * as ProviderManagedActorCompletion from "./ProviderManagedActorCompletion.ts";
+
+export type OrdinaryManagedRunExecutorV1 = Extract<
+  OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1,
+  { readonly kind: "captured_managed_run" }
+>;
+
+export interface OrdinaryManagedRunStartObservationV1 {
+  readonly kind: "dispatch_returned";
+  readonly settlementMode?: "primary_terminal_checkpoint" | "managed_actor_completion";
+  readonly startExecution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
+  readonly managedExecutor: OrdinaryManagedRunExecutorV1;
+  readonly observedAt: string;
+}
+
+type OrdinaryManagedRunRevalidationError =
+  | RunExecutionStartError
+  | ProviderSessionActivityError
+  | ProviderManagedActorCompletion.ProviderManagedActorCompletionError;
+
+const issuedOrdinaryManagedStarts = new WeakMap<
+  object,
+  {
+    readonly bytes: string;
+    readonly revalidateIssued: Effect.Effect<void, OrdinaryManagedRunRevalidationError>;
+  }
+>();
+
+function issueOrdinaryManagedRunStartObservation(
+  observation: OrdinaryManagedRunStartObservationV1,
+  revalidateIssued: Effect.Effect<void, OrdinaryManagedRunRevalidationError>,
+): void {
+  issuedOrdinaryManagedStarts.set(observation, {
+    bytes: JSON.stringify(observation),
+    revalidateIssued,
+  });
+}
+
+// Encoded JSON text compares exact persisted checkout identities. An encoding failure stays a defect.
+const encodeOrdinaryCheckoutUseJson = (use: OrdinaryCheckout.OrdinaryCheckoutUseV1) =>
+  Schema.encodeEffect(Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutUseV1))(use).pipe(
+    Effect.orDie,
+  );
+
+const encodeOrdinaryCheckoutExecutionRefJson = (
+  ref: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+) =>
+  Schema.encodeEffect(Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1))(
+    ref,
+  ).pipe(Effect.orDie);
+
+// Descriptive fields cannot issue a start: only the original returned object has this retained producer closure.
+export function readIssuedOrdinaryManagedRunStartObservation(input: unknown): {
+  readonly observation: OrdinaryManagedRunStartObservationV1;
+  readonly revalidateIssued: Effect.Effect<void, OrdinaryManagedRunRevalidationError>;
+} | null {
+  if (typeof input !== "object" || input === null) return null;
+  const issued = issuedOrdinaryManagedStarts.get(input);
+  if (issued === undefined || JSON.stringify(input) !== issued.bytes) return null;
+  return {
+    observation: input as OrdinaryManagedRunStartObservationV1,
+    revalidateIssued: issued.revalidateIssued,
+  };
+}
+
+function freezeOrdinaryExecutionFacts<A>(value: A): A {
+  if (typeof value === "object" && value !== null) {
+    if (DateTime.isDateTime(value)) DateTime.formatIso(value);
+    for (const child of Object.values(value)) freezeOrdinaryExecutionFacts(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+export interface OrdinaryManagedRunExecutionHandleV1 {
+  readonly startExecution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
+  readonly managedExecutor: OrdinaryManagedRunExecutorV1;
+  readonly actualStartObservation: OrdinaryManagedRunStartObservationV1;
+  readonly attachment: ProviderOrdinaryExecutionAttachmentV1;
+  readonly revalidateCaptured: Effect.Effect<void, OrdinaryManagedRunRevalidationError>;
+  readonly revalidateMutation: Effect.Effect<
+    void,
+    RunExecutionStartError | ProviderSessionActivityError
+  >;
+  readonly revalidateCompletionBinding: Effect.Effect<void, OrdinaryManagedRunRevalidationError>;
+  readonly nativeCompletion?: ProviderManagedActorCompletion.ProviderManagedActorRunReaderV1;
+  readonly requireActivatedExecution: Effect.Effect<
+    OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+    RunExecutionStartError
+  >;
+  readonly activate: (
+    ref: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+  ) => Effect.Effect<void, RunExecutionStartError>;
+  readonly lose: (reason: string) => Effect.Effect<ProviderPinnedRuntimeStopResultV1 | undefined>;
+  readonly awaitIngestionExit: Effect.Effect<Exit.Exit<void, RunExecutionIngestError>>;
+  /** Closing this owned output scope does not certify adapter mutation completion or retire its SQL participant. */
+  readonly close: Effect.Effect<void>;
+}
+
+export interface ImportedHistoryStartExecution {
+  readonly reference: ImportedHistoryStartExecutionReferenceV2;
+  readonly executionIntent: Extract<
+    QueuedRunExecutionIntentV2,
+    { readonly kind: "imported_history_choice" }
+  >;
+  readonly workerId: string;
+  readonly expectedAttempt: number;
+}
+
+export interface QueuedRunStartExecution {
+  readonly effectId: string;
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly runId: RunId;
+  readonly workerId: string;
+  readonly expectedAttempt: number;
+}
+
+export const readClaimedQueuedRunStartExecution = (
+  input: QueuedRunStartExecution,
+  sink: EventSink.EventSinkV2Shape,
+) =>
+  Effect.gen(function* () {
+    const proof = yield* sink.readClaimedQueuedRunStart({
+      effectId: input.effectId,
+      threadId: input.threadId,
+      runId: input.runId,
+      workerId: input.workerId,
+      expectedAttempt: input.expectedAttempt,
+    });
+    if (
+      proof === null ||
+      proof.incarnation.threadId !== input.threadId ||
+      proof.executionIntent.kind !== "queued" ||
+      proof.executionIntent.commandId !== input.commandId ||
+      proof.executionIntent.effectId !== input.effectId ||
+      proof.executionIntent.runId !== input.runId ||
+      proof.basis.runId !== input.runId ||
+      proof.basis.runAttemptId !== proof.executionIntent.runAttemptId
+    )
+      return yield* new ProviderNativeOperationUnknownError({
+        nativeEffect: {
+          operationId: input.effectId,
+          operation: "start_turn",
+          threadId: input.threadId,
+          outcome: "unknown",
+        },
+        cause: "The reserved queued start has no matching current claimed source proof.",
+      });
+    return proof;
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ProviderNativeOperationUnknownError({
+          nativeEffect: {
+            operationId: input.effectId,
+            operation: "start_turn",
+            threadId: input.threadId,
+            outcome: "unknown",
+          },
+          cause,
+        }),
+    ),
+  );
+
+export const readImportedHistoryStartExecution = (
+  input: ImportedHistoryStartExecution,
+  sink: EventSink.EventSinkV2Shape,
+) =>
+  Effect.gen(function* () {
+    const reference = input.reference;
+    const unknown = (cause: unknown) =>
+      new ProviderNativeOperationUnknownError({
+        nativeEffect: {
+          operationId: reference.effectId,
+          operation: "start_turn",
+          threadId: reference.threadId,
+          attemptId: input.executionIntent.runAttemptId,
+          outcome: "unknown",
+        },
+        cause,
+      });
+    const choice = yield* sink.readImportedHistoryStartChoice(reference);
+    if (
+      choice === null ||
+      choice.receipt.status !== "accepted" ||
+      choice.commandId !== reference.commandId ||
+      choice.threadId !== reference.threadId ||
+      choice.runId !== reference.runId ||
+      (choice.effectId !== null && choice.effectId !== reference.effectId) ||
+      input.executionIntent.commandId !== reference.commandId ||
+      input.executionIntent.runId !== reference.runId ||
+      input.executionIntent.effectId !== reference.effectId ||
+      input.executionIntent.reviewedBasis !== choice.command.reviewedBasis
+    )
+      return yield* unknown("The imported choice differs from its prepared execution intent.");
+    const facts = yield* sink.readNativeCommandFacts({
+      threadId: reference.threadId,
+      commandId: reference.commandId,
+    });
+    const reservations =
+      facts.commitSnapshot.records.start_reservations?.filter(
+        (row) => row.effect_id === reference.effectId,
+      ) ?? [];
+    const claims =
+      facts.commitSnapshot.records.effects?.filter((row) => row.effect_id === reference.effectId) ??
+      [];
+    const now = DateTime.formatIso(yield* DateTime.now);
+    if (
+      reservations.length !== 1 ||
+      claims.length !== 1 ||
+      claims[0]!.command_id !== reference.commandId ||
+      claims[0]!.status !== "running" ||
+      claims[0]!.lease_owner !== input.workerId ||
+      claims[0]!.attempt_count !== input.expectedAttempt ||
+      typeof claims[0]!.lease_expires_at !== "string" ||
+      !Number.isFinite(Date.parse(claims[0]!.lease_expires_at)) ||
+      Date.parse(claims[0]!.lease_expires_at) <= Date.parse(now) ||
+      (facts.commitSnapshot.records.unknown_effect_holds?.length ?? 0) > 0
+    )
+      return yield* unknown("The prepared imported choice no longer owns its current claim.");
+    const intentSchema = Schema.fromJsonString(
+      Schema.Struct({
+        kind: Schema.Literal("imported_history_choice"),
+        commandId: CommandId,
+        runId: RunId,
+        runAttemptId: RunAttemptId,
+        effectId: Schema.NonEmptyString,
+        reviewedBasis: Schema.NonEmptyString,
+      }),
+    );
+    const storedIntent = yield* Schema.decodeUnknownEffect(intentSchema)(
+      reservations[0]!.execution_intent_json,
+    );
+    if (
+      (["kind", "commandId", "runId", "runAttemptId", "effectId", "reviewedBasis"] as const).some(
+        (key) => storedIntent[key] !== input.executionIntent[key],
+      )
+    )
+      return yield* unknown("The imported choice reservation changed before provider execution.");
+    const preparedProviders = facts.events.flatMap((stored) =>
+      stored.commandId === reference.commandId &&
+      stored.event.type === "provider-thread.updated" &&
+      stored.event.payload.providerSessionId !== null &&
+      stored.event.payload.nativeThreadRef === null &&
+      stored.event.payload.nativeConversationHeadRef === null
+        ? [stored.event.payload]
+        : [],
+    );
+    const preparedProvider = preparedProviders[0];
+    const preparedScopes = facts.events.flatMap((stored) =>
+      stored.commandId === reference.commandId &&
+      stored.event.type === "checkpoint-scope.created" &&
+      stored.event.payload.runId === reference.runId &&
+      stored.event.payload.providerThreadId === preparedProvider?.id
+        ? [stored.event.payload]
+        : [],
+    );
+    const current = facts.projection;
+    const run = current?.runs.find((candidate) => candidate.id === reference.runId);
+    const attempt = current?.attempts.find(
+      (candidate) => candidate.id === input.executionIntent.runAttemptId,
+    );
+    const root = current?.nodes.find((candidate) => candidate.id === run?.rootNodeId);
+    const provider = current?.providerThreads.find(
+      (candidate) => candidate.id === run?.providerThreadId,
+    );
+    if (
+      facts.eventMetadataOverflow ||
+      preparedProviders.length !== 1 ||
+      preparedScopes.length !== 1 ||
+      current === null ||
+      preparedProvider === undefined ||
+      preparedProvider.appThreadId !== reference.threadId ||
+      run === undefined ||
+      (run.status !== "starting" && run.status !== "running") ||
+      run.userMessageId !== choice.messageId ||
+      run.activeAttemptId !== input.executionIntent.runAttemptId ||
+      run.providerThreadId !== preparedProvider.id ||
+      current.thread.activeProviderThreadId !== preparedProvider.id ||
+      attempt?.runId !== reference.runId ||
+      attempt.providerThreadId !== preparedProvider.id ||
+      root?.checkpointScopeId !== preparedScopes[0]!.id ||
+      preparedScopes[0]!.nodeId !== root.id ||
+      provider?.providerSessionId !== preparedProvider.providerSessionId ||
+      provider.providerInstanceId !== preparedProvider.providerInstanceId ||
+      provider.driver !== preparedProvider.driver
+    )
+      return yield* unknown(
+        "The imported choice no longer owns its command-attributed prepared target.",
+      );
+    for (const fence of facts.commitSnapshot.records.stop_fences ?? []) {
+      if (fence.run_id !== reference.runId) continue;
+      const fencedIntent = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+        fence.execution_intent_json,
+      );
+      if (
+        typeof fencedIntent === "object" &&
+        fencedIntent !== null &&
+        "effectId" in fencedIntent &&
+        fencedIntent.effectId === reference.effectId
+      )
+        return yield* unknown("The prepared imported choice is fenced by a current stop intent.");
+    }
+    return choice;
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ProviderNativeOperationUnknownError({
+          nativeEffect: {
+            operationId: input.reference.effectId,
+            operation: "start_turn",
+            threadId: input.reference.threadId,
+            attemptId: input.executionIntent.runAttemptId,
+            outcome: "unknown",
+          },
+          cause,
+        }),
+    ),
+  );
 
 export interface ProviderEventRoutingState {
   readonly ownedThreadIds: ReadonlySet<ThreadId>;
@@ -367,6 +719,8 @@ export function routeProviderEvent(
   });
 
   switch (event.type) {
+    case "runtime_identity.observed":
+      return [false, state];
     case "provider_session.updated":
       // The session manager persists process-wide status once for every
       // attached app thread before broadcasting the adapter event.
@@ -495,6 +849,17 @@ export type RunExecutionServiceV2Error = typeof RunExecutionServiceV2Error.Type;
  */
 export interface RunExecutionServiceV2StartRootRunInput {
   readonly commandId: CommandId;
+  readonly ordinaryCheckoutUse?: OrdinaryCheckout.OrdinaryCheckoutUseV1;
+  readonly ordinaryCheckoutExecution?: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
+  readonly captureOrdinaryAttachment?: () => Effect.Effect<
+    ProviderOrdinaryExecutionAttachmentV1,
+    unknown
+  >;
+  readonly prepareOrdinaryManagedActorRun?: (
+    admission: ProviderManagedActorCompletion.ProviderManagedActorAdmissionV1,
+  ) => Effect.Effect<ProviderManagedActorCompletion.ProviderManagedActorRunReaderV1, unknown>;
+  readonly nativeCreationExecutionContext?: NativeCreationExecutionContextV2;
+  readonly importedHistoryStartExecution?: ImportedHistoryStartExecution;
   readonly appThread: OrchestrationV2AppThread;
   readonly providerSessionId: ProviderSessionId;
   readonly session: ProviderAdapterV2SessionRuntime;
@@ -522,7 +887,7 @@ export interface RunExecutionServiceV2StartRootRunInput {
 export interface RunExecutionServiceV2Shape {
   readonly startRootRun: (
     input: RunExecutionServiceV2StartRootRunInput,
-  ) => Effect.Effect<void, RunExecutionServiceV2Error>;
+  ) => Effect.Effect<void | OrdinaryManagedRunExecutionHandleV1, RunExecutionServiceV2Error>;
 }
 
 export class RunExecutionServiceV2 extends Context.Service<
@@ -544,6 +909,7 @@ export const layer: Layer.Layer<
 > = Layer.effect(
   RunExecutionServiceV2,
   Effect.gen(function* () {
+    const serviceScope = yield* Effect.scope;
     const checkpointService = yield* CheckpointService.CheckpointServiceV2;
     const eventSink = yield* EventSink.EventSinkV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -553,10 +919,18 @@ export const layer: Layer.Layer<
 
     const writeFinalRunEvents = (input: {
       readonly run: OrchestrationV2Run;
+      readonly ordinaryCheckoutExecution?: Effect.Effect<
+        OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+        RunExecutionStartError
+      >;
       readonly rootNode: OrchestrationV2ExecutionNode;
       readonly checkpointScope: OrchestrationV2CheckpointScope;
       readonly providerThread: OrchestrationV2ProviderThread;
       readonly attempt: OrchestrationV2RunAttempt;
+      readonly acceptedPrimaryState?: Effect.Effect<{
+        readonly attempt: OrchestrationV2RunAttempt;
+        readonly rootNode: OrchestrationV2ExecutionNode;
+      }>;
       readonly shouldFinalizeRun?: () => Effect.Effect<boolean, never>;
       readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
       readonly openRunOwnedSubagents?: OpenRunOwnedSubagentProjection;
@@ -570,11 +944,6 @@ export const layer: Layer.Layer<
     }) =>
       Effect.gen(function* () {
         const completedAt = yield* DateTime.now;
-        const finalizedAttempt: OrchestrationV2RunAttempt | null = {
-          ...input.attempt,
-          status: input.terminal.status,
-          completedAt,
-        };
         const shouldFinalizeRun =
           input.shouldFinalizeRun === undefined ? true : yield* input.shouldFinalizeRun();
         if (!shouldFinalizeRun) {
@@ -613,6 +982,15 @@ export const layer: Layer.Layer<
           }
           return;
         }
+        const acceptedPrimary =
+          input.acceptedPrimaryState === undefined
+            ? { attempt: input.attempt, rootNode: input.rootNode }
+            : yield* input.acceptedPrimaryState;
+        const finalizedAttempt: OrchestrationV2RunAttempt | null = {
+          ...acceptedPrimary.attempt,
+          status: input.terminal.status,
+          completedAt,
+        };
         const allocateEventId = () => idAllocator.allocate.event({ threadId: input.run.threadId });
         const open = input.openRunOwnedSubagents ?? emptyOpenRunOwnedSubagentProjection();
         const hasOpenSubagentProjection =
@@ -643,7 +1021,7 @@ export const layer: Layer.Layer<
           completedAt: input.terminal.status === "completed" ? null : completedAt,
         };
         const finalizedRootNode: OrchestrationV2ExecutionNode = {
-          ...input.rootNode,
+          ...acceptedPrimary.rootNode,
           status: persistedStatus,
           completedAt: input.terminal.status === "completed" ? null : completedAt,
           checkpointScopeId: input.checkpointScope.id,
@@ -662,24 +1040,59 @@ export const layer: Layer.Layer<
         // Stopped runs capture too: their checkpoint is the rollback point for
         // the next message. The capture is enqueued with these terminal events,
         // ahead of any later run's start on this thread's effect lane.
+        // Failed captured runs also need this physical result to settle their
+        // original managed checkout participant while retaining failed status.
+        const ordinaryExecution =
+          input.ordinaryCheckoutExecution === undefined
+            ? undefined
+            : yield* input.ordinaryCheckoutExecution;
+        const ordinaryUseRecord =
+          ordinaryExecution === undefined
+            ? null
+            : yield* eventSink.readOrdinaryCheckoutUse(ordinaryExecution.originalUse.operationId);
+        if (ordinaryExecution !== undefined && ordinaryUseRecord === null)
+          return yield* new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
+            reason: "stale_admission",
+            threadId: input.run.threadId,
+            path: ordinaryExecution.originalUse.lease.resourcePath,
+            message: "Run finalization has no original checkout admission",
+          });
+        const capturesTerminalCheckpoint =
+          input.terminal.status === "completed" ||
+          input.terminal.status === "interrupted" ||
+          input.terminal.status === "cancelled" ||
+          (input.terminal.status === "failed" &&
+            ordinaryExecution?.executor.kind === "captured_managed_run");
         const finalization = {
-          effects:
-            input.terminal.status === "completed" ||
-            input.terminal.status === "interrupted" ||
-            input.terminal.status === "cancelled"
-              ? [
+          ...(ordinaryExecution === undefined ||
+          ordinaryUseRecord === null ||
+          !capturesTerminalCheckpoint
+            ? {}
+            : {
+                ordinaryCheckoutEffects: [
                   {
-                    id: `effect:checkpoint.capture:${input.run.id}`,
-                    commandId: checkpointCaptureCommandId,
-                    threadId: input.run.threadId,
-                    request: {
-                      type: "checkpoint.capture" as const,
-                      runId: input.run.id,
-                      scopeId: input.checkpointScope.id,
-                    },
+                    admission: ordinaryExecution.originalUse.admission,
+                    runId: input.run.id,
+                    source: ordinaryUseRecord.subject.source,
+                    joinedUse: ordinaryExecution.originalUse,
+                    ordinaryCheckoutExecution: ordinaryExecution,
                   },
-                ]
-              : [],
+                ],
+              }),
+          effects: capturesTerminalCheckpoint
+            ? [
+                {
+                  id: `effect:checkpoint.capture:${input.run.id}`,
+                  commandId: checkpointCaptureCommandId,
+                  threadId: input.run.threadId,
+                  request: {
+                    type: "checkpoint.capture" as const,
+                    runId: input.run.id,
+                    scopeId: input.checkpointScope.id,
+                  },
+                },
+              ]
+            : [],
           events: [
             // Terminalize open run-owned subagent rows before the root run
             // settles so projections never keep a forever-running subagent card.
@@ -793,6 +1206,95 @@ export const layer: Layer.Layer<
     return RunExecutionServiceV2.of({
       startRootRun: (input) =>
         Effect.gen(function* () {
+          const ordinaryStartExecution = input.ordinaryCheckoutExecution;
+          const ordinaryFailure = (cause: unknown) =>
+            new RunExecutionStartError({
+              commandId: input.commandId,
+              runId: input.run.id,
+              cause,
+            });
+          const ordinaryAdmission =
+            ordinaryStartExecution === undefined
+              ? null
+              : yield* eventSink
+                  .readOrdinaryCheckoutAdmissionForRun({
+                    threadId: input.run.threadId,
+                    runId: input.run.id,
+                  })
+                  .pipe(Effect.mapError(ordinaryFailure));
+          if (ordinaryStartExecution !== undefined) {
+            if (
+              ordinaryStartExecution.executor.kind !== "actual_outbox_claim" ||
+              ordinaryAdmission?.run === null ||
+              ordinaryAdmission?.run === undefined ||
+              input.captureOrdinaryAttachment === undefined ||
+              ordinaryAdmission.run.runId !== input.run.id ||
+              ordinaryAdmission.run.runAttemptId !== input.attemptId ||
+              ordinaryAdmission.run.nodeId !== input.rootNode.id ||
+              ordinaryAdmission.run.messageId !== input.message.messageId ||
+              (input.ordinaryCheckoutUse !== undefined &&
+                (yield* encodeOrdinaryCheckoutUseJson(input.ordinaryCheckoutUse)) !==
+                  (yield* encodeOrdinaryCheckoutUseJson(ordinaryStartExecution.originalUse)))
+            )
+              return yield* ordinaryFailure(
+                "The ordinary run has no exact original start actor, accepted run, or captured runtime producer.",
+              );
+            yield* eventSink
+              .revalidateOrdinaryCheckoutExecution(ordinaryStartExecution)
+              .pipe(Effect.mapError(ordinaryFailure));
+          }
+          const runScope = yield* Scope.fork(serviceScope);
+          const activated = yield* Deferred.make<
+            OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+            RunExecutionStartError
+          >();
+          let scopeCurrent = true;
+          let lossSignaled = false;
+          let activatedRef: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1 | undefined;
+          const currentOrdinaryExecution =
+            ordinaryStartExecution === undefined ? undefined : Deferred.await(activated);
+          yield* Scope.addFinalizer(
+            runScope,
+            Effect.sync(() => {
+              scopeCurrent = false;
+            }).pipe(
+              Effect.andThen(
+                Deferred.fail(
+                  activated,
+                  ordinaryFailure("The owned run scope closed before activation."),
+                ),
+              ),
+              Effect.asVoid,
+            ),
+          );
+          const executionReference =
+            input.nativeCreationExecutionContext === undefined
+              ? null
+              : getNativeCreationExecutionReference(input.nativeCreationExecutionContext);
+          if (input.nativeCreationExecutionContext !== undefined && executionReference === null) {
+            return yield* new RunExecutionStartError({
+              commandId: input.commandId,
+              runId: input.run.id,
+              cause: "The native execution context has no issued effect reference.",
+            });
+          }
+          if (input.importedHistoryStartExecution !== undefined) {
+            if (
+              executionReference !== null ||
+              input.importedHistoryStartExecution.reference.threadId !== input.run.threadId ||
+              input.importedHistoryStartExecution.reference.runId !== input.run.id ||
+              input.importedHistoryStartExecution.executionIntent.runAttemptId !== input.attemptId
+            )
+              return yield* new RunExecutionStartError({
+                commandId: input.commandId,
+                runId: input.run.id,
+                cause: "The prepared application choice differs from this provider execution.",
+              });
+            yield* readImportedHistoryStartExecution(
+              input.importedHistoryStartExecution,
+              eventSink,
+            ).pipe(Effect.mapError(ordinaryFailure));
+          }
           // Startup failure and stream shutdown can report the same attempt.
           const refreshAfterTurn = yield* Effect.cached(
             finalizationObserver.refreshAfterTurn(input.appThread.projectId).pipe(
@@ -836,10 +1338,22 @@ export const layer: Layer.Layer<
               .captureBaseline({
                 scope: input.checkpointScope,
                 ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
+                ...(ordinaryStartExecution === undefined
+                  ? {}
+                  : {
+                      ordinaryCheckoutUse: ordinaryStartExecution.originalUse,
+                      ordinaryCheckoutExecution: ordinaryStartExecution,
+                    }),
               })
               .pipe(
+                Effect.provideService(EventSink.EventSinkV2, eventSink),
                 Effect.catchCause((cause) =>
-                  Cause.hasInterruptsOnly(cause)
+                  Cause.hasInterruptsOnly(cause) ||
+                  cause.reasons.some(
+                    (reason) =>
+                      Cause.isFailReason(reason) &&
+                      CheckpointService.isOrdinaryCheckoutMutationError(reason.error),
+                  )
                     ? Effect.failCause(cause)
                     : Effect.logWarning(
                         "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
@@ -851,13 +1365,30 @@ export const layer: Layer.Layer<
               input.shouldStartProviderTurn !== undefined &&
               !(yield* input.shouldStartProviderTurn())
             ) {
+              if (ordinaryStartExecution !== undefined) {
+                yield* Scope.close(runScope, Exit.void);
+                return yield* new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
+                  reason: "unknown_use",
+                  threadId: input.run.threadId,
+                  path: ordinaryStartExecution.originalUse.lease.resourcePath,
+                  message:
+                    "The original run attempt was superseded after baseline preparation and before native dispatch.",
+                });
+              }
               return null;
             }
             return responseStreamingMode;
           }).pipe(
             Effect.catchCause((cause) =>
               Effect.gen(function* () {
-                if (Cause.hasInterruptsOnly(cause)) {
+                if (
+                  Cause.hasInterruptsOnly(cause) ||
+                  cause.reasons.some(
+                    (reason) =>
+                      Cause.isFailReason(reason) &&
+                      CheckpointService.isOrdinaryCheckoutMutationError(reason.error),
+                  )
+                ) {
                   return yield* Effect.failCause(cause);
                 }
                 yield* Effect.logError("orchestration V2 run preparation failed", {
@@ -865,6 +1396,9 @@ export const layer: Layer.Layer<
                   cause,
                 });
                 yield* writeFinalRunEvents({
+                  ...(ordinaryStartExecution === undefined
+                    ? {}
+                    : { ordinaryCheckoutExecution: Effect.succeed(ordinaryStartExecution) }),
                   run: input.run,
                   rootNode: input.rootNode,
                   checkpointScope: input.checkpointScope,
@@ -903,8 +1437,16 @@ export const layer: Layer.Layer<
             return;
           }
           const terminalEvent = yield* Ref.make<ProviderTerminalEvent | null>(null);
+          const assistantOutputHeld = yield* Ref.make(false);
+          const capturedAssistantOrigin = yield* Ref.make<ProviderEventOrigin | undefined>(
+            undefined,
+          );
           const latestTurnItemOrdinal = yield* Ref.make(input.providerTurnOrdinal * 100);
           const latestProviderThread = yield* Ref.make(input.providerThread);
+          const acceptedPrimaryState = yield* Ref.make({
+            attempt: input.attempt,
+            rootNode: input.rootNode,
+          });
           const routeIdentity: ProviderEventRouteIdentity = {
             threadId: input.run.threadId,
             runId: input.run.id,
@@ -915,10 +1457,13 @@ export const layer: Layer.Layer<
             input.session.subscribeEvents === undefined
               ? { events: input.session.events, close: Effect.void }
               : yield* input.session.subscribeEvents;
+          // Loss can close the scope before its child fiber starts; acquisition owns cleanup immediately.
+          const closeEventSubscription = yield* Effect.cached(eventSubscription.close);
+          yield* Scope.addFinalizer(runScope, closeEventSubscription);
           const inheritedBackgroundTurnItems = yield* (
             input.loadInheritedBackgroundTurnItems?.() ?? Effect.succeed([])
           ).pipe(
-            Effect.onError(() => eventSubscription.close),
+            Effect.onError(() => closeEventSubscription),
             Effect.mapError(
               (cause) =>
                 new RunExecutionStartError({
@@ -961,11 +1506,15 @@ export const layer: Layer.Layer<
               const providerThread = yield* Ref.get(latestProviderThread);
               const openSubagents = yield* Ref.get(openRunOwnedSubagents);
               yield* writeFinalRunEvents({
+                ...(currentOrdinaryExecution === undefined
+                  ? {}
+                  : { ordinaryCheckoutExecution: currentOrdinaryExecution }),
                 run: input.run,
                 rootNode: input.rootNode,
                 checkpointScope: input.checkpointScope,
                 providerThread,
                 attempt: input.attempt,
+                acceptedPrimaryState: Ref.get(acceptedPrimaryState),
                 ...(input.shouldFinalizeRun === undefined
                   ? {}
                   : { shouldFinalizeRun: input.shouldFinalizeRun }),
@@ -1167,17 +1716,237 @@ export const layer: Layer.Layer<
             return true;
           });
           const filterAssistantEvent = makeAssistantStreamingFilter(responseStreamingMode);
+          const revalidateOutputRuntime = (
+            binding: ProviderEventIngestor.ProviderAssistantOutputOwner["binding"],
+          ) =>
+            Effect.gen(function* () {
+              const providerThread = yield* Ref.get(latestProviderThread);
+              if (
+                input.session.runtimeGeneration !== binding.runtimeGeneration ||
+                input.session.providerSessionId !== binding.providerSessionId ||
+                providerThread.id !== binding.providerThreadId ||
+                providerThread.nativeThreadRef?.nativeId !== binding.nativeThreadId ||
+                input.session.instanceId !== binding.instanceId
+              )
+                return yield* Effect.fail(
+                  "Assistant output's emitting runtime was replaced before publication.",
+                );
+            });
           const providerEventFiber = yield* eventSubscription.events.pipe(
             Stream.filterEffect((event) =>
-              Ref.modify(eventRouting, (state) => routeProviderEvent(event, routeIdentity, state)),
+              Effect.gen(function* () {
+                const origin = readProviderEventOrigin(event);
+                if (origin !== undefined) {
+                  if (
+                    origin.producer.driver !== event.driver ||
+                    origin.producer.driver !== input.session.driver ||
+                    origin.producer.instanceId !== input.run.providerInstanceId ||
+                    origin.producer.providerSessionId !== input.providerSessionId
+                  )
+                    return false;
+                  const owner = origin.turn;
+                  if (
+                    owner !== undefined &&
+                    (owner.binding.instanceId !== origin.producer.instanceId ||
+                      owner.binding.providerSessionId !== origin.producer.providerSessionId ||
+                      (origin.producer.runtimeGeneration !== undefined &&
+                        origin.producer.runtimeGeneration !== owner.binding.runtimeGeneration))
+                  )
+                    return false;
+                  const current = yield* origin.producer.revalidateCurrent.pipe(Effect.exit);
+                  if (current._tag === "Failure") return false;
+                  if (origin.derivation !== undefined) {
+                    const d = origin.derivation;
+                    const executor = d.executor;
+                    if (
+                      origin.turn !== undefined ||
+                      executor.runId !== input.run.id ||
+                      executor.attemptId !== input.attempt.id ||
+                      executor.binding.threadId !== input.run.threadId ||
+                      executor.binding.providerThreadId !== input.providerThread.id ||
+                      executor.binding.instanceId !== input.run.providerInstanceId ||
+                      executor.binding.providerSessionId !== input.providerSessionId ||
+                      d.subject.parentThreadId !== input.run.threadId
+                    )
+                      return false;
+                    const derivation = yield* d.revalidateDerivation.pipe(Effect.exit);
+                    if (derivation._tag === "Failure") {
+                      yield* Ref.set(assistantOutputHeld, true);
+                      return yield* Effect.fail(
+                        new RunExecutionIngestError({
+                          runId: input.run.id,
+                          cause: derivation.cause,
+                        }),
+                      );
+                    }
+                    return true;
+                  }
+                  if (
+                    owner !== undefined &&
+                    (event.type === "turn.terminal" || event.type === "provider_turn.updated")
+                  ) {
+                    const providerTurnId =
+                      event.type === "turn.terminal" ? event.providerTurnId : event.providerTurn.id;
+                    if (providerTurnId !== owner.providerTurnId) return false;
+                    const providerThreadId =
+                      event.type === "turn.terminal"
+                        ? event.providerThreadId
+                        : event.providerTurn.providerThreadId;
+                    if (
+                      providerThreadId !== owner.binding.providerThreadId ||
+                      (event.type === "provider_turn.updated" &&
+                        event.providerTurn.runAttemptId !== owner.attemptId)
+                    )
+                      return false;
+                    if (
+                      owner.binding.threadId === input.run.threadId &&
+                      (owner.runId !== input.run.id || owner.attemptId !== input.attempt.id)
+                    )
+                      return false;
+                  }
+                }
+                return yield* Ref.modify(eventRouting, (state) =>
+                  routeProviderEvent(event, routeIdentity, state),
+                );
+              }),
             ),
             Stream.tap((event) =>
               Effect.gen(function* () {
                 let storedEventCount = 0;
-                const deliveredEvent = filterAssistantEvent(
+                const origin = readProviderEventOrigin(event);
+                const owner = origin?.turn;
+                if (origin?.derivation !== undefined) {
+                  const d = origin.derivation;
+                  const committed = yield* providerEventIngestor
+                    .ingestNormalized({
+                      providerSessionId: input.providerSessionId,
+                      providerInstanceId: input.run.providerInstanceId,
+                      threadId: input.run.threadId,
+                      runId: input.run.id,
+                      nodeId: input.rootNode.id,
+                      event,
+                      revalidateCurrentOwner: origin.producer.revalidateCurrent.pipe(
+                        Effect.andThen(revalidateOutputRuntime(d.executor.binding)),
+                      ),
+                    })
+                    .pipe(Effect.onError(() => Ref.set(assistantOutputHeld, true)));
+                  if (committed.length === 0) return;
+                  // Only the qualified committed family can clear child and pending-work tracking.
+                  yield* Ref.update(eventRouting, (state) => ({
+                    ...state,
+                    ownedThreadIds: new Set([...state.ownedThreadIds, d.subject.childThreadId]),
+                  }));
+                  for (const { event: stored } of committed) {
+                    if (stored.type === "node.updated") {
+                      yield* trackChildLifecycle(
+                        { type: "node.updated", driver: event.driver, node: stored.payload },
+                        true,
+                      );
+                    } else if (stored.type === "subagent.updated") {
+                      yield* trackChildLifecycle(
+                        {
+                          type: "subagent.updated",
+                          driver: event.driver,
+                          subagent: stored.payload,
+                        },
+                        true,
+                      );
+                    } else if (stored.type === "turn-item.updated") {
+                      yield* trackChildLifecycle(
+                        {
+                          type: "turn_item.updated",
+                          driver: event.driver,
+                          turnItem: stored.payload,
+                        },
+                        true,
+                      );
+                    }
+                  }
+                  return;
+                }
+                const isRootAssistantOutput =
+                  (event.type === "node.updated" &&
+                    (event.node.kind === "assistant_message" || event.node.kind === "reasoning") &&
+                    event.node.threadId === input.run.threadId &&
+                    event.node.runId === input.run.id) ||
+                  (event.type === "message.updated" &&
+                    event.message.role === "assistant" &&
+                    event.message.threadId === input.run.threadId &&
+                    event.message.runId === input.run.id) ||
+                  (event.type === "turn_item.updated" &&
+                    (event.turnItem.type === "assistant_message" ||
+                      event.turnItem.type === "reasoning") &&
+                    event.turnItem.threadId === input.run.threadId &&
+                    event.turnItem.runId === input.run.id);
+                if (
+                  owner !== undefined &&
+                  owner.runId === input.run.id &&
+                  owner.attemptId === input.attempt.id &&
+                  isRootAssistantOutput
+                ) {
+                  yield* providerEventIngestor
+                    .captureAssistantOutput({
+                      providerSessionId: input.providerSessionId,
+                      providerInstanceId: input.run.providerInstanceId,
+                      threadId: input.run.threadId,
+                      runId: input.run.id,
+                      nodeId: input.rootNode.id,
+                      event,
+                      owner,
+                      revalidateCurrentOwner: revalidateOutputRuntime(owner.binding),
+                    })
+                    .pipe(Effect.onError(() => Ref.set(assistantOutputHeld, true)));
+                  yield* Ref.set(capturedAssistantOrigin, origin);
+                }
+                const terminalOutputTarget =
+                  event.type === "turn.terminal"
+                    ? event.providerTurnId
+                    : event.type === "provider_turn.updated" &&
+                        event.providerTurn.providerThreadId === input.providerThread.id &&
+                        event.providerTurn.runAttemptId === input.attempt.id &&
+                        ["completed", "interrupted", "failed", "cancelled"].includes(
+                          event.providerTurn.status,
+                        )
+                      ? event.providerTurn.id
+                      : undefined;
+                const capturedOwner = (yield* Ref.get(capturedAssistantOrigin))?.turn;
+                if (
+                  terminalOutputTarget !== undefined &&
+                  owner === undefined &&
+                  capturedOwner !== undefined &&
+                  (yield* providerEventIngestor.hasBufferedAssistantOutput({
+                    binding: capturedOwner.binding,
+                    providerTurnId: terminalOutputTarget,
+                  }))
+                ) {
+                  yield* Ref.set(assistantOutputHeld, true);
+                  return yield* Effect.fail(
+                    new ProviderEventIngestor.ProviderEventPublishError({
+                      providerSessionId: input.providerSessionId,
+                      eventCount: 0,
+                      cause:
+                        "A terminal without captured native ownership cannot omit held assistant output.",
+                    }),
+                  );
+                }
+                if (owner !== undefined && terminalOutputTarget !== undefined) {
+                  // Persist the full raw snapshot before terminal ingestion can settle the run.
+                  yield* providerEventIngestor
+                    .flushAssistantOutput({
+                      binding: owner.binding,
+                      providerTurnId: terminalOutputTarget,
+                      revalidateCurrentOwner: origin!.producer.revalidateCurrent.pipe(
+                        Effect.andThen(revalidateOutputRuntime(owner.binding)),
+                      ),
+                    })
+                    .pipe(Effect.onError(() => Ref.set(assistantOutputHeld, true)));
+                }
+                const filteredEvent = filterAssistantEvent(
                   event,
                   DateTime.toEpochMillis(yield* DateTime.now),
                 );
+                const deliveredEvent =
+                  filteredEvent === null ? null : copyProviderEventOrigin(event, filteredEvent);
                 if (deliveredEvent) {
                   // Root provider_thread.updated always uses an ownership gate:
                   // pre-terminal writeIfRunCurrent (attempt still running), or
@@ -1188,38 +1957,83 @@ export const layer: Layer.Layer<
                   const isRootProviderThreadUpdate =
                     event.type === "provider_thread.updated" &&
                     event.providerThread.id === input.providerThread.id;
-                  const storedEvents = yield* providerEventIngestor.ingestNormalized({
-                    analyticsContext: {
-                      modelSelection: input.modelSelection,
-                      runtimeMode: input.runtimePolicy.runtimeMode,
-                      interactionMode: input.runtimePolicy.interactionMode,
-                    },
-                    providerSessionId: input.providerSessionId,
-                    providerInstanceId: input.run.providerInstanceId,
-                    threadId: input.run.threadId,
-                    runId: input.run.id,
-                    nodeId: input.rootNode.id,
-                    event: deliveredEvent,
-                    ...(isRootProviderThreadUpdate
-                      ? rootTerminalAlreadySeen
-                        ? {
-                            writeIfProviderThreadOwner: {
-                              providerThreadId: input.providerThread.id,
-                              runId: input.run.id,
-                              activeAttemptId: input.attempt.id,
-                              expectedLastRunOrdinal: input.run.ordinal,
-                            },
-                          }
-                        : {
-                            writeIfRunCurrent: {
-                              runId: input.run.id,
-                              activeAttemptId: input.attempt.id,
-                              expectedStatus: "running" as const,
-                            },
-                          }
-                      : {}),
-                  });
+                  const isRootProviderTurnUpdate =
+                    !rootTerminalAlreadySeen &&
+                    event.type === "provider_turn.updated" &&
+                    event.providerTurn.runAttemptId === input.attempt.id &&
+                    event.providerTurn.nodeId === input.rootNode.id &&
+                    event.providerTurn.providerThreadId === input.providerThread.id &&
+                    (event.threadId === undefined || event.threadId === input.run.threadId);
+                  const storedEvents = yield* providerEventIngestor
+                    .ingestNormalized({
+                      analyticsContext: {
+                        modelSelection: input.modelSelection,
+                        runtimeMode: input.runtimePolicy.runtimeMode,
+                        interactionMode: input.runtimePolicy.interactionMode,
+                      },
+                      providerSessionId: input.providerSessionId,
+                      providerInstanceId: input.run.providerInstanceId,
+                      threadId: input.run.threadId,
+                      runId: input.run.id,
+                      nodeId: input.rootNode.id,
+                      event: deliveredEvent,
+                      ...(origin === undefined
+                        ? {}
+                        : { revalidateCurrentOwner: origin.producer.revalidateCurrent }),
+                      ...(isRootProviderThreadUpdate || isRootProviderTurnUpdate
+                        ? rootTerminalAlreadySeen
+                          ? {
+                              writeIfProviderThreadOwner: {
+                                providerThreadId: input.providerThread.id,
+                                runId: input.run.id,
+                                activeAttemptId: input.attempt.id,
+                                expectedLastRunOrdinal: input.run.ordinal,
+                              },
+                            }
+                          : {
+                              writeIfRunCurrent: {
+                                runId: input.run.id,
+                                activeAttemptId: input.attempt.id,
+                                expectedStatus: "running" as const,
+                              },
+                            }
+                        : {}),
+                    })
+                    .pipe(
+                      Effect.onError(() =>
+                        isRootAssistantOutput ? Ref.set(assistantOutputHeld, true) : Effect.void,
+                      ),
+                    );
                   storedEventCount = storedEvents.length;
+                  if (isRootProviderTurnUpdate) {
+                    const acceptedAttempt = storedEvents
+                      .map((stored) => stored.event)
+                      .find(
+                        (stored) =>
+                          stored.type === "run-attempt.updated" &&
+                          stored.payload.id === input.attempt.id &&
+                          stored.payload.runId === input.run.id &&
+                          stored.payload.rootNodeId === input.rootNode.id,
+                      );
+                    const acceptedRoot = storedEvents
+                      .map((stored) => stored.event)
+                      .find(
+                        (stored) =>
+                          stored.type === "node.updated" &&
+                          stored.payload.id === input.rootNode.id &&
+                          stored.payload.runId === input.run.id,
+                      );
+                    if (
+                      acceptedAttempt?.type === "run-attempt.updated" &&
+                      acceptedRoot?.type === "node.updated"
+                    ) {
+                      // Only committed companion rows may replace the preparation snapshots.
+                      yield* Ref.set(acceptedPrimaryState, {
+                        attempt: acceptedAttempt.payload,
+                        rootNode: acceptedRoot.payload,
+                      });
+                    }
+                  }
                   if (
                     isRootProviderThreadUpdate &&
                     rootTerminalAlreadySeen &&
@@ -1265,67 +2079,82 @@ export const layer: Layer.Layer<
               }),
             ),
             Effect.catchCause((cause) =>
-              Ref.get(rootRunFinalized).pipe(
-                Effect.flatMap((finalized) =>
-                  Effect.logWarning("orchestration V2 provider event ingestion failed", {
-                    runId: input.run.id,
-                    cause,
-                  }).pipe(
-                    Effect.andThen(
-                      finalized
-                        ? Effect.void
-                        : Ref.get(latestProviderThread).pipe(
-                            Effect.flatMap((providerThread) =>
-                              Ref.get(latestTurnItemOrdinal).pipe(
-                                Effect.flatMap((latestItemOrdinal) =>
-                                  Ref.get(openRunOwnedSubagents).pipe(
-                                    Effect.flatMap((openSubagents) =>
-                                      writeFinalRunEvents({
-                                        run: input.run,
-                                        rootNode: input.rootNode,
-                                        checkpointScope: input.checkpointScope,
-                                        providerThread,
-                                        attempt: input.attempt,
-                                        ...(input.shouldFinalizeRun === undefined
-                                          ? {}
-                                          : { shouldFinalizeRun: input.shouldFinalizeRun }),
-                                        ...(input.hasUnpairedRunInterruptRequest === undefined
-                                          ? {}
-                                          : {
-                                              hasUnpairedRunInterruptRequest:
-                                                input.hasUnpairedRunInterruptRequest,
-                                            }),
-                                        openRunOwnedSubagents: openSubagents,
-                                        terminal: makeFailedTerminalEvent(
-                                          makeProviderFailure({
-                                            cause: Cause.squash(cause),
-                                            class: "unknown",
-                                          }),
-                                          latestItemOrdinal + 1,
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.failCause(cause)
+                : Ref.get(rootRunFinalized).pipe(
+                    Effect.flatMap((finalized) =>
+                      Effect.logWarning("orchestration V2 provider event ingestion failed", {
+                        runId: input.run.id,
+                        cause,
+                      }).pipe(
+                        Effect.andThen(
+                          Ref.get(assistantOutputHeld).pipe(
+                            Effect.flatMap((outputHeld) =>
+                              // A rejected output transaction must not be followed by a terminal write.
+                              finalized || outputHeld
+                                ? Effect.void
+                                : Ref.get(latestProviderThread).pipe(
+                                    Effect.flatMap((providerThread) =>
+                                      Ref.get(latestTurnItemOrdinal).pipe(
+                                        Effect.flatMap((latestItemOrdinal) =>
+                                          Ref.get(openRunOwnedSubagents).pipe(
+                                            Effect.flatMap((openSubagents) =>
+                                              writeFinalRunEvents({
+                                                ...(currentOrdinaryExecution === undefined
+                                                  ? {}
+                                                  : {
+                                                      ordinaryCheckoutExecution:
+                                                        currentOrdinaryExecution,
+                                                    }),
+                                                run: input.run,
+                                                rootNode: input.rootNode,
+                                                checkpointScope: input.checkpointScope,
+                                                providerThread,
+                                                attempt: input.attempt,
+                                                acceptedPrimaryState: Ref.get(acceptedPrimaryState),
+                                                ...(input.shouldFinalizeRun === undefined
+                                                  ? {}
+                                                  : { shouldFinalizeRun: input.shouldFinalizeRun }),
+                                                ...(input.hasUnpairedRunInterruptRequest ===
+                                                undefined
+                                                  ? {}
+                                                  : {
+                                                      hasUnpairedRunInterruptRequest:
+                                                        input.hasUnpairedRunInterruptRequest,
+                                                    }),
+                                                openRunOwnedSubagents: openSubagents,
+                                                terminal: makeFailedTerminalEvent(
+                                                  makeProviderFailure({
+                                                    cause: Cause.squash(cause),
+                                                    class: "unknown",
+                                                  }),
+                                                  latestItemOrdinal + 1,
+                                                ),
+                                                failureItemPersisted: false,
+                                                refreshAfterTurn,
+                                              }),
+                                            ),
+                                          ),
                                         ),
-                                        failureItemPersisted: false,
-                                        refreshAfterTurn,
-                                      }),
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ),
                             ),
                           ),
-                    ),
-                    Effect.mapError(
-                      (writeCause) =>
-                        new RunExecutionIngestError({
-                          runId: input.run.id,
-                          cause: { ingest: cause, write: writeCause },
-                        }),
+                        ),
+                        Effect.mapError(
+                          (writeCause) =>
+                            new RunExecutionIngestError({
+                              runId: input.run.id,
+                              cause: { ingest: cause, write: writeCause },
+                            }),
+                        ),
+                      ),
                     ),
                   ),
-                ),
-              ),
             ),
-            Effect.ensuring(eventSubscription.close),
-            Effect.forkDetach,
+            Effect.ensuring(closeEventSubscription),
+            Effect.forkIn(runScope),
           );
 
           if (
@@ -1333,6 +2162,18 @@ export const layer: Layer.Layer<
             !(yield* input.shouldStartProviderTurn())
           ) {
             yield* Fiber.interrupt(providerEventFiber);
+            if (ordinaryStartExecution !== undefined) {
+              yield* Scope.close(runScope, Exit.void);
+              return yield* ordinaryFailure(
+                new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
+                  reason: "unknown_use",
+                  threadId: input.run.threadId,
+                  path: ordinaryStartExecution.originalUse.lease.resourcePath,
+                  message:
+                    "The original run attempt was superseded after setup and before native dispatch.",
+                }),
+              );
+            }
             return;
           }
 
@@ -1340,7 +2181,41 @@ export const layer: Layer.Layer<
           // its already-issued MCP credential valid even when the agent goes
           // a long time between browser-tool calls.
           yield* McpSessionRegistry.touchActiveMcpThread(input.run.threadId);
+          const nativeCompletion =
+            ordinaryStartExecution === undefined ||
+            input.prepareOrdinaryManagedActorRun === undefined
+              ? undefined
+              : yield* input
+                  .prepareOrdinaryManagedActorRun({
+                    startExecution: ordinaryStartExecution,
+                    admission: ordinaryAdmission!,
+                    checkpointScopeId: input.checkpointScope.id,
+                    providerThreadId: input.providerThread.id,
+                  })
+                  .pipe(
+                    Effect.mapError(ordinaryFailure),
+                    Effect.onError(() => Scope.close(runScope, Exit.void)),
+                  );
+          const compact =
+            input.message.attachments.length === 0 &&
+            input.message.text.trim().toLowerCase() === "/compact";
+          const nativeOperation: ProviderNativeOperationContext = {
+            operationId:
+              executionReference?.effectId ??
+              input.importedHistoryStartExecution?.reference.effectId ??
+              `${input.commandId}:${input.attemptId}:start`,
+            operation: compact ? "compact_thread" : "start_turn",
+            instanceId: input.modelSelection.instanceId,
+            threadId: input.run.threadId,
+            providerSessionId: input.providerSessionId,
+            providerThreadId: input.providerThread.id,
+            ...(input.session.runtimeGeneration === undefined
+              ? {}
+              : { runtimeGeneration: input.session.runtimeGeneration }),
+            attemptId: input.attemptId,
+          };
           const turnInput = {
+            nativeOperation,
             appThread: input.appThread,
             threadId: input.run.threadId,
             runId: input.run.id,
@@ -1358,9 +2233,6 @@ export const layer: Layer.Layer<
             modelSelection: input.modelSelection,
             runtimePolicy: input.runtimePolicy,
           };
-          const compact =
-            input.message.attachments.length === 0 &&
-            input.message.text.trim().toLowerCase() === "/compact";
           const startTurn = compact
             ? (input.session.compactThread?.(turnInput) ??
               Effect.fail(
@@ -1373,9 +2245,42 @@ export const layer: Layer.Layer<
                 }),
               ))
             : input.session.startTurn(turnInput);
-          yield* startTurn.pipe(
-            Effect.catchCause((cause) =>
-              Effect.logError("orchestration V2 provider turn start failed", {
+          if (ordinaryStartExecution !== undefined)
+            yield* eventSink
+              .revalidateOrdinaryCheckoutExecution(ordinaryStartExecution)
+              .pipe(Effect.mapError(ordinaryFailure));
+          let dispatchReturned = false;
+          const actualDispatch =
+            ordinaryStartExecution === undefined || nativeCompletion === undefined
+              ? startTurn
+              : ProviderManagedActorCompletion.withProviderManagedActorExecution(
+                  ordinaryStartExecution,
+                  startTurn,
+                );
+          yield* withProviderNativeEffect(actualDispatch, nativeOperation).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                dispatchReturned = true;
+              }),
+            ),
+            Effect.catchCause((cause) => {
+              const evidence = nativeEffectEvidenceFor(cause, nativeOperation);
+              if (evidence.outcome === "confirmed_success")
+                return Effect.sync(() => {
+                  dispatchReturned = true;
+                });
+              if (evidence.outcome === "unknown")
+                return Effect.fail(
+                  new RunExecutionStartError({
+                    commandId: input.commandId,
+                    runId: input.run.id,
+                    cause: new ProviderNativeOperationUnknownError({
+                      nativeEffect: evidence,
+                      cause,
+                    }),
+                  }),
+                );
+              return Effect.logError("orchestration V2 provider turn start failed", {
                 runId: input.run.id,
                 cause,
               }).pipe(
@@ -1387,11 +2292,17 @@ export const layer: Layer.Layer<
                       Ref.get(openRunOwnedSubagents).pipe(
                         Effect.flatMap((openSubagents) =>
                           writeFinalRunEvents({
+                            ...(ordinaryStartExecution === undefined
+                              ? {}
+                              : {
+                                  ordinaryCheckoutExecution: Effect.succeed(ordinaryStartExecution),
+                                }),
                             run: input.run,
                             rootNode: input.rootNode,
                             checkpointScope: input.checkpointScope,
                             providerThread,
                             attempt: input.attempt,
+                            acceptedPrimaryState: Ref.get(acceptedPrimaryState),
                             ...(input.shouldFinalizeRun === undefined
                               ? {}
                               : { shouldFinalizeRun: input.shouldFinalizeRun }),
@@ -1425,9 +2336,177 @@ export const layer: Layer.Layer<
                       cause: { start: cause, write: writeCause },
                     }),
                 ),
-              ),
+              );
+            }),
+            Effect.onError((cause) =>
+              ordinaryStartExecution === undefined
+                ? Effect.void
+                : Ref.set(assistantOutputHeld, true).pipe(
+                    Effect.andThen(Deferred.fail(activated, ordinaryFailure(Cause.squash(cause)))),
+                    Effect.asVoid,
+                  ),
             ),
           );
+          if (ordinaryStartExecution === undefined) return;
+          if (!dispatchReturned) {
+            yield* Deferred.fail(
+              activated,
+              ordinaryFailure("The native dispatch did not return successfully."),
+            );
+            yield* Scope.close(runScope, Exit.void);
+            return;
+          }
+          const captured = yield* input.captureOrdinaryAttachment!().pipe(
+            Effect.mapError(ordinaryFailure),
+          );
+          const managedExecutor = freezeOrdinaryExecutionFacts(
+            yield* Schema.decodeUnknownEffect(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)(
+              {
+                kind: "captured_managed_run",
+                captureId: captured.captureId,
+                run: ordinaryAdmission!.run,
+                checkpointScopeId: input.checkpointScope.id,
+                driver: captured.driver,
+                binding: {
+                  threadId: captured.binding.threadId,
+                  providerThreadId: captured.binding.providerThreadId,
+                  providerSessionId: captured.binding.providerSessionId,
+                  instanceId: captured.binding.instanceId,
+                },
+                ...(captured.binding.runtimeGeneration === undefined
+                  ? {}
+                  : { runtimeGeneration: captured.binding.runtimeGeneration }),
+                ...(captured.binding.nativeThreadId === undefined
+                  ? {}
+                  : { nativeThreadId: captured.binding.nativeThreadId }),
+                ...(captured.binding.evidenceRevision === undefined
+                  ? {}
+                  : { evidenceRevision: captured.binding.evidenceRevision }),
+                ...(captured.providerTurnId === undefined
+                  ? {}
+                  : { providerTurnId: captured.providerTurnId }),
+              },
+            ).pipe(Effect.orDie),
+          ) as OrdinaryManagedRunExecutorV1;
+          if (
+            captured.runId !== input.run.id ||
+            captured.attemptId !== input.attemptId ||
+            captured.binding.threadId !== input.run.threadId ||
+            captured.binding.providerThreadId !== input.providerThread.id ||
+            captured.binding.providerSessionId !== input.providerSessionId ||
+            captured.binding.instanceId !== input.run.providerInstanceId
+          )
+            return yield* ordinaryFailure(
+              "The returned dispatch capture differs from this exact run target.",
+            );
+          const revalidateMutation = Effect.suspend(
+            (): Effect.Effect<void, RunExecutionStartError | ProviderSessionActivityError> =>
+              !scopeCurrent || lossSignaled
+                ? Effect.fail(ordinaryFailure("The captured run scope is no longer current."))
+                : captured.revalidateCaptured,
+          );
+          const revalidateCompletionBinding = Effect.suspend(
+            (): Effect.Effect<void, OrdinaryManagedRunRevalidationError> =>
+              !scopeCurrent || lossSignaled
+                ? Effect.fail(ordinaryFailure("The captured run completion binding was lost."))
+                : nativeCompletion === undefined
+                  ? revalidateMutation
+                  : captured.revalidateCompletionBinding.pipe(
+                      Effect.andThen(nativeCompletion.revalidateCompletionBinding),
+                    ),
+          );
+          // The optional native producer can qualify historical completion; default runs keep their current captured owner.
+          const revalidateCaptured =
+            nativeCompletion === undefined
+              ? revalidateMutation
+              : revalidateMutation.pipe(Effect.catch(() => revalidateCompletionBinding));
+          const startExecution = freezeOrdinaryExecutionFacts(
+            OrdinaryCheckout.decodeOrdinaryCheckoutExecutionRefV1(
+              yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
+                ordinaryStartExecution,
+              ).pipe(Effect.orDie),
+            ),
+          );
+          const observation = Object.freeze({
+            kind: "dispatch_returned" as const,
+            settlementMode:
+              input.prepareOrdinaryManagedActorRun === undefined
+                ? ("primary_terminal_checkpoint" as const)
+                : ("managed_actor_completion" as const),
+            startExecution,
+            managedExecutor,
+            observedAt: DateTime.formatIso(yield* DateTime.now),
+          });
+          issueOrdinaryManagedRunStartObservation(observation, revalidateCaptured);
+          return Object.freeze({
+            startExecution,
+            managedExecutor,
+            actualStartObservation: observation,
+            attachment: captured,
+            revalidateCaptured,
+            revalidateMutation,
+            revalidateCompletionBinding,
+            ...(nativeCompletion === undefined ? {} : { nativeCompletion }),
+            requireActivatedExecution: Effect.suspend(() =>
+              activatedRef === undefined
+                ? Effect.fail(
+                    ordinaryFailure("The actual managed activation has not been committed."),
+                  )
+                : Effect.succeed(activatedRef),
+            ),
+            activate: (ref: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1) =>
+              Effect.gen(function* () {
+                const expected = OrdinaryCheckout.makeOrdinaryCheckoutExecutionRefV1({
+                  originalUse: startExecution.originalUse,
+                  executor: managedExecutor,
+                });
+                if (
+                  (yield* encodeOrdinaryCheckoutExecutionRefJson(ref)) !==
+                  (yield* encodeOrdinaryCheckoutExecutionRefJson(expected))
+                )
+                  return yield* ordinaryFailure(
+                    "Activation returned a different managed checkout participant.",
+                  );
+                yield* revalidateCaptured.pipe(Effect.mapError(ordinaryFailure));
+                yield* eventSink
+                  .revalidateOrdinaryCheckoutExecution(ref)
+                  .pipe(Effect.mapError(ordinaryFailure));
+                const retainedRef = freezeOrdinaryExecutionFacts(
+                  OrdinaryCheckout.decodeOrdinaryCheckoutExecutionRefV1(
+                    yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
+                      ref,
+                    ).pipe(Effect.orDie),
+                  ),
+                );
+                yield* (
+                  nativeCompletion === undefined
+                    ? Effect.void
+                    : nativeCompletion.bindManagedExecution(retainedRef)
+                ).pipe(
+                  Effect.mapError(ordinaryFailure),
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      activatedRef = retainedRef;
+                    }),
+                  ),
+                  Effect.andThen(Deferred.succeed(activated, retainedRef)),
+                  Effect.uninterruptible,
+                );
+              }),
+            lose: (reason: string) =>
+              Effect.gen(function* () {
+                if (lossSignaled) return undefined;
+                lossSignaled = true;
+                yield* Deferred.fail(activated, ordinaryFailure(reason));
+                return yield* captured
+                  .stopCaptured({
+                    operationId: `${startExecution.originalUse.operationId}:captured-loss`,
+                  })
+                  .pipe(Effect.ensuring(Scope.close(runScope, Exit.void)));
+              }),
+            awaitIngestionExit: Fiber.await(providerEventFiber),
+            close: Scope.close(runScope, Exit.void),
+          } satisfies OrdinaryManagedRunExecutionHandleV1);
         }),
     } satisfies RunExecutionServiceV2Shape);
   }),

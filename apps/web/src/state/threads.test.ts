@@ -5,19 +5,204 @@ import {
 import {
   EnvironmentId,
   MessageId,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ProviderThreadId,
+  ProjectId,
   RunId,
   ThreadId,
   type OrchestrationV2ThreadShell,
+  type OrchestrationV2ThreadRuntimeObservationResult,
+  type OrchestrationV2OperatingCountsResult,
+  type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
-import { makeThreadProjectionFixture } from "../test-fixtures";
+import { makeThreadFixture, makeThreadProjectionFixture } from "../test-fixtures";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createRunningThreadKeepAliveAtom } from "./threads";
+import {
+  createOperatingCountAtom,
+  createRunningThreadKeepAliveAtom,
+  createThreadOperatingStatesAtom,
+} from "./threads";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 
 const LOCAL = EnvironmentId.make("local");
 const REMOTE = EnvironmentId.make("remote");
+
+describe("current web Operating observations", () => {
+  it("follows the active owner across selected-account changes and releases archived rows", () => {
+    const registry = AtomRegistry.make();
+    const owner = ProviderThreadId.make("active-owner");
+    const thread = makeThreadFixture({ environmentId: LOCAL, activeProviderThreadId: owner });
+    const threads = Atom.make([thread]);
+    const current = Atom.make(true);
+    const result: OrchestrationV2ThreadRuntimeObservationResult = {
+      threadId: thread.id,
+      observation: {
+        status: "monitoring",
+        observedAt: "2026-10-03T02:32:29Z",
+        binding: {
+          threadId: thread.id,
+          providerThreadId: owner,
+          providerSessionId: ProviderSessionId.make("resident-session"),
+          instanceId: ProviderInstanceId.make("active-account"),
+          runtimeGeneration: "generation-1",
+        },
+      },
+    };
+    const observation = Atom.make(AsyncResult.success(result));
+    const states = createThreadOperatingStatesAtom({
+      threadsAtom: threads,
+      isCurrentAtom: () => current,
+      observationAtom: () => observation,
+    });
+    const key = scopedThreadKey({ environmentId: LOCAL, threadId: thread.id });
+    const release = registry.mount(states);
+    try {
+      expect(registry.get(states).get(key)).toMatchObject({
+        operating: true,
+        workstreamRunning: false,
+        backgroundDisplay: "monitoring",
+      });
+      registry.set(threads, [
+        {
+          ...thread,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("next-account"),
+            model: "next-model",
+          },
+        },
+      ]);
+      expect(registry.get(states).get(key)?.operating).toBe(true);
+      registry.set(observation, AsyncResult.success(result, { waiting: true }));
+      expect(registry.get(states).get(key)).toMatchObject({
+        operating: false,
+        backgroundStatus: "unknown",
+      });
+      registry.set(observation, AsyncResult.success(result));
+      registry.set(threads, [
+        { ...thread, activeProviderThreadId: ProviderThreadId.make("replacement-owner") },
+      ]);
+      expect(registry.get(states).get(key)?.operating).toBe(false);
+      registry.set(threads, [{ ...thread, archivedAt: "2026-10-03T02:33:00Z" }]);
+      expect(registry.get(states).has(key)).toBe(false);
+    } finally {
+      release();
+      registry.dispose();
+    }
+  });
+
+  it("does not confirm cached foreground work or turn unknown background into monitoring", () => {
+    const registry = AtomRegistry.make();
+    const thread = makeThreadFixture({ environmentId: LOCAL });
+    const running = {
+      ...thread,
+      runtime: {
+        status: "running" as const,
+        activeRunId: null,
+        providerInstanceId: thread.providerInstanceId,
+        providerName: null,
+        lastError: null,
+        updatedAt: thread.updatedAt,
+      },
+    };
+    const threads = Atom.make([running]);
+    const current = Atom.make(false);
+    const observation = Atom.make(
+      AsyncResult.success<OrchestrationV2ThreadRuntimeObservationResult>({
+        threadId: thread.id,
+        observation: { status: "unknown", reason: "runtime_not_observed" },
+      }),
+    );
+    const states = createThreadOperatingStatesAtom({
+      threadsAtom: threads,
+      isCurrentAtom: () => current,
+      observationAtom: () => observation,
+    });
+    const key = scopedThreadKey({ environmentId: LOCAL, threadId: thread.id });
+    const release = registry.mount(states);
+    try {
+      expect(registry.get(states).get(key)).toMatchObject({
+        operating: false,
+        workstreamRunning: false,
+        backgroundStatus: "unknown",
+      });
+      registry.set(current, true);
+      expect(registry.get(states).get(key)).toMatchObject({
+        operating: true,
+        workstreamRunning: true,
+        backgroundDisplay: null,
+      });
+      registry.set(threads, [{ ...running, hasPendingApprovals: true }]);
+      expect(registry.get(states).get(key)).toMatchObject({
+        foregroundAttention: "approval",
+        operating: true,
+      });
+    } finally {
+      release();
+      registry.dispose();
+    }
+  });
+
+  it("reads the exact project aggregate and makes refreshing, outdated, and absent counts unavailable", () => {
+    const registry = AtomRegistry.make();
+    const request = { environmentId: LOCAL, projectId: ProjectId.make("selected-project") };
+    const requests = Atom.make([request]);
+    const current = Atom.make(true);
+    const snapshot = Atom.make<OrchestrationV2ShellSnapshot | null>({
+      schemaVersion: 2,
+      snapshotSequence: 10,
+      projects: [],
+      threads: [],
+      archivedThreads: [],
+    });
+    const counts: OrchestrationV2OperatingCountsResult = {
+      total: 7,
+      operating: 5,
+      foregroundWaitingApproval: 1,
+      foregroundWaitingInput: 1,
+      foregroundWaitingPlan: 0,
+      backgroundOperating: 3,
+      backgroundUnknown: 2,
+      snapshotSequence: 10,
+      observedAt: "2026-10-03T02:32:29Z",
+      backgroundSampledAt: "2026-10-03T02:32:29Z",
+    };
+    const query = Atom.make<AsyncResult.AsyncResult<OrchestrationV2OperatingCountsResult>>(
+      AsyncResult.success(counts),
+    );
+    const seen: Array<typeof request> = [];
+    const count = createOperatingCountAtom({
+      requestsAtom: requests,
+      isCurrentAtom: () => current,
+      snapshotAtom: () => snapshot,
+      countsAtom: (ref) => {
+        seen.push(ref as typeof request);
+        return query;
+      },
+    });
+    const release = registry.mount(count);
+    try {
+      expect(registry.get(count)).toBe(5);
+      expect(seen).toEqual([request]);
+      registry.set(query, AsyncResult.success(counts, { waiting: true }));
+      expect(registry.get(count)).toBeNull();
+      registry.set(query, AsyncResult.success({ ...counts, snapshotSequence: 9 }));
+      expect(registry.get(count)).toBeNull();
+      registry.set(query, AsyncResult.initial());
+      expect(registry.get(count)).toBeNull();
+      registry.set(query, AsyncResult.success({ ...counts, operating: 0 }));
+      expect(registry.get(count)).toBe(0);
+      registry.set(current, false);
+      expect(registry.get(count)).toBeNull();
+    } finally {
+      release();
+      registry.dispose();
+    }
+  });
+});
 
 type Status = "running" | "starting" | "idle";
 function shell(id: string, status: Status | null) {

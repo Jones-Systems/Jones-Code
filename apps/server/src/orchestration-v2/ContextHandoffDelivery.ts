@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { historyCost, renderHistory, selectHistory } from "./ContextHandoffBudget.ts";
 
-/** Persist before/after injection: an ambiguous pending delivery requires a fresh native thread. */
+/** Persist before/after injection so ambiguous pending delivery remains held for reconciliation. */
 export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextHandoffs")(
   function* <InjectError = never, PersistError = never, BudgetError = never>(input: {
     readonly handoffs: ReadonlyArray<OrchestrationV2ContextHandoff>;
@@ -154,6 +154,6 @@ export class ContextHandoffDeliveryUncertainError extends Schema.TaggedError<Con
   {},
 ) {
   override get message() {
-    return "Historical context delivery is uncertain; replace the native thread before retrying.";
+    return "Historical context delivery is uncertain; the operation is held for reconciliation.";
   }
 }

@@ -54,142 +54,259 @@ import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
 export const makeCodexNativeCreationFixture = (
   scenario: string,
   hooks: { readonly beforeGrantRead?: () => Effect.Effect<void> } = {},
-) => Effect.gen(function* () {
-  const actorSessionId = AuthSessionId.make(`codex-fixture-actor-${scenario}`);
-  const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
-    backend_instance: "synthetic-backend", environment_id: "synthetic-environment",
-    project_id: "synthetic-project", project_cwd: "/synthetic/project",
-    account_ref: "synthetic-account", runtime_mode: "full-access", interaction_mode: "default",
-    base_branch: "main", start_from_origin: false, run_setup_script: false,
-    provider_model_selection: { instanceId: "codex", model: "gpt-5.4" },
-  });
-  const preparedCommand = nativePreparationCommand(
-    `codex-authority-${scenario}`, binding, "Synthetic prompt", "Synthetic thread",
-    "2026-10-03T12:00:00Z",
-  );
-  const preparation = yield* validateNativeCreationPreparation(new TextEncoder().encode(
-    nativeCreationCanonicalJson({
-      schema: "voice.t3-bootstrap-preparation/v1", operation_id: `codex-authority-${scenario}`,
-      binding, command: preparedCommand,
-      preparation_id: preparedCommand.commandId.replace("voice-command-", "voice-bootstrap-"),
-      binding_digest: nativeCreationSha256(nativeCreationCanonicalJson(binding)),
-      prompt_digest: nativeCreationSha256(preparedCommand.message.text),
-      command_digest: nativeCreationSha256(nativeCreationCanonicalJson(preparedCommand)),
-    }),
-  ));
-  const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
-    backendInstance: binding.backend_instance, environmentId: binding.environment_id,
-    projectId: binding.project_id, projectCwd: binding.project_cwd, accountRef: binding.account_ref,
-    accountBindingId: "synthetic-qualified-account", accountBindingRevision: 1,
-    providerModelSelection: binding.provider_model_selection,
-    runtimeMode: binding.runtime_mode, interactionMode: binding.interaction_mode,
-    baseBranch: binding.base_branch, startFromOrigin: false, runSetupScript: false,
-    requestedBranch: preparedCommand.bootstrap.prepareWorktree.branch,
-  });
-  const resources = Object.freeze({
-    projectCwd: historical.projectCwd, branch: historical.requestedBranch,
-    worktreePath: "/synthetic/worktree",
-  });
-  const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
-    version: 2, claimId: `synthetic-claim-${scenario}`, stage: "native_command",
-    stageCommandId: `${preparedCommand.commandId}:native:v2:create`,
-    effectId: `synthetic-effect-${scenario}`,
-  });
-  const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
-    type: "thread.create", commandId: reference.stageCommandId, threadId: preparedCommand.threadId,
-    ...preparedCommand.bootstrap.createThread, createdBy: "user", creationSource: "server",
-  });
-  if (command.type !== "thread.create")
-    return yield* Effect.die("Synthetic native creation command was not a thread create");
-  const commandDigest = nativeCreationV2CommandDigest(command);
-  const nativeIdentity = yield* Schema.decodeUnknownEffect(NativeCommandIdentityV2)({
-    kind: "native_creation_stage", version: 2, commandId: reference.stageCommandId,
-    commandType: command.type, aggregateKind: "thread", aggregateId: command.threadId,
-    normalizedCommandDigest: commandDigest, bindingDigest: preparation.bindingDigest,
-  });
-  const grantId = `synthetic-grant-${scenario}`;
-  let grant: NativeCreationGrant = {
-    grantId, revision: 1, actorSessionId, issuerId: "synthetic-issuer",
-    expiresAt: DateTime.makeUnsafe("2099-01-01T00:00:00Z"), revoked: false,
-    operationId: preparation.operationId, preparationId: preparation.preparationId,
-    preparationSha256: preparation.preparationSha256, bindingDigest: preparation.bindingDigest,
-    binding: historical, resources, allowedStages: ["native_command"], recoveryScopes: [],
-  };
-  const session = yield* Schema.decodeUnknownEffect(AuthSessionRecord)({
-    sessionId: actorSessionId, subject: "Synthetic actor", scopes: ["orchestration:operate"],
-    method: "bearer-access-token",
-    client: { label: null, ipAddress: null, userAgent: null, deviceType: "bot", os: null, browser: null },
-    issuedAt: "2026-01-01T00:00:00Z", expiresAt: "2099-01-01T00:00:00Z",
-    revokedAt: null, lastConnectedAt: null,
-  });
-  const resolved: NativeCreationResolvedExecutionV2 = {
-    reference, command, nativeIdentity, preparation,
-    history: {
-      intent: {
-        claimId: reference.claimId, claimedBootId: "synthetic-boot", claimedAt: "2026-10-03T12:00:00Z",
-        actorSessionId, grantId, grantRevision: 1, preparationId: preparation.preparationId,
-        operationId: preparation.operationId, preparationSha256: preparation.preparationSha256,
-        bindingDigest: preparation.bindingDigest, promptDigest: preparation.promptDigest,
-        commandDigest: preparation.commandDigest, commandId: preparedCommand.commandId,
-        threadId: preparedCommand.threadId, messageId: preparedCommand.message.messageId,
-        canonicalPreparation: preparation.canonicalText, binding: historical, resources,
+) =>
+  Effect.gen(function* () {
+    const actorSessionId = AuthSessionId.make(`codex-fixture-actor-${scenario}`);
+    const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
+      backend_instance: "synthetic-backend",
+      environment_id: "synthetic-environment",
+      project_id: "synthetic-project",
+      project_cwd: "/synthetic/project",
+      account_ref: "synthetic-account",
+      runtime_mode: "full-access",
+      interaction_mode: "default",
+      base_branch: "main",
+      start_from_origin: false,
+      run_setup_script: false,
+      provider_model_selection: { instanceId: "codex", model: "gpt-5.4" },
+    });
+    const preparedCommand = nativePreparationCommand(
+      `codex-authority-${scenario}`,
+      binding,
+      "Synthetic prompt",
+      "Synthetic thread",
+      "2026-10-03T12:00:00Z",
+    );
+    const preparation = yield* validateNativeCreationPreparation(
+      new TextEncoder().encode(
+        nativeCreationCanonicalJson({
+          schema: "voice.t3-bootstrap-preparation/v1",
+          operation_id: `codex-authority-${scenario}`,
+          binding,
+          command: preparedCommand,
+          preparation_id: preparedCommand.commandId.replace("voice-command-", "voice-bootstrap-"),
+          binding_digest: nativeCreationSha256(nativeCreationCanonicalJson(binding)),
+          prompt_digest: nativeCreationSha256(preparedCommand.message.text),
+          command_digest: nativeCreationSha256(nativeCreationCanonicalJson(preparedCommand)),
+        }),
+      ),
+    );
+    const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
+      backendInstance: binding.backend_instance,
+      environmentId: binding.environment_id,
+      projectId: binding.project_id,
+      projectCwd: binding.project_cwd,
+      accountRef: binding.account_ref,
+      accountBindingId: "synthetic-qualified-account",
+      accountBindingRevision: 1,
+      providerModelSelection: binding.provider_model_selection,
+      runtimeMode: binding.runtime_mode,
+      interactionMode: binding.interaction_mode,
+      baseBranch: binding.base_branch,
+      startFromOrigin: false,
+      runSetupScript: false,
+      requestedBranch: preparedCommand.bootstrap.prepareWorktree.branch,
+    });
+    const resources = Object.freeze({
+      projectCwd: historical.projectCwd,
+      branch: historical.requestedBranch,
+      worktreePath: "/synthetic/worktree",
+    });
+    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+      version: 2,
+      claimId: `synthetic-claim-${scenario}`,
+      stage: "native_command",
+      stageCommandId: `${preparedCommand.commandId}:native:v2:create`,
+      effectId: `synthetic-effect-${scenario}`,
+    });
+    const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+      type: "thread.create",
+      commandId: reference.stageCommandId,
+      threadId: preparedCommand.threadId,
+      ...preparedCommand.bootstrap.createThread,
+      createdBy: "user",
+      creationSource: "server",
+    });
+    if (command.type !== "thread.create")
+      return yield* Effect.die("Synthetic native creation command was not a thread create");
+    const commandDigest = nativeCreationV2CommandDigest(command);
+    const nativeIdentity = yield* Schema.decodeUnknownEffect(NativeCommandIdentityV2)({
+      kind: "native_creation_stage",
+      version: 2,
+      commandId: reference.stageCommandId,
+      commandType: command.type,
+      aggregateKind: "thread",
+      aggregateId: command.threadId,
+      normalizedCommandDigest: commandDigest,
+      bindingDigest: preparation.bindingDigest,
+    });
+    const grantId = `synthetic-grant-${scenario}`;
+    let grant: NativeCreationGrant = {
+      grantId,
+      revision: 1,
+      actorSessionId,
+      issuerId: "synthetic-issuer",
+      expiresAt: DateTime.makeUnsafe("2099-01-01T00:00:00Z"),
+      revoked: false,
+      operationId: preparation.operationId,
+      preparationId: preparation.preparationId,
+      preparationSha256: preparation.preparationSha256,
+      bindingDigest: preparation.bindingDigest,
+      binding: historical,
+      resources,
+      allowedStages: ["native_command"],
+      recoveryScopes: [],
+    };
+    const session = yield* Schema.decodeUnknownEffect(AuthSessionRecord)({
+      sessionId: actorSessionId,
+      subject: "Synthetic actor",
+      scopes: ["orchestration:operate"],
+      method: "bearer-access-token",
+      client: {
+        label: null,
+        ipAddress: null,
+        userAgent: null,
+        deviceType: "bot",
+        os: null,
+        browser: null,
       },
-      normalizedCommandDigest: null, effects: [], effectsV2: [], effectOverflow: false,
-    },
-  };
-  let starts = 0;
-  let authorizationReads = 0;
-  const unexpected = () => Effect.die("Unexpected synthetic native-creation repository operation");
-  const ledger = NativeCreationRepository.of({
-    hasAutomationEnrollment: () => Effect.succeed(true),
-    claim: unexpected, readHistory: unexpected, readHistoryByClaim: unexpected,
-    readBoundedHistoryByThread: unexpected, validateCommandAcceptanceV2: unexpected,
-    readExecutionReference: () => Effect.succeed(resolved),
-    startEffectV2: (actual, timestamp, authorize) => Effect.gen(function* () {
-      yield* authorize;
-      if (starts > 0) return yield* new NativeCreationRepositoryError({
-        code: "unresolved_claim", message: "Synthetic native effect already started",
-      });
-      starts++;
-      return { status: "started" as const, fact: {
-        version: 2 as const, kind: "native_command" as const, phase: "started" as const,
-        effectId: actual.effectId, ordinal: 0, timestamp,
-        commandId: command.commandId, threadId: command.threadId,
-        commandType: command.type, commandDigest,
-      } };
-    }),
-    completeEffectV2: unexpected, reserveCommandIdentities: unexpected,
-    getReservedCommandIdentity: unexpected, recordNormalizedCommand: unexpected,
-    reserveCommand: unexpected, getReservedCommand: unexpected,
-    startEffect: unexpected, completeEffect: unexpected,
+      issuedAt: "2026-01-01T00:00:00Z",
+      expiresAt: "2099-01-01T00:00:00Z",
+      revokedAt: null,
+      lastConnectedAt: null,
+    });
+    const resolved: NativeCreationResolvedExecutionV2 = {
+      reference,
+      command,
+      nativeIdentity,
+      preparation,
+      history: {
+        intent: {
+          claimId: reference.claimId,
+          claimedBootId: "synthetic-boot",
+          claimedAt: "2026-10-03T12:00:00Z",
+          actorSessionId,
+          grantId,
+          grantRevision: 1,
+          preparationId: preparation.preparationId,
+          operationId: preparation.operationId,
+          preparationSha256: preparation.preparationSha256,
+          bindingDigest: preparation.bindingDigest,
+          promptDigest: preparation.promptDigest,
+          commandDigest: preparation.commandDigest,
+          commandId: preparedCommand.commandId,
+          threadId: preparedCommand.threadId,
+          messageId: preparedCommand.message.messageId,
+          canonicalPreparation: preparation.canonicalText,
+          binding: historical,
+          resources,
+        },
+        normalizedCommandDigest: null,
+        effects: [],
+        effectsV2: [],
+        effectOverflow: false,
+      },
+    };
+    let starts = 0;
+    let authorizationReads = 0;
+    const unexpected = () =>
+      Effect.die("Unexpected synthetic native-creation repository operation");
+    const ledger = NativeCreationRepository.of({
+      hasAutomationEnrollment: () => Effect.succeed(true),
+      claim: unexpected,
+      readHistory: unexpected,
+      readHistoryByClaim: unexpected,
+      readBoundedHistoryByThread: unexpected,
+      validateCommandAcceptanceV2: unexpected,
+      readExecutionReference: () => Effect.succeed(resolved),
+      startEffectV2: (actual, timestamp, authorize) =>
+        Effect.gen(function* () {
+          yield* authorize;
+          if (starts > 0)
+            return yield* new NativeCreationRepositoryError({
+              code: "unresolved_claim",
+              message: "Synthetic native effect already started",
+            });
+          starts++;
+          return {
+            status: "started" as const,
+            fact: {
+              version: 2 as const,
+              kind: "native_command" as const,
+              phase: "started" as const,
+              effectId: actual.effectId,
+              ordinal: 0,
+              timestamp,
+              commandId: command.commandId,
+              threadId: command.threadId,
+              commandType: command.type,
+              commandDigest,
+            },
+          };
+        }),
+      completeEffectV2: unexpected,
+      reserveCommandIdentities: unexpected,
+      getReservedCommandIdentity: unexpected,
+      recordNormalizedCommand: unexpected,
+      reserveCommand: unexpected,
+      getReservedCommand: unexpected,
+      reserveThreadRecoveryCommand: unexpected,
+      readThreadRecoveryCommand: unexpected,
+      recordNativeEffectConfirmation: unexpected,
+      readNativeEffectConfirmation: unexpected,
+      startEffect: unexpected,
+      completeEffect: unexpected,
+    });
+    const sessions = AuthSessionRepository.of({
+      create: unexpected,
+      createReplacingActive: unexpected,
+      createIfAbsent: unexpected,
+      getById: () => Effect.succeed(Option.some(session)),
+      listActive: unexpected,
+      revoke: unexpected,
+      revokeAllExcept: unexpected,
+      setLastConnectedAt: unexpected,
+      setClientConnection: unexpected,
+    });
+    const authority = yield* makeNativeCreationAuthority.pipe(
+      Effect.provideService(NativeCreationRepository, ledger),
+      Effect.provideService(AuthSessionRepository, sessions),
+      Effect.provideService(NativeCreationBindingResolver, {
+        resolveCurrent: () => Effect.succeed(historical),
+      }),
+      Effect.provideService(NativeCreationGrantResolver, {
+        resolveCurrent: () =>
+          (hooks.beforeGrantRead?.() ?? Effect.void).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                authorizationReads++;
+                return {
+                  enrolledSessionId: actorSessionId,
+                  trustedIssuerId: "synthetic-issuer",
+                  grant,
+                };
+              }),
+            ),
+          ),
+      }),
+    );
+    const context = yield* authority.issueExecution({
+      reference,
+      timestamp: "2026-10-03T12:00:00Z",
+    });
+    return {
+      execution: Object.freeze({ context, resources }),
+      revoke: Effect.sync(() => {
+        grant = { ...grant, revoked: true };
+      }),
+      get startCount() {
+        return starts;
+      },
+      get authorizationReads() {
+        return authorizationReads;
+      },
+    };
   });
-  const sessions = AuthSessionRepository.of({
-    create: unexpected, createReplacingActive: unexpected, createIfAbsent: unexpected,
-    getById: () => Effect.succeed(Option.some(session)), listActive: unexpected,
-    revoke: unexpected, revokeAllExcept: unexpected, setLastConnectedAt: unexpected,
-    setClientConnection: unexpected,
-  });
-  const authority = yield* makeNativeCreationAuthority.pipe(
-    Effect.provideService(NativeCreationRepository, ledger),
-    Effect.provideService(AuthSessionRepository, sessions),
-    Effect.provideService(NativeCreationBindingResolver, {
-      resolveCurrent: () => Effect.succeed(historical),
-    }),
-    Effect.provideService(NativeCreationGrantResolver, {
-      resolveCurrent: () => (hooks.beforeGrantRead?.() ?? Effect.void).pipe(Effect.andThen(Effect.sync(() => {
-        authorizationReads++;
-        return { enrolledSessionId: actorSessionId, trustedIssuerId: "synthetic-issuer", grant };
-      }))),
-    }),
-  );
-  const context = yield* authority.issueExecution({ reference, timestamp: "2026-10-03T12:00:00Z" });
-  return {
-    execution: Object.freeze({ context, resources }),
-    revoke: Effect.sync(() => { grant = { ...grant, revoked: true }; }),
-    get startCount() { return starts; },
-    get authorizationReads() { return authorizationReads; },
-  };
-});
 
 export class CodexReplayTranscriptDecodeError extends Schema.TaggedError<CodexReplayTranscriptDecodeError>()(
   "CodexReplayTranscriptDecodeError",
@@ -325,6 +442,7 @@ export function makeReplayServerConfig(
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
       stateDir,
+      authorityStateDir: path.join(baseDir, "native-store-authority"),
       dbPath: path.join(stateDir, "state.sqlite"),
       keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
       settingsPath: path.join(stateDir, "settings.json"),
@@ -350,7 +468,10 @@ export function makeReplayServerConfig(
 export function makeCodexProviderAdapterRegistryReplayLayer(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
-  readonly goalResponses?: ReadonlyMap<string, import("effect-codex-app-server/schema").V2ThreadGoalGetResponse>;
+  readonly goalResponses?: ReadonlyMap<
+    string,
+    import("effect-codex-app-server/schema").V2ThreadGoalGetResponse
+  >;
 }) {
   const replayLayer =
     input.driver === undefined
@@ -377,8 +498,10 @@ export function makeCodexProviderAdapterRegistryReplayLayer(input: {
               raw: {
                 ...client.raw,
                 request: (method, params) =>
-                  method === "thread/goal/get" && Predicate.isObject(params) &&
-                  typeof params.threadId === "string" && input.goalResponses?.has(params.threadId)
+                  method === "thread/goal/get" &&
+                  Predicate.isObject(params) &&
+                  typeof params.threadId === "string" &&
+                  input.goalResponses?.has(params.threadId)
                     ? Effect.succeed(input.goalResponses.get(params.threadId))
                     : client.raw.request(method, params),
               },

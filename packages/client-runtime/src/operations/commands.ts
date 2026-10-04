@@ -972,10 +972,9 @@ export const revertThreadCheckpoint = Effect.fn("EnvironmentCommands.revertThrea
   },
 );
 
-export const stopCurrentThreadRuntime = Effect.fn(
-  "EnvironmentCommands.stopCurrentThreadRuntime",
-)((input: OrchestrationV2StopCurrentThreadRuntimeInput) =>
-  request(ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime, input),
+export const stopCurrentThreadRuntime = Effect.fn("EnvironmentCommands.stopCurrentThreadRuntime")(
+  (input: OrchestrationV2StopCurrentThreadRuntimeInput) =>
+    request(ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime, input),
 );
 
 export const observeCurrentThreadRuntimeStop = Effect.fn(
@@ -996,10 +995,9 @@ export const getThreadRuntimeObservation = Effect.fn(
   request(ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation, input),
 );
 
-export const getOperatingCounts = Effect.fn(
-  "EnvironmentCommands.getOperatingCounts",
-)((input: OrchestrationV2GetOperatingCountsInput) =>
-  request(ORCHESTRATION_V2_WS_METHODS.getOperatingCounts, input),
+export const getOperatingCounts = Effect.fn("EnvironmentCommands.getOperatingCounts")(
+  (input: OrchestrationV2GetOperatingCountsInput) =>
+    request(ORCHESTRATION_V2_WS_METHODS.getOperatingCounts, input),
 );
 
 export const stopThreadSession = Effect.fn("EnvironmentCommands.stopThreadSession")(function* (

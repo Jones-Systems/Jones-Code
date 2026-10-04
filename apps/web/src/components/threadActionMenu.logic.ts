@@ -1,61 +1,290 @@
-import { CommandId, type ContextMenuItem, type ScopedThreadRef, type ThreadId, type OrchestrationV2ThreadRuntimeAttachmentResult, type OrchestrationV2CurrentThreadRuntimeTarget, type OrchestrationV2StopCurrentThreadRuntimeInput, type OrchestrationV2StopCurrentThreadRuntimeResult } from "@t3tools/contracts";
+import {
+  CommandId,
+  type ContextMenuItem,
+  type ScopedThreadRef,
+  type ThreadId,
+  type OrchestrationV2ThreadRuntimeAttachmentResult,
+  type OrchestrationV2CurrentThreadRuntimeTarget,
+  type OrchestrationV2StopCurrentThreadRuntimeInput,
+  type OrchestrationV2StopCurrentThreadRuntimeResult,
+} from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { captureCurrentThreadRuntimeStopTarget, resolveCurrentThreadRuntimeStop } from "@t3tools/client-runtime/state/thread-continuation";
+import {
+  captureCurrentThreadRuntimeStopTarget,
+  resolveCurrentThreadRuntimeStop,
+} from "@t3tools/client-runtime/state/thread-continuation";
+import { randomUUID } from "../lib/utils";
 
-export function currentRuntimeStopMenuTarget(result: OrchestrationV2ThreadRuntimeAttachmentResult | null, threadId: ThreadId): OrchestrationV2CurrentThreadRuntimeTarget | null {
-  return result?.stopCapability?.version === 2 ? captureCurrentThreadRuntimeStopTarget(result, threadId) : null;
+export function currentRuntimeStopMenuTarget(
+  result: OrchestrationV2ThreadRuntimeAttachmentResult | null,
+  threadId: ThreadId,
+): OrchestrationV2CurrentThreadRuntimeTarget | null {
+  return result?.stopCapability?.version === 2
+    ? captureCurrentThreadRuntimeStopTarget(result, threadId)
+    : null;
+}
+
+export type CurrentRuntimeStopOperation = Readonly<
+  Pick<OrchestrationV2StopCurrentThreadRuntimeInput, "commandId" | "target">
+>;
+export type CurrentRuntimeStopOutcome = ReturnType<typeof resolveCurrentThreadRuntimeStop> & {
+  readonly commandId: CurrentRuntimeStopOperation["commandId"] | null;
+  readonly target: CurrentRuntimeStopOperation["target"] | null;
+};
+
+function snapshotStopOperation(input: CurrentRuntimeStopOperation): CurrentRuntimeStopOperation {
+  return Object.freeze({
+    commandId: input.commandId,
+    target: Object.freeze({ ...input.target, binding: Object.freeze({ ...input.target.binding }) }),
+  });
+}
+
+function sameStopTarget(
+  a: OrchestrationV2CurrentThreadRuntimeTarget,
+  b: OrchestrationV2CurrentThreadRuntimeTarget,
+): boolean {
+  return (
+    a.driver === b.driver &&
+    a.evidenceRevision === b.evidenceRevision &&
+    a.binding.threadId === b.binding.threadId &&
+    a.binding.providerThreadId === b.binding.providerThreadId &&
+    a.binding.providerSessionId === b.binding.providerSessionId &&
+    a.binding.instanceId === b.binding.instanceId &&
+    a.binding.runtimeGeneration === b.binding.runtimeGeneration &&
+    a.binding.nativeThreadId === b.binding.nativeThreadId
+  );
+}
+
+function sameStopOperation(
+  a: CurrentRuntimeStopOperation,
+  b: CurrentRuntimeStopOperation,
+): boolean {
+  return a.commandId === b.commandId && sameStopTarget(a.target, b.target);
+}
+
+function unknownStopOperation(reason: string): CurrentRuntimeStopOutcome {
+  return {
+    status: "unknown",
+    commandAccepted: false,
+    queueFenceInstalled: false,
+    reason,
+    commandId: null,
+    target: null,
+  };
 }
 
 export function createCurrentRuntimeStopController(options: {
-  readonly read: (threadRef: ScopedThreadRef) => OrchestrationV2StopCurrentThreadRuntimeInput | null;
-  readonly reserve: (threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => void;
-  readonly clear: (threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => void;
-  readonly stop: (threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => Promise<OrchestrationV2StopCurrentThreadRuntimeResult>;
-  readonly observe: (threadRef: ScopedThreadRef, input: Pick<OrchestrationV2StopCurrentThreadRuntimeInput, "threadId" | "commandId">) => Promise<OrchestrationV2StopCurrentThreadRuntimeResult>;
+  readonly read: (
+    threadRef: ScopedThreadRef,
+  ) => OrchestrationV2StopCurrentThreadRuntimeInput | null;
+  readonly reserve: (
+    threadRef: ScopedThreadRef,
+    input: OrchestrationV2StopCurrentThreadRuntimeInput,
+  ) => void;
+  readonly clear: (
+    threadRef: ScopedThreadRef,
+    input: OrchestrationV2StopCurrentThreadRuntimeInput,
+  ) => void;
+  readonly stop: (
+    threadRef: ScopedThreadRef,
+    input: OrchestrationV2StopCurrentThreadRuntimeInput,
+  ) => Promise<OrchestrationV2StopCurrentThreadRuntimeResult>;
+  readonly observe: (
+    threadRef: ScopedThreadRef,
+    input: Pick<OrchestrationV2StopCurrentThreadRuntimeInput, "threadId" | "commandId">,
+  ) => Promise<OrchestrationV2StopCurrentThreadRuntimeResult>;
 }) {
-  const inFlight = new Map<string, Promise<ReturnType<typeof resolveCurrentThreadRuntimeStop>>>();
+  type PendingOperation = {
+    readonly promise: Promise<CurrentRuntimeStopOutcome>;
+    readonly requestedTarget: OrchestrationV2CurrentThreadRuntimeTarget;
+    readonly expectedOperation: CurrentRuntimeStopOperation | null | undefined;
+    operation: CurrentRuntimeStopOperation | null;
+  };
+  const inFlight = new Map<string, PendingOperation>();
   const unsent = new Map<string, OrchestrationV2StopCurrentThreadRuntimeInput>();
-  return (threadRef: ScopedThreadRef, target: OrchestrationV2CurrentThreadRuntimeTarget) => {
+  const matchesPending = (
+    pending: PendingOperation,
+    target: OrchestrationV2CurrentThreadRuntimeTarget,
+    expected: CurrentRuntimeStopOperation | null,
+  ) => {
+    if (!sameStopTarget(pending.operation?.target ?? pending.requestedTarget, target)) return false;
+    if (expected === null) return pending.expectedOperation === null;
+    const operation = pending.operation ?? pending.expectedOperation;
+    return operation != null && sameStopOperation(operation, expected);
+  };
+  const reconcile = async (
+    threadRef: ScopedThreadRef,
+    input: OrchestrationV2StopCurrentThreadRuntimeInput,
+    dispatch: boolean,
+  ): Promise<CurrentRuntimeStopOutcome> => {
+    if (
+      input.threadId !== threadRef.threadId ||
+      input.target.binding.threadId !== threadRef.threadId
+    ) {
+      return unknownStopOperation("The saved stop belongs to another thread.");
+    }
+    const operation = snapshotStopOperation(input);
+    let result;
+    try {
+      result = dispatch
+        ? await options.stop(threadRef, input)
+        : await options.observe(threadRef, {
+            threadId: input.threadId,
+            commandId: input.commandId,
+          });
+    } catch {
+      return {
+        ...unknownStopOperation(
+          "The stop response is unavailable. Check the same operation's status.",
+        ),
+        ...operation,
+      };
+    }
+    const outcome = { ...resolveCurrentThreadRuntimeStop(result, input), ...operation };
+    if (outcome.status === "stopped" || outcome.status === "rejected") {
+      try {
+        options.clear(threadRef, input);
+      } catch {
+        return {
+          ...outcome,
+          reason: "The stop result is confirmed, but its saved correlation could not be cleared.",
+        };
+      }
+    }
+    return outcome;
+  };
+  const run = (
+    threadRef: ScopedThreadRef,
+    target: OrchestrationV2CurrentThreadRuntimeTarget,
+    expectedOperation?: CurrentRuntimeStopOperation | null,
+  ): Promise<CurrentRuntimeStopOutcome> => {
+    const expected =
+      expectedOperation == null ? expectedOperation : snapshotStopOperation(expectedOperation);
+    const requestedTarget = Object.freeze({
+      ...target,
+      binding: Object.freeze({ ...target.binding }),
+    });
+    if (expected != null && !sameStopTarget(expected.target, requestedTarget)) {
+      return Promise.resolve(
+        unknownStopOperation("The requested target does not match the original stop operation."),
+      );
+    }
     const key = scopedThreadKey(threadRef);
     const pending = inFlight.get(key);
-    if (pending) return pending;
-    const request = Promise.resolve().then(async () => {
-      const saved = options.read(threadRef);
-      const retrySave = unsent.get(key);
-      const knownUnsent = retrySave !== undefined && (saved === null || saved.commandId === retrySave.commandId);
-      const input = knownUnsent ? retrySave : saved ?? { commandId: CommandId.make(crypto.randomUUID()), threadId: threadRef.threadId, target };
-      if (input.threadId !== threadRef.threadId || input.target.binding.threadId !== threadRef.threadId) {
-        return { status: "unknown" as const, commandAccepted: false, queueFenceInstalled: false, reason: "The saved stop belongs to another thread." };
-      }
-      if (saved === null || knownUnsent) {
-        try {
-          options.reserve(threadRef, input);
-        } catch (error) {
-          // Only this live pre-RPC failure permits an explicit save retry of the same ID.
-          unsent.set(key, input);
-          throw error;
+    if (pending) {
+      return expected !== undefined && !matchesPending(pending, requestedTarget, expected)
+        ? Promise.resolve(
+            unknownStopOperation("A different runtime stop operation is already pending."),
+          )
+        : pending.promise;
+    }
+    const request = Promise.resolve()
+      .then(async () => {
+        const saved = options.read(threadRef);
+        if (
+          expected !== undefined &&
+          (expected === null
+            ? saved !== null
+            : saved === null || !sameStopOperation(saved, expected))
+        ) {
+          return unknownStopOperation(
+            "The saved stop changed before the request could be reconciled.",
+          );
         }
-      }
-      unsent.delete(key);
-      let result;
-      try {
-        result = saved === null || knownUnsent
-          ? await options.stop(threadRef, input)
-          : await options.observe(threadRef, { threadId: input.threadId, commandId: input.commandId });
-      } catch {
-        return { status: "unknown" as const, commandAccepted: false, queueFenceInstalled: false, reason: "The stop response is unavailable. Check the same operation's status." };
-      }
-      const outcome = resolveCurrentThreadRuntimeStop(result, input);
-      if (outcome.status === "stopped" || outcome.status === "rejected") {
-        try { options.clear(threadRef, input); }
-        catch { return { ...outcome, reason: "The stop result is confirmed, but its saved correlation could not be cleared." }; }
-      }
-      return outcome;
-    }).finally(() => { inFlight.delete(key); });
-    inFlight.set(key, request);
+        const retrySave = unsent.get(key);
+        const knownUnsent =
+          retrySave !== undefined && (saved === null || saved.commandId === retrySave.commandId);
+        const source = knownUnsent
+          ? retrySave
+          : (saved ?? {
+              commandId: CommandId.make(randomUUID()),
+              threadId: threadRef.threadId,
+              target: requestedTarget,
+            });
+        const input = { threadId: source.threadId, ...snapshotStopOperation(source) };
+        if (expected !== undefined && !sameStopTarget(input.target, requestedTarget)) {
+          return unknownStopOperation("The captured stop belongs to a different runtime target.");
+        }
+        if (
+          input.threadId !== threadRef.threadId ||
+          input.target.binding.threadId !== threadRef.threadId
+        ) {
+          return unknownStopOperation("The saved stop belongs to another thread.");
+        }
+        if (saved === null || knownUnsent) {
+          try {
+            options.reserve(threadRef, input);
+          } catch (error) {
+            // Only this live pre-RPC failure permits an explicit save retry of the same ID.
+            unsent.set(key, input);
+            throw error;
+          }
+        }
+        unsent.delete(key);
+        entry.operation = snapshotStopOperation(input);
+        return reconcile(threadRef, input, saved === null || knownUnsent);
+      })
+      .finally(() => {
+        inFlight.delete(key);
+      });
+    const entry: PendingOperation = {
+      promise: request,
+      requestedTarget,
+      expectedOperation: expected,
+      operation: null,
+    };
+    inFlight.set(key, entry);
     return request;
   };
+  const observe = (
+    threadRef: ScopedThreadRef,
+    expectedOperation?: CurrentRuntimeStopOperation | null,
+  ): Promise<CurrentRuntimeStopOutcome | null> => {
+    const expected =
+      expectedOperation == null ? expectedOperation : snapshotStopOperation(expectedOperation);
+    const key = scopedThreadKey(threadRef);
+    const pending = inFlight.get(key);
+    if (pending) {
+      return expected !== undefined &&
+        (expected === null || !matchesPending(pending, expected.target, expected))
+        ? Promise.resolve(
+            unknownStopOperation("A different runtime stop operation is already pending."),
+          )
+        : pending.promise;
+    }
+    let saved: OrchestrationV2StopCurrentThreadRuntimeInput | null;
+    try {
+      saved = options.read(threadRef);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (saved === null)
+      return Promise.resolve(
+        expected == null
+          ? null
+          : unknownStopOperation("The original saved stop is no longer available."),
+      );
+    if (expected !== undefined && (expected === null || !sameStopOperation(saved, expected))) {
+      return Promise.resolve(
+        unknownStopOperation("The saved stop no longer matches the original operation."),
+      );
+    }
+    const input = { threadId: saved.threadId, ...snapshotStopOperation(saved) };
+    const request = Promise.resolve()
+      .then(() => reconcile(threadRef, input, false))
+      .finally(() => {
+        inFlight.delete(key);
+      });
+    inFlight.set(key, {
+      promise: request,
+      requestedTarget: input.target,
+      expectedOperation: expected,
+      operation: snapshotStopOperation(input),
+    });
+    return request;
+  };
+  return Object.assign(run, { observe });
 }
 
 /**

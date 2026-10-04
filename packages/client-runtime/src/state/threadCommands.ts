@@ -347,7 +347,8 @@ export function createThreadEnvironmentAtoms<R, E>(
     }),
     stopCurrentThreadRuntime: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:stop-current-runtime",
-      execute: (input: OrchestrationV2StopCurrentThreadRuntimeInput) => stopCurrentThreadRuntime(input),
+      execute: (input: OrchestrationV2StopCurrentThreadRuntimeInput) =>
+        stopCurrentThreadRuntime(input),
       scheduler,
       concurrency,
     }),

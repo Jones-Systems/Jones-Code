@@ -62,9 +62,9 @@ it.effect(
       assert.equal(rows[0]!.type, "thread.settled");
       assert.deepEqual(yield* eventStore.readMetadataByCommandId("unrelated-command"), []);
       assert.equal(
-        (yield* Stream.runCollect(eventStore.readAgentEvents({ afterSequence: rows[0]!.sequence - 1, limit: 1 })).pipe(
-          Effect.result,
-        ))._tag,
+        (yield* Stream.runCollect(
+          eventStore.readAgentEvents({ afterSequence: rows[0]!.sequence - 1, limit: 1 }),
+        ).pipe(Effect.result))._tag,
         "Failure",
       );
     }).pipe(

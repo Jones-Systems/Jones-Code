@@ -31,7 +31,7 @@ import {
 } from "./chat/threadContextDrag";
 import { releaseComposerDraftUploads } from "../lib/composerDraftUploads";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
-import { useCurrentRuntimeStop } from "../hooks/useThreadActionMenu";
+import { useCurrentRuntimeStopMenu } from "../hooks/useThreadActionMenu";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { useAtomValue } from "@effect/atom-react";
@@ -177,7 +177,12 @@ import {
 } from "../state/entities";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { vcsEnvironment } from "../state/vcs";
-import { threadEnvironment, useOperatingCount, useThreadOperatingStates, type ThreadOperatingState } from "../state/threads";
+import {
+  threadEnvironment,
+  useOperatingCount,
+  useThreadOperatingStates,
+  type ThreadOperatingState,
+} from "../state/threads";
 import { useEnvironmentQuery } from "../state/query";
 import { useThreadSearch } from "../state/queries";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -321,7 +326,10 @@ const observedInboxReturns = new Map<string, number>();
 /** Stamps threads that stopped working since the last call. The first call
     only takes a baseline, so mounting never reshuffles the inbox. Pass null
     to reset when the beta is off. */
-function observeInboxReturns(threads: readonly EnvironmentThreadShell[] | null, states: ReadonlyMap<string, ThreadOperatingState>): void {
+function observeInboxReturns(
+  threads: readonly EnvironmentThreadShell[] | null,
+  states: ReadonlyMap<string, ThreadOperatingState>,
+): void {
   if (threads === null) {
     lastWorkingThreadKeys = null;
     observedInboxReturns.clear();
@@ -1259,7 +1267,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // switching sidebars must not light up every historical thread as unread.
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const operatingStates = useThreadOperatingStates();
-  const operatingState = operatingStates.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)));
+  const operatingState = operatingStates.get(
+    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+  );
   const status = resolveSidebarThreadStatus(thread, operatingState);
   const isInFlight =
     status === "working" || status === "waiting" || status === "approval" || status === "input";
@@ -1331,19 +1341,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   }
                 : status === "unknown"
                   ? { label: "Unknown", icon: null, className: "text-muted-foreground" }
-                : isWoke
-                  ? {
-                      label: "Woke",
-                      icon: "woke" as const,
-                      className: "text-warning",
-                    }
-                  : isUnread
+                  : isWoke
                     ? {
-                        label: "Done",
-                        icon: "done" as const,
-                        className: "text-success",
+                        label: "Woke",
+                        icon: "woke" as const,
+                        className: "text-warning",
                       }
-                    : null;
+                    : isUnread
+                      ? {
+                          label: "Done",
+                          icon: "done" as const,
+                          className: "text-success",
+                        }
+                      : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -2345,7 +2355,7 @@ export default function Sidebar() {
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
-  const runtimeStop = useCurrentRuntimeStop();
+  const runtimeStop = useCurrentRuntimeStopMenu();
   const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) => {
       toastManager.add({
@@ -2605,13 +2615,21 @@ export default function Sidebar() {
     [threads, scopedProjectKeys],
   );
   const operatingStates = useThreadOperatingStates();
-  const getOperatingState = useCallback((thread: EnvironmentThreadShell) =>
-    operatingStates.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
-  [operatingStates]);
-  const activeThreadCount = useOperatingCount(projectScopeKey === null ? null : scopedProjectGroup?.memberProjectRefs ?? []);
+  const getOperatingState = useCallback(
+    (thread: EnvironmentThreadShell) =>
+      operatingStates.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
+    [operatingStates],
+  );
+  const activeThreadCount = useOperatingCount(
+    projectScopeKey === null ? null : (scopedProjectGroup?.memberProjectRefs ?? []),
+  );
   const filteredThreads = useMemo(
-    () => filterSidebarOperatingThreads(scopedThreads, activeOnly,
-      (thread) => getOperatingState(thread)?.operating === true),
+    () =>
+      filterSidebarOperatingThreads(
+        scopedThreads,
+        activeOnly,
+        (thread) => getOperatingState(thread)?.operating === true,
+      ),
     [scopedThreads, activeOnly, getOperatingState],
   );
   // A persisted scope whose project is gone falls back to all projects, but
@@ -2729,7 +2747,10 @@ export default function Sidebar() {
     // Working beta: only inbox threads fold away. Pins stay where the user
     // put them, and snoozed or settled threads keep their shelves.
     const inbox = (thread: EnvironmentThreadShell) =>
-      workingShelfEnabled && isSidebarThreadWorkingWithCurrentState(thread, getOperatingState(thread)) ? working : active;
+      workingShelfEnabled &&
+      isSidebarThreadWorkingWithCurrentState(thread, getOperatingState(thread))
+        ? working
+        : active;
     const snoozed: EnvironmentThreadShell[] = [];
     const settled: EnvironmentThreadShell[] = [];
     const draggable = new Set<string>();
@@ -4905,7 +4926,7 @@ export default function Sidebar() {
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
               isRegeneratingTitle,
               isRunning: !threadRuntimeCanArchive(thread.runtime),
-              canStopSession: capturedStop !== null,
+              canStopSession: capturedStop.status === "current",
               supports: {
                 settlement: supportsSettlement,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -4969,7 +4990,8 @@ export default function Sidebar() {
             attemptSettle(threadRef);
             return;
           case "kill-thread": {
-            if (capturedStop !== null) await runtimeStop.request(threadRef, capturedStop);
+            if (capturedStop.status === "current")
+              await runtimeStop.request(threadRef, capturedStop.target);
             return;
           }
           case "unsettle":

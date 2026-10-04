@@ -70,7 +70,10 @@ it.effect("applies fork migration 1 to an existing upstream-54 database exactly 
     yield* runMigrations({ toMigrationInclusive: 54 });
     injectMigrations();
 
-    assert.deepEqual(yield* runMigrations(), migrationManifest.filter(([id]) => id > 54));
+    assert.deepEqual(
+      yield* runMigrations(),
+      migrationManifest.filter(([id]) => id > 54),
+    );
     assert.deepEqual(yield* runMigrations(), []);
     assert.deepEqual(yield* sql`SELECT upstream_max FROM fork_probe`, [{ upstream_max: 56 }]);
     assert.deepEqual(yield* sql`SELECT migration_id, name FROM jones_sql_migrations`, [
@@ -111,7 +114,10 @@ it.effect("runs fork migration 1 after completing historical upstream replay", (
       yield* runMigrations({ toMigrationInclusive: 53 }),
       migrationManifest.filter(([id]) => id <= 53),
     );
-    assert.deepEqual(yield* runMigrations(), migrationManifest.filter(([id]) => id > 53));
+    assert.deepEqual(
+      yield* runMigrations(),
+      migrationManifest.filter(([id]) => id > 53),
+    );
     assert.deepEqual(yield* runMigrations(), []);
     assert.deepEqual(yield* sql`SELECT migration_id, name FROM jones_sql_migrations`, [
       { migration_id: 1, name: "WorktreeOwnershipLeases" },
@@ -125,6 +131,8 @@ it.effect("runs fork migration 1 after completing historical upstream replay", (
       { migration_id: 9, name: "OrdinaryCheckoutOwnership" },
       { migration_id: 10, name: "AttachmentCleanup" },
       { migration_id: 11, name: "OrdinaryCheckoutExecutionLifetime" },
+      { migration_id: 12, name: "ImportedApplicationAttachments" },
+      { migration_id: 13, name: "CommandNormalizationWitness" },
     ]);
     assert.deepEqual(
       yield* sql`SELECT name FROM sqlite_master WHERE name = 'worktree_ownership_leases'`,
@@ -151,7 +159,10 @@ it.effect("keeps historical upstream replay independent of pending fork migratio
       yield* sql`SELECT name FROM sqlite_master WHERE name IN ('jones_sql_migrations', 'fork_probe')`,
       [],
     );
-    assert.deepEqual(yield* runMigrations(), migrationManifest.filter(([id]) => id > 53));
+    assert.deepEqual(
+      yield* runMigrations(),
+      migrationManifest.filter(([id]) => id > 53),
+    );
     assert.deepEqual(yield* sql`SELECT upstream_max FROM fork_probe`, [{ upstream_max: 56 }]);
   }).pipe(Effect.provide(memory)),
 );
@@ -169,9 +180,12 @@ for (const limit of [54, 55, 56, 57]) {
         yield* sql`SELECT name FROM sqlite_master WHERE name IN ('jones_sql_migrations', 'worktree_ownership_leases', 'orchestration_v2_native_command_identities')`,
         [],
       );
-      assert.deepEqual(yield* runMigrations(), migrationManifest.filter(([id]) => id > limit));
+      assert.deepEqual(
+        yield* runMigrations(),
+        migrationManifest.filter(([id]) => id > limit),
+      );
       assert.deepEqual(yield* runMigrations(), []);
-      assert.equal((yield* sql`SELECT * FROM jones_sql_migrations`).length, 11);
+      assert.equal((yield* sql`SELECT * FROM jones_sql_migrations`).length, 13);
     }).pipe(Effect.provide(memory)),
   );
 }
@@ -186,45 +200,64 @@ const releasedJonesMigrations = [
 ] as const;
 
 for (const prefixLength of [0, 1, 2, 3, 4, 5, 6]) {
-  it.effect(`upgrades upstream54 with Jones prefix ${prefixLength} without changing released history or schema`, () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 54 });
-      if (prefixLength > 0) {
-        yield* Migrator.make({})({
-          loader: Migrator.fromRecord(Object.fromEntries(
-            releasedJonesMigrations.slice(0, prefixLength).map(([id, name, migration]) => [`${id}_${name}`, migration]),
-          )),
-          table: "jones_sql_migrations",
-        });
-      }
-      const releasedSchema = yield* sql<{ readonly name: string; readonly sql: string }>`
+  it.effect(
+    `upgrades upstream54 with Jones prefix ${prefixLength} without changing released history or schema`,
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 54 });
+        if (prefixLength > 0) {
+          yield* Migrator.make({})({
+            loader: Migrator.fromRecord(
+              Object.fromEntries(
+                releasedJonesMigrations
+                  .slice(0, prefixLength)
+                  .map(([id, name, migration]) => [`${id}_${name}`, migration]),
+              ),
+            ),
+            table: "jones_sql_migrations",
+          });
+        }
+        const releasedSchema = yield* sql<{ readonly name: string; readonly sql: string }>`
         SELECT name, sql FROM sqlite_master
         WHERE name LIKE 'worktree_ownership_leases%' OR name LIKE 'native_creation_%' OR name LIKE 'workstreams_native_%'
         ORDER BY name
       `;
-      const releasedHistory = prefixLength === 0 ? [] : yield* sql`
+        const releasedHistory =
+          prefixLength === 0
+            ? []
+            : yield* sql`
         SELECT * FROM jones_sql_migrations ORDER BY migration_id
       `;
-      assert.deepEqual(yield* runMigrations(), migrationManifest.filter(([id]) => id > 54));
-      assert.deepEqual(yield* runMigrations(), []);
-      assert.deepEqual(
-        yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= ${prefixLength} ORDER BY migration_id`,
-        releasedHistory,
-      );
-      for (const row of releasedSchema) {
-        assert.deepEqual(yield* sql`SELECT name, sql FROM sqlite_master WHERE name = ${row.name}`, [row]);
-      }
-      assert.deepEqual(
-        yield* sql`SELECT migration_id, name FROM jones_sql_migrations ORDER BY migration_id`,
-        [...releasedJonesMigrations.map(([migration_id, name]) => ({ migration_id, name })),
-          { migration_id: 7, name: "V2NativeAcceptance" },
-          { migration_id: 8, name: "DeletionWorktreeAdmission" },
-          { migration_id: 9, name: "OrdinaryCheckoutOwnership" },
-          { migration_id: 10, name: "AttachmentCleanup" },
-          { migration_id: 11, name: "OrdinaryCheckoutExecutionLifetime" }],
-      );
-    }).pipe(Effect.provide(memory)),
+        assert.deepEqual(
+          yield* runMigrations(),
+          migrationManifest.filter(([id]) => id > 54),
+        );
+        assert.deepEqual(yield* runMigrations(), []);
+        assert.deepEqual(
+          yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= ${prefixLength} ORDER BY migration_id`,
+          releasedHistory,
+        );
+        for (const row of releasedSchema) {
+          assert.deepEqual(
+            yield* sql`SELECT name, sql FROM sqlite_master WHERE name = ${row.name}`,
+            [row],
+          );
+        }
+        assert.deepEqual(
+          yield* sql`SELECT migration_id, name FROM jones_sql_migrations ORDER BY migration_id`,
+          [
+            ...releasedJonesMigrations.map(([migration_id, name]) => ({ migration_id, name })),
+            { migration_id: 7, name: "V2NativeAcceptance" },
+            { migration_id: 8, name: "DeletionWorktreeAdmission" },
+            { migration_id: 9, name: "OrdinaryCheckoutOwnership" },
+            { migration_id: 10, name: "AttachmentCleanup" },
+            { migration_id: 11, name: "OrdinaryCheckoutExecutionLifetime" },
+            { migration_id: 12, name: "ImportedApplicationAttachments" },
+            { migration_id: 13, name: "CommandNormalizationWitness" },
+          ],
+        );
+      }).pipe(Effect.provide(memory)),
   );
 }
 
@@ -237,7 +270,10 @@ it.effect("preserves divergent names and unknown later upstream history on repea
     const history = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
     assert.deepEqual(yield* runMigrations(), []);
     assert.deepEqual(yield* runMigrations(), []);
-    assert.deepEqual(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`, history);
-    assert.equal((yield* sql`SELECT * FROM jones_sql_migrations`).length, 11);
+    assert.deepEqual(
+      yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+      history,
+    );
+    assert.equal((yield* sql`SELECT * FROM jones_sql_migrations`).length, 13);
   }).pipe(Effect.provide(memory)),
 );

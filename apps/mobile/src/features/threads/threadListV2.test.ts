@@ -21,9 +21,13 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  ProviderThreadId,
+  ProviderSessionId,
   RunId,
   ThreadId,
+  type OrchestrationV2ThreadRuntimeObservation,
 } from "@t3tools/contracts";
+import { resolveThreadOperatingState } from "@t3tools/client-runtime/state/thread-continuation";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
@@ -158,7 +162,7 @@ describe("resolveThreadListV2Status", () => {
     expect(resolveThreadListV2Status(thread)).toBe("approval");
   });
 
-  it("reports waiting when presentation parks runtime idle for background tasks", () => {
+  it("does not claim live waiting from an idle runtime and historical background roster", () => {
     expect(
       resolveThreadListV2Status(
         makeThread({
@@ -177,13 +181,130 @@ describe("resolveThreadListV2Status", () => {
           },
         }),
       ),
-    ).toBe("waiting");
+    ).toBe("ready");
   });
 
   it("resolves ready for quiescent threads", () => {
     expect(resolveThreadListV2Status(makeThread({ id: ThreadId.make("t"), title: "t" }))).toBe(
       "ready",
     );
+  });
+
+  const observedThread = makeThread({
+    id: ThreadId.make("observed-thread"),
+    title: "Observed",
+    activeProviderThreadId: ProviderThreadId.make("active-provider-thread"),
+    modelSelection: { instanceId: ProviderInstanceId.make("next-account"), model: "next-model" },
+  });
+  const monitoring: OrchestrationV2ThreadRuntimeObservation = {
+    status: "monitoring",
+    observedAt: NOW,
+    binding: {
+      threadId: observedThread.id,
+      providerThreadId: ProviderThreadId.make("active-provider-thread"),
+      providerSessionId: ProviderSessionId.make("active-session"),
+      instanceId: ProviderInstanceId.make("active-account"),
+      runtimeGeneration: "generation-1",
+      nativeThreadId: "native-thread",
+    },
+  };
+
+  it("uses the active owner for monitoring when the next model selects another account", () => {
+    expect(resolveThreadListV2Status(observedThread, monitoring)).toBe("waiting");
+    expect(resolveThreadOperatingState(observedThread, monitoring)).toMatchObject({
+      operating: true,
+      workstreamRunning: false,
+      backgroundDisplay: "monitoring",
+    });
+    expect(resolveThreadListV2Status(observedThread, { ...monitoring, status: "working" })).toBe(
+      "working",
+    );
+    expect(
+      resolveThreadOperatingState(observedThread, { ...monitoring, status: "working" })
+        .workstreamRunning,
+    ).toBe(true);
+  });
+
+  it.each([
+    {
+      hasPendingApprovals: true,
+      hasPendingUserInput: true,
+      hasActionableProposedPlan: true,
+      expected: "approval",
+    },
+    {
+      hasPendingApprovals: false,
+      hasPendingUserInput: true,
+      hasActionableProposedPlan: true,
+      expected: "input",
+    },
+    {
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: true,
+      expected: "plan",
+    },
+  ])(
+    "keeps foreground $expected attention separate from monitoring Operating",
+    ({ expected, ...attention }) => {
+      const thread = { ...observedThread, ...attention };
+      expect(resolveThreadListV2Status(thread, monitoring)).toBe(expected);
+      expect(resolveThreadOperatingState(thread, monitoring)).toMatchObject({
+        operating: true,
+        workstreamRunning: false,
+      });
+    },
+  );
+
+  it("does not turn a failed or mismatched observation into monitoring", () => {
+    expect(
+      resolveThreadListV2Status(observedThread, { status: "unknown", reason: "Read failed." }),
+    ).toBe("unknown");
+    expect(
+      resolveThreadListV2Status(observedThread, {
+        ...monitoring,
+        binding: {
+          ...monitoring.binding,
+          providerThreadId: ProviderThreadId.make("different-owner"),
+        },
+      }),
+    ).toBe("unknown");
+    expect(resolveThreadListV2Status(observedThread, { ...monitoring, status: "idle" })).toBe(
+      "ready",
+    );
+  });
+
+  it("keeps current foreground work through a background-read failure but excludes a cached foreground runtime", () => {
+    const running = {
+      ...observedThread,
+      runtime: {
+        status: "running" as const,
+        activeRunId: RunId.make("current-run"),
+        providerInstanceId: ProviderInstanceId.make("active-account"),
+        providerName: "Codex",
+        lastError: null,
+        updatedAt: NOW,
+      },
+    };
+    const unavailable = { status: "unknown" as const, reason: "Background read unavailable." };
+    expect(resolveThreadListV2Status(running, unavailable, { foregroundCurrent: true })).toBe(
+      "working",
+    );
+    expect(resolveThreadListV2Status(running, unavailable, { foregroundCurrent: false })).toBe(
+      "unknown",
+    );
+  });
+
+  it("includes settled and snoozed monitoring in Operating while excluding archived threads", () => {
+    const parked = { ...observedThread, settledAt: NOW, snoozedUntil: "2026-06-03T00:00:00.000Z" };
+    expect(resolveThreadOperatingState(parked, monitoring)).toMatchObject({
+      operating: true,
+      workstreamRunning: false,
+    });
+    expect(resolveThreadOperatingState({ ...parked, archivedAt: NOW }, monitoring)).toMatchObject({
+      operating: false,
+      workstreamRunning: false,
+    });
   });
 });
 

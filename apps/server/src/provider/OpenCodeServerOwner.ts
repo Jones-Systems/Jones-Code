@@ -1,3 +1,5 @@
+import * as NodeCrypto from "node:crypto";
+
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -10,8 +12,13 @@ import * as OpenCodeRuntime from "./opencodeRuntime.ts";
 
 const OPENCODE_SERVER_IDLE_TTL = "30 seconds";
 
+export interface OpenCodeOwnedServerProcess extends OpenCodeRuntime.OpenCodeServerProcess {
+  readonly runtimeGeneration?: string;
+  readonly isCurrentAndRunning?: Effect.Effect<boolean>;
+}
+
 interface OpenCodeServerOwnerState {
-  server: OpenCodeRuntime.OpenCodeServerProcess | null;
+  server: OpenCodeOwnedServerProcess | null;
   serverScope: Scope.Closeable | null;
   borrowers: number;
   idleCloseFiber: Fiber.Fiber<void, never> | null;
@@ -20,8 +27,12 @@ interface OpenCodeServerOwnerState {
 export class OpenCodeServerOwner extends Context.Service<
   OpenCodeServerOwner,
   {
-    readonly withServer: <A, E, R>(
-      use: (server: OpenCodeRuntime.OpenCodeServerProcess) => Effect.Effect<A, E, R>,
+    readonly subscribeBeforeRuntimeReplacement?: <E>(
+      listener: (generation: string) => Effect.Effect<void, E>,
+    ) => Effect.Effect<void, never, Scope.Scope>;
+    readonly withServer: <A, E, R, CreationError = never>(
+      use: (server: OpenCodeOwnedServerProcess) => Effect.Effect<A, E, R>,
+      beforeNativeCreation?: (actualDirectory: string) => Effect.Effect<void, CreationError>,
     ) => Effect.Effect<A, E | OpenCodeRuntime.OpenCodeRuntimeError, R>;
   }
 >()("t3/provider/OpenCodeServerOwner") {}
@@ -39,6 +50,11 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     Scope.close(scope, Exit.void),
   );
   const mutex = yield* Semaphore.make(1);
+  const replacementListeners = new Set<{
+    readonly listener: (
+      generation: string,
+    ) => Effect.Effect<void, OpenCodeRuntime.OpenCodeRuntimeError>;
+  }>();
   const state: OpenCodeServerOwnerState = {
     server: null,
     serverScope: null,
@@ -55,7 +71,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   });
 
   const closeServer = Effect.fn("OpenCodeServerOwner.closeServer")(function* (
-    expected?: OpenCodeRuntime.OpenCodeServerProcess,
+    expected?: OpenCodeOwnedServerProcess,
   ) {
     if (expected !== undefined && state.server !== expected) {
       return;
@@ -69,7 +85,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   });
 
   const watchServerExit = Effect.fn("OpenCodeServerOwner.watchServerExit")(function* (
-    server: OpenCodeRuntime.OpenCodeServerProcess,
+    server: OpenCodeOwnedServerProcess,
   ) {
     yield* server.exitCode;
     yield* mutex.withPermit(
@@ -83,52 +99,82 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     );
   });
 
-  const acquireServer = mutex.withPermit(
-    Effect.gen(function* () {
-      yield* cancelIdleClose();
-      if (state.server !== null) {
-        if (yield* state.server.isRunning) {
-          state.borrowers += 1;
-          return state.server;
+  const acquireServer = <CreationError>(
+    beforeNativeCreation?: (actualDirectory: string) => Effect.Effect<void, CreationError>,
+  ) =>
+    mutex.withPermit(
+      Effect.gen(function* () {
+        yield* cancelIdleClose();
+        if (state.server !== null) {
+          if (yield* state.server.isRunning) {
+            state.borrowers += 1;
+            return state.server;
+          }
         }
-        yield* closeServer(state.server);
-      }
 
-      return yield* Effect.uninterruptibleMask((restore) =>
-        Effect.gen(function* () {
-          const serverScope = yield* Scope.make();
-          const started = yield* Effect.exit(
-            restore(
-              runtime
-                .startOpenCodeServerProcess({
-                  binaryPath: input.binaryPath,
-                  directory: input.directory,
-                  ...(input.serverPassword !== undefined
-                    ? { serverPassword: input.serverPassword }
-                    : {}),
-                  ...(input.environment ? { environment: input.environment } : {}),
-                  ...(input.verify ? { verify: input.verify } : {}),
-                })
-                .pipe(Effect.provideService(Scope.Scope, serverScope)),
+        const runtimeGeneration = yield* Effect.sync(() => NodeCrypto.randomUUID());
+        for (const { listener } of replacementListeners) {
+          yield* listener(runtimeGeneration);
+        }
+        if (beforeNativeCreation !== undefined) {
+          yield* beforeNativeCreation(input.directory).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OpenCodeRuntime.OpenCodeRuntimeError({
+                  operation: "beforeNativeCreation",
+                  detail: "Could not authorize creation of the owned OpenCode runtime.",
+                  cause,
+                }),
             ),
           );
-          if (Exit.isFailure(started)) {
-            yield* Scope.close(serverScope, Exit.void).pipe(Effect.ignore);
-            return yield* Effect.failCause(started.cause);
-          }
+        }
+        if (state.server !== null) {
+          yield* closeServer(state.server);
+        }
 
-          const server = started.value;
-          state.server = server;
-          state.serverScope = serverScope;
-          state.borrowers = 1;
-          yield* watchServerExit(server).pipe(Effect.forkIn(ownerScope));
-          return server;
-        }),
-      );
-    }),
-  );
+        return yield* Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            const serverScope = yield* Scope.make();
+            const started = yield* Effect.exit(
+              restore(
+                runtime
+                  .startOpenCodeServerProcess({
+                    binaryPath: input.binaryPath,
+                    directory: input.directory,
+                    ...(input.serverPassword !== undefined
+                      ? { serverPassword: input.serverPassword }
+                      : {}),
+                    ...(input.environment ? { environment: input.environment } : {}),
+                    ...(input.verify ? { verify: input.verify } : {}),
+                  })
+                  .pipe(Effect.provideService(Scope.Scope, serverScope)),
+              ),
+            );
+            if (Exit.isFailure(started)) {
+              yield* Scope.close(serverScope, Exit.void).pipe(Effect.ignore);
+              return yield* Effect.failCause(started.cause);
+            }
 
-  const releaseServer = (server: OpenCodeRuntime.OpenCodeServerProcess) =>
+            const server: OpenCodeOwnedServerProcess = Object.freeze({
+              ...started.value,
+              runtimeGeneration,
+              isCurrentAndRunning: mutex.withPermit(
+                Effect.suspend(() =>
+                  state.server === server ? started.value.isRunning : Effect.succeed(false),
+                ),
+              ),
+            });
+            state.server = server;
+            state.serverScope = serverScope;
+            state.borrowers = 1;
+            yield* watchServerExit(server).pipe(Effect.forkIn(ownerScope));
+            return server;
+          }),
+        );
+      }),
+    );
+
+  const releaseServer = (server: OpenCodeOwnedServerProcess) =>
     mutex.withPermit(
       Effect.gen(function* () {
         if (state.server !== server) {
@@ -167,9 +213,37 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   );
 
   return OpenCodeServerOwner.of({
-    withServer: (use) =>
+    subscribeBeforeRuntimeReplacement: (listener) => {
+      const entry = {
+        listener: (generation: string) =>
+          listener(generation).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OpenCodeRuntime.OpenCodeRuntimeError({
+                  operation: "beforeRuntimeReplacement",
+                  detail: "Could not register the replacement OpenCode runtime.",
+                  cause,
+                }),
+            ),
+          ),
+      };
+      return Effect.acquireRelease(
+        mutex.withPermit(
+          Effect.sync(() => {
+            replacementListeners.add(entry);
+          }),
+        ),
+        () =>
+          mutex.withPermit(
+            Effect.sync(() => {
+              replacementListeners.delete(entry);
+            }),
+          ),
+      );
+    },
+    withServer: (use, beforeNativeCreation) =>
       Effect.uninterruptibleMask((restore) =>
-        restore(acquireServer).pipe(
+        restore(acquireServer(beforeNativeCreation)).pipe(
           Effect.flatMap((server) =>
             restore(use(server)).pipe(Effect.ensuring(releaseServer(server))),
           ),

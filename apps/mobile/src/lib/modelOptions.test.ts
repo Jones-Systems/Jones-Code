@@ -288,7 +288,9 @@ describe("mobile model options", () => {
       "codex",
       "claudeAgent",
     ]);
-    expect(buildModelOptions(config, selection, { providerInstanceId: selection.instanceId })).toEqual(
+    expect(
+      buildModelOptions(config, selection, { providerInstanceId: selection.instanceId }),
+    ).toEqual(
       buildModelOptions(config, selection).filter((option) => option.providerKey === "codex"),
     );
   });
@@ -371,14 +373,11 @@ describe("mobile model options", () => {
     expect(options[1]?.capabilities?.optionDescriptors?.[0]?.currentValue).toBe("high");
     expect(options[1]?.selection.options).toBeUndefined();
     expect(options[1]?.capabilities?.optionDescriptors?.[0]).toMatchObject({
-      options: [
-        { id: "medium", isDefault: true },
-        { id: "high" },
-      ],
+      options: [{ id: "medium", isDefault: true }, { id: "high" }],
     });
-    expect(buildModelOptions(null, defaultModelSelection, { providerInstanceId: provider })).toEqual(
-      [],
-    );
+    expect(
+      buildModelOptions(null, defaultModelSelection, { providerInstanceId: provider }),
+    ).toEqual([]);
     const explicitOptions = buildModelOptions(
       config,
       {

@@ -274,13 +274,19 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     yield* Effect.forEach(
       new Set(workspaceRoots),
       (workspaceRoot) =>
-        Effect.all(
-          [
-            Cache.invalidate(repositoryIdentityCache, workspaceRoot),
-            Cache.invalidate(faviconCache, workspaceRoot),
-          ],
-          { concurrency: "unbounded", discard: true },
-        ),
+        faviconResolver
+          .invalidate(workspaceRoot)
+          .pipe(
+            Effect.andThen(
+              Effect.all(
+                [
+                  Cache.invalidate(repositoryIdentityCache, workspaceRoot),
+                  Cache.invalidate(faviconCache, workspaceRoot),
+                ],
+                { concurrency: "unbounded", discard: true },
+              ),
+            ),
+          ),
       { discard: true },
     );
   });

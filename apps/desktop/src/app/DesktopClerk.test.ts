@@ -169,7 +169,9 @@ describe("DesktopClerk", () => {
             false,
             events,
             "win32",
-            FileSystem.layerNoop({ exists: () => Effect.die("override must bypass default profiles") }),
+            FileSystem.layerNoop({
+              exists: () => Effect.die("override must bypass default profiles"),
+            }),
             undefined,
             Option.some(" /isolated/other/../profile "),
           ),

@@ -70,31 +70,46 @@ describe("RPC authorization scopes", () => {
   });
 
   it("keeps imported review and observation read scoped and explicit start operate scoped", () => {
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.reviewImportedHistoryStart)).toBe(AuthOrchestrationReadScope);
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.observeImportedHistoryStart)).toBe(AuthOrchestrationReadScope);
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.startWithImportedHistory)).toBe(AuthOrchestrationOperateScope);
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.reviewImportedHistoryStart)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.observeImportedHistoryStart)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.startWithImportedHistory)).toBe(
+      AuthOrchestrationOperateScope,
+    );
   });
 
   it("reads current runtime observation and operating counts without mutation permission", () => {
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation)).toBe(AuthOrchestrationReadScope);
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.getOperatingCounts)).toBe(AuthOrchestrationReadScope);
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.getOperatingCounts)).toBe(
+      AuthOrchestrationReadScope,
+    );
   });
 
   it("observes a current runtime STOP receipt under read permission", () => {
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop)).toBe(AuthOrchestrationReadScope);
+    expect(
+      requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop),
+    ).toBe(AuthOrchestrationReadScope);
   });
 
   it("requires operate for both bootstrap RPCs and the exact current-runtime STOP mutation", () => {
-    for (const method of ["orchestration.dispatchBootstrap", ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
-      ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]) {
+    for (const method of [
+      "orchestration.dispatchBootstrap",
+      ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
+      ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
+    ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
   });
 
   it("observes deletion cleanup under read permission without granting another mutation", () => {
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup)).toBe(
-      AuthOrchestrationReadScope,
-    );
+    expect(
+      requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup),
+    ).toBe(AuthOrchestrationReadScope);
   });
 
   it("reads saved accounting under orchestration read permission", () => {
@@ -164,32 +179,38 @@ it("requires operate permission for tool updates even alongside a read-only chec
   expect(requiredScopeForDeviceList({ updateTool: "hub" })).toBe(AuthOrchestrationOperateScope);
 });
 
-it.effect("checks the verified auth session's permanent enrollment before ordinary V2 creation", () =>
-  Effect.gen(function* () {
-    const actorSessionId = AuthSessionId.make("verified-ordinary-create-session");
-    let reads = 0;
-    const error = yield* assertLegacyBootstrapAllowed({
-      actorSessionId, command: { type: "thread.create" },
-      hasAutomationEnrollment: (received) => Effect.sync(() => {
-        expect(received).toBe(actorSessionId);
-        reads++;
-        return true;
-      }),
-    }).pipe(Effect.flip);
-    expect(reads).toBe(1);
-    expect(error.creationRejectionCode).toBe("stale_grant");
-  }),
+it.effect(
+  "checks the verified auth session's permanent enrollment before ordinary V2 creation",
+  () =>
+    Effect.gen(function* () {
+      const actorSessionId = AuthSessionId.make("verified-ordinary-create-session");
+      let reads = 0;
+      const error = yield* assertLegacyBootstrapAllowed({
+        actorSessionId,
+        command: { type: "thread.create" },
+        hasAutomationEnrollment: (received) =>
+          Effect.sync(() => {
+            expect(received).toBe(actorSessionId);
+            reads++;
+            return true;
+          }),
+      }).pipe(Effect.flip);
+      expect(reads).toBe(1);
+      expect(error.creationRejectionCode).toBe("stale_grant");
+    }),
 );
 
 it.effect("permits ordinary V2 creation only with a successful unenrolled lookup", () =>
   Effect.gen(function* () {
     const actorSessionId = AuthSessionId.make("verified-ordinary-create-session");
     yield* assertLegacyBootstrapAllowed({
-      actorSessionId, command: { type: "thread.create" },
+      actorSessionId,
+      command: { type: "thread.create" },
       hasAutomationEnrollment: () => Effect.succeed(false),
     });
     const error = yield* assertLegacyBootstrapAllowed({
-      actorSessionId, command: { type: "thread.create" },
+      actorSessionId,
+      command: { type: "thread.create" },
       hasAutomationEnrollment: () => Effect.fail("enrollment lookup unavailable"),
     }).pipe(Effect.flip);
     expect(error.creationRejectionCode).toBe("unsupported_authority");

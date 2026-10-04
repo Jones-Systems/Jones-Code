@@ -17,7 +17,7 @@ import {
   type WorkstreamRegistryCounts,
 } from "@t3tools/contracts";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderSessionManagerV2 } from "../../../orchestration-v2/ProviderSessionManager.ts";
 import { WorkstreamGateway } from "../../../workstreams/WorkstreamGateway.ts";
 import { DecisionSnapshotToolkitHandlersLive } from "./handlers.ts";
 import { DecisionSnapshotToolkit } from "./tools.ts";
@@ -812,7 +812,7 @@ if __name__ == '__main__':
               unknown_lifecycle: 0,
             };
             const dependencies = Layer.mergeAll(
-              Layer.mock(ProjectionSnapshotQuery)({
+              Layer.mock(ProviderSessionManagerV2)({
                 getOperatingCounts: () =>
                   Effect.succeed({
                     total: 4,
@@ -821,6 +821,7 @@ if __name__ == '__main__':
                     foregroundWaitingInput: 0,
                     foregroundWaitingPlan: 0,
                     backgroundOperating: 0,
+                    backgroundUnknown: 0,
                     snapshotSequence: 1,
                     backgroundSampledAt: counts.observed_at,
                     observedAt: counts.observed_at,

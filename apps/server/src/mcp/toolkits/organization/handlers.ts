@@ -1,27 +1,28 @@
-import type { CommandId, OrchestrationThreadShell, ThreadId } from "@t3tools/contracts";
+import type { CommandId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
+import * as DateTime from "effect/DateTime";
 import { requireMcpCapability } from "../../McpInvocationContext.ts";
-import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import {
   WorkstreamGateway,
   WorkstreamGatewayError,
 } from "../../../workstreams/WorkstreamGateway.ts";
 import { OrganizationToolkit, OrganizationToolError, type OrganizationThread } from "./tools.ts";
 
-const organizationThread = (thread: OrchestrationThreadShell): typeof OrganizationThread.Type => ({
+const organizationThread = (
+  thread: OrchestrationV2ThreadShell,
+): typeof OrganizationThread.Type => ({
   threadId: thread.id,
   title: thread.title.slice(0, 512),
   projectId: thread.projectId,
-  pinnedAt: thread.pinnedAt ?? null,
+  pinnedAt: thread.pinnedAt == null ? null : DateTime.formatIso(thread.pinnedAt),
   pinOrderKey: thread.pinOrderKey ?? null,
   activeOrderKey: thread.activeOrderKey ?? null,
-  snoozedUntil: thread.snoozedUntil ?? null,
+  snoozedUntil: thread.snoozedUntil == null ? null : DateTime.formatIso(thread.snoozedUntil),
   settledOverride: thread.settledOverride,
-  settledAt: thread.settledAt,
-  archivedAt: thread.archivedAt,
+  settledAt: thread.settledAt == null ? null : DateTime.formatIso(thread.settledAt),
+  archivedAt: thread.archivedAt == null ? null : DateTime.formatIso(thread.archivedAt),
 });
 const localFailure = (cause: unknown) =>
   new OrganizationToolError({ reason: "local-operation-failed", cause });
@@ -34,8 +35,7 @@ const pageInput = (input: {
 });
 const make = Effect.gen(function* () {
   const gateway = yield* WorkstreamGateway;
-  const snapshots = yield* ProjectionSnapshotQuery;
-  const engine = yield* OrchestrationEngineService;
+  const threads = yield* ThreadManagementService;
   const authorized = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
     requireMcpCapability("organization").pipe(Effect.andThen(operation));
   const requireThread = Effect.fn("OrganizationToolkit.requireThread")(function* (
@@ -43,19 +43,17 @@ const make = Effect.gen(function* () {
     requireVisible: boolean,
   ) {
     yield* requireMcpCapability("organization");
-    const thread = yield* snapshots
-      .getThreadShellById(threadId)
-      .pipe(Effect.mapError(localFailure));
-    if (Option.isNone(thread))
+    const thread = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(localFailure));
+    if (thread === null || thread.deletedAt !== null)
       return yield* new OrganizationToolError({ reason: "thread-not-found", threadId });
-    const value = thread.value;
+    const value = thread;
     const now = yield* Clock.currentTimeMillis;
     if (
       value.archivedAt !== null ||
       (requireVisible &&
         (value.settledOverride === "settled" ||
           value.settledAt !== null ||
-          (value.snoozedUntil != null && Date.parse(value.snoozedUntil) > now)))
+          (value.snoozedUntil != null && DateTime.toEpochMillis(value.snoozedUntil) > now)))
     ) {
       return yield* new OrganizationToolError({ reason: "thread-parked", threadId });
     }
@@ -65,17 +63,17 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     commandId: CommandId,
     sequence: number,
-    matches: (thread: OrchestrationThreadShell) => boolean,
+    matches: (thread: OrchestrationV2ThreadShell) => boolean,
   ) {
-    return yield* snapshots.getThreadShellById(threadId).pipe(
+    return yield* threads.getThreadShell(threadId).pipe(
       Effect.map((thread) =>
-        Option.isNone(thread)
+        thread === null || thread.deletedAt !== null
           ? { commandId, sequence, readback: "unknown" as const }
           : {
               commandId,
               sequence,
-              readback: matches(thread.value) ? ("observed" as const) : ("pending" as const),
-              thread: organizationThread(thread.value),
+              readback: matches(thread) ? ("observed" as const) : ("pending" as const),
+              thread: organizationThread(thread),
             },
       ),
       Effect.catch(() => Effect.succeed({ commandId, sequence, readback: "unknown" as const })),
@@ -86,7 +84,7 @@ const make = Effect.gen(function* () {
       authorized(
         Effect.gen(function* () {
           const scope = yield* requireMcpCapability("organization");
-          const snapshot = yield* snapshots.getShellSnapshot().pipe(Effect.mapError(localFailure));
+          const snapshot = yield* threads.getShellSnapshot().pipe(Effect.mapError(localFailure));
           const start = input.offset ?? 0;
           const end = start + (input.limit ?? 50);
           return {
@@ -137,7 +135,7 @@ const make = Effect.gen(function* () {
     set_thread_pinned: (input) =>
       Effect.gen(function* () {
         yield* requireThread(input.threadId, input.pinned);
-        const result = yield* engine
+        const result = yield* threads
           .dispatch(
             input.pinned
               ? {
@@ -174,7 +172,7 @@ const make = Effect.gen(function* () {
             reason: "pin-state-mismatch",
             threadId: input.threadId,
           });
-        const result = yield* engine
+        const result = yield* threads
           .dispatch({
             type: input.list === "pinned" ? "thread.pin.reorder" : "thread.active.reorder",
             commandId: input.commandId,

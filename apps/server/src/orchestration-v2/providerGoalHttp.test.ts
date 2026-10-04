@@ -27,14 +27,15 @@ describe("provider goal HTTP metadata adapter", () => {
     { nativeThreadId: "native-thread", state: "unknown", reasonCode: "goal_field_omitted" },
   ] satisfies ReadonlyArray<ProviderGoalReadResult>) {
     it(`preserves ${result.reasonCode} and exposes only metadata`, async () => {
-      const requests: typeof input[] = [];
+      const requests: (typeof input)[] = [];
       const observation = await Effect.runPromise(
         readProviderGoalState(input).pipe(
           Effect.provideService(ProviderSessionGoalService, {
-            get: (request) => Effect.sync(() => {
-              requests.push(request);
-              return { ...result, objective: "private objective", tokenBudget: 1000 };
-            }),
+            get: (request) =>
+              Effect.sync(() => {
+                requests.push(request);
+                return { ...result, objective: "private objective", tokenBudget: 1000 };
+              }),
           }),
         ),
       );
@@ -61,11 +62,17 @@ describe("provider goal HTTP metadata adapter", () => {
   });
 
   it("maps a failed resident read to the existing unknown reason", async () => {
-    const result = await Effect.runPromise(readProviderGoalState(input).pipe(
-      Effect.provideService(ProviderSessionGoalService, {
-        get: () => Effect.die(new Error("Synthetic provider failure")),
-      }),
-    ));
-    expect(result).toMatchObject({ nativeThreadId: null, state: "unknown", reasonCode: "rpc_error" });
+    const result = await Effect.runPromise(
+      readProviderGoalState(input).pipe(
+        Effect.provideService(ProviderSessionGoalService, {
+          get: () => Effect.die(new Error("Synthetic provider failure")),
+        }),
+      ),
+    );
+    expect(result).toMatchObject({
+      nativeThreadId: null,
+      state: "unknown",
+      reasonCode: "rpc_error",
+    });
   });
 });

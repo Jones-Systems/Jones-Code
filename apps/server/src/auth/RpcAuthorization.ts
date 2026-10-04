@@ -2,7 +2,8 @@ import * as Effect from "effect/Effect";
 import {
   OrchestrationDispatchCommandError,
   type AuthSessionId,
-  type ClientOrchestrationCommand,
+  type OrchestrationV2Command,
+  type ThreadTurnStartCommand,
 } from "@t3tools/contracts";
 import {
   type DeviceListInput,
@@ -239,12 +240,18 @@ export const requiredScopeForDeviceList = (input: DeviceListInput): AuthEnvironm
 
 export const assertLegacyBootstrapAllowed = <E>(input: {
   readonly actorSessionId: AuthSessionId;
-  readonly command: ClientOrchestrationCommand | { readonly type: "thread.create" };
+  readonly command:
+    | OrchestrationV2Command
+    | typeof ThreadTurnStartCommand.Type
+    | { readonly type: "thread.create" };
   readonly hasAutomationEnrollment: (sessionId: AuthSessionId) => Effect.Effect<boolean, E>;
 }): Effect.Effect<void, OrchestrationDispatchCommandError> =>
   Effect.gen(function* () {
-    if (input.command.type !== "thread.create" &&
-      (input.command.type !== "thread.turn.start" || input.command.bootstrap === undefined)) return;
+    if (
+      input.command.type !== "thread.create" &&
+      (input.command.type !== "thread.turn.start" || input.command.bootstrap === undefined)
+    )
+      return;
     const enrolled = yield* input.hasAutomationEnrollment(input.actorSessionId).pipe(
       Effect.mapError(
         (cause) =>

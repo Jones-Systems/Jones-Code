@@ -13,19 +13,29 @@ import {
   type WorkstreamsNativeSettlementResponse,
   type WorkstreamsNativeSettlementEvent,
 } from "@t3tools/contracts";
-import { CommandId, ThreadId } from "@t3tools/contracts";
+import {
+  AuthSessionId,
+  CommandId,
+  EnvironmentAuthenticatedPrincipal,
+  NativeCommandIdentityV2,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { NativeStoreAuthority } from "../../environment/NativeStoreAuthority.ts";
 import { NativeStoreAuthorityPersistenceError } from "../../environment/nativeStoreAuthorityPersistence.ts";
-import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
-import type { OrchestrationCommandReceiptRepositoryShape } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
-import type { OrchestrationEventStoreShape } from "../../persistence/Services/OrchestrationEventStore.ts";
-import type { OrchestrationEngineShape } from "../../orchestration/Services/OrchestrationEngine.ts";
+import type { EventSinkV2Shape, NativeCommandFactsV2 } from "../../orchestration-v2/EventSink.ts";
+import type { OrchestratorV2Shape } from "../../orchestration-v2/Orchestrator.ts";
+import type { ProjectionStoreV2Error } from "../../orchestration-v2/ProjectionStore.ts";
 import { type NativeProviderAttempts, type NativeProviderAttempt } from "./attemptRepository.ts";
-import { NATIVE_PROVIDER_SCOPES, type NativeProviderEnrollmentBinding } from "./enrollment.ts";
+import {
+  NativeProviderBuild,
+  NATIVE_PROVIDER_SCOPES,
+  type NativeProviderEnrollmentBinding,
+} from "./enrollment.ts";
 
 export const sha256Bytes = (bytes: string | Uint8Array): string =>
   NodeCrypto.createHash("sha256").update(bytes).digest("hex");
@@ -34,12 +44,16 @@ export const readNativeProviderBuild = Schema.decodeUnknownEffect(WorkstreamsNat
   (packageJson as { readonly jonesSource?: unknown }).jonesSource,
 ).pipe(Effect.option);
 
+export const NativeProviderBuildLive = Layer.succeed(NativeProviderBuild, {
+  readCurrent: readNativeProviderBuild,
+});
+
 export interface NativeProviderPorts {
   readonly authority: Pick<NativeStoreAuthority["Service"], "readCurrent">;
-  readonly threadExists: (threadId: ThreadId) => Effect.Effect<boolean, ProjectionRepositoryError>;
-  readonly engine: Pick<OrchestrationEngineShape, "dispatch">;
-  readonly receipts: Pick<OrchestrationCommandReceiptRepositoryShape, "getByCommandId">;
-  readonly events: Pick<OrchestrationEventStoreShape, "readMetadataByCommandId">;
+  readonly threadExists: (threadId: ThreadId) => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  readonly orchestrator: Pick<OrchestratorV2Shape, "dispatchNativeWorkstreamSettlement"> &
+    Partial<Pick<OrchestratorV2Shape, "observeNativeWorkstreamSettlementBinding">>;
+  readonly eventSink: Pick<EventSinkV2Shape, "readNativeCommandFacts" | "getThreadIncarnation">;
   readonly attempts: NativeProviderAttempts["Service"];
   readonly build?: Effect.Effect<Option.Option<WorkstreamsNativeBuild>>;
 }
@@ -110,6 +124,124 @@ export const nativeProviderResultEvidence = Effect.fn("NativeProvider.resultEvid
   });
   return { ...value, result_sha256: sha256Bytes(encoded) };
 }, Effect.orDie);
+
+export const nativeProviderSettlementFromFacts = Effect.fn("NativeProvider.settlementFromFacts")(
+  function* (
+    attempt: NativeProviderAttempt,
+    facts: NativeCommandFactsV2,
+    expectedIdentity: NativeCommandIdentityV2 | null,
+  ): Effect.fn.Return<WorkstreamsNativeSettlementResponse> {
+    const request = attempt.request;
+    if (facts.receipt === null) return unknownSettlement(request, "receipt_missing");
+    const receipt = facts.receipt;
+    const events = facts.eventMetadata;
+    const commandType = request.native_action === "settle" ? "thread.settle" : "thread.unsettle";
+    const identity = facts.identity;
+    if (
+      facts.commandId !== attempt.nativeCommandId ||
+      facts.threadId !== request.identity.native_id ||
+      facts.incarnation === null ||
+      facts.creationProvenance !== "native_created" ||
+      !Number.isSafeInteger(receipt.resultSequence) ||
+      receipt.resultSequence < facts.incarnation.sequence ||
+      receipt.resultSequence > facts.snapshotSequence ||
+      receipt.commandId !== attempt.nativeCommandId ||
+      receipt.commandType !== commandType ||
+      receipt.threadId !== request.identity.native_id ||
+      identity === null ||
+      !Schema.is(NativeCommandIdentityV2)(identity) ||
+      identity.kind !== "workstream_settlement" ||
+      identity.commandId !== attempt.nativeCommandId ||
+      identity.commandType !== commandType ||
+      identity.aggregateId !== request.identity.native_id ||
+      facts.eventMetadataOverflow ||
+      events.length > 256 ||
+      events.some(
+        (event) =>
+          event.applicationEventVersion !== 2 ||
+          event.commandId !== attempt.nativeCommandId ||
+          event.aggregateKind !== "thread" ||
+          event.aggregateId !== request.identity.native_id,
+      )
+    )
+      return unknownSettlement(request, "evidence_conflict");
+    if (
+      expectedIdentity !== null &&
+      (!Schema.is(NativeCommandIdentityV2)(expectedIdentity) ||
+        !Schema.toEquivalence(NativeCommandIdentityV2)(identity, expectedIdentity))
+    )
+      return unknownSettlement(request, "evidence_conflict");
+    const identityFailure =
+      expectedIdentity === null ? unknownSettlement(request, "authority_unavailable") : null;
+    const acceptedAt = DateTime.formatIso(receipt.acceptedAt);
+    const nativeReceipt = {
+      commandId: receipt.commandId,
+      aggregateKind: "thread" as const,
+      aggregateId: receipt.threadId,
+      acceptedAt,
+      resultSequence: receipt.resultSequence,
+    };
+    if (receipt.status === "rejected") {
+      if (events.length !== 0) return unknownSettlement(request, "evidence_conflict");
+      if (identityFailure !== null) return identityFailure;
+      return {
+        protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+        state: "terminal",
+        request,
+        result: {
+          native_outcome: "denied",
+          native_evidence: yield* nativeProviderResultEvidence(request, "denied"),
+        },
+        native_receipt: { ...nativeReceipt, status: "rejected" },
+        settlement_event: null,
+      };
+    }
+    const settlementEvents = events.filter(
+      (event) => event.type === "thread.settled" || event.type === "thread.unsettled",
+    );
+    const settlement = settlementEvents[0];
+    const last = events.at(-1);
+    if (
+      receipt.status !== "accepted" ||
+      settlementEvents.length !== 1 ||
+      settlement === undefined ||
+      last === undefined ||
+      settlement.type !==
+        (request.native_action === "settle" ? "thread.settled" : "thread.unsettled") ||
+      last.sequence !== receipt.resultSequence ||
+      last.occurredAt !== acceptedAt ||
+      events.some(
+        (event, index) =>
+          !Number.isSafeInteger(event.sequence) ||
+          event.sequence <= 0 ||
+          event.sequence > receipt.resultSequence ||
+          (index > 0 && event.sequence !== events[index - 1]!.sequence + 1),
+      )
+    )
+      return unknownSettlement(request, "evidence_conflict");
+    if (identityFailure !== null) return identityFailure;
+    const settlementEvent: WorkstreamsNativeSettlementEvent = {
+      eventId: settlement.eventId,
+      commandId: attempt.nativeCommandId,
+      aggregateKind: "thread",
+      aggregateId: settlement.aggregateId,
+      sequence: settlement.sequence,
+      type: request.native_action === "settle" ? "thread.settled" : "thread.unsettled",
+      occurredAt: settlement.occurredAt,
+    };
+    return {
+      protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+      state: "terminal",
+      request,
+      result: {
+        native_outcome: "committed",
+        native_evidence: yield* nativeProviderResultEvidence(request, "committed"),
+      },
+      native_receipt: { ...nativeReceipt, status: "accepted" },
+      settlement_event: settlementEvent,
+    };
+  },
+);
 
 export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
   const build = ports.build ?? readNativeProviderBuild;
@@ -213,6 +345,9 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
     const exists = yield* ports
       .threadExists(ThreadId.make(request.identity.native_id))
       .pipe(Effect.option);
+    const birth = yield* ports.eventSink
+      .getThreadIncarnation(ThreadId.make(request.identity.native_id))
+      .pipe(Effect.option);
     const after = yield* checkAuthority;
     if (after.state === "failed")
       return after.fenced
@@ -235,6 +370,12 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
         reason: "observation_unavailable",
       };
     if (!exists.value) return reject("thread_not_found");
+    if (Option.isNone(birth) || birth.value === null)
+      return {
+        protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+        state: "unknown",
+        reason: "observation_unavailable",
+      };
     const now = yield* DateTime.now;
     const attestedAt = DateTime.formatIso(now);
     const expiresAt = DateTime.formatIso(
@@ -264,7 +405,11 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
   const observe = Effect.fn("NativeProvider.observe")(function* (
     binding: NativeProviderEnrollmentBinding,
     attempt: NativeProviderAttempt,
-  ): Effect.fn.Return<WorkstreamsNativeSettlementResponse> {
+  ): Effect.fn.Return<
+    WorkstreamsNativeSettlementResponse,
+    never,
+    EnvironmentAuthenticatedPrincipal
+  > {
     const request = attempt.request;
     if (attempt.dispatchStartedAt === null)
       return unknownSettlement(request, "dispatch_in_progress");
@@ -272,97 +417,39 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
     if (before.state === "failed") return unknownSettlement(request, "authority_unavailable");
     if (!sameAuthority(binding, before.tuple))
       return unknownSettlement(request, "authority_changed");
-    const receiptOption = yield* ports.receipts
-      .getByCommandId({ commandId: CommandId.make(attempt.nativeCommandId) })
-      .pipe(Effect.option);
-    const eventOption = yield* ports.events
-      .readMetadataByCommandId(attempt.nativeCommandId)
-      .pipe(Effect.option);
+    const readBinding = ports.orchestrator.observeNativeWorkstreamSettlementBinding;
+    const observed = yield* readBinding === undefined
+      ? ports.eventSink
+          .readNativeCommandFacts({
+            threadId: ThreadId.make(request.identity.native_id),
+            commandId: CommandId.make(attempt.nativeCommandId),
+            authority: { actorSessionId: AuthSessionId.make(binding.session_id) },
+          })
+          .pipe(
+            Effect.map((facts) => ({ facts, expectedIdentity: null })),
+            Effect.result,
+          )
+      : readBinding({ enrollment: binding, request, attempt }).pipe(Effect.result);
     const after = yield* checkAuthority;
     if (after.state === "failed") return unknownSettlement(request, "authority_unavailable");
     if (!sameAuthority(binding, after.tuple))
       return unknownSettlement(request, "authority_changed");
-    if (Option.isNone(receiptOption) || Option.isNone(eventOption))
+    if (observed._tag === "Failure") {
+      if (observed.failure._tag === "NativeWorkstreamSettlementAuthorityError")
+        return unknownSettlement(
+          request,
+          observed.failure.code === "authority_unavailable"
+            ? "authority_unavailable"
+            : "evidence_conflict",
+        );
       return unknownSettlement(request, "provider_unavailable");
-    if (Option.isNone(receiptOption.value)) return unknownSettlement(request, "receipt_missing");
-    const receipt = receiptOption.value.value;
-    const events = eventOption.value;
-    if (
-      receipt.commandId !== attempt.nativeCommandId ||
-      receipt.aggregateKind !== "thread" ||
-      receipt.aggregateId !== request.identity.native_id ||
-      events.length > 256 ||
-      events.some(
-        (event) =>
-          event.commandId !== attempt.nativeCommandId ||
-          event.aggregateKind !== "thread" ||
-          event.aggregateId !== request.identity.native_id,
-      )
-    )
-      return unknownSettlement(request, "evidence_conflict");
-    const nativeReceipt = {
-      commandId: receipt.commandId,
-      aggregateKind: "thread" as const,
-      aggregateId: receipt.aggregateId,
-      acceptedAt: receipt.acceptedAt,
-      resultSequence: receipt.resultSequence,
-    };
-    if (receipt.status === "rejected") {
-      if (events.length !== 0) return unknownSettlement(request, "evidence_conflict");
-      return {
-        protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
-        state: "terminal",
-        request,
-        result: {
-          native_outcome: "denied",
-          native_evidence: yield* nativeProviderResultEvidence(request, "denied"),
-        },
-        native_receipt: { ...nativeReceipt, status: "rejected" },
-        settlement_event: null,
-      };
     }
-    const settlementEvents = events.filter(
-      (event) => event.type === "thread.settled" || event.type === "thread.unsettled",
+    // AUTH derives the expected identity from the original immutable server witness.
+    return yield* nativeProviderSettlementFromFacts(
+      attempt,
+      observed.success.facts,
+      observed.success.expectedIdentity,
     );
-    const settlement = settlementEvents[0];
-    const last = events.at(-1);
-    if (
-      receipt.status !== "accepted" ||
-      settlementEvents.length !== 1 ||
-      settlement === undefined ||
-      last === undefined ||
-      settlement.type !==
-        (request.native_action === "settle" ? "thread.settled" : "thread.unsettled") ||
-      last.sequence !== receipt.resultSequence ||
-      last.occurredAt !== receipt.acceptedAt ||
-      events.some(
-        (event, index) =>
-          event.sequence <= 0 ||
-          event.sequence > receipt.resultSequence ||
-          (index > 0 && event.sequence !== events[index - 1]!.sequence + 1),
-      )
-    )
-      return unknownSettlement(request, "evidence_conflict");
-    const settlementEvent: WorkstreamsNativeSettlementEvent = {
-      eventId: settlement.eventId,
-      commandId: attempt.nativeCommandId,
-      aggregateKind: "thread",
-      aggregateId: settlement.aggregateId,
-      sequence: settlement.sequence,
-      type: request.native_action === "settle" ? "thread.settled" : "thread.unsettled",
-      occurredAt: settlement.occurredAt,
-    };
-    return {
-      protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
-      state: "terminal",
-      request,
-      result: {
-        native_outcome: "committed",
-        native_evidence: yield* nativeProviderResultEvidence(request, "committed"),
-      },
-      native_receipt: { ...nativeReceipt, status: "accepted" },
-      settlement_event: settlementEvent,
-    };
   });
 
   const settlement = (lookupOnly: boolean) =>
@@ -370,7 +457,11 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       binding: NativeProviderEnrollmentBinding,
       request: WorkstreamsNativeSettlementRequest,
       requestBytesSha256: string,
-    ): Effect.fn.Return<WorkstreamsNativeSettlementResponse> {
+    ): Effect.fn.Return<
+      WorkstreamsNativeSettlementResponse,
+      never,
+      EnvironmentAuthenticatedPrincipal
+    > {
       const invalid = yield* validateBinding(
         binding,
         lookupOnly ? NATIVE_PROVIDER_SCOPES.reconciliation : NATIVE_PROVIDER_SCOPES.settlement,
@@ -419,6 +510,9 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
         const exists = yield* ports
           .threadExists(ThreadId.make(request.identity.native_id))
           .pipe(Effect.option);
+        const birth = yield* ports.eventSink
+          .getThreadIncarnation(ThreadId.make(request.identity.native_id))
+          .pipe(Effect.option);
         const after = yield* checkAuthority;
         if (after.state === "failed")
           return after.fenced
@@ -428,6 +522,8 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
           return unknownSettlement(request, "authority_changed");
         if (Option.isNone(exists)) return unknownSettlement(request, "provider_unavailable");
         if (!exists.value) return reject("thread_not_found");
+        if (Option.isNone(birth) || birth.value === null)
+          return unknownSettlement(request, "evidence_conflict");
         const createdAt = DateTime.formatIso(yield* DateTime.now);
         const reserved = yield* ports.attempts
           .reserve({
@@ -448,6 +544,8 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       )(attempt.request).pipe(Effect.option);
       if (
         attempt.enrollmentSha256 !== enrollmentSha256 ||
+        attempt.nativeCommandId !==
+          `workstreams:${sha256Bytes(`${enrollmentSha256}\n${requestJson.value}`)}` ||
         Option.isNone(persistedJson) ||
         persistedJson.value !== requestJson.value ||
         attempt.requestBytesSha256 !== requestBytesSha256
@@ -467,17 +565,36 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       if (current.state === "failed") return unknownSettlement(request, "authority_unavailable");
       if (!sameAuthority(binding, current.tuple))
         return unknownSettlement(request, "authority_changed");
-      const commandId = CommandId.make(attempt.nativeCommandId);
-      const threadId = ThreadId.make(request.identity.native_id);
+      const startedAttempt = yield* ports.attempts.get(request).pipe(Effect.option);
+      if (Option.isNone(startedAttempt) || Option.isNone(startedAttempt.value))
+        return unknownSettlement(request, "provider_unavailable");
+      const durableAttempt = startedAttempt.value.value;
+      if (
+        durableAttempt.dispatchStartedAt === null ||
+        durableAttempt.nativeCommandId !== attempt.nativeCommandId ||
+        durableAttempt.enrollmentSha256 !== enrollmentSha256 ||
+        durableAttempt.requestBytesSha256 !== requestBytesSha256
+      )
+        return unknownSettlement(request, "evidence_conflict");
       // Persisted dispatch-start survives timeout and lost replies; a started attempt is observation-only.
-      yield* ports.engine
-        .dispatch(
-          request.native_action === "settle"
-            ? { type: "thread.settle", commandId, threadId }
-            : { type: "thread.unsettle", commandId, threadId, reason: "user" },
-        )
-        .pipe(Effect.ignore);
-      return yield* observe(binding, { ...attempt, dispatchStartedAt: startedAt });
+      const dispatched = yield* ports.orchestrator
+        .dispatchNativeWorkstreamSettlement({
+          enrollment: binding,
+          request,
+          attempt: durableAttempt,
+        })
+        .pipe(Effect.result);
+      if (
+        dispatched._tag === "Failure" &&
+        dispatched.failure._tag === "NativeWorkstreamSettlementAuthorityError"
+      ) {
+        const code = dispatched.failure.code;
+        if (code === "authority_unavailable")
+          return unknownSettlement(request, "authority_unavailable");
+        if (code === "idempotency_conflict") return reject("idempotency_conflict");
+        return reject(code === "binding_mismatch" ? "caller_mismatch" : "invalid_request");
+      }
+      return yield* observe(binding, durableAttempt);
     });
 
   return { context, attest, settle: settlement(false), lookup: settlement(true) };

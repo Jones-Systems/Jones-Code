@@ -421,5 +421,4 @@ export default Effect.gen(function* () {
     BEFORE INSERT ON orchestration_v2_lease_cleanup_task_outcomes
     WHEN EXISTS (SELECT 1 FROM orchestration_v2_lease_cleanup_task_outcomes WHERE effect_id = NEW.effect_id AND ordinal = NEW.ordinal)
     BEGIN SELECT RAISE(ABORT, 'lease cleanup task outcome ownership is permanent'); END`;
-
 });

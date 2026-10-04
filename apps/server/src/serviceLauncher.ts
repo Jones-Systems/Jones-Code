@@ -58,6 +58,7 @@ type ChildRole = "active" | "trial";
 
 interface ManagedChild {
   readonly version: string;
+  readonly databasePath: string;
   role: ChildRole;
   readonly process: NodeChildProcess.ChildProcess;
 }
@@ -93,14 +94,22 @@ const databaseBackupFile = (backupDir: string, suffix: (typeof DB_FILE_SUFFIXES)
   NodePath.join(backupDir, suffix === "" ? "database" : `database${suffix}`);
 
 export const configuredDatabasePathForBaseDir = (baseDir: string): string =>
-  NodePath.resolve(baseDir, "userdata", "state.sqlite");
+  NodePath.resolve(baseDir, "userdata", "statev2.sqlite");
 
-export const validateDatabasePathForBaseDir = (baseDir: string, databasePath: string): string => {
-  const configuredPath = configuredDatabasePathForBaseDir(baseDir);
-  if (NodePath.resolve(databasePath) !== configuredPath) {
-    throw new Error("Service update database path must be the configured userdata/state.sqlite.");
+export const validateDatabasePathForBaseDir = (
+  baseDir: string,
+  databasePath: string,
+  selectedDatabasePath = configuredDatabasePathForBaseDir(baseDir),
+): string => {
+  const selected = NodePath.resolve(selectedDatabasePath);
+  const legacy = NodePath.resolve(baseDir, "userdata", "state.sqlite");
+  if (
+    (selected !== configuredDatabasePathForBaseDir(baseDir) && selected !== legacy) ||
+    NodePath.resolve(databasePath) !== selected
+  ) {
+    throw new Error("Service update database path must match the selected userdata database.");
   }
-  return configuredPath;
+  return selected;
 };
 
 async function pathExists(target: string): Promise<boolean> {
@@ -143,7 +152,7 @@ async function syncDirectory(directory: string): Promise<void> {
  * database writes from an earlier attempt by the same trial.
  */
 async function backupDatabaseOnce(baseDir: string, pending: PendingServiceUpdate): Promise<void> {
-  validateDatabasePathForBaseDir(baseDir, pending.dbPath);
+  validateDatabasePathForBaseDir(baseDir, pending.dbPath, pending.dbPath);
   const backupDir = databaseBackupDir(baseDir, pending.id);
   if (await pathExists(backupDir)) {
     if (!(await databaseBackupAvailable(baseDir, pending.id))) {
@@ -311,10 +320,10 @@ async function restoreDatabaseBackup(
   baseDir: string,
   pending: PendingServiceUpdate,
 ): Promise<void> {
-  validateDatabasePathForBaseDir(baseDir, pending.dbPath);
+  validateDatabasePathForBaseDir(baseDir, pending.dbPath, pending.dbPath);
   const backupDir = databaseBackupDir(baseDir, pending.id);
   if (!(await databaseBackupAvailable(baseDir, pending.id))) {
-    fenceNativeStoreAuthorityForBaseDir(baseDir);
+    fenceNativeStoreAuthorityForBaseDir(baseDir, pending.dbPath);
     throw new Error("Cannot rollback while the native database backup is missing.");
   }
   // Persist restore intent before fencing so recovery cannot restart or commit
@@ -325,7 +334,7 @@ async function restoreDatabaseBackup(
       await retainAdvancedState(baseDir, pending);
   }
   await markDatabaseRestorePending(backupDir);
-  fenceNativeStoreAuthorityForBaseDir(baseDir);
+  fenceNativeStoreAuthorityForBaseDir(baseDir, pending.dbPath);
   for (const suffix of DB_FILE_SUFFIXES) {
     const target = `${pending.dbPath}${suffix}`;
     const source = databaseBackupFile(backupDir, suffix);
@@ -446,6 +455,7 @@ const restartPendingPath = (baseDir: string) =>
 export class Launcher {
   readonly #baseDir: string;
   readonly #statePath: string;
+  readonly #selectedDatabasePath: string;
   readonly #quiescenceAdapter: QualifiedQuiescenceAdapter | undefined;
   #state: ServiceState;
   #child: ManagedChild | null = null;
@@ -459,9 +469,13 @@ export class Launcher {
   constructor(
     baseDir: string,
     state: ServiceState,
-    options: { readonly quiescenceAdapter?: QualifiedQuiescenceAdapter } = {},
+    options: {
+      readonly quiescenceAdapter?: QualifiedQuiescenceAdapter;
+      readonly databasePath?: string;
+    } = {},
   ) {
     this.#baseDir = baseDir;
+    this.#selectedDatabasePath = options.databasePath ?? configuredDatabasePathForBaseDir(baseDir);
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
     this.#quiescenceAdapter = options.quiescenceAdapter;
@@ -600,7 +614,7 @@ export class Launcher {
       return;
     }
     if (!(await databaseBackupAvailable(this.#baseDir, update.id))) {
-      fenceNativeStoreAuthorityForBaseDir(this.#baseDir);
+      fenceNativeStoreAuthorityForBaseDir(this.#baseDir, update.dbPath);
       throw new Error("Cannot recover a trial-ready update without its database backup.");
     }
     if (!(await runtimeExists(this.#baseDir, update.targetVersion))) {
@@ -610,9 +624,13 @@ export class Launcher {
     await this.#startTrial(update);
   }
 
-  async #proveQuiescence(allowedProcessIds: readonly number[] = []): Promise<void> {
+  async #proveQuiescence(
+    databasePath: string,
+    allowedProcessIds: readonly number[] = [],
+  ): Promise<void> {
     await proveQualifiedStateQuiescence({
       baseDir: this.#baseDir,
+      databasePath,
       allowedProcessIds,
       ...(this.#quiescenceAdapter === undefined ? {} : { adapter: this.#quiescenceAdapter }),
     });
@@ -624,6 +642,8 @@ export class Launcher {
         this.#baseDir,
         pending.fromVersion,
         pending.qualified.stagedHandle,
+        undefined,
+        pending.dbPath,
       );
       if (JSON.stringify(staged) !== JSON.stringify(pending.qualified))
         throw new Error("The qualified trial binding changed after handoff.");
@@ -631,7 +651,7 @@ export class Launcher {
     // Owned child exit alone does not prove another same-home writer stopped.
     // Keep this proof outside backup failure recovery: uncertainty must retain
     // pending state rather than restart a potentially competing old writer.
-    if (pending.qualified !== undefined) await this.#proveQuiescence();
+    if (pending.qualified !== undefined) await this.#proveQuiescence(pending.dbPath);
     if (pending.phase === "accepted") {
       try {
         await backupDatabaseOnce(this.#baseDir, pending);
@@ -640,7 +660,7 @@ export class Launcher {
         return;
       }
     } else if (!(await databaseBackupAvailable(this.#baseDir, pending.id))) {
-      fenceNativeStoreAuthorityForBaseDir(this.#baseDir);
+      fenceNativeStoreAuthorityForBaseDir(this.#baseDir, pending.dbPath);
       throw new Error("Cannot start a trial-ready update without its database backup.");
     }
     let trialReady = pending;
@@ -668,10 +688,17 @@ export class Launcher {
     this.#state = next;
     if (pending.qualified === undefined)
       await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
-    await this.#startChild(next.activeVersion, "active", outcome);
+    await this.#startChild(next.activeVersion, "active", outcome, pending.dbPath);
   }
 
-  async #startChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
+  async #startChild(
+    version: string,
+    role: ChildRole,
+    update?: ServiceUpdateRecord,
+    selectedDatabasePath = update?.status === "pending"
+      ? update.dbPath
+      : this.#selectedDatabasePath,
+  ): Promise<void> {
     if (this.#stopping) return;
     if (!(await runtimeExists(this.#baseDir, version))) {
       throw new Error(`Selected t3@${version} runtime is missing or incomplete.`);
@@ -720,6 +747,7 @@ export class Launcher {
 
     const managed: ManagedChild = {
       version,
+      databasePath: selectedDatabasePath,
       role,
       process: child,
     };
@@ -790,9 +818,9 @@ export class Launcher {
       return;
     }
     try {
-      validateDatabasePathForBaseDir(this.#baseDir, message.dbPath);
+      validateDatabasePathForBaseDir(this.#baseDir, message.dbPath, child.databasePath);
     } catch {
-      await reject("The requested database path is not the configured userdata/state.sqlite.");
+      await reject("The requested database path differs from the selected server database.");
       return;
     }
     if (!(await runtimeExists(this.#baseDir, message.targetVersion))) {
@@ -807,6 +835,8 @@ export class Launcher {
           this.#baseDir,
           child.version,
           message.stagedHandle,
+          undefined,
+          message.dbPath,
         );
         if (
           qualified.receipt.version !== message.targetVersion ||
@@ -877,7 +907,7 @@ export class Launcher {
     if (pending.qualified !== undefined) {
       if (child.process.pid === undefined) throw new Error("Trial writer identity is unavailable.");
       // Only the captured trial may own writable state at the pointer commit.
-      await this.#proveQuiescence([child.process.pid]);
+      await this.#proveQuiescence(pending.dbPath, [child.process.pid]);
     }
     this.#clearTimer();
     const committed = terminalUpdate({ pending, status: "committed" });
@@ -943,7 +973,7 @@ export class Launcher {
       this.#child = null;
       await terminateChild(child.process);
     }
-    if (pending.qualified !== undefined) await this.#proveQuiescence();
+    if (pending.qualified !== undefined) await this.#proveQuiescence(pending.dbPath);
     await restoreDatabaseBackup(this.#baseDir, pending);
     const outcome = terminalUpdate({ pending, status, reason });
     const next: ServiceState = {
@@ -955,7 +985,7 @@ export class Launcher {
     this.#state = next;
     if (pending.qualified === undefined)
       await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
-    await this.#startChild(next.activeVersion, "active", outcome);
+    await this.#startChild(next.activeVersion, "active", outcome, pending.dbPath);
   }
 }
 

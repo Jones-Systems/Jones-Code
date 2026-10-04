@@ -2,6 +2,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_TERMINAL_ID,
+  EventId,
+  ProjectId,
+  ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
@@ -41,6 +44,11 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "./Manager.ts";
+import {
+  LegacyLeaseInventoryError,
+  type LegacyLeaseOwnerV1,
+} from "../orchestration-v2/LegacyLeaseCleanup.ts";
+import { EventSinkStreamError } from "../orchestration-v2/EventSink.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";
 
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
@@ -56,6 +64,8 @@ class FakePtyProcess implements PtyAdapter.PtyProcess {
   readonly pid: number;
   writeFailure: unknown | undefined;
   resizeFailure: unknown | undefined;
+  killFailure: unknown | undefined;
+  exitOnKill: PtyAdapter.PtyExitEvent | undefined;
   private readonly dataListeners = new Set<(data: string) => void>();
   private readonly exitListeners = new Set<(event: PtyAdapter.PtyExitEvent) => void>();
   killed = false;
@@ -80,8 +90,10 @@ class FakePtyProcess implements PtyAdapter.PtyProcess {
   }
 
   kill(signal?: string): void {
+    if (this.killFailure !== undefined) throw this.killFailure;
     this.killed = true;
     this.killSignals.push(signal);
+    if (this.exitOnKill !== undefined) this.emitExit(this.exitOnKill);
   }
 
   onData(callback: (data: string) => void): () => void {
@@ -221,6 +233,7 @@ const multiTerminalHistoryLogPath = (
   );
 
 interface CreateManagerOptions {
+  ownerObservation?: Parameters<typeof TerminalManager.makeWithOptions>[0]["ownerObservation"];
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
   subprocessInspector?: (terminalPid: number) => Effect.Effect<{
@@ -271,6 +284,9 @@ const createManager = (
         logsDir,
         historyLineLimit,
         ptyAdapter,
+        ...(options.ownerObservation !== undefined
+          ? { ownerObservation: options.ownerObservation }
+          : {}),
         ...(options.historyByteLimit !== undefined
           ? { historyByteLimit: options.historyByteLimit }
           : {}),
@@ -420,6 +436,478 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  const ownerBirth: TerminalManager.TerminalOwnerBirth = {
+    kind: "application_v2_thread_birth",
+    threadId: "thread-1",
+    eventId: "birth-old",
+    sequence: 12,
+  };
+
+  const legacyOwner: LegacyLeaseOwnerV1 = {
+    originalBirth: {
+      kind: "application_v1_thread_birth",
+      threadId: ThreadId.make("thread-1"),
+      eventId: EventId.make("legacy-birth"),
+      sequence: 1,
+      projectId: ProjectId.make("project-1"),
+      createdAt: "2026-10-01T00:00:00.000Z",
+    },
+    importedBirth: {
+      kind: "application_v2_thread_birth",
+      threadId: ThreadId.make("thread-1"),
+      eventId: EventId.make("imported-birth"),
+      sequence: 2,
+    },
+    replacementBirth: {
+      kind: "application_v2_thread_birth",
+      threadId: ThreadId.make("thread-1"),
+      eventId: EventId.make("replacement-birth"),
+      sequence: 3,
+    },
+  };
+
+  it.effect("legacy absence retains a starting handle when inactive retention is zero", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        maxRetainedInactiveSessions: 0,
+        ownerObservation: { observeCurrentBirth: () => Effect.succeed(ownerBirth) },
+      });
+      yield* manager.open(openInput());
+      expect(ptyAdapter.processes).toHaveLength(1);
+      const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+      expect(capture.targets).toHaveLength(1);
+      expect(
+        (yield* Effect.flip(manager.withLegacyOwnerAbsent(legacyOwner, (revalidate) => revalidate)))
+          .reason,
+      ).toBe("terminal_original_or_unclassified_handle");
+      expect(ptyAdapter.processes[0]!.killSignals).toEqual([]);
+    }),
+  );
+
+  it.effect("legacy absence reserves empty managed inventory and expires its revalidation", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      const revalidate = yield* manager.withLegacyOwnerAbsent(legacyOwner, (revalidate) =>
+        Effect.gen(function* () {
+          yield* revalidate;
+          return revalidate;
+        }),
+      );
+      expect(ptyAdapter.processes).toHaveLength(0);
+      const failure = yield* Effect.flip(revalidate);
+      expect(failure).toBeInstanceOf(LegacyLeaseInventoryError);
+      expect(failure.reason).toBe("terminal_inventory_reservation_expired");
+    }),
+  );
+
+  for (const [label, birth] of [
+    ["unclassified", null],
+    ["original imported", legacyOwner.importedBirth],
+    ["unqualified V2", ownerBirth],
+  ] as const) {
+    it.effect(
+      `legacy absence retains ${label} managed handles without closing or clearing them`,
+      () =>
+        Effect.gen(function* () {
+          const { manager, ptyAdapter, logsDir } = yield* createManager(5, {
+            ownerObservation: { observeCurrentBirth: () => Effect.succeed(birth) },
+          });
+          yield* manager.open(openInput());
+          const fs = yield* FileSystem.FileSystem;
+          const history = yield* historyLogPath(logsDir);
+          yield* fs.writeFileString(history, "retained history\n");
+          let entered = false;
+          const failure = yield* Effect.flip(
+            manager.withLegacyOwnerAbsent(legacyOwner, () =>
+              Effect.sync(() => {
+                entered = true;
+              }),
+            ),
+          );
+          expect(failure).toBeInstanceOf(LegacyLeaseInventoryError);
+          expect(failure.reason).toBe("terminal_original_or_unclassified_handle");
+          expect(entered).toBe(false);
+          expect(ptyAdapter.processes[0]!.killSignals).toEqual([]);
+          expect(yield* fs.readFileString(history)).toBe("retained history\n");
+        }),
+    );
+  }
+
+  it.effect("legacy absence preserves the issued replacement handle and its history", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, logsDir } = yield* createManager(5, {
+        ownerObservation: {
+          observeCurrentBirth: () => Effect.succeed(legacyOwner.replacementBirth),
+        },
+      });
+      yield* manager.open(openInput());
+      const before = yield* manager.captureOwnedTargets({
+        threadId: "thread-1",
+        ownerBirth: legacyOwner.replacementBirth!,
+      });
+      const fs = yield* FileSystem.FileSystem;
+      const history = yield* historyLogPath(logsDir);
+      yield* fs.writeFileString(history, "replacement history\n");
+      const result = yield* manager.withLegacyOwnerAbsent(legacyOwner, (revalidate) =>
+        revalidate.pipe(Effect.as("released")),
+      );
+      expect(result).toBe("released");
+      expect(
+        yield* manager.captureOwnedTargets({
+          threadId: "thread-1",
+          ownerBirth: legacyOwner.replacementBirth!,
+        }),
+      ).toEqual(before);
+      expect(ptyAdapter.processes[0]!.killSignals).toEqual([]);
+      expect(yield* fs.readFileString(history)).toBe("replacement history\n");
+    }),
+  );
+
+  it.effect("legacy absence rejects a replacement process exit during the reservation", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: {
+          observeCurrentBirth: () => Effect.succeed(legacyOwner.replacementBirth),
+        },
+      });
+      yield* manager.open(openInput());
+      const failure = yield* Effect.flip(
+        manager.withLegacyOwnerAbsent(legacyOwner, (revalidate) =>
+          Effect.gen(function* () {
+            yield* revalidate;
+            ptyAdapter.processes[0]!.emitExit({ exitCode: 0, signal: 0 });
+            yield* revalidate;
+          }),
+        ),
+      );
+      expect(failure.reason).toBe("terminal_inventory_changed");
+      expect(ptyAdapter.processes[0]!.killSignals).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "legacy absence retains unclassified pending kill handles outside the session map",
+    () =>
+      Effect.gen(function* () {
+        const { manager } = yield* createManager(5, { processKillGraceMs: 60_000 });
+        yield* manager.open(openInput());
+        yield* manager.close({ threadId: "thread-1" });
+        let entered = false;
+        const failure = yield* Effect.flip(
+          manager.withLegacyOwnerAbsent(legacyOwner, () =>
+            Effect.sync(() => {
+              entered = true;
+            }),
+          ),
+        );
+        expect(failure.reason).toBe("terminal_unclassified_pending_kill");
+        expect(entered).toBe(false);
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect(
+    "legacy absence holds the thread lock through final callback before a concurrent open",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager();
+        const opening = yield* manager.withLegacyOwnerAbsent(legacyOwner, (revalidate) =>
+          Effect.gen(function* () {
+            const opening = yield* manager
+              .open(openInput())
+              .pipe(Effect.forkScoped({ startImmediately: true }));
+            expect(ptyAdapter.spawnInputs).toHaveLength(0);
+            yield* revalidate;
+            return opening;
+          }),
+        );
+        yield* Fiber.join(opening);
+        expect(ptyAdapter.spawnInputs).toHaveLength(1);
+        expect(
+          (yield* Effect.flip(
+            manager.withLegacyOwnerAbsent(legacyOwner, (revalidate) => revalidate),
+          )).reason,
+        ).toBe("terminal_original_or_unclassified_handle");
+      }),
+  );
+
+  it.effect("legacy absence waits for pending open admission before session insertion", () =>
+    Effect.gen(function* () {
+      const admitted = yield* Deferred.make<void>();
+      const continueOpen = yield* Deferred.make<void>();
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        resolveProviderInstanceEnvironment: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(admitted, undefined);
+            yield* Deferred.await(continueOpen);
+            return {};
+          }),
+      });
+      const opening = yield* manager
+        .open(openInput({ providerInstanceId: ProviderInstanceId.make("codex") }))
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Deferred.await(admitted);
+      expect(ptyAdapter.spawnInputs).toHaveLength(0);
+      let entered = false;
+      const reserving = yield* Effect.flip(
+        manager.withLegacyOwnerAbsent(legacyOwner, () =>
+          Effect.sync(() => {
+            entered = true;
+          }),
+        ),
+      ).pipe(Effect.forkScoped({ startImmediately: true }));
+      expect(entered).toBe(false);
+      yield* Deferred.succeed(continueOpen, undefined);
+      yield* Fiber.join(opening);
+      expect((yield* Fiber.join(reserving)).reason).toBe(
+        "terminal_original_or_unclassified_handle",
+      );
+      expect(entered).toBe(false);
+      expect(ptyAdapter.processes[0]!.killSignals).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "captures the birth before spawn and closes only the owned process after observed exit",
+    () =>
+      Effect.gen(function* () {
+        const ptyAdapter = new FakePtyAdapter();
+        let observations = 0;
+        const { manager, logsDir } = yield* createManager(5, {
+          ptyAdapter,
+          ownerObservation: {
+            observeCurrentBirth: () =>
+              Effect.sync(() => {
+                expect(ptyAdapter.processes).toHaveLength(0);
+                observations += 1;
+                return ownerBirth;
+              }),
+          },
+        });
+        yield* manager.open(openInput());
+        const process = ptyAdapter.processes[0]!;
+        yield* manager.open(openInput());
+        expect(observations).toBe(1);
+        const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+        expect(capture.status).toBe("captured");
+        expect(capture.targets).toHaveLength(1);
+        expect(capture.targets[0]?.ownerBirth).toEqual(ownerBirth);
+        expect(capture.targets[0]?.handleId.length).toBeGreaterThan(0);
+        const fs = yield* FileSystem.FileSystem;
+        const history = yield* historyLogPath(logsDir);
+        yield* fs.writeFileString(history, "owned persisted history\n");
+        process.exitOnKill = { exitCode: 0, signal: 15 };
+        const result = yield* manager.closeOwnedTargets(capture);
+        expect(result).toEqual({
+          status: "closed",
+          managedTargetsOnly: true,
+          processExitObserved: true,
+          descendantsQuiescence: "unavailable",
+          futureWakeClosure: "unavailable",
+        });
+        expect(process.killSignals).toEqual(["SIGTERM"]);
+        expect(yield* fs.exists(history)).toBe(false);
+        const remaining = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+        expect(remaining.targets).toHaveLength(0);
+      }),
+  );
+
+  it.effect("keeps unavailable ownership unknown when an already live terminal is attached", () =>
+    Effect.gen(function* () {
+      let observed: TerminalManager.TerminalOwnerBirth | null = null;
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Effect.sync(() => observed) },
+      });
+      yield* manager.open(openInput());
+      observed = ownerBirth;
+      yield* manager.open(openInput());
+      const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+      expect(capture.status).toBe("unknown");
+      expect((yield* manager.closeOwnedTargets(capture)).status).toBe("unknown");
+      expect(ptyAdapter.processes[0]!.killed).toBe(false);
+      yield* manager.close({ threadId: "thread-1" });
+    }),
+  );
+
+  it.effect(
+    "preserves a replacement process and its history when closing an old birth capture",
+    () =>
+      Effect.gen(function* () {
+        let observed = ownerBirth;
+        const { manager, ptyAdapter, logsDir } = yield* createManager(5, {
+          ownerObservation: { observeCurrentBirth: () => Effect.sync(() => observed) },
+        });
+        yield* manager.open(openInput());
+        const old = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+        observed = { ...ownerBirth, eventId: "birth-replacement", sequence: 13 };
+        yield* manager.restart(restartInput());
+        const replacement = ptyAdapter.processes[1]!;
+        const beforeSnapshot = yield* manager.open(openInput());
+        const fs = yield* FileSystem.FileSystem;
+        const history = yield* historyLogPath(logsDir);
+        const before = "replacement persisted history\n";
+        yield* fs.writeFileString(history, before);
+        expect((yield* manager.closeOwnedTargets(old)).status).toBe("mismatch");
+        expect(replacement.killed).toBe(false);
+        expect(yield* fs.readFileString(history)).toBe(before);
+        expect((yield* manager.open(openInput())).history).toBe(beforeSnapshot.history);
+        const current = yield* manager.captureOwnedTargets({
+          threadId: "thread-1",
+          ownerBirth: observed,
+        });
+        expect(current.targets[0]?.handleId).not.toBe(old.targets[0]?.handleId);
+        expect(current.targets[0]?.ownerBirth).toEqual(observed);
+      }),
+  );
+
+  it.effect("preserves a restarted handle even when the thread birth is unchanged", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Effect.succeed(ownerBirth) },
+      });
+      yield* manager.open(openInput());
+      const old = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+      yield* manager.restart(restartInput());
+      expect((yield* manager.closeOwnedTargets(old)).status).toBe("mismatch");
+      expect(ptyAdapter.processes[1]!.killed).toBe(false);
+    }),
+  );
+
+  it.effect(
+    "closes an old owned process while preserving a distinct replacement terminal and history",
+    () =>
+      Effect.gen(function* () {
+        let observed = ownerBirth;
+        const { manager, ptyAdapter, logsDir } = yield* createManager(5, {
+          ownerObservation: { observeCurrentBirth: () => Effect.sync(() => observed) },
+        });
+        yield* manager.open(openInput({ terminalId: "old-terminal" }));
+        const old = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+        observed = { ...ownerBirth, eventId: "replacement-birth", sequence: 14 };
+        yield* manager.open(openInput({ terminalId: "replacement-terminal" }));
+        const fs = yield* FileSystem.FileSystem;
+        const history = yield* multiTerminalHistoryLogPath(
+          logsDir,
+          "thread-1",
+          "replacement-terminal",
+        );
+        yield* fs.writeFileString(history, "replacement history survives\n");
+        ptyAdapter.processes[0]!.exitOnKill = { exitCode: 0, signal: 15 };
+        expect((yield* manager.closeOwnedTargets(old)).status).toBe("closed");
+        expect(ptyAdapter.processes[1]!.killed).toBe(false);
+        expect(yield* fs.readFileString(history)).toBe("replacement history survives\n");
+        expect(
+          (yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth: observed }))
+            .targets,
+        ).toHaveLength(1);
+      }),
+  );
+
+  it.effect("allows another owner to close while a failed owner remains retryable", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: {
+          observeCurrentBirth: (threadId) => Effect.succeed({ ...ownerBirth, threadId }),
+        },
+      });
+      yield* manager.open(openInput());
+      yield* manager.open(openInput({ threadId: "thread-2" }));
+      const first = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+      const secondBirth = { ...ownerBirth, threadId: "thread-2" };
+      const second = yield* manager.captureOwnedTargets({
+        threadId: "thread-2",
+        ownerBirth: secondBirth,
+      });
+      ptyAdapter.processes[0]!.killFailure = new Error("first owner signal failure");
+      ptyAdapter.processes[1]!.exitOnKill = { exitCode: 0, signal: 15 };
+      expect((yield* manager.closeOwnedTargets(first)).status).toBe("unknown");
+      expect((yield* manager.closeOwnedTargets(second)).status).toBe("closed");
+      expect(
+        (yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth })).targets,
+      ).toEqual(first.targets);
+    }),
+  );
+
+  it.effect("retains an owned target after a signal failure and permits an exact retry", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Effect.succeed(ownerBirth) },
+      });
+      yield* manager.open(openInput());
+      const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+      const process = ptyAdapter.processes[0]!;
+      process.killFailure = new Error("owned signal failed");
+      expect((yield* manager.closeOwnedTargets(capture)).status).toBe("unknown");
+      expect(
+        (yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth })).targets,
+      ).toEqual(capture.targets);
+      process.killFailure = undefined;
+      process.exitOnKill = { exitCode: 0, signal: 15 };
+      expect((yield* manager.closeOwnedTargets(capture)).status).toBe("closed");
+    }),
+  );
+
+  it.effect("keeps ordinary creation available when the ownership observer fails", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: {
+          observeCurrentBirth: (threadId) =>
+            Effect.fail(
+              new EventSinkStreamError({
+                threadId: ThreadId.make(threadId),
+                cause: new Error("birth unavailable"),
+              }),
+            ),
+        },
+      });
+      yield* manager.open(openInput());
+      expect(ptyAdapter.processes).toHaveLength(1);
+      expect(
+        (yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth })).status,
+      ).toBe("unknown");
+    }),
+  );
+
+  it.effect("retains the exact owned handle when signalling produces no observed exit", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Effect.succeed(ownerBirth) },
+      });
+      yield* manager.open(openInput());
+      const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+      const result = yield* manager.closeOwnedTargets(capture);
+      expect(result.status).toBe("unknown");
+      expect(result.processExitObserved).toBe(false);
+      expect(ptyAdapter.processes[0]!.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(
+        (yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth })).targets,
+      ).toEqual(capture.targets);
+    }),
+  );
+
+  it.effect("preserves interruption of birth observation before spawning", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Effect.interrupt },
+      });
+      expect(Exit.isFailure(yield* Effect.exit(manager.open(openInput())))).toBe(true);
+      expect(ptyAdapter.processes).toHaveLength(0);
+    }),
+  );
+
+  it.effect("reports empty managed inventory without claiming physical or historical absence", () =>
+    Effect.gen(function* () {
+      const { manager } = yield* createManager();
+      const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+      expect(yield* manager.closeOwnedTargets(capture)).toEqual({
+        status: "observed_absent",
+        managedTargetsOnly: true,
+        processExitObserved: false,
+        descendantsQuiescence: "unavailable",
+        futureWakeClosure: "unavailable",
+      });
+    }),
+  );
+
   it.effect("spawns lazily and reuses running terminal per thread", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();

@@ -360,10 +360,15 @@ it.effect("holds a stopped compatible Codex account switch when its native threa
         nativeConversationHeadRef: null,
       })),
     };
-    const result = yield* service.plan({
-      projection: missingHead,
-      targetModelSelection: { instanceId: ProviderInstanceId.make("codex_compatible"), model: "gpt-5.1-codex" },
-    }).pipe(Effect.flip);
+    const result = yield* service
+      .plan({
+        projection: missingHead,
+        targetModelSelection: {
+          instanceId: ProviderInstanceId.make("codex_compatible"),
+          model: "gpt-5.1-codex",
+        },
+      })
+      .pipe(Effect.flip);
     assert.instanceOf(result, ProviderSwitch.ProviderSwitchPlanError);
     assert.instanceOf(result.cause, ProviderSwitch.ProviderSwitchPlanError);
     assert.equal(
@@ -373,10 +378,14 @@ it.effect("holds a stopped compatible Codex account switch when its native threa
     assert.equal(missingHead.providerThreads[0]?.nativeThreadRef, null);
     assert.equal(missingHead.providerThreads[0]?.nativeConversationHeadRef, null);
     assert.equal(missingHead.providerSessions[0]?.status, "stopped");
-  }).pipe(Effect.provide(testLayer({
-    [currentInstanceId]: { continuationKey: "codex:account:primary" },
-    codex_compatible: { continuationKey: "codex:account:primary" },
-  }))),
+  }).pipe(
+    Effect.provide(
+      testLayer({
+        [currentInstanceId]: { continuationKey: "codex:account:primary" },
+        codex_compatible: { continuationKey: "codex:account:primary" },
+      }),
+    ),
+  ),
 );
 
 it.effect("preserves genuine first start and incompatible handoff without a native thread", () =>
@@ -384,24 +393,38 @@ it.effect("preserves genuine first start and incompatible handoff without a nati
     const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
     const firstStart = yield* service.plan({
       projection: { ...projection(), providerSessions: [] },
-      targetModelSelection: { instanceId: ProviderInstanceId.make("codex_compatible"), model: "gpt-5.1-codex" },
+      targetModelSelection: {
+        instanceId: ProviderInstanceId.make("codex_compatible"),
+        model: "gpt-5.1-codex",
+      },
     });
     assert.equal(firstStart.transition.type, "create_with_handoff");
     assert.deepEqual(firstStart.releaseProviderSessionIds, []);
     const source = deadNativeThreadProjection("stopped");
     const incompatible = yield* service.plan({
-      projection: { ...source,
+      projection: {
+        ...source,
         providerSessions: source.providerSessions.map((session) => ({ ...session, driver })),
         providerThreads: source.providerThreads.map((thread) => ({
-        ...thread, nativeThreadRef: null, nativeConversationHeadRef: null,
-      })) },
-      targetModelSelection: { instanceId: ProviderInstanceId.make("codex_incompatible"), model: "gpt-5.1-codex" },
+          ...thread,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+        })),
+      },
+      targetModelSelection: {
+        instanceId: ProviderInstanceId.make("codex_incompatible"),
+        model: "gpt-5.1-codex",
+      },
     });
     assert.equal(incompatible.transition.type, "create_with_handoff");
     assert.deepEqual(incompatible.releaseProviderSessionIds, []);
-  }).pipe(Effect.provide(testLayer({
-    [currentInstanceId]: { continuationKey: "codex:account:primary" },
-    codex_compatible: { continuationKey: "codex:account:primary" },
-    codex_incompatible: { continuationKey: "codex:account:other" },
-  }))),
+  }).pipe(
+    Effect.provide(
+      testLayer({
+        [currentInstanceId]: { continuationKey: "codex:account:primary" },
+        codex_compatible: { continuationKey: "codex:account:primary" },
+        codex_incompatible: { continuationKey: "codex:account:other" },
+      }),
+    ),
+  ),
 );

@@ -460,7 +460,7 @@ it.effect(
     }).pipe(Effect.provide(cliRuntimeLayer), Effect.scoped),
 );
 
-it.effect("the sidecar-effects flag is closed and belongs only to plan/readback", () =>
+it.effect("the sidecar-effects flag is closed and cannot qualify the selected V2 store", () =>
   Effect.gen(function* () {
     const f = yield* fixture;
     const db = new NodeSqlite.DatabaseSync(f.dbPath);
@@ -469,6 +469,7 @@ it.effect("the sidecar-effects flag is closed and belongs only to plan/readback"
     } finally {
       db.close();
     }
+    const before = snapshot(f.baseDir);
     const run = Command.runWith(workstreamCommand, { version });
     const locations = [
       "--base-dir",
@@ -482,7 +483,7 @@ it.effect("the sidecar-effects flag is closed and belongs only to plan/readback"
     const strictLines = yield* TestConsole.logLines;
     assert.strictEqual(
       strictLines.some(
-        (line) => typeof line === "string" && line.includes('"reason":"records_unavailable"'),
+        (line) => typeof line === "string" && line.includes('"reason":"qualification_failed"'),
       ),
       true,
     );
@@ -496,9 +497,11 @@ it.effect("the sidecar-effects flag is closed and belongs only to plan/readback"
     ]);
     const operationalLines = yield* TestConsole.logLines;
     assert.strictEqual(
-      operationalLines.some(
-        (line) => typeof line === "string" && line.includes('"state":"planned"'),
-      ),
+      operationalLines
+        .slice(strictLines.length)
+        .some(
+          (line) => typeof line === "string" && line.includes('"reason":"qualification_failed"'),
+        ),
       true,
     );
     yield* run([
@@ -511,6 +514,15 @@ it.effect("the sidecar-effects flag is closed and belongs only to plan/readback"
       "d".repeat(64),
       f.requestFile,
     ]);
+    const readbackLines = yield* TestConsole.logLines;
+    assert.strictEqual(
+      readbackLines
+        .slice(operationalLines.length)
+        .some(
+          (line) => typeof line === "string" && line.includes('"reason":"qualification_failed"'),
+        ),
+      true,
+    );
     assert.strictEqual(
       (yield* run([
         "provider",
@@ -535,6 +547,7 @@ it.effect("the sidecar-effects flag is closed and belongs only to plan/readback"
       ]).pipe(Effect.result))._tag,
       "Failure",
     );
+    assert.deepEqual(snapshot(f.baseDir), before);
     assert.strictEqual(NodeFS.existsSync(f.secretsDir), false);
     assert.strictEqual(NodeFS.existsSync(f.credentialPath), false);
   }).pipe(Effect.provide(cliRuntimeLayer), Effect.scoped),

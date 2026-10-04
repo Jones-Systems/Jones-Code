@@ -13,6 +13,7 @@ import * as Encoding from "effect/Encoding";
 import * as Layer from "effect/Layer";
 import * as P from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
+import type * as Scope from "effect/Scope";
 import * as HttpClientError from "effect/unstable/http/HttpClientError";
 
 import { OpenCodeRuntimeError } from "../opencodeRuntime.ts";
@@ -21,7 +22,13 @@ import * as OpenCode2Client from "./OpenCode2Client.ts";
 
 const INFO_TIMEOUT = "5 seconds";
 
+export interface OpenCode2OwnedProcess {
+  readonly runtimeGeneration: string;
+  readonly isRunning: Effect.Effect<boolean>;
+}
+
 export interface OpenCode2Connection extends OpenCode2Client.OpenCode2Api {
+  readonly ownedProcess?: OpenCode2OwnedProcess;
   readonly url: string;
   readonly version: string;
   readonly external: boolean;
@@ -30,9 +37,13 @@ export interface OpenCode2Connection extends OpenCode2Client.OpenCode2Api {
 export class OpenCode2Server extends Context.Service<
   OpenCode2Server,
   {
+    readonly subscribeBeforeRuntimeReplacement?: (
+      listener: (generation: string) => Effect.Effect<void, unknown>,
+    ) => Effect.Effect<void, never, Scope.Scope>;
     /** Runs `use` against the instance's server, spawning it first when T3 owns it. */
     readonly withConnection: <A, E, R>(
       use: (connection: OpenCode2Connection) => Effect.Effect<A, E, R>,
+      beforeNativeCreation?: (actualDirectory: string) => Effect.Effect<void, unknown>,
     ) => Effect.Effect<A, E | OpenCodeRuntimeError, R>;
   }
 >()("t3/provider/opencode2/OpenCode2Server") {}
@@ -183,13 +194,30 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
     verify: (url) => connectTo(url, password, false).pipe(Effect.flatMap(remember)),
   });
   return OpenCode2Server.of({
-    withConnection: (use) =>
-      owner.withServer((server) =>
+    ...(owner.subscribeBeforeRuntimeReplacement === undefined
+      ? {}
+      : { subscribeBeforeRuntimeReplacement: owner.subscribeBeforeRuntimeReplacement }),
+    withConnection: (use, beforeNativeCreation) =>
+      owner.withServer((server) => {
         // The owner verifies every server it starts before lending it out.
-        latest?.url === server.url
-          ? use(latest)
-          : Effect.die(new Error("OpenCode 2 server was lent before verification.")),
-      ),
+        if (latest?.url !== server.url) {
+          return Effect.die(new Error("OpenCode 2 server was lent before verification."));
+        }
+        if (
+          server.runtimeGeneration !== undefined &&
+          server.isCurrentAndRunning !== undefined &&
+          latest.ownedProcess?.runtimeGeneration !== server.runtimeGeneration
+        ) {
+          latest = {
+            ...latest,
+            ownedProcess: Object.freeze({
+              runtimeGeneration: server.runtimeGeneration,
+              isRunning: server.isCurrentAndRunning,
+            }),
+          };
+        }
+        return use(latest);
+      }, beforeNativeCreation),
   });
 });
 

@@ -215,42 +215,63 @@ const runBootstrap = (input: {
   readonly threads?: ReadonlyArray<OrchestrationV2ThreadShell>;
   readonly launch?: ThreadLaunch.ThreadLaunchService["Service"]["launch"];
   readonly settings?: Partial<ServerSettings.ServerSettingsService["Service"]>;
-}) => ServerRuntimeStartup.resolveAutoBootstrapWelcomeTargets.pipe(
-  Effect.provideService(ServerConfig.ServerConfig, {
-    cwd: bootstrapProject.workspaceRoot,
-    autoBootstrapProjectFromCwd: true,
-  } as ServerConfig.ServerConfig["Service"]),
-  Effect.provide(Layer.mock(ProjectService.ProjectService)({
-    bootstrap: input.bootstrap ?? (() => Effect.succeed({ project: bootstrapProject, created: false })),
-  })),
-  Effect.provide(Layer.mock(ThreadManagement.ThreadManagementService)({
-    getShellSnapshot: () => Effect.succeed({ threads: input.threads ?? [] } as never),
-  })),
-  Effect.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({
-    launch: input.launch ?? (() => Effect.succeed({ threadId: bootstrapThreadId, projection: {} as never, resumed: false })),
-  })),
-  Effect.provide(input.settings === undefined
-    ? ServerSettings.layerTest()
-    : Layer.mock(ServerSettings.ServerSettingsService)(input.settings)),
-);
+}) =>
+  ServerRuntimeStartup.resolveAutoBootstrapWelcomeTargets.pipe(
+    Effect.provideService(ServerConfig.ServerConfig, {
+      cwd: bootstrapProject.workspaceRoot,
+      autoBootstrapProjectFromCwd: true,
+    } as ServerConfig.ServerConfig["Service"]),
+    Effect.provide(
+      Layer.mock(ProjectService.ProjectService)({
+        bootstrap:
+          input.bootstrap ?? (() => Effect.succeed({ project: bootstrapProject, created: false })),
+      }),
+    ),
+    Effect.provide(
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        getShellSnapshot: () => Effect.succeed({ threads: input.threads ?? [] } as never),
+      }),
+    ),
+    Effect.provide(
+      Layer.mock(ThreadLaunch.ThreadLaunchService)({
+        launch:
+          input.launch ??
+          (() =>
+            Effect.succeed({
+              threadId: bootstrapThreadId,
+              projection: {} as never,
+              resumed: false,
+            })),
+      }),
+    ),
+    Effect.provide(
+      input.settings === undefined
+        ? ServerSettings.layerTest()
+        : Layer.mock(ServerSettings.ServerSettingsService)(input.settings),
+    ),
+  );
 
 it.layer(NodeServices.layer)("V2 bootstrap targets", (it) => {
   it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and thread ids", () =>
     Effect.gen(function* () {
       let launches = 0;
-      const shell = (id: string, projectId: ProjectId, relationshipToParent: string | null) => ({
-        id: ThreadId.make(id), projectId, lineage: { relationshipToParent },
-      }) as OrchestrationV2ThreadShell;
+      const shell = (id: string, projectId: ProjectId, relationshipToParent: string | null) =>
+        ({
+          id: ThreadId.make(id),
+          projectId,
+          lineage: { relationshipToParent },
+        }) as OrchestrationV2ThreadShell;
       const result = yield* runBootstrap({
         threads: [
           shell("other-project", ProjectId.make("other"), null),
           shell("delegated", bootstrapProject.id, "subagent"),
           shell(bootstrapThreadId, bootstrapProject.id, null),
         ],
-        launch: () => Effect.sync(() => {
-          launches += 1;
-          return { threadId: bootstrapThreadId, projection: {} as never, resumed: false };
-        }),
+        launch: () =>
+          Effect.sync(() => {
+            launches += 1;
+            return { threadId: bootstrapThreadId, projection: {} as never, resumed: false };
+          }),
       });
       assert.deepEqual(result, { bootstrapProjectId: bootstrapProject.id, bootstrapThreadId });
       assert.equal(launches, 0);
@@ -258,40 +279,80 @@ it.layer(NodeServices.layer)("V2 bootstrap targets", (it) => {
   );
 
   it.effect.each([
-    { existing: false, machineModel: null, projectModel: null, machineMode: "full-access", projectMode: null },
-    { existing: false, machineModel: "claude-sonnet-4-6", projectModel: null, machineMode: "approval-required", projectMode: null },
-    { existing: true, machineModel: "claude-sonnet-4-6", projectModel: null, machineMode: "auto", projectMode: null },
-    { existing: true, machineModel: "claude-sonnet-4-6", projectModel: "gpt-5.4", machineMode: "full-access", projectMode: "auto-accept-edits" },
+    {
+      existing: false,
+      machineModel: null,
+      projectModel: null,
+      machineMode: "full-access",
+      projectMode: null,
+    },
+    {
+      existing: false,
+      machineModel: "claude-sonnet-4-6",
+      projectModel: null,
+      machineMode: "approval-required",
+      projectMode: null,
+    },
+    {
+      existing: true,
+      machineModel: "claude-sonnet-4-6",
+      projectModel: null,
+      machineMode: "auto",
+      projectMode: null,
+    },
+    {
+      existing: true,
+      machineModel: "claude-sonnet-4-6",
+      projectModel: "gpt-5.4",
+      machineMode: "full-access",
+      projectMode: "auto-accept-edits",
+    },
   ] as const)("auto-bootstrap model and permissions precedence: %j", (options) =>
     Effect.gen(function* () {
-      const machineSelection: ModelSelection | null = options.machineModel === null ? null : {
-        instanceId: ProviderInstanceId.make("claude-code"), model: options.machineModel,
-      };
-      const projectSelection: ModelSelection | null = options.projectModel === null ? null : {
-        instanceId: ProviderInstanceId.make("codex"), model: options.projectModel,
-      };
+      const machineSelection: ModelSelection | null =
+        options.machineModel === null
+          ? null
+          : {
+              instanceId: ProviderInstanceId.make("claude-code"),
+              model: options.machineModel,
+            };
+      const projectSelection: ModelSelection | null =
+        options.projectModel === null
+          ? null
+          : {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: options.projectModel,
+            };
       const project = { ...bootstrapProject, defaultModelSelection: projectSelection };
       const settings = {
         ...DEFAULT_SERVER_SETTINGS,
         defaultModelSelection: machineSelection,
         defaultRuntimeMode: options.machineMode,
         projectSettingsOverrides: {
-          [project.id]: { ...(options.projectMode === null ? {} : { defaultRuntimeMode: options.projectMode }) },
+          [project.id]: {
+            ...(options.projectMode === null ? {} : { defaultRuntimeMode: options.projectMode }),
+          },
         },
       };
       let launch: ThreadLaunch.ThreadLaunchInput | undefined;
       const result = yield* runBootstrap({
         bootstrap: () => Effect.succeed({ project, created: !options.existing }),
         settings: { getSettings: Effect.succeed(settings) },
-        launch: (input) => Effect.sync(() => {
-          launch = input;
-          return { threadId: bootstrapThreadId, projection: {} as never, resumed: false };
-        }),
+        launch: (input) =>
+          Effect.sync(() => {
+            launch = input;
+            return { threadId: bootstrapThreadId, projection: {} as never, resumed: false };
+          }),
       });
       assert.deepEqual(result, { bootstrapProjectId: project.id, bootstrapThreadId });
-      assert.deepEqual(launch?.modelSelection, projectSelection ?? machineSelection ?? {
-        instanceId: ProviderInstanceId.make("codex"), model: DEFAULT_MODEL,
-      });
+      assert.deepEqual(
+        launch?.modelSelection,
+        projectSelection ??
+          machineSelection ?? {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: DEFAULT_MODEL,
+          },
+      );
       assert.equal(launch?.runtimeMode, options.projectMode ?? options.machineMode);
       assert.equal(launch?.workspaceStrategy.type, "root");
       assert.equal(launch?.createdBy, "system");
@@ -299,43 +360,56 @@ it.layer(NodeServices.layer)("V2 bootstrap targets", (it) => {
     }),
   );
 
-  it.effect("resolveAutoBootstrapWelcomeTargets preserves a project created before thread failure", () =>
-    Effect.gen(function* () {
-      let project: Project | undefined;
-      const failure = new ThreadLaunch.ThreadLaunchError({
-        operation: "resolve-project", commandId: CommandId.make("launch-failed"),
-        projectId: bootstrapProject.id, cause: "Thread launch unavailable",
-      });
-      const error = yield* runBootstrap({
-        bootstrap: () => Effect.sync(() => {
-          project = bootstrapProject;
-          return { project, created: true };
-        }),
-        launch: () => Effect.fail(failure),
-      }).pipe(Effect.flip);
-      assert.strictEqual(error, failure);
-      assert.strictEqual(project, bootstrapProject);
-    }),
+  it.effect(
+    "resolveAutoBootstrapWelcomeTargets preserves a project created before thread failure",
+    () =>
+      Effect.gen(function* () {
+        let project: Project | undefined;
+        const failure = new ThreadLaunch.ThreadLaunchError({
+          operation: "resolve-project",
+          commandId: CommandId.make("launch-failed"),
+          projectId: bootstrapProject.id,
+          cause: "Thread launch unavailable",
+        });
+        const error = yield* runBootstrap({
+          bootstrap: () =>
+            Effect.sync(() => {
+              project = bootstrapProject;
+              return { project, created: true };
+            }),
+          launch: () => Effect.fail(failure),
+        }).pipe(Effect.flip);
+        assert.strictEqual(error, failure);
+        assert.strictEqual(project, bootstrapProject);
+      }),
   );
 
   it.effect("resolveAutoBootstrapWelcomeTargets preserves typed UUID generation failures", () =>
     Effect.gen(function* () {
       const crypto = yield* Crypto.Crypto;
       const failure = PlatformError.systemError({
-        _tag: "Unknown", module: "Crypto", method: "randomUUIDv4", description: "UUID generation unavailable",
+        _tag: "Unknown",
+        module: "Crypto",
+        method: "randomUUIDv4",
+        description: "UUID generation unavailable",
       });
       let created = 0;
       let launched = 0;
       const error = yield* runBootstrap({
-        bootstrap: () => Effect.sync(() => {
-          created += 1;
-          return { project: bootstrapProject, created: true };
-        }),
-        launch: () => Effect.sync(() => {
-          launched += 1;
-          return { threadId: bootstrapThreadId, projection: {} as never, resumed: false };
-        }),
-      }).pipe(Effect.provideService(Crypto.Crypto, { ...crypto, randomUUIDv4: Effect.fail(failure) }), Effect.flip);
+        bootstrap: () =>
+          Effect.sync(() => {
+            created += 1;
+            return { project: bootstrapProject, created: true };
+          }),
+        launch: () =>
+          Effect.sync(() => {
+            launched += 1;
+            return { threadId: bootstrapThreadId, projection: {} as never, resumed: false };
+          }),
+      }).pipe(
+        Effect.provideService(Crypto.Crypto, { ...crypto, randomUUIDv4: Effect.fail(failure) }),
+        Effect.flip,
+      );
       assert.strictEqual(error, failure);
       assert.equal(created, 0);
       assert.equal(launched, 0);

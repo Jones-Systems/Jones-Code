@@ -1229,24 +1229,44 @@ export function resolveThreadStatusPill(input: {
   if (input.current !== undefined) {
     const status = resolveSidebarThreadStatus(thread, input.current);
     if (input.current.foregroundAttention === "plan") {
-      return { label: "Plan Ready", colorClass: "text-violet-600 dark:text-violet-300/90",
-        dotClass: "bg-violet-500 dark:bg-violet-300/90", pulse: false };
+      return {
+        label: "Plan Ready",
+        colorClass: "text-violet-600 dark:text-violet-300/90",
+        dotClass: "bg-violet-500 dark:bg-violet-300/90",
+        pulse: false,
+      };
     }
     if (status === "working") {
-      return { label: "Working", colorClass: "text-sky-600 dark:text-sky-300/80",
-        dotClass: "bg-sky-500 dark:bg-sky-300/80", pulse: false };
+      return {
+        label: "Working",
+        colorClass: "text-sky-600 dark:text-sky-300/80",
+        dotClass: "bg-sky-500 dark:bg-sky-300/80",
+        pulse: false,
+      };
     }
     if (status === "waiting" || status === "unknown") {
-      return { label: status === "waiting" ? "Monitoring" : "Unknown",
-        colorClass: "text-sidebar-muted-foreground", dotClass: "bg-sidebar-muted-foreground", pulse: false };
+      return {
+        label: status === "waiting" ? "Monitoring" : "Unknown",
+        colorClass: "text-sidebar-muted-foreground",
+        dotClass: "bg-sidebar-muted-foreground",
+        pulse: false,
+      };
     }
     if (status === "failed" || status === "limited") {
-      return { label: status === "failed" ? "Failed" : "Limited",
-        colorClass: "text-thread-failed", dotClass: "bg-thread-failed", pulse: false };
+      return {
+        label: status === "failed" ? "Failed" : "Limited",
+        colorClass: "text-thread-failed",
+        dotClass: "bg-thread-failed",
+        pulse: false,
+      };
     }
     return hasUnseenCompletion(thread)
-      ? { label: "Completed", colorClass: "text-emerald-600 dark:text-emerald-300/90",
-          dotClass: "bg-emerald-500 dark:bg-emerald-300/90", pulse: false }
+      ? {
+          label: "Completed",
+          colorClass: "text-emerald-600 dark:text-emerald-300/90",
+          dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+          pulse: false,
+        }
       : null;
   }
 

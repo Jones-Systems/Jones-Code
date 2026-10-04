@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderSessionManagerV2 } from "../../../orchestration-v2/ProviderSessionManager.ts";
 import { WorkstreamGateway } from "../../../workstreams/WorkstreamGateway.ts";
 import { DecisionSnapshotCollector } from "./collector.ts";
 
@@ -59,7 +59,7 @@ const DecisionSnapshotTool = Tool.make("decision_snapshot", {
   failure: McpCapabilityUnavailableError,
   dependencies: [
     McpInvocationContext,
-    ProjectionSnapshotQuery,
+    ProviderSessionManagerV2,
     WorkstreamGateway,
     DecisionSnapshotCollector,
   ],

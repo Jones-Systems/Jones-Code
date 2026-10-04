@@ -4,6 +4,7 @@ import {
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProjectId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -15,8 +16,11 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as SqlError from "effect/unstable/sql/SqlError";
 
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -24,12 +28,575 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ServerSettings from "../serverSettings.ts";
+
+for (const respectProjectPreference of [true, false]) {
+  it.effect(
+    `reuses the exact dormant source across both ${respectProjectPreference ? "opted-in" : "forced"} preparations and releases after opt-out`,
+    () =>
+      Effect.gen(function* () {
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const threadId = ThreadId.make(`repeat-preparation-${respectProjectPreference}`);
+        const binding: EventSink.ProviderBindingExpectationV2 = {
+          threadId,
+          providerThreadId: ProviderThreadId.make(
+            `repeat-provider-thread-${respectProjectPreference}`,
+          ),
+          providerSessionId: ProviderSessionId.make(`repeat-session-${respectProjectPreference}`),
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          nativeThreadId: "repeat-native-thread",
+          runtimeGeneration: "actual-repeat-generation",
+        };
+        const runId = RunId.make(`repeat-run-${respectProjectPreference}`);
+        const attemptId = RunAttemptId.make(`repeat-attempt-${respectProjectPreference}`);
+        const projectId = ProjectId.make("repeat-project");
+        const projection = {
+          thread: {
+            id: threadId,
+            projectId,
+            providerInstanceId: binding.instanceId,
+            activeProviderThreadId: binding.providerThreadId,
+            modelSelection: { instanceId: binding.instanceId },
+            archivedAt: null,
+            deletedAt: null,
+          },
+          runs: [
+            {
+              id: runId,
+              activeAttemptId: attemptId,
+              providerThreadId: binding.providerThreadId,
+              providerInstanceId: binding.instanceId,
+              status: "completed",
+              ordinal: 1,
+            },
+          ],
+          attempts: [{ id: attemptId, runId, providerThreadId: binding.providerThreadId }],
+          providerThreads: [
+            {
+              id: binding.providerThreadId,
+              appThreadId: threadId,
+              ownerNodeId: null,
+              providerSessionId: binding.providerSessionId,
+              providerInstanceId: binding.instanceId,
+              driver: binding.driver,
+              nativeThreadRef: {
+                driver: binding.driver,
+                nativeId: binding.nativeThreadId,
+                strength: "strong",
+              },
+              status: "idle",
+            },
+          ],
+          providerSessions: [
+            {
+              id: binding.providerSessionId,
+              providerInstanceId: binding.instanceId,
+              driver: binding.driver,
+              status: "ready",
+            },
+          ],
+          providerTurns: [],
+          nodes: [],
+          subagents: [],
+          messages: [],
+          runtimeRequests: [],
+          turnItems: [],
+        } as unknown as ProjectionStore.ProjectionRuntimeRecoveryState;
+        let preferences = yield* ServerSettings.ServerSettingsService.pipe(
+          Effect.flatMap((service) => service.getSettings),
+          Effect.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true })),
+        );
+        let marker: EventSink.RestartContinuationMarkerV2 | null = null;
+        let observing = 0;
+        let allocations = 0;
+        let releases = 0;
+        let afterTrial = false;
+        const layer = ProviderRuntimeRecovery.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.mock(ServerSettings.ServerSettingsService)({
+                getSettings: Effect.sync(() => preferences),
+              }),
+              IdAllocator.layer,
+              Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+                observeCurrentThreadRuntime: () =>
+                  Effect.sync(() => {
+                    observing++;
+                    return {
+                      status: "monitoring" as const,
+                      observedAt: now,
+                      binding: {
+                        threadId,
+                        providerThreadId: binding.providerThreadId,
+                        providerSessionId: binding.providerSessionId,
+                        instanceId: binding.instanceId,
+                        runtimeGeneration: "actual-repeat-generation",
+                        nativeThreadId: "repeat-native-thread",
+                      },
+                    };
+                  }),
+              }),
+              Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                getRecoveryThreadIds: () => Effect.sync(() => (afterTrial ? [] : [threadId])),
+                getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+              }),
+              Layer.mock(EventSink.EventSinkV2)({
+                readProviderRuntimeEvidence: () =>
+                  Effect.succeed({
+                    binding,
+                    evidenceRevision: 3,
+                    observation: null,
+                    registeredAt: now,
+                  }),
+                findDormantRestartContinuation: (input) =>
+                  Effect.sync(() => {
+                    assert.deepEqual(input, {
+                      threadId,
+                      projectId,
+                      sourceRunId: runId,
+                      sourceRunAttemptId: attemptId,
+                      expectedBinding: binding,
+                      expectedEvidenceRevision: 3,
+                    });
+                    return marker;
+                  }),
+                prepareRestartContinuation: (input) =>
+                  Effect.gen(function* () {
+                    allocations++;
+                    const markerId =
+                      typeof input.markerId === "string" ? input.markerId : yield* input.markerId;
+                    marker = {
+                      markerId,
+                      threadId,
+                      projectId,
+                      sourceRunId: runId,
+                      sourceRunAttemptId: attemptId,
+                      binding,
+                      evidenceRevision: 3,
+                      createdAt: now,
+                    };
+                    return marker;
+                  }),
+                readLegacyContinuationDisposition: () => Effect.succeed(null),
+                readNativeCommandFacts: ({ commandId }) =>
+                  Effect.succeed({ commitSnapshot: { threadId, commandId } } as never),
+                releaseRestartContinuation: (input) =>
+                  Effect.gen(function* () {
+                    assert.strictEqual(input.marker, marker);
+                    // The store reports any failed post-trial revalidation as unqualified.
+                    yield* input.revalidateAfterTrial.pipe(
+                      Effect.mapError(
+                        () =>
+                          new EventSink.RestartContinuationMarkerError({
+                            reason: "qualification_unavailable",
+                          }),
+                      ),
+                    );
+                    releases++;
+                    return true;
+                  }),
+                writeWithEffects: () =>
+                  Effect.die("Preparing a marker must not dispatch a runnable continuation."),
+              }),
+              Layer.mock(EffectOutbox.EffectOutboxV2)({
+                listHeldByThreadId: () => Effect.succeed([]),
+                reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+                reconcileAfterProcessLossExcluding: () =>
+                  Effect.succeed({ requeued: 0, cancelled: 0 }),
+              }),
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+          const first = yield* recovery.prepareForServerUpdate({ respectProjectPreference });
+          const second = yield* recovery.prepareForServerUpdate({ respectProjectPreference });
+          assert.lengthOf(first, 1);
+          assert.lengthOf(second, 1);
+          assert.strictEqual(second[0], first[0]);
+          assert.equal(observing, 1);
+          assert.equal(allocations, 1);
+          preferences = { ...preferences, continueThreadsAfterServerUpdate: false };
+          afterTrial = true;
+          const released = yield* recovery.reconcileAfterStartupTrial({
+            continuationMarkers: second,
+          });
+          assert.deepEqual(released.releasedContinuationMarkerIds, [first[0]!.markerId]);
+          assert.equal(releases, 1);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+}
+
+for (const changed of [false, true]) {
+  it.effect(
+    `post-trial continuation ${changed ? "holds a changed source without synthesizing a fresh run" : "rechecks the exact source inside release"}`,
+    () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`post-trial-source-${changed}`);
+        const binding: EventSink.ProviderBindingExpectationV2 = {
+          threadId,
+          providerThreadId: ProviderThreadId.make(`post-trial-provider-thread-${changed}`),
+          providerSessionId: ProviderSessionId.make(`post-trial-session-${changed}`),
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          nativeThreadId: "post-trial-native-thread",
+          runtimeGeneration: "prior-actual-incarnation",
+        };
+        const marker: EventSink.RestartContinuationMarkerV2 = {
+          markerId: `post-trial-marker-${changed}`,
+          threadId,
+          projectId: ProjectId.make("post-trial-project"),
+          sourceRunId: RunId.make("post-trial-run"),
+          sourceRunAttemptId: RunAttemptId.make("post-trial-attempt"),
+          binding,
+          evidenceRevision: 3,
+          createdAt: DateTime.formatIso(now),
+        };
+        const projection = {
+          thread: {
+            id: threadId,
+            projectId: marker.projectId,
+            activeProviderThreadId: binding.providerThreadId,
+            modelSelection: { instanceId: binding.instanceId },
+            archivedAt: null,
+            deletedAt: null,
+          },
+          runs: [
+            {
+              id: marker.sourceRunId,
+              activeAttemptId: marker.sourceRunAttemptId,
+              providerThreadId: binding.providerThreadId,
+              providerInstanceId: binding.instanceId,
+              status: "completed",
+              ordinal: 1,
+            },
+          ],
+          attempts: [
+            {
+              id: marker.sourceRunAttemptId,
+              runId: marker.sourceRunId,
+              providerThreadId: binding.providerThreadId,
+            },
+          ],
+          providerThreads: [
+            {
+              id: binding.providerThreadId,
+              appThreadId: threadId,
+              providerSessionId: binding.providerSessionId,
+              providerInstanceId: binding.instanceId,
+              driver: binding.driver,
+              nativeThreadRef: { nativeId: binding.nativeThreadId },
+              status: "idle",
+            },
+          ],
+          nodes: [],
+          subagents: [],
+          messages: [],
+          providerSessions: [],
+          providerTurns: [],
+          runtimeRequests: [],
+          turnItems: [],
+        } as unknown as ProjectionStore.ProjectionRuntimeRecoveryState;
+        const snapshot = {
+          commandId: `command:restart-continuation:${marker.markerId}`,
+          threadId,
+        } as unknown as EventSink.NativeCommandTargetSnapshotV2;
+        let projectionReads = 0;
+        let releases = 0;
+        let factsReads = 0;
+        const layer = ProviderRuntimeRecovery.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+              IdAllocator.layer,
+              Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+              Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                getRecoveryThreadIds: () => Effect.succeed([]),
+                getRuntimeRecoveryProjection: () =>
+                  Effect.sync(() => {
+                    projectionReads++;
+                    return projection;
+                  }),
+              }),
+              Layer.mock(EventSink.EventSinkV2)({
+                readProviderRuntimeEvidence: () =>
+                  Effect.succeed({
+                    binding,
+                    evidenceRevision: changed ? 4 : 3,
+                    observation: null,
+                    registeredAt: DateTime.formatIso(now),
+                  }),
+                readLegacyContinuationDisposition: () => Effect.succeed(null),
+                readNativeCommandFacts: () =>
+                  Effect.sync(() => {
+                    factsReads++;
+                    return { commitSnapshot: snapshot } as never;
+                  }),
+                releaseRestartContinuation: (input) =>
+                  Effect.gen(function* () {
+                    releases++;
+                    assert.strictEqual(input.marker, marker);
+                    assert.strictEqual(input.currentSnapshot, snapshot);
+                    // The store reports any failed post-trial revalidation as unqualified.
+                    yield* input.revalidateAfterTrial.pipe(
+                      Effect.mapError(
+                        () =>
+                          new EventSink.RestartContinuationMarkerError({
+                            reason: "qualification_unavailable",
+                          }),
+                      ),
+                    );
+                    return true;
+                  }),
+                commitCommand: () =>
+                  Effect.die(
+                    "Post-trial marker qualification must not synthesize a replacement source.",
+                  ),
+              }),
+              Layer.mock(EffectOutbox.EffectOutboxV2)({
+                listHeldByThreadId: () => Effect.succeed([]),
+                reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+              }),
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const result =
+            yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).reconcileAfterStartupTrial(
+              { continuationMarkers: [marker] },
+            );
+          assert.deepEqual(result.releasedContinuationMarkerIds, changed ? [] : [marker.markerId]);
+          assert.equal(result.heldContinuationMarkers.length, changed ? 1 : 0);
+          if (changed) assert.strictEqual(result.heldContinuationMarkers[0]?.marker, marker);
+          assert.equal(releases, changed ? 0 : 1);
+          assert.equal(factsReads, changed ? 0 : 1);
+          assert.equal(projectionReads, changed ? 1 : 2);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+}
+
+for (const transient of [true, false]) {
+  it.effect(
+    `bounds ${transient ? "transient" : "deterministic"} recovery reads while excluding failed threads from outbox reconciliation`,
+    () => {
+      const failed = ThreadId.make(`failed-recovery-read-${transient}`);
+      const later = ThreadId.make(`later-recovery-read-${transient}`);
+      let failedReads = 0;
+      let laterReads = 0;
+      let excluded: ReadonlyArray<ThreadId> = [];
+      const error = new ProjectionStore.ProjectionStoreReadError({
+        threadId: failed,
+        cause: transient
+          ? new SqlError.SqlError({
+              reason: new SqlError.LockTimeoutError({
+                cause: { code: "SQLITE_BUSY" },
+                operation: "read",
+              }),
+            })
+          : new SqlError.SqlError({
+              reason: new SqlError.SqlSyntaxError({ cause: null, operation: "read" }),
+            }),
+      });
+      const layer = ProviderRuntimeRecovery.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ServerSettings.layerTest(),
+            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getRecoveryThreadIds: () => Effect.succeed([failed, later]),
+              getRuntimeRecoveryProjection: (threadId) =>
+                Effect.suspend(() => {
+                  if (threadId === failed) {
+                    failedReads++;
+                    return Effect.fail(error);
+                  }
+                  laterReads++;
+                  return Effect.succeed({
+                    thread: { id: later },
+                    runs: [],
+                    attempts: [],
+                    nodes: [],
+                    subagents: [],
+                    messages: [],
+                    providerSessions: [],
+                    providerThreads: [],
+                    providerTurns: [],
+                    runtimeRequests: [],
+                    turnItems: [],
+                  } as unknown as ProjectionStore.ProjectionRuntimeRecoveryState);
+                }),
+            }),
+            Layer.mock(EventSink.EventSinkV2)({
+              commitCommand: () => Effect.die("A failed read must not mutate its projection."),
+            }),
+            IdAllocator.layer,
+            Layer.mock(EffectOutbox.EffectOutboxV2)({
+              listHeldByThreadId: () => Effect.succeed([]),
+              cancelUnsettled: () => Effect.succeed([]),
+              signalCancellations: () => Effect.void,
+              reconcileAfterProcessLoss: Effect.die("Failed threads require scoped exclusions."),
+              reconcileAfterProcessLossExcluding: ({ excludeThreadIds }) =>
+                Effect.sync(() => {
+                  excluded = excludeThreadIds;
+                  return { requeued: 2, cancelled: 3 };
+                }),
+            }),
+          ),
+        ),
+      );
+      return Effect.gen(function* () {
+        const result = yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService)
+          .recover;
+        assert.equal(failedReads, transient ? 2 : 1);
+        assert.equal(laterReads, 1);
+        assert.deepEqual(result.failedThreadIds, [failed]);
+        assert.deepEqual(excluded, [failed]);
+        assert.equal(result.requeuedEffects, 2);
+        assert.equal(result.retiredEffects, 3);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+}
+
+it.effect("does not retry or suppress a recovery read defect", () => {
+  const threadId = ThreadId.make("defective-recovery-read");
+  let reads = 0;
+  const layer = ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        ServerSettings.layerTest(),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getRecoveryThreadIds: () => Effect.succeed([threadId]),
+          getRuntimeRecoveryProjection: () =>
+            Effect.suspend(() => {
+              reads++;
+              return Effect.die("Synthetic read defect");
+            }),
+        }),
+        Layer.mock(EventSink.EventSinkV2)({}),
+        Layer.mock(EffectOutbox.EffectOutboxV2)({}),
+        IdAllocator.layer,
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const result =
+      yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).recover.pipe(
+        Effect.exit,
+      );
+    assert.isTrue(Exit.isFailure(result));
+    assert.equal(reads, 1);
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect(
+  "preserves a thread with an unknown native operation through process-loss recovery",
+  () => {
+    const threadId = ThreadId.make("unknown-native-operation-recovery");
+    const projection = {
+      thread: { id: threadId },
+      runs: [{ id: RunId.make("held-run"), status: "running" }],
+      providerSessions: [{ id: ProviderSessionId.make("held-session"), status: "running" }],
+      runtimeRequests: [],
+      providerThreads: [],
+      providerTurns: [],
+      nodes: [],
+      attempts: [],
+      subagents: [],
+      messages: [],
+      turnItems: [],
+    } as unknown as ProjectionStore.ProjectionRuntimeRecoveryState;
+    const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ServerSettings.layerTest(),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([threadId]),
+            getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            commitCommand: () =>
+              Effect.die("Unknown native operations must preserve the projection."),
+          }),
+          IdAllocator.layer,
+          Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listHeldByThreadId: () =>
+              Effect.succeed([
+                {
+                  effectId: "held-effect",
+                  threadId,
+                  workerId: "prior-worker",
+                  operationId: "unknown-operation",
+                  evidence: {
+                    operationId: "unknown-operation",
+                    operation: "start_turn",
+                    outcome: "unknown",
+                  },
+                  expectedAttempt: 5,
+                  heldAt: "2026-10-03T12:00:00Z",
+                },
+              ]),
+            cancelUnsettled: () =>
+              Effect.die("Unknown native operations must preserve their lane hold."),
+            reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+          }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const result = yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).recover;
+      assert.equal(result.terminalizedRuns, 0);
+      assert.equal(result.stoppedSessions, 0);
+      assert.equal(result.retiredEffects, 0);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect("gathers dormant startup preparation without touching projections or outbox", () =>
+  Effect.gen(function* () {
+    const reconciliations = yield* Ref.make(0);
+    const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([]),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            readDormantRestartContinuations: Effect.succeed([]),
+          }),
+          IdAllocator.layer,
+          Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listHeldByThreadId: () => Effect.succeed([]),
+            reconcileAfterProcessLoss: Ref.update(reconciliations, (count) => count + 1).pipe(
+              Effect.as({ requeued: 2, cancelled: 3 }),
+            ),
+          }),
+        ),
+      ),
+    );
+    const summary = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
+      Effect.flatMap((service) => service.stageStartupRecovery),
+      Effect.provide(layer),
+    );
+    assert.deepEqual(summary, { continuationMarkers: [] });
+    assert.equal(yield* Ref.get(reconciliations), 0);
+  }),
+);
 
 it.effect("leaves durable effects for the worker after runtime reconciliation", () =>
   Effect.gen(function* () {
     const runs = yield* Ref.make(0);
     const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -44,6 +611,7 @@ it.effect("leaves durable effects for the worker after runtime reconciliation", 
             ),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listHeldByThreadId: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -59,6 +627,7 @@ it.effect("leaves durable effects for the worker after runtime reconciliation", 
       closedRequests: 0,
       retiredEffects: 0,
       requeuedEffects: 0,
+      failedThreadIds: [],
     });
     assert.equal(yield* Ref.get(runs), 0);
   }),
@@ -71,6 +640,7 @@ it.effect("reads recovery projections only for threads that need runtime recover
   const recoveryThreadId = ThreadId.make("thread_recovery_candidate");
   const projectionReads = vi.fn<(threadId: ThreadId) => void>();
   const layer = ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -106,6 +676,7 @@ it.effect("reads recovery projections only for threads that need runtime recover
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listHeldByThreadId: () => Effect.succeed([]),
           cancelUnsettled: () => Effect.succeed([]),
           signalCancellations: () => Effect.void,
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
@@ -149,6 +720,7 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
     nodes: [],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -162,6 +734,7 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listHeldByThreadId: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -201,6 +774,7 @@ it.effect("preserves async questions across startup and shutdown", () => {
   } as unknown as OrchestrationV2ThreadProjection;
   const commitCommand = vi.fn(() => Effect.die("an async question needs no process-loss write"));
   const layer = ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -214,6 +788,7 @@ it.effect("preserves async questions across startup and shutdown", () => {
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listHeldByThreadId: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           cancelUnsettled: () => Effect.succeed([]),
           signalCancellations: () => Effect.void,
@@ -249,6 +824,7 @@ it.effect("uses the same reconciliation path to cancel runtime requests during s
     nodes: [],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -267,6 +843,7 @@ it.effect("uses the same reconciliation path to cancel runtime requests during s
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listHeldByThreadId: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -332,6 +909,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -353,6 +931,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listHeldByThreadId: () => Effect.succeed([]),
             listByCommandId: () =>
               Effect.succeed([
                 {
@@ -478,6 +1057,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -496,6 +1076,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listHeldByThreadId: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -544,6 +1125,7 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
     turnItems: [],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -562,6 +1144,7 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listHeldByThreadId: () => Effect.succeed([]),
           listByCommandId: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
@@ -619,6 +1202,7 @@ it.effect("holds accepted queued work without cancelling its execution state aft
     turnItems: [],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -637,6 +1221,7 @@ it.effect("holds accepted queued work without cancelling its execution state aft
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listHeldByThreadId: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -729,6 +1314,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -747,6 +1333,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listHeldByThreadId: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -760,6 +1347,7 @@ it.effect(
       assert.equal(summary.stoppedSessions, 1);
       assert.equal(summary.retiredEffects, 2);
       assert.deepEqual(committedInput?.cancelUnsettledEffects?.effectTypes, [
+        "worktree.cleanup",
         "provider-turn.start",
         "provider-turn.interrupt",
         "provider-turn.steer",
@@ -914,6 +1502,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -932,6 +1521,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listHeldByThreadId: () => Effect.succeed([]),
             listByCommandId: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
@@ -1071,6 +1661,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -1089,6 +1680,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listHeldByThreadId: () => Effect.succeed([]),
             listByCommandId: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
@@ -1201,6 +1793,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -1219,6 +1812,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listHeldByThreadId: () => Effect.succeed([]),
             listByCommandId: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),

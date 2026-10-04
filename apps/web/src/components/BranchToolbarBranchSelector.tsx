@@ -1,3 +1,4 @@
+import { useCurrentRuntimeStop } from "../hooks/useCurrentRuntimeStop";
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
 import { ComposerContextLabel } from "./ComposerContextLabel";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
@@ -17,6 +18,7 @@ import {
   useImperativeHandle,
   useMemo,
   useOptimistic,
+  useRef,
   useState,
   useTransition,
   type MouseEvent as ReactMouseEvent,
@@ -47,6 +49,7 @@ import {
   resolveBranchTriggerLabel,
   resolveBranchToolbarPrBranch,
   resolveBranchSelectionTarget,
+  runBranchContextChange,
   resolveBranchToolbarValue,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
@@ -88,6 +91,8 @@ interface BranchToolbarBranchSelectorProps {
   onComposerFocusRequest?: () => void;
 }
 
+class BranchActionInterruptedError extends Error {}
+
 function toBranchActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An error occurred.";
 }
@@ -110,7 +115,7 @@ export function BranchToolbarBranchSelector({
   onComposerFocusRequest,
 }: BranchToolbarBranchSelectorProps) {
   const composerFloatingLayerProps = useComposerMenuProps();
-  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, "thread session stop");
+  const runtimeStop = useCurrentRuntimeStop();
   const updateThreadMetadata = useAtomCommand(
     threadEnvironment.updateMetadata,
     "thread metadata update",
@@ -129,7 +134,6 @@ export function BranchToolbarBranchSelector({
     [environmentId, threadId],
   );
   const serverThread = useThreadShell(threadRef);
-  const serverSession = serverThread?.runtime ?? null;
   const draftThread = useComposerDraftStore((store) =>
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
   );
@@ -164,27 +168,44 @@ export function BranchToolbarBranchSelector({
   // ---------------------------------------------------------------------------
   // Thread branch mutation (colocated — only this component calls it)
   // ---------------------------------------------------------------------------
+  const branchContext = {
+    identity: JSON.stringify([
+      environmentId,
+      threadId,
+      activeThreadId,
+      activeProject?.id,
+      activeProjectCwd,
+      draftId,
+      hasServerThread,
+      forceNewWorktree,
+      effectiveEnvMode,
+      envLocked,
+    ]),
+    branch: activeThreadBranch,
+    worktreePath: activeWorktreePath,
+  };
+  const currentBranchContext = useRef(branchContext);
+  currentBranchContext.current = branchContext;
+  const isMounted = useRef(true);
+  const mountedGeneration = useRef(0);
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+      mountedGeneration.current += 1;
+    };
+  }, []);
+
   const setThreadBranch = useCallback(
-    (branch: string | null, worktreePath: string | null, automatic = false) => {
-      if (!activeThreadId || !activeProject) return;
-      if (serverSession && worktreePath !== activeWorktreePath) {
-        void stopThreadSession({
-          environmentId,
-          input: { threadId: activeThreadId },
-        });
-      }
+    async (branch: string | null, worktreePath: string | null, automatic = false) => {
+      if (!activeThreadId || !activeProject)
+        throw new Error("The thread workspace is unavailable.");
       if (hasServerThread) {
-        void updateThreadMetadata({
+        const result = await updateThreadMetadata({
           environmentId,
-          input: {
-            threadId: activeThreadId,
-            branch,
-            worktreePath,
-          },
+          input: { threadId: activeThreadId, branch, worktreePath },
         });
-      }
-      if (hasServerThread) {
-        onActiveThreadBranchOverrideChange?.(branch);
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
         return;
       }
       const nextDraftEnvMode = resolveDraftEnvModeAfterBranchChange({
@@ -203,17 +224,14 @@ export function BranchToolbarBranchSelector({
     [
       activeThreadId,
       activeProject,
-      serverSession,
       activeWorktreePath,
       hasServerThread,
-      onActiveThreadBranchOverrideChange,
       setDraftThreadContext,
       draftId,
       threadRef,
       environmentId,
       effectiveEnvMode,
       draftThread?.environmentSelection,
-      stopThreadSession,
       updateThreadMetadata,
     ],
   );
@@ -399,100 +417,152 @@ export function BranchToolbarBranchSelector({
     });
   };
 
+  const changeBranchContext = useCallback(
+    async (input: {
+      branch: string;
+      worktreePath: string | null;
+      automatic?: boolean;
+      checkout?: () => Promise<string>;
+    }) => {
+      const capturedContext = currentBranchContext.current;
+      const capturedMountGeneration = mountedGeneration.current;
+      let metadataBranch: string | null = null;
+      const isCurrent = () => {
+        const current = currentBranchContext.current;
+        return (
+          isMounted.current &&
+          mountedGeneration.current === capturedMountGeneration &&
+          current.identity === capturedContext.identity &&
+          ((current.branch === capturedContext.branch &&
+            current.worktreePath === capturedContext.worktreePath) ||
+            (metadataBranch !== null &&
+              current.branch === metadataBranch &&
+              current.worktreePath === input.worktreePath))
+        );
+      };
+      const result = await runBranchContextChange({
+        branch: input.branch,
+        isCurrent,
+        confirmStopped: async () => {
+          if (!hasServerThread && input.checkout === undefined)
+            return { confirmed: true, reason: null };
+          const saved = await runtimeStop.observe(threadRef);
+          if (!isCurrent()) return { confirmed: false, reason: "The thread workspace changed." };
+          if (saved !== null && saved.status !== "stopped") {
+            return { confirmed: false, reason: saved.reason };
+          }
+          const captured = await runtimeStop.capture(threadRef);
+          if (!isCurrent()) return { confirmed: false, reason: "The thread workspace changed." };
+          if (captured.status === "known-stopped") return { confirmed: true, reason: null };
+          if (captured.status === "unavailable")
+            return { confirmed: false, reason: captured.reason };
+          const outcome = await runtimeStop.request(threadRef, captured.target);
+          return { confirmed: outcome.status === "stopped", reason: outcome.reason };
+        },
+        ...(input.checkout ? { checkout: input.checkout } : {}),
+        onCheckout: setOptimisticBranch,
+        updateMetadata: async (branch) => {
+          metadataBranch = branch;
+          await setThreadBranch(branch, input.worktreePath, input.automatic);
+        },
+      });
+      if (result.status === "complete") {
+        if (hasServerThread) onActiveThreadBranchOverrideChange?.(result.branch);
+        return;
+      }
+      if (result.status === "failed" && result.error instanceof BranchActionInterruptedError)
+        return;
+      toastManager.add(
+        stackedThreadToast({
+          type: result.status === "blocked" ? "info" : "error",
+          title:
+            result.status === "partial" || (result.status === "stale" && result.checkoutCompleted)
+              ? "Ref switched; thread workspace update incomplete"
+              : result.status === "blocked"
+                ? "Ref change waiting for runtime stop"
+                : "Failed to change ref",
+          description:
+            result.status === "blocked"
+              ? result.reason
+              : result.status === "stale"
+                ? result.checkoutCompleted
+                  ? "The checkout succeeded, but the thread context changed. Check the workspace before retrying."
+                  : "The thread context changed before the ref could be changed."
+                : toBranchActionErrorMessage(result.error),
+        }),
+      );
+    },
+    [
+      hasServerThread,
+      runtimeStop,
+      threadRef,
+      setOptimisticBranch,
+      setThreadBranch,
+      onActiveThreadBranchOverrideChange,
+    ],
+  );
+
   const selectBranch = (refName: VcsRef) => {
     if (!branchCwd || !activeProjectCwd || isBranchActionPending) return;
-
-    if (isSelectingWorktreeBase) {
-      setThreadBranch(refName.name, null);
-      setIsBranchMenuOpen(false);
-      onComposerFocusRequest?.();
-      return;
-    }
-
     const selectionTarget = resolveBranchSelectionTarget({
       activeProjectCwd,
       activeWorktreePath,
       refName,
     });
-
-    if (selectionTarget.reuseExistingWorktree) {
-      setThreadBranch(refName.name, selectionTarget.nextWorktreePath);
-      setIsBranchMenuOpen(false);
-      onComposerFocusRequest?.();
-      return;
-    }
-
     const selectedBranchName = refName.isRemote
       ? deriveLocalBranchNameFromRemoteRef(refName.name)
       : refName.name;
-
     setIsBranchMenuOpen(false);
     onComposerFocusRequest?.();
-
     runBranchAction(async () => {
-      const previousBranch = resolvedActiveBranch;
-      setOptimisticBranch(selectedBranchName);
-      const checkoutResult = await switchRef({
-        environmentId,
-        input: {
-          cwd: selectionTarget.checkoutCwd,
-          refName: refName.name,
-        },
+      await changeBranchContext({
+        branch:
+          isSelectingWorktreeBase || selectionTarget.reuseExistingWorktree
+            ? refName.name
+            : selectedBranchName,
+        worktreePath: isSelectingWorktreeBase ? null : selectionTarget.nextWorktreePath,
+        ...(!isSelectingWorktreeBase && !selectionTarget.reuseExistingWorktree
+          ? {
+              checkout: async () => {
+                const result = await switchRef({
+                  environmentId,
+                  input: { cwd: selectionTarget.checkoutCwd, refName: refName.name },
+                });
+                if (result._tag === "Failure") {
+                  if (isAtomCommandInterrupted(result)) throw new BranchActionInterruptedError();
+                  throw squashAtomCommandFailure(result);
+                }
+                return refName.isRemote
+                  ? (result.value.refName ?? selectedBranchName)
+                  : selectedBranchName;
+              },
+            }
+          : {}),
       });
-      if (checkoutResult._tag === "Success") {
-        const nextBranchName = refName.isRemote
-          ? (checkoutResult.value.refName ?? selectedBranchName)
-          : selectedBranchName;
-        setOptimisticBranch(nextBranchName);
-        setThreadBranch(nextBranchName, selectionTarget.nextWorktreePath);
-        return;
-      }
-      setOptimisticBranch(previousBranch);
-      if (!isAtomCommandInterrupted(checkoutResult)) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to switch ref.",
-            description: toBranchActionErrorMessage(squashAtomCommandFailure(checkoutResult)),
-          }),
-        );
-      }
     });
   };
 
   const createRef = (rawName: string) => {
     const name = sanitizeNewRefName(rawName);
     if (!branchCwd || !name || isBranchActionPending) return;
-
     setIsBranchMenuOpen(false);
     onComposerFocusRequest?.();
-
     runBranchAction(async () => {
-      const previousBranch = resolvedActiveBranch;
-      setOptimisticBranch(name);
-      const createBranchResult = await createRefMutation({
-        environmentId,
-        input: {
-          cwd: branchCwd,
-          refName: name,
-          switchRef: true,
+      await changeBranchContext({
+        branch: name,
+        worktreePath: activeWorktreePath,
+        checkout: async () => {
+          const result = await createRefMutation({
+            environmentId,
+            input: { cwd: branchCwd, refName: name, switchRef: true },
+          });
+          if (result._tag === "Failure") {
+            if (isAtomCommandInterrupted(result)) throw new BranchActionInterruptedError();
+            throw squashAtomCommandFailure(result);
+          }
+          return result.value.refName;
         },
       });
-      if (createBranchResult._tag === "Success") {
-        setOptimisticBranch(createBranchResult.value.refName);
-        setThreadBranch(createBranchResult.value.refName, activeWorktreePath);
-        return;
-      }
-      setOptimisticBranch(previousBranch);
-      if (!isAtomCommandInterrupted(createBranchResult)) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to create and switch ref.",
-            description: toBranchActionErrorMessage(squashAtomCommandFailure(createBranchResult)),
-          }),
-        );
-      }
     });
   };
 
@@ -515,12 +585,16 @@ export function BranchToolbarBranchSelector({
     ) {
       return;
     }
-    setThreadBranch(worktreeBaseBranchCandidate, null, true);
+    void changeBranchContext({
+      branch: worktreeBaseBranchCandidate,
+      worktreePath: null,
+      automatic: true,
+    });
   }, [
     activeThreadBranch,
     activeWorktreePath,
     effectiveEnvMode,
-    setThreadBranch,
+    changeBranchContext,
     worktreeBaseBranchCandidate,
   ]);
 

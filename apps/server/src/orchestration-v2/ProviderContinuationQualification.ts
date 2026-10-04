@@ -42,7 +42,11 @@ export interface ProviderContinuationAccessibility {
 }
 
 export type ProviderContinuationQualification =
-  | { readonly type: "qualified"; readonly nativeThreadId: string; readonly continuationKey: string }
+  | {
+      readonly type: "qualified";
+      readonly nativeThreadId: string;
+      readonly continuationKey: string;
+    }
   | { readonly type: "unknown" | "unsupported"; readonly reason: string };
 
 const nonempty = (value: string | null | undefined): value is string =>
@@ -71,7 +75,8 @@ export function qualifyProviderContinuation(input: {
       return { type: "unknown", reason: "stopped_proof_mismatch" };
     }
   }
-  if (!nonempty(source.nativeThreadId)) return { type: "unknown", reason: "native_reference_missing" };
+  if (!nonempty(source.nativeThreadId))
+    return { type: "unknown", reason: "native_reference_missing" };
   if (!nonempty(source.driver)) return { type: "unknown", reason: "source_driver_unproved" };
   if (!nonempty(target.continuationKey) || !nonempty(target.driver)) {
     return { type: "unknown", reason: "target_identity_missing" };
@@ -79,8 +84,10 @@ export function qualifyProviderContinuation(input: {
   if (!legacy && !nonempty(source.continuationKey)) {
     return { type: "unknown", reason: "historical_identity_unproved" };
   }
-  if (source.driver !== target.driver) return { type: "unsupported", reason: "driver_incompatible" };
-  if (!target.supportsNativeResume) return { type: "unsupported", reason: "native_resume_unsupported" };
+  if (source.driver !== target.driver)
+    return { type: "unsupported", reason: "driver_incompatible" };
+  if (!target.supportsNativeResume)
+    return { type: "unsupported", reason: "native_resume_unsupported" };
   if (nonempty(source.continuationKey) && source.continuationKey !== target.continuationKey) {
     return { type: "unsupported", reason: "store_incompatible" };
   }

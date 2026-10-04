@@ -4,7 +4,11 @@ import { act, useState, useCallback, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { OrchestrationV2ThreadRuntimeObservation, WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ThreadRuntimeObservation,
+  WorkstreamCommand,
+  WorkstreamReceipt,
+} from "@t3tools/contracts";
 import type { WorkstreamDetailView, WorkstreamListView } from "../../state/workstreams";
 import { WorkstreamCreateForm, WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
 import { SidebarThreadHeader } from "../sidebar/SidebarThreadHeader";
@@ -13,7 +17,14 @@ import { canEditWorkstreams } from "./nativeWorkstreamActions";
 import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
 import { resolveThreadOperatingState } from "@t3tools/client-runtime/state/thread-continuation";
 import { makeThreadFixture } from "../../test-fixtures";
-import { EnvironmentId, ProjectId, ProviderInstanceId, ProviderSessionId, ProviderThreadId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ProviderThreadId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { WorkstreamNativeSidebar } from "./WorkstreamNativeSidebar";
 import { groupNativeThreadsByWorkstream } from "./nativeThreadGrouping";
 import { data, now, placements, reference, thread } from "./nativeWorkstreamActions.fixtures";
@@ -23,13 +34,17 @@ let container: HTMLDivElement;
 const currentOwner = ProviderThreadId.make("native-current-owner");
 const threads: readonly EnvironmentThreadShell[] = [
   makeThreadFixture({
-    environmentId: EnvironmentId.make(thread.environmentId), id: ThreadId.make(thread.id),
-    projectId: ProjectId.make(thread.projectId), title: "First native conversation",
+    environmentId: EnvironmentId.make(thread.environmentId),
+    id: ThreadId.make(thread.id),
+    projectId: ProjectId.make(thread.projectId),
+    title: "First native conversation",
     activeProviderThreadId: currentOwner,
   }),
   makeThreadFixture({
-    environmentId: EnvironmentId.make(thread.environmentId), id: ThreadId.make("unassigned"),
-    projectId: ProjectId.make("another-repo"), title: "Unassigned native conversation",
+    environmentId: EnvironmentId.make(thread.environmentId),
+    id: ThreadId.make("unassigned"),
+    projectId: ProjectId.make("another-repo"),
+    title: "Unassigned native conversation",
     activeProviderThreadId: currentOwner,
   }),
 ];
@@ -750,12 +765,19 @@ describe("Workstream toolbar creation", () => {
   });
 });
 
-const fixtureObservations = new WeakMap<EnvironmentThreadShell, OrchestrationV2ThreadRuntimeObservation>();
+const fixtureObservations = new WeakMap<
+  EnvironmentThreadShell,
+  OrchestrationV2ThreadRuntimeObservation
+>();
 
 function fixtureOperatingState(member: EnvironmentThreadShell) {
-  return resolveThreadOperatingState(member, fixtureObservations.get(member) ?? {
-    status: "unknown", reason: "No current runtime observation in this fixture.",
-  });
+  return resolveThreadOperatingState(
+    member,
+    fixtureObservations.get(member) ?? {
+      status: "unknown",
+      reason: "No current runtime observation in this fixture.",
+    },
+  );
 }
 
 function statusThread(
@@ -774,12 +796,18 @@ function statusThread(
     ...changes,
   };
   if (backgroundStatus !== "unknown") {
-    if (member.activeProviderThreadId === null) throw new Error("Current observation fixture needs its active owner.");
+    if (member.activeProviderThreadId === null)
+      throw new Error("Current observation fixture needs its active owner.");
     fixtureObservations.set(member, {
-      status: backgroundStatus, observedAt: new Date(now).toISOString(),
-      binding: { threadId: member.id, providerThreadId: member.activeProviderThreadId,
+      status: backgroundStatus,
+      observedAt: new Date(now).toISOString(),
+      binding: {
+        threadId: member.id,
+        providerThreadId: member.activeProviderThreadId,
         providerSessionId: ProviderSessionId.make(`current-session:${id}`),
-        instanceId: ProviderInstanceId.make("resident-account"), runtimeGeneration: "fixture-current-generation" },
+        instanceId: ProviderInstanceId.make("resident-account"),
+        runtimeGeneration: "fixture-current-generation",
+      },
     });
   }
   return member;
@@ -800,15 +828,23 @@ describe("Workstream live thread summaries", () => {
     const member = makeThreadFixture({ activeProviderThreadId: currentOwner });
     const failed = { ...member, runtime: { ...member.runtime!, status: "failed" as const } };
     const state = resolveThreadOperatingState(failed, {
-      status: "working", observedAt: "2026-10-03T03:01:13Z",
-      binding: { threadId: failed.id, providerThreadId: currentOwner,
+      status: "working",
+      observedAt: "2026-10-03T03:01:13Z",
+      binding: {
+        threadId: failed.id,
+        providerThreadId: currentOwner,
         providerSessionId: ProviderSessionId.make("failed-foreground-current-session"),
-        instanceId: ProviderInstanceId.make("current-active-account"), runtimeGeneration: "current-generation" },
+        instanceId: ProviderInstanceId.make("current-active-account"),
+        runtimeGeneration: "current-generation",
+      },
     });
     expect(state).toMatchObject({ operating: true, workstreamRunning: true });
-    expect(summarizeWorkstreamThreadStatuses({ groups: [
-      { workstream: data.items[0]!, threads: [failed] },
-    ] }, () => state).get("alpha")).toEqual({ total: 1, running: 1, waiting: 0, failed: 1 });
+    expect(
+      summarizeWorkstreamThreadStatuses(
+        { groups: [{ workstream: data.items[0]!, threads: [failed] }] },
+        () => state,
+      ).get("alpha"),
+    ).toEqual({ total: 1, running: 1, waiting: 0, failed: 1 });
   });
   it("counts current working independently from attention and never counts monitoring as Running", () => {
     const owner = ProviderThreadId.make("workstream-owner");
@@ -816,16 +852,29 @@ describe("Workstream live thread summaries", () => {
     const approval = { ...base, id: "approval" as typeof base.id, hasPendingApprovals: true };
     const monitoring = { ...base, id: "monitoring" as typeof base.id };
     const unknown = { ...base, id: "unknown" as typeof base.id };
-    const state = (member: EnvironmentThreadShell) => resolveThreadOperatingState(member,
-      member === unknown ? { status: "unknown", reason: "unavailable" } : {
-        status: member === monitoring ? "monitoring" : "working", observedAt: "2026-10-03T02:32:29Z",
-        binding: { threadId: member.id, providerThreadId: owner,
-          providerSessionId: ProviderSessionId.make("current-session"),
-          instanceId: ProviderInstanceId.make("current-owner-account"), runtimeGeneration: "current-generation" },
-      });
-    expect(summarizeWorkstreamThreadStatuses({ groups: [
-      { workstream: data.items[0]!, threads: [approval, monitoring, unknown] },
-    ] }, state).get("alpha")).toEqual({ total: 3, running: 1, waiting: 1, failed: 0 });
+    const state = (member: EnvironmentThreadShell) =>
+      resolveThreadOperatingState(
+        member,
+        member === unknown
+          ? { status: "unknown", reason: "unavailable" }
+          : {
+              status: member === monitoring ? "monitoring" : "working",
+              observedAt: "2026-10-03T02:32:29Z",
+              binding: {
+                threadId: member.id,
+                providerThreadId: owner,
+                providerSessionId: ProviderSessionId.make("current-session"),
+                instanceId: ProviderInstanceId.make("current-owner-account"),
+                runtimeGeneration: "current-generation",
+              },
+            },
+      );
+    expect(
+      summarizeWorkstreamThreadStatuses(
+        { groups: [{ workstream: data.items[0]!, threads: [approval, monitoring, unknown] }] },
+        state,
+      ).get("alpha"),
+    ).toEqual({ total: 3, running: 1, waiting: 1, failed: 0 });
   });
   it("matches native row precedence for running, connecting, approval, input, failed and background states", () => {
     const members = [
@@ -840,22 +889,28 @@ describe("Workstream live thread summaries", () => {
       statusThread("ready", "idle"),
     ];
     expect(
-      summarizeWorkstreamThreadStatuses({
-        groups: [{ workstream: data.items[0]!, threads: members }],
-      }, fixtureOperatingState).get("alpha"),
+      summarizeWorkstreamThreadStatuses(
+        {
+          groups: [{ workstream: data.items[0]!, threads: members }],
+        },
+        fixtureOperatingState,
+      ).get("alpha"),
     ).toEqual({ total: 9, running: 3, waiting: 2, failed: 1 });
     expect(
-      summarizeWorkstreamThreadStatuses({
-        groups: [
-          {
-            workstream: data.items[0]!,
-            threads: [
-              statusThread("approval-error", "failed", { hasPendingApprovals: true }),
-              statusThread("input-error", "failed", { hasPendingUserInput: true }),
-            ],
-          },
-        ],
-      }, fixtureOperatingState).get("alpha"),
+      summarizeWorkstreamThreadStatuses(
+        {
+          groups: [
+            {
+              workstream: data.items[0]!,
+              threads: [
+                statusThread("approval-error", "failed", { hasPendingApprovals: true }),
+                statusThread("input-error", "failed", { hasPendingUserInput: true }),
+              ],
+            },
+          ],
+        },
+        fixtureOperatingState,
+      ).get("alpha"),
     ).toEqual({ total: 2, running: 0, waiting: 2, failed: 0 });
   });
 
@@ -863,14 +918,17 @@ describe("Workstream live thread summaries", () => {
     const running = statusThread("same", "running");
     const remote = { ...running, environmentId: EnvironmentId.make("env:other") };
     expect(
-      summarizeWorkstreamThreadStatuses({
-        groups: [
-          {
-            workstream: data.items[0]!,
-            threads: [running, running, remote, statusThread("unknown", null)],
-          },
-        ],
-      }, fixtureOperatingState).get("alpha"),
+      summarizeWorkstreamThreadStatuses(
+        {
+          groups: [
+            {
+              workstream: data.items[0]!,
+              threads: [running, running, remote, statusThread("unknown", null)],
+            },
+          ],
+        },
+        fixtureOperatingState,
+      ).get("alpha"),
     ).toEqual({ total: 3, running: 2, waiting: 0, failed: 0 });
     expect(summarizeWorkstreamThreadStatuses({ groups: [] }).size).toBe(0);
   });

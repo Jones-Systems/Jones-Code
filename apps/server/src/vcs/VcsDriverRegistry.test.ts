@@ -44,7 +44,7 @@ describe("VcsDriverRegistry", () => {
   });
 
   it.effect("caches repository detection for repeated resolves in the same cwd and kind", () => {
-    const calls: VcsProcess.VcsProcessInput[] = [];
+    const calls: VcsProcess.VcsProcessInput<unknown, unknown>[] = [];
     const layer = Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
       Layer.provide(NodeServices.layer),
       Layer.provide(

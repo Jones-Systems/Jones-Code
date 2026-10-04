@@ -1,4 +1,4 @@
-import { isOperatingThread } from "@t3tools/contracts";
+import { useOperatingCount, useThreadOperatingStates } from "../state/threads";
 import { filterSidebarOperatingThreads } from "./Sidebar.logic";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
@@ -467,7 +467,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     [discoveredPorts, navigateToThread, openPreview, threadRef],
   );
   const isThreadRunning = !threadRuntimeCanArchive(thread.runtime);
+  const operatingStates = useThreadOperatingStates();
+  const currentOperatingState = operatingStates.get(threadKey);
   const threadStatus = resolveThreadStatusPill({
+    ...(currentOperatingState === undefined ? {} : { current: currentOperatingState }),
     thread: {
       ...thread,
       lastVisitedAt,
@@ -1274,9 +1277,17 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   // thread-list change).
   const sidebarThreadByKeyRef = useRef(sidebarThreadByKey);
   sidebarThreadByKeyRef.current = sidebarThreadByKey;
+  const operatingStates = useThreadOperatingStates();
   const projectThreads = useMemo(
-    () => filterSidebarOperatingThreads(sidebarThreads, props.activeOnly, isOperatingThread),
-    [sidebarThreads, props.activeOnly],
+    () =>
+      filterSidebarOperatingThreads(
+        sidebarThreads,
+        props.activeOnly,
+        (thread) =>
+          operatingStates.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))
+            ?.operating === true,
+      ),
+    [sidebarThreads, props.activeOnly, operatingStates],
   );
   const projectPreferenceKeys = useMemo(() => projectExpansionPreferenceKeys(project), [project]);
   const projectExpanded = useUiStateStore((state) =>
@@ -1344,7 +1355,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       const lastVisitedAt = lastVisitedAtByThreadKey.get(
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       );
+      const current = operatingStates.get(
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      );
       return resolveThreadStatusPill({
+        ...(current === undefined ? {} : { current }),
         thread: {
           ...thread,
           ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
@@ -1365,7 +1380,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       projectStatus,
       visibleProjectThreads,
     };
-  }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
+  }, [projectThreads, threadLastVisitedAts, threadSortOrder, operatingStates]);
   const pinnedCollapsedThread = useMemo(() => {
     const activeThreadKey = activeRouteThreadKey ?? undefined;
     if (!activeThreadKey || projectExpanded) {
@@ -1396,7 +1411,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       const lastVisitedAt = lastVisitedAtByThreadKey.get(
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       );
+      const current = operatingStates.get(
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      );
       return resolveThreadStatusPill({
+        ...(current === undefined ? {} : { current }),
         thread: {
           ...thread,
           ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
@@ -1436,6 +1455,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     pinnedCollapsedThread,
     projectExpanded,
     projectThreads,
+    operatingStates,
     sidebarThreadPreviewCount,
     threadLastVisitedAts,
     visibleProjectThreads,
@@ -3146,13 +3166,18 @@ export default function LegacySidebar() {
   const allSidebarThreads = useThreadShells();
   const [activeOnly, setActiveOnly] = useState(false);
   const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
-  const activeThreadCount = useMemo(
-    () => allSidebarThreads.filter(isOperatingThread).length,
-    [allSidebarThreads],
-  );
+  const operatingStates = useThreadOperatingStates();
+  const activeThreadCount = useOperatingCount();
   const sidebarThreads = useMemo(
-    () => filterSidebarOperatingThreads(allSidebarThreads, activeOnly, isOperatingThread),
-    [allSidebarThreads, activeOnly],
+    () =>
+      filterSidebarOperatingThreads(
+        allSidebarThreads,
+        activeOnly,
+        (thread) =>
+          operatingStates.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))
+            ?.operating === true,
+      ),
+    [allSidebarThreads, activeOnly, operatingStates],
   );
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);

@@ -20,6 +20,7 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
+  ProviderTurnId,
   RunAttemptId,
   RunId,
   ThreadId,
@@ -52,6 +53,7 @@ import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 
 const isLiveStreamBufferError = Schema.is(LiveStreamBufferError);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -81,6 +83,378 @@ const modelSelection = {
   instanceId: providerInstanceId,
   model: "gpt-5.4",
 } satisfies ModelSelection;
+
+it.effect(
+  "native outbox references survive claim while ordinary request bytes stay unchanged",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const commandId = CommandId.make("command:native-envelope");
+      const runId = RunId.make("run:native-envelope");
+      const id = `effect:${commandId}:provider-turn.start:${runId}`;
+      const nativeCreationExecutionReference = {
+        version: 2 as const,
+        claimId: "claim:native-envelope",
+        stageCommandId: commandId,
+        effectId: id,
+        stage: "native_command" as const,
+      };
+      const native = {
+        id,
+        commandId,
+        threadId: ThreadId.make("thread:native-envelope"),
+        request: { type: "provider-turn.start" as const, runId },
+        nativeCreationExecutionReference,
+      };
+      const ordinary = {
+        id: "effect:ordinary-envelope",
+        commandId: CommandId.make("command:ordinary-envelope"),
+        threadId: ThreadId.make("thread:ordinary-envelope"),
+        request: { type: "terminal.cleanup" as const },
+      };
+      yield* outbox.enqueue([native, ordinary]);
+      const bytes = yield* sql<{
+        readonly payload_json: string;
+      }>`SELECT payload_json FROM orchestration_v2_effect_outbox
+      WHERE effect_id = ${ordinary.id}`;
+      const ordinaryRequestJson = yield* Schema.encodeEffect(
+        Schema.fromJsonString(EffectOutbox.OrchestrationEffectRequestV2),
+      )(ordinary.request).pipe(Effect.orDie);
+      assert.strictEqual(bytes[0]?.payload_json, ordinaryRequestJson);
+      const claimed = Option.getOrThrow(
+        yield* outbox.claimNext({ workerId: "native-worker", leaseDurationMs: 60_000 }),
+      );
+      assert.strictEqual(claimed.id, native.id);
+      assert.deepEqual(claimed.nativeCreationExecutionReference, nativeCreationExecutionReference);
+      yield* outbox.enqueue([native]);
+      const { nativeCreationExecutionReference: removedReference, ...stripped } = native;
+      assert.deepEqual(removedReference, nativeCreationExecutionReference);
+      assert.strictEqual((yield* outbox.enqueue([stripped]).pipe(Effect.result))._tag, "Failure");
+      assert.strictEqual(
+        (yield* outbox
+          .enqueue([
+            {
+              ...native,
+              nativeCreationExecutionReference: {
+                ...nativeCreationExecutionReference,
+                claimId: "other-claim",
+              },
+            },
+          ])
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.deepEqual(
+        Option.getOrThrow(yield* outbox.get(id)).nativeCreationExecutionReference,
+        nativeCreationExecutionReference,
+      );
+    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
+
+it.effect("malformed native outbox envelopes fail without ordinary payload fallback", () =>
+  Effect.gen(function* () {
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const sql = yield* SqlClient.SqlClient;
+    const commandId = CommandId.make("command:invalid-envelope");
+    const runId = RunId.make("run:invalid-envelope");
+    const id = `effect:${commandId}:provider-turn.start:${runId}`;
+    const request = { type: "provider-turn.start" as const, runId };
+    const reference = {
+      version: 2 as const,
+      claimId: "claim:invalid-envelope",
+      stageCommandId: commandId,
+      effectId: id,
+      stage: "native_command" as const,
+    };
+    yield* outbox.enqueue([
+      {
+        id,
+        commandId,
+        threadId: ThreadId.make("thread:invalid-envelope"),
+        request,
+        nativeCreationExecutionReference: reference,
+      },
+    ]);
+    for (const payload of [
+      { request },
+      { nativeCreationExecutionReference: reference },
+      { request, nativeCreationExecutionReference: { ...reference, unexpected: true } },
+      { request: { ...request, unexpected: true }, nativeCreationExecutionReference: reference },
+      { request, nativeCreationExecutionReference: reference, unexpected: true },
+      { request, nativeCreationExecutionReference: { ...reference, effectId: "changed-effect" } },
+      {
+        request,
+        nativeCreationExecutionReference: { ...reference, stageCommandId: "changed-command" },
+      },
+    ]) {
+      const payloadJson = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+        payload,
+      ).pipe(Effect.orDie);
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json = ${payloadJson} WHERE effect_id = ${id}`;
+      assert.strictEqual((yield* outbox.get(id).pipe(Effect.result))._tag, "Failure");
+    }
+    assert.strictEqual(
+      (yield* EffectOutbox.decodeOrchestrationEffectPayloadV2("{invalid-json").pipe(Effect.result))
+        ._tag,
+      "Failure",
+    );
+  }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
+
+it.effect("native outbox enqueue rolls back an earlier row when a later reference is invalid", () =>
+  Effect.gen(function* () {
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const commandId = CommandId.make("command:atomic-envelope");
+    const threadId = ThreadId.make("thread:atomic-envelope");
+    const runId = RunId.make("run:atomic-envelope");
+    const result = yield* outbox
+      .enqueue([
+        {
+          id: "effect:earlier-envelope",
+          commandId,
+          threadId,
+          request: { type: "terminal.cleanup" },
+        },
+        {
+          id: "effect:incorrect-provider-start",
+          commandId,
+          threadId,
+          request: { type: "provider-turn.start", runId },
+          nativeCreationExecutionReference: {
+            version: 2,
+            claimId: "claim:atomic-envelope",
+            stageCommandId: commandId,
+            effectId: "effect:incorrect-provider-start",
+            stage: "native_command",
+          },
+        },
+      ])
+      .pipe(Effect.result);
+    assert.strictEqual(result._tag, "Failure");
+    assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+  }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
+
+it.effect(
+  "process-loss reconciliation preserves excluded threads byte for byte and reconciles unrelated effects",
+  () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const sql = yield* SqlClient.SqlClient;
+      const failedThread = ThreadId.make("thread:unreadable-recovery");
+      const unrelatedThread = ThreadId.make("thread:readable-recovery");
+      const commandId = CommandId.make("command:scoped-recovery");
+      for (const [prefix, threadId] of [
+        ["failed", failedThread],
+        ["unrelated", unrelatedThread],
+      ] as const) {
+        yield* outbox.enqueue([
+          {
+            id: `${prefix}:provider-start`,
+            commandId,
+            threadId,
+            request: { type: "provider-turn.start", runId: RunId.make(`${prefix}:run`) },
+          },
+          { id: `${prefix}:cleanup`, commandId, threadId, request: { type: "terminal.cleanup" } },
+        ]);
+      }
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'running', lease_owner = 'dead-worker',
+      lease_expires_at = '2099-01-01T00:00:00Z', attempt_count = 3, last_error = 'prior-evidence'`;
+      const before =
+        yield* sql`SELECT * FROM orchestration_v2_effect_outbox WHERE thread_id = ${failedThread} ORDER BY effect_id`;
+      assert.deepEqual(
+        yield* outbox.reconcileAfterProcessLossExcluding({
+          excludeThreadIds: [failedThread, failedThread],
+        }),
+        { requeued: 1, cancelled: 1 },
+      );
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_v2_effect_outbox WHERE thread_id = ${failedThread} ORDER BY effect_id`,
+        before,
+      );
+      assert.strictEqual(
+        Option.getOrThrow(yield* outbox.get("unrelated:provider-start")).status,
+        "cancelled",
+      );
+      assert.strictEqual(
+        Option.getOrThrow(yield* outbox.get("unrelated:cleanup")).status,
+        "pending",
+      );
+      assert.deepEqual(yield* outbox.reconcileAfterProcessLoss, { requeued: 1, cancelled: 1 });
+    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
+
+it.effect(
+  "continuation source capture requires a native tuple and preserves exact earlier generations",
+  () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:source-capture");
+      const providerThreadId = ProviderThreadId.make("provider-thread:source-capture");
+      const providerSessionId = ProviderSessionId.make("provider-session:source-capture");
+      const thread = { ...makeThread(threadId, now), activeProviderThreadId: providerThreadId };
+      const providerThread = {
+        id: providerThreadId,
+        driver: providerDriver,
+        providerInstanceId,
+        providerSessionId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "idle" as const,
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: "event:source-capture:birth", thread, now }),
+          {
+            id: EventId.make("event:source-capture:session"),
+            type: "provider-session.attached",
+            threadId,
+            driver: providerDriver,
+            providerInstanceId,
+            occurredAt: now,
+            payload: {
+              id: providerSessionId,
+              driver: providerDriver,
+              providerInstanceId,
+              status: "ready",
+              cwd: "/fixture",
+              model: "fixture-model",
+              capabilities: CodexProviderCapabilitiesV2,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
+            },
+          },
+          {
+            id: EventId.make("event:source-capture:thread"),
+            type: "provider-thread.updated",
+            threadId,
+            driver: providerDriver,
+            providerInstanceId,
+            occurredAt: now,
+            payload: providerThread,
+          },
+        ],
+      });
+      const reserved = {
+        threadId,
+        providerThreadId,
+        providerSessionId,
+        instanceId: providerInstanceId,
+        driver: providerDriver,
+        nativeThreadId: null,
+        runtimeGeneration: null,
+      };
+      const actual = {
+        threadId,
+        providerThreadId,
+        providerSessionId,
+        instanceId: providerInstanceId,
+        runtimeGeneration: "actual-generation-one",
+      };
+      const source = {
+        driverKind: providerDriver,
+        continuationKey: "observed-native-home-one",
+        runtimeGeneration: actual.runtimeGeneration,
+      };
+      const first = yield* sink.registerProviderRuntime({
+        expectedBinding: reserved,
+        expectedEvidenceRevision: 0,
+        actualBinding: actual,
+        actualContinuationSourceIdentity: source,
+      });
+      assert.isTrue(first.committed);
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_v2_provider_continuation_sources`,
+        [],
+      );
+      const oldRegistered = { ...reserved, runtimeGeneration: actual.runtimeGeneration };
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("event:source-capture:native"),
+            type: "provider-thread.updated",
+            threadId,
+            driver: providerDriver,
+            providerInstanceId,
+            occurredAt: now,
+            payload: {
+              ...providerThread,
+              nativeThreadRef: {
+                driver: providerDriver,
+                nativeId: "observed-native-thread",
+                strength: "strong",
+              },
+            },
+          },
+        ],
+      });
+      const bound = { ...oldRegistered, nativeThreadId: "observed-native-thread" };
+      const captured = yield* sink.registerProviderRuntime({
+        expectedBinding: bound,
+        expectedRegisteredBinding: oldRegistered,
+        expectedEvidenceRevision: 1,
+        actualBinding: { ...actual, nativeThreadId: bound.nativeThreadId },
+        actualContinuationSourceIdentity: source,
+      });
+      assert.isTrue(captured.committed);
+      assert.deepEqual(yield* sink.readProviderContinuationSourceIdentity(bound), source);
+      assert.isNull(
+        yield* sink.readProviderContinuationSourceIdentity({
+          ...bound,
+          nativeThreadId: "different-native-thread",
+        }),
+      );
+      const changedKey = yield* sink.registerProviderRuntime({
+        expectedBinding: bound,
+        expectedEvidenceRevision: 2,
+        actualBinding: { ...actual, nativeThreadId: bound.nativeThreadId },
+        actualContinuationSourceIdentity: {
+          ...source,
+          continuationKey: "changed-key-same-generation",
+        },
+      });
+      assert.isFalse(changedKey.committed);
+      assert.strictEqual((yield* sink.readProviderRuntimeEvidence(threadId))?.evidenceRevision, 2);
+      const nextSource = {
+        ...source,
+        continuationKey: "observed-native-home-two",
+        runtimeGeneration: "actual-generation-two",
+      };
+      const replaced = yield* sink.registerProviderRuntime({
+        expectedBinding: bound,
+        expectedEvidenceRevision: 2,
+        actualBinding: {
+          ...actual,
+          nativeThreadId: bound.nativeThreadId,
+          runtimeGeneration: nextSource.runtimeGeneration,
+        },
+        actualContinuationSourceIdentity: nextSource,
+      });
+      assert.isTrue(replaced.committed);
+      assert.deepEqual(yield* sink.readProviderContinuationSourceIdentity(bound), source);
+      assert.deepEqual(
+        yield* sink.readProviderContinuationSourceIdentity({
+          ...bound,
+          runtimeGeneration: nextSource.runtimeGeneration,
+        }),
+        nextSource,
+      );
+      yield* sql`DELETE FROM orchestration_v2_provider_runtime_evidence WHERE thread_id = ${threadId}`;
+      assert.deepEqual(yield* sink.readProviderContinuationSourceIdentity(bound), source);
+    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
 
 function makeThread(threadId: ThreadId, now: DateTime.Utc): OrchestrationV2AppThread {
   return {
@@ -2546,53 +2920,242 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
         const providerThreadId = ProviderThreadId.make("provider-thread:shutdown-prepare");
         const sessionId = ProviderSessionId.make("session:shutdown-prepare");
         const attemptId = RunAttemptId.make("attempt:shutdown-prepare");
-        const projection = {
-          thread: makeThread(threadId, now),
-          runs: [
+        const sink = yield* EventSink.EventSinkV2;
+        const rootNodeId = NodeId.make("node:shutdown-prepare");
+        const providerTurnId = ProviderTurnId.make("provider-turn:shutdown-prepare");
+        const commandId = CommandId.make(`command:restart-prepare:${runId}`);
+        const thread = { ...makeThread(threadId, now), activeProviderThreadId: providerThreadId };
+        yield* sink.write({
+          events: [
+            threadCreatedEvent({ id: "event:shutdown-prepare:thread", thread, now }),
             {
-              id: runId,
-              ordinal: 1,
-              status: "running",
+              id: EventId.make("event:shutdown-prepare:session"),
+              type: "provider-session.attached",
+              threadId,
+              driver: providerDriver,
               providerInstanceId,
-              providerThreadId,
-              activeAttemptId: attemptId,
+              occurredAt: now,
+              payload: {
+                id: sessionId,
+                driver: providerDriver,
+                providerInstanceId,
+                status: "running",
+                cwd: "/synthetic/shutdown",
+                model: modelSelection.model,
+                capabilities: CodexProviderCapabilitiesV2,
+                createdAt: now,
+                updatedAt: now,
+                lastError: null,
+              },
             },
-          ],
-          providerThreads: [
             {
-              id: providerThreadId,
-              appThreadId: threadId,
-              ownerNodeId: null,
-              driver: "codex",
+              id: EventId.make("event:shutdown-prepare:provider-thread"),
+              type: "provider-thread.updated",
+              threadId,
+              driver: providerDriver,
               providerInstanceId,
-              providerSessionId: sessionId,
-              status: "active",
-              nativeThreadRef: {
-                driver: "codex",
-                nativeId: "saved-native-thread",
-                strength: "strong",
+              occurredAt: now,
+              payload: {
+                id: providerThreadId,
+                appThreadId: threadId,
+                ownerNodeId: null,
+                driver: providerDriver,
+                providerInstanceId,
+                providerSessionId: sessionId,
+                status: "active",
+                nativeThreadRef: {
+                  driver: providerDriver,
+                  nativeId: "saved-native-thread",
+                  strength: "strong",
+                },
+                nativeConversationHeadRef: null,
+                firstRunOrdinal: 1,
+                lastRunOrdinal: 1,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            },
+            {
+              id: EventId.make("event:shutdown-prepare:run"),
+              type: "run.created",
+              threadId,
+              runId,
+              providerInstanceId,
+              occurredAt: now,
+              payload: {
+                id: runId,
+                threadId,
+                ordinal: 1,
+                status: "running",
+                providerInstanceId,
+                modelSelection,
+                providerThreadId,
+                activeAttemptId: attemptId,
+                rootNodeId,
+                userMessageId: MessageId.make("message:shutdown-prepare"),
+                requestedAt: now,
+                startedAt: now,
+                completedAt: null,
+                checkpointId: null,
+                contextHandoffId: null,
+              },
+            },
+            {
+              id: EventId.make("event:shutdown-prepare:attempt"),
+              type: "run-attempt.created",
+              threadId,
+              runId,
+              providerInstanceId,
+              occurredAt: now,
+              payload: {
+                id: attemptId,
+                runId,
+                attemptOrdinal: 1,
+                rootNodeId,
+                providerInstanceId,
+                providerThreadId,
+                providerTurnId,
+                reason: "initial",
+                status: "running",
+                startedAt: now,
+                completedAt: null,
+              },
+            },
+            {
+              id: EventId.make("event:shutdown-prepare:turn"),
+              type: "provider-turn.updated",
+              threadId,
+              runId,
+              providerInstanceId,
+              occurredAt: now,
+              payload: {
+                id: providerTurnId,
+                providerThreadId,
+                nodeId: rootNodeId,
+                runAttemptId: attemptId,
+                nativeTurnRef: {
+                  driver: providerDriver,
+                  nativeId: "saved-native-turn",
+                  strength: "strong",
+                },
+                ordinal: 1,
+                status: "running",
+                startedAt: now,
+                completedAt: null,
               },
             },
           ],
-          providerSessions: [
-            { id: sessionId, driver: "codex", providerInstanceId, status: "running" },
-          ],
-          providerTurns: [{ providerThreadId, runAttemptId: attemptId, status: "running" }],
-        } as unknown as OrchestrationV2ThreadProjection;
+        });
+        const reservedBinding = {
+          threadId,
+          providerThreadId,
+          providerSessionId: sessionId,
+          instanceId: providerInstanceId,
+          driver: providerDriver,
+          nativeThreadId: "saved-native-thread",
+          runtimeGeneration: null,
+        };
+        const runtimeBinding = {
+          threadId,
+          providerThreadId,
+          providerSessionId: sessionId,
+          instanceId: providerInstanceId,
+          nativeThreadId: "saved-native-thread",
+          runtimeGeneration: "synthetic-shutdown-generation",
+        };
+        const registered = yield* sink.registerProviderRuntime({
+          expectedBinding: reservedBinding,
+          expectedEvidenceRevision: 0,
+          actualBinding: runtimeBinding,
+          expectedRunId: runId,
+          expectedRunAttemptId: attemptId,
+          actualContinuationSourceIdentity: {
+            driverKind: providerDriver,
+            continuationKey: "synthetic-shutdown-native-store",
+            runtimeGeneration: runtimeBinding.runtimeGeneration,
+          },
+        });
+        assert.isTrue(registered.committed);
+        const binding = { ...reservedBinding, runtimeGeneration: runtimeBinding.runtimeGeneration };
+        const observation = {
+          status: "working" as const,
+          binding: runtimeBinding,
+          observedAt: DateTime.formatIso(now),
+        };
+        const observed = yield* sink.writeIfProviderBindingCurrent({
+          expectedBinding: binding,
+          expectedEvidenceRevision: registered.evidenceRevision,
+          expectedRunId: runId,
+          expectedRunAttemptId: attemptId,
+          observation,
+          events: [],
+        });
+        assert.isTrue(observed.committed);
+        const observationCount = yield* Ref.make(0);
         const recovery = yield* ProviderRuntimeRecovery.make.pipe(
           Effect.provide(
             Layer.mergeAll(
               ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
-              Layer.mock(ProjectionStore.ProjectionStoreV2)({
-                getRecoveryThreadIds: () => Effect.succeed([threadId]),
-                getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+              Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+                observeCurrentThreadRuntime: (requestedThreadId) =>
+                  Effect.gen(function* () {
+                    assert.strictEqual(requestedThreadId, threadId);
+                    yield* Ref.update(observationCount, (count) => count + 1);
+                    return observation;
+                  }),
               }),
-              Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
             ),
           ),
         );
+        const sequenceBefore = yield* sink.latestSequence({ threadId });
         yield* recovery.prepareForShutdown;
+        const firstStage = yield* recovery.stageStartupRecovery;
         yield* recovery.prepareForShutdown;
+        const retryStage = yield* recovery.stageStartupRecovery;
+        assert.lengthOf(firstStage.continuationMarkers, 1);
+        assert.deepEqual(retryStage, firstStage);
+        assert.strictEqual(yield* Ref.get(observationCount), 1);
+        const marker = firstStage.continuationMarkers[0]!;
+        assert.strictEqual(marker.sourceRunId, runId);
+        assert.strictEqual(marker.sourceRunAttemptId, attemptId);
+        assert.deepEqual(marker.binding, binding);
+        assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+        const facts = yield* sink.readNativeCommandFacts({ threadId, commandId });
+        const trialCommitted = yield* Ref.make(false);
+        const revalidateAfterTrial = Effect.gen(function* () {
+          if (!(yield* Ref.get(trialCommitted))) return yield* Effect.fail("trial not committed");
+          const current = yield* sink.readProviderRuntimeEvidence(threadId);
+          assert.deepEqual(current?.binding, marker.binding);
+          assert.strictEqual(current?.evidenceRevision, marker.evidenceRevision);
+        });
+        const beforeTrial = yield* sink
+          .releaseRestartContinuation({
+            marker,
+            currentSnapshot: facts.commitSnapshot,
+            revalidateAfterTrial,
+          })
+          .pipe(Effect.result);
+        assert.strictEqual(beforeTrial._tag, "Failure");
+        assert.deepEqual(yield* recovery.stageStartupRecovery, firstStage);
+        assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+        yield* Ref.set(trialCommitted, true);
+        assert.isTrue(
+          yield* sink.releaseRestartContinuation({
+            marker,
+            currentSnapshot: facts.commitSnapshot,
+            revalidateAfterTrial,
+          }),
+        );
+        assert.isFalse(
+          yield* sink.releaseRestartContinuation({
+            marker,
+            currentSnapshot: facts.commitSnapshot,
+            revalidateAfterTrial,
+          }),
+        );
+        assert.strictEqual(yield* sink.latestSequence({ threadId }), sequenceBefore);
         const effects = yield* outbox.listByCommandId(
           CommandId.make(`command:restart-prepare:${runId}`),
         );
@@ -2602,13 +3165,13 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
           type: "provider-runtime.continue",
           sourceRunId: runId,
         });
-        // This fixture shares the database; settle its intent before later claim tests.
+        // Settle this fixture's continuation before its database layer closes.
         yield* outbox.cancelUnsettled({
           threadId,
           effectTypes: ["provider-runtime.continue"],
           reason: "fixture complete",
         });
-      }),
+      }).pipe(Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("leaves restart continuation pending until normal worker claims are enabled", () =>
@@ -2784,7 +3347,12 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
       );
 
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-        Effect.provide(ServerSettings.layerTest()),
+        Effect.provide(
+          Layer.mergeAll(
+            ServerSettings.layerTest(),
+            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+          ),
+        ),
         Effect.provideService(
           EffectWorker.OrchestrationEffectWorkerV2,
           EffectWorker.OrchestrationEffectWorkerV2.of({
@@ -3006,7 +3574,12 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
       });
 
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-        Effect.provide(ServerSettings.layerTest()),
+        Effect.provide(
+          Layer.mergeAll(
+            ServerSettings.layerTest(),
+            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+          ),
+        ),
         Effect.provideService(
           EffectWorker.OrchestrationEffectWorkerV2,
           EffectWorker.OrchestrationEffectWorkerV2.of({

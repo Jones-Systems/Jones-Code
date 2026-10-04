@@ -212,9 +212,8 @@ export function ThreadRelationshipsPanel(props: {
     readonly threadKey: string;
     readonly state: CurrentThreadRuntimeStopState;
   } | null>(null);
-  const currentDetachState = detachResult?.threadKey === scopedThreadKey(ref)
-    ? detachResult.state
-    : null;
+  const currentDetachState =
+    detachResult?.threadKey === scopedThreadKey(ref) ? detachResult.state : null;
   const latestMergeBackRun = projection === null ? null : resolveLatestMergeBackRun(projection);
   const mergeTargetThreadId = resolveMergeBackTargetThreadId(projection);
   const relationshipRows = useMemo(
@@ -229,8 +228,8 @@ export function ThreadRelationshipsPanel(props: {
   );
   const canMerge = mergeTargetThreadId !== null && latestMergeBackRun !== null;
   const canDetach = projection ? canDetachThreadProviderSession(projection) : false;
-  const canCheckDetach = currentDetachState?.status === "pending" ||
-    currentDetachState?.status === "unknown";
+  const canCheckDetach =
+    currentDetachState?.status === "pending" || currentDetachState?.status === "unknown";
 
   const {
     related = [],
@@ -295,13 +294,18 @@ export function ThreadRelationshipsPanel(props: {
       const captured = await runtimeStop.capture(ref);
       if (captured.status === "known-stopped") {
         showResult({
-          status: "stopped", commandAccepted: false, queueFenceInstalled: false, reason: null,
+          status: "stopped",
+          commandAccepted: false,
+          queueFenceInstalled: false,
+          reason: null,
         });
         return;
       }
       if (captured.status === "unavailable") {
         showResult({
-          status: "unknown", commandAccepted: false, queueFenceInstalled: false,
+          status: "unknown",
+          commandAccepted: false,
+          queueFenceInstalled: false,
           reason: captured.reason,
         });
         return;
@@ -309,8 +313,13 @@ export function ThreadRelationshipsPanel(props: {
       showResult(await runtimeStop.request(ref, captured.target));
     } catch (error) {
       showResult({
-        status: "unknown", commandAccepted: false, queueFenceInstalled: false,
-        reason: error instanceof Error ? error.message : "Disconnect outcome is unknown. Check the original stop again.",
+        status: "unknown",
+        commandAccepted: false,
+        queueFenceInstalled: false,
+        reason:
+          error instanceof Error
+            ? error.message
+            : "Disconnect outcome is unknown. Check the original stop again.",
       });
     } finally {
       setBusyAction(null);
@@ -346,9 +355,7 @@ export function ThreadRelationshipsPanel(props: {
             <MenuPopup align="end" className="min-w-60 max-w-(--available-width)">
               <MenuItem onClick={() => void detach()}>
                 <UnplugIcon className="size-3.5" />
-                {canCheckDetach
-                  ? "Check disconnect status"
-                  : "Disconnect agent session"}
+                {canCheckDetach ? "Check disconnect status" : "Disconnect agent session"}
               </MenuItem>
             </MenuPopup>
           </Menu>

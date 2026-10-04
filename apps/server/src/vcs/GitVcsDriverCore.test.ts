@@ -3356,3 +3356,160 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
     );
   });
 });
+
+it.effect("revalidates worktree creation after checkout metadata finishes", () =>
+  Effect.gen(function* () {
+    const metadataStarted = yield* Deferred.make<void>();
+    const metadataRelease = yield* Deferred.make<void>();
+    const stale = { _tag: "StaleWorktreeMutation" } as const;
+    let current = true;
+    let mutations = 0;
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.gen(function* () {
+        if (!ChildProcess.isStandardCommand(command))
+          return yield* Effect.die("Expected Git command");
+        if (command.args.includes("checkout.workers")) {
+          return ChildProcessSpawner.makeHandle({
+            ...makeSuccessfulHandle("0"),
+            exitCode: Deferred.succeed(metadataStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(metadataRelease)),
+              Effect.as(ChildProcessSpawner.ExitCode(0)),
+            ),
+          });
+        }
+        if (command.args.includes("add")) mutations++;
+        return makeSuccessfulHandle("");
+      }),
+    );
+    const driver = yield* makeGitVcsDriverCore().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
+    const fiber = yield* driver
+      .createWorktree(
+        { cwd: "/repo", path: "/worktree", refName: "main" },
+        { revalidateMutation: Effect.suspend(() => (current ? Effect.void : Effect.fail(stale))) },
+      )
+      .pipe(Effect.flip, Effect.forkChild);
+    yield* Deferred.await(metadataStarted);
+    assert.equal(mutations, 0);
+    current = false;
+    yield* Deferred.succeed(metadataRelease, undefined);
+    assert.strictEqual(yield* Fiber.join(fiber), stale);
+    assert.equal(mutations, 0);
+  }).pipe(Effect.provide(ServerConfigLayer), Effect.provide(NodeServices.layer)),
+);
+
+it.effect("rejects stale submodule initialization without swallowing its guard failure", () =>
+  Effect.gen(function* () {
+    const stale = new GitCommandError({
+      operation: "guard",
+      command: "guard",
+      cwd: "/worktree",
+      detail: "stale worktree mutation",
+    });
+    let current = true;
+    let checks = 0;
+    const mutations: ReadonlyArray<string>[] = [];
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        if (!ChildProcess.isStandardCommand(command)) return assert.fail("Expected Git command");
+        if (command.args.includes("add") || command.args.includes("update"))
+          mutations.push(command.args);
+        return makeSuccessfulHandle(command.args.includes("checkout.workers") ? "0" : "");
+      }),
+    );
+    const driver = yield* makeGitVcsDriverCore().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(
+        FileSystem.FileSystem,
+        FileSystem.makeNoop({
+          exists: () => Effect.succeed(true),
+        }),
+      ),
+    );
+    const error = yield* driver
+      .createWorktree(
+        { cwd: "/repo", path: "/worktree", refName: "main" },
+        {
+          submodules: "recursive",
+          progress: {
+            onSubmodulesStarted: () =>
+              Effect.sync(() => {
+                current = false;
+              }),
+          },
+          revalidateMutation: Effect.suspend(() => {
+            checks++;
+            return current ? Effect.void : Effect.fail(stale);
+          }),
+        },
+      )
+      .pipe(Effect.flip);
+    assert.strictEqual(error, stale);
+    assert.equal(checks, 2);
+    assert.equal(mutations.length, 1);
+    assert.include(mutations[0]!, "add");
+  }).pipe(Effect.provide(ServerConfigLayer), Effect.provide(NodeServices.layer)),
+);
+
+it.effect("revalidates each worktree mutation and refuses stale repository pruning", () =>
+  Effect.gen(function* () {
+    const stale = { _tag: "StaleRepositoryMutation" } as const;
+    const order: string[] = [];
+    let current = true;
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        if (!ChildProcess.isStandardCommand(command)) return assert.fail("Expected Git command");
+        if (command.args.includes("add")) order.push("add");
+        if (command.args.includes("submodule")) order.push("submodule");
+        if (
+          command.args.includes("config") &&
+          command.args.some((arg) => arg.endsWith("gh-merge-base"))
+        )
+          order.push("configure");
+        if (command.args.includes("prune")) order.push("prune");
+        return makeSuccessfulHandle(command.args.includes("checkout.workers") ? "0" : "");
+      }),
+    );
+    const driver = yield* makeGitVcsDriverCore().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(
+        FileSystem.FileSystem,
+        FileSystem.makeNoop({
+          exists: () => Effect.succeed(true),
+        }),
+      ),
+    );
+    const guard = Effect.suspend(() => {
+      order.push("guard");
+      return current ? Effect.void : Effect.fail(stale);
+    });
+    yield* driver.createWorktree(
+      {
+        cwd: "/repo",
+        path: "/worktree",
+        refName: "main",
+        newRefName: "feature",
+        baseRefName: "main",
+      },
+      { submodules: "recursive", revalidateMutation: guard },
+    );
+    yield* driver.pruneWorktrees({ cwd: "/repo", revalidateMutation: guard });
+    assert.deepStrictEqual(order, [
+      "guard",
+      "add",
+      "guard",
+      "submodule",
+      "guard",
+      "configure",
+      "guard",
+      "prune",
+    ]);
+    current = false;
+    assert.strictEqual(
+      yield* driver.pruneWorktrees({ cwd: "/repo", revalidateMutation: guard }).pipe(Effect.flip),
+      stale,
+    );
+    assert.deepStrictEqual(order.slice(-2), ["prune", "guard"]);
+  }).pipe(Effect.provide(ServerConfigLayer), Effect.provide(NodeServices.layer)),
+);

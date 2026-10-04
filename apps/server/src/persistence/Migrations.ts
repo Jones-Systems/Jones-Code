@@ -81,6 +81,8 @@ import JonesMigration0008 from "./Migrations/008_JonesDeletionWorktreeAdmission.
 import JonesMigration0009 from "./Migrations/009_JonesOrdinaryCheckoutOwnership.ts";
 import JonesMigration0010 from "./Migrations/010_JonesAttachmentCleanup.ts";
 import JonesMigration0011 from "./Migrations/011_JonesOrdinaryCheckoutExecutionLifetime.ts";
+import JonesMigration0012 from "./Migrations/012_JonesImportedApplicationAttachments.ts";
+import JonesMigration0013 from "./Migrations/013_JonesCommandNormalizationWitness.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -178,6 +180,8 @@ const makeForkMigrationLoader = () =>
     "9_OrdinaryCheckoutOwnership": JonesMigration0009,
     "10_AttachmentCleanup": JonesMigration0010,
     "11_OrdinaryCheckoutExecutionLifetime": JonesMigration0011,
+    "12_ImportedApplicationAttachments": JonesMigration0012,
+    "13_CommandNormalizationWitness": JonesMigration0013,
   });
 
 /**

@@ -29,7 +29,6 @@ import {
   type CodexArtifactTemplate,
 } from "@t3tools/client-runtime/codex-artifact-templates";
 import type { ThreadUserInputQuestion } from "@t3tools/client-runtime/state/thread-requests";
-import { presentPendingBackgroundWork } from "@t3tools/client-runtime/state/thread-execution";
 import { resolveSubagentPillSegment } from "@t3tools/client-runtime/state/thread-subagents";
 import {
   formatModelSelectionEffort,
@@ -92,7 +91,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { threadDevicePreviews } from "../devices/threadDevicePreviews";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { scopedThreadKey } from "../../lib/scopedEntities";
-import { threadEnvironment } from "../../state/threads";
+import { threadEnvironment, useThreadOperatingState } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useDelayedStatus } from "../../lib/useDelayedStatus";
 import type {
@@ -124,6 +123,7 @@ import {
   COMPOSER_LAYOUT_TRANSITION,
   COMPOSER_TRANSITION_DURATION_MS,
   ThreadComposer,
+  type ThreadComposerProps,
 } from "./ThreadComposer";
 import { ThreadFeed, type ThreadFeedHistoryControls } from "./ThreadFeed";
 import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
@@ -201,6 +201,7 @@ export interface ThreadDetailScreenProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: (followUp?: ActiveTurnComposerAction) => Promise<MessageId | null>;
+  readonly importedContinuation?: ThreadComposerProps["importedContinuation"];
   readonly onReconnectEnvironment: () => void;
   /** Whether the model picker may offer providers other than this thread's. */
   readonly canSwitchThreadProvider: boolean;
@@ -303,6 +304,7 @@ const USER_INPUT_TOGGLE_TIMING = {
 
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const navigation = useNavigation();
+  const operatingState = useThreadOperatingState(props.selectedThread);
   const deviceState = useEnvironmentQuery(
     deviceEnvironment.state({ environmentId: props.environmentId, input: {} }),
   );
@@ -430,10 +432,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   // One floating pill above the composer: it reads the connection phase while
   // disconnected, the sync state while messages load, then the working timer
   // once the feed is settled.
-  // The shell's roster is the server's post-settlement view of what still runs.
-  const pendingBackgroundWork = presentPendingBackgroundWork(
-    props.selectedThread.pendingBackgroundTasks,
-  );
+  // Background status comes from the current active owner's runtime observation.
   const floatingStatus = ((): FloatingWorkingStatus | null => {
     const connectionStatus = connectionFloatingStatus({
       connectionError: props.connectionError,
@@ -444,7 +443,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     if (connectionStatus !== null) {
       return connectionStatus;
     }
-    if (props.activePendingApproval !== null || props.activePendingUserInput !== null) {
+    if (
+      props.activePendingApproval !== null ||
+      props.activePendingUserInput !== null ||
+      operatingState.foregroundAttention !== null
+    ) {
       return null;
     }
     if (props.creationState?.kind === "preparing") {
@@ -464,16 +467,33 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     if (props.isCompacting && contentPresentationKind === "ready") {
       return { kind: "compacting" };
     }
-    if (props.activeWorkStartedAt !== null && contentPresentationKind === "ready") {
+    if (
+      props.activeWorkStartedAt !== null &&
+      contentPresentationKind === "ready" &&
+      operatingState.foregroundCurrent &&
+      (props.selectedThread.runtime?.status === "starting" ||
+        props.selectedThread.runtime?.status === "running")
+    ) {
       return { kind: "working", startedAt: props.activeWorkStartedAt };
     }
-    if (pendingBackgroundWork !== null && contentPresentationKind === "ready") {
+    if (operatingState.backgroundDisplay !== null && contentPresentationKind === "ready") {
+      const label =
+        operatingState.backgroundDisplay === "working" ? "Background working" : "Monitoring";
       return {
         kind: "waiting",
-        label: pendingBackgroundWork.title,
-        accessibilityLabel: `${pendingBackgroundWork.title}: ${pendingBackgroundWork.items
-          .map((item) => item.label)
-          .join(", ")}`,
+        label,
+        accessibilityLabel: label,
+      };
+    }
+    if (
+      operatingState.backgroundStatus === "unknown" &&
+      props.selectedThread.activeProviderThreadId !== null &&
+      contentPresentationKind === "ready"
+    ) {
+      return {
+        kind: "waiting",
+        label: "Runtime status unknown",
+        accessibilityLabel: "Current runtime status is unavailable",
       };
     }
     return null;
@@ -1327,6 +1347,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       onRemoveDraftImage={props.onRemoveDraftImage}
                       onStopThread={props.onStopThread}
                       onSendMessage={handleSendMessage}
+                      importedContinuation={props.importedContinuation}
                       onShowUsageLimits={showUsageLimits}
                       canSwitchProvider={props.canSwitchThreadProvider}
                       onUpdateModelSelection={props.onUpdateThreadModelSelection}

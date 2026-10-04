@@ -163,3 +163,37 @@ it("interprets bounded Darwin exact-file writer output without trusting unknown 
     blocked("unavailable"),
   );
 });
+
+it("observes the selected V2 database and sidecars while preserving legacy state", async () => {
+  await fixture(async (baseDir) => {
+    const databasePath = NodePath.join(baseDir, "userdata", "statev2.sqlite");
+    await NodeFSP.writeFile(databasePath, "selected synthetic database");
+    await NodeFSP.writeFile(`${databasePath}-wal`, "selected synthetic WAL");
+    await NodeFSP.writeFile(`${databasePath}-shm`, "selected synthetic shared memory");
+    let observed: string[] = [];
+    await proveQualifiedStateQuiescence({
+      baseDir,
+      databasePath,
+      adapter: {
+        scan: async (input) => {
+          observed = input.files.map((file) => file.path);
+          return [];
+        },
+      },
+    });
+    assert.includeMembers(observed, [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]);
+    assert.notInclude(observed, NodePath.join(baseDir, "userdata", "state.sqlite"));
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(baseDir, "userdata", "state.sqlite"), "utf8"),
+      "synthetic database",
+    );
+    await NodeAssert.rejects(
+      proveQualifiedStateQuiescence({
+        baseDir,
+        databasePath,
+        adapter: { scan: async () => [{ pid: 123, path: `${databasePath}-wal` }] },
+      }),
+      blocked("writer-active"),
+    );
+  });
+});

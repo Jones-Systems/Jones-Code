@@ -1,8 +1,24 @@
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
+import {
+  copyProviderEventOrigin,
+  stampProviderEvent,
+  type ProviderEventOrigin,
+  type ProviderEventProducerOrigin,
+} from "../ProviderEventOrigin.ts";
+import {
+  readProviderManagedActorExecution,
+  registerProviderManagedActorProducer,
+  type ProviderManagedActorAdmissionV1,
+  type ProviderManagedActorIssuerV1,
+  type ProviderManagedActorSourceV1,
+  type ProviderManagedActorV1,
+} from "../ProviderManagedActorCompletion.ts";
+import { OrdinaryCheckoutExecutionRefV1 } from "../OrdinaryCheckoutOwnership.ts";
+import { nativeCreationCanonicalJson } from "../NativeCreationPreparation.ts";
 import {
   codexTurnNeedsModelCatalog,
   resolveCodexEffectiveTurnSettings,
@@ -181,6 +197,8 @@ import {
   type ProviderContinuationSourceIdentity,
   type ProviderOwnedRuntimeIdentity,
   type ProviderOwnedRuntimeExitObservation,
+  type ProviderPendingStartStopInput,
+  type ProviderPendingStartStopResult,
   type ProviderRuntimeBinding,
   type ProviderRuntimeObservation,
 } from "../ProviderAdapter.ts";
@@ -762,15 +780,19 @@ export function buildCodexTurnStartParams(input: {
       input.modelSelection,
       "reasoningEffort",
     );
-    const effort = input.effectiveSettings === undefined
-      ? selectedEffort === undefined ? undefined : yield* decodeTurnReasoningEffort(selectedEffort)
-      : input.effectiveSettings.effort;
+    const effort =
+      input.effectiveSettings === undefined
+        ? selectedEffort === undefined
+          ? undefined
+          : yield* decodeTurnReasoningEffort(selectedEffort)
+        : input.effectiveSettings.effort;
     const model = input.effectiveSettings?.model ?? input.modelSelection.model;
     const serviceTier =
-      input.effectiveSettings !== undefined ? input.effectiveSettings.serviceTier
-      : input.omitServiceTier === true
-        ? undefined
-        : getCodexServiceTierOptionValue(input.modelSelection);
+      input.effectiveSettings !== undefined
+        ? input.effectiveSettings.serviceTier
+        : input.omitServiceTier === true
+          ? undefined
+          : getCodexServiceTierOptionValue(input.modelSelection);
     const developerInstructions =
       input.hasT3Mcp !== true
         ? undefined
@@ -1060,7 +1082,13 @@ function codexErrorInfoCode(value: unknown): string | null {
   return Object.keys(value)[0] ?? null;
 }
 
+const NativeCodexEventProducer = Context.Reference<ProviderEventProducerOrigin | undefined>(
+  "t3/orchestration-v2/CodexAdapterV2/NativeEventProducer",
+  { defaultValue: () => undefined },
+);
+
 interface ActiveCodexTurnContext {
+  readonly origin: ProviderEventOrigin;
   latestProviderFailure?: {
     readonly nativeMessage: string;
     readonly failure: OrchestrationV2ProviderFailure;
@@ -1172,6 +1200,7 @@ const isDescendantCodexTurn = (
 };
 
 interface PendingCodexSubagentTurnStarted {
+  readonly producer: ProviderEventProducerOrigin;
   readonly nativeTurnId: string;
   readonly startedAt: DateTime.Utc;
 }
@@ -1239,58 +1268,75 @@ export interface CodexAppServerClientFactoryShape {
     readonly settings: CodexSettings;
     readonly environment: NodeJS.ProcessEnv;
     readonly processAttribution?: ProcessAttribution["Service"];
-    readonly nativeCreationExecution?: NonNullable<ProviderAdapterV2OpenSessionInput["nativeCreationExecution"]>;
-  }) => Effect.Effect<
-    CodexAppServerOwnedClient,
-    ProviderAdapterOpenSessionError,
-    Scope.Scope
-  >;
+    readonly nativeCreationExecution?: NonNullable<
+      ProviderAdapterV2OpenSessionInput["nativeCreationExecution"]
+    >;
+  }) => Effect.Effect<CodexAppServerOwnedClient, ProviderAdapterOpenSessionError, Scope.Scope>;
 }
 
 const captureCodexOwnedProcess = (
   handle: ChildProcessSpawner.ChildProcessHandle,
   input: Parameters<CodexAppServerClientFactoryShape["open"]>[0],
-): CodexOwnedProcess => Object.freeze({
-  instanceId: input.instanceId,
-  providerSessionId: input.providerSessionId,
-  runtimeGeneration: input.runtimeGeneration,
-  handleToken: randomUUID(),
-  pid: Number(handle.pid),
-  handle,
-});
+): CodexOwnedProcess =>
+  Object.freeze({
+    instanceId: input.instanceId,
+    providerSessionId: input.providerSessionId,
+    runtimeGeneration: input.runtimeGeneration,
+    handleToken: NodeCrypto.randomUUID(),
+    pid: Number(handle.pid),
+    handle,
+  });
 
 const authorizeCodexNativeCreation = (
   execution: ProviderAdapterV2OpenSessionInput["nativeCreationExecution"],
-) => execution === undefined ? Effect.void
-  : authorizeNativeCreationExecution(execution.context, {
-      stage: "native_command", resources: execution.resources,
-    }).pipe(Effect.asVoid);
+) =>
+  execution === undefined
+    ? Effect.void
+    : authorizeNativeCreationExecution(execution.context, {
+        stage: "native_command",
+        resources: execution.resources,
+      }).pipe(Effect.asVoid);
 
 const authorizeCodexNativeRequest = (
   execution: ProviderAdapterV2OpenSessionInput["nativeCreationExecution"],
   method: string,
-) => authorizeCodexNativeCreation(execution).pipe(
-  Effect.mapError((cause) => CodexErrors.CodexAppServerRequestError.internalError(
-    "Native creation authorization rejected the Codex operation", undefined,
-    { method, operation: "handle-request", cause },
-  )),
-);
+) =>
+  authorizeCodexNativeCreation(execution).pipe(
+    Effect.mapError((cause) =>
+      CodexErrors.CodexAppServerRequestError.internalError(
+        "Native creation authorization rejected the Codex operation",
+        undefined,
+        { method, operation: "handle-request", cause },
+      ),
+    ),
+  );
 
 const authorizeCodexNativeMutation = (
   execution: ProviderAdapterV2OpenSessionInput["nativeCreationExecution"],
   method: string,
   directory: string | undefined,
-) => authorizeProviderNativeCreation(execution, CODEX_PROVIDER, directory).pipe(
-  Effect.mapError((cause) => CodexErrors.CodexAppServerRequestError.internalError(
-    "Native creation authorization rejected the Codex mutation", undefined,
-    { method, operation: "handle-request", cause },
-  )),
-);
+) =>
+  authorizeProviderNativeCreation(execution, CODEX_PROVIDER, directory).pipe(
+    Effect.mapError((cause) =>
+      CodexErrors.CodexAppServerRequestError.internalError(
+        "Native creation authorization rejected the Codex mutation",
+        undefined,
+        { method, operation: "handle-request", cause },
+      ),
+    ),
+  );
 
-const codexNativeReplyDirectory = (threadDirectory: unknown, directory?: unknown, requireDirectory = false): string | undefined =>
-  typeof threadDirectory === "string" && threadDirectory.trim().length > 0 &&
+const codexNativeReplyDirectory = (
+  threadDirectory: unknown,
+  directory?: unknown,
+  requireDirectory = false,
+): string | undefined =>
+  typeof threadDirectory === "string" &&
+  threadDirectory.trim().length > 0 &&
   (!requireDirectory || typeof directory === "string") &&
-  (directory === undefined || directory === threadDirectory) ? threadDirectory : undefined;
+  (directory === undefined || directory === threadDirectory)
+    ? threadDirectory
+    : undefined;
 
 export class CodexAppServerClientFactory extends Context.Service<
   CodexAppServerClientFactory,
@@ -1338,7 +1384,11 @@ export function codexThreadRuntimeParams(input: {
 
 const decodeCodexResumeMetadata = Schema.decodeUnknownEffect(
   Schema.Struct({
-    thread: Schema.Struct({ id: Schema.String, updatedAt: Schema.Number, cwd: Schema.optionalKey(Schema.Unknown) }),
+    thread: Schema.Struct({
+      id: Schema.String,
+      updatedAt: Schema.Number,
+      cwd: Schema.optionalKey(Schema.Unknown),
+    }),
     cwd: Schema.optionalKey(Schema.Unknown),
     model: Schema.optionalKey(Schema.NullOr(Schema.String)),
     modelProvider: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -1451,10 +1501,19 @@ const makeCodexAppServerClientFactoryCommandLayer = (
               ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
               ...(options.env === undefined ? {} : { env: options.env, extendEnv: true }),
             });
-            yield* authorizeProviderNativeCreation(input.nativeCreationExecution, CODEX_PROVIDER, command.options.cwd).pipe(
-              Effect.mapError((cause) => new ProviderAdapterOpenSessionError({
-                driver: CODEX_PROVIDER, providerSessionId: input.providerSessionId, cause,
-              })),
+            yield* authorizeProviderNativeCreation(
+              input.nativeCreationExecution,
+              CODEX_PROVIDER,
+              command.options.cwd,
+            ).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterOpenSessionError({
+                    driver: CODEX_PROVIDER,
+                    providerSessionId: input.providerSessionId,
+                    cause,
+                  }),
+              ),
             );
             const handle = yield* spawner.spawn(command).pipe(
               Effect.provideService(Scope.Scope, scope),
@@ -1582,12 +1641,23 @@ export const codexAppServerClientFactoryFromSettingsLayer: Layer.Layer<
               resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
             ),
             env: environment,
-            ...(input.nativeCreationExecution === undefined ? {} : { cwd: input.runtimePolicy.cwd ?? undefined }),
+            ...(input.nativeCreationExecution === undefined
+              ? {}
+              : { cwd: input.runtimePolicy.cwd ?? undefined }),
           });
-          yield* authorizeProviderNativeCreation(input.nativeCreationExecution, CODEX_PROVIDER, command.options.cwd).pipe(
-            Effect.mapError((cause) => new ProviderAdapterOpenSessionError({
-              driver: CODEX_PROVIDER, providerSessionId: input.providerSessionId, cause,
-            })),
+          yield* authorizeProviderNativeCreation(
+            input.nativeCreationExecution,
+            CODEX_PROVIDER,
+            command.options.cwd,
+          ).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterOpenSessionError({
+                  driver: CODEX_PROVIDER,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                }),
+            ),
           );
           const handle = yield* spawner.spawn(command).pipe(
             Effect.provideService(Scope.Scope, scope),
@@ -1639,8 +1709,15 @@ export type CodexAdapterV2DriverEnv =
 
 export const createCodexAdapterV2 = (
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
-  hooks: Pick<CodexAdapterV2Options,
-    "onUsageLimits" | "resolveRuntime" | "resolveRuntimeForSend" | "readRuntimeRevisionForSend" | "getModelCatalog" | "processAttribution" | "continuationHomeLayout"
+  hooks: Pick<
+    CodexAdapterV2Options,
+    | "onUsageLimits"
+    | "resolveRuntime"
+    | "resolveRuntimeForSend"
+    | "readRuntimeRevisionForSend"
+    | "getModelCatalog"
+    | "processAttribution"
+    | "continuationHomeLayout"
   > = {},
 ) =>
   Effect.gen(function* () {
@@ -1729,7 +1806,11 @@ export interface CodexAdapterV2Options {
   readonly continuationHomeLayout?: CodexHomeLayout;
   readonly getModelCatalog?: () => Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   readonly readRuntimeRevisionForSend?: Effect.Effect<string, ProviderSetupError, Scope.Scope>;
-  readonly resolveRuntimeForSend?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
+  readonly resolveRuntimeForSend?: Effect.Effect<
+    CodexEffectiveRuntime,
+    ProviderSetupError,
+    Scope.Scope
+  >;
   /**
    * Resolves launch settings when each session opens, replacing `settings` and
    * `environment`. Managed ChatGPT sign-in uses it to launch the T3-installed
@@ -1762,32 +1843,46 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
     openSession: (input) =>
       Effect.gen(function* () {
         const scope = yield* Scope.Scope;
-        let runtimeGeneration = input.nativeOperation?.runtimeGeneration ?? randomUUID();
+        let runtimeGeneration = input.nativeOperation?.runtimeGeneration ?? NodeCrypto.randomUUID();
         let replacingRuntime = false;
-        const continuationHomeLayout = adapterOptions.continuationHomeLayout === undefined
-          ? undefined
-          : Object.freeze({ ...adapterOptions.continuationHomeLayout });
+        const continuationHomeLayout =
+          adapterOptions.continuationHomeLayout === undefined
+            ? undefined
+            : Object.freeze({ ...adapterOptions.continuationHomeLayout });
         let continuationSourceIdentity: ProviderContinuationSourceIdentity | undefined;
         const closed = yield* Ref.make(false);
         const runtimeBindings = new Map<string, CodexRuntimeThreadBinding>();
-        const nativeDirectories = new Map<string, {
-          readonly providerThreadId: ProviderThreadId;
-          readonly runtimeGeneration: string;
-          readonly cwd: string;
-        }>();
-        const pendingRuntimeIdentities = new Map<string, {
-          readonly evidence: ReadonlyArray<CodexNativeIdentityEvidence>;
-          readonly overflow: boolean;
-        }>();
+        const nativeDirectories = new Map<
+          string,
+          {
+            readonly providerThreadId: ProviderThreadId;
+            readonly runtimeGeneration: string;
+            readonly cwd: string;
+          }
+        >();
+        const pendingRuntimeIdentities = new Map<
+          string,
+          {
+            readonly evidence: ReadonlyArray<{
+              readonly evidence: CodexNativeIdentityEvidence;
+              readonly producer: ProviderEventProducerOrigin;
+            }>;
+            readonly overflow: boolean;
+          }
+        >();
         let bindingOperationsInFlight = 0;
         let pendingIdentityOverflow = false;
         yield* Effect.addFinalizer(() =>
-          Ref.set(closed, true).pipe(Effect.andThen(Effect.sync(() => {
-            runtimeBindings.clear();
-            nativeDirectories.clear();
-            pendingRuntimeIdentities.clear();
-            continuationSourceIdentity = undefined;
-          }))),
+          Ref.set(closed, true).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                runtimeBindings.clear();
+                nativeDirectories.clear();
+                pendingRuntimeIdentities.clear();
+                continuationSourceIdentity = undefined;
+              }),
+            ),
+          ),
         );
         const operationEvidence = (
           context: ProviderNativeOperationContext | undefined,
@@ -1800,7 +1895,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           outcome: ProviderNativeEffectEvidence["outcome"] = "unknown",
         ): ProviderNativeEffectEvidence => ({
           ...context,
-          operationId: context?.operationId ?? randomUUID(),
+          operationId: context?.operationId ?? NodeCrypto.randomUUID(),
           operation,
           instanceId: adapterOptions.instanceId,
           providerSessionId: input.providerSessionId,
@@ -1808,11 +1903,16 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           ...bounds,
           outcome,
         });
-        const nativeDirectoryFor = (providerThread: OrchestrationV2ProviderThread): string | undefined => {
+        const nativeDirectoryFor = (
+          providerThread: OrchestrationV2ProviderThread,
+        ): string | undefined => {
           const nativeId = providerThread.nativeThreadRef?.nativeId;
-          const evidence = nativeId === undefined ? undefined : nativeDirectories.get(nativeId);
-          return evidence !== undefined && evidence.providerThreadId === providerThread.id && evidence.runtimeGeneration === runtimeGeneration
-            ? evidence.cwd : undefined;
+          const evidence = nativeId == null ? undefined : nativeDirectories.get(nativeId);
+          return evidence !== undefined &&
+            evidence.providerThreadId === providerThread.id &&
+            evidence.runtimeGeneration === runtimeGeneration
+            ? evidence.cwd
+            : undefined;
         };
         const captureNativeDirectory = (
           providerThread: OrchestrationV2ProviderThread,
@@ -1824,23 +1924,39 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               nativeDirectories.delete(previousId);
           }
           if (directory === undefined) nativeDirectories.delete(nativeId);
-          else nativeDirectories.set(nativeId, { providerThreadId: providerThread.id, runtimeGeneration, cwd: directory });
+          else
+            nativeDirectories.set(nativeId, {
+              providerThreadId: providerThread.id,
+              runtimeGeneration,
+              cwd: directory,
+            });
         };
         const requireNativeDirectory = (
           execution: ProviderAdapterV2OpenSessionInput["nativeCreationExecution"],
           directory: string | undefined,
-        ) => execution === undefined || directory === execution.resources.worktreePath ? Effect.void
-          : Effect.fail(toProtocolError("Codex did not confirm the current native target directory."));
+        ) =>
+          execution === undefined || directory === execution.resources.worktreePath
+            ? Effect.void
+            : Effect.fail(
+                toProtocolError("Codex did not confirm the current native target directory."),
+              );
         if (input.beforeRuntimeReplacement !== undefined) {
           yield* input.beforeRuntimeReplacement(runtimeGeneration);
         }
-        const authorizeSessionNativeCreation = authorizeCodexNativeCreation(input.nativeCreationExecution).pipe(
-          Effect.mapError((cause) => new ProviderAdapterOpenSessionError({
-            driver: CODEX_PROVIDER, providerSessionId: input.providerSessionId, cause,
-            nativeEffect: operationEvidence(input.nativeOperation, "open_session", {
-              threadId: input.threadId,
-            }),
-          })),
+        const authorizeSessionNativeCreation = authorizeCodexNativeCreation(
+          input.nativeCreationExecution,
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterOpenSessionError({
+                driver: CODEX_PROVIDER,
+                providerSessionId: input.providerSessionId,
+                cause,
+                nativeEffect: operationEvidence(input.nativeOperation, "open_session", {
+                  threadId: input.threadId,
+                }),
+              }),
+          ),
         );
         if (adapterOptions.resolveRuntime !== undefined) yield* authorizeSessionNativeCreation;
         let resolvedRuntime =
@@ -1864,41 +1980,47 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         let incarnationScope = yield* Scope.make();
         yield* Effect.addFinalizer((exit) => Scope.close(incarnationScope, exit));
         let initializationExecution = input.nativeCreationExecution;
-        let client = yield* clientFactory.open({
-          instanceId: adapterOptions.instanceId,
-          threadId: input.threadId,
-          providerSessionId: input.providerSessionId,
-          runtimePolicy: input.runtimePolicy,
-          runtimeGeneration,
-          settings: launchSettings,
-          environment: resolvedRuntime?.environment ?? adapterOptions.environment,
-          ...(adapterOptions.processAttribution === undefined
-            ? {}
-            : { processAttribution: adapterOptions.processAttribution }),
-          ...(input.nativeCreationExecution === undefined
-            ? {} : { nativeCreationExecution: input.nativeCreationExecution }),
-        }).pipe(
-          Effect.provideService(Scope.Scope, incarnationScope),
-          Effect.mapError((cause) =>
-            new ProviderAdapterOpenSessionError({
-              driver: CODEX_PROVIDER,
-              providerSessionId: input.providerSessionId,
-              cause,
-              nativeEffect: operationEvidence(input.nativeOperation, "open_session", {
-                threadId: input.threadId,
-              }),
-            }),
-          ),
-        );
+        let client = yield* clientFactory
+          .open({
+            instanceId: adapterOptions.instanceId,
+            threadId: input.threadId,
+            providerSessionId: input.providerSessionId,
+            runtimePolicy: input.runtimePolicy,
+            runtimeGeneration,
+            settings: launchSettings,
+            environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+            ...(adapterOptions.processAttribution === undefined
+              ? {}
+              : { processAttribution: adapterOptions.processAttribution }),
+            ...(input.nativeCreationExecution === undefined
+              ? {}
+              : { nativeCreationExecution: input.nativeCreationExecution }),
+          })
+          .pipe(
+            Effect.provideService(Scope.Scope, incarnationScope),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterOpenSessionError({
+                  driver: CODEX_PROVIDER,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                  nativeEffect: operationEvidence(input.nativeOperation, "open_session", {
+                    threadId: input.threadId,
+                  }),
+                }),
+            ),
+          );
         // Retain this spawned handle for leader-exit readback after scope closure.
         // A leader exit does not prove descendant drain or future wake closure.
         let ownedProcess = client.ownedProcess;
         const captureOwnedRuntimeIdentity = (): ProviderOwnedRuntimeIdentity | undefined =>
-          ownedProcess !== undefined && ownedProcess.instanceId === adapterOptions.instanceId &&
+          ownedProcess !== undefined &&
+          ownedProcess.instanceId === adapterOptions.instanceId &&
           ownedProcess.providerSessionId === input.providerSessionId &&
           ownedProcess.runtimeGeneration === runtimeGeneration &&
           ownedProcess.handleToken.trim().length > 0 &&
-          Number.isSafeInteger(ownedProcess.pid) && ownedProcess.pid > 1
+          Number.isSafeInteger(ownedProcess.pid) &&
+          ownedProcess.pid > 1
             ? Object.freeze({
                 instanceId: ownedProcess.instanceId,
                 providerSessionId: ownedProcess.providerSessionId,
@@ -1908,57 +2030,143 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               })
             : undefined;
         let ownedRuntimeIdentity = captureOwnedRuntimeIdentity();
-        const nativeRegistrations: Array<(target: CodexAppServerOwnedClient, generation: string) => Effect.Effect<void>> = [];
+        const producerOrigins = new WeakMap<object, Map<string, ProviderEventProducerOrigin>>();
+        const captureProducer = (
+          target: CodexAppServerOwnedClient,
+          generation: string,
+        ): ProviderEventProducerOrigin => {
+          let generations = producerOrigins.get(target);
+          if (generations === undefined) producerOrigins.set(target, (generations = new Map()));
+          const existing = generations.get(generation);
+          if (existing !== undefined) return existing;
+          // A closed scope may still drain queued terminals; replacement invalidates this captured source.
+          const producer = Object.freeze({
+            token: target,
+            driver: CODEX_PROVIDER,
+            instanceId: adapterOptions.instanceId,
+            providerSessionId: input.providerSessionId,
+            runtimeGeneration: generation,
+            revalidateCurrent: Effect.suspend(() =>
+              target === client && generation === runtimeGeneration
+                ? Effect.void
+                : Effect.fail("codex_event_source_replaced"),
+            ),
+          });
+          generations.set(generation, producer);
+          return producer;
+        };
+        const nativeRegistrations: Array<
+          (target: CodexAppServerOwnedClient, generation: string) => Effect.Effect<void>
+        > = [];
+        let runManagedNotification: <E>(
+          method: string,
+          payload: unknown,
+          producer: ProviderEventProducerOrigin,
+          work: Effect.Effect<void, E>,
+        ) => Effect.Effect<void, E> = (_method, _payload, _producer, work) => work;
         const handleServerNotification = ((method, handler) => {
-          const register = (target: CodexAppServerOwnedClient, generation: string) => target.handleServerNotification(
-            method, (payload) => Effect.suspend(() => generation !== runtimeGeneration ? Effect.void
-              : Ref.get(closed).pipe(Effect.flatMap((isClosed) => isClosed ? Effect.void : handler(payload)))),
-          );
-          return Effect.sync(() => { nativeRegistrations.push(register); }).pipe(
-            Effect.andThen(register(client, runtimeGeneration)),
-          );
+          const register = (target: CodexAppServerOwnedClient, generation: string) => {
+            const producer = captureProducer(target, generation);
+            return target.handleServerNotification(method, (payload) =>
+              runManagedNotification(
+                method,
+                payload,
+                producer,
+                Effect.suspend(() =>
+                  generation !== runtimeGeneration || target !== client
+                    ? Effect.void
+                    : Ref.get(closed).pipe(
+                        Effect.flatMap((isClosed) =>
+                          isClosed
+                            ? Effect.void
+                            : handler(payload).pipe(
+                                Effect.provideService(NativeCodexEventProducer, producer),
+                              ),
+                        ),
+                      ),
+                ),
+              ),
+            );
+          };
+          return Effect.sync(() => {
+            nativeRegistrations.push(register);
+          }).pipe(Effect.andThen(register(client, runtimeGeneration)));
         }) satisfies CodexClient.CodexAppServerClient["Service"]["handleServerNotification"];
         const handleServerRequest = ((method, handler) => {
-          const register = (target: CodexAppServerOwnedClient, generation: string) => target.handleServerRequest(
-            method, (payload) => Effect.suspend(() => generation !== runtimeGeneration
-              ? Effect.fail(CodexErrors.CodexAppServerRequestError.internalError("Codex runtime incarnation changed"))
-              : Ref.get(closed).pipe(Effect.flatMap((isClosed) => isClosed
-                ? Effect.fail(CodexErrors.CodexAppServerRequestError.internalError("Codex runtime is closed")) : handler(payload)))),
-          );
-          return Effect.sync(() => { nativeRegistrations.push(register); }).pipe(
-            Effect.andThen(register(client, runtimeGeneration)),
-          );
+          const register = (target: CodexAppServerOwnedClient, generation: string) => {
+            const producer = captureProducer(target, generation);
+            return target.handleServerRequest(method, (payload) =>
+              Effect.suspend(() =>
+                generation !== runtimeGeneration || target !== client
+                  ? Effect.fail(
+                      CodexErrors.CodexAppServerRequestError.internalError(
+                        "Codex runtime incarnation changed",
+                      ),
+                    )
+                  : Ref.get(closed).pipe(
+                      Effect.flatMap((isClosed) =>
+                        isClosed
+                          ? Effect.fail(
+                              CodexErrors.CodexAppServerRequestError.internalError(
+                                "Codex runtime is closed",
+                              ),
+                            )
+                          : handler(payload).pipe(
+                              Effect.provideService(NativeCodexEventProducer, producer),
+                            ),
+                      ),
+                    ),
+              ),
+            );
+          };
+          return Effect.sync(() => {
+            nativeRegistrations.push(register);
+          }).pipe(Effect.andThen(register(client, runtimeGeneration)));
         }) satisfies CodexClient.CodexAppServerClient["Service"]["handleServerRequest"];
         const matchesOwnedRuntimeIdentity = (expected: ProviderOwnedRuntimeIdentity): boolean =>
-          ownedRuntimeIdentity !== undefined && client.ownedProcess === ownedProcess &&
+          ownedRuntimeIdentity !== undefined &&
+          client.ownedProcess === ownedProcess &&
           expected.instanceId === ownedRuntimeIdentity.instanceId &&
           expected.providerSessionId === ownedRuntimeIdentity.providerSessionId &&
           expected.runtimeGeneration === ownedRuntimeIdentity.runtimeGeneration &&
-          expected.handleToken === ownedRuntimeIdentity.handleToken && expected.pid === ownedRuntimeIdentity.pid;
+          expected.handleToken === ownedRuntimeIdentity.handleToken &&
+          expected.pid === ownedRuntimeIdentity.pid;
         const observeOwnedRuntimeExit = (expected: ProviderOwnedRuntimeIdentity) =>
           Effect.gen(function* () {
             const unknown = (reason: string): ProviderOwnedRuntimeExitObservation => ({
-              status: "unknown", reason,
+              status: "unknown",
+              reason,
               ...(ownedRuntimeIdentity === undefined ? {} : { identity: ownedRuntimeIdentity }),
             });
             if (ownedRuntimeIdentity === undefined) return unknown("owned_process_unavailable");
-            if (!matchesOwnedRuntimeIdentity(expected)) return unknown("owned_runtime_identity_mismatch");
+            if (!matchesOwnedRuntimeIdentity(expected))
+              return unknown("owned_runtime_identity_mismatch");
             const running = yield* ownedProcess!.handle.isRunning.pipe(
-              Effect.timeout("3 seconds"), Effect.result,
+              Effect.timeout("3 seconds"),
+              Effect.result,
             );
-            if (!matchesOwnedRuntimeIdentity(expected)) return unknown("owned_runtime_identity_changed");
+            if (!matchesOwnedRuntimeIdentity(expected))
+              return unknown("owned_runtime_identity_changed");
             if (running._tag === "Failure") return unknown("owned_process_status_unavailable");
             if (running.success) return unknown("owned_process_running");
             const exited = yield* ownedProcess!.handle.exitCode.pipe(
-              Effect.timeout("3 seconds"), Effect.result,
+              Effect.timeout("3 seconds"),
+              Effect.result,
             );
-            if (!matchesOwnedRuntimeIdentity(expected)) return unknown("owned_runtime_identity_changed");
+            if (!matchesOwnedRuntimeIdentity(expected))
+              return unknown("owned_runtime_identity_changed");
             if (exited._tag === "Failure") return unknown("owned_process_exit_unavailable");
             const exitCode = Number(exited.success);
             if (!Number.isSafeInteger(exitCode)) return unknown("owned_process_exit_malformed");
             const observedAt = DateTime.formatIso(yield* DateTime.now);
-            if (!matchesOwnedRuntimeIdentity(expected)) return unknown("owned_runtime_identity_changed");
-            return { status: "leader_exited", identity: ownedRuntimeIdentity, exitCode, observedAt } as const;
+            if (!matchesOwnedRuntimeIdentity(expected))
+              return unknown("owned_runtime_identity_changed");
+            return {
+              status: "leader_exited",
+              identity: ownedRuntimeIdentity,
+              exitCode,
+              observedAt,
+            } as const;
           });
         const additionalContextByThread = yield* Ref.make(
           new Map<
@@ -1970,6 +2178,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         // resends additionalContext when it changes. Restore the current entries.
         const restoreAdditionalContext = (threadId: string) =>
           Effect.gen(function* () {
+            const producer = yield* NativeCodexEventProducer;
+            if (producer !== undefined) yield* producer.revalidateCurrent;
             const context = (yield* Ref.get(additionalContextByThread)).get(threadId);
             if (!context) return;
             yield* client.request("thread/inject_items", {
@@ -1991,7 +2201,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         const initialized = yield* Ref.make(false);
         const ensureInitialized = Effect.gen(function* () {
           if (nativeStartUnknown && !replacingRuntime)
-            return yield* toProtocolError("Codex has an unconfirmed native operation and cannot initialize another request.");
+            return yield* toProtocolError(
+              "Codex has an unconfirmed native operation and cannot initialize another request.",
+            );
           const alreadyInitialized = yield* Ref.get(initialized);
           if (alreadyInitialized) {
             return;
@@ -2007,11 +2219,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           yield* authorizeCodexNativeRequest(initializationExecution, "initialized");
           yield* client.notify("initialized", undefined);
           if (response.codexHome.trim().length > 0 && continuationSourceIdentity === undefined) {
-            const continuationKey = continuationHomeLayout?.mode === "authOverlay"
-              ? response.codexHome === continuationHomeLayout.effectiveHomePath
-                ? continuationHomeLayout.continuationKey : undefined
-              : continuationHomeLayout === undefined && launchSettings.shadowHomePath.trim().length > 0
-                ? undefined : `codex:home:${response.codexHome}`;
+            const continuationKey =
+              continuationHomeLayout?.mode === "authOverlay"
+                ? response.codexHome === continuationHomeLayout.effectiveHomePath
+                  ? continuationHomeLayout.continuationKey
+                  : undefined
+                : continuationHomeLayout === undefined &&
+                    launchSettings.shadowHomePath.trim().length > 0
+                  ? undefined
+                  : `codex:home:${response.codexHome}`;
             if (continuationKey !== undefined) {
               continuationSourceIdentity = Object.freeze({
                 driverKind: CODEX_DRIVER_KIND,
@@ -2035,6 +2251,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         const limitedTurnItems = yield* Ref.make(
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
+        const limitedTurnItemOrigins = new Map<ProviderThreadId, ProviderEventOrigin>();
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
         const turnTokenUsageByThread = new Map<string, CodexTurnTokenUsageState>();
         const usageStateForThread = (nativeThreadId: string) => {
@@ -2064,39 +2281,292 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           ).hasSubagents = true;
         };
         const pendingRootTurns = yield* Ref.make(new Map<string, ProviderAdapterV2TurnInput>());
+        type PendingCodexCompaction = {
+          readonly input: ProviderAdapterV2TurnInput;
+          readonly producer: ProviderEventProducerOrigin;
+          readonly binding: ProviderPendingStartStopInput["binding"];
+          acknowledged: boolean;
+          nativeStart?: CodexSchema.V2TurnStartedNotification;
+          ambiguous: boolean;
+        };
+        const pendingCompactions = new Map<string, PendingCodexCompaction>();
         type CapacityRequest = {
+          readonly managed?: ManagedCodexCohort;
+          readonly producer: ProviderEventProducerOrigin;
           state: CodexCapacityContinuationState;
           readonly input: ProviderAdapterV2TurnInput;
           readonly params: CodexTurnStartParamsWithCollaborationMode;
           readonly earlyErrors: Map<string, CodexSchema.V2ErrorNotification>;
           readonly earlyCompletions: Map<string, CodexSchema.V2TurnCompletedNotification>;
           readonly earlyStarts: Map<string, CodexSchema.V2TurnStartedNotification>;
+          readonly startOperation: ProviderNativeOperationContext;
           logicalContext?: ActiveCodexTurnContext;
           currentContext?: ActiveCodexTurnContext;
+          pendingStart?:
+            | {
+                readonly producer: ProviderEventProducerOrigin;
+                readonly fiber: Fiber.Fiber<unknown, unknown>;
+                readonly client: typeof client;
+                readonly scope: Scope.Closeable;
+                readonly binding: ProviderPendingStartStopInput["binding"];
+                readonly retryOrdinal: number;
+                readonly isDispatched: () => boolean;
+              }
+            | undefined;
           timer?: Fiber.Fiber<void> | undefined;
+          stopping: boolean;
           recoveryEnabled: boolean;
           logicalTerminalEmitted: boolean;
           capacityRetry?: ActiveCodexProviderRetry;
         };
         const capacityByThread = new Map<string, CapacityRequest>();
         const capacityByTurn = new Map<string, CapacityRequest>();
+        type ManagedCodexActor = {
+          readonly cohort: ManagedCodexCohort;
+          readonly actor: ProviderManagedActorV1;
+          readonly producer: ProviderEventProducerOrigin;
+          readonly source: ProviderManagedActorSourceV1;
+          closed: boolean;
+        };
+        type ManagedCodexCohort = {
+          readonly admission: ProviderManagedActorAdmissionV1;
+          readonly issuer: ProviderManagedActorIssuerV1;
+          readonly nativeActors: Set<ManagedCodexActor>;
+          readonly actors: Set<ProviderManagedActorV1>;
+          request?: CapacityRequest;
+          callbacks: number;
+          requests: number;
+          started: boolean;
+          sealed: boolean;
+          unknown: boolean;
+          released: boolean;
+        };
+        const managedCohorts = new Map<string, ManagedCodexCohort>();
+        const managedTurns = new Map<string, ManagedCodexActor>();
+        const managedPending = new Map<string, ManagedCodexActor>();
+        const managedKey = (operationId: string, attemptId: string, providerThreadId: string) =>
+          JSON.stringify([operationId, attemptId, providerThreadId]);
+        const managedSource = (
+          cohort: ManagedCodexCohort,
+          producer: ProviderEventProducerOrigin,
+          nativeThreadId: string,
+          nativeTurnId?: string,
+        ): ProviderManagedActorSourceV1 => ({
+          sourceId: NodeCrypto.randomUUID(),
+          driver: CODEX_PROVIDER,
+          instanceId: adapterOptions.instanceId,
+          providerSessionId: input.providerSessionId,
+          providerThreadId: cohort.admission.providerThreadId,
+          threadId: cohort.admission.admission.capture.threadId,
+          ...(producer.runtimeGeneration === undefined
+            ? {}
+            : { runtimeGeneration: producer.runtimeGeneration }),
+          nativeThreadId,
+          ...(nativeTurnId === undefined ? {} : { nativeTurnId }),
+        });
+        const managedUnknown = (cohort: ManagedCodexCohort, reason: string) =>
+          Effect.gen(function* () {
+            cohort.unknown = true;
+            const actor = cohort.actors.values().next().value;
+            if (actor !== undefined)
+              yield* cohort.issuer.retainUnknown(actor, reason).pipe(Effect.ignore);
+          });
+        // Missing completion evidence cannot replace the existing native dispatch and currentness guards.
+        const managedEvidence = <A, E>(cohort: ManagedCodexCohort, effect: Effect.Effect<A, E>) =>
+          effect.pipe(
+            Effect.catch(() =>
+              managedUnknown(cohort, "native_actor_evidence_unavailable").pipe(
+                Effect.as(undefined),
+              ),
+            ),
+          );
+        const maybeSealManaged = (cohort: ManagedCodexCohort) =>
+          Effect.gen(function* () {
+            if (
+              cohort.sealed ||
+              cohort.unknown ||
+              cohort.released ||
+              !cohort.started ||
+              cohort.nativeActors.size === 0 ||
+              cohort.callbacks !== 0 ||
+              cohort.requests !== 0 ||
+              cohort.request?.state.phase !== "terminal" ||
+              [...cohort.nativeActors].some((actor) => !actor.closed)
+            )
+              return;
+            yield* managedEvidence(cohort, cohort.issuer.seal);
+            if (!cohort.unknown) cohort.sealed = true;
+          });
+        const managedForInput = (turnInput: ProviderAdapterV2TurnInput) =>
+          Effect.gen(function* () {
+            const execution = yield* readProviderManagedActorExecution;
+            if (execution === undefined) return undefined;
+            const cohort = managedCohorts.get(
+              managedKey(
+                execution.originalUse.operationId,
+                turnInput.attemptId,
+                turnInput.providerThread.id,
+              ),
+            );
+            const run = cohort?.admission.admission.run;
+            if (
+              cohort === undefined ||
+              cohort.released ||
+              cohort.sealed ||
+              cohort.started ||
+              run === null ||
+              run === undefined ||
+              execution.associationId !== cohort.admission.startExecution.associationId ||
+              nativeCreationCanonicalJson(
+                (yield* Schema.encodeEffect(OrdinaryCheckoutExecutionRefV1)(execution).pipe(
+                  Effect.orDie,
+                )).originalUse,
+              ) !==
+                nativeCreationCanonicalJson(
+                  (yield* Schema.encodeEffect(OrdinaryCheckoutExecutionRefV1)(
+                    cohort.admission.startExecution,
+                  ).pipe(Effect.orDie)).originalUse,
+                ) ||
+              run.runId !== turnInput.runId ||
+              run.runAttemptId !== turnInput.attemptId ||
+              run.nodeId !== turnInput.rootNodeId ||
+              run.messageId !== turnInput.message.messageId ||
+              cohort.admission.admission.capture.threadId !== turnInput.threadId
+            )
+              return yield* toProtocolError(
+                "Codex managed entry does not match its original prepared actor ticket.",
+              );
+            return cohort;
+          });
+        runManagedNotification = <E>(
+          method: string,
+          payload: unknown,
+          producer: ProviderEventProducerOrigin,
+          work: Effect.Effect<void, E>,
+        ) => {
+          if (
+            !["turn/started", "turn/completed", "error", "item/started", "item/completed"].includes(
+              method,
+            ) ||
+            typeof payload !== "object" ||
+            payload === null
+          )
+            return work;
+          const packet = payload as {
+            threadId?: unknown;
+            turnId?: unknown;
+            turn?: { id?: unknown };
+            item?: { type?: unknown };
+          };
+          const turnId =
+            typeof packet.turnId === "string"
+              ? packet.turnId
+              : typeof packet.turn?.id === "string"
+                ? packet.turn.id
+                : undefined;
+          const native = turnId === undefined ? undefined : managedTurns.get(turnId);
+          const pending =
+            typeof packet.threadId === "string" ? managedPending.get(packet.threadId) : undefined;
+          const owner = native ?? pending;
+          if (
+            owner === undefined ||
+            owner.producer.token !== producer.token ||
+            owner.producer.runtimeGeneration !== producer.runtimeGeneration ||
+            packet.threadId !== owner.source.nativeThreadId
+          )
+            return work;
+          const cohort = owner.cohort;
+          if (cohort.unknown || cohort.released) return work;
+          const incompleteItem =
+            (method === "item/started" || method === "item/completed") &&
+            [
+              "commandExecution",
+              "mcpToolCall",
+              "dynamicToolCall",
+              "subAgentActivity",
+              "collabAgentToolCall",
+              "webSearch",
+              "fileChange",
+              "contextCompaction",
+            ].includes(String(packet.item?.type));
+          if (cohort.sealed) {
+            if (method === "item/started" || incompleteItem)
+              return managedUnknown(cohort, "native_activity_after_completion").pipe(
+                Effect.andThen(work),
+              );
+            return work;
+          }
+          // Capture callback ownership when the SDK invokes it, before its effect can queue or yield.
+          cohort.callbacks++;
+          return Effect.gen(function* () {
+            if (cohort.unknown || cohort.released) return yield* work;
+            const gate = yield* Deferred.make<void>();
+            const task = yield* Deferred.await(gate).pipe(Effect.andThen(work), Effect.forkChild);
+            const actor = yield* managedEvidence(
+              cohort,
+              cohort.issuer.admitActor({
+                kind: "native_request",
+                completionMode: "task_join",
+                actualSource: managedSource(cohort, producer, owner.source.nativeThreadId!, turnId),
+              }),
+            );
+            if (actor === undefined) {
+              yield* Deferred.succeed(gate, undefined);
+              return yield* Fiber.join(task);
+            }
+            cohort.actors.add(actor);
+            const taskId = NodeCrypto.randomUUID();
+            yield* managedEvidence(
+              cohort,
+              cohort.issuer.requireTaskJoin(actor, { taskId, fiber: task }),
+            );
+            yield* managedEvidence(cohort, cohort.issuer.markActorEntered(actor));
+            if (incompleteItem)
+              yield* managedUnknown(cohort, "native_descendant_endpoint_not_bound");
+            yield* Deferred.succeed(gate, undefined);
+            const result = yield* Fiber.await(task);
+            yield* managedEvidence(cohort, cohort.issuer.joinTask(actor, taskId));
+            if (Exit.isFailure(result)) {
+              yield* managedUnknown(cohort, "native_callback_failed");
+              return yield* Effect.failCause(result.cause);
+            }
+          }).pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                cohort.callbacks--;
+                yield* maybeSealManaged(cohort);
+              }),
+            ),
+          );
+        };
         let nativeStartUnknown = false;
-        type CapacitySignalWithoutBinding<T> = T extends { readonly binding: unknown } ? Omit<T, "binding"> : never;
-        const reduceCapacity = (request: CapacityRequest, signal: CapacitySignalWithoutBinding<CodexCapacityContinuationSignal>) => {
+        type CapacitySignalWithoutBinding<T> = T extends { readonly binding: unknown }
+          ? Omit<T, "binding">
+          : never;
+        const reduceCapacity = (
+          request: CapacityRequest,
+          signal: CapacitySignalWithoutBinding<CodexCapacityContinuationSignal>,
+        ) => {
           const reduction = reduceCodexCapacityContinuation(request.state, {
-            ...signal, binding: request.state.binding,
+            ...signal,
+            binding: request.state.binding,
           } as CodexCapacityContinuationSignal);
           request.state = reduction.state;
           return reduction.actions;
         };
         const currentCapacityBinding = (request: CapacityRequest): boolean => {
           const binding = runtimeBindings.get(request.state.binding.nativeThreadId)?.binding;
-          return binding !== undefined && matchesRuntimeBinding(binding) &&
+          return (
+            binding !== undefined &&
+            matchesRuntimeBinding(binding) &&
             binding.providerThreadId === request.state.binding.providerThreadId &&
             binding.runtimeGeneration === request.state.binding.runtimeGeneration &&
-            binding.instanceId === adapterOptions.instanceId && binding.providerSessionId === input.providerSessionId &&
+            binding.instanceId === adapterOptions.instanceId &&
+            binding.providerSessionId === input.providerSessionId &&
             request.input.threadId === binding.threadId &&
-            request.input.runId === request.state.binding.runId && request.input.attemptId === request.state.binding.attemptId;
+            request.input.runId === request.state.binding.runId &&
+            request.input.attemptId === request.state.binding.attemptId
+          );
         };
         const turnWaiters = yield* Ref.make(new Map<string, Deferred.Deferred<void, never>>());
         const subagentThreads = yield* Ref.make(new Map<string, CodexSubagentThreadContext>());
@@ -2139,8 +2609,21 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         // finalization path. Serialize the race so terminal events publish once.
         const turnTerminalizationPermit = yield* Semaphore.make(1);
 
-        const emitProviderEvent = (event: ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+        const emitProviderEvent = (event: ProviderAdapterV2Event, origin?: ProviderEventOrigin) =>
+          Effect.gen(function* () {
+            const callback = yield* NativeCodexEventProducer;
+            const captured =
+              origin ?? (callback === undefined ? undefined : { producer: callback });
+            if (captured === undefined)
+              return yield* Effect.die("Codex event has no captured native source.");
+            if (
+              callback !== undefined &&
+              (callback.token !== captured.producer.token ||
+                callback.runtimeGeneration !== captured.producer.runtimeGeneration)
+            )
+              return;
+            yield* Queue.offer(events, stampProviderEvent(event, captured));
+          });
 
         const matchesRuntimeBinding = (binding: ProviderRuntimeBinding): boolean => {
           const current = binding.nativeThreadId
@@ -2170,47 +2653,73 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           matchesRuntimeBinding(binding) &&
           (operation?.instanceId === undefined || operation.instanceId === binding.instanceId) &&
           (operation?.threadId === undefined || operation.threadId === binding.threadId) &&
-          (operation?.providerThreadId === undefined || operation.providerThreadId === binding.providerThreadId) &&
-          (operation?.providerSessionId === undefined || operation.providerSessionId === binding.providerSessionId) &&
-          (operation?.runtimeGeneration === undefined || operation.runtimeGeneration === binding.runtimeGeneration);
+          (operation?.providerThreadId === undefined ||
+            operation.providerThreadId === binding.providerThreadId) &&
+          (operation?.providerSessionId === undefined ||
+            operation.providerSessionId === binding.providerSessionId) &&
+          (operation?.runtimeGeneration === undefined ||
+            operation.runtimeGeneration === binding.runtimeGeneration);
         const pauseActiveGoal = (
           providerThread: OrchestrationV2ProviderThread,
           binding: ProviderRuntimeBinding,
           operation: ProviderNativeOperationContext | undefined,
-        ) => Effect.gen(function* () {
-          const current = Effect.gen(function* () {
-            return !(yield* Ref.get(closed)) && matchesInterruptBinding(providerThread, binding, operation);
+        ) =>
+          Effect.gen(function* () {
+            const current = Effect.gen(function* () {
+              return (
+                !(yield* Ref.get(closed)) &&
+                matchesInterruptBinding(providerThread, binding, operation)
+              );
+            });
+            const pause = Effect.gen(function* () {
+              if (!(yield* current)) return "context_changed";
+              const response = yield* client.raw
+                .request("thread/goal/get", {
+                  threadId: binding.nativeThreadId!,
+                })
+                .pipe(
+                  Effect.flatMap(Schema.decodeUnknownEffect(CodexSchema.V2ThreadGoalGetResponse)),
+                );
+              if (!(yield* current)) return "context_changed";
+              if (response.goal === null) return "inactive";
+              if (response.goal === undefined) return "missing_goal";
+              if (response.goal.threadId !== binding.nativeThreadId)
+                return "native_thread_mismatch";
+              if (response.goal.status !== "active") return "inactive";
+              const acknowledgement = yield* client.raw
+                .request("thread/goal/set", {
+                  threadId: binding.nativeThreadId!,
+                  status: "paused",
+                })
+                .pipe(
+                  Effect.flatMap(Schema.decodeUnknownEffect(CodexSchema.V2ThreadGoalSetResponse)),
+                );
+              if (!(yield* current)) return "context_changed";
+              return acknowledgement.goal.threadId === binding.nativeThreadId &&
+                acknowledgement.goal.status === "paused"
+                ? "paused"
+                : "pause_not_acknowledged";
+            }).pipe(
+              Effect.timeout("1 second"),
+              Effect.catch((cause) =>
+                Effect.succeed(
+                  cause._tag === "TimeoutError"
+                    ? "timeout"
+                    : cause._tag === "CodexAppServerRequestError" && cause.code === -32601
+                      ? "unsupported"
+                      : "goal_rpc_or_decode_error",
+                ),
+              ),
+            );
+            const result = yield* pause;
+            if (result !== "paused" && result !== "inactive") {
+              yield* Effect.logWarning("orchestration-v2.codex-goal-pause-unknown", {
+                reason: result,
+              });
+            }
           });
-          const pause = Effect.gen(function* () {
-            if (!(yield* current)) return "context_changed";
-            const response = yield* client.raw.request("thread/goal/get", {
-              threadId: binding.nativeThreadId!,
-            }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(CodexSchema.V2ThreadGoalGetResponse)));
-            if (!(yield* current)) return "context_changed";
-            if (response.goal === null) return "inactive";
-            if (response.goal === undefined) return "missing_goal";
-            if (response.goal.threadId !== binding.nativeThreadId) return "native_thread_mismatch";
-            if (response.goal.status !== "active") return "inactive";
-            const acknowledgement = yield* client.raw.request("thread/goal/set", {
-              threadId: binding.nativeThreadId!, status: "paused",
-            }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(CodexSchema.V2ThreadGoalSetResponse)));
-            if (!(yield* current)) return "context_changed";
-            return acknowledgement.goal.threadId === binding.nativeThreadId &&
-              acknowledgement.goal.status === "paused" ? "paused" : "pause_not_acknowledged";
-          }).pipe(
-            Effect.timeout("1 second"),
-            Effect.catch((cause) => Effect.succeed(
-              cause._tag === "TimeoutError" ? "timeout"
-                : cause._tag === "CodexAppServerRequestError" && cause.code === -32601
-                  ? "unsupported" : "goal_rpc_or_decode_error",
-            )),
-          );
-          const result = yield* pause;
-          if (result !== "paused" && result !== "inactive") {
-            yield* Effect.logWarning("orchestration-v2.codex-goal-pause-unknown", { reason: result });
-          }
-        });
         const bindRuntimeThread = (bindingInput: {
+          readonly producer: ProviderEventProducerOrigin;
           readonly threadId: ThreadId;
           readonly providerThread: OrchestrationV2ProviderThread;
           readonly requested: ModelSelection;
@@ -2222,20 +2731,31 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         }): Effect.Effect<void> =>
           Effect.gen(function* () {
             const nativeThreadId = bindingInput.providerThread.nativeThreadRef?.nativeId;
-            if (!nativeThreadId) return;
-            captureNativeDirectory(bindingInput.providerThread, nativeThreadId, bindingInput.nativeDirectory);
+            const generation = bindingInput.producer.runtimeGeneration;
+            if (
+              !nativeThreadId ||
+              generation === undefined ||
+              (yield* bindingInput.producer.revalidateCurrent.pipe(Effect.result))._tag ===
+                "Failure"
+            )
+              return;
+            captureNativeDirectory(
+              bindingInput.providerThread,
+              nativeThreadId,
+              bindingInput.nativeDirectory,
+            );
             const binding: ProviderRuntimeBinding = {
               threadId: bindingInput.threadId,
               providerThreadId: bindingInput.providerThread.id,
               providerSessionId: input.providerSessionId,
               instanceId: adapterOptions.instanceId,
-              runtimeGeneration,
+              runtimeGeneration: generation,
               nativeThreadId,
             };
             const reported = codexRuntimeIdentity({
               ...bindingInput,
               instanceId: adapterOptions.instanceId,
-              runtimeGeneration,
+              runtimeGeneration: generation,
             });
             const pending = pendingRuntimeIdentities.get(nativeThreadId);
             pendingRuntimeIdentities.delete(nativeThreadId);
@@ -2256,23 +2776,34 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               requested: bindingInput.requested,
               attestation,
             });
-            yield* emitProviderEvent({
-              type: "runtime_identity.observed",
-              driver: CODEX_PROVIDER,
-              binding,
-              attestation,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "runtime_identity.observed",
+                driver: CODEX_PROVIDER,
+                binding,
+                attestation,
+              },
+              { producer: bindingInput.producer },
+            );
             if (!overflow) {
               for (const evidence of pending?.evidence ?? []) {
-                yield* observeRuntimeIdentity(nativeThreadId, evidence);
+                yield* observeRuntimeIdentity(nativeThreadId, evidence.evidence, evidence.producer);
               }
             }
           });
         const observeRuntimeIdentity = (
           nativeThreadId: string,
           evidence: CodexNativeIdentityEvidence,
+          capturedProducer?: ProviderEventProducerOrigin,
         ): Effect.Effect<void> =>
           Effect.gen(function* () {
+            const producer = capturedProducer ?? (yield* NativeCodexEventProducer);
+            if (
+              producer === undefined ||
+              producer.runtimeGeneration === undefined ||
+              (yield* producer.revalidateCurrent.pipe(Effect.result))._tag === "Failure"
+            )
+              return;
             const current = runtimeBindings.get(nativeThreadId);
             if (yield* Ref.get(closed)) return;
             if (!current) {
@@ -2285,7 +2816,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               }
               const entries = pending?.evidence ?? [];
               pendingRuntimeIdentities.set(nativeThreadId, {
-                evidence: entries.length < 32 ? [...entries, evidence] : entries,
+                evidence: entries.length < 32 ? [...entries, { evidence, producer }] : entries,
                 overflow: pending?.overflow === true || entries.length >= 32,
               });
               return;
@@ -2294,24 +2825,28 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               ...evidence,
               requested: current.requested,
               instanceId: adapterOptions.instanceId,
-              runtimeGeneration,
+              runtimeGeneration: producer.runtimeGeneration,
             });
-            const attestation = evidence.sourceEvent === "model/rerouted"
-              ? {
-                  ...observed,
-                  observed: {
-                    ...current.attestation.observed,
-                    model: observed.observed.model,
-                  },
-                }
-              : observed;
+            const attestation =
+              evidence.sourceEvent === "model/rerouted"
+                ? {
+                    ...observed,
+                    observed: {
+                      ...current.attestation.observed,
+                      model: observed.observed.model,
+                    },
+                  }
+                : observed;
             runtimeBindings.set(nativeThreadId, { ...current, attestation });
-            yield* emitProviderEvent({
-              type: "runtime_identity.observed",
-              driver: CODEX_PROVIDER,
-              binding: current.binding,
-              attestation,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "runtime_identity.observed",
+                driver: CODEX_PROVIDER,
+                binding: current.binding,
+                attestation,
+              },
+              { producer },
+            );
           });
         const finishBindingOperation = Effect.sync(() => {
           bindingOperationsInFlight--;
@@ -2343,29 +2878,34 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           if (providerRetry === undefined) {
             return;
           }
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver: CODEX_PROVIDER,
-            turnItem: makeProviderRetryTurnItem({
-              idAllocator,
+          yield* emitProviderEvent(
+            {
+              type: "turn_item.updated",
               driver: CODEX_PROVIDER,
-              threadId: context.projectionThreadId,
-              runId: context.projectionRunId,
-              nodeId: context.providerNodeId,
-              providerThreadId: context.providerThread.id,
-              providerTurnId: context.providerTurnId,
-              itemOrdinal: providerRetry.itemOrdinal,
-              failure: providerRetry.failure,
-              retry: providerRetry.retry,
-              status: "completed",
-              startedAt: providerRetry.startedAt,
-              updatedAt,
-            }),
-          });
+              turnItem: makeProviderRetryTurnItem({
+                idAllocator,
+                driver: CODEX_PROVIDER,
+                threadId: context.projectionThreadId,
+                runId: context.projectionRunId,
+                nodeId: context.providerNodeId,
+                providerThreadId: context.providerThread.id,
+                providerTurnId: context.providerTurnId,
+                itemOrdinal: providerRetry.itemOrdinal,
+                failure: providerRetry.failure,
+                retry: providerRetry.retry,
+                status: "completed",
+                startedAt: providerRetry.startedAt,
+                updatedAt,
+              }),
+            },
+            context.origin,
+          );
         });
 
         const registerRootTurn = (input: {
           readonly turnInput: ProviderAdapterV2TurnInput;
+          readonly producer: ProviderEventProducerOrigin;
+          readonly binding: ProviderPendingStartStopInput["binding"];
           readonly nativeTurnId: string;
           readonly startedAt: DateTime.Utc;
           readonly waitForNativeStart?: boolean;
@@ -2380,6 +2920,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               nativeTurnId: input.nativeTurnId,
             });
             const context: ActiveCodexTurnContext = {
+              origin: Object.freeze({
+                producer: input.producer,
+                turn: Object.freeze({
+                  binding: Object.freeze({ ...input.binding }),
+                  runId: input.turnInput.runId,
+                  attemptId: input.turnInput.attemptId,
+                  providerTurnId,
+                }),
+              }),
               ...(input.waitForNativeStart
                 ? { nativeStartReady: yield* Deferred.make<void>() }
                 : {}),
@@ -2405,40 +2954,80 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               next.delete(context.providerThread.id);
               return next;
             });
+            limitedTurnItemOrigins.delete(context.providerThread.id);
+            coalescedTurnKey(context);
             beginTurnTokenUsage(context);
             yield* Ref.update(activeTurns, (current) => {
               const updated = new Map(current);
               updated.set(input.nativeTurnId, context);
               return updated;
             });
-            yield* emitProviderEvent({
-              type: "provider_turn.updated",
-              driver: CODEX_PROVIDER,
-              threadId: input.turnInput.threadId,
-              providerTurn: {
-                id: providerTurnId,
-                providerThreadId: input.turnInput.providerThread.id,
-                nodeId: input.turnInput.rootNodeId,
-                runAttemptId: input.turnInput.attemptId,
-                nativeTurnRef: {
-                  driver: CODEX_PROVIDER,
-                  nativeId: input.nativeTurnId,
-                  strength: "strong",
+            yield* emitProviderEvent(
+              {
+                type: "provider_turn.updated",
+                driver: CODEX_PROVIDER,
+                threadId: input.turnInput.threadId,
+                providerTurn: {
+                  id: providerTurnId,
+                  providerThreadId: input.turnInput.providerThread.id,
+                  nodeId: input.turnInput.rootNodeId,
+                  runAttemptId: input.turnInput.attemptId,
+                  nativeTurnRef: {
+                    driver: CODEX_PROVIDER,
+                    nativeId: input.nativeTurnId,
+                    strength: "strong",
+                  },
+                  ordinal: input.turnInput.providerTurnOrdinal,
+                  status: "running",
+                  startedAt: input.startedAt,
+                  completedAt: null,
                 },
-                ordinal: input.turnInput.providerTurnOrdinal,
-                status: "running",
-                startedAt: input.startedAt,
-                completedAt: null,
               },
-            });
+              context.origin,
+            );
             return context;
+          });
+
+        const registerCompactionTurn = (
+          pending: PendingCodexCompaction,
+          start: CodexSchema.V2TurnStartedNotification,
+        ) =>
+          Effect.gen(function* () {
+            if (
+              !pending.acknowledged ||
+              pending.ambiguous ||
+              pendingCompactions.get(start.threadId) !== pending ||
+              start.threadId !== pending.binding.nativeThreadId ||
+              !matchesRuntimeBinding(pending.binding)
+            )
+              return;
+            yield* pending.producer.revalidateCurrent.pipe(Effect.orDie);
+            pendingCompactions.delete(start.threadId);
+            yield* Ref.update(pendingRootTurns, (current) => {
+              if (current.get(start.threadId) !== pending.input) return current;
+              const next = new Map(current);
+              next.delete(start.threadId);
+              return next;
+            });
+            yield* registerRootTurn({
+              turnInput: pending.input,
+              producer: pending.producer,
+              binding: pending.binding,
+              nativeTurnId: start.turn.id,
+              startedAt: codexTimestamp(start.turn.startedAt),
+            });
           });
 
         const findActiveTurnByNativeThreadId = (nativeThreadId: string) =>
           Effect.gen(function* () {
+            const producer = yield* NativeCodexEventProducer;
             const turns = Array.from((yield* Ref.get(activeTurns)).values());
             return turns.find(
-              (context) => context.providerThread.nativeThreadRef?.nativeId === nativeThreadId,
+              (context) =>
+                context.providerThread.nativeThreadRef?.nativeId === nativeThreadId &&
+                (producer === undefined ||
+                  (context.origin.producer.token === producer.token &&
+                    context.origin.producer.runtimeGeneration === producer.runtimeGeneration)),
             );
           });
 
@@ -2447,9 +3036,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           attemptsRemaining = 1_000,
         ): Effect.Effect<ActiveCodexTurnContext | undefined> =>
           Effect.gen(function* () {
+            const producer = yield* NativeCodexEventProducer;
             const context = (yield* Ref.get(activeTurns)).get(nativeTurnId);
             if (context !== undefined || attemptsRemaining <= 0) {
-              return context;
+              return producer === undefined ||
+                context === undefined ||
+                (context.origin.producer.token === producer.token &&
+                  context.origin.producer.runtimeGeneration === producer.runtimeGeneration)
+                ? context
+                : undefined;
             }
             yield* Effect.yieldNow;
             return yield* awaitActiveTurn(nativeTurnId, attemptsRemaining - 1);
@@ -2462,9 +3057,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
          */
         const resolveItemEventContext = (nativeTurnId: string) =>
           Effect.gen(function* () {
+            const producer = yield* NativeCodexEventProducer;
             const settled = (yield* Ref.get(settledTurns)).get(nativeTurnId);
             if (settled !== undefined) {
-              return { context: settled, settled: true } as const;
+              return producer === undefined ||
+                (settled.origin.producer.token === producer.token &&
+                  settled.origin.producer.runtimeGeneration === producer.runtimeGeneration)
+                ? ({ context: settled, settled: true } as const)
+                : undefined;
             }
             const context = yield* awaitActiveTurn(nativeTurnId);
             return context === undefined ? undefined : ({ context, settled: false } as const);
@@ -2645,16 +3245,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   ? {}
                   : { output: tracked.aggregatedOutput }),
               };
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node,
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem,
+                },
+                context.origin,
+              );
             }
           });
 
@@ -2721,25 +3327,31 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 continue;
               }
               const artifacts = yield* buildDynamicToolArtifacts(context, tracked);
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node: {
-                  ...artifacts.node,
-                  status,
-                  completedAt,
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node: {
+                    ...artifacts.node,
+                    status,
+                    completedAt,
+                  },
                 },
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: {
-                  ...artifacts.turnItem,
-                  status,
-                  completedAt,
-                  updatedAt: completedAt,
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: {
+                    ...artifacts.turnItem,
+                    status,
+                    completedAt,
+                    updatedAt: completedAt,
+                  },
                 },
-              });
+                context.origin,
+              );
             }
             yield* Ref.update(runningDynamicToolsByTurn, (current) => {
               if (!current.has(nativeTurnId)) {
@@ -2838,39 +3450,45 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             input.subagent.task = task;
             if (input.startedAt !== undefined) input.subagent.startedAt = input.startedAt;
 
-            yield* emitProviderEvent({
-              type: "subagent.updated",
-              driver: CODEX_PROVIDER,
-              subagent: task,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: {
-                id: input.subagent.turnItemId,
-                threadId: task.threadId,
-                runId: task.runId,
-                nodeId: task.id,
-                providerThreadId: task.providerThreadId,
-                providerTurnId: input.subagent.parentContext.providerTurnId,
-                nativeItemRef: task.nativeTaskRef,
-                parentItemId: null,
-                ordinal: input.subagent.turnItemOrdinal,
-                status: task.status,
-                title: task.title,
-                startedAt: task.startedAt,
-                completedAt: task.completedAt,
-                updatedAt: task.updatedAt,
-                type: "subagent",
-                subagentId: task.id,
-                origin: task.origin,
-                driver: task.driver,
-                providerInstanceId: task.providerInstanceId,
-                childThreadId: task.childThreadId,
-                prompt: task.prompt,
-                result: task.result,
+            yield* emitProviderEvent(
+              {
+                type: "subagent.updated",
+                driver: CODEX_PROVIDER,
+                subagent: task,
               },
-            });
+              input.subagent.parentContext.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: {
+                  id: input.subagent.turnItemId,
+                  threadId: task.threadId,
+                  runId: task.runId,
+                  nodeId: task.id,
+                  providerThreadId: task.providerThreadId,
+                  providerTurnId: input.subagent.parentContext.providerTurnId,
+                  nativeItemRef: task.nativeTaskRef,
+                  parentItemId: null,
+                  ordinal: input.subagent.turnItemOrdinal,
+                  status: task.status,
+                  title: task.title,
+                  startedAt: task.startedAt,
+                  completedAt: task.completedAt,
+                  updatedAt: task.updatedAt,
+                  type: "subagent",
+                  subagentId: task.id,
+                  origin: task.origin,
+                  driver: task.driver,
+                  providerInstanceId: task.providerInstanceId,
+                  childThreadId: task.childThreadId,
+                  prompt: task.prompt,
+                  result: task.result,
+                },
+              },
+              input.subagent.parentContext.origin,
+            );
           });
 
         const emitSubagentProviderTurnStarted = (
@@ -2878,6 +3496,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           turn: PendingCodexSubagentTurnStarted,
         ) =>
           Effect.gen(function* () {
+            if (
+              turn.producer.token !== subagent.parentContext.origin.producer.token ||
+              turn.producer.runtimeGeneration !==
+                subagent.parentContext.origin.producer.runtimeGeneration
+            )
+              return;
             if (subagent.nativeTurnIds.has(turn.nativeTurnId)) return;
             subagent.nativeTurnIds.add(turn.nativeTurnId);
             const parentNativeThreadId = yield* getNativeThreadId(
@@ -2935,6 +3559,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     nativeItemId: `${turn.nativeTurnId}:thread-root`,
                   });
             const activeContext: ActiveCodexTurnContext = {
+              origin: Object.freeze({ producer: turn.producer }),
               input: subagent.parentContext.input,
               projectionAppThread: subagent.childThread,
               projectionThreadId: subagent.childThreadId,
@@ -2952,6 +3577,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               startedAt: turn.startedAt,
               itemPositions: new Map(),
             };
+            coalescedTurnKey(activeContext);
             beginTurnTokenUsage(activeContext);
             yield* Ref.update(activeTurns, (current) => {
               const updated = new Map(current);
@@ -2965,56 +3591,65 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               ...(providerTurnOrdinal > 1 ? { reopen: true, result: null } : {}),
             });
             const now = yield* DateTime.now;
-            yield* emitProviderEvent({
-              type: "provider_thread.updated",
-              driver: CODEX_PROVIDER,
-              providerThread: {
-                ...subagent.providerThread,
-                status: "active",
-                updatedAt: now,
-              },
-            });
-            yield* emitProviderEvent({
-              type: "provider_turn.updated",
-              driver: CODEX_PROVIDER,
-              threadId: subagent.childThreadId,
-              providerTurn: {
-                id: providerTurnId,
-                providerThreadId: subagent.providerThread.id,
-                nodeId: providerNodeId,
-                runAttemptId: null,
-                nativeTurnRef: {
-                  driver: CODEX_PROVIDER,
-                  nativeId: turn.nativeTurnId,
-                  strength: "strong",
+            yield* emitProviderEvent(
+              {
+                type: "provider_thread.updated",
+                driver: CODEX_PROVIDER,
+                providerThread: {
+                  ...subagent.providerThread,
+                  status: "active",
+                  updatedAt: now,
                 },
-                ordinal: activeContext.providerTurnOrdinal,
-                status: "running",
-                startedAt: turn.startedAt,
-                completedAt: null,
               },
-            });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: {
-                id: providerNodeId,
+              activeContext.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "provider_turn.updated",
+                driver: CODEX_PROVIDER,
                 threadId: subagent.childThreadId,
-                runId: null,
-                parentNodeId: null,
-                rootNodeId: providerNodeId,
-                kind: "root_turn",
-                status: "running",
-                countsForRun: false,
-                providerThreadId: subagent.providerThread.id,
-                providerTurnId,
-                nativeItemRef: subagent.task.nativeTaskRef,
-                runtimeRequestId: null,
-                checkpointScopeId: null,
-                startedAt: turn.startedAt,
-                completedAt: null,
+                providerTurn: {
+                  id: providerTurnId,
+                  providerThreadId: subagent.providerThread.id,
+                  nodeId: providerNodeId,
+                  runAttemptId: null,
+                  nativeTurnRef: {
+                    driver: CODEX_PROVIDER,
+                    nativeId: turn.nativeTurnId,
+                    strength: "strong",
+                  },
+                  ordinal: activeContext.providerTurnOrdinal,
+                  status: "running",
+                  startedAt: turn.startedAt,
+                  completedAt: null,
+                },
               },
-            });
+              activeContext.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: {
+                  id: providerNodeId,
+                  threadId: subagent.childThreadId,
+                  runId: null,
+                  parentNodeId: null,
+                  rootNodeId: providerNodeId,
+                  kind: "root_turn",
+                  status: "running",
+                  countsForRun: false,
+                  providerThreadId: subagent.providerThread.id,
+                  providerTurnId,
+                  nativeItemRef: subagent.task.nativeTaskRef,
+                  runtimeRequestId: null,
+                  checkpointScopeId: null,
+                  startedAt: turn.startedAt,
+                  completedAt: null,
+                },
+              },
+              activeContext.origin,
+            );
           });
 
         const rememberSubagentTurnStarted = (input: {
@@ -3023,16 +3658,18 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           readonly startedAt: DateTime.Utc;
         }) =>
           Effect.gen(function* () {
+            const producer = yield* NativeCodexEventProducer;
+            if (producer === undefined) return;
             const subagent = (yield* Ref.get(subagentThreads)).get(input.nativeThreadId);
             if (subagent !== undefined) {
-              yield* emitSubagentProviderTurnStarted(subagent, input);
+              yield* emitSubagentProviderTurnStarted(subagent, { ...input, producer });
               return;
             }
             yield* Ref.update(pendingSubagentTurns, (current) => {
               const updated = new Map(current);
               updated.set(input.nativeThreadId, [
                 ...(updated.get(input.nativeThreadId) ?? []),
-                { nativeTurnId: input.nativeTurnId, startedAt: input.startedAt },
+                { producer, nativeTurnId: input.nativeTurnId, startedAt: input.startedAt },
               ]);
               return updated;
             });
@@ -3048,20 +3685,26 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           if (model) subagentModels.set(nativeThreadId, model);
           if (reasoningEffort !== undefined) subagentEfforts.set(nativeThreadId, reasoningEffort);
           const subagent = (yield* Ref.get(subagentThreads)).get(nativeThreadId);
-          if (subagent === undefined ||
-              ((!model || subagent.task.model === model) &&
-               (reasoningEffort === undefined || subagent.task.reasoningEffort === reasoningEffort))) return;
+          if (
+            subagent === undefined ||
+            ((!model || subagent.task.model === model) &&
+              (reasoningEffort === undefined || subagent.task.reasoningEffort === reasoningEffort))
+          )
+            return;
           subagent.task = {
             ...subagent.task,
             ...(model ? { model } : {}),
             ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
             updatedAt: yield* DateTime.now,
           };
-          yield* emitProviderEvent({
-            type: "subagent.updated",
-            driver: CODEX_PROVIDER,
-            subagent: subagent.task,
-          });
+          yield* emitProviderEvent(
+            {
+              type: "subagent.updated",
+              driver: CODEX_PROVIDER,
+              subagent: subagent.task,
+            },
+            subagent.parentContext.origin,
+          );
         });
 
         const registerSubagentThread = (input: {
@@ -3189,58 +3832,70 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               updated.set(input.nativeThreadId, subagent);
               return updated;
             });
-            yield* emitProviderEvent({
-              type: "app_thread.created",
-              driver: CODEX_PROVIDER,
-              appThread: childThread,
-            });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: {
-                id: subagentNodeId,
-                threadId: input.context.projectionThreadId,
-                runId: input.context.projectionRunId,
-                parentNodeId: input.context.itemParentNodeId,
-                rootNodeId: input.context.rootNodeId,
-                kind: "subagent",
-                status: "running",
-                countsForRun: false,
-                providerThreadId: providerThread.id,
-                providerTurnId: input.context.providerTurnId,
-                nativeItemRef: codexNativeItemRef(input.nativeToolCallId),
-                runtimeRequestId: null,
-                checkpointScopeId: null,
-                startedAt: now,
-                completedAt: null,
+            yield* emitProviderEvent(
+              {
+                type: "app_thread.created",
+                driver: CODEX_PROVIDER,
+                appThread: childThread,
               },
-            });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: {
-                id: childRootNodeId,
-                threadId: childThreadId,
-                runId: null,
-                parentNodeId: null,
-                rootNodeId: childRootNodeId,
-                kind: "root_turn",
-                status: "running",
-                countsForRun: false,
-                providerThreadId: providerThread.id,
-                providerTurnId: null,
-                nativeItemRef: codexNativeItemRef(input.nativeItemId),
-                runtimeRequestId: null,
-                checkpointScopeId: null,
-                startedAt: now,
-                completedAt: null,
+              { producer: input.context.origin.producer },
+            );
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: {
+                  id: subagentNodeId,
+                  threadId: input.context.projectionThreadId,
+                  runId: input.context.projectionRunId,
+                  parentNodeId: input.context.itemParentNodeId,
+                  rootNodeId: input.context.rootNodeId,
+                  kind: "subagent",
+                  status: "running",
+                  countsForRun: false,
+                  providerThreadId: providerThread.id,
+                  providerTurnId: input.context.providerTurnId,
+                  nativeItemRef: codexNativeItemRef(input.nativeToolCallId),
+                  runtimeRequestId: null,
+                  checkpointScopeId: null,
+                  startedAt: now,
+                  completedAt: null,
+                },
               },
-            });
-            yield* emitProviderEvent({
-              type: "provider_thread.updated",
-              driver: CODEX_PROVIDER,
-              providerThread,
-            });
+              input.context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: {
+                  id: childRootNodeId,
+                  threadId: childThreadId,
+                  runId: null,
+                  parentNodeId: null,
+                  rootNodeId: childRootNodeId,
+                  kind: "root_turn",
+                  status: "running",
+                  countsForRun: false,
+                  providerThreadId: providerThread.id,
+                  providerTurnId: null,
+                  nativeItemRef: codexNativeItemRef(input.nativeItemId),
+                  runtimeRequestId: null,
+                  checkpointScopeId: null,
+                  startedAt: now,
+                  completedAt: null,
+                },
+              },
+              { producer: input.context.origin.producer },
+            );
+            yield* emitProviderEvent(
+              {
+                type: "provider_thread.updated",
+                driver: CODEX_PROVIDER,
+                providerThread,
+              },
+              { producer: input.context.origin.producer },
+            );
             if (input.emitInitialPrompt && input.prompt.length > 0) {
               const promptNativeItemId = `${input.nativeItemId}:prompt`;
               const promptArtifacts = makeSubagentConversationArtifacts({
@@ -3263,16 +3918,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 ordinal: 100,
                 now,
               });
-              yield* emitProviderEvent({
-                type: "message.updated",
-                driver: CODEX_PROVIDER,
-                message: promptArtifacts.message,
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: promptArtifacts.turnItem,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "message.updated",
+                  driver: CODEX_PROVIDER,
+                  message: promptArtifacts.message,
+                },
+                { producer: input.context.origin.producer },
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: promptArtifacts.turnItem,
+                },
+                { producer: input.context.origin.producer },
+              );
             }
             yield* emitSubagentTaskUpdate({
               subagent,
@@ -3294,13 +3955,23 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 .pipe(
                   Effect.flatMap(decodeCodexChildModel),
                   Effect.timeout("5 seconds"),
-                  Effect.flatMap((response) => Effect.gen(function* () {
-                    if ((yield* Ref.get(closed)) || response.thread.id !== input.nativeThreadId ||
-                        (yield* Ref.get(subagentThreads)).get(input.nativeThreadId) !== subagent) return;
-                    yield* updateSubagentModel(input.nativeThreadId,
-                      subagentModels.has(input.nativeThreadId) ? null : response.model,
-                      subagentEfforts.has(input.nativeThreadId) ? undefined : response.reasoningEffort);
-                  })),
+                  Effect.flatMap((response) =>
+                    Effect.gen(function* () {
+                      if (
+                        (yield* Ref.get(closed)) ||
+                        response.thread.id !== input.nativeThreadId ||
+                        (yield* Ref.get(subagentThreads)).get(input.nativeThreadId) !== subagent
+                      )
+                        return;
+                      yield* updateSubagentModel(
+                        input.nativeThreadId,
+                        subagentModels.has(input.nativeThreadId) ? null : response.model,
+                        subagentEfforts.has(input.nativeThreadId)
+                          ? undefined
+                          : response.reasoningEffort,
+                      );
+                    }),
+                  ),
                   Effect.catch(() => Effect.void),
                   Effect.forkIn(scope),
                 );
@@ -3554,13 +4225,43 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           string,
           { turnId: string; nativeItemId: string; stream: "summary" | "content"; index: number }
         >();
+        const coalescedContexts = new Map<string, ActiveCodexTurnContext>();
+        const coalescedSources = new Map<
+          string,
+          { readonly producer: ProviderEventProducerOrigin; readonly nativeTurnId: string }
+        >();
+        const coalescedSourceKey = (
+          producer: ProviderEventProducerOrigin,
+          nativeTurnId: string,
+        ) => {
+          const key = JSON.stringify([producer.runtimeGeneration, nativeTurnId]);
+          if (!coalescedSources.has(key)) coalescedSources.set(key, { producer, nativeTurnId });
+          return key;
+        };
+        const coalescedTurnKey = (context: ActiveCodexTurnContext) => {
+          const key = coalescedSourceKey(context.origin.producer, context.nativeTurnId);
+          coalescedContexts.set(key, context);
+          return key;
+        };
+        const resolveCoalescedContext = (key: string) =>
+          Effect.gen(function* () {
+            const retained = coalescedContexts.get(key);
+            if (retained !== undefined) return retained;
+            const source = coalescedSources.get(key);
+            if (source === undefined) return undefined;
+            const context = yield* awaitActiveTurn(source.nativeTurnId).pipe(
+              Effect.provideService(NativeCodexEventProducer, source.producer),
+            );
+            if (context !== undefined) coalescedContexts.set(key, context);
+            return context;
+          });
         const reasoningDeltas = yield* makeProviderTextDeltaCoalescer({
           flushIntervalMs: CODEX_ASSISTANT_DELTA_FLUSH_INTERVAL_MS,
           emit: (update) =>
             Effect.gen(function* () {
               const part = reasoningParts.get(update.itemId);
               if (part === undefined) return;
-              const context = yield* awaitActiveTurn(update.turnId);
+              const context = yield* resolveCoalescedContext(update.turnId);
               if (context === undefined) return;
               const artifacts = yield* buildAgentMessageArtifacts(
                 context,
@@ -3568,38 +4269,45 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 update.completed,
               );
               const interrupted = (yield* Ref.get(terminalizedNonCompletedNativeTurns)).has(
-                update.turnId,
+                context.nativeTurnId,
               );
               const { messageId: _messageId, ...item } = artifacts.turnItem;
               const nativeItemRef = codexNativeItemRef(part.nativeItemId);
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node: {
-                  ...artifacts.node,
-                  kind: "reasoning",
-                  nativeItemRef,
-                  ...(interrupted ? { status: "interrupted" as const } : {}),
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node: {
+                    ...artifacts.node,
+                    kind: "reasoning",
+                    nativeItemRef,
+                    ...(interrupted ? { status: "interrupted" as const } : {}),
+                  },
                 },
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: {
-                  ...item,
-                  type: "reasoning",
-                  nativeItemRef,
-                  ...(interrupted ? { status: "interrupted" as const } : {}),
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: {
+                    ...item,
+                    type: "reasoning",
+                    nativeItemRef,
+                    ...(interrupted ? { status: "interrupted" as const } : {}),
+                  },
                 },
-              });
-            }),
+                context.origin,
+              );
+            }).pipe(Effect.provideService(NativeCodexEventProducer, undefined)),
         });
         const reasoningPartKey = (
-          turnId: string,
+          context: ActiveCodexTurnContext,
           nativeItemId: string,
           stream: "summary" | "content",
           index: number,
         ) => {
+          const turnId = coalescedTurnKey(context);
           const key = JSON.stringify([turnId, nativeItemId, stream, index]);
           reasoningParts.set(key, { turnId, nativeItemId, stream, index });
           return key;
@@ -3612,18 +4320,23 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           const context = yield* awaitActiveTurn(payload.turnId);
           if (context === undefined || payload.delta.length === 0) return;
           yield* completeProviderRetry(context, yield* DateTime.now);
-          const itemId = reasoningPartKey(payload.turnId, payload.itemId, stream, index);
+          const itemId = reasoningPartKey(context, payload.itemId, stream, index);
           // Reserve the position before the delayed flush, ahead of later tool items.
           yield* resolveItemOrdinal(context, itemId);
-          yield* reasoningDeltas.append({ turnId: payload.turnId, itemId, delta: payload.delta });
+          yield* reasoningDeltas.append({
+            turnId: coalescedTurnKey(context),
+            itemId,
+            delta: payload.delta,
+          });
         });
         const completeReasoning = Effect.fn("CodexAdapterV2.completeReasoning")(function* (
-          turnId: string,
+          context: ActiveCodexTurnContext,
           item: { id: string; summary?: ReadonlyArray<string>; content?: ReadonlyArray<string> },
         ) {
+          const turnId = coalescedTurnKey(context);
           for (const stream of ["summary", "content"] as const) {
             for (const [index] of (item[stream] ?? []).entries()) {
-              reasoningPartKey(turnId, item.id, stream, index);
+              reasoningPartKey(context, item.id, stream, index);
             }
           }
           for (const [key, part] of reasoningParts) {
@@ -3643,19 +4356,19 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           flushIntervalMs: CODEX_ASSISTANT_DELTA_FLUSH_INTERVAL_MS,
           emit: (update) =>
             Effect.gen(function* () {
-              const context = yield* awaitActiveTurn(update.turnId);
+              const context = yield* resolveCoalescedContext(update.turnId);
               if (context === undefined) {
                 return;
               }
               const finalAnswerItem = (yield* Ref.get(finalAnswerItemIdsByTurn))
-                .get(update.turnId)
+                .get(context.nativeTurnId)
                 ?.has(update.itemId);
               if (finalAnswerItem) {
                 const finalAnswerItemIds = (yield* Ref.get(finalAnswerItemIdsByTurn)).get(
-                  update.turnId,
+                  context.nativeTurnId,
                 );
                 const completedTexts =
-                  (yield* Ref.get(completedFinalAnswerTextsByTurn)).get(update.turnId) ??
+                  (yield* Ref.get(completedFinalAnswerTextsByTurn)).get(context.nativeTurnId) ??
                   new Set<string>();
                 const firstFinalAnswerItemId = finalAnswerItemIds?.values().next().value;
                 const duplicateCompletion =
@@ -3674,31 +4387,40 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 { id: update.itemId, text: update.text },
                 update.completed,
               );
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node: artifacts.node,
-              });
-              yield* emitProviderEvent({
-                type: "message.updated",
-                driver: CODEX_PROVIDER,
-                message: artifacts.message,
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: artifacts.turnItem,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node: artifacts.node,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "message.updated",
+                  driver: CODEX_PROVIDER,
+                  message: artifacts.message,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: artifacts.turnItem,
+                },
+                context.origin,
+              );
               if (finalAnswerItem && update.completed) {
                 yield* Ref.update(completedFinalAnswerTextsByTurn, (current) => {
                   const updated = new Map(current);
-                  const texts = new Set(updated.get(update.turnId) ?? []);
+                  const texts = new Set(updated.get(context.nativeTurnId) ?? []);
                   texts.add(update.text);
-                  updated.set(update.turnId, texts);
+                  updated.set(context.nativeTurnId, texts);
                   return updated;
                 });
               }
-            }),
+            }).pipe(Effect.provideService(NativeCodexEventProducer, undefined)),
         });
 
         const emitSubagentUserMessage = (
@@ -3743,16 +4465,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               ordinal,
               now: startedAt,
             });
-            yield* emitProviderEvent({
-              type: "message.updated",
-              driver: CODEX_PROVIDER,
-              message: artifacts.message,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "message.updated",
+                driver: CODEX_PROVIDER,
+                message: artifacts.message,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              },
+              context.origin,
+            );
             return true;
           });
 
@@ -4340,12 +5068,19 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
 
         yield* handleServerNotification("item/agentMessage/delta", (payload) =>
           Effect.gen(function* () {
+            const producer = yield* NativeCodexEventProducer;
+            if (producer === undefined) return;
             const context = (yield* Ref.get(activeTurns)).get(payload.turnId);
-            if (context !== undefined) {
+            if (
+              context !== undefined &&
+              context.origin.producer.token === producer.token &&
+              context.origin.producer.runtimeGeneration === producer.runtimeGeneration
+            ) {
+              coalescedTurnKey(context);
               yield* completeProviderRetry(context, yield* DateTime.now);
             }
             yield* agentMessageDeltas.append({
-              turnId: payload.turnId,
+              turnId: coalescedSourceKey(producer, payload.turnId),
               itemId: payload.itemId,
               delta: payload.delta,
             });
@@ -4374,21 +5109,30 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               status: "active",
               markdown,
             });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "plan.updated",
-              driver: CODEX_PROVIDER,
-              plan: artifacts.plan,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "plan.updated",
+                driver: CODEX_PROVIDER,
+                plan: artifacts.plan,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              },
+              context.origin,
+            );
           }).pipe(Effect.orDie),
         );
 
@@ -4412,21 +5156,30 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               ...(explanation === undefined ? {} : { explanation }),
               steps,
             });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "plan.updated",
-              driver: CODEX_PROVIDER,
-              plan: artifacts.plan,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "plan.updated",
+                driver: CODEX_PROVIDER,
+                plan: artifacts.plan,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              },
+              context.origin,
+            );
           }).pipe(Effect.orDie),
         );
 
@@ -4447,11 +5200,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               yield* Ref.update(limitedTurnItems, (current) =>
                 new Map(current).set(item.providerThreadId!, updated),
               );
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: updated,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: updated,
+                },
+                limitedTurnItemOrigins.get(item.providerThreadId!),
+              );
             }
             const update = codexRateLimitsToUpdate(payload.rateLimits);
             if (update && adapterOptions.onUsageLimits) {
@@ -4475,82 +5231,116 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             const now = yield* DateTime.now;
             // Live context usage rides on the provider turn (#8144): the turn
             // is the natural owner and re-emitting it never disturbs items.
-            yield* emitProviderEvent({
-              type: "provider_turn.updated",
-              driver: CODEX_PROVIDER,
-              threadId: context.projectionThreadId,
-              providerTurn: {
-                id: context.providerTurnId,
-                providerThreadId: context.providerThread.id,
-                nodeId: context.providerNodeId,
-                runAttemptId: context.subagent === null ? context.input.attemptId : null,
-                nativeTurnRef: {
-                  driver: CODEX_PROVIDER,
-                  nativeId: payload.turnId,
-                  strength: "strong",
+            yield* emitProviderEvent(
+              {
+                type: "provider_turn.updated",
+                driver: CODEX_PROVIDER,
+                threadId: context.projectionThreadId,
+                providerTurn: {
+                  id: context.providerTurnId,
+                  providerThreadId: context.providerThread.id,
+                  nodeId: context.providerNodeId,
+                  runAttemptId: context.subagent === null ? context.input.attemptId : null,
+                  nativeTurnRef: {
+                    driver: CODEX_PROVIDER,
+                    nativeId: payload.turnId,
+                    strength: "strong",
+                  },
+                  ordinal: context.providerTurnOrdinal,
+                  status: "running",
+                  startedAt: context.startedAt,
+                  completedAt: null,
+                  tokenUsage: codexProviderTurnTokenUsage(
+                    payload.tokenUsage,
+                    DateTime.formatIso(now),
+                  ),
                 },
-                ordinal: context.providerTurnOrdinal,
-                status: "running",
-                startedAt: context.startedAt,
-                completedAt: null,
-                tokenUsage: codexProviderTurnTokenUsage(
-                  payload.tokenUsage,
-                  DateTime.formatIso(now),
-                ),
               },
-            });
+              context.origin,
+            );
           }).pipe(Effect.orDie),
         );
 
         yield* handleServerNotification("thread/settings/updated", (payload) =>
-          updateSubagentModel(payload.threadId, payload.threadSettings.model, payload.threadSettings.effort).pipe(
-            Effect.andThen(observeRuntimeIdentity(payload.threadId, {
-              sourceEvent: "thread/settings/updated",
-              model: payload.threadSettings.model,
-              modelProvider: payload.threadSettings.modelProvider,
-              serviceTier: payload.threadSettings.serviceTier,
-            })),
+          updateSubagentModel(
+            payload.threadId,
+            payload.threadSettings.model,
+            payload.threadSettings.effort,
+          ).pipe(
+            Effect.andThen(
+              observeRuntimeIdentity(payload.threadId, {
+                sourceEvent: "thread/settings/updated",
+                model: payload.threadSettings.model,
+                modelProvider: payload.threadSettings.modelProvider,
+                ...(payload.threadSettings.serviceTier === undefined
+                  ? {}
+                  : { serviceTier: payload.threadSettings.serviceTier }),
+              }),
+            ),
           ),
         );
         yield* handleServerNotification("model/rerouted", (payload) =>
           updateSubagentModel(payload.threadId, payload.toModel).pipe(
-            Effect.andThen(observeRuntimeIdentity(payload.threadId, {
-              sourceEvent: "model/rerouted",
-              model: payload.toModel,
-            })),
+            Effect.andThen(
+              observeRuntimeIdentity(payload.threadId, {
+                sourceEvent: "model/rerouted",
+                model: payload.toModel,
+              }),
+            ),
           ),
         );
 
         yield* handleServerNotification("turn/started", (payload) =>
           Effect.gen(function* () {
+            const producer = yield* NativeCodexEventProducer;
             if ((yield* Ref.get(terminalizedNonCompletedNativeTurns)).has(payload.turn.id)) return;
             const context = (yield* Ref.get(activeTurns)).get(payload.turn.id);
             if (context !== undefined) {
+              if (
+                producer !== undefined &&
+                (context.origin.producer.token !== producer.token ||
+                  context.origin.producer.runtimeGeneration !== producer.runtimeGeneration)
+              )
+                return;
               if (context.nativeStartReady !== undefined) {
                 yield* Deferred.succeed(context.nativeStartReady, undefined);
               }
               return;
             }
+            const compact = pendingCompactions.get(payload.threadId);
+            if (compact !== undefined) {
+              if (
+                producer === undefined ||
+                compact.producer.token !== producer.token ||
+                compact.producer.runtimeGeneration !== producer.runtimeGeneration
+              )
+                return;
+              if (compact.acknowledged) yield* registerCompactionTurn(compact, payload);
+              else if (compact.nativeStart === undefined) compact.nativeStart = payload;
+              else if (compact.nativeStart.turn.id !== payload.turn.id) compact.ambiguous = true;
+              return;
+            }
             const pendingRootTurn = (yield* Ref.get(pendingRootTurns)).get(payload.threadId);
             if (pendingRootTurn !== undefined) {
               const request = capacityByThread.get(payload.threadId);
+              if (
+                request !== undefined &&
+                producer !== undefined &&
+                (request.producer.token !== producer.token ||
+                  request.producer.runtimeGeneration !== producer.runtimeGeneration)
+              )
+                return;
               if (request?.state.phase === "awaiting_start") {
                 if (request.earlyStarts.size >= 32) {
-                  reduceCapacity(request, { type: "startUnknown", retryOrdinal: request.state.retryOrdinal });
+                  reduceCapacity(request, {
+                    type: "startUnknown",
+                    retryOrdinal: request.state.retryOrdinal,
+                  });
                   nativeStartUnknown = true;
                 } else request.earlyStarts.set(payload.turn.id, payload);
                 return;
               }
-              yield* registerRootTurn({
-                turnInput: pendingRootTurn,
-                nativeTurnId: payload.turn.id,
-                startedAt: codexTimestamp(payload.turn.startedAt),
-              });
-              yield* Ref.update(pendingRootTurns, (current) => {
-                const updated = new Map(current);
-                updated.delete(payload.threadId);
-                return updated;
-              });
+              // Notifications remain facts until the matching start reply selects the actual native turn.
               return;
             }
             yield* rememberSubagentTurnStarted({
@@ -4563,22 +5353,45 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
 
         const handleNativeError = (payload: CodexSchema.V2ErrorNotification) =>
           Effect.gen(function* () {
-            const request = capacityByTurn.get(payload.turnId) ?? capacityByThread.get(payload.threadId);
-            if (request !== undefined && request.state.binding.nativeThreadId === payload.threadId) {
+            const producer = yield* NativeCodexEventProducer;
+            const request =
+              capacityByTurn.get(payload.turnId) ?? capacityByThread.get(payload.threadId);
+            if (
+              request !== undefined &&
+              producer !== undefined &&
+              (request.producer.token !== producer.token ||
+                request.producer.runtimeGeneration !== producer.runtimeGeneration)
+            )
+              return;
+            if (
+              request !== undefined &&
+              request.state.binding.nativeThreadId === payload.threadId
+            ) {
               if (request.state.phase === "awaiting_start") {
                 if (request.earlyErrors.size + request.earlyCompletions.size >= 32) {
-                  reduceCapacity(request, { type: "startUnknown", retryOrdinal: request.state.retryOrdinal });
+                  reduceCapacity(request, {
+                    type: "startUnknown",
+                    retryOrdinal: request.state.retryOrdinal,
+                  });
                   nativeStartUnknown = true;
                 } else {
                   request.earlyErrors.set(payload.turnId, payload);
-                  reduceCapacity(request, { type: "nativeError", nativeTurnId: payload.turnId,
-                    code: codexErrorInfoCode(payload.error.codexErrorInfo), willRetry: payload.willRetry });
+                  reduceCapacity(request, {
+                    type: "nativeError",
+                    nativeTurnId: payload.turnId,
+                    code: codexErrorInfoCode(payload.error.codexErrorInfo),
+                    willRetry: payload.willRetry,
+                  });
                 }
                 return;
               }
               if (request.state.nativeTurnId === payload.turnId) {
-                reduceCapacity(request, { type: "nativeError", nativeTurnId: payload.turnId,
-                  code: codexErrorInfoCode(payload.error.codexErrorInfo), willRetry: payload.willRetry });
+                reduceCapacity(request, {
+                  type: "nativeError",
+                  nativeTurnId: payload.turnId,
+                  code: codexErrorInfoCode(payload.error.codexErrorInfo),
+                  willRetry: payload.willRetry,
+                });
               }
             }
             const context = yield* awaitActiveTurn(payload.turnId);
@@ -4640,25 +5453,28 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               updated.set(context.providerTurnId, state);
               return updated;
             });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: makeProviderRetryTurnItem({
-                idAllocator,
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
                 driver: CODEX_PROVIDER,
-                threadId: context.projectionThreadId,
-                runId: context.projectionRunId,
-                nodeId: context.providerNodeId,
-                providerThreadId: context.providerThread.id,
-                providerTurnId: context.providerTurnId,
-                itemOrdinal,
-                failure,
-                retry,
-                status: "running",
-                startedAt: state.startedAt,
-                updatedAt,
-              }),
-            });
+                turnItem: makeProviderRetryTurnItem({
+                  idAllocator,
+                  driver: CODEX_PROVIDER,
+                  threadId: context.projectionThreadId,
+                  runId: context.projectionRunId,
+                  nodeId: context.providerNodeId,
+                  providerThreadId: context.providerThread.id,
+                  providerTurnId: context.providerTurnId,
+                  itemOrdinal,
+                  failure,
+                  retry,
+                  status: "running",
+                  startedAt: state.startedAt,
+                  updatedAt,
+                }),
+              },
+              context.origin,
+            );
           }).pipe(Effect.orDie);
         yield* handleServerNotification("error", handleNativeError);
 
@@ -4674,31 +5490,34 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             nativeItemId,
             nativeStartedAt,
           );
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver: CODEX_PROVIDER,
-            turnItem: {
-              id: idAllocator.derive.turnItemFromProviderItem({
-                driver: CODEX_PROVIDER,
-                nativeItemId,
-              }),
-              threadId: context.projectionThreadId,
-              runId: context.projectionRunId,
-              nodeId: context.providerNodeId,
-              providerThreadId: context.providerThread.id,
-              providerTurnId: context.providerTurnId,
-              nativeItemRef: codexNativeItemRef(nativeItemId),
-              parentItemId: null,
-              ordinal,
-              type: "compaction",
+          yield* emitProviderEvent(
+            {
+              type: "turn_item.updated",
               driver: CODEX_PROVIDER,
-              status,
-              title: status === "completed" ? "Context compacted" : "Compacting context",
-              startedAt,
-              completedAt: status === "completed" ? now : null,
-              updatedAt: now,
+              turnItem: {
+                id: idAllocator.derive.turnItemFromProviderItem({
+                  driver: CODEX_PROVIDER,
+                  nativeItemId,
+                }),
+                threadId: context.projectionThreadId,
+                runId: context.projectionRunId,
+                nodeId: context.providerNodeId,
+                providerThreadId: context.providerThread.id,
+                providerTurnId: context.providerTurnId,
+                nativeItemRef: codexNativeItemRef(nativeItemId),
+                parentItemId: null,
+                ordinal,
+                type: "compaction",
+                driver: CODEX_PROVIDER,
+                status,
+                title: status === "completed" ? "Context compacted" : "Compacting context",
+                startedAt,
+                completedAt: status === "completed" ? now : null,
+                updatedAt: now,
+              },
             },
-          });
+            context.origin,
+          );
         });
 
         yield* handleServerNotification("item/started", (payload) =>
@@ -4774,16 +5593,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 });
               }
               const artifacts = yield* buildCommandExecutionArtifacts(context, payload.item);
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node: artifacts.node,
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: artifacts.turnItem,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node: artifacts.node,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: artifacts.turnItem,
+                },
+                context.origin,
+              );
               return;
             }
 
@@ -4792,16 +5617,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 yield* trackRunningDynamicTool(payload.turnId, payload.item);
               }
               const artifacts = yield* buildDynamicToolArtifacts(context, payload.item);
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node: artifacts.node,
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: artifacts.turnItem,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node: artifacts.node,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: artifacts.turnItem,
+                },
+                context.origin,
+              );
               return;
             }
 
@@ -4814,16 +5645,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               item: payload.item,
               completed: false,
             });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              },
+              context.origin,
+            );
           }).pipe(Effect.orDie, turnTerminalizationPermit.withPermits(1)),
         );
 
@@ -4857,7 +5694,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             const { context, settled } = resolved;
 
             if (payload.item.type === "reasoning") {
-              yield* completeReasoning(payload.turnId, payload.item);
+              yield* completeReasoning(context, payload.item);
               return;
             }
 
@@ -4875,16 +5712,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             if (payload.item.type === "commandExecution") {
               const turnDrained = yield* clearRunningCommandItem(payload.turnId, payload.item.id);
               const artifacts = yield* buildCommandExecutionArtifacts(context, payload.item);
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node: artifacts.node,
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: artifacts.turnItem,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node: artifacts.node,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: artifacts.turnItem,
+                },
+                context.origin,
+              );
               if (settled) {
                 if (
                   context.subagent === null &&
@@ -4940,16 +5783,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             if (payload.item.type === "mcpToolCall" || payload.item.type === "dynamicToolCall") {
               yield* clearRunningDynamicTool(payload.turnId, payload.item.id);
               const artifacts = yield* buildDynamicToolArtifacts(context, payload.item);
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node: artifacts.node,
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: artifacts.turnItem,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node: artifacts.node,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: artifacts.turnItem,
+                },
+                context.origin,
+              );
               if (settled) {
                 yield* releaseSettledTurnIfIdle(payload.turnId);
               }
@@ -4961,16 +5810,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               if (artifacts === null) {
                 return;
               }
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node: artifacts.node,
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: artifacts.turnItem,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node: artifacts.node,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: artifacts.turnItem,
+                },
+                context.origin,
+              );
               return;
             }
 
@@ -4980,16 +5835,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 item: payload.item,
                 completed: true,
               });
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node: artifacts.node,
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: artifacts.turnItem,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node: artifacts.node,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: artifacts.turnItem,
+                },
+                context.origin,
+              );
               return;
             }
 
@@ -5007,21 +5868,30 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 markdown,
                 completed: true,
               });
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node: artifacts.node,
-              });
-              yield* emitProviderEvent({
-                type: "plan.updated",
-                driver: CODEX_PROVIDER,
-                plan: artifacts.plan,
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: artifacts.turnItem,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node: artifacts.node,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "plan.updated",
+                  driver: CODEX_PROVIDER,
+                  plan: artifacts.plan,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: artifacts.turnItem,
+                },
+                context.origin,
+              );
               return;
             }
 
@@ -5063,22 +5933,31 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   options: (question.options ?? []).map((label) => ({ label, description: "" })),
                 })),
               });
-              yield* emitProviderEvent({
-                type: "node.updated",
-                driver: CODEX_PROVIDER,
-                node: artifacts.node,
-              });
-              yield* emitProviderEvent({
-                type: "runtime_request.updated",
-                driver: CODEX_PROVIDER,
-                threadId: artifacts.node.threadId,
-                runtimeRequest: artifacts.request,
-              });
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: artifacts.turnItem,
-              });
+              yield* emitProviderEvent(
+                {
+                  type: "node.updated",
+                  driver: CODEX_PROVIDER,
+                  node: artifacts.node,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "runtime_request.updated",
+                  driver: CODEX_PROVIDER,
+                  threadId: artifacts.node.threadId,
+                  runtimeRequest: artifacts.request,
+                },
+                context.origin,
+              );
+              yield* emitProviderEvent(
+                {
+                  type: "turn_item.updated",
+                  driver: CODEX_PROVIDER,
+                  turnItem: artifacts.turnItem,
+                },
+                context.origin,
+              );
               yield* Ref.update(finalAnswerItemIdsByTurn, (current) => {
                 const ids = current.get(payload.turnId);
                 if (!ids?.has(payload.item.id)) return current;
@@ -5106,7 +5985,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               (yield* Ref.get(completedFinalAnswerTextsByTurn)).get(payload.turnId) ??
               new Set<string>();
             const text = yield* agentMessageDeltas.complete({
-              turnId: payload.turnId,
+              turnId: coalescedTurnKey(context),
               itemId: payload.item.id,
               finalText: payload.item.text,
             });
@@ -5170,22 +6049,31 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               });
               return updated;
             });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "runtime_request.updated",
-              driver: CODEX_PROVIDER,
-              threadId: artifacts.node.threadId,
-              runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "runtime_request.updated",
+                driver: CODEX_PROVIDER,
+                threadId: artifacts.node.threadId,
+                runtimeRequest: artifacts.request,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              },
+              context.origin,
+            );
 
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
@@ -5230,22 +6118,31 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               });
               return updated;
             });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "runtime_request.updated",
-              driver: CODEX_PROVIDER,
-              threadId: artifacts.node.threadId,
-              runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "runtime_request.updated",
+                driver: CODEX_PROVIDER,
+                threadId: artifacts.node.threadId,
+                runtimeRequest: artifacts.request,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              },
+              context.origin,
+            );
 
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
@@ -5291,22 +6188,31 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               });
               return updated;
             });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "runtime_request.updated",
-              driver: CODEX_PROVIDER,
-              threadId: artifacts.node.threadId,
-              runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "runtime_request.updated",
+                driver: CODEX_PROVIDER,
+                threadId: artifacts.node.threadId,
+                runtimeRequest: artifacts.request,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              },
+              context.origin,
+            );
 
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
@@ -5376,22 +6282,31 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               });
               return updated;
             });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "runtime_request.updated",
-              driver: CODEX_PROVIDER,
-              threadId: artifacts.node.threadId,
-              runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "runtime_request.updated",
+                driver: CODEX_PROVIDER,
+                threadId: artifacts.node.threadId,
+                runtimeRequest: artifacts.request,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              },
+              context.origin,
+            );
 
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
@@ -5435,22 +6350,31 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               });
               return updated;
             });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "runtime_request.updated",
-              driver: CODEX_PROVIDER,
-              threadId: artifacts.node.threadId,
-              runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "runtime_request.updated",
+                driver: CODEX_PROVIDER,
+                threadId: artifacts.node.threadId,
+                runtimeRequest: artifacts.request,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              },
+              context.origin,
+            );
 
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
@@ -5495,22 +6419,31 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               });
               return updated;
             });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "runtime_request.updated",
-              driver: CODEX_PROVIDER,
-              threadId: artifacts.node.threadId,
-              runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "runtime_request.updated",
+                driver: CODEX_PROVIDER,
+                threadId: artifacts.node.threadId,
+                runtimeRequest: artifacts.request,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              },
+              context.origin,
+            );
 
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
@@ -5553,22 +6486,31 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               });
               return updated;
             });
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CODEX_PROVIDER,
-              node: artifacts.node,
-            });
-            yield* emitProviderEvent({
-              type: "runtime_request.updated",
-              driver: CODEX_PROVIDER,
-              threadId: artifacts.node.threadId,
-              runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "runtime_request.updated",
+                driver: CODEX_PROVIDER,
+                threadId: artifacts.node.threadId,
+                runtimeRequest: artifacts.request,
+              },
+              context.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              },
+              context.origin,
+            );
 
             const resolved = yield* Deferred.await(answers).pipe(
               Effect.ensuring(
@@ -5615,43 +6557,49 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                           ? "usage_limit"
                           : "provider_error",
                     });
-              return {
+              return stampProviderEvent<CodexRootTerminalEvent>(
+                {
+                  type: "turn.terminal",
+                  driver: CODEX_PROVIDER,
+                  providerThreadId: input.context.providerThread.id,
+                  providerTurnId: input.context.providerTurnId,
+                  runOrdinal: input.context.input.runOrdinal,
+                  failureItemOrdinal: yield* resolveItemOrdinal(
+                    input.context,
+                    `terminal-failure:${input.context.providerTurnId}`,
+                  ),
+                  status: terminalStatus,
+                  failure:
+                    failure.class === "usage_limit"
+                      ? {
+                          ...failure,
+                          resetAt: codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)),
+                        }
+                      : failure,
+                  ...(input.providerRetry === undefined
+                    ? {}
+                    : {
+                        retry: input.providerRetry.retry,
+                        retryStartedAt: input.providerRetry.startedAt,
+                      }),
+                  threadDisposition: "reusable",
+                },
+                input.context.origin,
+              );
+            }
+            return stampProviderEvent<CodexRootTerminalEvent>(
+              {
                 type: "turn.terminal",
                 driver: CODEX_PROVIDER,
                 providerThreadId: input.context.providerThread.id,
                 providerTurnId: input.context.providerTurnId,
                 runOrdinal: input.context.input.runOrdinal,
-                failureItemOrdinal: yield* resolveItemOrdinal(
-                  input.context,
-                  `terminal-failure:${input.context.providerTurnId}`,
-                ),
                 status: terminalStatus,
-                failure:
-                  failure.class === "usage_limit"
-                    ? {
-                        ...failure,
-                        resetAt: codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)),
-                      }
-                    : failure,
-                ...(input.providerRetry === undefined
-                  ? {}
-                  : {
-                      retry: input.providerRetry.retry,
-                      retryStartedAt: input.providerRetry.startedAt,
-                    }),
+                failure: null,
                 threadDisposition: "reusable",
-              };
-            }
-            return {
-              type: "turn.terminal",
-              driver: CODEX_PROVIDER,
-              providerThreadId: input.context.providerThread.id,
-              providerTurnId: input.context.providerTurnId,
-              runOrdinal: input.context.input.runOrdinal,
-              status: terminalStatus,
-              failure: null,
-              threadDisposition: "reusable",
-            };
+              },
+              input.context.origin,
+            );
           },
         );
 
@@ -5661,7 +6609,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         ) {
           const current =
             event.status === "failed" && event.failure.class === "usage_limit"
-              ? {
+              ? copyProviderEventOrigin<CodexRootTerminalEvent>(event, {
                   ...event,
                   failure: {
                     ...event.failure,
@@ -5669,9 +6617,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                       event.failure.resetAt ??
                       codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)),
                   },
-                }
+                })
               : event;
-          yield* emitProviderEvent(current);
+          yield* emitProviderEvent(current, context.origin);
           if (current.status === "failed" && current.failure.class === "usage_limit") {
             const item = makeProviderFailureTurnItem({
               idAllocator,
@@ -5688,6 +6636,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             yield* Ref.update(limitedTurnItems, (items) =>
               new Map(items).set(context.providerThread.id, item),
             );
+            limitedTurnItemOrigins.set(context.providerThread.id, context.origin);
           }
         });
 
@@ -5703,10 +6652,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             const request = capacityByTurn.get(input.nativeTurnId);
             if (request?.logicalTerminalEmitted) return;
             const logicalContext = request?.logicalContext ?? input.context;
-            const event = yield* makeRootTerminalEvent({ ...input, context: logicalContext,
-              ...(request?.capacityRetry === undefined || input.providerRetry !== undefined ? {} : { providerRetry: request.capacityRetry }),
+            const event = yield* makeRootTerminalEvent({
+              ...input,
+              context: logicalContext,
+              ...(request?.capacityRetry === undefined || input.providerRetry !== undefined
+                ? {}
+                : { providerRetry: request.capacityRetry }),
             });
-            if (request?.capacityRetry !== undefined) yield* emitCapacityRetryItem(request, providerTurnStatusToTerminal(input.status));
+            if (request?.capacityRetry !== undefined)
+              yield* emitCapacityRetryItem(request, providerTurnStatusToTerminal(input.status));
             if (request !== undefined) request.logicalTerminalEmitted = true;
             const hasActiveDescendants = Array.from((yield* Ref.get(activeTurns)).values()).some(
               (candidate) => isDescendantCodexTurn(candidate, logicalContext),
@@ -5778,25 +6732,28 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 providerRetry !== undefined &&
                 (input.status !== "failed" || input.context.subagent !== null)
               ) {
-                yield* emitProviderEvent({
-                  type: "turn_item.updated",
-                  driver: CODEX_PROVIDER,
-                  turnItem: makeProviderRetryTurnItem({
-                    idAllocator,
+                yield* emitProviderEvent(
+                  {
+                    type: "turn_item.updated",
                     driver: CODEX_PROVIDER,
-                    threadId: input.context.projectionThreadId,
-                    runId: input.context.projectionRunId,
-                    nodeId: input.context.providerNodeId,
-                    providerThreadId: input.context.providerThread.id,
-                    providerTurnId: input.context.providerTurnId,
-                    itemOrdinal: providerRetry.itemOrdinal,
-                    failure: providerRetry.failure,
-                    retry: providerRetry.retry,
-                    status: providerTurnStatusToTerminal(input.status),
-                    startedAt: providerRetry.startedAt,
-                    updatedAt: input.completedAt,
-                  }),
-                });
+                    turnItem: makeProviderRetryTurnItem({
+                      idAllocator,
+                      driver: CODEX_PROVIDER,
+                      threadId: input.context.projectionThreadId,
+                      runId: input.context.projectionRunId,
+                      nodeId: input.context.providerNodeId,
+                      providerThreadId: input.context.providerThread.id,
+                      providerTurnId: input.context.providerTurnId,
+                      itemOrdinal: providerRetry.itemOrdinal,
+                      failure: providerRetry.failure,
+                      retry: providerRetry.retry,
+                      status: providerTurnStatusToTerminal(input.status),
+                      startedAt: providerRetry.startedAt,
+                      updatedAt: input.completedAt,
+                    }),
+                  },
+                  input.context.origin,
+                );
               }
               if (input.status !== "completed") {
                 yield* Ref.update(terminalizedNonCompletedNativeTurns, (current) => {
@@ -5805,92 +6762,107 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   return updated;
                 });
               }
-              yield* agentMessageDeltas.flushTurn(input.nativeTurnId);
-              yield* reasoningDeltas.flushTurn(input.nativeTurnId);
+              const coalescedKey = coalescedTurnKey(input.context);
+              yield* agentMessageDeltas.flushTurn(coalescedKey);
+              yield* reasoningDeltas.flushTurn(coalescedKey);
               for (const [key, part] of reasoningParts) {
-                if (part.turnId === input.nativeTurnId) reasoningParts.delete(key);
+                if (part.turnId === coalescedKey) reasoningParts.delete(key);
               }
-              yield* emitProviderEvent({
-                type: "provider_turn.updated",
-                driver: CODEX_PROVIDER,
-                threadId: input.context.projectionThreadId,
-                providerTurn: {
-                  id: input.context.providerTurnId,
-                  providerThreadId: input.context.providerThread.id,
-                  nodeId: input.context.providerNodeId,
-                  runAttemptId:
-                    input.context.subagent === null ? input.context.input.attemptId : null,
-                  nativeTurnRef: {
-                    driver: CODEX_PROVIDER,
-                    nativeId: input.nativeTurnId,
-                    strength: "strong",
-                  },
-                  ordinal: input.context.providerTurnOrdinal,
-                  status: input.status,
-                  startedAt: input.context.startedAt,
-                  completedAt: input.completedAt,
-                  turnTokenUsage: completeCodexTurnTokenUsage(
-                    usageStateForThread(
-                      input.context.providerThread.nativeThreadRef?.nativeId ??
-                        String(input.context.providerThread.id),
+              coalescedContexts.delete(coalescedKey);
+              coalescedSources.delete(coalescedKey);
+              yield* emitProviderEvent(
+                {
+                  type: "provider_turn.updated",
+                  driver: CODEX_PROVIDER,
+                  threadId: input.context.projectionThreadId,
+                  providerTurn: {
+                    id: input.context.providerTurnId,
+                    providerThreadId: input.context.providerThread.id,
+                    nodeId: input.context.providerNodeId,
+                    runAttemptId:
+                      input.context.subagent === null ? input.context.input.attemptId : null,
+                    nativeTurnRef: {
+                      driver: CODEX_PROVIDER,
+                      nativeId: input.nativeTurnId,
+                      strength: "strong",
+                    },
+                    ordinal: input.context.providerTurnOrdinal,
+                    status: input.status,
+                    startedAt: input.context.startedAt,
+                    completedAt: input.completedAt,
+                    turnTokenUsage: completeCodexTurnTokenUsage(
+                      usageStateForThread(
+                        input.context.providerThread.nativeThreadRef?.nativeId ??
+                          String(input.context.providerThread.id),
+                      ),
+                      input.nativeTurnId,
+                      input.status === "completed",
                     ),
-                    input.nativeTurnId,
-                    input.status === "completed",
-                  ),
+                  },
                 },
-              });
+                input.context.origin,
+              );
               if (input.context.subagent !== null) {
-                yield* emitProviderEvent({
-                  type: "node.updated",
-                  driver: CODEX_PROVIDER,
-                  node: {
-                    id: input.context.providerNodeId,
-                    threadId: input.context.projectionThreadId,
-                    runId: null,
-                    parentNodeId: null,
-                    rootNodeId: input.context.rootNodeId,
-                    kind: "root_turn",
-                    status: input.status,
-                    countsForRun: false,
-                    providerThreadId: input.context.providerThread.id,
-                    providerTurnId: input.context.providerTurnId,
-                    nativeItemRef: input.context.subagent.task.nativeTaskRef,
-                    runtimeRequestId: null,
-                    checkpointScopeId: null,
-                    startedAt: input.context.providerNodeStartedAt,
-                    completedAt: input.completedAt,
+                yield* emitProviderEvent(
+                  {
+                    type: "node.updated",
+                    driver: CODEX_PROVIDER,
+                    node: {
+                      id: input.context.providerNodeId,
+                      threadId: input.context.projectionThreadId,
+                      runId: null,
+                      parentNodeId: null,
+                      rootNodeId: input.context.rootNodeId,
+                      kind: "root_turn",
+                      status: input.status,
+                      countsForRun: false,
+                      providerThreadId: input.context.providerThread.id,
+                      providerTurnId: input.context.providerTurnId,
+                      nativeItemRef: input.context.subagent.task.nativeTaskRef,
+                      runtimeRequestId: null,
+                      checkpointScopeId: null,
+                      startedAt: input.context.providerNodeStartedAt,
+                      completedAt: input.completedAt,
+                    },
                   },
-                });
-                yield* emitProviderEvent({
-                  type: "provider_thread.updated",
-                  driver: CODEX_PROVIDER,
-                  providerThread: {
-                    ...input.context.providerThread,
-                    status: "idle",
-                    updatedAt: input.completedAt,
+                  input.context.origin,
+                );
+                yield* emitProviderEvent(
+                  {
+                    type: "provider_thread.updated",
+                    driver: CODEX_PROVIDER,
+                    providerThread: {
+                      ...input.context.providerThread,
+                      status: "idle",
+                      updatedAt: input.completedAt,
+                    },
                   },
-                });
-                yield* emitProviderEvent({
-                  type: "node.updated",
-                  driver: CODEX_PROVIDER,
-                  node: {
-                    id: input.context.subagent.subagentNodeId,
-                    threadId: input.context.subagent.parentContext.projectionThreadId,
-                    runId: input.context.subagent.parentContext.projectionRunId,
-                    parentNodeId: input.context.subagent.parentContext.itemParentNodeId,
-                    rootNodeId: input.context.subagent.parentContext.rootNodeId,
-                    kind: "subagent",
-                    status: input.status,
-                    countsForRun: false,
-                    providerThreadId: input.context.providerThread.id,
-                    providerTurnId: input.context.subagent.parentContext.providerTurnId,
-                    nativeItemRef: input.context.subagent.task.nativeTaskRef,
-                    runtimeRequestId: null,
-                    checkpointScopeId: null,
-                    startedAt: input.context.subagent.startedAt,
-                    completedAt: input.completedAt,
+                  input.context.origin,
+                );
+                yield* emitProviderEvent(
+                  {
+                    type: "node.updated",
+                    driver: CODEX_PROVIDER,
+                    node: {
+                      id: input.context.subagent.subagentNodeId,
+                      threadId: input.context.subagent.parentContext.projectionThreadId,
+                      runId: input.context.subagent.parentContext.projectionRunId,
+                      parentNodeId: input.context.subagent.parentContext.itemParentNodeId,
+                      rootNodeId: input.context.subagent.parentContext.rootNodeId,
+                      kind: "subagent",
+                      status: input.status,
+                      countsForRun: false,
+                      providerThreadId: input.context.providerThread.id,
+                      providerTurnId: input.context.subagent.parentContext.providerTurnId,
+                      nativeItemRef: input.context.subagent.task.nativeTaskRef,
+                      runtimeRequestId: null,
+                      checkpointScopeId: null,
+                      startedAt: input.context.subagent.startedAt,
+                      completedAt: input.completedAt,
+                    },
                   },
-                });
+                  input.context.origin,
+                );
                 yield* emitSubagentTaskUpdate({
                   subagent: input.context.subagent,
                   status: input.status,
@@ -5991,18 +6963,44 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             }),
           );
 
-        const handleNativeCompletion = (payload: CodexSchema.V2TurnCompletedNotification) =>
+        const handleNativeCompletion = (
+          payload: CodexSchema.V2TurnCompletedNotification,
+        ): Effect.Effect<void> =>
           Effect.gen(function* () {
-            const request = capacityByTurn.get(payload.turn.id) ?? capacityByThread.get(payload.threadId);
-            if (request !== undefined && request.state.binding.nativeThreadId === payload.threadId && request.state.phase === "awaiting_start") {
+            const producer = yield* NativeCodexEventProducer;
+            const request =
+              capacityByTurn.get(payload.turn.id) ?? capacityByThread.get(payload.threadId);
+            if (
+              request !== undefined &&
+              producer !== undefined &&
+              (request.producer.token !== producer.token ||
+                request.producer.runtimeGeneration !== producer.runtimeGeneration)
+            )
+              return;
+            if (
+              request !== undefined &&
+              request.state.binding.nativeThreadId === payload.threadId &&
+              request.state.phase === "awaiting_start"
+            ) {
               if (request.earlyErrors.size + request.earlyCompletions.size >= 32) {
-                reduceCapacity(request, { type: "startUnknown", retryOrdinal: request.state.retryOrdinal });
+                reduceCapacity(request, {
+                  type: "startUnknown",
+                  retryOrdinal: request.state.retryOrdinal,
+                });
                 nativeStartUnknown = true;
               } else {
                 request.earlyCompletions.set(payload.turn.id, payload);
                 const nativeStatus = mapCodexTurnStatus(payload.turn.status);
-                if (nativeStatus === "completed" || nativeStatus === "failed" || nativeStatus === "interrupted")
-                  reduceCapacity(request, { type: "nativeCompleted", nativeTurnId: payload.turn.id, status: nativeStatus });
+                if (
+                  nativeStatus === "completed" ||
+                  nativeStatus === "failed" ||
+                  nativeStatus === "interrupted"
+                )
+                  reduceCapacity(request, {
+                    type: "nativeCompleted",
+                    nativeTurnId: payload.turn.id,
+                    status: nativeStatus,
+                  });
               }
               return;
             }
@@ -6011,17 +7009,52 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               return;
             }
             const nativeStatus = mapCodexTurnStatus(payload.turn.status);
+            const managed = managedTurns.get(payload.turn.id);
+            if (
+              managed !== undefined &&
+              producer !== undefined &&
+              managed.producer.token === producer.token &&
+              managed.producer.runtimeGeneration === producer.runtimeGeneration &&
+              managed.source.nativeThreadId === payload.threadId &&
+              (nativeStatus === "completed" ||
+                nativeStatus === "failed" ||
+                nativeStatus === "interrupted")
+            ) {
+              if (!managed.cohort.unknown)
+                yield* managedEvidence(
+                  managed.cohort,
+                  managed.cohort.issuer.recordNativeEndpoint(managed.actor, {
+                    kind: "native_endpoint",
+                    endpoint: "turn/completed",
+                    nativeThreadId: payload.threadId,
+                    nativeTurnId: payload.turn.id,
+                    outcome: nativeStatus,
+                    observedAt: DateTime.formatIso(codexTimestamp(payload.turn.completedAt)),
+                  }),
+                );
+              managed.closed = true;
+            }
             const status =
               nativeStatus === "completed" &&
               (yield* Ref.get(interruptingNativeTurns)).has(payload.turn.id)
                 ? "interrupted"
                 : nativeStatus;
-            if (request !== undefined && request.state.nativeTurnId === payload.turn.id &&
-                (status === "completed" || status === "failed" || status === "interrupted")) {
-              reduceCapacity(request, { type: "nativeCompleted", nativeTurnId: payload.turn.id, status });
+            if (
+              request !== undefined &&
+              request.state.nativeTurnId === payload.turn.id &&
+              (status === "completed" || status === "failed" || status === "interrupted")
+            ) {
+              reduceCapacity(request, {
+                type: "nativeCompleted",
+                nativeTurnId: payload.turn.id,
+                status,
+              });
             }
-            const continuingCapacity = request !== undefined && request.recoveryEnabled &&
-              request.state.phase === "waiting_retry" && capacityByThread.get(payload.threadId) === request;
+            const continuingCapacity =
+              request !== undefined &&
+              request.recoveryEnabled &&
+              request.state.phase === "waiting_retry" &&
+              capacityByThread.get(payload.threadId) === request;
             yield* finalizeCodexTurn({
               context,
               nativeTurnId: payload.turn.id,
@@ -6043,258 +7076,794 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           });
         yield* handleServerNotification("turn/completed", handleNativeCompletion);
 
-        const emitCapacityRetryItem = (request: CapacityRequest, status: "running" | "completed" | "failed" | "interrupted" | "cancelled") => Effect.gen(function* () {
-          const context = request.logicalContext;
-          const retry = request.capacityRetry;
-          if (context === undefined || retry === undefined) return;
-          yield* emitProviderEvent({ type: "turn_item.updated", driver: CODEX_PROVIDER,
-            turnItem: makeProviderRetryTurnItem({ idAllocator, driver: CODEX_PROVIDER,
-              threadId: context.projectionThreadId, runId: context.projectionRunId, nodeId: context.providerNodeId,
-              providerThreadId: context.providerThread.id, providerTurnId: context.providerTurnId,
-              itemOrdinal: retry.itemOrdinal, failure: retry.failure, retry: retry.retry, status,
-              startedAt: retry.startedAt, updatedAt: yield* DateTime.now,
-            }),
+        const emitCapacityRetryItem = (
+          request: CapacityRequest,
+          status: "running" | "completed" | "failed" | "interrupted" | "cancelled",
+        ) =>
+          Effect.gen(function* () {
+            const context = request.logicalContext;
+            const retry = request.capacityRetry;
+            if (context === undefined || retry === undefined) return;
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: makeProviderRetryTurnItem({
+                  idAllocator,
+                  driver: CODEX_PROVIDER,
+                  threadId: context.projectionThreadId,
+                  runId: context.projectionRunId,
+                  nodeId: context.providerNodeId,
+                  providerThreadId: context.providerThread.id,
+                  providerTurnId: context.providerTurnId,
+                  itemOrdinal: retry.itemOrdinal,
+                  failure: retry.failure,
+                  retry: retry.retry,
+                  status,
+                  startedAt: retry.startedAt,
+                  updatedAt: yield* DateTime.now,
+                }),
+              },
+              context.origin,
+            );
           });
-        });
 
-        const finishUnknownCapacityStart = (request: CapacityRequest) => Effect.gen(function* () {
-          nativeStartUnknown = true;
-          request.recoveryEnabled = false;
-          reduceCapacity(request, { type: "startUnknown", retryOrdinal: request.state.retryOrdinal });
-          const logicalContext = request.logicalContext;
-          if (logicalContext === undefined || request.logicalTerminalEmitted) return;
-          request.logicalTerminalEmitted = true;
-          yield* emitCapacityRetryItem(request, "failed");
-          yield* emitRootTerminal(logicalContext, {
-            type: "turn.terminal", driver: CODEX_PROVIDER,
-            providerThreadId: logicalContext.providerThread.id, providerTurnId: logicalContext.providerTurnId,
-            runOrdinal: logicalContext.input.runOrdinal,
-            failureItemOrdinal: yield* resolveItemOrdinal(logicalContext, `terminal-failure:${logicalContext.providerTurnId}`),
-            status: "failed", failure: makeProviderFailure({
-              class: "unknown", code: "codex_start_unknown", message: "Codex did not confirm the continuation start.", retryable: false,
-            }), threadDisposition: "broken",
+        const finishUnknownCapacityStart = (request: CapacityRequest) =>
+          Effect.gen(function* () {
+            if (request.managed !== undefined)
+              yield* managedUnknown(request.managed, "native_start_outcome_unknown");
+            nativeStartUnknown = true;
+            request.recoveryEnabled = false;
+            if (request.stopping) return;
+            reduceCapacity(request, {
+              type: "startUnknown",
+              retryOrdinal: request.state.retryOrdinal,
+            });
+            const logicalContext = request.logicalContext;
+            if (logicalContext === undefined || request.logicalTerminalEmitted) return;
+            request.logicalTerminalEmitted = true;
+            yield* emitCapacityRetryItem(request, "failed");
+            yield* emitRootTerminal(logicalContext, {
+              type: "turn.terminal",
+              driver: CODEX_PROVIDER,
+              providerThreadId: logicalContext.providerThread.id,
+              providerTurnId: logicalContext.providerTurnId,
+              runOrdinal: logicalContext.input.runOrdinal,
+              failureItemOrdinal: yield* resolveItemOrdinal(
+                logicalContext,
+                `terminal-failure:${logicalContext.providerTurnId}`,
+              ),
+              status: "failed",
+              failure: makeProviderFailure({
+                class: "unknown",
+                code: "codex_start_unknown",
+                message: "Codex did not confirm the continuation start.",
+                retryable: false,
+              }),
+              threadDisposition: "broken",
+            });
           });
-        });
         const cancelCapacityRequest = (
           request: CapacityRequest,
           reason: "stop" | "superseded" | "closed" | "runtime_changed",
           fromTimer = false,
-        ) => Effect.gen(function* () {
-          const waiting = request.state.phase === "waiting_retry";
-          request.recoveryEnabled = false;
-          reduceCapacity(request, { type: "cancel", reason });
-          if (request.timer !== undefined && !fromTimer) yield* Fiber.interrupt(request.timer);
-          if (!waiting || request.logicalContext === undefined || request.logicalTerminalEmitted) return;
-          const status = reason === "superseded" ? "failed" : "interrupted";
-          yield* emitOrDeferRootTerminal({
-            context: request.logicalContext, nativeTurnId: request.logicalContext.nativeTurnId,
-            status,
-            ...(status === "failed" ? { failureMessage: "Codex capacity recovery was superseded by newer input.", failureCode: "serverOverloaded" } : {}),
+          waitingBeforeFence?: boolean,
+        ) =>
+          Effect.gen(function* () {
+            const waiting = waitingBeforeFence ?? request.state.phase === "waiting_retry";
+            request.recoveryEnabled = false;
+            reduceCapacity(request, { type: "cancel", reason });
+            if (request.timer !== undefined && !fromTimer) yield* Fiber.interrupt(request.timer);
+            if (!waiting || request.logicalContext === undefined || request.logicalTerminalEmitted)
+              return;
+            const status = reason === "superseded" ? "failed" : "interrupted";
+            yield* emitOrDeferRootTerminal({
+              context: request.logicalContext,
+              nativeTurnId: request.logicalContext.nativeTurnId,
+              status,
+              ...(status === "failed"
+                ? {
+                    failureMessage: "Codex capacity recovery was superseded by newer input.",
+                    failureCode: "serverOverloaded",
+                  }
+                : {}),
+            });
           });
-        });
+        const stopPendingStart = (
+          stopInput: ProviderPendingStartStopInput,
+          goalAlreadyPaused = false,
+        ): Effect.Effect<ProviderPendingStartStopResult> =>
+          Effect.gen(function* () {
+            const unknown = (reason: string): ProviderPendingStartStopResult => ({
+              status: "unknown",
+              reason,
+            });
+            const request = capacityByThread.get(stopInput.binding.nativeThreadId);
+            if (request === undefined) return unknown("pending_start_missing");
+            const pending = request.pendingStart;
+            if (pending === undefined) {
+              const current = () => {
+                const binding = runtimeBindings.get(stopInput.binding.nativeThreadId)?.binding;
+                const acknowledged = request.currentContext;
+                return (
+                  !request.stopping &&
+                  !Ref.getUnsafe(closed) &&
+                  !replacingRuntime &&
+                  !nativeStartUnknown &&
+                  capacityByThread.get(stopInput.binding.nativeThreadId) === request &&
+                  request.pendingStart === undefined &&
+                  request.state.phase !== "awaiting_start" &&
+                  request.logicalContext !== undefined &&
+                  acknowledged !== undefined &&
+                  request.state.nativeTurnId === acknowledged.nativeTurnId &&
+                  acknowledged.input.runId === request.input.runId &&
+                  acknowledged.input.attemptId === request.input.attemptId &&
+                  binding !== undefined &&
+                  currentCapacityBinding(request) &&
+                  matchesInterruptBinding(
+                    request.input.providerThread,
+                    stopInput.binding,
+                    undefined,
+                  ) &&
+                  matchesInterruptBinding(
+                    acknowledged.providerThread,
+                    stopInput.binding,
+                    undefined,
+                  ) &&
+                  (
+                    [
+                      "threadId",
+                      "providerThreadId",
+                      "providerSessionId",
+                      "instanceId",
+                      "runtimeGeneration",
+                      "nativeThreadId",
+                    ] as const
+                  ).every((key) => stopInput.binding[key] === binding[key]) &&
+                  stopInput.runId === request.input.runId &&
+                  stopInput.attemptId === request.input.attemptId &&
+                  stopInput.startOperation.operation === "start_turn" &&
+                  request.startOperation.operation === "start_turn" &&
+                  stopInput.startOperation.operationId === request.startOperation.operationId &&
+                  (
+                    [
+                      "instanceId",
+                      "threadId",
+                      "providerSessionId",
+                      "providerThreadId",
+                      "runtimeGeneration",
+                      "attemptId",
+                    ] as const
+                  ).every((key) => stopInput.startOperation[key] === request.startOperation[key])
+                );
+              };
+              let waitingBeforeFence = false;
+              const fenced = yield* Effect.sync(() => {
+                if (!current()) return false;
+                // Fence delayed recovery without yielding between the current-RPC check and admission change.
+                waitingBeforeFence = request.state.phase === "waiting_retry";
+                request.recoveryEnabled = false;
+                reduceCapacity(request, { type: "cancel", reason: "stop" });
+                return true;
+              });
+              if (!fenced) return unknown("pending_start_changed");
+              const cancelled = yield* cancelCapacityRequest(
+                request,
+                "stop",
+                false,
+                waitingBeforeFence,
+              ).pipe(
+                Effect.as(true),
+                Effect.catchCause(() => Effect.succeed(false)),
+              );
+              if (!cancelled) return unknown("pending_start_fence_failed");
+              return yield* Effect.sync((): ProviderPendingStartStopResult =>
+                current()
+                  ? {
+                      status: "not_pending",
+                      binding: Object.freeze({ ...stopInput.binding }),
+                      runId: stopInput.runId,
+                      attemptId: stopInput.attemptId,
+                      startOperationId: request.startOperation.operationId,
+                    }
+                  : unknown("pending_start_changed"),
+              );
+            }
+            const current = Effect.gen(function* () {
+              return (
+                !request.stopping &&
+                !(yield* Ref.get(closed)) &&
+                capacityByThread.get(stopInput.binding.nativeThreadId) === request &&
+                request.pendingStart === pending &&
+                pending.isDispatched() &&
+                pending.fiber.pollUnsafe() === undefined &&
+                request.state.phase === "awaiting_start" &&
+                request.state.retryOrdinal === pending.retryOrdinal &&
+                currentCapacityBinding(request) &&
+                pending.client === client &&
+                pending.scope === incarnationScope &&
+                matchesRuntimeBinding(stopInput.binding) &&
+                stopInput.binding.threadId === pending.binding.threadId &&
+                stopInput.binding.providerThreadId === pending.binding.providerThreadId &&
+                stopInput.binding.providerSessionId === pending.binding.providerSessionId &&
+                stopInput.binding.instanceId === pending.binding.instanceId &&
+                stopInput.binding.runtimeGeneration === pending.binding.runtimeGeneration &&
+                stopInput.binding.nativeThreadId === pending.binding.nativeThreadId &&
+                stopInput.runId === request.input.runId &&
+                stopInput.attemptId === request.input.attemptId &&
+                stopInput.startOperation.operation === "start_turn" &&
+                request.startOperation.operation === "start_turn" &&
+                stopInput.startOperation.operationId === request.startOperation.operationId &&
+                (
+                  [
+                    "instanceId",
+                    "threadId",
+                    "providerSessionId",
+                    "providerThreadId",
+                    "runtimeGeneration",
+                    "attemptId",
+                  ] as const
+                ).every((key) => stopInput.startOperation[key] === request.startOperation[key])
+              );
+            });
+            if (!(yield* current)) return unknown("pending_start_changed");
+            if (!goalAlreadyPaused)
+              yield* pauseActiveGoal(request.input.providerThread, pending.binding, undefined);
+            if (!(yield* current)) return unknown("pending_start_changed");
+            if (input.withPendingStartStop === undefined)
+              return unknown("pending_start_owner_unavailable");
+            let cleanupCompleted = false;
+            const stop = Effect.gen(function* () {
+              if (!(yield* current))
+                return yield* toProtocolError("Codex pending start changed before owned cleanup.");
+              // The manager reserves ownership before this captured incarnation can close.
+              request.stopping = true;
+              request.recoveryEnabled = false;
+              reduceCapacity(request, { type: "cancel", reason: "stop" });
+              nativeStartUnknown = true;
+              yield* Ref.set(closed, true);
+              yield* Fiber.interrupt(pending.fiber);
+              yield* Scope.close(pending.scope, Exit.void);
+              runtimeBindings.clear();
+              nativeDirectories.clear();
+              pendingRuntimeIdentities.clear();
+              continuationSourceIdentity = undefined;
+              yield* Ref.set(pendingRootTurns, new Map());
+              const logical = request.logicalContext;
+              if (logical !== undefined) {
+                const completedAt = yield* DateTime.now;
+                const descendants = Array.from((yield* Ref.get(activeTurns)).values()).filter(
+                  (context) => isDescendantCodexTurn(context, logical),
+                );
+                for (const context of descendants)
+                  yield* finalizeCodexTurn({
+                    context,
+                    nativeTurnId: context.nativeTurnId,
+                    status: "interrupted",
+                    completedAt,
+                  });
+                yield* emitOrDeferRootTerminal({
+                  context: logical,
+                  nativeTurnId: logical.nativeTurnId,
+                  status: "interrupted",
+                });
+                yield* flushReadyRootTerminals();
+              }
+              cleanupCompleted = true;
+            });
+            return yield* input.withPendingStartStop(stopInput, stop).pipe(
+              Effect.timeoutOption("3 seconds"),
+              Effect.map((result): ProviderPendingStartStopResult => {
+                if (Option.isNone(result)) return unknown("pending_start_cleanup_timeout");
+                const receipt = result.value;
+                if (receipt.status === "unknown") return receipt;
+                return receipt.status === "cancelled" &&
+                  cleanupCompleted &&
+                  receipt.runId === stopInput.runId &&
+                  receipt.attemptId === stopInput.attemptId &&
+                  receipt.startOperationId === stopInput.startOperation.operationId &&
+                  (
+                    [
+                      "threadId",
+                      "providerThreadId",
+                      "providerSessionId",
+                      "instanceId",
+                      "runtimeGeneration",
+                      "nativeThreadId",
+                    ] as const
+                  ).every((key) => receipt.binding[key] === stopInput.binding[key])
+                  ? receipt
+                  : unknown("pending_start_cleanup_mismatch");
+              }),
+              Effect.catchCause(() => Effect.succeed(unknown("pending_start_cleanup_failed"))),
+            );
+          });
         const managedRuntimeUnchanged = Effect.gen(function* () {
           if (adapterOptions.resolveRuntimeForSend === undefined) return true;
           if (adapterOptions.readRuntimeRevisionForSend === undefined) return false;
           const generation = runtimeGeneration;
-          const revision = yield* adapterOptions.readRuntimeRevisionForSend.pipe(Effect.provideService(Scope.Scope, scope));
-          return !replacingRuntime && !(yield* Ref.get(closed)) && runtimeGeneration === generation &&
-            resolvedRuntime !== undefined && revision === resolvedRuntime.revision;
+          const revision = yield* adapterOptions.readRuntimeRevisionForSend.pipe(
+            Effect.provideService(Scope.Scope, scope),
+          );
+          return (
+            !replacingRuntime &&
+            !(yield* Ref.get(closed)) &&
+            runtimeGeneration === generation &&
+            resolvedRuntime !== undefined &&
+            revision === resolvedRuntime.revision
+          );
         });
-        const refreshManagedRuntime = (turnInput: ProviderAdapterV2TurnInput) => Effect.gen(function* () {
-          if (adapterOptions.resolveRuntimeForSend === undefined) return;
-          if (adapterOptions.readRuntimeRevisionForSend === undefined)
-            return yield* toProtocolError("Codex cannot observe its current managed runtime revision without materializing it.");
-          if (yield* managedRuntimeUnchanged) return;
-          const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
-          const current = runtimeBindings.get(nativeThreadId)?.binding;
-          const previousSource = continuationSourceIdentity;
-          if (input.withRuntimeReplacement === undefined || input.beforeRuntimeReplacement === undefined ||
-              replacingRuntime || nativeStartUnknown || (yield* Ref.get(closed)) || bindingOperationsInFlight !== 0 ||
-              runtimeBindings.size !== 1 || current === undefined ||
+        const refreshManagedRuntime = (
+          turnInput: ProviderAdapterV2TurnInput,
+          managed?: ManagedCodexCohort,
+        ) =>
+          Effect.gen(function* () {
+            if (adapterOptions.resolveRuntimeForSend === undefined) return;
+            if (adapterOptions.readRuntimeRevisionForSend === undefined)
+              return yield* toProtocolError(
+                "Codex cannot observe its current managed runtime revision without materializing it.",
+              );
+            if (yield* managedRuntimeUnchanged) return;
+            const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
+            const current = runtimeBindings.get(nativeThreadId)?.binding;
+            const previousSource = continuationSourceIdentity;
+            if (
+              input.withRuntimeReplacement === undefined ||
+              input.beforeRuntimeReplacement === undefined ||
+              replacingRuntime ||
+              nativeStartUnknown ||
+              (yield* Ref.get(closed)) ||
+              bindingOperationsInFlight !== 0 ||
+              runtimeBindings.size !== 1 ||
+              current === undefined ||
               !matchesInterruptBinding(turnInput.providerThread, current, undefined) ||
-              previousSource === undefined || previousSource.runtimeGeneration !== runtimeGeneration ||
-              (yield* Ref.get(activeTurns)).size > 0 || (yield* Ref.get(pendingRootTurns)).size > 0 ||
+              previousSource === undefined ||
+              previousSource.runtimeGeneration !== runtimeGeneration ||
+              (yield* Ref.get(activeTurns)).size > 0 ||
+              (yield* Ref.get(pendingRootTurns)).size > 0 ||
               (yield* Ref.get(pendingRuntimeRequests)).size > 0 ||
-              (yield* (runtime.hasPendingBackgroundWork ?? Effect.succeed(true)))) {
-            return yield* toProtocolError("Codex managed replacement requires one current quiescent native binding and its manager reservation.");
-          }
-          // A new incarnation cannot inherit the old native conversation cwd evidence.
-          if (turnInput.nativeCreationExecution !== undefined)
-            return yield* toProtocolError("Codex has no new-incarnation target directory proof for the bundled managed resume.");
-          const nextGeneration = randomUUID();
-          const replace = Effect.gen(function* () {
-            if (replacingRuntime || (yield* Ref.get(closed)) || !matchesRuntimeBinding(current))
-              return yield* toProtocolError("Codex managed binding changed before replacement was reserved.");
-            replacingRuntime = true;
-            runtimeGeneration = nextGeneration;
-            nativeStartUnknown = true;
-            continuationSourceIdentity = undefined;
-            ownedProcess = undefined;
-            ownedRuntimeIdentity = undefined;
-            runtimeBindings.clear();
-            nativeDirectories.clear();
-            pendingRuntimeIdentities.clear();
-            pendingIdentityOverflow = false;
-            subagentModels.clear();
-            subagentEfforts.clear();
-            yield* Ref.set(subagentThreads, new Map());
-            yield* Ref.set(pendingSubagentTurns, new Map());
-            yield* Ref.set(settledTurns, new Map());
+              (yield* runtime.hasPendingBackgroundWork ?? Effect.succeed(true))
+            ) {
+              return yield* toProtocolError(
+                "Codex managed replacement requires one current quiescent native binding and its manager reservation.",
+              );
+            }
+            // A new incarnation cannot inherit the old native conversation cwd evidence.
+            if (turnInput.nativeCreationExecution !== undefined)
+              return yield* toProtocolError(
+                "Codex has no new-incarnation target directory proof for the bundled managed resume.",
+              );
+            const nextGeneration = NodeCrypto.randomUUID();
+            const replace = Effect.gen(function* () {
+              if (replacingRuntime || (yield* Ref.get(closed)) || !matchesRuntimeBinding(current))
+                return yield* toProtocolError(
+                  "Codex managed binding changed before replacement was reserved.",
+                );
+              if (managed !== undefined)
+                yield* managedUnknown(managed, "native_runtime_replacement_actor_not_bound");
+              replacingRuntime = true;
+              runtimeGeneration = nextGeneration;
+              nativeStartUnknown = true;
+              continuationSourceIdentity = undefined;
+              ownedProcess = undefined;
+              ownedRuntimeIdentity = undefined;
+              runtimeBindings.clear();
+              nativeDirectories.clear();
+              pendingRuntimeIdentities.clear();
+              pendingIdentityOverflow = false;
+              subagentModels.clear();
+              subagentEfforts.clear();
+              yield* Ref.set(subagentThreads, new Map());
+              yield* Ref.set(pendingSubagentTurns, new Map());
+              yield* Ref.set(settledTurns, new Map());
+              capacityByThread.clear();
+              capacityByTurn.clear();
+              yield* input.beforeRuntimeReplacement!(nextGeneration);
+              yield* Scope.close(incarnationScope, Exit.void);
+              yield* authorizeCodexNativeCreation(turnInput.nativeCreationExecution);
+              const next = yield* adapterOptions.resolveRuntimeForSend!.pipe(
+                Effect.provideService(Scope.Scope, scope),
+              );
+              yield* authorizeCodexNativeCreation(turnInput.nativeCreationExecution);
+              incarnationScope = yield* Scope.make();
+              launchSettings = next.config;
+              initializationExecution = turnInput.nativeCreationExecution;
+              client = yield* clientFactory
+                .open({
+                  instanceId: adapterOptions.instanceId,
+                  threadId: turnInput.threadId,
+                  providerSessionId: input.providerSessionId,
+                  runtimeGeneration,
+                  runtimePolicy: turnInput.runtimePolicy,
+                  settings: launchSettings,
+                  environment: next.environment,
+                  ...(adapterOptions.processAttribution === undefined
+                    ? {}
+                    : { processAttribution: adapterOptions.processAttribution }),
+                  ...(turnInput.nativeCreationExecution === undefined
+                    ? {}
+                    : { nativeCreationExecution: turnInput.nativeCreationExecution }),
+                })
+                .pipe(Effect.provideService(Scope.Scope, incarnationScope));
+              ownedProcess = client.ownedProcess;
+              ownedRuntimeIdentity = captureOwnedRuntimeIdentity();
+              const replacementProducer = captureProducer(client, nextGeneration);
+              for (const register of nativeRegistrations)
+                yield* register(client, runtimeGeneration);
+              yield* Ref.set(initialized, false);
+              yield* ensureInitialized;
+              const nextSource = runtime.continuationSourceIdentity;
+              if (
+                nextSource?.runtimeGeneration !== nextGeneration ||
+                nextSource.continuationKey !== previousSource.continuationKey ||
+                nextSource.driverKind !== previousSource.driverKind
+              )
+                return yield* toProtocolError(
+                  "Codex initialized a different continuation source during managed replacement.",
+                );
+              bindingOperationsInFlight++;
+              const response = yield* client.raw
+                .request("thread/resume", {
+                  threadId: nativeThreadId,
+                  excludeTurns: true,
+                  ...codexThreadRuntimeParams({
+                    threadId: turnInput.threadId,
+                    modelSelection: turnInput.modelSelection,
+                    runtimePolicy: turnInput.runtimePolicy,
+                  }),
+                })
+                .pipe(
+                  Effect.flatMap(decodeCodexResumeMetadata),
+                  Effect.ensuring(finishBindingOperation),
+                );
+              if (response.thread.id !== nativeThreadId)
+                return yield* toProtocolError(
+                  "Codex restored a different native thread during managed replacement.",
+                );
+              const nativeDirectory = codexNativeReplyDirectory(
+                response.thread.cwd,
+                response.cwd,
+                true,
+              );
+              const restored = {
+                ...turnInput.providerThread,
+                providerSessionId: input.providerSessionId,
+                providerInstanceId: adapterOptions.instanceId,
+                updatedAt: codexTimestamp(response.thread.updatedAt),
+              };
+              yield* bindRuntimeThread({
+                producer: replacementProducer,
+                threadId: turnInput.threadId,
+                providerThread: restored,
+                requested: turnInput.modelSelection,
+                sourceEvent: "thread/resume",
+                ...(response.model === undefined ? {} : { model: response.model }),
+                ...(response.modelProvider === undefined
+                  ? {}
+                  : { modelProvider: response.modelProvider }),
+                ...(response.serviceTier === undefined
+                  ? {}
+                  : { serviceTier: response.serviceTier }),
+                nativeDirectory,
+              });
+              yield* emitProviderEvent(
+                {
+                  type: "provider_thread.updated",
+                  driver: CODEX_PROVIDER,
+                  providerThread: restored,
+                },
+                { producer: replacementProducer },
+              );
+              resolvedRuntime = next;
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterOpenSessionError({
+                    driver: CODEX_PROVIDER,
+                    providerSessionId: input.providerSessionId,
+                    cause,
+                    nativeEffect: operationEvidence(turnInput.nativeOperation, "start_turn", {
+                      threadId: turnInput.threadId,
+                      providerThreadId: turnInput.providerThread.id,
+                      attemptId: turnInput.attemptId,
+                    }),
+                  }),
+              ),
+            );
+            yield* input.withRuntimeReplacement(nextGeneration, replace).pipe(
+              Effect.onExit((exit) =>
+                Effect.sync(() => {
+                  replacingRuntime = false;
+                  if (exit._tag === "Success") nativeStartUnknown = false;
+                  else if (runtimeGeneration === nextGeneration) {
+                    nativeStartUnknown = true;
+                    continuationSourceIdentity = undefined;
+                    runtimeBindings.clear();
+                    nativeDirectories.clear();
+                    pendingRuntimeIdentities.clear();
+                  }
+                }),
+              ),
+            );
+          });
+        const sendCapacityTurn = (
+          request: CapacityRequest,
+          retryOrdinal: number,
+        ): Effect.Effect<void, CodexErrors.CodexAppServerError | ProviderAdapterProtocolError> =>
+          Effect.gen(function* () {
+            // Retry dispatch retains the original runtime guards; incomplete actor coverage cannot certify retirement.
+            if (retryOrdinal > 0 && request.managed !== undefined) {
+              yield* managedUnknown(request.managed, "managed_retry_revalidation_unavailable");
+            }
+            if (
+              nativeStartUnknown ||
+              (yield* Ref.get(closed)) ||
+              !currentCapacityBinding(request)
+            ) {
+              return yield* toProtocolError(
+                "Codex continuation does not match a confirmed current native runtime.",
+              );
+            }
+            const params = retryOrdinal === 0 ? request.params : { ...request.params, input: [] };
+            const binding = runtimeBindings.get(request.state.binding.nativeThreadId)!.binding;
+            const target = client;
+            const producer = captureProducer(target, binding.runtimeGeneration);
+            const dispatch = yield* Deferred.make<void>();
+            let dispatched = false;
+            const managedActorRef: { current?: ManagedCodexActor } = {};
+            const managedTaskId = NodeCrypto.randomUUID();
+            const cohort = request.managed;
+            if (cohort !== undefined) cohort.requests++;
+            let fiber!: Fiber.Fiber<
+              CodexSchema.V2TurnStartResponse,
+              CodexErrors.CodexAppServerError | ProviderAdapterProtocolError
+            >;
+            fiber = yield* Deferred.await(dispatch).pipe(
+              Effect.andThen(
+                Effect.gen(function* () {
+                  const current = () =>
+                    !nativeStartUnknown &&
+                    request.state.phase === "awaiting_start" &&
+                    request.state.retryOrdinal === retryOrdinal &&
+                    target === client &&
+                    producer.runtimeGeneration === runtimeGeneration &&
+                    capacityByThread.get(request.state.binding.nativeThreadId) === request &&
+                    currentCapacityBinding(request);
+                  if ((yield* Ref.get(closed)) || !current())
+                    return yield* toProtocolError(
+                      "Codex request changed before native start dispatch.",
+                    );
+                  yield* requireNativeDirectory(
+                    request.input.nativeCreationExecution,
+                    nativeDirectoryFor(request.input.providerThread),
+                  );
+                  yield* authorizeCodexNativeMutation(
+                    request.input.nativeCreationExecution,
+                    "turn/start",
+                    params.cwd ?? undefined,
+                  );
+                  yield* requireNativeDirectory(
+                    request.input.nativeCreationExecution,
+                    nativeDirectoryFor(request.input.providerThread),
+                  );
+                  if ((yield* Ref.get(closed)) || !current())
+                    return yield* toProtocolError(
+                      "Codex request changed before native start dispatch.",
+                    );
+                  if (cohort !== undefined && !cohort.unknown) {
+                    const source = managedSource(cohort, producer, binding.nativeThreadId!);
+                    const actor = yield* managedEvidence(
+                      cohort,
+                      cohort.issuer.admitActor({
+                        kind: "foreground",
+                        actualSource: source,
+                        completionMode: "native_endpoint_and_task_join",
+                      }),
+                    );
+                    if (actor !== undefined) {
+                      const managedActor = { cohort, actor, producer, source, closed: false };
+                      managedActorRef.current = managedActor;
+                      cohort.actors.add(actor);
+                      cohort.nativeActors.add(managedActor);
+                      yield* managedEvidence(
+                        cohort,
+                        cohort.issuer.requireTaskJoin(actor, { taskId: managedTaskId, fiber }),
+                      );
+                      yield* managedEvidence(cohort, cohort.issuer.markActorEntered(actor));
+                      managedPending.set(binding.nativeThreadId!, managedActor);
+                    }
+                  }
+                  dispatched = true;
+                  return yield* target.request("turn/start", params);
+                }),
+              ),
+              Effect.forkChild,
+            );
+            // Publish actual RPC ownership before dispatch; an unreturned start has no native turn ID.
+            const pending = {
+              fiber,
+              client: target,
+              producer,
+              scope: incarnationScope,
+              binding: Object.freeze({
+                ...binding,
+                nativeThreadId: request.state.binding.nativeThreadId,
+              }),
+              retryOrdinal,
+              isDispatched: () => dispatched,
+            };
+            request.pendingStart = pending;
+            yield* Deferred.succeed(dispatch, undefined);
+            const started = yield* Fiber.join(fiber).pipe(
+              Effect.ensuring(
+                Effect.gen(function* () {
+                  if (request.pendingStart === pending) request.pendingStart = undefined;
+                  if (cohort !== undefined) {
+                    cohort.requests--;
+                    if (managedActorRef.current !== undefined)
+                      yield* managedEvidence(
+                        cohort,
+                        cohort.issuer.joinTask(managedActorRef.current.actor, managedTaskId),
+                      );
+                  }
+                }),
+              ),
+            );
+            if (
+              request.state.phase !== "awaiting_start" ||
+              request.state.retryOrdinal !== retryOrdinal ||
+              target !== client ||
+              producer.runtimeGeneration !== runtimeGeneration ||
+              !currentCapacityBinding(request) ||
+              (yield* Ref.get(closed))
+            ) {
+              return yield* toProtocolError(
+                "Codex start acknowledgement no longer matches the current request.",
+              );
+            }
+            const managedActor = managedActorRef.current;
+            if (managedActor !== undefined) {
+              if (!managedActor.cohort.unknown)
+                yield* managedEvidence(
+                  managedActor.cohort,
+                  managedActor.cohort.issuer.bindActorNativeIdentity(managedActor.actor, {
+                    nativeTurnId: started.turn.id,
+                  }),
+                );
+              managedTurns.set(started.turn.id, managedActor);
+              if (managedPending.get(binding.nativeThreadId!) === managedActor)
+                managedPending.delete(binding.nativeThreadId!);
+            }
+            const context = yield* registerRootTurn({
+              producer: pending.producer,
+              binding: pending.binding,
+              turnInput: {
+                ...request.input,
+                providerTurnOrdinal: request.input.providerTurnOrdinal + retryOrdinal,
+              },
+              nativeTurnId: started.turn.id,
+              startedAt: codexTimestamp(started.turn.startedAt),
+              waitForNativeStart: started.turn.startedAt === null,
+            });
+            request.currentContext = context;
+            request.logicalContext ??= context;
+            capacityByTurn.set(started.turn.id, request);
+            reduceCapacity(request, {
+              type: "startAcknowledged",
+              retryOrdinal,
+              nativeTurnId: started.turn.id,
+            });
+            const earlyStart = request.earlyStarts.get(started.turn.id);
+            const earlyError = request.earlyErrors.get(started.turn.id);
+            const earlyCompletion = request.earlyCompletions.get(started.turn.id);
+            request.earlyStarts.clear();
+            request.earlyErrors.clear();
+            request.earlyCompletions.clear();
+            if (earlyStart !== undefined && context.nativeStartReady !== undefined)
+              yield* Deferred.succeed(context.nativeStartReady, undefined);
+            if (earlyError !== undefined)
+              yield* handleNativeError(earlyError).pipe(
+                Effect.provideService(NativeCodexEventProducer, pending.producer),
+              );
+            if (earlyCompletion !== undefined)
+              yield* handleNativeCompletion(earlyCompletion).pipe(
+                Effect.provideService(NativeCodexEventProducer, pending.producer),
+              );
+            yield* Ref.update(pendingRootTurns, (current) => {
+              if (current.get(request.state.binding.nativeThreadId) !== request.input)
+                return current;
+              const updated = new Map(current);
+              updated.delete(request.state.binding.nativeThreadId);
+              return updated;
+            });
+            if (cohort !== undefined) yield* maybeSealManaged(cohort);
+          });
+        const scheduleCapacityRetry = (request: CapacityRequest): Effect.Effect<void> =>
+          Effect.gen(function* () {
+            if (request.timer !== undefined || !request.recoveryEnabled) return;
+            if (request.managed !== undefined)
+              yield* managedUnknown(request.managed, "managed_retry_revalidation_unavailable");
+            const retryOrdinal = request.state.retryOrdinal;
+            const context = request.logicalContext!;
+            const now = yield* DateTime.now;
+            request.capacityRetry = {
+              nativeMessage:
+                context.latestProviderFailure?.nativeMessage ?? "Codex is at capacity.",
+              failure: makeProviderFailure({
+                code: "serverOverloaded",
+                class: "provider_error",
+                retryable: true,
+                message:
+                  context.latestProviderFailure?.nativeMessage ??
+                  "Codex is at capacity; retrying without resending the prompt.",
+              }),
+              retry: { attempt: retryOrdinal, maxAttempts: 5, retryDelayMs: 10000 },
+              startedAt: request.capacityRetry?.startedAt ?? now,
+              itemOrdinal:
+                request.capacityRetry?.itemOrdinal ??
+                (yield* resolveItemOrdinal(context, `terminal-failure:${context.providerTurnId}`)),
+            };
+            request.timer = yield* Effect.gen(function* () {
+              yield* Effect.sleep("10 seconds");
+              if (
+                !request.recoveryEnabled ||
+                request.state.phase !== "waiting_retry" ||
+                request.state.retryOrdinal !== retryOrdinal
+              )
+                return;
+              if (
+                (yield* Ref.get(closed)) ||
+                capacityByThread.get(request.state.binding.nativeThreadId) !== request ||
+                !currentCapacityBinding(request)
+              ) {
+                yield* cancelCapacityRequest(request, "runtime_changed", true);
+                return;
+              }
+              const unchanged = yield* authorizeCodexNativeCreation(
+                request.input.nativeCreationExecution,
+              ).pipe(
+                Effect.andThen(managedRuntimeUnchanged),
+                Effect.orElseSucceed(() => false),
+              );
+              if (!unchanged) {
+                yield* cancelCapacityRequest(request, "runtime_changed", true);
+                return;
+              }
+              const actions = reduceCapacity(request, { type: "retryReady", retryOrdinal });
+              if (!actions.some((action) => action.type === "retry")) return;
+              request.timer = undefined;
+              yield* sendCapacityTurn(request, retryOrdinal).pipe(
+                Effect.catch(() => finishUnknownCapacityStart(request)),
+              );
+            }).pipe(Effect.forkIn(scope));
+            yield* emitCapacityRetryItem(request, "running");
+          });
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            for (const request of capacityByThread.values())
+              yield* cancelCapacityRequest(request, "closed");
             capacityByThread.clear();
             capacityByTurn.clear();
-            yield* input.beforeRuntimeReplacement!(nextGeneration);
-            yield* Scope.close(incarnationScope, Exit.void);
-            yield* authorizeCodexNativeCreation(turnInput.nativeCreationExecution);
-            const next = yield* adapterOptions.resolveRuntimeForSend!.pipe(Effect.provideService(Scope.Scope, scope));
-            yield* authorizeCodexNativeCreation(turnInput.nativeCreationExecution);
-            incarnationScope = yield* Scope.make();
-            launchSettings = next.config;
-            initializationExecution = turnInput.nativeCreationExecution;
-            client = yield* clientFactory.open({
-              instanceId: adapterOptions.instanceId, threadId: turnInput.threadId,
-              providerSessionId: input.providerSessionId, runtimeGeneration,
-              runtimePolicy: turnInput.runtimePolicy, settings: launchSettings, environment: next.environment,
-              ...(adapterOptions.processAttribution === undefined ? {} : { processAttribution: adapterOptions.processAttribution }),
-              ...(turnInput.nativeCreationExecution === undefined ? {} : { nativeCreationExecution: turnInput.nativeCreationExecution }),
-            }).pipe(Effect.provideService(Scope.Scope, incarnationScope));
-            ownedProcess = client.ownedProcess;
-            ownedRuntimeIdentity = captureOwnedRuntimeIdentity();
-            for (const register of nativeRegistrations) yield* register(client, runtimeGeneration);
-            yield* Ref.set(initialized, false);
-            yield* ensureInitialized;
-            const nextSource = runtime.continuationSourceIdentity;
-            if (nextSource?.runtimeGeneration !== nextGeneration ||
-                nextSource.continuationKey !== previousSource.continuationKey ||
-                nextSource.driverKind !== previousSource.driverKind)
-              return yield* toProtocolError("Codex initialized a different continuation source during managed replacement.");
-            bindingOperationsInFlight++;
-            const response = yield* client.raw.request("thread/resume", {
-              threadId: nativeThreadId, excludeTurns: true,
-              ...codexThreadRuntimeParams({ threadId: turnInput.threadId,
-                modelSelection: turnInput.modelSelection, runtimePolicy: turnInput.runtimePolicy }),
-            }).pipe(Effect.flatMap(decodeCodexResumeMetadata), Effect.ensuring(finishBindingOperation));
-            if (response.thread.id !== nativeThreadId)
-              return yield* toProtocolError("Codex restored a different native thread during managed replacement.");
-            const nativeDirectory = codexNativeReplyDirectory(response.thread.cwd, response.cwd, true);
-            const restored = { ...turnInput.providerThread, providerSessionId: input.providerSessionId,
-              providerInstanceId: adapterOptions.instanceId, updatedAt: codexTimestamp(response.thread.updatedAt) };
-            yield* bindRuntimeThread({ threadId: turnInput.threadId, providerThread: restored,
-              requested: turnInput.modelSelection, sourceEvent: "thread/resume", model: response.model,
-              modelProvider: response.modelProvider, serviceTier: response.serviceTier, nativeDirectory });
-            yield* emitProviderEvent({ type: "provider_thread.updated", driver: CODEX_PROVIDER, providerThread: restored });
-            resolvedRuntime = next;
-          }).pipe(
-            Effect.mapError((cause) => new ProviderAdapterOpenSessionError({
-              driver: CODEX_PROVIDER, providerSessionId: input.providerSessionId, cause,
-              nativeEffect: operationEvidence(turnInput.nativeOperation, "start_turn", {
-                threadId: turnInput.threadId, providerThreadId: turnInput.providerThread.id, attemptId: turnInput.attemptId,
-              }),
-            })),
-          );
-          yield* input.withRuntimeReplacement(nextGeneration, replace).pipe(
-            Effect.onExit((exit) => Effect.sync(() => {
-              replacingRuntime = false;
-              if (exit._tag === "Success") nativeStartUnknown = false;
-              else if (runtimeGeneration === nextGeneration) {
-                nativeStartUnknown = true;
-                continuationSourceIdentity = undefined;
-                runtimeBindings.clear();
-                nativeDirectories.clear();
-                pendingRuntimeIdentities.clear();
-              }
-            })),
-          );
-        });
-        const sendCapacityTurn = (request: CapacityRequest, retryOrdinal: number) => Effect.gen(function* () {
-          if (nativeStartUnknown || (yield* Ref.get(closed)) || !currentCapacityBinding(request)) {
-            return yield* toProtocolError("Codex continuation does not match a confirmed current native runtime.");
-          }
-          yield* requireNativeDirectory(request.input.nativeCreationExecution, nativeDirectoryFor(request.input.providerThread));
-          yield* authorizeCodexNativeMutation(request.input.nativeCreationExecution, "turn/start", request.params.cwd ?? undefined);
-          yield* requireNativeDirectory(request.input.nativeCreationExecution, nativeDirectoryFor(request.input.providerThread));
-          const params = retryOrdinal === 0 ? request.params : { ...request.params, input: [] };
-          const started = yield* client.request("turn/start", params);
-          if (request.state.phase !== "awaiting_start" || request.state.retryOrdinal !== retryOrdinal ||
-              !currentCapacityBinding(request) || (yield* Ref.get(closed))) {
-            return yield* toProtocolError("Codex start acknowledgement no longer matches the current request.");
-          }
-          const context = yield* registerRootTurn({
-            turnInput: { ...request.input, providerTurnOrdinal: request.input.providerTurnOrdinal + retryOrdinal },
-            nativeTurnId: started.turn.id, startedAt: codexTimestamp(started.turn.startedAt),
-            waitForNativeStart: started.turn.startedAt === null,
-          });
-          request.currentContext = context;
-          request.logicalContext ??= context;
-          capacityByTurn.set(started.turn.id, request);
-          reduceCapacity(request, { type: "startAcknowledged", retryOrdinal, nativeTurnId: started.turn.id });
-          const earlyStart = request.earlyStarts.get(started.turn.id);
-          const earlyError = request.earlyErrors.get(started.turn.id);
-          const earlyCompletion = request.earlyCompletions.get(started.turn.id);
-          request.earlyStarts.clear();
-          request.earlyErrors.clear();
-          request.earlyCompletions.clear();
-          if (earlyStart !== undefined && context.nativeStartReady !== undefined) yield* Deferred.succeed(context.nativeStartReady, undefined);
-          if (earlyError !== undefined) yield* handleNativeError(earlyError);
-          if (earlyCompletion !== undefined) yield* handleNativeCompletion(earlyCompletion);
-          yield* Ref.update(pendingRootTurns, (current) => {
-            if (current.get(request.state.binding.nativeThreadId) !== request.input) return current;
-            const updated = new Map(current);
-            updated.delete(request.state.binding.nativeThreadId);
-            return updated;
-          });
-        });
-        const scheduleCapacityRetry = (request: CapacityRequest) => Effect.gen(function* () {
-          if (request.timer !== undefined || !request.recoveryEnabled) return;
-          const retryOrdinal = request.state.retryOrdinal;
-          const context = request.logicalContext!;
-          const now = yield* DateTime.now;
-          request.capacityRetry = {
-            nativeMessage: context.latestProviderFailure?.nativeMessage ?? "Codex is at capacity.",
-            failure: makeProviderFailure({ code: "serverOverloaded", class: "provider_error", retryable: true,
-              message: context.latestProviderFailure?.nativeMessage ?? "Codex is at capacity; retrying without resending the prompt.",
-            }),
-            retry: { attempt: retryOrdinal, maxAttempts: 5, retryDelayMs: 10000 },
-            startedAt: request.capacityRetry?.startedAt ?? now,
-            itemOrdinal: request.capacityRetry?.itemOrdinal ?? (yield* resolveItemOrdinal(context, `terminal-failure:${context.providerTurnId}`)),
-          };
-          request.timer = yield* Effect.gen(function* () {
-            yield* Effect.sleep("10 seconds");
-            if (!request.recoveryEnabled || request.state.phase !== "waiting_retry" || request.state.retryOrdinal !== retryOrdinal) return;
-            if ((yield* Ref.get(closed)) || capacityByThread.get(request.state.binding.nativeThreadId) !== request || !currentCapacityBinding(request)) {
-              yield* cancelCapacityRequest(request, "runtime_changed", true);
-              return;
-            }
-            const unchanged = yield* authorizeCodexNativeCreation(request.input.nativeCreationExecution).pipe(
-              Effect.andThen(managedRuntimeUnchanged), Effect.orElseSucceed(() => false));
-            if (!unchanged) {
-              yield* cancelCapacityRequest(request, "runtime_changed", true);
-              return;
-            }
-            const actions = reduceCapacity(request, { type: "retryReady", retryOrdinal });
-            if (!actions.some((action) => action.type === "retry")) return;
-            request.timer = undefined;
-            yield* sendCapacityTurn(request, retryOrdinal).pipe(
-              Effect.catch(() => finishUnknownCapacityStart(request)),
-            );
-          }).pipe(Effect.forkIn(scope));
-          yield* emitCapacityRetryItem(request, "running");
-        });
-        yield* Effect.addFinalizer(() => Effect.gen(function* () {
-          for (const request of capacityByThread.values()) yield* cancelCapacityRequest(request, "closed");
-          capacityByThread.clear();
-          capacityByTurn.clear();
-        }));
+          }),
+        );
 
         const runtime: ProviderAdapterV2SessionRuntime = {
           instanceId: adapterOptions.instanceId,
           driver: CODEX_PROVIDER,
-          get runtimeGeneration() { return runtimeGeneration; },
-          get ownedRuntimeIdentity() { return ownedRuntimeIdentity; },
+          get runtimeGeneration() {
+            return runtimeGeneration;
+          },
+          get ownedRuntimeIdentity() {
+            return ownedRuntimeIdentity;
+          },
           observeOwnedRuntimeExit,
-          get continuationSourceIdentity() { return continuationSourceIdentity; },
+          get continuationSourceIdentity() {
+            return continuationSourceIdentity;
+          },
           providerSessionId: input.providerSessionId,
           providerSession: session,
           events: Stream.fromEffectRepeat(Queue.take(events)),
+          stopPendingStart: (stopInput) => stopPendingStart(stopInput),
           getGoal: (binding) =>
             Effect.gen(function* () {
               if (yield* Ref.get(closed))
@@ -6302,20 +7871,26 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               if (!matchesRuntimeBinding(binding))
                 return unknownProviderGoal("context_changed", binding.nativeThreadId ?? null);
               const nativeThreadId = binding.nativeThreadId!;
-              const result = yield* client.raw.request("thread/goal/get", {
-                threadId: nativeThreadId,
-              }).pipe(
-                Effect.map((response) => classifyProviderGoal(response, nativeThreadId)),
-                Effect.timeout("3 seconds"),
-                Effect.catch((cause) => Effect.succeed(unknownProviderGoal(
-                  cause._tag === "TimeoutError"
-                    ? "timeout"
-                    : cause._tag === "CodexAppServerRequestError" && cause.code === -32601
-                      ? "unsupported"
-                      : "rpc_error",
-                  nativeThreadId,
-                ))),
-              );
+              const result = yield* client.raw
+                .request("thread/goal/get", {
+                  threadId: nativeThreadId,
+                })
+                .pipe(
+                  Effect.map((response) => classifyProviderGoal(response, nativeThreadId)),
+                  Effect.timeout("3 seconds"),
+                  Effect.catch((cause) =>
+                    Effect.succeed(
+                      unknownProviderGoal(
+                        cause._tag === "TimeoutError"
+                          ? "timeout"
+                          : cause._tag === "CodexAppServerRequestError" && cause.code === -32601
+                            ? "unsupported"
+                            : "rpc_error",
+                        nativeThreadId,
+                      ),
+                    ),
+                  ),
+                );
               if ((yield* Ref.get(closed)) || !matchesRuntimeBinding(binding))
                 return unknownProviderGoal("context_changed", nativeThreadId);
               return result;
@@ -6323,18 +7898,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           observeThreadRuntime: (binding) =>
             Effect.gen(function* () {
               const unknown = (reason: string): ProviderRuntimeObservation => ({
-                status: "unknown", binding, reason,
+                status: "unknown",
+                binding,
+                reason,
               });
               if ((yield* Ref.get(closed)) || !matchesRuntimeBinding(binding))
                 return unknown("runtime_binding_mismatch");
-              const response = yield* client.raw.request("thread/read", {
-                threadId: binding.nativeThreadId!,
-                includeTurns: false,
-              }).pipe(
-                Effect.flatMap(decodeCodexRuntimeThreadStatus),
-                Effect.timeout("3 seconds"),
-                Effect.result,
-              );
+              const response = yield* client.raw
+                .request("thread/read", {
+                  threadId: binding.nativeThreadId!,
+                  includeTurns: false,
+                })
+                .pipe(
+                  Effect.flatMap(decodeCodexRuntimeThreadStatus),
+                  Effect.timeout("3 seconds"),
+                  Effect.result,
+                );
               if ((yield* Ref.get(closed)) || !matchesRuntimeBinding(binding))
                 return unknown("runtime_binding_changed");
               if (response._tag === "Failure") {
@@ -6352,15 +7931,18 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               }
               const currentDirectory = codexNativeReplyDirectory(response.success.thread.cwd);
               if (currentDirectory === undefined) nativeDirectories.delete(binding.nativeThreadId!);
-              else nativeDirectories.set(binding.nativeThreadId!, {
-                providerThreadId: binding.providerThreadId, runtimeGeneration, cwd: currentDirectory,
-              });
+              else
+                nativeDirectories.set(binding.nativeThreadId!, {
+                  providerThreadId: binding.providerThreadId,
+                  runtimeGeneration,
+                  cwd: currentDirectory,
+                });
               const contexts = [
                 ...(yield* Ref.get(activeTurns)).values(),
                 ...(yield* Ref.get(settledTurns)).values(),
               ];
-              const roots = contexts.filter((context) =>
-                context.providerThread.id === binding.providerThreadId,
+              const roots = contexts.filter(
+                (context) => context.providerThread.id === binding.providerThreadId,
               );
               let working = false;
               let monitoring = false;
@@ -6370,11 +7952,16 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 if ((yield* Ref.get(activeTurns)).has(context.nativeTurnId)) working = true;
                 if (yield* turnHasRetainedBackgroundWork(context.nativeTurnId)) monitoring = true;
               }
-              const status = nativeStatus.type === "active" && nativeStatus.activeFlags.length > 0
-                ? "busy"
-                : working ? "working"
-                  : monitoring ? "monitoring"
-                    : nativeStatus.type === "active" ? "busy" : undefined;
+              const status =
+                nativeStatus.type === "active" && nativeStatus.activeFlags.length > 0
+                  ? "busy"
+                  : working
+                    ? "working"
+                    : monitoring
+                      ? "monitoring"
+                      : nativeStatus.type === "active"
+                        ? "busy"
+                        : undefined;
               if (status === undefined) return unknown("native_activity_coverage_incomplete");
               return { status, binding, observedAt: DateTime.formatIso(yield* DateTime.now) };
             }),
@@ -6422,215 +8009,389 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               }
               return false;
             }),
-          ensureThread: (threadInput) => Effect.suspend(() => {
-            let dispatched = false;
-            let initializedDuringOperation = false;
-            let authorityCheckInvoked = false;
-            let bindingOperationStarted = false;
-            return Effect.gen(function* () {
-              if (nativeStartUnknown || replacingRuntime) return yield* toProtocolError("Codex has an unconfirmed or replacing native runtime and cannot bind another thread.");
-              const existing = threadInput.existingProviderThread;
-              if (threadInput.modelSelection.instanceId !== adapterOptions.instanceId ||
-                  (threadInput.providerSessionId !== undefined && threadInput.providerSessionId !== input.providerSessionId) ||
-                  (existing !== undefined && (existing.driver !== CODEX_PROVIDER ||
-                    existing.providerInstanceId !== adapterOptions.instanceId || existing.appThreadId !== threadInput.threadId ||
-                    (existing.providerSessionId !== null && existing.providerSessionId !== input.providerSessionId) ||
-                    (threadInput.nativeOperation?.providerThreadId !== undefined && threadInput.nativeOperation.providerThreadId !== existing.id)))) {
-                return yield* toProtocolError("Codex prepared provider thread does not match the current runtime target.");
-              }
-              bindingOperationStarted = true;
-              bindingOperationsInFlight++;
-              initializedDuringOperation = !(yield* Ref.get(initialized));
-              dispatched = initializedDuringOperation;
-              yield* ensureInitialized;
-              authorityCheckInvoked = threadInput.nativeCreationExecution !== undefined;
-              const params = codexThreadRuntimeParams({
-                threadId: threadInput.threadId,
-                modelSelection: threadInput.modelSelection,
-                runtimePolicy: threadInput.runtimePolicy,
-              });
-              yield* authorizeCodexNativeMutation(threadInput.nativeCreationExecution, "thread/start", params.cwd);
-              dispatched = true;
-              const response = yield* client.request("thread/start", params);
-              const nativeProviderThread = providerThreadFromCodexThread({
+          ensureThread: (threadInput) =>
+            Effect.suspend(() => {
+              let dispatched = false;
+              let initializedDuringOperation = false;
+              let authorityCheckInvoked = false;
+              let bindingOperationStarted = false;
+              return Effect.gen(function* () {
+                if (nativeStartUnknown || replacingRuntime)
+                  return yield* toProtocolError(
+                    "Codex has an unconfirmed or replacing native runtime and cannot bind another thread.",
+                  );
+                const existing = threadInput.existingProviderThread;
+                if (
+                  threadInput.modelSelection.instanceId !== adapterOptions.instanceId ||
+                  (threadInput.providerSessionId !== undefined &&
+                    threadInput.providerSessionId !== input.providerSessionId) ||
+                  (existing !== undefined &&
+                    (existing.driver !== CODEX_PROVIDER ||
+                      existing.providerInstanceId !== adapterOptions.instanceId ||
+                      existing.appThreadId !== threadInput.threadId ||
+                      (existing.providerSessionId !== null &&
+                        existing.providerSessionId !== input.providerSessionId) ||
+                      (threadInput.nativeOperation?.providerThreadId !== undefined &&
+                        threadInput.nativeOperation.providerThreadId !== existing.id)))
+                ) {
+                  return yield* toProtocolError(
+                    "Codex prepared provider thread does not match the current runtime target.",
+                  );
+                }
+                bindingOperationStarted = true;
+                bindingOperationsInFlight++;
+                initializedDuringOperation = !(yield* Ref.get(initialized));
+                dispatched = initializedDuringOperation;
+                yield* ensureInitialized;
+                authorityCheckInvoked = threadInput.nativeCreationExecution !== undefined;
+                const params = codexThreadRuntimeParams({
+                  threadId: threadInput.threadId,
+                  modelSelection: threadInput.modelSelection,
+                  runtimePolicy: threadInput.runtimePolicy,
+                });
+                yield* authorizeCodexNativeMutation(
+                  threadInput.nativeCreationExecution,
+                  "thread/start",
+                  params.cwd,
+                );
+                dispatched = true;
+                const target = client;
+                const producer = captureProducer(target, runtimeGeneration);
+                const response = yield* target.request("thread/start", params);
+                yield* producer.revalidateCurrent.pipe(
+                  Effect.mapError(() =>
+                    toProtocolError("Codex thread start came from a replaced native source."),
+                  ),
+                );
+                const nativeProviderThread = providerThreadFromCodexThread({
                   appThreadId: threadInput.threadId,
                   idAllocator,
                   ownerNodeId: null,
                   providerSessionId: input.providerSessionId,
                   providerInstanceId: adapterOptions.instanceId,
                   thread: response.thread,
-              });
-              // Adopt the prepared Jones row while binding the actual new native thread.
-              const providerThread: OrchestrationV2ProviderThread = existing === undefined ? nativeProviderThread : {
-                ...existing,
-                providerSessionId: nativeProviderThread.providerSessionId,
-                nativeThreadRef: nativeProviderThread.nativeThreadRef,
-                nativeConversationHeadRef: nativeProviderThread.nativeConversationHeadRef,
-                status: nativeProviderThread.status,
-                updatedAt: nativeProviderThread.updatedAt,
-              };
-              const nativeDirectory = codexNativeReplyDirectory(response.thread.cwd, response.cwd, true);
-              captureNativeDirectory(providerThread, response.thread.id, nativeDirectory);
-              yield* requireNativeDirectory(threadInput.nativeCreationExecution, nativeDirectory);
-              yield* bindRuntimeThread({
-                threadId: threadInput.threadId,
-                providerThread,
-                requested: threadInput.modelSelection,
-                sourceEvent: "thread/start",
-                model: response.model,
-                modelProvider: response.modelProvider,
-                serviceTier: response.serviceTier,
-                nativeDirectory,
-              });
-              return providerThread;
-            }).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterEnsureThreadError({
-                    driver: CODEX_PROVIDER,
-                    threadId: threadInput.threadId,
-                    cause: normalizeCodexCause(cause),
-                    nativeEffect: operationEvidence(threadInput.nativeOperation, "ensure_thread", {
-                      threadId: threadInput.threadId,
-                    }, !nativeStartUnknown && !authorityCheckInvoked && (!dispatched || (!initializedDuringOperation &&
-                      cause._tag === "CodexAppServerRequestError" && cause.code === -32601))
-                      ? "known_no_effect" : "unknown"),
-                  }),
-              ),
-              Effect.onExit((exit) => Effect.suspend(() => {
-                if (!bindingOperationStarted) return Effect.void;
-                return (exit._tag === "Failure" ? discardFailedBindingObservations : Effect.void)
-                  .pipe(Effect.andThen(finishBindingOperation));
-              })),
-            );
-          }),
-          resumeThread: (threadInput) => Effect.suspend(() => {
-            let dispatched = false;
-            let initializedDuringOperation = false;
-            let resumeGateInvoked = false;
-            let authorityCheckInvoked = false;
-            let bindingOperationStarted = false;
-            return Effect.gen(function* () {
-              if (nativeStartUnknown || replacingRuntime) return yield* toProtocolError("Codex has an unconfirmed or replacing native runtime and cannot resume another thread.");
-              bindingOperationStarted = true;
-              bindingOperationsInFlight++;
-              const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
-              const params = codexThreadRuntimeParams({
-                threadId: threadInput.threadId ?? threadInput.providerThread.appThreadId,
-                ...(threadInput.modelSelection === undefined ? {} : { modelSelection: threadInput.modelSelection }),
-                ...(threadInput.runtimePolicy === undefined ? {} : { runtimePolicy: threadInput.runtimePolicy }),
-              });
-              initializedDuringOperation = !(yield* Ref.get(initialized));
-              dispatched = initializedDuringOperation;
-              const response = yield* ensureInitialized.pipe(
-                Effect.andThen(Effect.suspend(() => {
-                  if (threadInput.beforeNativeResume === undefined) return Effect.void;
-                  resumeGateInvoked = true;
-                  return threadInput.beforeNativeResume(continuationSourceIdentity);
-                })),
-                Effect.andThen(Effect.suspend(() => {
-                  authorityCheckInvoked = threadInput.nativeCreationExecution !== undefined;
-                  return requireNativeDirectory(threadInput.nativeCreationExecution, nativeDirectoryFor(threadInput.providerThread)).pipe(
-                    Effect.andThen(authorizeCodexNativeMutation(threadInput.nativeCreationExecution, "thread/resume",
-                      params.cwd ?? nativeDirectoryFor(threadInput.providerThread))),
-                    Effect.andThen(Effect.suspend(() => requireNativeDirectory(
-                      threadInput.nativeCreationExecution, nativeDirectoryFor(threadInput.providerThread),
-                    ))),
-                  );
-                })),
-                Effect.andThen(Effect.suspend(() => {
-                  dispatched = true;
-                  // Decode resume metadata without loading the native history payload.
-                  return client.raw.request("thread/resume", {
-                    threadId: nativeThreadId,
-                    excludeTurns: true,
-                    ...params,
-                  });
-                })),
-                Effect.flatMap(decodeCodexResumeMetadata),
-              );
-              if (response.thread.id !== nativeThreadId) {
-                nativeDirectories.delete(nativeThreadId);
-                return yield* toProtocolError("Codex resumed a different native thread.");
-              }
-              const nativeDirectory = codexNativeReplyDirectory(response.thread.cwd, response.cwd, true);
-              captureNativeDirectory(threadInput.providerThread, nativeThreadId, nativeDirectory);
-              yield* requireNativeDirectory(threadInput.nativeCreationExecution, nativeDirectory);
-              const resumed = {
-                ...threadInput.providerThread,
-                providerSessionId: input.providerSessionId,
-                providerInstanceId: adapterOptions.instanceId,
-                status: "idle",
-                nativeThreadRef: {
-                  driver: CODEX_PROVIDER,
-                  nativeId: response.thread.id,
-                  strength: "strong",
-                },
-                nativeConversationHeadRef: threadInput.providerThread.nativeConversationHeadRef,
-                updatedAt: codexTimestamp(response.thread.updatedAt),
-              } satisfies OrchestrationV2ProviderThread;
-              const threadId = threadInput.threadId ?? resumed.appThreadId;
-              if (threadId !== null) {
+                });
+                // Adopt the prepared Jones row while binding the actual new native thread.
+                const providerThread: OrchestrationV2ProviderThread =
+                  existing === undefined
+                    ? nativeProviderThread
+                    : {
+                        ...existing,
+                        providerSessionId: nativeProviderThread.providerSessionId,
+                        nativeThreadRef: nativeProviderThread.nativeThreadRef,
+                        nativeConversationHeadRef: nativeProviderThread.nativeConversationHeadRef,
+                        status: nativeProviderThread.status,
+                        updatedAt: nativeProviderThread.updatedAt,
+                      };
+                const nativeDirectory = codexNativeReplyDirectory(
+                  response.thread.cwd,
+                  response.cwd,
+                  true,
+                );
+                captureNativeDirectory(providerThread, response.thread.id, nativeDirectory);
+                yield* requireNativeDirectory(threadInput.nativeCreationExecution, nativeDirectory);
                 yield* bindRuntimeThread({
-                  threadId,
-                  providerThread: resumed,
-                  requested: threadInput.modelSelection ?? input.modelSelection,
-                  sourceEvent: "thread/resume",
+                  producer,
+                  threadId: threadInput.threadId,
+                  providerThread,
+                  requested: threadInput.modelSelection,
+                  sourceEvent: "thread/start",
                   model: response.model,
                   modelProvider: response.modelProvider,
-                  serviceTier: response.serviceTier,
+                  ...(response.serviceTier === undefined
+                    ? {}
+                    : { serviceTier: response.serviceTier }),
                   nativeDirectory,
                 });
-              }
-              return resumed;
-            }).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterResumeThreadError({
-                    driver: CODEX_PROVIDER,
-                    providerSessionId: input.providerSessionId,
-                    providerThreadId: threadInput.providerThread.id,
-                    cause: normalizeCodexCause(cause),
-                    nativeEffect: operationEvidence(threadInput.nativeOperation, "resume_thread", {
-                      ...(threadInput.threadId ?? threadInput.providerThread.appThreadId
-                        ? { threadId: (threadInput.threadId ?? threadInput.providerThread.appThreadId)! }
-                        : {}),
-                      providerThreadId: threadInput.providerThread.id,
-                    }, !nativeStartUnknown && !resumeGateInvoked && !authorityCheckInvoked && (!dispatched || (!initializedDuringOperation &&
-                      cause._tag === "CodexAppServerRequestError" && cause.code === -32601))
-                      ? "known_no_effect" : "unknown"),
+                return providerThread;
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterEnsureThreadError({
+                      driver: CODEX_PROVIDER,
+                      threadId: threadInput.threadId,
+                      cause: normalizeCodexCause(cause),
+                      nativeEffect: operationEvidence(
+                        threadInput.nativeOperation,
+                        "ensure_thread",
+                        {
+                          threadId: threadInput.threadId,
+                        },
+                        !nativeStartUnknown &&
+                          !authorityCheckInvoked &&
+                          (!dispatched ||
+                            (!initializedDuringOperation &&
+                              cause._tag === "CodexAppServerRequestError" &&
+                              cause.code === -32601))
+                          ? "known_no_effect"
+                          : "unknown",
+                      ),
+                    }),
+                ),
+                Effect.onExit((exit) =>
+                  Effect.suspend(() => {
+                    if (!bindingOperationStarted) return Effect.void;
+                    return (
+                      exit._tag === "Failure" ? discardFailedBindingObservations : Effect.void
+                    ).pipe(Effect.andThen(finishBindingOperation));
                   }),
-              ),
-              Effect.onExit((exit) => Effect.suspend(() => {
-                if (!bindingOperationStarted) return Effect.void;
-                if (exit._tag === "Failure" && threadInput.providerThread.nativeThreadRef)
-                  nativeDirectories.delete(threadInput.providerThread.nativeThreadRef.nativeId);
-                return (exit._tag === "Failure" ? discardFailedBindingObservations : Effect.void)
-                  .pipe(Effect.andThen(finishBindingOperation));
-              })),
-            );
-          }),
+                ),
+              );
+            }),
+          resumeThread: (threadInput) =>
+            Effect.suspend(() => {
+              let dispatched = false;
+              let initializedDuringOperation = false;
+              let resumeGateInvoked = false;
+              let authorityCheckInvoked = false;
+              let bindingOperationStarted = false;
+              return Effect.gen(function* () {
+                if (nativeStartUnknown || replacingRuntime)
+                  return yield* toProtocolError(
+                    "Codex has an unconfirmed or replacing native runtime and cannot resume another thread.",
+                  );
+                bindingOperationStarted = true;
+                bindingOperationsInFlight++;
+                const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
+                const params = codexThreadRuntimeParams({
+                  threadId: threadInput.threadId ?? threadInput.providerThread.appThreadId,
+                  ...(threadInput.modelSelection === undefined
+                    ? {}
+                    : { modelSelection: threadInput.modelSelection }),
+                  ...(threadInput.runtimePolicy === undefined
+                    ? {}
+                    : { runtimePolicy: threadInput.runtimePolicy }),
+                });
+                initializedDuringOperation = !(yield* Ref.get(initialized));
+                dispatched = initializedDuringOperation;
+                let producer: ProviderEventProducerOrigin | undefined;
+                const response = yield* ensureInitialized.pipe(
+                  Effect.andThen(
+                    Effect.suspend(() => {
+                      if (threadInput.beforeNativeResume === undefined) return Effect.void;
+                      resumeGateInvoked = true;
+                      return threadInput.beforeNativeResume(continuationSourceIdentity);
+                    }),
+                  ),
+                  Effect.andThen(
+                    Effect.suspend(() => {
+                      authorityCheckInvoked = threadInput.nativeCreationExecution !== undefined;
+                      return requireNativeDirectory(
+                        threadInput.nativeCreationExecution,
+                        nativeDirectoryFor(threadInput.providerThread),
+                      ).pipe(
+                        Effect.andThen(
+                          authorizeCodexNativeMutation(
+                            threadInput.nativeCreationExecution,
+                            "thread/resume",
+                            params.cwd ?? nativeDirectoryFor(threadInput.providerThread),
+                          ),
+                        ),
+                        Effect.andThen(
+                          Effect.suspend(() =>
+                            requireNativeDirectory(
+                              threadInput.nativeCreationExecution,
+                              nativeDirectoryFor(threadInput.providerThread),
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
+                  Effect.andThen(
+                    Effect.suspend(() => {
+                      dispatched = true;
+                      const target = client;
+                      producer = captureProducer(target, runtimeGeneration);
+                      // Decode resume metadata without loading the native history payload.
+                      return target.raw.request("thread/resume", {
+                        threadId: nativeThreadId,
+                        excludeTurns: true,
+                        ...params,
+                      });
+                    }),
+                  ),
+                  Effect.flatMap(decodeCodexResumeMetadata),
+                );
+                if (producer === undefined)
+                  return yield* toProtocolError("Codex resume has no captured native source.");
+                yield* producer.revalidateCurrent.pipe(
+                  Effect.mapError(() =>
+                    toProtocolError("Codex resume came from a replaced native source."),
+                  ),
+                );
+                if (response.thread.id !== nativeThreadId) {
+                  nativeDirectories.delete(nativeThreadId);
+                  return yield* toProtocolError("Codex resumed a different native thread.");
+                }
+                const nativeDirectory = codexNativeReplyDirectory(
+                  response.thread.cwd,
+                  response.cwd,
+                  true,
+                );
+                captureNativeDirectory(threadInput.providerThread, nativeThreadId, nativeDirectory);
+                yield* requireNativeDirectory(threadInput.nativeCreationExecution, nativeDirectory);
+                const resumed = {
+                  ...threadInput.providerThread,
+                  providerSessionId: input.providerSessionId,
+                  providerInstanceId: adapterOptions.instanceId,
+                  status: "idle",
+                  nativeThreadRef: {
+                    driver: CODEX_PROVIDER,
+                    nativeId: response.thread.id,
+                    strength: "strong",
+                  },
+                  nativeConversationHeadRef: threadInput.providerThread.nativeConversationHeadRef,
+                  updatedAt: codexTimestamp(response.thread.updatedAt),
+                } satisfies OrchestrationV2ProviderThread;
+                const threadId = threadInput.threadId ?? resumed.appThreadId;
+                if (threadId !== null) {
+                  yield* bindRuntimeThread({
+                    producer,
+                    threadId,
+                    providerThread: resumed,
+                    requested: threadInput.modelSelection ?? input.modelSelection,
+                    sourceEvent: "thread/resume",
+                    ...(response.model === undefined ? {} : { model: response.model }),
+                    ...(response.modelProvider === undefined
+                      ? {}
+                      : { modelProvider: response.modelProvider }),
+                    ...(response.serviceTier === undefined
+                      ? {}
+                      : { serviceTier: response.serviceTier }),
+                    nativeDirectory,
+                  });
+                }
+                return resumed;
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterResumeThreadError({
+                      driver: CODEX_PROVIDER,
+                      providerSessionId: input.providerSessionId,
+                      providerThreadId: threadInput.providerThread.id,
+                      cause: normalizeCodexCause(cause),
+                      nativeEffect: operationEvidence(
+                        threadInput.nativeOperation,
+                        "resume_thread",
+                        {
+                          ...((threadInput.threadId ?? threadInput.providerThread.appThreadId)
+                            ? {
+                                threadId: (threadInput.threadId ??
+                                  threadInput.providerThread.appThreadId)!,
+                              }
+                            : {}),
+                          providerThreadId: threadInput.providerThread.id,
+                        },
+                        !nativeStartUnknown &&
+                          !resumeGateInvoked &&
+                          !authorityCheckInvoked &&
+                          (!dispatched ||
+                            (!initializedDuringOperation &&
+                              cause._tag === "CodexAppServerRequestError" &&
+                              cause.code === -32601))
+                          ? "known_no_effect"
+                          : "unknown",
+                      ),
+                    }),
+                ),
+                Effect.onExit((exit) =>
+                  Effect.suspend(() => {
+                    if (!bindingOperationStarted) return Effect.void;
+                    const nativeId = threadInput.providerThread.nativeThreadRef?.nativeId;
+                    if (exit._tag === "Failure" && nativeId != null)
+                      nativeDirectories.delete(nativeId);
+                    return (
+                      exit._tag === "Failure" ? discardFailedBindingObservations : Effect.void
+                    ).pipe(Effect.andThen(finishBindingOperation));
+                  }),
+                ),
+              );
+            }),
           compactThread: (turnInput) =>
             Effect.gen(function* () {
               if (nativeStartUnknown || replacingRuntime)
-                return yield* toProtocolError("Codex has an unconfirmed or replacing native runtime and cannot compact it.");
+                return yield* toProtocolError(
+                  "Codex has an unconfirmed or replacing native runtime and cannot compact it.",
+                );
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
+              const binding = runtimeBindings.get(threadId)?.binding;
+              if (
+                binding === undefined ||
+                !matchesInterruptBinding(turnInput.providerThread, binding, undefined) ||
+                pendingCompactions.has(threadId)
+              )
+                return yield* toProtocolError(
+                  "Codex compaction does not match a confirmed current native binding.",
+                );
+              const target = client;
+              const producer = captureProducer(target, binding.runtimeGeneration);
+              const pending: PendingCodexCompaction = {
+                input: turnInput,
+                producer,
+                binding: Object.freeze({ ...binding, nativeThreadId: threadId }),
+                acknowledged: false,
+                ambiguous: false,
+              };
+              pendingCompactions.set(threadId, pending);
               yield* Ref.update(pendingRootTurns, (current) =>
                 new Map(current).set(threadId, turnInput),
               );
-              yield* authorizeCodexNativeMutation(turnInput.nativeCreationExecution, "thread/compact/start", nativeDirectoryFor(turnInput.providerThread)).pipe(
-                Effect.andThen(Effect.suspend(() => requireNativeDirectory(
-                  turnInput.nativeCreationExecution, nativeDirectoryFor(turnInput.providerThread),
-                ))),
-                Effect.andThen(client.request("thread/compact/start", { threadId })),
+              yield* authorizeCodexNativeMutation(
+                turnInput.nativeCreationExecution,
+                "thread/compact/start",
+                nativeDirectoryFor(turnInput.providerThread),
+              ).pipe(
+                Effect.andThen(
+                  Effect.suspend(() =>
+                    requireNativeDirectory(
+                      turnInput.nativeCreationExecution,
+                      nativeDirectoryFor(turnInput.providerThread),
+                    ),
+                  ),
+                ),
+                Effect.andThen(
+                  producer.revalidateCurrent.pipe(
+                    Effect.mapError(() =>
+                      toProtocolError("Codex compaction source was replaced before dispatch."),
+                    ),
+                  ),
+                ),
+                Effect.andThen(target.request("thread/compact/start", { threadId })),
+                Effect.andThen(
+                  Effect.gen(function* () {
+                    yield* producer.revalidateCurrent.pipe(
+                      Effect.mapError(() =>
+                        toProtocolError(
+                          "Codex compaction acknowledgement came from a replaced native source.",
+                        ),
+                      ),
+                    );
+                    if (pending.ambiguous)
+                      return yield* toProtocolError(
+                        "Codex compaction has conflicting native start notifications.",
+                      );
+                    // Compaction replies omit the turn ID; join the acknowledged request with its captured native notification.
+                    pending.acknowledged = true;
+                    if (pending.nativeStart !== undefined)
+                      yield* registerCompactionTurn(pending, pending.nativeStart);
+                  }).pipe(turnTerminalizationPermit.withPermits(1)),
+                ),
                 Effect.tapError(() =>
-                  Effect.sync(() => { nativeDirectories.delete(threadId); }).pipe(Effect.andThen(
-                  Ref.update(pendingRootTurns, (current) => {
-                    const next = new Map(current);
-                    next.delete(threadId);
-                    return next;
-                  }),
-                  )),
+                  Effect.sync(() => {
+                    nativeDirectories.delete(threadId);
+                    if (pendingCompactions.get(threadId) === pending)
+                      pendingCompactions.delete(threadId);
+                  }).pipe(
+                    Effect.andThen(
+                      Ref.update(pendingRootTurns, (current) => {
+                        if (current.get(threadId) !== turnInput) return current;
+                        const next = new Map(current);
+                        next.delete(threadId);
+                        return next;
+                      }),
+                    ),
+                  ),
                 ),
               );
             }).pipe(
@@ -6647,11 +8408,21 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             ),
           injectHistory: (input) =>
             Effect.gen(function* () {
-              if (nativeStartUnknown || replacingRuntime) return yield* toProtocolError("Codex has an unconfirmed or replacing native runtime and cannot inject history.");
+              if (nativeStartUnknown || replacingRuntime)
+                return yield* toProtocolError(
+                  "Codex has an unconfirmed or replacing native runtime and cannot inject history.",
+                );
               const threadId = yield* getNativeThreadId(input.providerThread);
               const items = historyResponseItems(input.messages, input.context);
-              yield* authorizeCodexNativeMutation(input.nativeCreationExecution, "thread/inject_items", nativeDirectoryFor(input.providerThread));
-              yield* requireNativeDirectory(input.nativeCreationExecution, nativeDirectoryFor(input.providerThread));
+              yield* authorizeCodexNativeMutation(
+                input.nativeCreationExecution,
+                "thread/inject_items",
+                nativeDirectoryFor(input.providerThread),
+              );
+              yield* requireNativeDirectory(
+                input.nativeCreationExecution,
+                nativeDirectoryFor(input.providerThread),
+              );
               return yield* client
                 .request("thread/inject_items", {
                   threadId,
@@ -6668,10 +8439,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   }),
                 );
             }).pipe(
-              Effect.tapError(() => Effect.sync(() => {
-                const nativeId = input.providerThread.nativeThreadRef?.nativeId;
-                if (nativeId !== undefined) nativeDirectories.delete(nativeId);
-              })),
+              Effect.tapError(() =>
+                Effect.sync(() => {
+                  const nativeId = input.providerThread.nativeThreadRef?.nativeId;
+                  if (nativeId != null) nativeDirectories.delete(nativeId);
+                }),
+              ),
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapterProtocolError({
@@ -6681,113 +8454,182 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   }),
               ),
             ),
-          startTurn: (turnInput) => Effect.suspend(() => {
-            let dispatched = false;
-            let authorityCheckInvoked = false;
-            let managedFreshnessInvoked = false;
-            let request: CapacityRequest | undefined;
-            return Effect.gen(function* () {
-              const threadId = yield* getNativeThreadId(turnInput.providerThread);
-              if (nativeStartUnknown || replacingRuntime) return yield* toProtocolError("Codex has an unconfirmed or replacing native runtime and cannot send another turn.");
-              const previous = capacityByThread.get(threadId);
-              if (previous !== undefined && previous.input.attemptId !== turnInput.attemptId)
-                yield* cancelCapacityRequest(previous, "superseded");
-              managedFreshnessInvoked = adapterOptions.resolveRuntimeForSend !== undefined;
-              if (managedFreshnessInvoked) yield* authorizeCodexNativeCreation(turnInput.nativeCreationExecution);
-              yield* refreshManagedRuntime(turnInput);
+          startTurn: (turnInput) =>
+            Effect.suspend(() => {
+              let dispatched = false;
+              let authorityCheckInvoked = false;
+              let managedFreshnessInvoked = false;
+              let request: CapacityRequest | undefined;
+              return Effect.gen(function* () {
+                const managed = yield* managedForInput(turnInput);
+                const threadId = yield* getNativeThreadId(turnInput.providerThread);
+                if (nativeStartUnknown || replacingRuntime)
+                  return yield* toProtocolError(
+                    "Codex has an unconfirmed or replacing native runtime and cannot send another turn.",
+                  );
+                const previous = capacityByThread.get(threadId);
+                if (previous !== undefined && previous.input.attemptId !== turnInput.attemptId)
+                  yield* cancelCapacityRequest(previous, "superseded");
+                managedFreshnessInvoked = adapterOptions.resolveRuntimeForSend !== undefined;
+                if (managedFreshnessInvoked)
+                  yield* authorizeCodexNativeCreation(turnInput.nativeCreationExecution);
+                yield* refreshManagedRuntime(turnInput, managed);
 
-              const selectionInput = { instanceId: adapterOptions.instanceId, selection: turnInput.modelSelection };
-              const models = codexTurnNeedsModelCatalog(selectionInput) && adapterOptions.getModelCatalog !== undefined
-                ? yield* adapterOptions.getModelCatalog() : undefined;
-              const resolvedSettings = resolveCodexEffectiveTurnSettings({
-                ...selectionInput,
-                ...(models === undefined ? {} : { models }),
-                managed: adapterOptions.resolveRuntime !== undefined,
-                ...(turnInput.configuredDefaultModelSelection === undefined ? {} : {
-                  configuredDefaultModelSelection: turnInput.configuredDefaultModelSelection,
-                }),
-              });
-              if (resolvedSettings.type === "rejected") {
-                return yield* toProtocolError("Codex turn settings do not match the current provider instance or native schema.");
-              }
-              const effectiveSettings = Object.freeze({ ...resolvedSettings.settings });
+                const selectionInput = {
+                  instanceId: adapterOptions.instanceId,
+                  selection: turnInput.modelSelection,
+                };
+                const models =
+                  codexTurnNeedsModelCatalog(selectionInput) &&
+                  adapterOptions.getModelCatalog !== undefined
+                    ? yield* adapterOptions.getModelCatalog()
+                    : undefined;
+                const resolvedSettings = resolveCodexEffectiveTurnSettings({
+                  ...selectionInput,
+                  ...(models === undefined ? {} : { models }),
+                  managed: adapterOptions.resolveRuntime !== undefined,
+                  ...(turnInput.configuredDefaultModelSelection === undefined
+                    ? {}
+                    : {
+                        configuredDefaultModelSelection: turnInput.configuredDefaultModelSelection,
+                      }),
+                });
+                if (resolvedSettings.type === "rejected") {
+                  return yield* toProtocolError(
+                    "Codex turn settings do not match the current provider instance or native schema.",
+                  );
+                }
+                const effectiveSettings = Object.freeze({ ...resolvedSettings.settings });
 
-              const codexInput =
-                turnInput.restartContinuationOfRunId === undefined
-                  ? yield* toCodexInput(turnInput)
-                  : [];
-              const mcpSession = McpProviderSession.readMcpProviderSession(turnInput.threadId);
-              const turnStartParams = yield* buildCodexTurnStartParams({
-                nativeThreadId: threadId,
-                codexInput,
-                runtimePolicy: turnInput.runtimePolicy,
-                modelSelection: turnInput.modelSelection,
-                effectiveSettings,
-                hasT3Mcp: mcpSession !== undefined,
-                browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
-                deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
-                omitServiceTier: adapterOptions.resolveRuntime !== undefined,
-              });
-              yield* Ref.update(pendingRootTurns, (current) => {
-                const updated = new Map(current);
-                updated.set(threadId, turnInput);
-                return updated;
-              });
-              yield* Ref.update(additionalContextByThread, (current) => {
-                const next = new Map(current);
-                if (turnStartParams.additionalContext)
-                  next.set(threadId, turnStartParams.additionalContext);
-                else next.delete(threadId);
-                return next;
-              });
-              const binding = runtimeBindings.get(threadId);
-              if (binding && binding.binding.providerThreadId === turnInput.providerThread.id) {
-                runtimeBindings.set(threadId, { ...binding, requested: turnInput.modelSelection });
-              }
-              request = {
-                state: makeCodexCapacityContinuation({ runId: turnInput.runId, attemptId: turnInput.attemptId,
-                  providerThreadId: turnInput.providerThread.id, nativeThreadId: threadId, runtimeGeneration }),
-                input: turnInput, params: turnStartParams, earlyErrors: new Map(), earlyCompletions: new Map(), earlyStarts: new Map(),
-                recoveryEnabled: true, logicalTerminalEmitted: false,
-              };
-              capacityByThread.set(threadId, request);
-              authorityCheckInvoked = turnInput.nativeCreationExecution !== undefined;
-              yield* requireNativeDirectory(turnInput.nativeCreationExecution, nativeDirectoryFor(turnInput.providerThread));
-              if (nativeDirectoryFor(turnInput.providerThread) !== turnStartParams.cwd) nativeDirectories.delete(threadId);
-              dispatched = true;
-              yield* sendCapacityTurn(request, 0);
-            }).pipe(
-              Effect.onError(() => dispatched && request !== undefined ? finishUnknownCapacityStart(request) : Effect.void),
-              Effect.onExit((exit) => Effect.sync(() => {
-                if (exit._tag === "Failure" && turnInput.providerThread.nativeThreadRef)
-                  nativeDirectories.delete(turnInput.providerThread.nativeThreadRef.nativeId);
-              })),
-              Effect.ensuring(
-                Effect.flatMap(getNativeThreadId(turnInput.providerThread), (threadId) =>
-                  Ref.update(pendingRootTurns, (current) => {
-                    const updated = new Map(current);
-                    updated.delete(threadId);
-                    return updated;
-                  }),
-                ).pipe(Effect.ignore),
-              ),
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterTurnStartError({
-                    driver: CODEX_PROVIDER,
-                    threadId: turnInput.threadId,
-                    providerThreadId: turnInput.providerThread.id,
+                const codexInput =
+                  turnInput.restartContinuationOfRunId === undefined
+                    ? yield* toCodexInput(turnInput)
+                    : [];
+                const mcpSession = McpProviderSession.readMcpProviderSession(turnInput.threadId);
+                const turnStartParams = yield* buildCodexTurnStartParams({
+                  nativeThreadId: threadId,
+                  codexInput,
+                  runtimePolicy: turnInput.runtimePolicy,
+                  modelSelection: turnInput.modelSelection,
+                  effectiveSettings,
+                  hasT3Mcp: mcpSession !== undefined,
+                  browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
+                  deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
+                  omitServiceTier: adapterOptions.resolveRuntime !== undefined,
+                });
+                yield* Ref.update(pendingRootTurns, (current) => {
+                  const updated = new Map(current);
+                  updated.set(threadId, turnInput);
+                  return updated;
+                });
+                yield* Ref.update(additionalContextByThread, (current) => {
+                  const next = new Map(current);
+                  if (turnStartParams.additionalContext)
+                    next.set(threadId, turnStartParams.additionalContext);
+                  else next.delete(threadId);
+                  return next;
+                });
+                const binding = runtimeBindings.get(threadId);
+                if (binding && binding.binding.providerThreadId === turnInput.providerThread.id) {
+                  runtimeBindings.set(threadId, {
+                    ...binding,
+                    requested: turnInput.modelSelection,
+                  });
+                }
+                request = {
+                  ...(managed === undefined ? {} : { managed }),
+                  producer: captureProducer(client, runtimeGeneration),
+                  state: makeCodexCapacityContinuation({
                     runId: turnInput.runId,
-                    cause,
-                    nativeEffect: operationEvidence(turnInput.nativeOperation, "start_turn", {
+                    attemptId: turnInput.attemptId,
+                    providerThreadId: turnInput.providerThread.id,
+                    nativeThreadId: threadId,
+                    runtimeGeneration,
+                  }),
+                  input: turnInput,
+                  params: turnStartParams,
+                  earlyErrors: new Map(),
+                  earlyCompletions: new Map(),
+                  earlyStarts: new Map(),
+                  startOperation: Object.freeze({
+                    ...(turnInput.nativeOperation ?? {
+                      operationId: NodeCrypto.randomUUID(),
+                      operation: "start_turn" as const,
+                      instanceId: adapterOptions.instanceId,
+                      threadId: turnInput.threadId,
+                      providerSessionId: input.providerSessionId,
+                      providerThreadId: turnInput.providerThread.id,
+                      runtimeGeneration,
+                      attemptId: turnInput.attemptId,
+                    }),
+                  }),
+                  stopping: false,
+                  recoveryEnabled: true,
+                  logicalTerminalEmitted: false,
+                };
+                capacityByThread.set(threadId, request);
+                if (managed !== undefined) {
+                  managed.request = request;
+                  managed.started = true;
+                }
+                authorityCheckInvoked = turnInput.nativeCreationExecution !== undefined;
+                yield* requireNativeDirectory(
+                  turnInput.nativeCreationExecution,
+                  nativeDirectoryFor(turnInput.providerThread),
+                );
+                if (nativeDirectoryFor(turnInput.providerThread) !== turnStartParams.cwd)
+                  nativeDirectories.delete(threadId);
+                dispatched = true;
+                yield* sendCapacityTurn(request, 0);
+              }).pipe(
+                Effect.onError(() =>
+                  dispatched && request !== undefined
+                    ? finishUnknownCapacityStart(request)
+                    : Effect.void,
+                ),
+                Effect.onExit((exit) =>
+                  Effect.sync(() => {
+                    const nativeId = turnInput.providerThread.nativeThreadRef?.nativeId;
+                    if (exit._tag === "Failure" && nativeId != null)
+                      nativeDirectories.delete(nativeId);
+                  }),
+                ),
+                Effect.ensuring(
+                  Effect.flatMap(getNativeThreadId(turnInput.providerThread), (threadId) =>
+                    Ref.update(pendingRootTurns, (current) => {
+                      const updated = new Map(current);
+                      updated.delete(threadId);
+                      return updated;
+                    }),
+                  ).pipe(Effect.ignore),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterTurnStartError({
+                      driver: CODEX_PROVIDER,
                       threadId: turnInput.threadId,
                       providerThreadId: turnInput.providerThread.id,
-                      attemptId: turnInput.attemptId,
-                    }, dispatched || authorityCheckInvoked || managedFreshnessInvoked || nativeStartUnknown ? "unknown" : "known_no_effect"),
-                  }),
-              ),
-            );
-          }),
+                      runId: turnInput.runId,
+                      cause,
+                      nativeEffect: operationEvidence(
+                        turnInput.nativeOperation,
+                        "start_turn",
+                        {
+                          threadId: turnInput.threadId,
+                          providerThreadId: turnInput.providerThread.id,
+                          attemptId: turnInput.attemptId,
+                        },
+                        dispatched ||
+                          authorityCheckInvoked ||
+                          managedFreshnessInvoked ||
+                          nativeStartUnknown
+                          ? "unknown"
+                          : "known_no_effect",
+                      ),
+                    }),
+                ),
+              );
+            }),
           steerTurn: (turnInput) =>
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
@@ -6843,20 +8685,72 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               // interrupts remain goal-neutral; a paused goal does not prove drain.
               if (turnInput.requestRuntimeRestart === true) {
                 const nativeId = turnInput.providerThread.nativeThreadRef?.nativeId;
-                const currentBinding = nativeId === undefined ? undefined : runtimeBindings.get(nativeId)?.binding;
-                if (currentBinding === undefined || (yield* Ref.get(closed)) ||
-                    !matchesInterruptBinding(turnInput.providerThread, currentBinding, turnInput.nativeOperation)) {
-                  return yield* toProtocolError("Codex user Stop does not match the current runtime binding.");
+                const currentBinding =
+                  nativeId == null ? undefined : runtimeBindings.get(nativeId)?.binding;
+                if (
+                  currentBinding === undefined ||
+                  (yield* Ref.get(closed)) ||
+                  !matchesInterruptBinding(
+                    turnInput.providerThread,
+                    currentBinding,
+                    turnInput.nativeOperation,
+                  )
+                ) {
+                  return yield* toProtocolError(
+                    "Codex user Stop does not match the current runtime binding.",
+                  );
                 }
                 const binding = { ...currentBinding };
-                yield* pauseActiveGoal(turnInput.providerThread, binding, turnInput.nativeOperation);
-                if ((yield* Ref.get(closed)) ||
-                    !matchesInterruptBinding(turnInput.providerThread, binding, turnInput.nativeOperation)) {
-                  return yield* toProtocolError("Codex runtime binding changed before user Stop could be delivered.");
+                yield* pauseActiveGoal(
+                  turnInput.providerThread,
+                  binding,
+                  turnInput.nativeOperation,
+                );
+                if (
+                  (yield* Ref.get(closed)) ||
+                  !matchesInterruptBinding(
+                    turnInput.providerThread,
+                    binding,
+                    turnInput.nativeOperation,
+                  )
+                ) {
+                  return yield* toProtocolError(
+                    "Codex runtime binding changed before user Stop could be delivered.",
+                  );
                 }
               }
-              const recovery = capacityByThread.get(turnInput.providerThread.nativeThreadRef?.nativeId ?? "");
-              if (recovery !== undefined && recovery.input.providerThread.id === turnInput.providerThread.id) {
+              const recovery = capacityByThread.get(
+                turnInput.providerThread.nativeThreadRef?.nativeId ?? "",
+              );
+              if (
+                turnInput.requestRuntimeRestart === true &&
+                recovery?.pendingStart !== undefined
+              ) {
+                if (
+                  recovery.logicalContext?.providerTurnId !== turnInput.providerTurnId ||
+                  recovery.input.providerThread.id !== turnInput.providerThread.id
+                )
+                  return yield* toProtocolError(
+                    "Codex pending continuation does not match the requested logical turn.",
+                  );
+                const result = yield* stopPendingStart(
+                  {
+                    binding: recovery.pendingStart.binding,
+                    runId: recovery.input.runId,
+                    attemptId: recovery.input.attemptId,
+                    startOperation: recovery.startOperation,
+                  },
+                  true,
+                );
+                if (result.status === "cancelled") return;
+                return yield* toProtocolError(
+                  "Codex did not confirm pending continuation cleanup.",
+                );
+              }
+              if (
+                recovery !== undefined &&
+                recovery.input.providerThread.id === turnInput.providerThread.id
+              ) {
                 yield* cancelCapacityRequest(recovery, "stop");
               }
               const [activeTurnContexts, settledTurnContexts] =
@@ -7086,48 +8980,70 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               });
 
               yield* Effect.gen(function* () {
-                const interruptTarget = (target: (typeof interruptTargets)[number]) => Effect.gen(function* () {
-                  const context = target.context;
-                  // A null start timestamp acknowledges a queued turn; Codex cannot interrupt it
-                  // until turn/started confirms that the native task exists.
-                  if (context.nativeStartReady !== undefined) {
-                    const ready = yield* Deferred.await(context.nativeStartReady).pipe(
-                      Effect.timeoutOption("10 seconds"),
-                    );
-                    if (Option.isNone(ready)) {
-                      return yield* toProtocolError(
-                        "Codex did not start the queued turn within 10 seconds; Stop could not be delivered.",
+                const interruptTarget = (target: (typeof interruptTargets)[number]) =>
+                  Effect.gen(function* () {
+                    const context = target.context;
+                    // A null start timestamp acknowledges a queued turn; Codex cannot interrupt it
+                    // until turn/started confirms that the native task exists.
+                    if (context.nativeStartReady !== undefined) {
+                      const ready = yield* Deferred.await(context.nativeStartReady).pipe(
+                        Effect.timeoutOption("10 seconds"),
                       );
+                      if (Option.isNone(ready)) {
+                        return yield* toProtocolError(
+                          "Codex did not start the queued turn within 10 seconds; Stop could not be delivered.",
+                        );
+                      }
                     }
-                  }
-                  if ((yield* Ref.get(activeTurns)).get(context.nativeTurnId) !== context) {
-                    return;
-                  }
-                  const nativeThreadId = yield* getNativeThreadId(context.providerThread);
-                  const interrupt = client.request("turn/interrupt", {
-                    threadId: nativeThreadId,
-                    turnId: context.nativeTurnId,
+                    if ((yield* Ref.get(activeTurns)).get(context.nativeTurnId) !== context) {
+                      return;
+                    }
+                    const nativeThreadId = yield* getNativeThreadId(context.providerThread);
+                    const interrupt = client.request("turn/interrupt", {
+                      threadId: nativeThreadId,
+                      turnId: context.nativeTurnId,
+                    });
+                    yield* context === activeTurn
+                      ? interrupt.pipe(
+                          Effect.timeoutOrElse({
+                            duration: "3 seconds",
+                            orElse: () =>
+                              Effect.sync(() => {
+                                rootInterruptTimedOut = true;
+                              }).pipe(
+                                Effect.andThen(
+                                  Effect.fail(
+                                    new CodexNativeInterruptTimeoutError({
+                                      nativeThreadId,
+                                      nativeTurnId: context.nativeTurnId,
+                                      runtimeGeneration,
+                                    }),
+                                  ),
+                                ),
+                              ),
+                          }),
+                        )
+                      : interrupt;
                   });
-                  yield* context === activeTurn ? interrupt.pipe(Effect.timeoutOrElse({
-                    duration: "3 seconds",
-                    orElse: () => Effect.sync(() => { rootInterruptTimedOut = true; }).pipe(Effect.andThen(
-                      Effect.fail(new CodexNativeInterruptTimeoutError({
-                        nativeThreadId, nativeTurnId: context.nativeTurnId, runtimeGeneration,
-                      })),
-                    )),
-                  })) : interrupt;
-                });
                 let childInterruptFailure: unknown;
                 yield* Effect.forEach(
                   interruptTargets.filter((target) => target.context !== activeTurn).slice(0, 32),
-                  (target) => interruptTarget(target).pipe(
-                    Effect.timeoutOption("3 seconds"),
-                    Effect.catch((cause) => Effect.sync(() => { childInterruptFailure ??= cause; })),
-                  ),
+                  (target) =>
+                    interruptTarget(target).pipe(
+                      Effect.timeoutOption("3 seconds"),
+                      Effect.catch((cause) =>
+                        Effect.sync(() => {
+                          childInterruptFailure ??= cause;
+                        }),
+                      ),
+                    ),
                   { concurrency: 8, discard: true },
                 ).pipe(Effect.timeoutOption("10 seconds"));
-                yield* interruptTarget(interruptTargets.find((target) => target.context === activeTurn)!);
-                if (childInterruptFailure !== undefined) return yield* Effect.fail(childInterruptFailure);
+                yield* interruptTarget(
+                  interruptTargets.find((target) => target.context === activeTurn)!,
+                );
+                if (childInterruptFailure !== undefined)
+                  return yield* Effect.fail(childInterruptFailure);
                 const containedTerminalKeys = new Set<string>();
                 const attemptedTerminalKeys = new Set<string>();
                 const collectTrackedTerminals = (targets: typeof interruptTargets) =>
@@ -7245,7 +9161,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 );
               }).pipe(
                 // An unacknowledged root interrupt leaves the actual turn active.
-                Effect.onError(() => rootInterruptTimedOut ? Effect.void : finalizeRemainingInterruptLineage),
+                Effect.onError(() =>
+                  rootInterruptTimedOut ? Effect.void : finalizeRemainingInterruptLineage,
+                ),
                 Effect.ensuring(cleanupInterruptState),
               );
             }).pipe(
@@ -7338,9 +9256,19 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 Effect.andThen(client.request("thread/read", { threadId, includeTurns: true })),
               );
               const nativeStatus = response.thread.status.type;
-              if ((yield* Ref.get(closed)) || response.thread.id !== threadId ||
-                nativeStatus === "notLoaded" || nativeStatus === "systemError") nativeDirectories.delete(threadId);
-              else captureNativeDirectory(threadInput.providerThread, threadId, codexNativeReplyDirectory(response.thread.cwd));
+              if (
+                (yield* Ref.get(closed)) ||
+                response.thread.id !== threadId ||
+                nativeStatus === "notLoaded" ||
+                nativeStatus === "systemError"
+              )
+                nativeDirectories.delete(threadId);
+              else
+                captureNativeDirectory(
+                  threadInput.providerThread,
+                  threadId,
+                  codexNativeReplyDirectory(response.thread.cwd),
+                );
               return {
                 providerThread: {
                   ...threadInput.providerThread,
@@ -7358,10 +9286,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 providerPayload: response.thread,
               };
             }).pipe(
-              Effect.tapError(() => Effect.sync(() => {
-                const nativeId = threadInput.providerThread.nativeThreadRef?.nativeId;
-                if (nativeId !== undefined) nativeDirectories.delete(nativeId);
-              })),
+              Effect.tapError(() =>
+                Effect.sync(() => {
+                  const nativeId = threadInput.providerThread.nativeThreadRef?.nativeId;
+                  if (nativeId != null) nativeDirectories.delete(nativeId);
+                }),
+              ),
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapterReadThreadSnapshotError({
@@ -7533,7 +9463,65 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               ),
             ),
         };
-        return withProviderNativeEffects(runtime);
+        const rawRuntime = withProviderNativeEffects(runtime);
+        registerProviderManagedActorProducer(rawRuntime, ({ admission, issuer }) =>
+          Effect.sync(() => {
+            const run = admission.admission.run!;
+            const key = managedKey(
+              admission.startExecution.originalUse.operationId,
+              run.runAttemptId,
+              admission.providerThreadId,
+            );
+            if (managedCohorts.has(key))
+              throw new Error("Codex managed actor ticket is already prepared.");
+            const cohort: ManagedCodexCohort = {
+              admission,
+              issuer,
+              nativeActors: new Set(),
+              actors: new Set(),
+              callbacks: 0,
+              requests: 0,
+              started: false,
+              sealed: false,
+              unknown: false,
+              released: false,
+            };
+            managedCohorts.set(key, cohort);
+            return {
+              revalidateMutation: Effect.suspend(() => {
+                const binding = [...runtimeBindings.values()].find(
+                  (entry) => entry.binding.providerThreadId === admission.providerThreadId,
+                )?.binding;
+                return !cohort.released &&
+                  !cohort.sealed &&
+                  !cohort.unknown &&
+                  !Ref.getUnsafe(closed) &&
+                  !replacingRuntime &&
+                  !nativeStartUnknown &&
+                  binding !== undefined &&
+                  matchesRuntimeBinding(binding) &&
+                  binding.threadId === admission.admission.capture.threadId &&
+                  binding.instanceId === adapterOptions.instanceId &&
+                  binding.providerSessionId === input.providerSessionId
+                  ? Effect.void
+                  : Effect.fail("codex_managed_mutation_binding_changed");
+              }),
+              revalidateCompletion: Effect.suspend(() =>
+                !cohort.released &&
+                !cohort.unknown &&
+                cohort.started &&
+                cohort.callbacks === 0 &&
+                cohort.requests === 0 &&
+                cohort.request?.state.phase === "terminal" &&
+                cohort.nativeActors.size > 0 &&
+                [...cohort.nativeActors].every((actor) => actor.closed)
+                  ? Effect.void
+                  : Effect.fail("codex_managed_native_completion_pending"),
+              ),
+            };
+          }),
+        );
+        return rawRuntime;
       }).pipe(
         Effect.mapError(
           (cause) =>

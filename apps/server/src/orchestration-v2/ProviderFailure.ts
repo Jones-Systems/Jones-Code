@@ -12,9 +12,70 @@ import type {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Cause from "effect/Cause";
+import * as Schema from "effect/Schema";
 
 import type { IdAllocatorV2Shape } from "./IdAllocator.ts";
 import { ContextHandoffBudgetError } from "./ContextHandoffDelivery.ts";
+import {
+  ProviderNativeEffectEvidence,
+  type ProviderNativeOperationContext,
+} from "./ProviderAdapter.ts";
+
+export class ProviderNativeOperationUnknownError extends Schema.TaggedError<ProviderNativeOperationUnknownError>()(
+  "ProviderNativeOperationUnknownError",
+  { nativeEffect: ProviderNativeEffectEvidence, cause: Schema.optional(Schema.Defect()) },
+) {
+  override get message(): string {
+    return "T3 could not confirm the provider operation. The operation is held for reconciliation.";
+  }
+}
+
+export function nativeEffectEvidenceFromCause(
+  cause: unknown,
+): ProviderNativeEffectEvidence | undefined {
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 16 && cause != null && !seen.has(cause); depth++) {
+    seen.add(cause);
+    try {
+      if (Cause.isCause(cause)) {
+        cause = Cause.squash(cause);
+        continue;
+      }
+      if (typeof cause !== "object") return undefined;
+      if ("nativeEffect" in cause) {
+        return Schema.is(ProviderNativeEffectEvidence)(cause.nativeEffect)
+          ? cause.nativeEffect
+          : undefined;
+      }
+      cause = "cause" in cause ? cause.cause : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+export function nativeEffectEvidenceFor(
+  cause: unknown,
+  operation: ProviderNativeOperationContext,
+): ProviderNativeEffectEvidence {
+  const evidence = nativeEffectEvidenceFromCause(cause);
+  return evidence !== undefined &&
+    evidence.operationId === operation.operationId &&
+    evidence.operation === operation.operation &&
+    (
+      [
+        "instanceId",
+        "threadId",
+        "providerSessionId",
+        "providerThreadId",
+        "runtimeGeneration",
+        "attemptId",
+      ] as const
+    ).every((key) => operation[key] === undefined || operation[key] === evidence[key])
+    ? evidence
+    : { ...operation, outcome: "unknown" };
+}
 
 export const MAX_PROVIDER_FAILURE_MESSAGE_LENGTH = 4_096;
 export const MAX_PROVIDER_FAILURE_CODE_LENGTH = 128;
@@ -23,6 +84,8 @@ const DEFAULT_PROVIDER_FAILURE_MESSAGE = "Provider turn failed.";
 
 /** Translate known categories without exposing arbitrary provider defect text. */
 function causeMessage(cause: unknown): string | undefined {
+  if (nativeEffectEvidenceFromCause(cause)?.outcome === "unknown")
+    return "T3 could not confirm the provider operation. The operation is held for reconciliation.";
   const seen = new Set<unknown>();
   let message: string | undefined;
   for (let depth = 0; depth < 16 && cause != null && !seen.has(cause); depth++) {
@@ -37,22 +100,23 @@ function causeMessage(cause: unknown): string | undefined {
         case "ContextHandoffBudgetError":
           return new ContextHandoffBudgetError().message;
         case "ContextHandoffDeliveryUncertainError":
-          return "T3 could not confirm whether conversation history reached the provider. Retry the turn to recover the session.";
+        case "ProviderNativeOperationUnknownError":
+          return "T3 could not confirm the provider operation. The operation is held for reconciliation.";
         case "ProviderAdapterTurnStartError":
           message =
-            "The provider could not start this turn. Retry the turn; if it keeps failing, check the provider setup and server logs.";
+            "The provider could not start this turn. Check the provider setup and server logs.";
           break;
         case "ProviderAdapterEventStreamError":
           message =
-            "The provider event stream closed unexpectedly. Retry the turn; if it keeps failing, check the provider and server logs.";
+            "The provider event stream closed unexpectedly. Check the provider and server logs.";
           break;
         case "ProviderAdapterOpenSessionError":
           message =
-            "The provider session could not be opened. Check that the provider is installed and signed in, then retry the turn.";
+            "The provider session could not be opened. Check that the provider is installed and signed in.";
           break;
         case "ProviderAdapterResumeThreadError":
           message =
-            "The provider conversation could not be resumed. Retry the turn; if it keeps failing, check the provider and server logs.";
+            "The provider conversation could not be resumed. Check the provider and server logs.";
           break;
       }
       cause = (cause as Record<string, unknown>).cause;

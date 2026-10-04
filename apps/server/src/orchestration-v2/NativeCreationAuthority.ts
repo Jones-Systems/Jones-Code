@@ -1,6 +1,9 @@
 import {
   AuthSessionId,
   CommandId,
+  type ThreadId,
+  type NativeThreadIncarnationV2,
+  OrchestrationV2Command,
   type NativeCreationGuard,
   type NativeCreationEffect,
   NativeCreationHistoricalBinding,
@@ -19,6 +22,7 @@ import {
 } from "../persistence/Services/NativeCreationRepository.ts";
 import {
   nativeCreationCanonicalJson,
+  nativeCreationV2CommandDigest,
   validateNativeCreationPreparation,
   type ValidatedNativeCreationPreparation,
 } from "./NativeCreationPreparation.ts";
@@ -112,10 +116,9 @@ const issuedExecutions = new WeakMap<
   NativeCreationExecutionContextV2,
   {
     readonly reference: NativeCreationExecutionReferenceV2;
-    readonly authorize: (input: NativeCreationExecutionStageInput) => Effect.Effect<
-      NativeCreationHistoricalBinding,
-      NativeCreationAuthorityError
-    >;
+    readonly authorize: (
+      input: NativeCreationExecutionStageInput,
+    ) => Effect.Effect<NativeCreationHistoricalBinding, NativeCreationAuthorityError>;
   }
 >();
 
@@ -137,6 +140,61 @@ export const authorizeNativeCreationExecution = Effect.fn("authorizeNativeCreati
     return yield* execution.authorize(input);
   },
 );
+
+declare const issuedThreadRecoveryContext: unique symbol;
+
+export interface NativeCreationThreadRecoveryContextV2 {
+  readonly [issuedThreadRecoveryContext]: true;
+}
+
+export interface NativeCreationThreadRecoveryReferenceV2 {
+  readonly version: 2;
+  readonly claimId: string;
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly commandDigest: string;
+  readonly commandStartEffectId: string;
+  readonly cleanupStartEffectId: string;
+  readonly recoveryScopeId: string;
+  readonly incarnation: NativeThreadIncarnationV2;
+}
+
+export interface NativeCreationThreadRecoveryInputV2 {
+  readonly claimId: string;
+  readonly commandStartEffectId: string;
+  readonly cleanupStartEffectId: string;
+  readonly authorization: NativeCreationAuthorityInput;
+}
+
+const issuedThreadRecoveries = new WeakMap<
+  NativeCreationThreadRecoveryContextV2,
+  {
+    readonly reference: NativeCreationThreadRecoveryReferenceV2;
+    readonly authorize: Effect.Effect<
+      NativeCreationHistoricalBinding,
+      NativeCreationRepositoryError | NativeCreationAuthorityError
+    >;
+  }
+>();
+
+// Recovery correlation grants no external action; acceptance must prove the current birth atomically.
+export const getNativeCreationThreadRecoveryReference = (
+  context: NativeCreationThreadRecoveryContextV2,
+): NativeCreationThreadRecoveryReferenceV2 | null =>
+  issuedThreadRecoveries.get(context)?.reference ?? null;
+
+export const authorizeNativeCreationThreadRecovery = Effect.fn(
+  "authorizeNativeCreationThreadRecovery",
+)(function* (context: NativeCreationThreadRecoveryContextV2) {
+  const recovery = issuedThreadRecoveries.get(context);
+  if (recovery === undefined) {
+    return yield* new NativeCreationAuthorityError({
+      code: "unsupported_authority",
+      message: "Native thread recovery context was not issued by an authority",
+    });
+  }
+  return yield* recovery.authorize;
+});
 
 function freezePreparation<Value>(value: Value): Value {
   if (value !== null && typeof value === "object") {
@@ -181,7 +239,7 @@ export class NativeCreationGrantResolver extends Context.Service<
       NativeCreationAuthorityError
     >;
   }
->()("t3/orchestration/NativeCreationAuthority/NativeCreationGrantResolver") {}
+>()("t3/orchestration-v2/NativeCreationAuthority/NativeCreationGrantResolver") {}
 
 // This port must read current native environment, project, enabled provider and qualified account mapping.
 export class NativeCreationBindingResolver extends Context.Service<
@@ -191,7 +249,7 @@ export class NativeCreationBindingResolver extends Context.Service<
       preparation: ValidatedNativeCreationPreparation,
     ) => Effect.Effect<NativeCreationHistoricalBinding, NativeCreationAuthorityError>;
   }
->()("t3/orchestration/NativeCreationAuthority/NativeCreationBindingResolver") {}
+>()("t3/orchestration-v2/NativeCreationAuthority/NativeCreationBindingResolver") {}
 
 const unavailable = () =>
   new NativeCreationAuthorityError({
@@ -228,8 +286,14 @@ export class NativeCreationAuthority extends Context.Service<
       context: NativeCreationExecutionContextV2,
       input: NativeCreationExecutionStageInput,
     ) => Effect.Effect<NativeCreationHistoricalBinding, NativeCreationAuthorityError>;
+    readonly issueThreadRecovery: (
+      input: NativeCreationThreadRecoveryInputV2,
+    ) => Effect.Effect<
+      NativeCreationThreadRecoveryContextV2,
+      NativeCreationRepositoryError | NativeCreationAuthorityError
+    >;
   }
->()("t3/orchestration/NativeCreationAuthority") {}
+>()("t3/orchestration-v2/NativeCreationAuthority") {}
 
 export const makeNativeCreationAuthority = Effect.gen(function* () {
   const sessions = yield* AuthSessionRepository;
@@ -457,11 +521,227 @@ export const makeNativeCreationAuthority = Effect.gen(function* () {
     return context;
   });
 
+  const issueThreadRecovery: NativeCreationAuthority["Service"]["issueThreadRecovery"] = Effect.fn(
+    "NativeCreationAuthority.issueThreadRecovery",
+  )(function* (input: NativeCreationThreadRecoveryInputV2) {
+    const invalid = (message: string) =>
+      new NativeCreationAuthorityError({ code: "unresolved_claim", message });
+    const claimId = input.claimId;
+    const commandStartEffectId = input.commandStartEffectId;
+    const cleanupStartEffectId = input.cleanupStartEffectId;
+    const requested = input.authorization;
+    if (
+      claimId.length === 0 ||
+      commandStartEffectId.length === 0 ||
+      cleanupStartEffectId.length === 0 ||
+      commandStartEffectId === cleanupStartEffectId ||
+      requested.stage !== "cleanup" ||
+      requested.recoveryResource?.kind !== "thread" ||
+      requested.recoveryScopeId === undefined
+    ) {
+      return yield* invalid("Native thread recovery requires its exact cleanup and command starts");
+    }
+    const actorSessionId = requested.actorSessionId;
+    const guard = Object.freeze({
+      schema: requested.guard.schema,
+      grantId: requested.guard.grantId,
+      grantRevision: requested.guard.grantRevision,
+    });
+    const resources = Object.freeze({
+      projectCwd: requested.resources.projectCwd,
+      branch: requested.resources.branch,
+      worktreePath: requested.resources.worktreePath,
+    });
+    const expectedPreparation = nativeCreationCanonicalJson(requested.preparation);
+    const expectedResource = nativeCreationCanonicalJson(requested.recoveryResource);
+    const recoveryScopeId = requested.recoveryScopeId;
+    const initialHistory = yield* repository.readHistoryByClaim(claimId);
+    const intent = initialHistory.intent;
+    const immutableIntent = nativeCreationCanonicalJson(intent);
+    const preparation = freezePreparation(
+      yield* validateNativeCreationPreparation(
+        new TextEncoder().encode(intent.canonicalPreparation),
+      ).pipe(
+        Effect.mapError(() =>
+          invalid("Native recovery preparation cannot be recovered from its immutable claim"),
+        ),
+      ),
+    );
+    if (
+      intent.claimId !== claimId ||
+      intent.actorSessionId !== actorSessionId ||
+      intent.grantId !== guard.grantId ||
+      intent.grantRevision !== guard.grantRevision ||
+      guard.schema !== "t3.native-creation-guard/v1" ||
+      expectedPreparation !== nativeCreationCanonicalJson(preparation) ||
+      nativeCreationCanonicalJson(resources) !== nativeCreationCanonicalJson(intent.resources) ||
+      preparation.preparationId !== intent.preparationId ||
+      preparation.operationId !== intent.operationId ||
+      preparation.preparationSha256 !== intent.preparationSha256 ||
+      preparation.bindingDigest !== intent.bindingDigest ||
+      preparation.promptDigest !== intent.promptDigest ||
+      preparation.commandDigest !== intent.commandDigest ||
+      preparation.command.commandId !== intent.commandId ||
+      preparation.command.threadId !== intent.threadId ||
+      preparation.command.message.messageId !== intent.messageId
+    ) {
+      return yield* invalid("Native thread recovery differs from its immutable claim");
+    }
+    const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)(
+      {
+        type: "thread.delete",
+        commandId: `${intent.commandId}:bootstrap-thread-delete`,
+        threadId: intent.threadId,
+      },
+      { onExcessProperty: "error" },
+    ).pipe(Effect.mapError(() => invalid("Native recovery command is invalid")));
+    if (
+      command.type !== "thread.delete" ||
+      command.commandId !== `${intent.commandId}:bootstrap-thread-delete` ||
+      command.threadId !== intent.threadId
+    )
+      return yield* invalid("Native recovery command IDs cannot be normalized");
+    const canonicalCommand = nativeCreationCanonicalJson(command);
+    const commandDigest = nativeCreationV2CommandDigest(command);
+    const verify = Effect.gen(function* () {
+      const history = yield* repository.readHistoryByClaim(claimId);
+      if (nativeCreationCanonicalJson(history.intent) !== immutableIntent)
+        return yield* invalid("Native recovery claim changed");
+      const reserved = yield* repository.readThreadRecoveryCommand(command.commandId);
+      if (
+        reserved === null ||
+        reserved.version !== 2 ||
+        reserved.claimId !== claimId ||
+        reserved.commandId !== command.commandId ||
+        reserved.threadId !== command.threadId ||
+        reserved.commandType !== command.type ||
+        reserved.commandDigest !== commandDigest ||
+        reserved.commandStartEffectId !== commandStartEffectId ||
+        reserved.cleanupStartEffectId !== cleanupStartEffectId ||
+        reserved.recoveryScopeId !== recoveryScopeId ||
+        nativeCreationCanonicalJson(reserved.resource) !== expectedResource ||
+        nativeCreationCanonicalJson(reserved.canonicalCommand) !== canonicalCommand
+      ) {
+        return yield* invalid("Native recovery command is not exactly reserved");
+      }
+      const starts = history.effects.filter(
+        (fact) => fact.effectId === commandStartEffectId && fact.phase === "started",
+      );
+      const start = starts[0];
+      if (
+        starts.length !== 1 ||
+        start?.kind !== "native_command" ||
+        start.phase !== "started" ||
+        start.commandId !== command.commandId ||
+        start.threadId !== command.threadId ||
+        start.commandType !== command.type ||
+        start.commandDigest !== commandDigest ||
+        history.effects.filter(
+          (fact) =>
+            fact.kind === "native_command" &&
+            fact.phase === "started" &&
+            fact.commandId === command.commandId,
+        ).length !== 1 ||
+        history.effects.some(
+          (fact) => fact.effectId === commandStartEffectId && fact.phase === "completed",
+        )
+      ) {
+        return yield* invalid("Native recovery command has no unique unresolved matching start");
+      }
+      const cleanup = history.effects
+        .filter(
+          (fact) =>
+            fact.kind === "cleanup" &&
+            fact.phase === "started" &&
+            fact.resource.kind === "thread" &&
+            fact.resource.threadId === command.threadId &&
+            fact.ordinal < start.ordinal &&
+            !history.effects.some(
+              (completion) =>
+                completion.effectId === fact.effectId && completion.phase === "completed",
+            ),
+        )
+        .at(-1);
+      if (
+        cleanup?.kind !== "cleanup" ||
+        cleanup.phase !== "started" ||
+        cleanup.resource.kind !== "thread" ||
+        cleanup.effectId !== cleanupStartEffectId ||
+        cleanup.recoveryScopeId !== recoveryScopeId ||
+        cleanup.ordinal !== reserved.cleanupStartOrdinal ||
+        nativeCreationCanonicalJson(cleanup.resource) !== expectedResource ||
+        history.effects.filter(
+          (fact) => fact.effectId === cleanupStartEffectId && fact.phase === "started",
+        ).length !== 1
+      ) {
+        return yield* invalid("Native recovery cleanup scope or incarnation changed");
+      }
+      return {
+        resource: cleanup.resource,
+        canonicalCompanion: nativeCreationCanonicalJson(reserved),
+      };
+    });
+    const verified = yield* verify;
+    const verifiedResource = verified.resource;
+    const resource = freezePreparation({
+      ...verifiedResource,
+      incarnation: { ...verifiedResource.incarnation },
+    });
+    const originalInput: NativeCreationAuthorityInput = Object.freeze({
+      actorSessionId,
+      preparation,
+      guard,
+      resources,
+      stage: "native_command",
+    });
+    const immutableBinding = nativeCreationCanonicalJson(intent.binding);
+    const revalidate = verify.pipe(
+      Effect.flatMap((current) =>
+        Effect.gen(function* () {
+          if (current.canonicalCompanion !== verified.canonicalCompanion)
+            return yield* invalid("Native recovery reservation changed");
+          const nativeBinding = yield* authorize(originalInput);
+          const cleanupBinding = yield* authorize({
+            ...originalInput,
+            stage: "cleanup",
+            recoveryScopeId,
+            recoveryResource: resource,
+          });
+          if (
+            nativeCreationCanonicalJson(nativeBinding) !== immutableBinding ||
+            nativeCreationCanonicalJson(cleanupBinding) !== immutableBinding
+          )
+            return yield* invalid("Current recovery authority differs from its claimed binding");
+          return cleanupBinding;
+        }),
+      ),
+    );
+    yield* revalidate;
+    // This context guards one logical SQL command; it never substitutes an external-effect execution context.
+    const context = Object.freeze({}) as NativeCreationThreadRecoveryContextV2;
+    issuedThreadRecoveries.set(context, {
+      reference: freezePreparation({
+        version: 2 as const,
+        claimId,
+        commandId: command.commandId,
+        threadId: command.threadId,
+        commandDigest,
+        commandStartEffectId,
+        cleanupStartEffectId,
+        recoveryScopeId,
+        incarnation: { ...resource.incarnation },
+      }),
+      authorize: revalidate,
+    });
+    return context;
+  });
+
   return NativeCreationAuthority.of({
     authorize,
     isAutomationEnrolled,
     issueExecution,
     authorizeExecution: authorizeNativeCreationExecution,
+    issueThreadRecovery,
   });
 });
 

@@ -4058,7 +4058,10 @@ describe("streaming v2 row projection", () => {
     expect(next.rows[userIndex]).toBe(previous.rows[userIndex]);
     const changedInput = {
       ...input,
-      turnDiffSummaries: input.turnDiffSummaries.map((summary) => ({ ...summary, checkpointTurnCount: 3 })),
+      turnDiffSummaries: input.turnDiffSummaries.map((summary) => ({
+        ...summary,
+        checkpointTurnCount: 3,
+      })),
     };
     const changed = deriveMessagesTimelineRowsWithState(changedInput, next);
     expect(changed.rows).toEqual(deriveMessagesTimelineRows(changedInput));
@@ -4073,7 +4076,10 @@ describe("streaming v2 row projection", () => {
     const initial = fixture("Partial");
     const historyUser = initial.visibleTurnItems[0]!;
     const historyAssistant = initial.visibleTurnItems[2]!;
-    if (historyUser.item.type !== "user_message" || historyAssistant.item.type !== "assistant_message") {
+    if (
+      historyUser.item.type !== "user_message" ||
+      historyAssistant.item.type !== "assistant_message"
+    ) {
       throw new Error("Expected message fixtures");
     }
     const user = historyUser.item;
@@ -4082,43 +4088,83 @@ describe("streaming v2 row projection", () => {
       const runId = RunId.make(`older-run-${index}`);
       const time = DateTime.makeUnsafe(initial.time(-1500 + index * 5));
       return [
-        { ...historyUser, sourceItemId: TurnItemId.make(`older-user-item-${index}`), item: {
-          ...user, id: TurnItemId.make(`older-user-item-${index}`), runId,
-          messageId: MessageId.make(`older-user-${index}`), startedAt: time,
-          attachments: [{ type: "image" as const, id: "history-image", name: "history.png", mimeType: "image/png", sizeBytes: 42 }],
-        } },
-        { ...historyAssistant, sourceItemId: TurnItemId.make(`older-assistant-item-${index}`), item: {
-          ...assistant, id: TurnItemId.make(`older-assistant-item-${index}`), runId,
-          messageId: MessageId.make(`older-assistant-${index}`), startedAt: time,
-        } },
+        {
+          ...historyUser,
+          sourceItemId: TurnItemId.make(`older-user-item-${index}`),
+          item: {
+            ...user,
+            id: TurnItemId.make(`older-user-item-${index}`),
+            runId,
+            messageId: MessageId.make(`older-user-${index}`),
+            startedAt: time,
+            attachments: [
+              {
+                type: "image" as const,
+                id: "history-image",
+                name: "history.png",
+                mimeType: "image/png",
+                sizeBytes: 42,
+              },
+            ],
+          },
+        },
+        {
+          ...historyAssistant,
+          sourceItemId: TurnItemId.make(`older-assistant-item-${index}`),
+          item: {
+            ...assistant,
+            id: TurnItemId.make(`older-assistant-item-${index}`),
+            runId,
+            messageId: MessageId.make(`older-assistant-${index}`),
+            startedAt: time,
+          },
+        },
       ];
     }).flat();
     let timelineInput: Parameters<typeof deriveTimelineEntriesFromVisibleTurnItems>[0] = {
       ...initial.timelineInput,
-      visibleTurnItems: [...history, ...initial.visibleTurnItems].map((row, position) => ({ ...row, position })),
+      visibleTurnItems: [...history, ...initial.visibleTurnItems].map((row, position) => ({
+        ...row,
+        position,
+      })),
       attachmentUrlById: new Map([["history-image", "https://first.test/history"]]),
     };
     let timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState(timelineInput);
-    let projection = deriveMessagesTimelineRowsWithState({ ...initial.input, timelineEntries: timeline.entries });
+    let projection = deriveMessagesTimelineRowsWithState({
+      ...initial.input,
+      timelineEntries: timeline.entries,
+    });
     const first = projection;
     const saved = structuredClone(first.rows);
     for (let index = 0; index < 10; index += 1) {
-      timelineInput = { ...timelineInput, visibleTurnItems: updateText(timelineInput.visibleTurnItems, `Token ${index}`) };
+      timelineInput = {
+        ...timelineInput,
+        visibleTurnItems: updateText(timelineInput.visibleTurnItems, `Token ${index}`),
+      };
       timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState(timelineInput, timeline);
       const input = { ...initial.input, timelineEntries: timeline.entries };
       projection = deriveMessagesTimelineRowsWithState(input, projection);
       expect(projection.rows).toEqual(deriveMessagesTimelineRows(input));
       for (const [rowIndex, row] of first.rows.entries()) {
-        if ((row.kind === "message" || row.kind === "assistant-meta") && row.message.id === "live-assistant") continue;
+        if (
+          (row.kind === "message" || row.kind === "assistant-meta") &&
+          row.message.id === "live-assistant"
+        )
+          continue;
         expect(projection.rows[rowIndex]).toBe(row);
       }
     }
-    timelineInput = { ...timelineInput, attachmentUrlById: new Map([["history-image", "https://renewed.test/history"]]) };
+    timelineInput = {
+      ...timelineInput,
+      attachmentUrlById: new Map([["history-image", "https://renewed.test/history"]]),
+    };
     timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState(timelineInput, timeline);
     const renewedInput = { ...initial.input, timelineEntries: timeline.entries };
     const renewed = deriveMessagesTimelineRowsWithState(renewedInput, projection);
     expect(renewed.rows).toEqual(deriveMessagesTimelineRows(renewedInput));
-    expect(renewed.rows.find((row) => row.id === "older-user-0")).toMatchObject({ message: { attachments: [{ previewUrl: "https://renewed.test/history" }] } });
+    expect(renewed.rows.find((row) => row.id === "older-user-0")).toMatchObject({
+      message: { attachments: [{ previewUrl: "https://renewed.test/history" }] },
+    });
     expect(first.rows).toEqual(saved);
   });
 

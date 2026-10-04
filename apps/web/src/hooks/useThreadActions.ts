@@ -4,14 +4,22 @@ import {
   scopeThreadRef,
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
-import { createEnvironmentRpcQueryAtomFamily, settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  createEnvironmentRpcQueryAtomFamily,
+  settlePromise,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import {
-  CommandId, EnvironmentId, ProjectId, ORCHESTRATION_V2_WS_METHODS,
+  CommandId,
+  EnvironmentId,
+  ProjectId,
+  ORCHESTRATION_V2_WS_METHODS,
   OrchestrationV2ThreadDeletionWorktreeRemoval,
   type OrchestrationV2ThreadDeletionCleanupObservation,
-  type ScopedThreadRef, ThreadId,
+  type ScopedThreadRef,
+  ThreadId,
 } from "@t3tools/contracts";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
@@ -81,9 +89,16 @@ function deletionOperationKey(ref: ScopedThreadRef): string {
 
 function readSavedDeletion(ref: ScopedThreadRef): ThreadDeletionOperation | null {
   if (typeof window === "undefined") throw new Error("Deletion tracking storage is unavailable.");
-  const saved = getLocalStorageItem(deletionStoragePrefix + deletionOperationKey(ref), DeletionOperationSchema);
+  const saved = getLocalStorageItem(
+    deletionStoragePrefix + deletionOperationKey(ref),
+    DeletionOperationSchema,
+  );
   const volatile = volatileDeletionOperations.get(deletionOperationKey(ref));
-  if (volatile !== undefined && saved !== null && JSON.stringify(volatile) !== JSON.stringify(saved)) {
+  if (
+    volatile !== undefined &&
+    saved !== null &&
+    JSON.stringify(volatile) !== JSON.stringify(saved)
+  ) {
     throw new Error("The saved deletion no longer matches the original operation.");
   }
   return volatile ?? saved;
@@ -91,25 +106,44 @@ function readSavedDeletion(ref: ScopedThreadRef): ThreadDeletionOperation | null
 
 function saveDeletion(operation: ThreadDeletionOperation): void {
   if (typeof window === "undefined") throw new Error("Deletion tracking storage is unavailable.");
-  setLocalStorageItem(deletionStoragePrefix + deletionOperationKey(operation), operation, DeletionOperationSchema);
+  setLocalStorageItem(
+    deletionStoragePrefix + deletionOperationKey(operation),
+    operation,
+    DeletionOperationSchema,
+  );
   const saved = readSavedDeletion(operation);
-  if (JSON.stringify(saved) !== JSON.stringify(operation)) throw new Error("Deletion tracking was not saved.");
+  if (JSON.stringify(saved) !== JSON.stringify(operation))
+    throw new Error("Deletion tracking was not saved.");
 }
 
-function acceptedDeletionSequence(operation: ThreadDeletionOperation, observation: OrchestrationV2ThreadDeletionCleanupObservation): number | null {
-  if (observation.threadId !== operation.threadId || observation.commandId !== operation.commandId ||
-      (observation.worktree !== null && (operation.worktreeRemoval === null ||
+function acceptedDeletionSequence(
+  operation: ThreadDeletionOperation,
+  observation: OrchestrationV2ThreadDeletionCleanupObservation,
+): number | null {
+  if (
+    observation.threadId !== operation.threadId ||
+    observation.commandId !== operation.commandId ||
+    (observation.worktree !== null &&
+      (operation.worktreeRemoval === null ||
         observation.worktree.projectId !== operation.worktreeRemoval.projectId ||
         observation.worktree.path !== operation.worktreeRemoval.path ||
-        observation.worktree.branch !== operation.worktreeRemoval.branch))) {
+        observation.worktree.branch !== operation.worktreeRemoval.branch))
+  ) {
     throw new Error("The deletion observation does not match the original operation.");
   }
   const receipt = observation.receipt;
   const deletion = observation.deletion;
-  if (receipt === null || deletion === null || receipt.status !== "accepted" ||
-      receipt.commandId !== operation.commandId || receipt.threadId !== operation.threadId ||
-      receipt.commandType !== "thread.delete" || receipt.resultSequence !== deletion.resultSequence ||
-      deletion.sequence > deletion.resultSequence) return null;
+  if (
+    receipt === null ||
+    deletion === null ||
+    receipt.status !== "accepted" ||
+    receipt.commandId !== operation.commandId ||
+    receipt.threadId !== operation.threadId ||
+    receipt.commandType !== "thread.delete" ||
+    receipt.resultSequence !== deletion.resultSequence ||
+    deletion.sequence > deletion.resultSequence
+  )
+    return null;
   return receipt.resultSequence;
 }
 
@@ -119,20 +153,30 @@ export function createThreadDeletionController(options: {
   readonly saveVolatile: (operation: ThreadDeletionOperation) => void;
   readonly allocateCommandId: () => CommandId;
   readonly delete: (operation: ThreadDeletionOperation) => Promise<{ sequence: number }>;
-  readonly observe: (operation: ThreadDeletionOperation) => Promise<OrchestrationV2ThreadDeletionCleanupObservation>;
+  readonly observe: (
+    operation: ThreadDeletionOperation,
+  ) => Promise<OrchestrationV2ThreadDeletionCleanupObservation>;
   readonly onUntracked: () => void;
   readonly inFlight?: Map<string, Promise<{ sequence: number }>>;
 }) {
   const inFlight = options.inFlight ?? new Map<string, Promise<{ sequence: number }>>();
   const read = (ref: ScopedThreadRef) => {
     const operation = options.read(ref);
-    if (operation !== null && (operation.environmentId !== ref.environmentId || operation.threadId !== ref.threadId)) {
+    if (
+      operation !== null &&
+      (operation.environmentId !== ref.environmentId || operation.threadId !== ref.threadId)
+    ) {
       throw new Error("The saved deletion belongs to another environment or thread.");
     }
-    return operation === null ? null : Object.freeze({
-      ...operation,
-      worktreeRemoval: operation.worktreeRemoval === null ? null : Object.freeze({ ...operation.worktreeRemoval }),
-    });
+    return operation === null
+      ? null
+      : Object.freeze({
+          ...operation,
+          worktreeRemoval:
+            operation.worktreeRemoval === null
+              ? null
+              : Object.freeze({ ...operation.worktreeRemoval }),
+        });
   };
   const observe = async (ref: ScopedThreadRef) => {
     const operation = read(ref);
@@ -146,30 +190,42 @@ export function createThreadDeletionController(options: {
   };
   const reconcile = async (ref: ScopedThreadRef, expected?: ThreadDeletionOperation) => {
     const operation = read(ref);
-    if (operation === null) throw new Error("The original deletion is unavailable; no new command was sent.");
+    if (operation === null)
+      throw new Error("The original deletion is unavailable; no new command was sent.");
     if (expected !== undefined && JSON.stringify(operation) !== JSON.stringify(expected)) {
-      throw new Error("The saved deletion no longer matches the original command. No replacement was observed.");
+      throw new Error(
+        "The saved deletion no longer matches the original command. No replacement was observed.",
+      );
     }
     const observation = await observe(ref);
     const sequence = observation === null ? null : acceptedDeletionSequence(operation, observation);
-    if (sequence === null) throw new Error("Deletion is unconfirmed. The original command remains saved for observation.");
+    if (sequence === null)
+      throw new Error(
+        "Deletion is unconfirmed. The original command remains saved for observation.",
+      );
     return { sequence };
   };
   return {
     read,
     observe,
-    request: (ref: ScopedThreadRef, input: {
-      projectId: ProjectId | null;
-      worktreeRemoval: OrchestrationV2ThreadDeletionWorktreeRemoval | null;
-    }) => {
+    request: (
+      ref: ScopedThreadRef,
+      input: {
+        projectId: ProjectId | null;
+        worktreeRemoval: OrchestrationV2ThreadDeletionWorktreeRemoval | null;
+      },
+    ) => {
       const key = deletionOperationKey(ref);
       const running = inFlight.get(key);
       if (running !== undefined) return running;
       const run = async () => {
         if (read(ref) !== null) return reconcile(ref);
         let operation: ThreadDeletionOperation = Object.freeze({
-          ...ref, commandId: options.allocateCommandId(), projectId: input.projectId,
-          worktreeRemoval: input.worktreeRemoval === null ? null : Object.freeze({ ...input.worktreeRemoval }),
+          ...ref,
+          commandId: options.allocateCommandId(),
+          projectId: input.projectId,
+          worktreeRemoval:
+            input.worktreeRemoval === null ? null : Object.freeze({ ...input.worktreeRemoval }),
         });
         try {
           options.save(operation);
@@ -186,14 +242,22 @@ export function createThreadDeletionController(options: {
         try {
           const result = await options.delete(operation);
           if (JSON.stringify(read(ref)) !== JSON.stringify(operation)) {
-            throw new Error("The saved deletion changed while the original command was being dispatched.");
+            throw new Error(
+              "The saved deletion changed while the original command was being dispatched.",
+            );
           }
           return result;
         } catch (error) {
-          try { return await reconcile(ref, operation); } catch { throw error; }
+          try {
+            return await reconcile(ref, operation);
+          } catch {
+            throw error;
+          }
         }
       };
-      const pending = run().finally(() => { if (inFlight.get(key) === pending) inFlight.delete(key); });
+      const pending = run().finally(() => {
+        if (inFlight.get(key) === pending) inFlight.delete(key);
+      });
       inFlight.set(key, pending);
       return pending;
     },
@@ -219,22 +283,37 @@ function resumeDeletionObservations(): void {
   const observe = deletionObservers.values().next().value;
   if (observe === undefined) return;
   let operations: ReadonlyArray<ThreadDeletionOperation>;
-  try { operations = savedDeletionOperations(); } catch { return; }
+  try {
+    operations = savedDeletionOperations();
+  } catch {
+    return;
+  }
   for (const operation of operations) {
     if (deletionConnectionSubscriptions.has(operation.environmentId)) continue;
     const atom = environmentCatalog.stateAtom(operation.environmentId);
     let generation: number | null = null;
     const connected = () => {
       const state = AsyncResult.value(appAtomRegistry.get(atom));
-      if (Option.isNone(state) || state.value.phase !== "connected" || generation === state.value.generation) return;
+      if (
+        Option.isNone(state) ||
+        state.value.phase !== "connected" ||
+        generation === state.value.generation
+      )
+        return;
       generation = state.value.generation;
       try {
         for (const saved of savedDeletionOperations()) {
-          if (saved.environmentId === operation.environmentId) void deletionObservers.values().next().value?.(saved);
+          if (saved.environmentId === operation.environmentId)
+            void deletionObservers.values().next().value?.(saved);
         }
-      } catch { /* Unreadable saved operations cannot authorize a replacement dispatch. */ }
+      } catch {
+        /* Unreadable saved operations cannot authorize a replacement dispatch. */
+      }
     };
-    deletionConnectionSubscriptions.set(operation.environmentId, appAtomRegistry.subscribe(atom, connected));
+    deletionConnectionSubscriptions.set(
+      operation.environmentId,
+      appAtomRegistry.subscribe(atom, connected),
+    );
     connected();
   }
 }
@@ -418,65 +497,102 @@ export function useThreadActions() {
   const deleteThreadMutation = useAtomCommand(threadEnvironment.delete, {
     reportFailure: false,
   });
-  const readDeletionCleanup = useAtomQueryRunner(deletionCleanupQuery, { refresh: true, reportFailure: false });
-  const deletionController = useMemo(() => createThreadDeletionController({
-    read: readSavedDeletion,
-    save: saveDeletion,
-    saveVolatile: (operation) => volatileDeletionOperations.set(deletionOperationKey(operation), operation),
-    allocateCommandId: () => CommandId.make(randomUUID()),
-    inFlight: deletionInFlight,
-    delete: async (operation) => {
-      const result = await deleteThreadMutation({
-        environmentId: operation.environmentId,
-        input: {
-          threadId: operation.threadId, commandId: operation.commandId,
-          ...(operation.worktreeRemoval === null ? {} : { worktreeRemoval: operation.worktreeRemoval }),
+  const readDeletionCleanup = useAtomQueryRunner(deletionCleanupQuery, {
+    refresh: true,
+    reportFailure: false,
+  });
+  const deletionController = useMemo(
+    () =>
+      createThreadDeletionController({
+        read: readSavedDeletion,
+        save: saveDeletion,
+        saveVolatile: (operation) =>
+          volatileDeletionOperations.set(deletionOperationKey(operation), operation),
+        allocateCommandId: () => CommandId.make(randomUUID()),
+        inFlight: deletionInFlight,
+        delete: async (operation) => {
+          const result = await deleteThreadMutation({
+            environmentId: operation.environmentId,
+            input: {
+              threadId: operation.threadId,
+              commandId: operation.commandId,
+              ...(operation.worktreeRemoval === null
+                ? {}
+                : { worktreeRemoval: operation.worktreeRemoval }),
+            },
+          });
+          if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+          return result.value;
         },
+        observe: async (operation) => {
+          const result = await readDeletionCleanup({
+            environmentId: operation.environmentId,
+            input: { threadId: operation.threadId, commandId: operation.commandId },
+          });
+          if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+          return result.value;
+        },
+        onUntracked: () =>
+          toastManager.add(
+            stackedThreadToast({
+              type: "info",
+              title: "Worktree removal was not requested",
+              description:
+                "Deletion tracking could not be saved. Only the thread will be deleted; recovery after closing this browser is unavailable.",
+            }),
+          ),
+      }),
+    [deleteThreadMutation, readDeletionCleanup],
+  );
+  const observeThreadDeletionCleanup = useCallback(
+    async (ref: ScopedThreadRef) => {
+      const result = await settlePromise(async () => {
+        const observation = await deletionController.observe(ref);
+        if (observation === null) return null;
+        const operation = deletionController.read(ref);
+        const accepted =
+          operation !== null && acceptedDeletionSequence(operation, observation) !== null;
+        if (observation.worktree !== null || operation?.worktreeRemoval != null) {
+          const completed =
+            accepted &&
+            operation?.worktreeRemoval != null &&
+            observation.worktree !== null &&
+            observation.state === "completed" &&
+            observation.currentLease === "absent" &&
+            observation.removalOutcome?.result === "succeeded" &&
+            (observation.removalOutcome.effect === "confirmed" ||
+              observation.removalOutcome.effect === "absent");
+          toastManager.add(
+            stackedThreadToast({
+              type: "info",
+              title: completed
+                ? "Thread worktree deleted"
+                : accepted
+                  ? "Thread deleted; worktree cleanup pending"
+                  : "Deletion cleanup is unconfirmed",
+              description: completed
+                ? "The server confirmed worktree removal and ownership release."
+                : (observation.reason ??
+                  "Worktree cleanup has not completed. The original deletion remains available for observation."),
+            }),
+          );
+        }
+        return observation;
       });
-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-      return result.value;
-    },
-    observe: async (operation) => {
-      const result = await readDeletionCleanup({
-        environmentId: operation.environmentId,
-        input: { threadId: operation.threadId, commandId: operation.commandId },
-      });
-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-      return result.value;
-    },
-    onUntracked: () => toastManager.add(stackedThreadToast({
-      type: "info", title: "Worktree removal was not requested",
-      description: "Deletion tracking could not be saved. Only the thread will be deleted; recovery after closing this browser is unavailable.",
-    })),
-  }), [deleteThreadMutation, readDeletionCleanup]);
-  const observeThreadDeletionCleanup = useCallback(async (ref: ScopedThreadRef) => {
-    const result = await settlePromise(async () => {
-      const observation = await deletionController.observe(ref);
-      if (observation === null) return null;
-      const operation = deletionController.read(ref);
-      const accepted = operation !== null && acceptedDeletionSequence(operation, observation) !== null;
-      if (observation.worktree !== null || operation?.worktreeRemoval != null) {
-        const completed = accepted && operation?.worktreeRemoval != null && observation.worktree !== null &&
-          observation.state === "completed" && observation.currentLease === "absent" &&
-          observation.removalOutcome?.result === "succeeded" &&
-          (observation.removalOutcome.effect === "confirmed" || observation.removalOutcome.effect === "absent");
-        toastManager.add(stackedThreadToast({
-          type: "info",
-          title: completed ? "Thread worktree deleted" : accepted ? "Thread deleted; worktree cleanup pending" : "Deletion cleanup is unconfirmed",
-          description: completed ? "The server confirmed worktree removal and ownership release." :
-            observation.reason ?? "Worktree cleanup has not completed. The original deletion remains available for observation.",
-        }));
+      if (result._tag === "Failure") {
+        toastManager.add(
+          stackedThreadToast({
+            type: "info",
+            title: "Deletion cleanup is unconfirmed",
+            description:
+              "The original command remains saved. Cleanup could not be observed; no replacement deletion was sent.",
+          }),
+        );
       }
-      return observation;
-    });
-    if (result._tag === "Failure") {
-      toastManager.add(stackedThreadToast({
-        type: "info", title: "Deletion cleanup is unconfirmed",
-        description: "The original command remains saved. Cleanup could not be observed; no replacement deletion was sent.",
-      }));
-    }
-    return result;
-  }, [deletionController]);
+      return result;
+    },
+    [deletionController],
+  );
   useEffect(() => {
     deletionObservers.add(observeThreadDeletionCleanup);
     const first = deletionObservers.size === 1;
@@ -489,7 +605,8 @@ export function useThreadActions() {
       if (deletionObservers.size === 0) {
         for (const unsubscribe of deletionConnectionSubscriptions.values()) unsubscribe();
         deletionConnectionSubscriptions.clear();
-        if (typeof window !== "undefined") window.removeEventListener("storage", resumeDeletionObservations);
+        if (typeof window !== "undefined")
+          window.removeEventListener("storage", resumeDeletionObservations);
       }
     };
   }, [observeThreadDeletionCleanup]);
@@ -644,20 +761,34 @@ export function useThreadActions() {
 
   const deleteThread = useCallback(
     async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
-      const savedResult = await settlePromise(() => deletionController.read(target));
+      const savedResult = (() => {
+        try {
+          return AsyncResult.success(deletionController.read(target));
+        } catch (defect) {
+          return AsyncResult.failure(Cause.die(defect));
+        }
+      })();
       if (savedResult._tag === "Failure") return savedResult;
-      if (savedResult.value !== null) {
-        const result = await settlePromise(() => deletionController.request(target, savedResult.value!));
+      const savedOperation = savedResult.value;
+      if (savedOperation !== null) {
+        const result = await settlePromise(() =>
+          deletionController.request(target, savedOperation),
+        );
         if (result._tag === "Success") {
           releaseComposerDraftUploads(target);
           clearComposerDraftForThread(target);
           clearTerminalUiState(target);
-          if (savedResult.value.projectId !== null) clearProjectDraftThreadById(
-            scopeProjectRef(target.environmentId, savedResult.value.projectId), target,
-          );
+          if (savedOperation.projectId !== null)
+            clearProjectDraftThreadById(
+              scopeProjectRef(target.environmentId, savedOperation.projectId),
+              target,
+            );
           refreshArchivedThreadsForEnvironment(target.environmentId);
           const current = getCurrentRouteThreadRef();
-          if (current?.environmentId === target.environmentId && current.threadId === target.threadId) {
+          if (
+            current?.environmentId === target.environmentId &&
+            current.threadId === target.threadId
+          ) {
             await navigateAfterThreadDeletion(() => router.navigate({ to: "/", replace: true }));
           }
         }
@@ -667,9 +798,12 @@ export function useThreadActions() {
       const resolved = resolveThreadTarget(target);
       if (!resolved) {
         // Thread not in main store (e.g. archived thread) — dispatch delete directly.
-        const result = await settlePromise(() => deletionController.request(target, {
-          projectId: null, worktreeRemoval: null,
-        }));
+        const result = await settlePromise(() =>
+          deletionController.request(target, {
+            projectId: null,
+            worktreeRemoval: null,
+          }),
+        );
         if (result._tag === "Success") {
           refreshArchivedThreadsForEnvironment(target.environmentId);
         }
@@ -748,12 +882,20 @@ export function useThreadActions() {
         deletedThreadIds,
         sortOrder: sidebarThreadSortOrder,
       });
-      const deleteResult = await settlePromise(() => deletionController.request(threadRef, {
-        projectId: thread.projectId,
-        worktreeRemoval: shouldDeleteWorktree && canDeleteWorktree && orphanedWorktreePath !== null
-          ? { projectId: thread.projectId, path: orphanedWorktreePath, branch: thread.branch, force: true }
-          : null,
-      }));
+      const deleteResult = await settlePromise(() =>
+        deletionController.request(threadRef, {
+          projectId: thread.projectId,
+          worktreeRemoval:
+            shouldDeleteWorktree && canDeleteWorktree && orphanedWorktreePath !== null
+              ? {
+                  projectId: thread.projectId,
+                  path: orphanedWorktreePath,
+                  branch: thread.branch,
+                  force: true,
+                }
+              : null,
+        }),
+      );
       resumeDeletionObservations();
       if (deleteResult._tag === "Failure") {
         await observeThreadDeletionCleanup(threadRef);
