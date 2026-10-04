@@ -1,488 +1,359 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  CommandId,
-  DEFAULT_PROVIDER_INTERACTION_MODE,
-  EnvironmentId,
-  MessageId,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ProviderSendTurnInput,
-  ThreadId,
-  TurnId,
-} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
+import {
+  CommandId, EventId, MessageId, NodeId, ProjectId, ProviderDriverKind,
+  ProviderInstanceId, ProviderSessionId, ProviderThreadId, RunAttemptId, RunId, ThreadId,
+  type OrchestrationV2AppThread, type OrchestrationV2DomainEvent, type OrchestrationV2ProviderSession,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Stream from "effect/Stream";
+import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { HttpServer } from "effect/unstable/http";
-import * as NetAddress from "effect/unstable/net/NetAddress";
 
-import * as EnvironmentAuth from "../src/auth/EnvironmentAuth.ts";
-import * as ServiceLauncherClient from "../src/cloud/serviceLauncherClient.ts";
-import * as ServerConfig from "../src/config.ts";
-import * as ServerEnvironment from "../src/environment/ServerEnvironment.ts";
-import * as Keybindings from "../src/keybindings.ts";
-import { OrchestrationLayerLive } from "../src/orchestration/runtimeLayer.ts";
-import * as OrchestrationEngine from "../src/orchestration/Services/OrchestrationEngine.ts";
-import * as OrchestrationReactor from "../src/orchestration/Services/OrchestrationReactor.ts";
-import * as ProjectionSnapshotQuery from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
 import * as ProviderSessionRuntime from "../src/persistence/ProviderSessionRuntime.ts";
-import * as ExternalLauncher from "../src/process/externalLauncher.ts";
-import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
-import * as ProviderService from "../src/provider/Services/ProviderService.ts";
-import * as ProviderSessionDirectory from "../src/provider/Services/ProviderSessionDirectory.ts";
-import * as ProviderSessionReaper from "../src/provider/Services/ProviderSessionReaper.ts";
-import * as RepositoryIdentityResolver from "../src/project/RepositoryIdentityResolver.ts";
-import * as ServerLifecycleEvents from "../src/serverLifecycleEvents.ts";
-import * as ServerRuntimeStartup from "../src/serverRuntimeStartup.ts";
+import * as EventSink from "../src/orchestration-v2/EventSink.ts";
+import * as EventStore from "../src/orchestration-v2/EventStore.ts";
+import * as EffectOutbox from "../src/orchestration-v2/EffectOutbox.ts";
+import * as IdAllocator from "../src/orchestration-v2/IdAllocator.ts";
+import { CodexProviderCapabilitiesV2 } from "../src/orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as LegacyImporter from "../src/orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
+import * as ProjectionStore from "../src/orchestration-v2/ProjectionStore.ts";
+import * as Recovery from "../src/orchestration-v2/ProviderRuntimeRecoveryService.ts";
+import * as ProviderSessions from "../src/orchestration-v2/ProviderSessionManager.ts";
+import * as ServerActivation from "../src/serverActivation.ts";
+import * as Startup from "../src/serverRuntimeStartup.ts";
 import * as ServerSettings from "../src/serverSettings.ts";
-import * as AnalyticsService from "../src/telemetry/AnalyticsService.ts";
-import * as GitVcsDriver from "../src/vcs/GitVcsDriver.ts";
 
-const providerInstanceId = ProviderInstanceId.make("codex");
-const projectId = ProjectId.make("project-startup-orphan");
-const threadId = ThreadId.make("thread-startup-orphan");
-const stoppedBindingThreadId = ThreadId.make("thread-startup-orphan-stopped-binding");
-const stoppedBindingWorktreePath = "/tmp/startup-orphan-project/stopped-binding";
-const resumeCursor = { schemaVersion: 1, sessionId: "provider-session-before-restart" };
-const stoppedBindingResumeCursor = {
-  schemaVersion: 1,
-  sessionId: "provider-session-stopped-before-restart",
-};
+const instanceId = ProviderInstanceId.make("codex");
+const driver = ProviderDriverKind.make("codex");
+const projectId = ProjectId.make("project:startup-cold");
 
-const makePersistedRuntimeLayer = (dbPath: string) => {
-  const persistence = makeSqlitePersistenceLive(dbPath);
-  const orchestration = OrchestrationLayerLive.pipe(
-    Layer.provideMerge(RepositoryIdentityResolver.layer),
-    Layer.provideMerge(persistence),
-  );
-  const directory = ProviderSessionDirectoryLive.pipe(
-    Layer.provide(ProviderSessionRuntime.layer),
-    Layer.provide(persistence),
-  );
-  return Layer.mergeAll(orchestration, directory);
-};
+const ids = (name: string) => ({
+  threadId: ThreadId.make(`thread:startup:${name}`),
+  providerThreadId: ProviderThreadId.make(`provider-thread:startup:${name}`),
+  providerSessionId: ProviderSessionId.make(`provider-session:startup:${name}`),
+  runId: RunId.make(`run:startup:${name}`),
+  attemptId: RunAttemptId.make(`attempt:startup:${name}`),
+  messageId: MessageId.make(`message:startup:${name}`),
+});
 
-const startupDependencies = Layer.mergeAll(
-  Layer.mock(Keybindings.Keybindings)({
-    start: Effect.void,
-  }),
-  ServerSettings.layerTest(),
-  Layer.succeed(OrchestrationReactor.OrchestrationReactor, {
-    start: () => Effect.void,
-  }),
-  Layer.succeed(ProviderSessionReaper.ProviderSessionReaper, {
-    start: () => Effect.void,
-  }),
-  ServerLifecycleEvents.layer,
-  Layer.succeed(ServerEnvironment.ServerEnvironment, {
-    getEnvironmentId: Effect.succeed(EnvironmentId.make("environment-startup-orphan")),
-    getDescriptor: Effect.succeed({
-      environmentId: EnvironmentId.make("environment-startup-orphan"),
-      label: "Startup orphan test",
-      version: "test",
-      platform: { os: "linux", arch: "x64" },
-      capabilities: {},
-    } as never),
-  }),
-  Layer.mock(EnvironmentAuth.EnvironmentAuth)({
-    issueStartupPairingUrl: (baseUrl: string) => Effect.succeed(`${baseUrl}/pair`),
-  }),
-  Layer.mock(ExternalLauncher.ExternalLauncher)({
-    launchBrowser: () => Effect.void,
-  }),
-  Layer.succeed(ServiceLauncherClient.ServiceLauncherClient, {
-    managed: false,
-    requestUpdate: () => Effect.die("unused"),
-    prepareTrial: Effect.undefined,
-  }),
-  Layer.succeed(
-    HttpServer.HttpServer,
-    HttpServer.HttpServer.of({
-      address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
-      serve: (() => Effect.void) as HttpServer.HttpServer["Service"]["serve"],
+// Every open builds fresh services around the same file. A disposed runtime's
+// memoized services and observation state cannot stand in for cold recovery.
+const runtimeLayer = (dbPath: string, monitoring?: EventSink.ProviderBindingExpectationV2, optedIn = false) => {
+  const database = makeSqlitePersistenceLive(dbPath).pipe(Layer.provide(NodeServices.layer));
+  const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, EffectOutbox.layer,
+    ProviderSessionRuntime.layer).pipe(Layer.provideMerge(database));
+  const core = Layer.mergeAll(stores, IdAllocator.layer,
+    EventSink.layer.pipe(Layer.provide(stores)),
+    ServerSettings.layerTest({ continueThreadsAfterServerUpdate: optedIn }));
+  const importer = LegacyImporter.layer.pipe(Layer.provide(core));
+  const recovery = Recovery.layer.pipe(Layer.provide(Layer.mergeAll(core,
+    Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
+      observeCurrentThreadRuntime: (threadId) => Effect.gen(function* () {
+        if (monitoring === undefined) return yield* Effect.die("Cold storage recovery must not claim a resident native process");
+        assert.equal(threadId, monitoring.threadId);
+        if (monitoring.runtimeGeneration === null || monitoring.nativeThreadId === null)
+          return yield* Effect.die("The synthetic monitoring fixture requires a concrete native binding");
+        return { status: "monitoring" as const,
+          binding: { threadId, providerThreadId: monitoring.providerThreadId,
+            providerSessionId: monitoring.providerSessionId, instanceId: monitoring.instanceId,
+            runtimeGeneration: monitoring.runtimeGeneration, nativeThreadId: monitoring.nativeThreadId },
+          observedAt: "2026-10-03T00:00:00.000Z" };
+      }),
     }),
-  ),
-  AnalyticsService.layerTest,
-  Layer.mock(GitVcsDriver.GitVcsDriver)({}),
-  Layer.succeed(ProviderService.ProviderService, {
-    startSession: () => Effect.die("unused"),
-    sendTurn: () => Effect.die("unused"),
-    compactThread: () => Effect.die("unused"),
-    interruptTurn: () => Effect.die("unused"),
-    respondToRequest: () => Effect.die("unused"),
-    respondToUserInput: () => Effect.die("unused"),
-    stopSession: () => Effect.die("unused"),
-    listSessions: () => Effect.succeed([]),
-    getCapabilities: () => Effect.die("unused"),
-    assertConversationRollbackSupported: () => Effect.die("unused"),
-    getInstanceInfo: () => Effect.die("unused"),
-    rollbackConversation: () => Effect.die("unused"),
-    uploadFeedback: () => Effect.die("unused"),
-    streamEvents: Stream.empty,
-  }),
-);
+  )));
+  return Layer.fresh(Layer.mergeAll(core, importer, recovery));
+};
 
-it.effect(
-  "recovers a persisted starting session before opening the command gate after restart",
-  () =>
-    Effect.gen(function* () {
-      const config = yield* ServerConfig.ServerConfig;
-      const firstRuntime = makePersistedRuntimeLayer(config.dbPath);
-      const now = yield* DateTime.now;
-      const createdAt = DateTime.formatIso(now);
+const fixture = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  // A disk-backed root owns the database, WAL, and worktree placeholder together.
+  const root = yield* fs.makeTempDirectoryScoped({ directory: process.cwd(), prefix: ".startup-cold-" });
+  const worktreePath = path.join(root, "stopped-binding-worktree");
+  yield* fs.makeDirectory(worktreePath);
+  yield* fs.writeFileString(path.join(worktreePath, "preserved.txt"), "Unrelated worktree contents");
+  return { root, dbPath: path.join(root, "state.sqlite"), worktreePath };
+});
 
-      yield* Effect.gen(function* () {
-        const engine = yield* OrchestrationEngine.OrchestrationEngineService;
-        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+const seed = Effect.fnUntraced(function* (
+  name: string, worktreePath: string, status: "starting" | "completed" | "queued", stopped = false,
+) {
+  const value = ids(name);
+  const now = yield* DateTime.now;
+  const thread: OrchestrationV2AppThread = {
+    id: value.threadId, projectId, title: name, providerInstanceId: instanceId,
+    modelSelection: { instanceId, model: "fixture-model" }, runtimeMode: "full-access", interactionMode: "default",
+    branch: "fixture-branch", worktreePath, activeProviderThreadId: value.providerThreadId,
+    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: value.threadId }, forkedFrom: null,
+    createdBy: "user", creationSource: "web", createdAt: now, updatedAt: now,
+    archivedAt: null, deletedAt: null, settledAt: null, settledOverride: null, lastVisitedAt: null,
+  };
+  const session: OrchestrationV2ProviderSession = {
+    id: value.providerSessionId, providerInstanceId: instanceId, driver, status: "ready",
+    cwd: worktreePath, model: "fixture-model", capabilities: CodexProviderCapabilitiesV2,
+    createdAt: now, updatedAt: now, lastError: null,
+  };
+  const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
+    { id: EventId.make(`birth:${name}`), type: "thread.created", threadId: value.threadId, occurredAt: now, payload: thread },
+    { id: EventId.make(`session:${name}`), type: "provider-session.attached", threadId: value.threadId, occurredAt: now,
+      payload: session },
+    { id: EventId.make(`provider:${name}`), type: "provider-thread.updated", threadId: value.threadId, occurredAt: now,
+      payload: { id: value.providerThreadId, appThreadId: value.threadId, ownerNodeId: null, providerInstanceId: instanceId, driver,
+        providerSessionId: value.providerSessionId, nativeThreadRef: { driver, nativeId: `native:${name}`, strength: "strong" },
+        nativeConversationHeadRef: null, status: stopped ? "not_loaded" : "idle", firstRunOrdinal: 1, lastRunOrdinal: 1,
+        ...(status === "completed" ? { pendingBackgroundTasks: [{ kind: "monitor" as const, taskId: `monitor:${name}`, description: "Captured monitoring" }] } : {}),
+        handoffIds: [], forkedFrom: null, createdAt: now, updatedAt: now } },
+    { id: EventId.make(`run:${name}`), type: "run.created", threadId: value.threadId, occurredAt: now,
+      payload: { id: value.runId, threadId: value.threadId, ordinal: 1, providerInstanceId: instanceId,
+        modelSelection: thread.modelSelection, providerThreadId: value.providerThreadId, userMessageId: value.messageId,
+        rootNodeId: NodeId.make(`node:${name}`), activeAttemptId: value.attemptId, status,
+        ...(status === "queued" ? { queueHeld: true } : {}), requestedAt: now,
+        startedAt: status === "completed" ? now : null, completedAt: status === "completed" ? now : null,
+        checkpointId: null, contextHandoffId: null } },
+    { id: EventId.make(`attempt:${name}`), type: "run-attempt.created", threadId: value.threadId, occurredAt: now,
+      payload: { id: value.attemptId, runId: value.runId, attemptOrdinal: 1, rootNodeId: NodeId.make(`node:${name}`),
+        providerInstanceId: instanceId, providerThreadId: value.providerThreadId, providerTurnId: null, reason: "initial",
+        status: status === "completed" ? "completed" : "pending", startedAt: status === "completed" ? now : null,
+        completedAt: status === "completed" ? now : null } },
+  ];
+  const sink = yield* EventSink.EventSinkV2;
+  yield* sink.write({ events });
+  const resumeCursor = { threadId: `native:${name}` };
+  const runtimePayload = { cwd: worktreePath, unrelated: `preserve:${name}`, activeTurnId: null };
+  const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+  yield* runtimes.upsert({ threadId: value.threadId, providerName: "codex", providerInstanceId: instanceId,
+    adapterKey: "codex", status: stopped ? "stopped" : "running", runtimeMode: "full-access",
+    resumeCursor, runtimePayload, lastSeenAt: DateTime.formatIso(now) });
+  const binding: EventSink.ProviderBindingExpectationV2 = { threadId: value.threadId,
+    providerThreadId: value.providerThreadId, providerSessionId: value.providerSessionId, instanceId, driver,
+    nativeThreadId: `native:${name}`, runtimeGeneration: `fixture-generation:${name}` };
+  assert.isTrue((yield* sink.registerProviderRuntime({ expectedBinding: { ...binding, runtimeGeneration: null },
+    expectedEvidenceRevision: 0, actualBinding: { threadId: value.threadId,
+      providerThreadId: value.providerThreadId, providerSessionId: value.providerSessionId, instanceId,
+      nativeThreadId: `native:${name}`, runtimeGeneration: `fixture-generation:${name}` } })).committed);
+  // A stopped binding retains an earlier registration. The production guard
+  // rejects registering a new generation against an already stopped session.
+  if (stopped) yield* sink.write({ events: [{ id: EventId.make(`session-stopped:${name}`),
+    type: "provider-session.updated", threadId: value.threadId, occurredAt: now,
+    payload: { ...session, status: "stopped" } }] });
+  return { ...value, thread, binding, resumeCursor, runtimePayload };
+});
 
-        yield* engine.dispatch({
-          type: "project.create",
-          commandId: CommandId.make("command-create-project"),
-          projectId,
-          title: "Startup orphan project",
-          workspaceRoot: "/tmp/startup-orphan-project",
-          defaultModelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
-          createdAt,
-        });
-        yield* engine.dispatch({
-          type: "thread.create",
-          commandId: CommandId.make("command-create-thread"),
-          threadId,
-          projectId,
-          title: "Startup orphan thread",
-          modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "full-access",
-          branch: null,
-          worktreePath: null,
-          createdAt,
-        });
-        yield* engine.dispatch({
-          type: "thread.turn.start",
-          commandId: CommandId.make("command-start-pending-turn"),
-          threadId,
-          message: {
-            messageId: MessageId.make("message-pending-before-restart"),
-            role: "user",
-            text: "Persist this queued turn before restart",
-            attachments: [],
-          },
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "full-access",
-          createdAt,
-        });
-        yield* engine.dispatch({
-          type: "thread.session.set",
-          commandId: CommandId.make("command-mark-session-starting"),
-          threadId,
-          session: {
-            threadId,
-            status: "starting",
-            providerName: "codex",
-            providerInstanceId,
-            runtimeMode: "full-access",
-            activeTurnId: null,
-            lastError: null,
-            updatedAt: createdAt,
-          },
-          createdAt,
-        });
-        yield* directory.upsert({
-          threadId,
-          provider: ProviderDriverKind.make("codex"),
-          providerInstanceId,
-          status: "running",
-          resumeCursor,
-          runtimePayload: { activeTurnId: null, unrelated: "preserve-me" },
-          runtimeMode: "full-access",
-        });
-        yield* engine.dispatch({
-          type: "thread.create",
-          commandId: CommandId.make("command-create-stopped-binding-thread"),
-          threadId: stoppedBindingThreadId,
-          projectId,
-          title: "Startup orphan with stopped binding",
-          modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "full-access",
-          branch: null,
-          worktreePath: stoppedBindingWorktreePath,
-          createdAt,
-        });
-        yield* engine.dispatch({
-          type: "thread.turn.start",
-          commandId: CommandId.make("command-start-stopped-binding-pending-turn"),
-          threadId: stoppedBindingThreadId,
-          message: {
-            messageId: MessageId.make("message-stopped-binding-pending-before-restart"),
-            role: "user",
-            text: "Persist another queued turn before restart",
-            attachments: [],
-          },
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "full-access",
-          createdAt,
-        });
-        yield* engine.dispatch({
-          type: "thread.session.set",
-          commandId: CommandId.make("command-mark-stopped-binding-session-starting"),
-          threadId: stoppedBindingThreadId,
-          session: {
-            threadId: stoppedBindingThreadId,
-            status: "starting",
-            providerName: "codex",
-            providerInstanceId,
-            runtimeMode: "full-access",
-            activeTurnId: null,
-            lastError: null,
-            updatedAt: createdAt,
-          },
-          createdAt,
-        });
-        yield* directory.upsert({
-          threadId: stoppedBindingThreadId,
-          provider: ProviderDriverKind.make("codex"),
-          providerInstanceId,
-          status: "stopped",
-          resumeCursor: stoppedBindingResumeCursor,
-          runtimePayload: { activeTurnId: "stale", unrelated: "also-preserve-me" },
-          runtimeMode: "full-access",
-        });
-      }).pipe(Effect.provide(firstRuntime));
-
-      const secondRuntime = makePersistedRuntimeLayer(config.dbPath);
-      const startupLayer = ServerRuntimeStartup.layer.pipe(
-        Layer.provideMerge(secondRuntime),
-        Layer.provideMerge(startupDependencies),
-      );
-
-      const result = yield* Effect.gen(function* () {
-        const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
-        const engine = yield* OrchestrationEngine.OrchestrationEngineService;
-        const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
-        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
-        const sql = yield* SqlClient.SqlClient;
-
-        yield* startup.markHttpListening;
-        yield* startup.awaitCommandReady;
-
-        const restartedThread = Option.getOrThrow(yield* query.getThreadDetailById(threadId));
-        const restartedStoppedBindingThread = Option.getOrThrow(
-          yield* query.getThreadDetailById(stoppedBindingThreadId),
-        );
-        const pendingRows = yield* sql<{ readonly threadId: string }>`
-          SELECT thread_id AS "threadId"
-          FROM projection_turns
-          WHERE thread_id IN (${threadId}, ${stoppedBindingThreadId})
-            AND turn_id IS NULL
-            AND state = 'pending'
-        `;
-        const settleExit = yield* Effect.exit(
-          engine.dispatch({
-            type: "thread.settle",
-            commandId: CommandId.make("command-settle-after-restart"),
-            threadId,
-          }),
-        );
-        const snoozeExit = yield* Effect.exit(
-          engine.dispatch({
-            type: "thread.snooze",
-            commandId: CommandId.make("command-snooze-after-restart"),
-            threadId,
-            snoozedUntil: DateTime.formatIso(DateTime.add(now, { hours: 1 })),
-          }),
-        );
-        const newTurnExit = yield* Effect.exit(
-          engine.dispatch({
-            type: "thread.turn.start",
-            commandId: CommandId.make("command-new-turn-after-restart"),
-            threadId,
-            message: {
-              messageId: MessageId.make("message-new-turn-after-restart"),
-              role: "user",
-              text: "Continue immediately after restart",
-              attachments: [],
-            },
-            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-            runtimeMode: "full-access",
-            createdAt,
-          }),
-        );
-        const binding = Option.getOrThrow(yield* directory.getBinding(threadId));
-        const stoppedBinding = Option.getOrThrow(
-          yield* directory.getBinding(stoppedBindingThreadId),
-        );
-
-        return {
-          sessionStatus: restartedThread.session?.status,
-          activeTurnId: restartedThread.session?.activeTurnId,
-          latestTurn: restartedThread.latestTurn,
-          pendingTurnCount: pendingRows.length,
-          settleSucceeded: Exit.isSuccess(settleExit),
-          snoozeSucceeded: Exit.isSuccess(snoozeExit),
-          newTurnSucceeded: Exit.isSuccess(newTurnExit),
-          bindingStatus: binding.status,
-          resumeCursor: binding.resumeCursor,
-          runtimePayload: binding.runtimePayload,
-          stoppedBindingSessionStatus: restartedStoppedBindingThread.session?.status,
-          stoppedBindingStatus: stoppedBinding.status,
-          stoppedBindingResumeCursor: stoppedBinding.resumeCursor,
-          stoppedBindingRuntimePayload: stoppedBinding.runtimePayload,
-        };
-      }).pipe(Effect.provide(startupLayer));
-
-      assert.deepStrictEqual(result, {
-        sessionStatus: "error",
-        activeTurnId: null,
-        latestTurn: null,
-        pendingTurnCount: 0,
-        settleSucceeded: true,
-        snoozeSucceeded: true,
-        newTurnSucceeded: true,
-        bindingStatus: "stopped",
-        resumeCursor,
-        runtimePayload: { activeTurnId: null, unrelated: "preserve-me" },
-        stoppedBindingSessionStatus: "error",
-        stoppedBindingStatus: "stopped",
-        stoppedBindingResumeCursor,
-        stoppedBindingRuntimePayload: {
-          activeTurnId: null,
-          unrelated: "also-preserve-me",
-        },
-      });
-    }).pipe(
-      Effect.provide(
-        ServerConfig.layerTest(process.cwd(), {
-          prefix: "t3-orphaned-provider-session-startup-",
-        }).pipe(Layer.provideMerge(NodeServices.layer)),
-      ),
+// This helper uses the production ordering, command queue and activation parking.
+// The parked root observes queue readiness only; no provider effect is executed.
+// Trial uses a deterministic commit barrier. Native Jones grant/listener
+// qualification remains covered by the native trial helper's separate checks.
+const coldStartup = Effect.fnUntraced(function* (
+  inspectBeforeTrial: (stage: Recovery.ProviderStartupRecoveryStage) => Effect.Effect<void, unknown>,
+) {
+  const recovery = yield* Recovery.ProviderRuntimeRecoveryService;
+  const importer = yield* LegacyImporter.LegacyV1ThreadImporter;
+  const activated = yield* Deferred.make<void>();
+  const trialEntered = yield* Deferred.make<void>();
+  const trialCommit = yield* Deferred.make<void>();
+  const afterTrialEntered = yield* Deferred.make<void>();
+  const permitActivation = yield* Deferred.make<void>();
+  const workerRan = yield* Deferred.make<void>();
+  const relayRan = yield* Deferred.make<void>();
+  const commandRan = yield* Deferred.make<void>();
+  const workerRef = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
+  const gate = yield* Startup.makeCommandGate;
+  const queuedCommand = yield* gate.enqueueCommand(Deferred.succeed(commandRan, undefined)).pipe(Effect.forkScoped);
+  const staged = yield* Startup.runOrderedV2StartupPhases({
+    importLegacyShells: importer.reconcileShells,
+    recover: recovery.stageStartupRecovery,
+    startEffectWorker: Startup.startEffectWorkerWithRelay({
+      runWorker: Deferred.succeed(workerRan, undefined).pipe(Effect.andThen(Effect.never)),
+      startRelay: ServerActivation.forkParked(Deferred.succeed(relayRan, undefined).pipe(Effect.andThen(Effect.never))),
+      workerFiberRef: workerRef,
+    }),
+    autoBootstrap: Effect.succeed({}),
+  }).pipe(Effect.provideService(ServerActivation.ServerActivation, Deferred.await(activated)));
+  yield* inspectBeforeTrial(staged.recovery);
+  let result: Recovery.ProviderStartupRecoveryResult | undefined;
+  const activation = yield* Startup.runOrderedV2ActivationPhases({
+    awaitHttpListening: Effect.void, awaitAuxiliaryParked: Effect.void,
+    prepareTrial: Effect.succeed({ selectedDatabase: "state.sqlite" }),
+    commitJonesTrial: Deferred.succeed(trialEntered, undefined).pipe(Effect.andThen(Deferred.await(trialCommit))),
+    reconcileAfterTrial: recovery.reconcileAfterStartupTrial(staged.recovery).pipe(
+      Effect.tap((value) => Effect.sync(() => { result = value; })),
+      Effect.andThen(Deferred.succeed(afterTrialEntered, undefined)), Effect.andThen(Deferred.await(permitActivation)),
     ),
+    publishWelcome: Effect.void,
+    activate: Deferred.succeed(activated, undefined).pipe(Effect.asVoid),
+    signalCommandReady: gate.signalCommandReady,
+  }).pipe(Effect.forkScoped);
+  yield* Deferred.await(trialEntered);
+  assert.isFalse(yield* Deferred.isDone(workerRan));
+  assert.isFalse(yield* Deferred.isDone(relayRan));
+  assert.isFalse(yield* Deferred.isDone(commandRan));
+  yield* Deferred.succeed(trialCommit, undefined);
+  yield* Deferred.await(afterTrialEntered);
+  assert.isFalse(yield* Deferred.isDone(activated));
+  assert.isFalse(yield* Deferred.isDone(commandRan));
+  assert.isFalse(yield* Deferred.isDone(workerRan));
+  assert.isFalse(yield* Deferred.isDone(relayRan));
+  yield* Deferred.succeed(permitActivation, undefined);
+  yield* Fiber.join(activation);
+  yield* gate.awaitCommandReady;
+  yield* Fiber.join(queuedCommand);
+  yield* Deferred.await(workerRan);
+  yield* Deferred.await(relayRan);
+  assert.isTrue(yield* Deferred.isDone(commandRan));
+  if (result === undefined) return yield* Effect.die("Posttrial recovery did not run");
+  return result;
+});
+
+it.effect("cold file recovery preserves stopped native/worktree identity and accepted held V2 queue behind trial readiness", () =>
+  Effect.scoped(Effect.gen(function* () {
+    const f = yield* fixture;
+    const prior = yield* Effect.scoped(Effect.gen(function* () {
+      const starting = yield* seed("starting", f.worktreePath, "starting");
+      const stopped = yield* seed("stopped", f.worktreePath, "starting", true);
+      const queued = yield* seed("queued", f.worktreePath, "queued", true);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE startup_unrelated (value TEXT NOT NULL)`;
+      yield* sql`INSERT INTO startup_unrelated VALUES ('preserve-unrelated')`;
+      return { starting, stopped, queued };
+    }).pipe(Effect.provide(runtimeLayer(f.dbPath), { local: true })));
+    yield* Effect.scoped(Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const before = yield* projections.getThreadProjection(prior.starting.threadId);
+      assert.equal(before.runs[0]?.status, "starting");
+      const result = yield* coldStartup((stage) => Effect.gen(function* () {
+        assert.deepEqual(stage.continuationMarkers, []);
+        assert.deepEqual(yield* projections.getThreadProjection(prior.starting.threadId), before);
+      }));
+      assert.equal(result.terminalizedRuns, 2);
+      const recovered = yield* projections.getThreadProjection(prior.starting.threadId);
+      assert.equal(recovered.runs[0]?.status, "cancelled");
+      assert.equal(recovered.providerSessions[0]?.status, "stopped");
+      const stopped = yield* projections.getThreadProjection(prior.stopped.threadId);
+      assert.equal(stopped.thread.worktreePath, f.worktreePath);
+      assert.equal(stopped.providerThreads[0]?.nativeThreadRef?.nativeId, prior.stopped.binding.nativeThreadId);
+      const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      const stoppedRow = Option.getOrThrow(yield* runtimes.getByThreadId({ threadId: prior.stopped.threadId }));
+      assert.equal(stoppedRow.status, "stopped");
+      assert.deepEqual(stoppedRow.resumeCursor, prior.stopped.resumeCursor);
+      assert.deepEqual(stoppedRow.runtimePayload, prior.stopped.runtimePayload);
+      const queued = yield* projections.getThreadProjection(prior.queued.threadId);
+      assert.equal(queued.runs[0]?.status, "queued");
+      assert.isTrue(queued.runs[0]?.queueHeld);
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepEqual(yield* sql`SELECT value FROM startup_unrelated`, [{ value: "preserve-unrelated" }]);
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      assert.equal(yield* fs.readFileString(path.join(f.worktreePath, "preserved.txt")), "Unrelated worktree contents");
+    }).pipe(Effect.provide(runtimeLayer(f.dbPath), { local: true })));
+  })).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect.each(["opt-in desktop restart", "marked remote update"] as const)(
-  "continues a newer persisted turn after %s",
-  (restart) =>
-    Effect.gen(function* () {
-      const config = yield* ServerConfig.ServerConfig;
-      const createdAt = DateTime.formatIso(yield* DateTime.now);
-      const activeTurnId = TurnId.make("turn-started-after-original-send");
-      const originalTurnId = TurnId.make("turn-from-original-send");
-      const sent = yield* Deferred.make<ProviderSendTurnInput>();
-
-      yield* Effect.gen(function* () {
-        const engine = yield* OrchestrationEngine.OrchestrationEngineService;
-        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
-        yield* engine.dispatch({
-          type: "project.create",
-          commandId: CommandId.make("create-restart-project"),
-          projectId,
-          title: "Restart continuation",
-          workspaceRoot: "/tmp/startup-orphan-project",
-          defaultModelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
-          createdAt,
-        });
-        yield* engine.dispatch({
-          type: "thread.create",
-          commandId: CommandId.make("create-restart-thread"),
-          threadId,
-          projectId,
-          title: "Newer running turn",
-          modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "full-access",
-          branch: null,
-          worktreePath: null,
-          createdAt,
-        });
-        yield* engine.dispatch({
-          type: "thread.session.set",
-          commandId: CommandId.make("persist-newer-running-turn"),
-          threadId,
-          session: {
-            threadId,
-            status: "running",
-            providerName: "codex",
-            providerInstanceId,
-            runtimeMode: "full-access",
-            activeTurnId,
-            lastError: null,
-            updatedAt: createdAt,
-          },
-          createdAt,
-        });
-        yield* directory.upsert({
-          threadId,
-          provider: ProviderDriverKind.make("codex"),
-          providerInstanceId,
-          status: "running",
-          resumeCursor,
-          runtimePayload: { activeTurnId: originalTurnId },
-        });
-        if (restart === "marked remote update") {
-          assert.deepStrictEqual(
-            yield* ServerRuntimeStartup.markRunningProviderSessionsForContinuation,
-            [threadId],
-          );
+for (const mode of ["opt-in desktop restart", "marked remote update", "changed source", "current STOP"] as const) {
+  it.effect(`cold ${mode} retains the complete marker and gates its continuation after trial`, () =>
+    Effect.scoped(Effect.gen(function* () {
+      const f = yield* fixture;
+      const name = "captured-source";
+      const sourceIds = ids(name);
+      const binding: EventSink.ProviderBindingExpectationV2 = { threadId: sourceIds.threadId,
+        providerThreadId: sourceIds.providerThreadId, providerSessionId: sourceIds.providerSessionId, instanceId, driver,
+        nativeThreadId: `native:${name}`, runtimeGeneration: `fixture-generation:${name}` };
+      const captured = yield* Effect.scoped(Effect.gen(function* () {
+        const source = yield* seed(name, f.worktreePath, "completed");
+        const markers = yield* (mode === "opt-in desktop restart"
+          ? Startup.markOptedInProviderSessionsForContinuation : Startup.markRunningProviderSessionsForContinuation);
+        assert.lengthOf(markers, 1);
+        const sink = yield* EventSink.EventSinkV2;
+        assert.deepEqual(yield* sink.readDormantRestartContinuations, markers);
+        return { source, marker: markers[0]! };
+      }).pipe(Effect.provide(runtimeLayer(f.dbPath, binding, mode === "opt-in desktop restart"), { local: true })));
+      yield* Effect.scoped(Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const marker = captured.marker;
+        assert.deepEqual(marker, { markerId: marker.markerId, threadId: captured.source.threadId, projectId,
+          sourceRunId: captured.source.runId, sourceRunAttemptId: captured.source.attemptId,
+          binding: captured.source.binding, evidenceRevision: 1, createdAt: marker.createdAt });
+        const commandId = CommandId.make(`command:restart-continuation:${marker.markerId}`);
+        const result = yield* coldStartup((stage) => Effect.gen(function* () {
+          assert.deepEqual(stage.continuationMarkers, [marker]);
+          assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+          if (mode === "changed source") {
+            const projection = yield* projections.getThreadProjection(marker.threadId);
+            yield* sink.write({ events: [{ id: EventId.make("changed-source-selection"), type: "thread.metadata-updated",
+              threadId: marker.threadId, occurredAt: yield* DateTime.now,
+              payload: { ...projection.thread, modelSelection: { ...projection.thread.modelSelection,
+                instanceId: ProviderInstanceId.make("changed-instance") } } }] });
+          }
+        }));
+        if (mode === "changed source") {
+          assert.deepEqual(result.releasedContinuationMarkerIds, []);
+          assert.deepEqual(result.heldContinuationMarkers, [{ marker, reason: "source_changed" }]);
+          assert.deepEqual(yield* sink.readDormantRestartContinuations, [marker]);
+          assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+          return;
         }
-      }).pipe(Effect.provide(makePersistedRuntimeLayer(config.dbPath)));
-
-      yield* Effect.gen(function* () {
-        const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
-        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
-        const provider = yield* ProviderService.ProviderService;
-        const before = Option.getOrThrow(yield* query.getThreadDetailById(threadId));
-        assert.equal(before.session?.activeTurnId, activeTurnId);
-        assert.propertyVal(
-          Option.getOrThrow(yield* directory.getBinding(threadId)).runtimePayload,
-          "activeTurnId",
-          originalTurnId,
-        );
-        yield* ServerRuntimeStartup.reconcileProviderSessions.pipe(
-          Effect.provideService(ProviderService.ProviderService, {
-            ...provider,
-            getCapabilities: () =>
-              Effect.succeed({
-                sessionModelSwitch: "in-session",
-                promptlessTurnContinuation: true,
+        assert.deepEqual(result.releasedContinuationMarkerIds, [marker.markerId]);
+        assert.deepEqual(result.heldContinuationMarkers, []);
+        const effects = yield* outbox.listByCommandId(commandId);
+        assert.lengthOf(effects, 1);
+        assert.equal(effects[0]!.status, "pending");
+        assert.deepEqual(effects[0]!.request, { type: "provider-runtime.continue", sourceRunId: marker.sourceRunId });
+        assert.deepEqual(yield* sink.readReleasedRestartContinuation({ effectId: effects[0]!.id,
+          threadId: marker.threadId, sourceRunId: marker.sourceRunId }), marker);
+        const claimed = Option.getOrThrow(yield* outbox.claimNext({ workerId: "worker:startup-cold", leaseDurationMs: 60_000 }));
+        const command = { type: "message.dispatch" as const,
+          ...EventSink.capturedRestartContinuationIdsV1({ effectId: claimed.id, marker }), threadId: marker.threadId,
+          text: "Continue where you left off.", attachments: [], modelSelection: captured.source.thread.modelSelection,
+          dispatchMode: { type: "start_immediately" as const }, createdBy: "agent" as const, creationSource: "server" as const,
+          restartContinuationOfRunId: marker.sourceRunId };
+        const context = { effectId: claimed.id, marker, workerId: "worker:startup-cold", expectedAttempt: claimed.attemptCount };
+        // Storage qualification is synthetic and exact. This proves the STOP
+        // persistence fence, not production caller authority or physical closure.
+        if (mode === "current STOP") {
+          const stopCommandId = CommandId.make("command:startup:current-stop");
+          const facts = yield* sink.readNativeCommandFacts({ threadId: marker.threadId, commandId: stopCommandId });
+          const now = yield* DateTime.now;
+          yield* sink.commitCommand({ commandId: stopCommandId, threadId: marker.threadId,
+            commandType: "provider-session.detach", acceptedAt: now,
+            events: [{ id: EventId.make("event:startup:current-stop"), type: "provider-session.detach-requested",
+              threadId: marker.threadId, occurredAt: now, payload: { providerSessionId: marker.binding.providerSessionId,
+                reason: "explicit startup fixture STOP" } }], effects: [],
+            stopContext: { snapshot: facts.commitSnapshot, incarnation: (yield* sink.readApplicationThreadBirth(marker.threadId))!,
+              canonicalRequestDigest: "c".repeat(64), actorBindingDigest: "d".repeat(64), targetBinding: marker.binding,
+              targetEvidenceRevision: marker.evidenceRevision, queuedBases: [], affectedRunIds: [],
+              revalidateCurrentTarget: Effect.gen(function* () {
+                const current = yield* sink.readNativeCommandFacts({ threadId: marker.threadId, commandId: stopCommandId });
+                assert.deepEqual(current.commitSnapshot, facts.commitSnapshot);
+                const registered = yield* sink.readProviderRuntimeEvidence(marker.threadId);
+                assert.deepEqual(registered?.binding, marker.binding);
+                assert.equal(registered?.evidenceRevision, marker.evidenceRevision);
               }),
-            sendTurn: (input) =>
-              Deferred.succeed(sent, input).pipe(
-                Effect.as({ threadId, turnId: TurnId.make("continued-turn") }),
-              ),
-          }),
-          Effect.provide(
-            ServerSettings.layerTest({
-              continueThreadsAfterServerUpdate: restart === "opt-in desktop restart",
-            }),
-          ),
-        );
-        const after = Option.getOrThrow(yield* query.getThreadDetailById(threadId));
-        assert.equal(after.session?.status, "starting");
-        assert.equal(after.session?.activeTurnId, null);
-        assert.equal(after.session?.lastError, null);
-        assert.deepStrictEqual(yield* Deferred.await(sent), {
-          threadId,
-          continuation: true,
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        });
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(makePersistedRuntimeLayer(config.dbPath), startupDependencies),
-        ),
-      );
-    }).pipe(
-      Effect.provide(
-        ServerConfig.layerTest(process.cwd(), { prefix: "t3-restart-newer-turn-" }).pipe(
-          Layer.provideMerge(NodeServices.layer),
-        ),
-      ),
-    ),
-);
+            },
+          });
+          const error = yield* sink.readCapturedRestartCommandOrigin({ command, context }).pipe(Effect.flip);
+          assert.equal(error._tag, "NativeCommandPreconditionError");
+          assert.isNull((yield* sink.readCommandReceiptIdentity(command.commandId)).receipt);
+        } else {
+          assert.isNull(yield* sink.readCapturedRestartCommandOrigin({ command, context }));
+          const changedMarker = { ...marker, createdAt: "2026-10-03T01:00:00.000Z" };
+          const error = yield* sink.readCapturedRestartCommandOrigin({ command, context: { ...context, marker: changedMarker } }).pipe(Effect.flip);
+          assert.equal(error._tag, "NativeCommandPreconditionError");
+        }
+        const projection = yield* projections.getThreadProjection(marker.threadId);
+        assert.equal(projection.runs.length, 1);
+        assert.equal(projection.thread.worktreePath, f.worktreePath);
+        assert.equal(projection.providerThreads[0]?.nativeThreadRef?.nativeId, marker.binding.nativeThreadId);
+        assert.lengthOf(yield* outbox.listByCommandId(commandId), 1);
+      }).pipe(Effect.provide(runtimeLayer(f.dbPath), { local: true })));
+    })).pipe(Effect.provide(NodeServices.layer)),
+  );
+}

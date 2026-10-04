@@ -1,8 +1,9 @@
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 
 import {
-  composerSubmissionIntentForEnter,
+  composerSubmissionIntentForKey,
   type ComposerSubmissionIntent,
 } from "../../composer-logic";
 
@@ -59,7 +60,11 @@ export function handleComposerEnter(options: {
     KeyboardEvent,
     "shiftKey" | "altKey" | "metaKey" | "ctrlKey" | "isComposing" | "keyCode" | "repeat"
   >;
-  intent: Omit<Parameters<typeof composerSubmissionIntentForEnter>[0], "shiftKey" | "modifierKey">;
+  intent: Omit<
+    Parameters<typeof composerSubmissionIntentForKey>[0],
+    "event" | "keybindings" | "platform"
+  >;
+  submissionIntent?: ComposerSubmissionIntent | null;
   hasDraftContext: boolean;
   queueActionDisabled: boolean;
   onSteerNextQueuedMessage: () => boolean;
@@ -76,15 +81,19 @@ export function handleComposerEnter(options: {
     !options.hasDraftContext &&
     !options.queueActionDisabled
   ) {
-    // Held Enter must not drain the queue after a completed send. The queue's
-    // existing send lock also covers an arrow click racing a fresh key press.
+    // Held Enter must not drain the queue after a completed promotion. The queue's
+    // promotion lock also covers an arrow click racing a fresh key press.
     if (event.repeat || options.onSteerNextQueuedMessage()) return true;
   }
-  const intent = composerSubmissionIntentForEnter({
-    ...options.intent,
-    shiftKey: event.shiftKey,
-    modifierKey: event.metaKey || event.ctrlKey,
-  });
+  if (event.repeat || event.altKey) return false;
+  const intent =
+    options.submissionIntent === undefined
+      ? composerSubmissionIntentForKey({
+          ...options.intent,
+          event: { ...event, key: "Enter" },
+          keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+        })
+      : options.submissionIntent;
   if (!intent) return false;
   options.onSubmit(intent);
   return true;

@@ -1,182 +1,102 @@
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import nativeCreationMigration from "./persistence/Migrations/003_JonesNativeCreationIntents.ts";
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  EventId,
-  type OrchestrationCommand,
-  ThreadId,
-  WORKTREE_SETUP_ACTIVITY_KIND,
-  WorktreeSetupSnapshot,
-  worktreeSetupActivityId,
-  type WorktreeSetupPhase,
-} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { NativeCreationHistoricalBinding, ProjectId, ThreadId, type Project } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
-import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
-import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
+import * as NativeCreationRepositoryLayer from "./persistence/Layers/NativeCreationRepository.ts";
+import { NativeCreationRepository } from "./persistence/Services/NativeCreationRepository.ts";
+import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import {
+  NativePreparationBinding, nativeCreationCanonicalJson, nativeCreationSha256,
+  nativePreparationCommand, validateNativeCreationPreparation,
+} from "./orchestration-v2/NativeCreationPreparation.ts";
+import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
+import * as ThreadLaunch from "./orchestration-v2/ThreadLaunchService.ts";
+import * as ProjectService from "./project/ProjectService.ts";
+import * as ServerConfig from "./config.ts";
+import * as ServerSettings from "./serverSettings.ts";
+import * as ServerActivation from "./serverActivation.ts";
+import * as Startup from "./serverRuntimeStartup.ts";
 
-const startedAt = "2026-08-20T12:00:00.000Z";
+const repositoryLayer = NativeCreationRepositoryLayer.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory));
+const testLayer = Layer.merge(repositoryLayer, NodeServices.layer);
 
-const snapshotFor = (
-  threadId: ThreadId,
-  phase: WorktreeSetupPhase,
-  agentStatus: "pending" | "done" = phase === "running" ? "pending" : "done",
-): WorktreeSetupSnapshot => ({
-  threadId,
-  phase,
-  startedAt,
-  endedAt: phase === "running" ? null : startedAt,
-  branch: "feature",
-  baseRef: "main",
-  worktreePath: null,
-  setupScript: null,
-  stages: [
-    {
-      id: "checkout",
-      status: "done",
-      startedAt,
-      endedAt: startedAt,
-      percent: null,
-      detail: null,
-      tail: [],
-    },
-    {
-      id: "setup-script",
-      status: phase === "running" ? "running" : "done",
-      startedAt,
-      endedAt: phase === "running" ? null : startedAt,
-      percent: null,
-      detail: null,
-      tail: [],
-    },
-    {
-      id: "agent",
-      status: agentStatus,
-      startedAt: null,
-      endedAt: null,
-      percent: null,
-      detail: null,
-      tail: [],
-    },
-  ],
-  error: null,
-  sequence: 4,
+it.layer(testLayer)("claimed creation startup", (it) => {
+  it.effect("restart preserves claimed creation setup without command replay or forced readiness", () =>
+    Effect.scoped(Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const repository = yield* NativeCreationRepository;
+      const timestamp = "2026-10-02T12:34:56Z";
+      const text = "Synthetic claimed setup";
+      const binding = Schema.decodeUnknownSync(NativePreparationBinding)({
+        backend_instance: "fixture-backend", environment_id: "fixture-environment",
+        project_id: "fixture-project", project_cwd: "/fixture/project", account_ref: "fixture-account",
+        runtime_mode: "full-access", interaction_mode: "default", base_branch: "main",
+        start_from_origin: false, run_setup_script: true,
+        provider_model_selection: { instanceId: "codex", model: "fixture-model" },
+      });
+      const command = nativePreparationCommand("fixture-startup-operation", binding, text, "Claimed thread", timestamp);
+      const preparation = yield* validateNativeCreationPreparation(new TextEncoder().encode(nativeCreationCanonicalJson({
+        schema: "voice.t3-bootstrap-preparation/v1", operation_id: "fixture-startup-operation", binding, command,
+        preparation_id: command.commandId.replace("voice-command-", "voice-bootstrap-"),
+        binding_digest: nativeCreationSha256(nativeCreationCanonicalJson(binding)), prompt_digest: nativeCreationSha256(text),
+        command_digest: nativeCreationSha256(nativeCreationCanonicalJson(command)),
+      })));
+      const historical = Schema.decodeUnknownSync(NativeCreationHistoricalBinding)({
+        backendInstance: binding.backend_instance, environmentId: binding.environment_id,
+        projectId: binding.project_id, projectCwd: binding.project_cwd, accountRef: binding.account_ref,
+        accountBindingId: "fixture-account-binding", accountBindingRevision: 1,
+        providerModelSelection: binding.provider_model_selection, runtimeMode: binding.runtime_mode,
+        interactionMode: binding.interaction_mode, baseBranch: binding.base_branch, startFromOrigin: false,
+        runSetupScript: true, requestedBranch: command.bootstrap.prepareWorktree.branch,
+      });
+      const claim = yield* repository.claim({
+        preparation, resources: { projectCwd: binding.project_cwd, branch: historical.requestedBranch, worktreePath: "/fixture/worktree" },
+        claimId: "fixture-startup-claim", claimedBootId: "previous-boot", claimedAt: timestamp,
+        actorSessionId: "fixture-session", grantId: "fixture-grant", grantRevision: 1,
+      }, Effect.succeed(historical));
+      assert.equal(claim.status, "claimed");
+      const before = yield* sql`SELECT * FROM native_creation_intents WHERE claim_id = 'fixture-startup-claim'`;
+      const project: Project = {
+        id: ProjectId.make(binding.project_id), title: "Claimed project", workspaceRoot: binding.project_cwd,
+        defaultModelSelection: null, scripts: [], createdAt: timestamp, updatedAt: timestamp, deletedAt: null,
+      };
+      const threadId = ThreadId.make(preparation.command.threadId);
+      const callbacks: string[] = [];
+      const activation = yield* Deferred.make<void>();
+      const worker = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
+      const bootstrap = Startup.resolveAutoBootstrapWelcomeTargets.pipe(
+        Effect.provideService(ServerConfig.ServerConfig, { cwd: project.workspaceRoot, autoBootstrapProjectFromCwd: true } as never),
+        Effect.provide(Layer.mock(ProjectService.ProjectService)({ bootstrap: () => Effect.succeed({ project, created: false }) })),
+        Effect.provide(Layer.mock(ThreadManagement.ThreadManagementService)({
+          getShellSnapshot: () => Effect.succeed({ threads: [{ id: threadId, projectId: project.id, lineage: { relationshipToParent: null } }] } as never),
+        })),
+        Effect.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({
+          launch: () => Effect.sync(() => { callbacks.push("launch/setup"); }).pipe(Effect.andThen(Effect.die("claimed startup must not relaunch"))),
+        })),
+        Effect.provide(ServerSettings.layerTest()),
+      );
+      const result = yield* Startup.runOrderedV2StartupPhases({
+        importLegacyShells: Effect.void,
+        recover: Effect.void,
+        startEffectWorker: Startup.startEffectWorkerWithRelay({
+          runWorker: Effect.sync(() => { callbacks.push("provider-effect"); }).pipe(Effect.andThen(Effect.never)),
+          startRelay: Effect.void,
+          workerFiberRef: worker,
+        }),
+        autoBootstrap: bootstrap,
+      }).pipe(Effect.provideService(ServerActivation.ServerActivation, Deferred.await(activation)));
+      assert.deepEqual(result.bootstrap, { bootstrapProjectId: project.id, bootstrapThreadId: threadId });
+      assert.deepEqual(callbacks, []);
+      assert.isFalse(yield* Deferred.isDone(activation));
+      assert.deepEqual(yield* sql`SELECT * FROM native_creation_intents WHERE claim_id = 'fixture-startup-claim'`, before);
+      assert.deepEqual(yield* repository.readHistoryByClaim("fixture-startup-claim"), claim.history);
+    })),
+  );
 });
-
-const recordedSetup = (id: string, phase: WorktreeSetupPhase, agentStatus?: "pending" | "done") => {
-  const threadId = ThreadId.make(id);
-  return {
-    id: EventId.make(worktreeSetupActivityId(threadId)),
-    tone: "info" as const,
-    kind: WORKTREE_SETUP_ACTIVITY_KIND,
-    summary: "Setting up worktree",
-    payload: snapshotFor(threadId, phase, agentStatus),
-    turnId: null,
-    createdAt: startedAt,
-  };
-};
-
-const run = (
-  activities: ReadonlyArray<ReturnType<typeof recordedSetup>>,
-  claimedThreadId?: string,
-) =>
-  Effect.gen(function* () {
-    const dispatched: Array<OrchestrationCommand> = [];
-    const sql = yield* SqlClient.SqlClient;
-    yield* nativeCreationMigration;
-    if (claimedThreadId !== undefined)
-      yield* sql`INSERT INTO native_creation_intents (claim_id, operation_id, preparation_id, command_id, thread_id, message_id, project_cwd, branch, worktree_path, canonical_preparation, intent_json) VALUES ('synthetic-claim', 'synthetic-operation', 'synthetic-preparation', 'synthetic-command', ${claimedThreadId}, 'synthetic-message', '/synthetic/project', 'synthetic-branch', '/synthetic/worktree', '{}', '{}')`;
-    yield* ServerRuntimeStartup.reconcileWorktreeSetups.pipe(
-      Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-        listActivitiesByKind: (kind: string) =>
-          Effect.succeed(kind === WORKTREE_SETUP_ACTIVITY_KIND ? activities : []),
-      } as unknown as ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]),
-      Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
-        readEvents: () => Stream.empty,
-        readThreadEvents: () => Stream.empty,
-        getThreadReplayStats: () => Effect.die("unused"),
-        dispatch: (command) =>
-          Effect.sync(() => {
-            dispatched.push(command);
-            return { sequence: dispatched.length };
-          }),
-        acquireWorktreeOwnership: () => Effect.die("unused ownership acquisition"),
-        releaseWorktreeOwnership: () => Effect.die("unused ownership release"),
-        getThreadOwnershipIncarnation: () => Effect.die("unused ownership incarnation"),
-        listWorktreeOwnershipLeases: Effect.die("unused ownership list"),
-        streamDomainEvents: Stream.empty,
-        subscribeDomainEvents: Effect.succeed(Stream.empty),
-        latestSequence: Effect.succeed(0),
-      }),
-      Effect.provide(NodeServices.layer),
-    );
-    return dispatched;
-  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
-
-it.effect("marks setups still recorded as running failed after a restart", () =>
-  Effect.gen(function* () {
-    const dispatched = yield* run([
-      recordedSetup("thread-running", "running"),
-      recordedSetup("thread-done", "done"),
-      recordedSetup("thread-failed", "failed"),
-    ]);
-
-    assert.equal(dispatched.length, 1);
-    const command = dispatched[0]!;
-    assert.equal(command.type, "thread.activity.append");
-    if (command.type !== "thread.activity.append") return;
-    assert.equal(command.threadId, ThreadId.make("thread-running"));
-    assert.equal(command.activity.id, worktreeSetupActivityId(ThreadId.make("thread-running")));
-    assert.equal(command.activity.tone, "error");
-    const payload = yield* Schema.decodeUnknownEffect(WorktreeSetupSnapshot)(
-      command.activity.payload,
-    );
-    assert.equal(payload.phase, "failed");
-    assert.isNotNull(payload.endedAt);
-    assert.equal(payload.sequence, 5);
-    assert.deepEqual(
-      payload.stages.map((stage) => stage.status),
-      ["done", "failed", "failed"],
-    );
-  }),
-);
-
-it.effect(
-  "settles an async setup script whose turn already started without failing the setup",
-  () =>
-    Effect.gen(function* () {
-      const dispatched = yield* run([recordedSetup("thread-async", "running", "done")]);
-
-      assert.equal(dispatched.length, 1);
-      const command = dispatched[0]!;
-      if (command.type !== "thread.activity.append") return assert.fail(command.type);
-      const payload = yield* Schema.decodeUnknownEffect(WorktreeSetupSnapshot)(
-        command.activity.payload,
-      );
-      // The turn is live; only the background script was lost. Nothing asks the
-      // user to resend, and the setup reads as done with a failed script stage.
-      assert.equal(payload.phase, "done");
-      assert.isNull(payload.error);
-      assert.deepEqual(
-        payload.stages.map((stage) => stage.status),
-        ["done", "failed", "done"],
-      );
-    }),
-);
-
-it.effect(
-  "restart preserves claimed creation setup without command replay or forced readiness",
-  () =>
-    Effect.gen(function* () {
-      const dispatched = yield* run(
-        [recordedSetup("synthetic-claimed", "running", "done")],
-        "synthetic-claimed",
-      );
-      assert.deepEqual(dispatched, []);
-    }),
-);

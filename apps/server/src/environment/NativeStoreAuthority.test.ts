@@ -33,6 +33,7 @@ const authorityLayer = (
     childVersion: "1.0.0",
   }),
   connected = true,
+  dbPath = NodePath.join(baseDir, "userdata", "state.sqlite"),
 ) =>
   Layer.mergeAll(
     Layer.succeed(
@@ -48,6 +49,7 @@ const authorityLayer = (
     Layer.succeed(ServerConfig.ServerConfig, {
       baseDir,
       authorityStateDir,
+      dbPath,
     } as ServerConfig.ServerConfig["Service"]),
     Layer.succeed(
       ServerEnvironment.ServerEnvironmentIdentity,
@@ -140,6 +142,62 @@ it.effect("publishes only the current T3-owned tuple and fails closed when fence
         readiness: "trust-provider-required",
       });
       expect(initial.authority_namespace).toMatch(/^t3-native:/);
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  }),
+);
+
+it.effect("does not lend a v1 authority tuple to a copied V2 or custom selected store", () =>
+  Effect.gen(function* () {
+    const root = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-native-authority-binding-test-"),
+    );
+    try {
+      const authorityStateDir = NodePath.join(root, "authority");
+      const environmentId = "environment-selected-store";
+      NodeFS.mkdirSync(NodePath.join(root, "runtime"), { recursive: true });
+      NodeFS.mkdirSync(NodePath.join(root, "userdata"));
+      NodeFS.writeFileSync(
+        NodePath.join(root, "runtime", "service-state.json"),
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - launcher-owned test fixture.
+        JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: "1.0.0" }),
+        { mode: 0o600 },
+      );
+      const original = NodePath.join(root, "userdata", "state.sqlite");
+      NodeFS.writeFileSync(original, "SQLite format 3\0");
+      const initial = initializeNativeStoreAuthority(authorityStateDir, environmentId);
+      const statePath = NodePath.join(authorityStateDir, "native-store-authority-v1.json");
+      const before = NodeFS.readFileSync(statePath);
+
+      for (const selected of [
+        NodePath.join(root, "userdata", "statev2.sqlite"),
+        NodePath.join(root, "custom.sqlite"),
+      ]) {
+        NodeFS.copyFileSync(original, selected);
+        const authority = yield* NativeStoreAuthority.make().pipe(
+          Effect.provide(
+            authorityLayer(root, authorityStateDir, environmentId, undefined, true, selected),
+          ),
+        );
+        const result = yield* Effect.result(authority.readCurrent);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") expect(result.failure.code).toBe("source_unavailable");
+        expect(authority.trustProvider.readTrustSnapshot()).toEqual({
+          trustedEnvironments: [],
+          readiness: "trust-provider-required",
+        });
+        expect(NodeFS.readFileSync(statePath)).toEqual(before);
+      }
+      const originalAuthority = yield* NativeStoreAuthority.make().pipe(
+        Effect.provide(authorityLayer(root, authorityStateDir, environmentId)),
+      );
+      expect(yield* originalAuthority.readCurrent).toEqual({
+        environmentId,
+        authorityNamespace: initial.authority_namespace,
+        storeGeneration: initial.store_generation,
+      });
+      expect(NodeFS.readFileSync(statePath)).toEqual(before);
     } finally {
       NodeFS.rmSync(root, { recursive: true, force: true });
     }

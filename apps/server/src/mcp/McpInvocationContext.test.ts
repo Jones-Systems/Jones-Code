@@ -91,3 +91,30 @@ it.effect("requires the additive decision snapshot capability", () =>
     ).toMatchObject({ environmentId: "env" });
   }),
 );
+
+it.effect("checks each ordinary MCP capability independently", () =>
+  Effect.gen(function* () {
+    const capabilities: McpInvocationContext.McpCapability[] = [
+      "device", "pull-requests", "organization", "decision-snapshot", "orchestration", "worktree",
+    ];
+    const invocation: McpInvocationContext.McpInvocationScope = {
+      environmentId: EnvironmentId.make("fixture-environment"),
+      threadId: ThreadId.make("fixture-thread"),
+      providerSessionId: "fixture-session",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      capabilities: new Set(["preview"]),
+      issuedAt: 1,
+    };
+    for (const capability of capabilities) {
+      const denied = yield* McpInvocationContext.requireMcpCapability(capability).pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.flip,
+      );
+      expect(denied).toMatchObject({ capability, threadId: invocation.threadId });
+      const allowed = { ...invocation, capabilities: new Set([capability]) };
+      expect(yield* McpInvocationContext.requireMcpCapability(capability).pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, allowed),
+      )).toBe(allowed);
+    }
+  }),
+);
