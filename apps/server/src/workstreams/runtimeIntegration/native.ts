@@ -1,4 +1,4 @@
-import { EnvironmentHttpApi, EnvironmentHttpBadRequestError } from "@t3tools/contracts";
+import { EnvironmentHttpApi, EnvironmentHttpBadRequestError, EnvironmentAuthenticatedPrincipal } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -9,8 +9,8 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { annotateEnvironmentRequest, requireEnvironmentScope } from "../../auth/http.ts";
 import { NativeStoreAuthority } from "../../environment/NativeStoreAuthority.ts";
-import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { NativeEnrollmentsLive, NativeProviderEnrollmentLive } from "../enrollment/service.ts";
@@ -18,20 +18,21 @@ import {
   NativeProviderAttempts,
   NativeProviderAttemptsLive,
 } from "../nativeProvider/attemptRepository.ts";
-import { NativeProviderEnrollment, NATIVE_PROVIDER_SCOPES } from "../nativeProvider/enrollment.ts";
+import { NativeProviderBuild, NativeProviderEnrollment, NATIVE_PROVIDER_SCOPES } from "../nativeProvider/enrollment.ts";
 import {
   createNativeProviderHandlers,
   type NativeProviderOperation,
 } from "../nativeProvider/http.ts";
 import {
   makeWorkstreamsNativeProvider,
+  readNativeProviderBuild,
   type WorkstreamsNativeProvider,
 } from "../nativeProvider/service.ts";
 
 export class NativeWorkstreamsRuntime extends Context.Service<
   NativeWorkstreamsRuntime,
   {
-    readonly provider: WorkstreamsNativeProvider;
+    readonly provider: WorkstreamsNativeProvider<EnvironmentAuthenticatedPrincipal>;
     readonly enrollments: NativeProviderEnrollment["Service"];
   }
 >()("t3/workstreams/runtimeIntegration/native/NativeWorkstreamsRuntime") {}
@@ -40,8 +41,8 @@ export const nativeWorkstreamsRuntimeLayer = Layer.effect(
   NativeWorkstreamsRuntime,
   Effect.gen(function* () {
     const authority = yield* NativeStoreAuthority;
-    const query = yield* ProjectionSnapshotQuery;
-    const engine = yield* OrchestrationEngineService;
+    const query = yield* ProjectionStore.ProjectionStoreV2;
+    const engine = yield* ThreadManagement.ThreadManagementService;
     const receipts = yield* OrchestrationCommandReceiptRepository;
     const events = yield* OrchestrationEventStore;
     const attempts = yield* NativeProviderAttempts;
@@ -51,8 +52,22 @@ export const nativeWorkstreamsRuntimeLayer = Layer.effect(
       provider: makeWorkstreamsNativeProvider({
         authority,
         threadExists: (threadId) =>
-          query.getThreadShellById(threadId).pipe(Effect.map(Option.isSome)),
-        engine,
+          query.getThreadShell(threadId).pipe(Effect.map((thread) => thread !== null)),
+        engine: {
+          observeBinding: (input) => engine.observeNativeWorkstreamSettlementBinding(input).pipe(
+            Effect.map(({ facts, expectedIdentity }) => expectedIdentity !== null && facts.identity !== null),
+            Effect.provideService(NativeStoreAuthority, authority),
+            Effect.provideService(NativeProviderEnrollment, enrollments),
+            Effect.provideService(NativeProviderAttempts, attempts),
+            Effect.provideService(NativeProviderBuild, { readCurrent: readNativeProviderBuild }),
+          ),
+          dispatch: (input) => engine.dispatchNativeWorkstreamSettlement(input).pipe(
+            Effect.provideService(NativeStoreAuthority, authority),
+            Effect.provideService(NativeProviderEnrollment, enrollments),
+            Effect.provideService(NativeProviderAttempts, attempts),
+            Effect.provideService(NativeProviderBuild, { readCurrent: readNativeProviderBuild }),
+          ),
+        },
         receipts,
         events,
         attempts,

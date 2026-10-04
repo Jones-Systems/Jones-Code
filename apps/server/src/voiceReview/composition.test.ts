@@ -5,14 +5,14 @@ import {
   EnvironmentId,
   VoiceReviewForbiddenError,
   type EnvironmentSessionPrincipalShape,
-  type OrchestrationShellSnapshot,
+  type OrchestrationV2ThreadShellSnapshot,
   type ThreadRegistryThread,
   type T3PlacementResult,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Data from "effect/Data";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
 import { makeVoiceReviewComposition, makeVoiceReviewCompositionFactory } from "./composition.ts";
 
@@ -67,11 +67,11 @@ const seam = () => {
   const read = vi.fn(() => Effect.succeed(result));
   const projectionRead = vi.fn(() =>
     Effect.succeed({
+      schemaVersion: 2,
       snapshotSequence: 1,
-      projects: [],
+      archivedThreads: [],
       threads: threadIds.map((id) => ({ id })),
-      updatedAt: "2026-10-02T12:00:00Z",
-    } as unknown as OrchestrationShellSnapshot),
+    } as unknown as OrchestrationV2ThreadShellSnapshot),
   );
   const run = (
     input: {
@@ -84,9 +84,9 @@ const seam = () => {
       Effect.provideService(ServerEnvironmentIdentity, {
         getEnvironmentId: Effect.suspend(() => Effect.succeed(EnvironmentId.make(environmentId))),
       }),
-      Effect.provideService(ProjectionSnapshotQuery, {
+      Effect.provideService(ProjectionStore.ProjectionStoreV2, {
         getShellSnapshot: projectionRead,
-      } as unknown as ProjectionSnapshotQuery["Service"]),
+      } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
       Effect.provideService(WorkstreamGateway, {
         readThreadPlacements: read,
       } as unknown as WorkstreamGateway["Service"]),
@@ -113,15 +113,15 @@ describe("voice native service composition", () => {
           Effect.provideService(ServerEnvironmentIdentity, {
             getEnvironmentId: Effect.succeed(EnvironmentId.make("native-environment")),
           }),
-          Effect.provideService(ProjectionSnapshotQuery, {
+          Effect.provideService(ProjectionStore.ProjectionStoreV2, {
             getShellSnapshot: () =>
               Effect.succeed({
+                schemaVersion: 2,
                 snapshotSequence: 1,
-                projects: [],
+                archivedThreads: [],
                 threads: [],
-                updatedAt: "2026-10-02T12:00:00Z",
-              }),
-          } as unknown as ProjectionSnapshotQuery["Service"]),
+                        }),
+          } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
           Effect.provideService(WorkstreamGateway, {
             readThreadPlacements: read,
           } as unknown as WorkstreamGateway["Service"]),

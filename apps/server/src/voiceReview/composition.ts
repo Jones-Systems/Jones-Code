@@ -6,7 +6,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { WorkstreamGateway, WorkstreamGatewayError } from "../workstreams/WorkstreamGateway.ts";
 import { makeVoiceReviewNativeReadPort, type VoiceReviewNativeIdentity } from "./native.ts";
 import type { VoiceReviewNativeReadPort } from "./bridge.ts";
@@ -32,7 +32,7 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
     return yield* new VoiceReviewForbiddenError({});
   const binding = input.binding;
   const identity = yield* ServerEnvironmentIdentity;
-  const projection = yield* ProjectionSnapshotQuery;
+  const projection = yield* ProjectionStore.ProjectionStoreV2;
   const gateway = yield* WorkstreamGateway;
   const readIdentities = Effect.fn("voiceReview.readNativeIdentities")(function* () {
     const environmentId = yield* identity.getEnvironmentId;
@@ -89,12 +89,12 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
 export const makeVoiceReviewCompositionFactory = Effect.fn("voiceReview.makeCompositionFactory")(
   function* () {
     const identity = yield* ServerEnvironmentIdentity;
-    const projection = yield* ProjectionSnapshotQuery;
+    const projection = yield* ProjectionStore.ProjectionStoreV2;
     const gateway = yield* WorkstreamGateway;
     const factory: VoiceReviewCompositionFactory = (input) =>
       makeVoiceReviewComposition(input).pipe(
         Effect.provideService(ServerEnvironmentIdentity, identity),
-        Effect.provideService(ProjectionSnapshotQuery, projection),
+        Effect.provideService(ProjectionStore.ProjectionStoreV2, projection),
         Effect.provideService(WorkstreamGateway, gateway),
       );
     return factory;

@@ -79,6 +79,7 @@ export const makeProviderFixture = () => {
     receipts.set(commandId, {
       commandId: CommandId.make(commandId),
       aggregateKind: "thread",
+      commandType: `thread.${action}`,
       aggregateId: ThreadId.make(request.identity.native_id),
       acceptedAt: now,
       resultSequence: companions ? 2 : 1,
@@ -94,6 +95,7 @@ export const makeProviderFixture = () => {
         sequence: 1,
         type: action === "settle" ? "thread.settled" : "thread.unsettled",
         occurredAt: now,
+        applicationEventVersion: 2,
       },
       ...(companions
         ? [
@@ -105,6 +107,7 @@ export const makeProviderFixture = () => {
               sequence: 2,
               type: "thread.unpinned" as const,
               occurredAt: now,
+              applicationEventVersion: 2,
             },
           ]
         : []),
@@ -129,19 +132,20 @@ export const makeProviderFixture = () => {
     },
     build: Effect.succeed(Option.some(binding.build)),
     engine: {
+      observeBinding: () => Effect.succeed(true),
       dispatch: (command) =>
         Effect.sync(() => {
-          if (command.type !== "thread.settle" && command.type !== "thread.unsettle")
+          if (command.request.native_action !== "settle" && command.request.native_action !== "unsettle")
             throw new Error("Unexpected native command.");
           const attempt = attempts.get(key(request));
           if (!attempt || attempt.dispatchStartedAt === null)
             throw new Error("Dispatch preceded durable start.");
           calls.push({
-            commandId: command.commandId,
-            threadId: command.threadId,
-            action: command.type,
+            commandId: CommandId.make(command.attempt.nativeCommandId),
+            threadId: ThreadId.make(command.request.identity.native_id),
+            action: `thread.${command.request.native_action}`,
           });
-          commit(command.commandId, command.type === "thread.settle" ? "settle" : "unsettle");
+          commit(command.attempt.nativeCommandId, command.request.native_action);
           return { sequence: 1 };
         }),
     },
