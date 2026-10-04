@@ -2,8 +2,10 @@
 
 The server-swap CLI switches an explicitly selected server runtime and service
 configuration while preserving its data directory and environment identity. It
-supports Jones → T3, T3 → Jones, and Jones → Jones, including different payloads
-with the same version string. Use normal T3 updates for ordinary T3 → T3 updates.
+supports Jones → T3, T3 → Jones, and Jones → Jones. Different payloads with the
+same version string require direct executable configurations in distinct runtime
+directories; the native version-keyed launcher cannot represent that pair.
+Use normal T3 updates for ordinary T3 → T3 updates.
 
 The CLI accepts pre-staged, exact artifacts. It does not download `latest`, infer
 database compatibility, or switch the laptop application. A version can be
@@ -32,6 +34,68 @@ approved system-unit plan may explicitly select `service.elevation:
 "sudo-noninteractive"` for bounded configuration and systemctl operations.
 
 ## Prepare one host
+
+Preparation is a two-stage file workflow. Supply explicit host/service metadata
+and staged paths, then obtain compatibility evidence for the returned binding:
+
+```sh
+server-swap prepare /absolute/request.json /absolute/preparation.json
+# Obtain external qualification for the reported bindingDigest.
+server-swap finalize /absolute/preparation.json /absolute/qualification.json /absolute/host-plan.json
+server-swap plan /absolute/host-plan.json
+```
+
+Both output paths must be new. `prepare` hashes and inventories staged inputs;
+its output is not an executable plan. `finalize` checks the external qualification
+and unchanged staged artifacts, then returns the final plan's SHA-256 `digest`
+for the fleet manifest's `planDigest`. Neither command stops services or reads
+the live database. Native preflight remains the separate `plan` command.
+
+A request uses the plan metadata described below with these simplifications:
+`source.config`, `source.executable`, `target.config`, and `target.executable`
+are absolute path strings; each `payload` contains only `root`. Optional
+`runtimeState.source`, `runtimeState.target`, `service.fragment`, and entries in
+`service.dropIns` are also absolute path strings. Omit `qualification`; optional
+`stateFiles` adds to the standard paired state-file list. No host identity,
+service configuration or compatibility conclusion is guessed.
+
+For example, after staging the files (replace all host-specific values):
+
+```json
+{
+  "schema": "server-swap-plan/1",
+  "id": "jones-to-t3-001",
+  "host": "exact-hostname",
+  "uid": 1000,
+  "platform": "linux",
+  "arch": "x64",
+  "home": "/home/operator/.t3",
+  "stateDir": "/home/operator/swap-state",
+  "environmentId": "exact-existing-environment-id",
+  "descriptorUrl": "http://127.0.0.1:3773/.well-known/t3/environment",
+  "service": {
+    "manager": "systemd-user",
+    "name": "t3-code.service",
+    "configPath": "/home/operator/.config/systemd/user/t3-code.service"
+  },
+  "source": {
+    "distribution": "jones",
+    "version": "1.2.3",
+    "config": "/home/operator/staged/source.service",
+    "executable": "/home/operator/staged/jones/t3",
+    "argv": ["/home/operator/staged/jones/t3", "--no-browser"],
+    "payload": {"root": "/home/operator/staged/jones"}
+  },
+  "target": {
+    "distribution": "t3",
+    "version": "1.3.0",
+    "config": "/home/operator/staged/target.service",
+    "executable": "/home/operator/staged/t3/t3",
+    "argv": ["/home/operator/staged/t3/t3", "--no-browser"],
+    "payload": {"root": "/home/operator/staged/t3"}
+  }
+}
+```
 
 Stage complete old and new runtime payloads in distinct directories. Keep the
 old runtime, native configuration and current data available. Include required
@@ -71,9 +135,8 @@ digest-bound `evidence: {path, sha256}`. These are externally produced qualifica
 results, not a claim the CLI established compatibility merely by hashing files.
 Never manufacture passing evidence to bypass an unknown version pair.
 
-Canonical binding generation is available to preparation tooling through
-`require('./apps/server-swap-cli/files.cjs').bindingDigest(validatedPlan)` and
-`validatePlan`. Qualification paths/digests are excluded from that binding to
+The `prepare` response provides the canonical `bindingDigest` needed by the
+qualification producer. Qualification paths/digests are excluded from that binding to
 avoid a circular digest. The raw final plan's SHA-256 is the operation identity
 reported by the CLI and pinned by the fleet manifest.
 
@@ -113,11 +176,29 @@ server-swap fleet plan /absolute/fleet.json
 server-swap fleet apply /absolute/fleet.json
 server-swap fleet status /absolute/fleet.json
 server-swap fleet resume /absolute/fleet.json
+server-swap fleet run /absolute/fleet.json 900000 2000
 ```
+
+`run` performs the ordered fleet in one foreground command: launch one host,
+observe its journal, verify its commit, then advance. The example sets a
+15-minute overall deadline and two-second polling interval. The deadline must
+be 1 second–30 minutes; polling must be 100 milliseconds–30 seconds and within
+the deadline. Every SSH call is capped by the remaining deadline. Unknown
+outcomes, failed-before-start, recovery-required, changed plan digests and
+deadline expiry stop progression and return exit code 2. Invalid input returns
+exit code 1. Output names the stopping host; the laptop handoff stays pending.
+All hosts are revalidated after the final host finishes.
+
+The controller deadline or interruption does not stop detached host workers.
+Rerun the same `fleet run` command to observe existing journals and launch claims;
+it never deletes a claim to retry an uncertain launch. An interrupted local
+transaction may require explicit `reconcile` and `resume` on its host before
+the fleet can continue. Do not run recovery concurrently with its worker.
 
 `apply` starts at most one unfinished host. `resume` observes the host journal
 and advances to the next host only after the preceding host is committed. Run
-it again at the next checkpoint; there is no hidden background fleet scheduler.
+it again at the next checkpoint, or use foreground `run`; there is no hidden
+background fleet scheduler.
 The detached host worker continues independently of SSH. Its launch is claimed
 once before spawning, so a lost response does not cause a second swap. A crash
 between the durable launch claim and a proved spawn remains unknown and needs

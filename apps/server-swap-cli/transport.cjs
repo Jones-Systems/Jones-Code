@@ -32,10 +32,10 @@ function remoteArgs(target, command) {
     '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10', '--', target.ssh, remote];
 }
 
-async function remote(target, command, runner = exec) {
+async function remote(target, command, runner = exec, options = {}) {
   const args = remoteArgs(target, command);
   try {
-    const result = await runner('ssh', args, { timeout: 20000, maxBuffer: 1024 * 1024, encoding: 'utf8' });
+    const result = await runner('ssh', args, { timeout: Math.max(1, Math.min(20000, options.timeoutMs ?? 20000)), maxBuffer: 1024 * 1024, encoding: 'utf8' });
     const value = JSON.parse(result.stdout);
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid worker response');
     return value;

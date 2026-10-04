@@ -2,6 +2,8 @@
 
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const { performance } = require('node:perf_hooks');
+const { setTimeout: sleep } = require('node:timers/promises');
 const { remote, remoteArgs } = require('./transport.cjs');
 
 function loadFleet(file) {
@@ -56,10 +58,80 @@ async function runFleet(manifest, operation, invoke = remote) {
 }
 
 async function main(argv) {
+  if (argv[0] === 'run') {
+    if (argv.length !== 4 || !argv.slice(2).every(value => /^\d+$/.test(value))) {
+      throw new Error('usage: fleet run /absolute/fleet.json deadline-ms poll-ms');
+    }
+    const manifest = loadFleet(argv[1]);
+    return { ...await runUntilComplete(manifest, { timeoutMs: Number(argv[2]), pollMs: Number(argv[3]) }),
+      fleetDigest: crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex') };
+  }
   if (argv.length !== 2) throw new Error('usage: fleet plan|apply|status|resume|reconcile fleet.json');
   const manifest = loadFleet(argv[1]);
   const result = await runFleet(manifest, argv[0]);
   return { ...result, fleetDigest: crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex') };
 }
 
-module.exports = { loadFleet, runFleet, main };
+async function runUntilComplete(manifest, options, dependencies = {}) {
+  const { timeoutMs, pollMs } = options;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 1800000 ||
+      !Number.isInteger(pollMs) || pollMs < 100 || pollMs > 30000 || pollMs > timeoutMs) {
+    throw new Error('Fleet deadline must be 1000–1800000 ms; polling must be 100–30000 ms and within the deadline');
+  }
+  const now = dependencies.now || (() => performance.now());
+  const pause = dependencies.sleep || sleep;
+  const invoke = dependencies.invoke || ((target, command, remaining) => remote(target, command, undefined, { timeoutMs: remaining }));
+  const deadline = now() + timeoutMs;
+  const results = [];
+  function report(status, stoppedAt, reason) {
+    return { status, targets: results, remaining: manifest.targets.slice(results.length).map(target => target.id),
+      ...(stoppedAt ? { stoppedAt } : {}), ...(reason ? { reason } : {}),
+      laptop: status === 'committed' ? 'Remote swaps committed. Switch the laptop application manually and verify Connections.' : 'Keep the laptop switch pending.' };
+  }
+  async function observe(target, command) {
+    if (now() >= deadline) return { status: 'timed-out', reason: 'Fleet deadline reached; host workers may still be running' };
+    let observation;
+    try { observation = await invoke(target, command, Math.max(1, Math.ceil(deadline - now()))); }
+    catch { return { status: 'unknown', reason: 'Transport outcome unavailable; reconcile before continuing' }; }
+    if (now() >= deadline) return { status: 'timed-out', reason: 'Fleet deadline reached; host workers may still be running' };
+    if (!observation || observation.planDigest !== target.planDigest) {
+      return { status: 'unknown', reason: 'Missing or changed host plan digest' };
+    }
+    return observation;
+  }
+  for (const target of manifest.targets) {
+    let launched = false;
+    const record = { id: target.id, observation: null };
+    results.push(record);
+    while (true) {
+      let observation = await observe(target, 'status');
+      if (['committed', 'committed-unverified'].includes(observation.status)) observation = await observe(target, 'reconcile');
+      if (observation.status === 'not-started' && !launched) {
+        // One attempt per invocation; the host's durable claim also fences restarts.
+        launched = true;
+        observation = await observe(target, 'launch');
+      }
+      record.observation = observation;
+      if (observation.status === 'committed') break;
+      if (!['launched', 'in-progress', 'not-started'].includes(observation.status)) {
+        const status = ['unknown', 'failed-before-start', 'recovery-required', 'timed-out'].includes(observation.status) ? observation.status : 'unknown';
+        return report(status, target.id, observation.reason || observation.error || 'Host requires inspection before continuing');
+      }
+      if (now() >= deadline) return report('timed-out', target.id, 'Host workers may still be running; rerun fleet run to observe them');
+      await pause(Math.min(pollMs, Math.max(0, deadline - now())));
+    }
+  }
+  // Recheck earlier hosts after the last one finishes before offering the laptop handoff.
+  for (let index = 0; index < manifest.targets.length; index++) {
+    const target = manifest.targets[index];
+    const observation = await observe(target, 'reconcile');
+    results[index].observation = observation;
+    if (observation.status !== 'committed') {
+      const status = ['unknown', 'failed-before-start', 'recovery-required', 'timed-out'].includes(observation.status) ? observation.status : 'unknown';
+      return report(status, target.id, observation.reason || observation.error || 'Final runtime verification failed');
+    }
+  }
+  return report('committed');
+}
+
+module.exports = { loadFleet, runFleet, runUntilComplete, main };
