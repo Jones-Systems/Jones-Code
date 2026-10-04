@@ -85,6 +85,7 @@ const DEFAULT_HOSTNAME = "127.0.0.1";
 const OPENCODE_SERVER_STARTUP_MAX_OUTPUT_CHARS = 64 * 1024;
 const OPENCODE_SKILL_DISCOVERY_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 export interface OpenCodeServerProcess {
+  readonly runtimeGeneration?: string;
   readonly url: string;
   readonly serverPassword?: string;
   readonly version: string;

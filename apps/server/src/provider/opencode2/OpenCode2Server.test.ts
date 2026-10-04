@@ -11,6 +11,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
+import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { describe } from "vite-plus/test";
@@ -238,6 +239,10 @@ describe("OpenCode2Server spawned server", () => {
         const second = yield* server.withConnection((connection) => Effect.succeed(connection));
         assert.strictEqual(first.version, "2.0.18");
         assert.strictEqual(first.external, false);
+        assert.isDefined(first.ownedProcess);
+        assert.isTrue(yield* first.ownedProcess!.isRunning);
+        assert.isNotEmpty(first.ownedProcess!.runtimeGeneration);
+        assert.strictEqual(second.ownedProcess, first.ownedProcess);
         assert.strictEqual(second.client, first.client);
       }).pipe(
         Effect.scoped,
@@ -251,3 +256,57 @@ describe("OpenCode2Server spawned server", () => {
     15_000,
   );
 });
+
+
+it.effect("reserves locally owned replacement generations and removes closed subscribers", () =>
+  Effect.gen(function* () {
+    const starts = yield* Ref.make(0);
+    const processRunning: Array<Ref.Ref<boolean>> = [];
+    const reservations: Array<{ readonly generation: string; readonly startsBefore: number }> = [];
+    const unused = () => Effect.die("Unexpected runtime method in lifecycle test");
+    const runtime: OpenCodeRuntime.OpenCodeRuntimeShape = {
+      startOpenCodeServerProcess: (input) => Effect.gen(function* () {
+        const index = yield* Ref.updateAndGet(starts, (count) => count + 1);
+        const running = yield* Ref.make(true);
+        processRunning.push(running);
+        yield* Effect.addFinalizer(() => Ref.set(running, false));
+        const url = `http://127.0.0.1:${index}`;
+        yield* input.verify!(url);
+        return { url, version: "2.0.18", isRunning: Ref.get(running), exitCode: Effect.never };
+      }),
+      connectToOpenCodeServer: unused, runOpenCodeCommand: unused,
+      createOpenCodeSdkClient: () => ({}) as never,
+      loadOpenCodeInventory: unused, loadOpenCodeSkills: unused,
+      loadInventoryFromCli: unused, loadSkillsFromCli: unused,
+    };
+    yield* Effect.scoped(Effect.gen(function* () {
+      const server = yield* OpenCode2Server.make({
+        binaryPath: "opencode", serverUrl: "", serverPassword: "", directory: "/project", environment: {},
+      });
+      const first = yield* Effect.scoped(Effect.gen(function* () {
+        yield* server.subscribeBeforeRuntimeReplacement!((generation) => Effect.gen(function* () {
+          reservations.push({ generation, startsBefore: yield* Ref.get(starts) });
+        }));
+        const connection = yield* server.withConnection((connection) => Effect.succeed(connection));
+        assert.isDefined(connection.ownedProcess);
+        assert.equal(connection.ownedProcess!.runtimeGeneration, reservations[0]!.generation);
+        assert.equal(reservations[0]!.startsBefore, 0);
+        assert.isTrue(yield* connection.ownedProcess!.isRunning);
+        const shared = yield* server.withConnection((connection) => Effect.succeed(connection));
+        assert.strictEqual(shared.ownedProcess, connection.ownedProcess);
+        assert.lengthOf(reservations, 1);
+        return connection;
+      }));
+      yield* Ref.set(processRunning[0]!, false);
+      const second = yield* server.withConnection((connection) => Effect.succeed(connection));
+      assert.equal(yield* Ref.get(starts), 2);
+      assert.notEqual(second.ownedProcess!.runtimeGeneration, first.ownedProcess!.runtimeGeneration);
+      assert.isFalse(yield* first.ownedProcess!.isRunning);
+      assert.isTrue(yield* second.ownedProcess!.isRunning);
+      assert.lengthOf(reservations, 1);
+    })).pipe(Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime));
+  }).pipe(Effect.provide(NodeServices.layer),
+    Effect.provide(OpenCode2Client.layer.pipe(Layer.provide(
+      serverReplying({ status: 200, contentType: "application/json", body: INFO_BODY }),
+    )))),
+);

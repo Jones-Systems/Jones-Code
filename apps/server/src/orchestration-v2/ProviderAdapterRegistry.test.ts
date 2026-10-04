@@ -328,3 +328,23 @@ it.effect("interrupts admitted session startup when a shared peer signs out", ()
     assert.isTrue(Exit.isFailure(yield* Fiber.await(startup)));
   }).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it.effect("reads declared handoff delivery without capability or session effects", () =>
+  Effect.gen(function* () {
+    const declared = Object.freeze({ canConsumeHandoffSummaries: true,
+      supportsFullThreadHandoff: false, supportsProviderSwitchingViaHandoff: true });
+    const instance = { ...makeInstance(personalId,
+      { ...personalAdapter, declaredHandoffDelivery: declared }), enabled: false };
+    const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2.pipe(
+      Effect.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
+        Layer.provide(Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+          getInstance: () => Effect.succeed(instance), listInstances: Effect.succeed([instance]),
+          listUnavailable: Effect.succeed([]), streamChanges: Stream.empty, subscribeChanges: Effect.never,
+        })),
+      )),
+    );
+    const descriptor = yield* registry.getHandoffDeliveryDescriptor!(personalId);
+    assert.deepEqual(descriptor, { instanceId: personalId, driver, enabled: false, declared });
+    assert.strictEqual(descriptor.declared, declared);
+  }),
+);

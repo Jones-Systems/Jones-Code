@@ -165,6 +165,7 @@ it.effect("replaces a dead cached process before its exit watcher runs", () =>
     const starts = yield* Ref.make(0);
     const closes = yield* Ref.make(0);
     const processRunning: Array<Ref.Ref<boolean>> = [];
+    const reservedGenerations: string[] = [];
     const runtime: OpenCodeRuntime.OpenCodeRuntimeShape = {
       startOpenCodeServerProcess: () =>
         Effect.gen(function* () {
@@ -193,6 +194,7 @@ it.effect("replaces a dead cached process before its exit watcher runs", () =>
         const owner = yield* OpenCodeServerOwner.make({
           binaryPath: "opencode",
           directory: "/project",
+          beforeStart: (generation) => Effect.sync(() => { reservedGenerations.push(generation); }),
         });
         expect(yield* owner.withServer((server) => Effect.succeed(server.url))).toBe(
           "http://127.0.0.1:1",
@@ -203,6 +205,8 @@ it.effect("replaces a dead cached process before its exit watcher runs", () =>
           "http://127.0.0.1:2",
         );
         expect(yield* Ref.get(starts)).toBe(2);
+        expect(reservedGenerations).toHaveLength(2);
+        expect(reservedGenerations[1]).not.toBe(reservedGenerations[0]);
         expect(yield* Ref.get(closes)).toBe(1);
       }),
     ).pipe(Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime));
@@ -286,4 +290,60 @@ it.effect("releases an interrupted borrower and closes after the idle TTL", () =
       }),
     ).pipe(Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, testRuntime.runtime));
   }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect("reserves one generation before spawn and reuses it for live borrowers", () =>
+  Effect.gen(function* () {
+    const testRuntime = yield* makeRuntime;
+    const reservations: string[] = [];
+    const creationDirectories: string[] = [];
+    yield* Effect.scoped(Effect.gen(function* () {
+      const owner = yield* OpenCodeServerOwner.make({
+        binaryPath: "opencode", directory: "/project",
+        beforeStart: (generation) => Effect.gen(function* () {
+          expect(yield* Ref.get(testRuntime.starts)).toBe(0);
+          reservations.push(generation);
+        }),
+      });
+      const beforeNativeCreation = (directory: string) => Effect.gen(function* () {
+        expect(reservations).toHaveLength(1);
+        expect(yield* Ref.get(testRuntime.starts)).toBe(0);
+        creationDirectories.push(directory);
+      });
+      const first = yield* owner.withServer((server) => Effect.succeed(server), beforeNativeCreation);
+      const second = yield* owner.withServer((server) => Effect.succeed(server), beforeNativeCreation);
+      expect(first.runtimeGeneration).toBe(reservations[0]);
+      expect(first.runtimeGeneration).toBeTruthy();
+      expect(second).toBe(first);
+      expect(creationDirectories).toEqual(["/project"]);
+      expect(reservations).toHaveLength(1);
+    })).pipe(Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, testRuntime.runtime));
+    expect(yield* Ref.get(testRuntime.starts)).toBe(1);
+    expect(yield* Ref.get(testRuntime.closes)).toBe(1);
+  }),
+);
+
+it.effect("does not spawn when generation reservation or creation authorization fails", () =>
+  Effect.gen(function* () {
+    for (const denied of ["reservation", "authorization"] as const) {
+      const testRuntime = yield* makeRuntime;
+      const trace: string[] = [];
+      yield* Effect.scoped(Effect.gen(function* () {
+        const owner = yield* OpenCodeServerOwner.make({
+          binaryPath: "opencode", directory: "/project",
+          beforeStart: () => Effect.sync(() => { trace.push("reservation"); }).pipe(
+            Effect.andThen(denied === "reservation" ? Effect.fail("denied") : Effect.void),
+          ),
+        });
+        const failed = yield* owner.withServer(
+          () => Effect.sync(() => { trace.push("borrowed"); }),
+          () => Effect.sync(() => { trace.push("authorization"); }).pipe(Effect.andThen(Effect.fail("denied"))),
+        ).pipe(Effect.exit);
+        expect(failed._tag).toBe("Failure");
+        expect(trace).toEqual(denied === "reservation" ? ["reservation"] : ["reservation", "authorization"]);
+        expect(yield* Ref.get(testRuntime.starts)).toBe(0);
+      })).pipe(Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, testRuntime.runtime));
+      expect(yield* Ref.get(testRuntime.closes)).toBe(0);
+    }
+  }),
 );
