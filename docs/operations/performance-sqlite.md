@@ -308,7 +308,29 @@ unknown. The runtime binding is required here too. These checks exercise V2
 initialization and storage; they do not grant authority to snapshot installed
 state or qualify a compiled/installed runtime.
 
-V2 benchmark qualification remains unavailable: the historical Engine dispatch,
-rollback injection, replay assertions and projection tables require a separate
-EventSink/ThreadManagementService workload and fresh measurements. Do not widen
-the historical source allowlist to present those checks as V2 coverage.
+## Separate V2 acceptance benchmark
+
+`node apps/server/scripts/jones-sqlite-v2-benchmark.mjs --request /absolute/request.json`
+runs the actual V2 EventSink against a newly created WAL database. The request has
+exactly `candidate`, `parentPath`, and `workload`; `candidate` uses the clean
+revision/tree/lock binding above and must name the checkout containing the harness.
+`workload` has `commands` (1–64), `payloadBytes` (1–4096), and `intervalMs` (0–100).
+`parentPath` must be an existing authorized scratch parent. The same explicit
+`JONES_RUNTIME_BINDING` is required. Without arguments the CLI prints caps only.
+
+This is one synthetic thread receiving metadata updates, not provider turns or
+full ThreadManagementService dispatch. Finite timers record actual offer times.
+Timer delay, offer-to-dispatch harness queue wait, EventSink completion, and
+arrival-to-completion are separate traffic populations. SQLite's synchronous
+work can delay the timers themselves; that delay is reported, not hidden in a
+claim about writer contention. The protocol population separately measures an
+accepted replay, a rejection and its replay, a projection-trigger rollback, and
+the successful retry after removing the trigger. State, receipts, event sequence,
+projection, integrity, and foreign keys are asserted before reporting success.
+
+The captured worker acknowledges database scope closure. Evidence survives in a
+sibling JSONL file before guarded cleanup; a crash or unknown closure retains the
+owned root. No database path, SQL, or copied fixture is accepted. Installed-runtime
+qualification, individual SQL/lock timing, capacity, and historical/V2 performance
+equivalence remain unproved. New measurements must identify the exact candidate
+and runtime; the existence of this route is not a recorded benchmark result.

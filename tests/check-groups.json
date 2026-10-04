@@ -1149,6 +1149,20 @@
       "scope": [
         "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts"
       ]
+    },
+    {
+      "group_id": "jones-sqlite-v2-benchmark",
+      "command": "vp test run --no-file-parallelism apps/server/scripts/jones-sqlite-v2-workload.test.ts apps/server/scripts/jones-sqlite-v2-benchmark.test.mjs",
+      "modules": [
+        "apps/server/scripts/jones-sqlite-v2-workload.test.ts",
+        "apps/server/scripts/jones-sqlite-v2-benchmark.test.mjs"
+      ],
+      "scope": [
+        "apps/server/scripts/jones-sqlite-v2-*",
+        "scripts/performance-staging/runtime-binding.mjs",
+        "scripts/performance-staging/current-qualification.mjs",
+        "docs/operations/performance-sqlite.md"
+      ]
     }
   ]
 }
