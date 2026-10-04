@@ -14,6 +14,11 @@ import {
 } from "../../../scripts/performance-staging/guard.mjs";
 import { runOwnedChild } from "../../../scripts/performance-staging/lifecycle.mjs";
 import {
+  sourceParentEnvironment,
+  syntheticDatabaseSource,
+  syntheticSourceParent,
+} from "../../../scripts/performance-staging/sources.mjs";
+import {
   benchmarkMetadata,
   runSqliteBenchmark,
   type BenchmarkRequest,
@@ -64,12 +69,7 @@ async function withInvocation<Value>(
       request: {
         parentPath: outer,
         binding,
-        databaseSource: {
-          repository: "Jones-Systems/Jones-Code",
-          sourceRevision: "e5a31aceec91484b64315c63dcce80f6e7581604",
-          worktreePath:
-            "/home/malcolmjones/Projects/Jones-Code-performance-worktrees-20261002/baseline",
-        },
+        databaseSource: syntheticDatabaseSource("e5a31aceec91484b64315c63dcce80f6e7581604"),
         trials: 1,
         turns: 2,
         historyTurns: 3,
@@ -84,7 +84,13 @@ async function withInvocation<Value>(
           owner,
           executable: process.execPath,
           args,
-          env: { HOME: worktree, LANG: "C.UTF-8", TZ: "UTC", NODE_NO_WARNINGS: "1" },
+          env: {
+            HOME: worktree,
+            LANG: "C.UTF-8",
+            TZ: "UTC",
+            NODE_NO_WARNINGS: "1",
+            [sourceParentEnvironment]: syntheticSourceParent(),
+          },
           timeoutMs: 45000,
           terminateGraceMs: 1000,
           reapTimeoutMs: 3000,

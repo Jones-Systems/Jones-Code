@@ -28,10 +28,14 @@ import {
   type StagingPolicy,
 } from "../../../scripts/performance-staging/guard.mjs";
 import { runOwnedChild } from "../../../scripts/performance-staging/lifecycle.mjs";
+import {
+  sourceParentEnvironment,
+  syntheticDatabaseSource,
+  syntheticSourceParent,
+} from "../../../scripts/performance-staging/sources.mjs";
 
 const scriptPath = NodeURL.fileURLToPath(import.meta.url);
 const worktreePath = NodePath.resolve(NodePath.dirname(scriptPath), "../../..");
-const sourceParent = "/home/malcolmjones/Projects/Jones-Code-performance-worktrees-20261002";
 const sourceRevisions = [
   "e5a31aceec91484b64315c63dcce80f6e7581604",
   "414bb8da204c3275cd0b76b2ec4d74dfb09a97e4",
@@ -111,11 +115,9 @@ export function benchmarkMetadata() {
       combinedTurnPayloadBytes: 4 * 1024 * 1024,
       timeoutMs: 120000,
     },
-    databaseSources: sourceRevisions.map((sourceRevision, index) => ({
-      repository: "Jones-Systems/Jones-Code",
-      sourceRevision,
-      worktreePath: NodePath.join(sourceParent, index === 0 ? "baseline" : "live-baseline"),
-    })),
+    databaseSources: sourceRevisions.map((sourceRevision) =>
+      syntheticDatabaseSource(sourceRevision),
+    ),
     boundaries: {
       sqlExecution: "unavailable",
       transaction: "unavailable",
@@ -917,7 +919,13 @@ export async function runSqliteBenchmark(
       owner,
       executable: process.execPath,
       args,
-      env: { HOME: policy.homePath, LANG: "C.UTF-8", TZ: "UTC", NODE_NO_WARNINGS: "1" },
+      env: {
+        HOME: policy.homePath,
+        LANG: "C.UTF-8",
+        TZ: "UTC",
+        NODE_NO_WARNINGS: "1",
+        [sourceParentEnvironment]: syntheticSourceParent(),
+      },
       timeoutMs: request.timeoutMs,
       terminateGraceMs: 1000,
       reapTimeoutMs: 3000,
