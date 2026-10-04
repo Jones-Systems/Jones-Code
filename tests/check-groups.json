@@ -988,6 +988,20 @@
         "apps/web/src/components/composerSendRecovery.ts",
         "apps/web/src/components/ChatView.tsx"
       ]
+    },
+    {
+      "group_id": "t3-v2-server-performance",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/ProjectionHistoryExperiment.test.ts apps/server/src/ws.shellFanout.test.ts",
+      "modules": [
+        "apps/server/src/orchestration-v2/ProjectionHistoryExperiment.test.ts",
+        "apps/server/src/ws.shellFanout.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/orchestration-v2/ProjectionHistoryExperiment.ts",
+        "apps/server/src/orchestration-v2/ProjectionHistoryExperiment.bench.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.ts",
+        "apps/server/src/ws.ts"
+      ]
     }
   ]
 }
