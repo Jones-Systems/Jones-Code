@@ -260,8 +260,8 @@ const FOLLOW_UP_ACTION_LABEL = {
 } as const;
 
 const FOLLOW_UP_ACTION_SUBTITLE = {
-  queue: "Run after the current turn",
-  steer: "Interrupt what the agent is doing",
+  queue: "Send after tools finish, or next turn",
+  steer: "Send into the current turn now",
   restart: "Start the turn over with this message",
 } as const;
 
@@ -596,8 +596,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   }, [onEditorFocusChange, onExpandedChange, settingsSheetPresentation.keepsComposerExpanded]);
   const handleSend = useCallback(
     async (followUp?: ActiveTurnComposerAction) => {
-      if (voiceInput.blocksSubmission || pendingPastedTextAttachmentCountRef.current > 0 ||
-        props.importedContinuation?.presentation.blocksOrdinarySend === true) return;
+      if (
+        voiceInput.blocksSubmission ||
+        pendingPastedTextAttachmentCountRef.current > 0 ||
+        props.importedContinuation?.presentation.blocksOrdinarySend === true
+      )
+        return;
       // Typed out in full rather than picked from the menu. Attachments mean the
       // user is sending a prompt, so those go through as usual.
       if (
@@ -839,22 +843,39 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             {props.importedContinuation.presentation.canStart ? (
               <>
                 {props.importedContinuation.queued ? (
-                  <Text className="text-xs text-muted-foreground">This starts the saved queued message. Your unsaved edits stay in the composer.</Text>
+                  <Text className="text-xs text-muted-foreground">
+                    This starts the saved queued message. Your unsaved edits stay in the composer.
+                  </Text>
                 ) : null}
-                <Pressable accessibilityRole="button"
-                  accessibilityLabel={props.importedContinuation.presentation.isSaveRetry ? "Save and start existing request" : "Start with imported history"}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    props.importedContinuation.presentation.isSaveRetry
+                      ? "Save and start existing request"
+                      : "Start with imported history"
+                  }
                   disabled={voiceInput.blocksSubmission}
                   className="rounded-lg bg-primary px-3 py-2"
-                  onPress={() => { void props.importedContinuation?.onStart(); }}>
+                  onPress={() => {
+                    void props.importedContinuation?.onStart();
+                  }}
+                >
                   <Text className="text-sm text-primary-foreground">
-                    {props.importedContinuation.presentation.isSaveRetry ? "Save and start existing request" : "Start with imported history"}
+                    {props.importedContinuation.presentation.isSaveRetry
+                      ? "Save and start existing request"
+                      : "Start with imported history"}
                   </Text>
                 </Pressable>
               </>
             ) : null}
             {props.importedContinuation.presentation.canObserve ? (
-              <Pressable accessibilityRole="button" className="rounded-lg px-3 py-2"
-                onPress={() => { void props.importedContinuation?.onObserve(); }}>
+              <Pressable
+                accessibilityRole="button"
+                className="rounded-lg px-3 py-2"
+                onPress={() => {
+                  void props.importedContinuation?.onObserve();
+                }}
+              >
                 <Text className="text-sm text-foreground">Check existing request</Text>
               </Pressable>
             ) : null}
