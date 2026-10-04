@@ -28,6 +28,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -427,7 +428,351 @@ const SharedApplicationDataPlaneTestLayer = Layer.mergeAll(
   Layer.provide(PlatformTestLayer),
 );
 
+const selfSettlementFixture = Effect.fnUntraced(function* (prefix: string) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const sink = yield* EventSink.EventSinkV2;
+  const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+  const threadId = ThreadId.make(prefix);
+  const projectId = ProjectId.make(`${prefix}-project`);
+  yield* seedProject({
+    projectId,
+    title: "Self settlement project",
+    workspaceRoot: process.cwd(),
+    defaultModelSelection: modelSelection,
+    createdAt: DateTime.formatIso(yield* DateTime.now),
+  });
+  yield* orchestrator.dispatch({
+    type: "thread.create",
+    commandId: CommandId.make(`${prefix}-create`),
+    threadId,
+    createdBy: "user",
+    creationSource: "web",
+    projectId,
+    title: "Self settlement",
+    modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+  });
+  yield* orchestrator.dispatch({
+    type: "message.dispatch",
+    commandId: CommandId.make(`${prefix}-start`),
+    threadId,
+    createdBy: "user",
+    creationSource: "web",
+    messageId: MessageId.make(`${prefix}-message`),
+    text: "Finish this task",
+    attachments: [],
+    dispatchMode: { type: "start_immediately" },
+  });
+  const initial = yield* orchestrator.getThreadProjection(threadId);
+  const run = initial.runs[0]!;
+  const provider = initial.providerThreads[0]!;
+  const callerSpy = vi
+    .spyOn(sessions, "isMcpCallerAttached")
+    .mockImplementation((input) =>
+      Effect.succeed(
+        input.threadId === threadId &&
+          input.mcpCredentialId === "self-credential" &&
+          input.providerSessionId === provider.providerSessionId,
+      ),
+    );
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      callerSpy.mockRestore();
+    }),
+  );
+  const request = {
+    threadId,
+    commandId: CommandId.make(`${prefix}-request`),
+    mcpCredentialId: "self-credential",
+    providerInstanceId: modelSelection.instanceId,
+  };
+  const now = yield* DateTime.now;
+  const providerSession = {
+    id: provider.providerSessionId!,
+    driver,
+    providerInstanceId: modelSelection.instanceId,
+    status: "running" as const,
+    cwd: process.cwd(),
+    model: modelSelection.model,
+    capabilities: CodexProviderCapabilitiesV2,
+    createdAt: now,
+    updatedAt: now,
+    lastError: null,
+  };
+  yield* sink.write({
+    events: [
+      {
+        id: EventId.make(`${prefix}-attached`),
+        type: "provider-session.attached",
+        threadId,
+        occurredAt: now,
+        payload: providerSession,
+      },
+    ],
+  });
+  return { orchestrator, sink, sessions, threadId, run, provider, providerSession, request };
+});
+
 it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
+  it.effect(
+    "defers self settlement through checkpoint completion and replays the original run after successor work",
+    () =>
+      Effect.gen(function* () {
+        const { orchestrator, sink, threadId, run, provider, providerSession, request } =
+          yield* selfSettlementFixture("runtime-self-settle");
+        const accepted = yield* orchestrator.requestSelfSettlement(request);
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              orchestrator.requestSelfSettlement({
+                ...request,
+                mcpCredentialId: "another-credential",
+              }),
+            ),
+          ),
+        );
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              orchestrator.requestSelfSettlement({
+                ...request,
+                providerInstanceId: alternateInstanceId,
+              }),
+            ),
+          ),
+        );
+        assert.equal(accepted.runId, run.id);
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.status,
+          "starting",
+        );
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).thread.settledOverride,
+          null,
+        );
+        const now = yield* DateTime.now;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("self-waiting"),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "waiting" },
+            },
+          ],
+        });
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).thread.selfSettlement?.runId,
+          run.id,
+        );
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).thread.settledOverride,
+          null,
+        );
+        const settledEvents = yield* Queue.unbounded<void>();
+        const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+        yield* sink.stream({ threadId, afterSequence }).pipe(
+          Stream.runForEach((stored) =>
+            stored.event.type === "thread.settled"
+              ? Queue.offer(settledEvents, undefined)
+              : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("self-completed"),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        yield* Queue.take(settledEvents);
+        const settled = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(settled.thread.settledOverride, "settled");
+        assert.isNull(settled.thread.selfSettlement);
+        assert.isFalse(
+          settled.providerSessions.some((session) => session.id === provider.providerSessionId),
+        );
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        assert.deepEqual(
+          (yield* outbox.listByCommandId(CommandId.make(`${request.commandId}:settle`))).map(
+            (effect) => effect.request,
+          ),
+          [
+            {
+              type: "provider-session.detach",
+              providerSessionId: providerSession.id,
+              detail: "Thread settled.",
+            },
+          ],
+        );
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("self-successor"),
+          threadId,
+          createdBy: "user",
+          creationSource: "web",
+          messageId: MessageId.make("self-successor-message"),
+          text: "New work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+        });
+        assert.deepEqual(yield* orchestrator.requestSelfSettlement(request), accepted);
+        const successor = yield* orchestrator.getThreadProjection(threadId);
+        assert.notEqual(successor.runs.at(-1)!.id, run.id);
+        assert.isNull(successor.thread.selfSettlement);
+        assert.equal(successor.thread.settledOverride, null);
+      }),
+  );
+
+  it.effect.each(["cancelled", "failed", "queue", "steer"] as const)(
+    "does not self settle after %s even if the original run later completes",
+    (invalidation) =>
+      Effect.gen(function* () {
+        const prefix = `self-invalidate-${invalidation}`;
+        const { orchestrator, sink, sessions, threadId, run, provider, providerSession, request } =
+          yield* selfSettlementFixture(prefix);
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const now = yield* DateTime.now;
+        yield* orchestrator.requestSelfSettlement(request);
+
+        const completeReaction = Effect.fnUntraced(function* (
+          status: "cancelled" | "failed" | "completed",
+        ) {
+          const reacted = yield* Deferred.make<void>();
+          const withLock = executor.withLock;
+          // For this parentless thread, the terminal reactor first finalizes delivery,
+          // then consumes settlement and promotes the queue under a second lock.
+          let completedLocks = 0;
+          const observeLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
+            key,
+            effect,
+          ) =>
+            withLock(key, effect).pipe(
+              Effect.tap(() =>
+                key === threadId && ++completedLocks === 2
+                  ? Deferred.succeed(reacted, undefined)
+                  : Effect.void,
+              ),
+            );
+          const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
+          yield* Effect.gen(function* () {
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make(`${prefix}-${status}`),
+                  type: "run.updated",
+                  threadId,
+                  runId: run.id,
+                  occurredAt: now,
+                  payload: { ...run, status, completedAt: now },
+                },
+              ],
+            });
+            yield* Deferred.await(reacted);
+          }).pipe(Effect.ensuring(Effect.sync(() => lockSpy.mockRestore())));
+        });
+
+        if (invalidation === "cancelled" || invalidation === "failed") {
+          yield* completeReaction(invalidation);
+        } else {
+          if (invalidation === "steer") {
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make(`${prefix}-running`),
+                  type: "run.updated",
+                  threadId,
+                  runId: run.id,
+                  occurredAt: now,
+                  payload: { ...run, status: "running", startedAt: now },
+                },
+                {
+                  id: EventId.make(`${prefix}-turn`),
+                  type: "provider-turn.updated",
+                  threadId,
+                  runId: run.id,
+                  occurredAt: now,
+                  payload: {
+                    id: ProviderTurnId.make(`${prefix}-turn`),
+                    providerThreadId: provider.id,
+                    nodeId: run.rootNodeId!,
+                    runAttemptId: run.activeAttemptId,
+                    nativeTurnRef: null,
+                    ordinal: 1,
+                    status: "running",
+                    startedAt: now,
+                    completedAt: null,
+                  },
+                },
+              ],
+            });
+            const sessionSpy = vi
+              .spyOn(sessions, "get")
+              .mockReturnValue(
+                Effect.succeed(Option.some({ providerSession } as ProviderAdapterV2SessionRuntime)),
+              );
+            yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
+          }
+          const commandId = CommandId.make(`${prefix}-new-work`);
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId,
+            threadId,
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make(`${prefix}-new-work`),
+            text: "Keep working",
+            attachments: [],
+            dispatchMode: {
+              type: invalidation === "queue" ? "queue_after_active" : "start_immediately",
+            },
+            ...(invalidation === "steer" ? { deliveryIntent: "auto" as const } : {}),
+          });
+          const updated = yield* orchestrator.getThreadProjection(threadId);
+          if (invalidation === "queue") {
+            assert.equal(updated.runs.at(-1)?.status, "queued");
+          } else {
+            assert.lengthOf(updated.runs, 1);
+            assert.equal(
+              (yield* outbox.listByCommandId(commandId))[0]?.request.type,
+              "provider-turn.steer",
+            );
+          }
+        }
+        assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.selfSettlement);
+        yield* completeReaction("completed");
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.isNull(projection.thread.settledOverride);
+        assert.isNull(projection.thread.selfSettlement);
+        assert.deepEqual(
+          yield* outbox.listByCommandId(CommandId.make(`${request.commandId}:settle`)),
+          [],
+        );
+        assert.lengthOf(
+          Array.from(
+            yield* sink
+              .readByCommandId({
+                commandId: CommandId.make(`${request.commandId}:settle`),
+              })
+              .pipe(Stream.runCollect),
+          ),
+          0,
+        );
+      }),
+  );
+
   it.effect("emits model updates separately from provider switches", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
