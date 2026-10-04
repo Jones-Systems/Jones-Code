@@ -182,6 +182,8 @@ import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
+  filterSidebarOperatingThreads,
+  isSidebarThreadOperating,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
@@ -2608,6 +2610,20 @@ export default function Sidebar() {
           ),
     [scopedProjectGroup],
   );
+  const [activeOnly, setActiveOnly] = useState(false);
+  const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
+  const scopedThreads = useMemo(
+    () => filterSidebarV2VisibleThreads(threads, scopedProjectKeys),
+    [threads, scopedProjectKeys],
+  );
+  const activeThreadCount = useMemo(
+    () => scopedThreads.filter(isSidebarThreadOperating).length,
+    [scopedThreads],
+  );
+  const filteredThreads = useMemo(
+    () => filterSidebarOperatingThreads(scopedThreads, activeOnly, isSidebarThreadOperating),
+    [scopedThreads, activeOnly],
+  );
   // A persisted scope whose project is gone falls back to all projects, but
   // only after every catalog environment has a live project snapshot. Cached
   // or disconnected environments cannot establish that the project is gone.
@@ -2625,6 +2641,7 @@ export default function Sidebar() {
   // an open never-left draft, which only softens the empty state.
   const routeDraftIdForRows = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
   const visibleDraftSessionCount = useComposerDraftStore((store) => {
+    if (activeOnly) return 0;
     let count = 0;
     for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
       if (session.promotedTo != null) {
@@ -2643,11 +2660,11 @@ export default function Sidebar() {
     }
     return count;
   });
-  // Scope flips drop the selection: rows selected under the old scope may be
-  // hidden now, and bulk actions must never count or touch invisible rows.
+  // Scope or activity filter flips drop the selection: previously selected
+  // rows may be hidden, and bulk actions must never touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, projectScopeKey]);
+  }, [activeOnly, clearSelection, projectScopeKey]);
 
   const openProjectSettings = useCallback(
     (projectGroup: SidebarProjectSnapshot) => {
@@ -2716,7 +2733,7 @@ export default function Sidebar() {
     const preciseNow = new Date().toISOString();
     // Subagent child threads live in the parent's Agents surface, not the
     // sidebar roster (v2 models them as real threads with lineage).
-    const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys);
+    const visible = filteredThreads;
     inboxReturns.observe(workingShelfEnabled ? threads : null);
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
@@ -2817,9 +2834,9 @@ export default function Sidebar() {
       snoozeNow: preciseNow,
     };
   }, [
+    filteredThreads,
     nowMinute,
     optimisticDrop,
-    scopedProjectKeys,
     serverConfigs,
     snoozeWakeTick,
     threads,
@@ -4868,7 +4885,12 @@ export default function Sidebar() {
   return (
     <>
       <ThreadContextDragGhost />
-      <SidebarChromeHeader isElectron={isElectron} />
+      <SidebarChromeHeader
+        isElectron={isElectron}
+        activeThreadCount={activeThreadCount}
+        activeOnly={activeOnly}
+        onToggleActiveOnly={toggleActiveOnly}
+      />
       <SidebarContent
         className="min-h-full"
         fixedHeader={
@@ -5281,15 +5303,17 @@ export default function Sidebar() {
                       };
                       const from = isContextDrag ? null : (dragState?.activeSection ?? null);
                       const items: ReactNode[] = [
-                        <SidebarDraftBlock
-                          key="draft-sessions"
-                          projectByKey={projectByKey}
-                          projectDisplayNameByKey={projectDisplayNameByKey}
-                          scopedProjectKeys={scopedProjectKeys}
-                          routeDraftId={routeDraftIdForRows}
-                          onNavigateToDraft={navigateToDraft}
-                          onDraftContextMenu={handleDraftContextMenu}
-                        />,
+                        !activeOnly ? (
+                          <SidebarDraftBlock
+                            key="draft-sessions"
+                            projectByKey={projectByKey}
+                            projectDisplayNameByKey={projectDisplayNameByKey}
+                            scopedProjectKeys={scopedProjectKeys}
+                            routeDraftId={routeDraftIdForRows}
+                            onNavigateToDraft={navigateToDraft}
+                            onDraftContextMenu={handleDraftContextMenu}
+                          />
+                        ) : null,
                       ];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
