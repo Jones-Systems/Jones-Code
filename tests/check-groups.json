@@ -876,14 +876,18 @@
     },
     {
       "group_id": "jones-performance-staging",
-      "command": "node --test --test-concurrency=1 scripts/performance-staging/guard.test.mjs scripts/performance-staging/lifecycle.test.mjs",
+      "command": "node --test --test-concurrency=1 scripts/performance-staging/guard.test.mjs scripts/performance-staging/lifecycle.test.mjs scripts/performance-staging/fixtures.test.mjs .github/scripts/test-with-performance-sources.test.mjs",
       "modules": [
         "scripts/performance-staging/guard.test.mjs",
-        "scripts/performance-staging/lifecycle.test.mjs"
+        "scripts/performance-staging/lifecycle.test.mjs",
+        "scripts/performance-staging/fixtures.test.mjs",
+        ".github/scripts/test-with-performance-sources.test.mjs"
       ],
       "scope": [
         "scripts/performance-staging/**",
-        "docs/operations/performance-staging.md"
+        "docs/operations/performance-staging.md",
+        ".github/scripts/test-with-performance-sources.mjs",
+        ".github/workflows/ci.yml"
       ]
     }
   ]
