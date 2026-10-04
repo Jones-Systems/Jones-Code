@@ -66,6 +66,10 @@ describe("cliRelease", () => {
     expect(cliReleaseChannelOf("1.2.3")).toBe("stable");
     expect(cliReleaseChannelOf("1.2.3-nightly.20260911.4")).toBe("nightly");
     expect(cliReleaseChannelOf("1.2.3-preview.20260911.4")).toBe("preview");
+    expect(cliReleaseChannelOf("1.2.3-preview.20260911.4.2")).toBe("preview");
+    expect(cliReleaseChannelOf("1.2.3-nightly.20260911.4.2")).toBe("nightly");
+    expect(cliReleaseChannelOf("1.2.3-preview.20260911.4.2.extra")).toBe("stable");
+    expect(cliReleaseChannelOf("1.2.3-preview.20260911.4.x")).toBe("stable");
     // A prerelease that is not one of our trains is not silently a nightly.
     expect(cliReleaseChannelOf("1.2.3-rc.1")).toBe("stable");
   });
