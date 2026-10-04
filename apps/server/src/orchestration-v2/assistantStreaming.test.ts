@@ -148,3 +148,149 @@ it("holds a streamed section heading until its content has a boundary", () => {
     rest: "Next",
   });
 });
+
+describe("splitBufferedAssistantText", () => {
+  it("keeps a partial trailing line buffered", () => {
+    expect(splitBufferedAssistantText("one\n\ntwo")).toEqual({ ready: "one\n\n", rest: "two" });
+    expect(splitBufferedAssistantText("one\ntwo")).toEqual({ ready: "", rest: "one\ntwo" });
+  });
+
+  it("does not split inside an open fence and delivers the block at its closing fence", () => {
+    const open = "intro\n\n```\ncode\n\nmore\n";
+    expect(splitBufferedAssistantText(open)).toEqual({
+      ready: "intro\n\n",
+      rest: "```\ncode\n\nmore\n",
+    });
+    expect(splitBufferedAssistantText(`${open}\`\`\`\nafter`)).toEqual({
+      ready: `${open}\`\`\`\n`,
+      rest: "after",
+    });
+  });
+
+  it("does not treat a fence with an info string as a closing fence", () => {
+    const text = "```\n```javascript\nstill code\n\nmore\n";
+    expect(splitBufferedAssistantText(text)).toEqual({ ready: "", rest: text });
+  });
+
+  it("treats a fence indented four or more spaces as code, not a closing fence", () => {
+    const text = "```\n    ```\n\nstill code\n";
+    expect(splitBufferedAssistantText(text)).toEqual({ ready: "", rest: text });
+    expect(splitBufferedAssistantText("```\n   ```\nafter")).toEqual({
+      ready: "```\n   ```\n",
+      rest: "after",
+    });
+  });
+
+  it("keeps a fence nested under a list item open across its blank lines", () => {
+    const text = "- step\n\n    ```ts\n    a\n\n    b\n    ```\n\nafter\n";
+    expect(splitBufferedAssistantText(text)).toEqual({
+      ready: "- step\n\n    ```ts\n    a\n\n    b\n    ```\n\n",
+      rest: "after\n",
+    });
+  });
+
+  it("does not treat a no-break-space line as blank", () => {
+    expect(splitBufferedAssistantText("para\n\u00a0\ncont\n\nnext")).toEqual({
+      ready: "para\n\u00a0\ncont\n\n",
+      rest: "next",
+    });
+  });
+
+  it("treats CRLF blank lines as boundaries", () => {
+    expect(splitBufferedAssistantText("one\r\n\r\ntwo")).toEqual({
+      ready: "one\r\n\r\n",
+      rest: "two",
+    });
+  });
+
+  it("only closes a fence with the same marker of equal or greater length", () => {
+    const text = "````\n```\nstill code\n\n````\n\nout\n";
+    expect(splitBufferedAssistantText(text)).toEqual({
+      ready: "````\n```\nstill code\n\n````\n\n",
+      rest: "out\n",
+    });
+    expect(splitBufferedAssistantText("~~~\n```\n\nx\n")).toEqual({
+      ready: "",
+      rest: "~~~\n```\n\nx\n",
+    });
+  });
+
+  it("delivers tight list items one at a time", () => {
+    expect(splitBufferedAssistantText("## Steps\n\n- one\n- two\n- thr")).toEqual({
+      ready: "## Steps\n\n- one\n- two\n",
+      rest: "- thr",
+    });
+    expect(splitBufferedAssistantText("1. one\n2. two\n   more\n3. t")).toEqual({
+      ready: "1. one\n2. two\n   more\n",
+      rest: "3. t",
+    });
+  });
+
+  it("keeps a partial list marker and list-like code buffered", () => {
+    expect(splitBufferedAssistantText("intro\n-")).toEqual({ ready: "", rest: "intro\n-" });
+    expect(splitBufferedAssistantText("intro\n1.")).toEqual({ ready: "", rest: "intro\n1." });
+    // `intro\n- \n` would parse as a setext heading, so a bare marker with only
+    // trailing whitespace is not a boundary on the partial line either.
+    expect(splitBufferedAssistantText("intro\n- ")).toEqual({ ready: "", rest: "intro\n- " });
+    expect(splitBufferedAssistantText("- one\n")).toEqual({ ready: "", rest: "- one\n" });
+    expect(splitBufferedAssistantText("```\n- one\n- two\n")).toEqual({
+      ready: "",
+      rest: "```\n- one\n- two\n",
+    });
+  });
+
+  it("holds a heading until the block under it is done", () => {
+    expect(splitBufferedAssistantText("intro\n\n## Setup\n\nInstall it")).toEqual({
+      ready: "intro\n\n",
+      rest: "## Setup\n\nInstall it",
+    });
+    expect(
+      splitBufferedAssistantText("intro\n\n# Plan\n\n## Setup\n\nInstall it.\n\nNext"),
+    ).toEqual({
+      ready: "intro\n\n# Plan\n\n## Setup\n\nInstall it.\n\n",
+      rest: "Next",
+    });
+  });
+
+  it("delivers the paragraph above a heading with no blank line between them", () => {
+    expect(splitBufferedAssistantText("para\n## Setup\n\nInstall")).toEqual({
+      ready: "para\n",
+      rest: "## Setup\n\nInstall",
+    });
+    // A bold line there continues the paragraph, so both stay buffered.
+    expect(splitBufferedAssistantText("para\n**Setup**\n\nInstall")).toEqual({
+      ready: "",
+      rest: "para\n**Setup**\n\nInstall",
+    });
+  });
+
+  it("holds a line of only bold text like a heading", () => {
+    expect(splitBufferedAssistantText("**Risk by area:**\n\n| a |\n|---|\n")).toEqual({
+      ready: "",
+      rest: "**Risk by area:**\n\n| a |\n|---|\n",
+    });
+    expect(splitBufferedAssistantText("**Use *npm* now**\n\nInstall it")).toEqual({
+      ready: "",
+      rest: "**Use *npm* now**\n\nInstall it",
+    });
+    expect(splitBufferedAssistantText("**Note:** read this.\n\nNext")).toEqual({
+      ready: "**Note:** read this.\n\n",
+      rest: "Next",
+    });
+  });
+
+  it("delivers a held heading with its first list item or its whole code block", () => {
+    expect(splitBufferedAssistantText("## Steps\n\n- one\n- tw")).toEqual({
+      ready: "## Steps\n\n- one\n",
+      rest: "- tw",
+    });
+    expect(splitBufferedAssistantText("## Code\n\n```ts\na\n\nb\n")).toEqual({
+      ready: "",
+      rest: "## Code\n\n```ts\na\n\nb\n",
+    });
+    expect(splitBufferedAssistantText("## Code\n\n```ts\na\n```\nafter")).toEqual({
+      ready: "## Code\n\n```ts\na\n```\n",
+      rest: "after",
+    });
+  });
+});

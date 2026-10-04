@@ -57,3 +57,15 @@ There is no supported whole-thread export API. Recovery uses an untouched copy o
 `userdata` directory and opens that copy with SQLite's read-only mode. The user guide documents the
 queries against `projection_threads` and `projection_thread_messages`. Never start a server against
 the recovery copy because startup can run migrations and write new state.
+
+## Runtime boundary
+
+The V1 orchestration engine, projection pipeline, provider ingestion and deletion reactor are
+retired, together with the V1 provider service and Codex adapter. They are not alternate dispatch
+paths: V2 owns live execution, and only the legacy importer reads historical V1 state. Restoring a
+V1 runtime alongside V2 would bypass its run, attempt and provider-generation ownership fences.
+
+Provider root terminal events own run settlement. Assistant messages and checkpoints do not prove
+that a turn ended. Buffered root assistant and reasoning text must become durable before terminal
+settlement, including provider interruption or stream failure; child streams retain their own
+lifecycles. See `apps/server/src/orchestration-v2/RunExecutionService.ts`.
