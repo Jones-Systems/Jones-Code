@@ -251,6 +251,8 @@ it.effect(
           getCheckpointCaptureContext: () => Effect.die("not used"),
           getRunMessage: () => Effect.die("not used"),
           canStartQueuedRun: () => Effect.die("not used"),
+          hasQueuedToolBoundaryWork: () => Effect.die("unused tool boundary preflight"),
+          getQueuedToolBoundaryContext: () => Effect.die("unused tool boundary context"),
           getRecoveryThreadIds: () => Effect.die("unused getRecoveryThreadIds"),
           getUnreadableThreadIds: () => Effect.die("unused getUnreadableThreadIds"),
           getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),

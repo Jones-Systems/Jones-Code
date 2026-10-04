@@ -170,6 +170,7 @@ import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { ProviderOperatingCountsError } from "./ProviderThreadRuntimeObservation.ts";
 import { ProviderSwitchServiceV2, type ProviderSwitchPlanV2 } from "./ProviderSwitchService.ts";
 import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
+import { queuedToolBoundaryTarget } from "./QueuedToolBoundary.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import {
   makeSubagentChildThread,
@@ -1332,6 +1333,18 @@ function lastDeliveredRunForProviderThread(
   );
 }
 
+const AutomaticQueuedToolBoundary = Context.Reference<
+  | {
+      readonly stored: OrchestrationV2StoredEvent;
+      readonly births: NonNullable<
+        Parameters<EventSinkV2["Service"]["canPromoteQueuedAtToolBoundary"]>[0]["births"]
+      >;
+    }
+  | undefined
+>("t3/orchestration-v2/Orchestrator/AutomaticQueuedToolBoundary", {
+  defaultValue: () => undefined,
+});
+
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
   const checkpointService = yield* CheckpointServiceV2;
   const commandPolicy = yield* CommandPolicyV2;
@@ -1711,52 +1724,74 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     threadId: ThreadId,
     requestedPath: string | undefined,
     kind: "native" | "ordinary",
-  ) => eventSink.withWorktreeOwnershipTransaction(Effect.gen(function* () {
-    const { thread, resourcePath } = yield* resolveWorktreeOwnershipTarget(threadId, requestedPath);
-    const ownershipError = (detail: string) => new OrchestratorWorktreeOwnershipError({ threadId, detail });
-    const birth = yield* (kind === "ordinary"
-      ? worktreeOwnershipLeases.getOrdinaryThreadIncarnation(threadId)
-      : worktreeOwnershipLeases.getThreadIncarnation(threadId));
-    if (Option.isNone(birth)) {
-      return yield* ownershipError("thread has no authoritative creation event");
-    }
-    const nowMs = yield* Clock.currentTimeMillis;
-    const acquire = kind === "ordinary" ? worktreeOwnershipLeases.ensureOrdinaryOwnership : worktreeOwnershipLeases.acquire;
-    const lease = yield* acquire({
-      resourcePath,
-      leaseId: yield* randomUuidV4,
-      ownerThreadId: threadId,
-      ownerIncarnation: birth.value,
-      branch: thread.branch,
-      nowMs,
-      expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS,
-    });
-    if (Option.isNone(lease)) {
-      const conflict = (yield* worktreeOwnershipLeases.listAll()).find(
-        (candidate) => candidate.resourcePath === resourcePath,
+  ) =>
+    eventSink
+      .withWorktreeOwnershipTransaction(
+        Effect.gen(function* () {
+          const { thread, resourcePath } = yield* resolveWorktreeOwnershipTarget(
+            threadId,
+            requestedPath,
+          );
+          const ownershipError = (detail: string) =>
+            new OrchestratorWorktreeOwnershipError({ threadId, detail });
+          const birth = yield* kind === "ordinary"
+            ? worktreeOwnershipLeases.getOrdinaryThreadIncarnation(threadId)
+            : worktreeOwnershipLeases.getThreadIncarnation(threadId);
+          if (Option.isNone(birth)) {
+            return yield* ownershipError("thread has no authoritative creation event");
+          }
+          const nowMs = yield* Clock.currentTimeMillis;
+          const acquire =
+            kind === "ordinary"
+              ? worktreeOwnershipLeases.ensureOrdinaryOwnership
+              : worktreeOwnershipLeases.acquire;
+          const lease = yield* acquire({
+            resourcePath,
+            leaseId: yield* randomUuidV4,
+            ownerThreadId: threadId,
+            ownerIncarnation: birth.value,
+            branch: thread.branch,
+            nowMs,
+            expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS,
+          });
+          if (Option.isNone(lease)) {
+            const conflict = (yield* worktreeOwnershipLeases.listAll()).find(
+              (candidate) => candidate.resourcePath === resourcePath,
+            );
+            if (conflict === undefined) {
+              return yield* ownershipError(`failed to acquire ownership for '${resourcePath}'`);
+            }
+            return yield* new WorktreeOwnershipConflictError({
+              resourcePath: conflict.resourcePath,
+              ownerThreadId: conflict.ownerThreadId,
+              requestingThreadId: threadId,
+              ownerBranch: conflict.branch,
+              expiresAtMs: conflict.expiresAtMs,
+            });
+          }
+          const ownedLease = lease.value;
+          if (kind === "ordinary") {
+            yield* eventSink.onCommit(
+              Effect.sync(() => locallyOwnedWorktrees.set(ownedLease.resourcePath, ownedLease)),
+            );
+          }
+          return ownedLease;
+        }),
+      )
+      .pipe(
+        Effect.catchTag("EventSinkWriteError", (cause) =>
+          Effect.fail(
+            toPersistenceSqlError(
+              `OrchestratorV2.${kind === "ordinary" ? "acquireOrdinaryWorktreeOwnership" : "acquireWorktreeOwnership"}:transaction`,
+            )(cause),
+          ),
+        ),
+        Effect.tap((lease) =>
+          kind === "native"
+            ? Effect.sync(() => locallyOwnedWorktrees.set(lease.resourcePath, lease))
+            : Effect.void,
+        ),
       );
-      if (conflict === undefined) {
-        return yield* ownershipError(`failed to acquire ownership for '${resourcePath}'`);
-      }
-      return yield* new WorktreeOwnershipConflictError({
-        resourcePath: conflict.resourcePath,
-        ownerThreadId: conflict.ownerThreadId,
-        requestingThreadId: threadId,
-        ownerBranch: conflict.branch,
-        expiresAtMs: conflict.expiresAtMs,
-      });
-    }
-    const ownedLease = lease.value;
-    if (kind === "ordinary") {
-      yield* eventSink.onCommit(Effect.sync(() => locallyOwnedWorktrees.set(ownedLease.resourcePath, ownedLease)));
-    }
-    return ownedLease;
-  })).pipe(
-    Effect.catchTag("EventSinkWriteError", (cause) =>
-      Effect.fail(toPersistenceSqlError(`OrchestratorV2.${kind === "ordinary" ? "acquireOrdinaryWorktreeOwnership" : "acquireWorktreeOwnership"}:transaction`)(cause)),
-    ),
-    Effect.tap((lease) => kind === "native" ? Effect.sync(() => locallyOwnedWorktrees.set(lease.resourcePath, lease)) : Effect.void),
-  );
 
   const acquireWorktreeOwnership: OrchestratorV2Shape["acquireWorktreeOwnership"] = (
     threadId,
@@ -4728,6 +4763,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const session = sessionOption.value;
+      const automaticBoundary = yield* AutomaticQueuedToolBoundary;
+      if (
+        automaticBoundary !== undefined &&
+        (session.providerSession.capabilities.turns.supportsActiveSteering !== true ||
+          !modelSelectionsEqual(targetRun.modelSelection, input.modelSelection))
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: input.command.commandId,
+          commandType: input.command.type,
+          cause: "Automatic queue delivery requires unchanged active steering.",
+        });
+      }
       const now = yield* DateTime.now;
       const emitEvent = emit(input.events, input.command);
       const selectionChanged = !modelSelectionsEqual(
@@ -4865,6 +4912,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               turnCapabilities.supportsSteeringByInterruptRestart),
         }),
       );
+
+      if (automaticBoundary !== undefined && steeringPolicy !== "active_steering") {
+        return yield* new OrchestratorDispatchError({
+          commandId: input.command.commandId,
+          commandType: input.command.type,
+          cause: "Automatic queue delivery cannot interrupt or restart a turn.",
+        });
+      }
 
       if (steeringPolicy === "active_steering") {
         if (
@@ -8147,26 +8202,59 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) =>
     Effect.gen(function* () {
-      const projection = yield* projectionStore
-        .getThreadRecords(
-          command.threadId,
-          [
-            "runs",
-            "nodes",
-            "attempts",
-            "messages",
-            "providerThreads",
-            "providerTurns",
-            "providerSessions",
-            "turnItems",
-            "runtimeRequests",
-            "subagents",
-          ],
-          { turnItemTypes: [], messageRoles: ["user"] },
-        )
-        .pipe(
-          Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
-        );
+      const automatic = yield* AutomaticQueuedToolBoundary;
+      const boundary = automatic?.stored;
+      const projection = yield* (
+        boundary?.event.type === "node.updated"
+          ? projectionStore.getQueuedToolBoundaryContext(command.threadId, boundary.event.payload)
+          : projectionStore.getThreadRecords(
+              command.threadId,
+              [
+                "runs",
+                "nodes",
+                "attempts",
+                "messages",
+                "providerThreads",
+                "providerTurns",
+                "providerSessions",
+                "turnItems",
+                "runtimeRequests",
+                "subagents",
+              ],
+              { turnItemTypes: [], messageRoles: ["user"] },
+            )
+      ).pipe(
+        Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
+      );
+      if (boundary !== undefined) {
+        const target =
+          boundary.event.type === "node.updated"
+            ? queuedToolBoundaryTarget(projection, boundary.event.payload)
+            : null;
+        if (
+          target === null ||
+          target.queuedRun.id !== command.queuedRunId ||
+          target.activeRun.id !== command.targetRunId ||
+          !(yield* eventSink
+            .canPromoteQueuedAtToolBoundary({
+              threadId: command.threadId,
+              queuedRunId: target.queuedRun.id,
+              activeRunId: target.activeRun.id,
+              messageId: target.queuedRun.userMessageId,
+              boundary,
+              ...(automatic === undefined ? {} : { births: automatic.births }),
+              runtimeMode: projection.thread.runtimeMode,
+              interactionMode: projection.thread.interactionMode,
+            })
+            .pipe(mapDispatchError(command)))
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Queued message no longer belongs to this safe tool boundary.",
+          });
+        }
+      }
       if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -8574,7 +8662,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<
       OrchestrationV2Command,
       {
-        readonly type: "prepared-run.release" | "prepared-run.progress" | "prepared-run.fail" | "prepared-run.retry";
+        readonly type:
+          | "prepared-run.release"
+          | "prepared-run.progress"
+          | "prepared-run.fail"
+          | "prepared-run.retry";
       }
     >,
     projection: Pick<
@@ -11260,67 +11352,163 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
     let ordinaryCheckoutContext: OrdinaryCheckoutCommitContextV1 | undefined;
-    const ordinarySubjects = new Set(effects.filter((effect) => [
-      "provider-turn.start", "provider-turn.restart", "provider-turn.steer", "provider-thread.rollback",
-      "provider-runtime.continue", "runtime-request.respond", "checkpoint.capture", "prepared-run.release",
-    ].includes(effect.request.type)).map((effect) => effect.threadId));
-    if (ordinarySubjects.size > 0 && nativeCreation === undefined && nativeRecovery === undefined &&
-        (nativeContext === undefined || nativeContext.identity.kind === "guarded_message_dispatch") &&
-        Schema.is(Schema.toType(OrchestrationV2Command))(command)) {
+    const ordinarySubjects = new Set(
+      effects
+        .filter((effect) =>
+          [
+            "provider-turn.start",
+            "provider-turn.restart",
+            "provider-turn.steer",
+            "provider-thread.rollback",
+            "provider-runtime.continue",
+            "runtime-request.respond",
+            "checkpoint.capture",
+            "prepared-run.release",
+          ].includes(effect.request.type),
+        )
+        .map((effect) => effect.threadId),
+    );
+    if (
+      ordinarySubjects.size > 0 &&
+      nativeCreation === undefined &&
+      nativeRecovery === undefined &&
+      (nativeContext === undefined || nativeContext.identity.kind === "guarded_message_dispatch") &&
+      Schema.is(Schema.toType(OrchestrationV2Command))(command)
+    ) {
       const ordinaryCommand = command;
       const canonicalCommand = Schema.encodeSync(OrchestrationV2Command)(ordinaryCommand);
       // Resolve filesystem aliases before the SQL acceptance; revalidate raw target facts inside it.
-      const targets = yield* Effect.forEach([...ordinarySubjects], (threadId) => Effect.gen(function* () {
-        const projected = [...plan.events].reverse().find((event) => event.threadId === threadId &&
-          (event.type === "thread.created" || event.type === "thread.metadata-updated"));
-        const thread = projected?.type === "thread.created" || projected?.type === "thread.metadata-updated"
-          ? projected.payload : yield* projectionStore.getThreadShell(threadId);
-        if (thread === null) return yield* new OrchestratorWorktreeOwnershipError({ threadId, detail: "Checkout subject is unavailable" });
-        const project = Option.getOrNull(yield* projects.get(thread.projectId));
-        if (project === null) return yield* new OrchestratorWorktreeOwnershipError({ threadId, detail: "Checkout project is unavailable" });
-        const root = path.resolve(project.workspaceRoot);
-        const checkout = path.resolve(root, thread.worktreePath ?? root);
-        const canonicalProjectRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
-        const canonicalCheckoutPath = yield* fileSystem.realPath(checkout).pipe(Effect.orElseSucceed(() => checkout));
-        return { threadId, projectId: thread.projectId, branch: thread.branch, canonicalProjectRoot, canonicalCheckoutPath,
-          source: { projectWorkspaceRoot: project.workspaceRoot, worktreePath: thread.worktreePath } };
-      })).pipe(Effect.mapError((cause) => new OrchestratorDispatchError({ commandId: command.commandId, commandType: command.type, cause })));
+      const targets = yield* Effect.forEach([...ordinarySubjects], (threadId) =>
+        Effect.gen(function* () {
+          const projected = [...plan.events]
+            .reverse()
+            .find(
+              (event) =>
+                event.threadId === threadId &&
+                (event.type === "thread.created" || event.type === "thread.metadata-updated"),
+            );
+          const thread =
+            projected?.type === "thread.created" || projected?.type === "thread.metadata-updated"
+              ? projected.payload
+              : yield* projectionStore.getThreadShell(threadId);
+          if (thread === null)
+            return yield* new OrchestratorWorktreeOwnershipError({
+              threadId,
+              detail: "Checkout subject is unavailable",
+            });
+          const project = Option.getOrNull(yield* projects.get(thread.projectId));
+          if (project === null)
+            return yield* new OrchestratorWorktreeOwnershipError({
+              threadId,
+              detail: "Checkout project is unavailable",
+            });
+          const root = path.resolve(project.workspaceRoot);
+          const checkout = path.resolve(root, thread.worktreePath ?? root);
+          const canonicalProjectRoot = yield* fileSystem
+            .realPath(root)
+            .pipe(Effect.orElseSucceed(() => root));
+          const canonicalCheckoutPath = yield* fileSystem
+            .realPath(checkout)
+            .pipe(Effect.orElseSucceed(() => checkout));
+          return {
+            threadId,
+            projectId: thread.projectId,
+            branch: thread.branch,
+            canonicalProjectRoot,
+            canonicalCheckoutPath,
+            source: {
+              projectWorkspaceRoot: project.workspaceRoot,
+              worktreePath: thread.worktreePath,
+            },
+          };
+        }),
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause,
+            }),
+        ),
+      );
       ordinaryCheckoutContext = {
         command: ordinaryCommand,
-        captureAfterProjection: () => Effect.gen(function* () {
-          const captures: OrdinaryCheckoutSqlCaptureV1[] = [];
-          for (const target of targets) {
-            const thread = yield* projectionStore.getThreadShell(target.threadId);
-            const project = Option.getOrNull(yield* projects.get(target.projectId));
-            const birth = yield* eventSink.readApplicationBirthRecord(target.threadId);
-            if (thread === null || thread.deletedAt !== null || birth === null || project === null ||
-                thread.projectId !== target.projectId || thread.branch !== target.branch ||
-                thread.worktreePath !== target.source.worktreePath || project.workspaceRoot !== target.source.projectWorkspaceRoot)
-              return yield* new OrchestratorWorktreeOwnershipError({ threadId: target.threadId, detail: "Checkout changed before acceptance" });
-            const nowMs = yield* Clock.currentTimeMillis;
-            const lease = yield* worktreeOwnershipLeases.ensureOrdinaryOwnership({ resourcePath: target.canonicalCheckoutPath,
-              leaseId: yield* randomUuidV4, ownerThreadId: target.threadId,
-              ownerIncarnation: OrdinaryCheckout.ordinaryApplicationIncarnationV1(birth), branch: target.branch,
-              nowMs, expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS });
-            if (Option.isNone(lease)) {
-              const conflict = Option.getOrNull(yield* worktreeOwnershipLeases.getByResourcePath(target.canonicalCheckoutPath));
-              if (conflict !== null) return yield* new WorktreeOwnershipConflictError({ resourcePath: conflict.resourcePath,
-                ownerThreadId: conflict.ownerThreadId, requestingThreadId: target.threadId, ownerBranch: conflict.branch, expiresAtMs: conflict.expiresAtMs });
-              return yield* new OrchestratorWorktreeOwnershipError({ threadId: target.threadId, detail: "Checkout ownership was not acquired" });
+        captureAfterProjection: () =>
+          Effect.gen(function* () {
+            const captures: OrdinaryCheckoutSqlCaptureV1[] = [];
+            for (const target of targets) {
+              const thread = yield* projectionStore.getThreadShell(target.threadId);
+              const project = Option.getOrNull(yield* projects.get(target.projectId));
+              const birth = yield* eventSink.readApplicationBirthRecord(target.threadId);
+              if (
+                thread === null ||
+                thread.deletedAt !== null ||
+                birth === null ||
+                project === null ||
+                thread.projectId !== target.projectId ||
+                thread.branch !== target.branch ||
+                thread.worktreePath !== target.source.worktreePath ||
+                project.workspaceRoot !== target.source.projectWorkspaceRoot
+              )
+                return yield* new OrchestratorWorktreeOwnershipError({
+                  threadId: target.threadId,
+                  detail: "Checkout changed before acceptance",
+                });
+              const nowMs = yield* Clock.currentTimeMillis;
+              const lease = yield* worktreeOwnershipLeases.ensureOrdinaryOwnership({
+                resourcePath: target.canonicalCheckoutPath,
+                leaseId: yield* randomUuidV4,
+                ownerThreadId: target.threadId,
+                ownerIncarnation: OrdinaryCheckout.ordinaryApplicationIncarnationV1(birth),
+                branch: target.branch,
+                nowMs,
+                expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS,
+              });
+              if (Option.isNone(lease)) {
+                const conflict = Option.getOrNull(
+                  yield* worktreeOwnershipLeases.getByResourcePath(target.canonicalCheckoutPath),
+                );
+                if (conflict !== null)
+                  return yield* new WorktreeOwnershipConflictError({
+                    resourcePath: conflict.resourcePath,
+                    ownerThreadId: conflict.ownerThreadId,
+                    requestingThreadId: target.threadId,
+                    ownerBranch: conflict.branch,
+                    expiresAtMs: conflict.expiresAtMs,
+                  });
+                return yield* new OrchestratorWorktreeOwnershipError({
+                  threadId: target.threadId,
+                  detail: "Checkout ownership was not acquired",
+                });
+              }
+              captures.push({
+                originalAdmission: null,
+                source: target.source,
+                capture: {
+                  version: 1,
+                  commandId: ordinaryCommand.commandId,
+                  commandType: ordinaryCommand.type,
+                  canonicalCommand,
+                  commandDigest: OrdinaryCheckout.ordinaryCheckoutCommandDigestV1(canonicalCommand),
+                  origin:
+                    ordinaryCommand.type === "delegated_task.request"
+                      ? { kind: "delegated_child", parentThreadId: ordinaryCommand.parentThreadId }
+                      : ordinaryCommand.type === "runtime-request.respond"
+                        ? { kind: "runtime_request_answer", requestId: ordinaryCommand.requestId }
+                        : { kind: "command" },
+                  threadId: target.threadId,
+                  applicationBirth: birth,
+                  projectId: target.projectId,
+                  canonicalProjectRoot: target.canonicalProjectRoot,
+                  canonicalCheckoutPath: target.canonicalCheckoutPath,
+                  branch: target.branch,
+                  lease: lease.value,
+                },
+              });
             }
-            captures.push({ originalAdmission: null, source: target.source, capture: {
-              version: 1, commandId: ordinaryCommand.commandId, commandType: ordinaryCommand.type, canonicalCommand,
-              commandDigest: OrdinaryCheckout.ordinaryCheckoutCommandDigestV1(canonicalCommand),
-              origin: ordinaryCommand.type === "delegated_task.request" ? { kind: "delegated_child", parentThreadId: ordinaryCommand.parentThreadId }
-                : ordinaryCommand.type === "runtime-request.respond" ? { kind: "runtime_request_answer", requestId: ordinaryCommand.requestId }
-                : { kind: "command" },
-              threadId: target.threadId, applicationBirth: birth, projectId: target.projectId,
-              canonicalProjectRoot: target.canonicalProjectRoot, canonicalCheckoutPath: target.canonicalCheckoutPath,
-              branch: target.branch, lease: lease.value,
-            } });
-          }
-          return captures;
-        }),
+            return captures;
+          }),
       };
     }
     const committed = yield* eventSink
@@ -12725,11 +12913,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (owner === null)
           return yield* reject("Self-settlement requires a current provider runtime owner.");
         const attached = yield* providerSessions.isMcpCallerAttached({
-            threadId: input.threadId,
-            providerSessionId: owner.binding.providerSessionId,
-            providerInstanceId: input.providerInstanceId,
-            mcpCredentialId: input.mcpCredentialId,
-          });
+          threadId: input.threadId,
+          providerSessionId: owner.binding.providerSessionId,
+          providerInstanceId: input.providerInstanceId,
+          mcpCredentialId: input.mcpCredentialId,
+        });
         const run = attached
           ? selfSettlementRun(
               projection,
@@ -12882,6 +13070,63 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+  const handleQueuedToolBoundary = (stored: OrchestrationV2StoredEvent) =>
+    Effect.gen(function* () {
+      if (stored.event.type !== "node.updated" || stored.event.payload.runId === null) return;
+      const boundaryNode = stored.event.payload;
+      const threadId = stored.event.threadId;
+      const births: NonNullable<
+        Parameters<EventSinkV2["Service"]["canPromoteQueuedAtToolBoundary"]>[0]["births"]
+      > = new Map();
+      if (!(yield* projectionStore.hasQueuedToolBoundaryWork(threadId, boundaryNode.runId!)))
+        return;
+      yield* threadDispatch.withLock(
+        threadId,
+        Effect.gen(function* () {
+          while (true) {
+            if (!(yield* projectionStore.hasQueuedToolBoundaryWork(threadId, boundaryNode.runId!)))
+              return;
+            const projection = yield* projectionStore.getQueuedToolBoundaryContext(
+              threadId,
+              boundaryNode,
+            );
+            const target = queuedToolBoundaryTarget(projection, boundaryNode);
+            if (
+              target === null ||
+              !(yield* eventSink.canPromoteQueuedAtToolBoundary({
+                threadId,
+                queuedRunId: target.queuedRun.id,
+                activeRunId: target.activeRun.id,
+                messageId: target.queuedRun.userMessageId,
+                boundary: stored,
+                births,
+                runtimeMode: projection.thread.runtimeMode,
+                interactionMode: projection.thread.interactionMode,
+              }))
+            )
+              return;
+            yield* dispatchWithReceiptEffect({
+              type: "queued-message.promote-to-steer",
+              threadId,
+              commandId: CommandId.make(
+                `command:queue-tool-boundary:${target.queuedRun.id}:${target.providerTurn.id}:${stored.sequence}`,
+              ),
+              queuedRunId: target.queuedRun.id,
+              targetRunId: target.activeRun.id,
+            }).pipe(Effect.provideService(AutomaticQueuedToolBoundary, { stored, births }));
+          }
+        }),
+      );
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to deliver queue at tool boundary", {
+          threadId: stored.event.threadId,
+          sequence: stored.sequence,
+          cause,
+        }),
+      ),
+    );
+
   // A restart cannot establish that a retained request's original provider turn succeeded.
   for (const threadId of yield* projectionStore
     .getRecoveryThreadIds("self-settlement")
@@ -12893,6 +13138,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   // below. Replaying the full event table on every server start delays live
   // queue promotion in proportion to the lifetime size of the database.
   const terminalEventsAfterSequence = yield* eventSink.latestSequence().pipe(Effect.orDie);
+  // Completed native tools establish observed foreground quiescence, not a provider pause.
+  yield* eventSink
+    .stream({ afterSequence: terminalEventsAfterSequence, eventType: "node.updated" })
+    .pipe(
+      Stream.filter(
+        (stored) =>
+          stored.event.type === "node.updated" &&
+          stored.event.payload.kind === "tool_call" &&
+          stored.event.payload.status === "completed" &&
+          stored.event.payload.nativeItemRef?.nativeId != null &&
+          !String(stored.commandId).startsWith("command:runtime-reconcile:"),
+      ),
+      Stream.runForEach(handleQueuedToolBoundary),
+      Effect.forkDetach,
+    );
   // Queue promotion can wait on a provider or a thread lock. Subscribe to run
   // updates before buffering so that wait never retains unrelated tool bodies.
   yield* eventSink
