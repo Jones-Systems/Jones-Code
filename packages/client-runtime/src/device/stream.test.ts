@@ -49,7 +49,10 @@ describe("native device stream transport", () => {
     vi.unstubAllGlobals();
   });
 
-  function setup(platform: "ios" | "android") {
+  function setup(
+    platform: "ios" | "android",
+    query: Record<string, string> = { wsTicket: "stream-ticket", hostId: "ssh-host" },
+  ) {
     vi.useFakeTimers();
     vi.stubGlobal("VideoDecoder", vi.fn());
     vi.stubGlobal("EncodedVideoChunk", vi.fn());
@@ -92,7 +95,7 @@ describe("native device stream transport", () => {
           httpBase: "https://environment.test/api/device-hub",
           wsBase: "wss://environment.test/api/device-hub",
           credentials: false,
-          query: { wsTicket: "stream-ticket", hostId: "ssh-host" },
+          query,
         },
       },
       { getContext: () => null } as unknown as HTMLCanvasElement,
@@ -157,6 +160,29 @@ describe("native device stream transport", () => {
     client.stop();
     expect(socket.close).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["ios", "android"] as const)(
+    "reports %s media grant denial before a disconnect can select fallback and drops later input",
+    async (platform) => {
+      const { client, opened, events } = setup(platform, { grant: "device-grant", hostId: "mini" });
+      client.start();
+      const socket = await opened;
+      socket.onopen?.();
+      socket.send.mockClear();
+      events.onInputConnected.mockClear();
+      socket.onclose?.({ code: 1008, reason: "unauthorized" });
+      expect(events.onUnauthorized).toHaveBeenCalledOnce();
+      expect(events.onInputConnected).toHaveBeenCalledWith(false);
+      expect(events.onUnauthorized.mock.invocationCallOrder[0]).toBeLessThan(
+        events.onInputConnected.mock.invocationCallOrder[0]!,
+      );
+      client.sendTouch("begin", 0.2, 0.8);
+      client.pressButton("home");
+      expect(socket.send).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      client.stop();
+    },
+  );
 
   it("renews an expired Android ticket when the HTTP upgrade is rejected instead of retrying it forever", async () => {
     const { client, opened, events } = setup("android");
