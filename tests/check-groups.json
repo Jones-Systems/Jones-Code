@@ -783,6 +783,31 @@
       ]
     },
     {
+      "group_id": "jones-pr-ci-status",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/pullRequest/GitHubCiStatus.test.ts apps/server/src/pullRequest/PullRequestCiStatus.test.ts apps/web/src/components/pullRequest/PullRequestCiStatusPopover.test.tsx packages/contracts/src/rpc.test.ts && node_modules/.bin/vp test run --no-file-parallelism apps/server/src/auth/RpcAuthorization.test.ts -t 'declares exactly one scope for every RPC in the server group'",
+      "modules": [
+        "apps/server/src/pullRequest/GitHubCiStatus.test.ts",
+        "apps/server/src/pullRequest/PullRequestCiStatus.test.ts",
+        "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.test.tsx",
+        "apps/server/src/auth/RpcAuthorization.test.ts",
+        "packages/contracts/src/rpc.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/pullRequest/GitHubPullRequestCli.ts",
+        "apps/server/src/pullRequest/PullRequestService.ts",
+        "apps/server/src/pullRequest/GitHubCiStatus.test.ts",
+        "apps/server/src/pullRequest/PullRequestCiStatus.test.ts",
+        "apps/server/src/ws.ts",
+        "apps/server/src/auth/RpcAuthorization.ts",
+        "apps/web/src/routes/_chat.pull-requests.tsx",
+        "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.tsx",
+        "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.test.tsx",
+        "packages/client-runtime/src/state/pullRequests.ts",
+        "packages/contracts/src/pullRequest.ts",
+        "packages/contracts/src/rpc.ts"
+      ]
+    },
+    {
       "group_id": "jones-v2-mcp-capabilities",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/mcp/McpInvocationContext.test.ts apps/server/src/mcp/McpProviderSession.test.ts apps/server/src/mcp/McpHttpServer.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts",
       "modules": [
