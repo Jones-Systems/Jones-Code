@@ -2354,6 +2354,83 @@ describe("mobile Workstream projection", () => {
   });
 });
 
+describe("workstream ordering preserves independent pins", () => {
+  it("orders grouped pins by active keys and excludes them from native shelves", () => {
+    const pinned = makeThread({
+      id: ThreadId.make("group-pin"),
+      title: "Pin",
+      pinnedAt: NOW,
+      pinOrderKey: "zz",
+      activeOrderKey: "aa",
+    });
+    const member = makeThread({
+      id: ThreadId.make("group-member"),
+      title: "Member",
+      activeOrderKey: "bb",
+    });
+    const freePin = makeThread({
+      id: ThreadId.make("free-pin"),
+      title: "Free",
+      pinnedAt: NOW,
+      pinOrderKey: "aa",
+    });
+    const snapshot = {
+      enabled: true,
+      revision: "verified",
+      primaryGroupByThreadKey: new Map([
+        [JSON.stringify([environmentId, pinned.id]), "group"],
+        [JSON.stringify([environmentId, member.id]), "group"],
+      ]),
+    };
+    const input = {
+      threads: [member, freePin, pinned],
+      now: NOW,
+      section: "active" as const,
+      scope: { kind: "workstream" as const, groupKey: "group" },
+      snapshot,
+    };
+    expect(getThreadListV2OrderedSection(input)).toEqual([pinned, member]);
+    expect(
+      getThreadListV2OrderedSection({
+        ...input,
+        section: "pinned",
+        scope: { kind: "shelf", section: "pinned" },
+      }),
+    ).toEqual([freePin]);
+    const layout = buildThreadListV2Items({
+      threads: [member, freePin, pinned],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+    });
+    const rows = projectMobileWorkstreamList(
+      buildThreadListV2ListItems({ ...layout, pendingTasks: [] }),
+      {
+        enabled: true,
+        groups: [
+          {
+            key: "group",
+            name: "Group",
+            color: "#123456",
+            threadKeys: new Set(snapshot.primaryGroupByThreadKey.keys()),
+          },
+        ],
+        collapsedKeys: new Set(),
+        secondaryLabelsByKey: new Map(),
+      },
+    );
+    expect(rows.filter((row) => row.type === "v2-thread").map((row) => row.item.thread)).toEqual([
+      freePin,
+      pinned,
+      member,
+    ]);
+    expect(mobileWorkstreamMoveDestination(rows, member, "up")).toEqual({
+      targetId: `${environmentId}:${pinned.id}`,
+      placement: "before",
+    });
+  });
+});
+
 describe("Working section beta", () => {
   const running = {
     status: "running" as const,

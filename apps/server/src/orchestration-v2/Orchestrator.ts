@@ -2436,10 +2436,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.threadId} is not pinned and cannot be reordered.`,
       });
     }
-    if (
-      command.type === "thread.active.reorder" &&
-      (thread.pinnedAt != null || thread.settledOverride === "settled")
-    ) {
+    if (command.type === "thread.active.reorder" && thread.settledOverride === "settled") {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,

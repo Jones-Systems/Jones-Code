@@ -45,7 +45,9 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 
 ## Pin and reorder threads
 
-Pin a thread from its menu to keep it above your active work.
+Pin a thread from its menu to keep it in Pinned when it is outside a Workstream. A pinned Workstream member stays pinned while appearing inside its group.
+
+On web and desktop, Shift-click to select a range of visible threads, or Ctrl-click on Windows and Linux or Cmd-click on macOS to select individual threads. Drag a selected row to move the selection together while keeping its relative order. Dragging an unselected row moves only that thread. A move that stops partway through reports which threads moved and keeps the remaining selection available.
 
 On web and desktop, unpinning, settling, snoozing, and archiving a thread each show
 a notification with **Undo** for five seconds. Undo restores the thread's previous

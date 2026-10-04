@@ -1,3 +1,8 @@
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import type {
+  MobileThreadOrderSnapshot,
+  MobileThreadOrderSource,
+} from "../../lib/threadOrderScope";
 import { useAtomValue } from "@effect/atom-react";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import {
@@ -33,7 +38,7 @@ import { workstreamRequest, type WorkstreamClient } from "./gateway";
 import type { EnvironmentHttpAuthHeaders } from "@t3tools/client-runtime/authorization";
 import { loadCompleteWorkstreamList } from "./loaders";
 import { reconcileMobileWorkstreamCommand, waitForWorkstreamReceipt } from "./commands";
-import { canEditWorkstreams } from "./actions";
+import { canEditWorkstreams, planNativeMembership } from "./actions";
 import { MobileWorkstreamControls } from "./Controls";
 
 import {
@@ -447,15 +452,117 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     () => projectMobileWorkstreams(snapshots, threads, Date.now()),
     [snapshots, threads],
   );
+  const readiness = snapshots.some((s) => s.placements?.readiness === "ready")
+    ? "ready"
+    : "unavailable";
+  const orderRevision = JSON.stringify([
+    enabled,
+    bindingRevision,
+    readiness,
+    snapshots.map((snapshot) => [
+      snapshot.data,
+      snapshot.placements,
+      [...snapshot.identityKeys].sort(),
+    ]),
+    [...projection.primaryGroupByThreadKey].sort(([left], [right]) => left.localeCompare(right)),
+  ]);
+  const orderSnapshot = useMemo<MobileThreadOrderSnapshot>(
+    () => ({
+      enabled,
+      revision: orderRevision,
+      primaryGroupByThreadKey: projection.primaryGroupByThreadKey,
+    }),
+    [enabled, orderRevision, projection.primaryGroupByThreadKey],
+  );
+  const orderRef = useRef<MobileThreadOrderSnapshot | null>(orderSnapshot);
+  orderRef.current = orderSnapshot;
+  const orderListeners = useRef(new Set<() => void>());
+  const orderSource = useMemo<MobileThreadOrderSource>(
+    () => ({
+      read: () => orderRef.current,
+      subscribe: (listener) => {
+        orderListeners.current.add(listener);
+        return () => {
+          orderListeners.current.delete(listener);
+        };
+      },
+    }),
+    [],
+  );
+  useEffect(() => {
+    for (const listener of orderListeners.current) listener();
+  }, [orderRevision]);
+  useEffect(() => {
+    orderRef.current = orderSnapshot;
+    return () => {
+      orderRef.current = null;
+      for (const listener of orderListeners.current) listener();
+      orderListeners.current.clear();
+    };
+  }, []);
+  const removePrimary = async (thread: EnvironmentThreadShell) => {
+    const key = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
+    const startedRevision = orderRef.current?.revision;
+    if (startedRevision === undefined)
+      throw new Error("Workstream ordering source is unavailable.");
+    if (!orderRef.current?.primaryGroupByThreadKey.has(key)) {
+      if (
+        snapshotsRef.current.some((snapshot) =>
+          snapshot.placements?.items.some(
+            (item) =>
+              item.kind === "primary" &&
+              item.source_instance_id === thread.environmentId &&
+              item.native_thread_id === thread.id,
+          ),
+        )
+      )
+        throw new Error("Primary placement is not verified. Refresh before moving to a shelf.");
+      return;
+    }
+    const candidates = snapshotsRef.current.filter(
+      (snapshot) =>
+        snapshot.prepared.environmentId === thread.environmentId &&
+        snapshot.identityKeys.has(key) &&
+        snapshot.placements?.readiness === "ready",
+    );
+    if (candidates.length !== 1)
+      throw new Error("Refresh verified Workstream placement before moving to a shelf.");
+    const snapshot = candidates[0]!;
+    if (pendingCommands.current.has(snapshot.prepared))
+      throw new Error("Reconcile the pending Workstream command before moving to a shelf.");
+    const references = await pages(snapshot, "/references", (client, headers, cursor) =>
+      client.references({ headers, payload: { limit: 50, ...(cursor ? { cursor } : {}) } }),
+    );
+    assertCurrent(snapshot);
+    if (orderRef.current?.revision !== startedRevision)
+      throw new Error("Workstream arrangement changed while planning the shelf move.");
+    const action = planNativeMembership({
+      data: snapshot.data,
+      placements: snapshot.placements!,
+      references: references.items,
+      thread,
+      destination: null,
+      now: Date.now(),
+    });
+    if (action === null) return;
+    if (pendingCommands.current.has(snapshot.prepared))
+      throw new Error("Workstream command started while planning this move.");
+    const receipt = await submit(snapshot, action);
+    if (receipt.state !== "committed")
+      throw new Error("Primary membership removal is not committed. Native shelf move stopped.");
+  };
   const api: MobileWorkstreams = {
     ...projection,
+    orderSnapshot,
+    orderSource,
+    removePrimary,
     snapshots,
     enabled,
     toggleEnabled,
     collapsedKeys,
     toggleGroup,
     bindingRevision,
-    readiness: snapshots.some((s) => s.placements?.readiness === "ready") ? "ready" : "unavailable",
+    readiness,
     error,
     refresh,
     submit,

@@ -873,6 +873,21 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           },
         ],
       });
+      const beforeRunningOrder = yield* orchestrator.getThreadProjection(threadId);
+      yield* orchestrator.dispatch({
+        type: "thread.active.reorder",
+        commandId: CommandId.make("runtime-delivery-intent-active-order"),
+        threadId,
+        orderKey: "r0",
+      });
+      const afterRunningOrder = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(afterRunningOrder.thread, {
+        ...beforeRunningOrder.thread,
+        activeOrderKey: "r0",
+      });
+      assert.deepEqual(afterRunningOrder.runs, beforeRunningOrder.runs);
+      assert.deepEqual(afterRunningOrder.providerSessions, beforeRunningOrder.providerSessions);
+      assert.deepEqual(afterRunningOrder.providerTurns, beforeRunningOrder.providerTurns);
       const sessionSpy = vi
         .spyOn(sessions, "get")
         .mockReturnValue(
@@ -1770,6 +1785,68 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       });
       assert.equal((yield* orchestrator.getThreadProjection(threadId)).thread.activeOrderKey, "a0");
 
+      yield* orchestrator.dispatch({
+        type: "thread.pin",
+        commandId: CommandId.make("runtime-layer-lifecycle-pin-for-active-order"),
+        threadId,
+        orderKey: "p0",
+      });
+      const beforePinnedOrder = yield* orchestrator.getThreadProjection(threadId);
+      yield* orchestrator.dispatch({
+        type: "thread.active.reorder",
+        commandId: CommandId.make("runtime-layer-lifecycle-pinned-active-order"),
+        threadId,
+        orderKey: "a1",
+      });
+      const afterPinnedOrder = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(afterPinnedOrder.thread, {
+        ...beforePinnedOrder.thread,
+        activeOrderKey: "a1",
+      });
+      assert.deepEqual(afterPinnedOrder.providerSessions, beforePinnedOrder.providerSessions);
+      assert.deepEqual(afterPinnedOrder.runs, beforePinnedOrder.runs);
+      for (const [index, orderKey] of ["a1", "a0"].entries()) {
+        const beforeRepeatedOrder = yield* orchestrator.getThreadProjection(threadId);
+        yield* orchestrator.dispatch({
+          type: "thread.active.reorder",
+          commandId: CommandId.make(`runtime-layer-lifecycle-repeated-active-order-${index}`),
+          threadId,
+          orderKey,
+        });
+        assert.deepEqual((yield* orchestrator.getThreadProjection(threadId)).thread, {
+          ...beforeRepeatedOrder.thread,
+          activeOrderKey: orderKey,
+        });
+      }
+      yield* orchestrator.dispatch({
+        type: "thread.snooze",
+        commandId: CommandId.make("runtime-layer-lifecycle-pinned-snooze-for-active-order"),
+        threadId,
+        snoozedUntil: "2099-01-01T00:00:00.000Z",
+      });
+      const beforeSnoozedOrder = yield* orchestrator.getThreadProjection(threadId);
+      yield* orchestrator.dispatch({
+        type: "thread.active.reorder",
+        commandId: CommandId.make("runtime-layer-lifecycle-pinned-snoozed-active-order"),
+        threadId,
+        orderKey: "a2",
+      });
+      assert.deepEqual((yield* orchestrator.getThreadProjection(threadId)).thread, {
+        ...beforeSnoozedOrder.thread,
+        activeOrderKey: "a2",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.unsnooze",
+        commandId: CommandId.make("runtime-layer-lifecycle-unsnooze-after-active-order"),
+        threadId,
+        reason: "user",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.unpin",
+        commandId: CommandId.make("runtime-layer-lifecycle-unpin-after-active-order"),
+        threadId,
+      });
+
       // Automatic settlement (#8600): a stale snapshot loses to any change
       // made after it, and a fresh one settles like a user settle would.
       const preAutoProjection = yield* orchestrator.getThreadProjection(threadId);
@@ -1819,6 +1896,19 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       const settledProjection = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(settledProjection.thread.settledOverride, "settled");
       assert.isNotNull(settledProjection.thread.settledAt);
+      const rejectedSettledOrder = yield* orchestrator
+        .dispatch({
+          type: "thread.active.reorder",
+          commandId: CommandId.make("runtime-layer-lifecycle-settled-active-order"),
+          threadId,
+          orderKey: "a3",
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(rejectedSettledOrder, Orchestrator.OrchestratorDispatchError);
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread,
+        settledProjection.thread,
+      );
 
       yield* orchestrator.dispatch({
         type: "thread.unsettle",
@@ -1840,6 +1930,20 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         commandId: CommandId.make("runtime-layer-lifecycle-archive"),
         threadId,
       });
+      const beforeArchivedOrder = yield* orchestrator.getThreadProjection(threadId);
+      const rejectedArchivedOrder = yield* orchestrator
+        .dispatch({
+          type: "thread.active.reorder",
+          commandId: CommandId.make("runtime-layer-lifecycle-archived-active-order"),
+          threadId,
+          orderKey: "a4",
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(rejectedArchivedOrder, Orchestrator.OrchestratorDispatchError);
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread,
+        beforeArchivedOrder.thread,
+      );
       const archivedShell = yield* orchestrator.getShellSnapshot();
       assert.notInclude(
         archivedShell.threads.map((thread) => thread.id),
@@ -1910,6 +2014,19 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.equal(projection.thread.modelSelection.model, "gpt-5.5");
       assert.isNotNull(projection.thread.archivedAt);
       assert.isNotNull(projection.thread.deletedAt);
+      const rejectedDeletedOrder = yield* orchestrator
+        .dispatch({
+          type: "thread.active.reorder",
+          commandId: CommandId.make("runtime-layer-lifecycle-deleted-active-order"),
+          threadId,
+          orderKey: "a5",
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(rejectedDeletedOrder, Orchestrator.OrchestratorDispatchError);
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread,
+        projection.thread,
+      );
     }),
   );
 

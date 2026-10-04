@@ -8,11 +8,27 @@ import {
   moveThreadContextDrag as moveThreadContextDragGhost,
 } from "./chat/threadContextDrag";
 import { discardComposerDraft } from "../lib/discardComposerDraft";
-import { WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
+import {
+  planSelectedShelfDrop,
+  runSelectedThreadSteps,
+  runSelectedShelfSteps,
+  type SelectedShelfThread,
+} from "./sidebar/selectedThreadMovement";
+import { workstreamCommandId, WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
 import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
-import { canEditWorkstreams, moveNativeThreadOrder } from "./workstreams/nativeWorkstreamActions";
+import {
+  canEditWorkstreams,
+  captureDraggedThreadKeys,
+  moveNativeThreadBlock,
+  moveNativeMembershipThreads,
+  projectWorkstreamShelves,
+  ThreadMovementError,
+} from "./workstreams/nativeWorkstreamActions";
 import { useWorkstreams } from "../state/workstreams";
-import { groupNativeThreadsByWorkstream } from "./workstreams/nativeThreadGrouping";
+import {
+  groupNativeThreadsByWorkstream,
+  nativeWorkstreamThreadKey,
+} from "./workstreams/nativeThreadGrouping";
 import { WorkstreamNativeSidebar } from "./workstreams/WorkstreamNativeSidebar";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
@@ -22,6 +38,7 @@ import { replaceComposerContextReferences } from "@t3tools/shared/composerContex
 import * as Schema from "effect/Schema";
 import {
   DndContext,
+  pointerWithin,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -228,6 +245,7 @@ import {
   useThreadJumpHintVisibility,
   useRetainedValue,
   useSidebarRowSubscriptionLease,
+  type SidebarDropTarget,
   type SidebarListItem,
   type SidebarListMarker,
   type SidebarSection,
@@ -683,6 +701,7 @@ function SortableSidebarMarker(props: {
     <li
       ref={setNodeRef}
       data-thread-selection-safe
+      data-sidebar-drop-id={sidebarMarkerId(props.marker)}
       data-testid={props["data-testid"]}
       className={cn("list-none", props.className)}
       style={{
@@ -1578,6 +1597,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   const sortableRootProps = sortable
     ? {
         ref: sortable.setNodeRef,
+        "data-sidebar-drop-id": threadKey,
         style: {
           transform: CSS.Translate.toString(sortable.transform),
           transition: sortable.transition,
@@ -2722,7 +2742,7 @@ export default function Sidebar() {
     readonly assignedKeys: ReadonlyMap<string, string>;
   } | null>(null);
   const {
-    pinnedThreads,
+    pinnedThreads: classificationPinnedThreads,
     draggableThreadKeys,
     activeReorderableThreadKeys,
     activeThreads,
@@ -2853,21 +2873,30 @@ export default function Sidebar() {
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
   const closeWorkstreamCreate = useCallback(() => setWorkstreamCreateOpen(false), []);
-  const workstreamGrouping = useMemo(
+  const { grouping: workstreamGrouping, pinnedThreads } = useMemo(
     () =>
-      groupNativeThreadsByWorkstream({
-        workstreams: workstreamController.data?.items ?? [],
-        placements: workstreamController.placements?.items ?? [],
-        threads: activeThreads,
-        trustedNow: snoozeNow,
-        trustedEnvironments: new Map(
-          (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
-            value.environmentId,
-            value,
-          ]),
-        ),
-      }),
-    [activeThreads, snoozeNow, workstreamController.data?.items, workstreamController.placements],
+      projectWorkstreamShelves(
+        groupNativeThreadsByWorkstream({
+          workstreams: workstreamController.data?.items ?? [],
+          placements: workstreamController.placements?.items ?? [],
+          threads: sortThreadsForSidebar([...activeThreads, ...classificationPinnedThreads]),
+          trustedNow: snoozeNow,
+          trustedEnvironments: new Map(
+            (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
+              value.environmentId,
+              value,
+            ]),
+          ),
+        }),
+        classificationPinnedThreads,
+      ),
+    [
+      activeThreads,
+      classificationPinnedThreads,
+      snoozeNow,
+      workstreamController.data?.items,
+      workstreamController.placements,
+    ],
   );
 
   const workstreamSummaryGrouping = useMemo(
@@ -2893,13 +2922,13 @@ export default function Sidebar() {
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
   const searchableThreads = useMemo(
     () => [
-      ...pinnedThreads,
+      ...classificationPinnedThreads,
       ...activeThreads,
       ...workingThreads,
       ...snoozedThreads,
       ...settledThreads,
     ],
-    [activeThreads, pinnedThreads, settledThreads, snoozedThreads, workingThreads],
+    [activeThreads, classificationPinnedThreads, settledThreads, snoozedThreads, workingThreads],
   );
   const searchEnvironmentIds = useConnectedEnvironmentIds();
   // useThreadSearch owns the debounce and the two-character floor.
@@ -3051,20 +3080,43 @@ export default function Sidebar() {
     return routeThread === undefined ? EMPTY_THREADS : [routeThread];
   }, [routeThreadKey, workingShelfExpanded, workingThreads]);
 
+  const [visibleWorkstreamIds, setVisibleWorkstreamIds] = useState<readonly (string | null)[]>([]);
+  const visibleActiveThreads = useMemo(
+    () =>
+      workstreamController.data === null
+        ? activeThreads
+        : visibleWorkstreamIds.flatMap((id) =>
+            id === null
+              ? workstreamGrouping.ungrouped
+              : (workstreamGrouping.groups.find((group) => group.workstream.workstreamId === id)
+                  ?.threads ?? []),
+          ),
+    [activeThreads, workstreamController.data, visibleWorkstreamIds, workstreamGrouping],
+  );
   const orderedThreads = useMemo(
-    () => [
-      ...pinnedThreads,
-      ...activeThreads,
-      ...visibleWorkingThreads,
-      ...visibleSnoozedThreads,
-      ...renderedSettledThreads,
-    ],
+    () =>
+      workstreamController.data === null
+        ? [
+            ...pinnedThreads,
+            ...visibleActiveThreads,
+            ...visibleWorkingThreads,
+            ...visibleSnoozedThreads,
+            ...renderedSettledThreads,
+          ]
+        : [
+            ...visibleActiveThreads,
+            ...pinnedThreads,
+            ...visibleWorkingThreads,
+            ...visibleSnoozedThreads,
+            ...renderedSettledThreads,
+          ],
     [
       pinnedThreads,
-      activeThreads,
+      visibleActiveThreads,
       visibleWorkingThreads,
       visibleSnoozedThreads,
       renderedSettledThreads,
+      workstreamController.data,
     ],
   );
   const orderedThreadKeys = useMemo(
@@ -3090,6 +3142,150 @@ export default function Sidebar() {
       ),
     [orderedThreads],
   );
+  const [htmlDraggedKeys, setHtmlDraggedKeys] = useState<readonly string[] | null>(null);
+  const endHtmlThreadDrag = useCallback(() => setHtmlDraggedKeys(null), []);
+  const captureThreadDrag = useCallback(
+    (thread: EnvironmentThreadShell) => {
+      const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+      const keys = captureDraggedThreadKeys(
+        key,
+        useThreadSelectionStore.getState().selectedThreadKeys,
+        orderedThreadKeysRef.current,
+      );
+      setHtmlDraggedKeys(keys);
+      return keys.map((id) => threadByKey.get(id)!).filter(Boolean);
+    },
+    [threadByKey],
+  );
+  const membershipBusyRef = useRef(false);
+  const moveWorkstreamThreads = useCallback(
+    async (selected: readonly EnvironmentThreadShell[], destination: string | null) => {
+      if (membershipBusyRef.current)
+        throw new Error("A Workstream movement is already in progress.");
+      const data = workstreamController.data;
+      const placements = workstreamController.placements;
+      if (!data || !placements || !canEditWorkstreams(data) || workstreamController.loading)
+        throw new Error("Refresh thread placements with write access before changing membership.");
+      membershipBusyRef.current = true;
+      try {
+        const key = (thread: EnvironmentThreadShell) =>
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+        if (destination === null) {
+          await moveNativeMembershipThreads({
+            controller: workstreamController,
+            threads: selected,
+            destination,
+            commandId: workstreamCommandId,
+            now: Date.now(),
+          });
+          useThreadSelectionStore.getState().removeFromSelection(selected.map(key));
+          return;
+        }
+        const activeOrder = visibleActiveThreads.map(key);
+        const selectedActive = selected.filter((thread) => activeOrder.includes(key(thread)));
+        const destinationThreads =
+          workstreamGrouping.groups.find((group) => group.workstream.workstreamId === destination)
+            ?.threads ?? [];
+        const movedIds = selectedActive.map(key);
+        const destinationRemaining = destinationThreads.filter(
+          (thread) => !movedIds.includes(key(thread)),
+        );
+        const order = moveNativeThreadBlock(
+          activeOrder,
+          movedIds,
+          destinationRemaining.length ? key(destinationRemaining.at(-1)!) : null,
+          true,
+        );
+        const keys = new Map(threads.map((thread) => [key(thread), thread.activeOrderKey ?? null]));
+        if (movedIds.length > 1) for (const id of movedIds) keys.set(id, null);
+        const assignments =
+          movedIds.length > 1
+            ? planPinnedReorder({ orderedIds: order, keysById: keys, movedId: movedIds[0]! })
+            : [];
+        if (
+          assignments.some(({ id }) => {
+            const thread = threads.find((thread) => key(thread) === id);
+            return (
+              !thread ||
+              serverConfigs.get(thread.environmentId)?.environment.capabilities
+                .threadActiveReorder !== true
+            );
+          })
+        )
+          throw new Error(
+            "An environment does not support selected Workstream ordering. No threads were moved.",
+          );
+        await moveNativeMembershipThreads({
+          controller: workstreamController,
+          threads: selected,
+          destination,
+          commandId: workstreamCommandId,
+          now: Date.now(),
+        });
+        try {
+          await runSelectedThreadSteps({
+            selectedKeys: movedIds,
+            steps: assignments.map(({ id, orderKey }) => ({
+              key: id,
+              orderKey,
+              operation: "order-active",
+            })),
+            run: async (step) => {
+              const thread = threads.find((thread) => key(thread) === step.key);
+              if (!thread) throw new Error("Thread changed after membership was committed.");
+              const result = await reorderActiveThread(
+                scopeThreadRef(thread.environmentId, thread.id),
+                step.orderKey!,
+              );
+              if (result._tag !== "Success")
+                throw new Error("Membership was committed; ordering did not complete.");
+            },
+          });
+        } catch (cause) {
+          throw new Error(
+            `Membership changes committed for ${selected.map(key).join(", ")}. ${cause instanceof Error ? cause.message : "Ordering effect unknown"}`,
+          );
+        }
+        useThreadSelectionStore.getState().removeFromSelection(selected.map(key));
+      } catch (cause) {
+        if (cause instanceof ThreadMovementError) {
+          const completed = new Set(cause.completedKeys);
+          useThreadSelectionStore
+            .getState()
+            .removeFromSelection(
+              selected
+                .filter((thread) =>
+                  completed.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id)),
+                )
+                .map((thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
+            );
+        }
+        throw cause;
+      } finally {
+        membershipBusyRef.current = false;
+      }
+    },
+    [
+      workstreamController,
+      visibleActiveThreads,
+      workstreamGrouping,
+      threads,
+      serverConfigs,
+      reorderActiveThread,
+    ],
+  );
+  const reportThreadMoveFailure = useCallback((cause: unknown) => {
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "Thread movement stopped",
+        description:
+          cause instanceof Error
+            ? cause.message
+            : "Movement effect unknown. Refresh before retrying.",
+      }),
+    );
+  }, []);
   // Handlers read these through refs: depending on per-update Map/Set
   // identities would give every row a fresh callback prop on each shell
   // event and defeat row memoization during streaming.
@@ -3454,6 +3650,7 @@ export default function Sidebar() {
   // A failed write, concurrent reorder, or membership change releases the hold.
   const [dragState, setDragState] = useState<{
     readonly activeKey: string;
+    readonly selectedKeys: readonly string[];
     readonly activeSection: SidebarSection;
     readonly occurredAt: string;
     readonly activationY: number | null;
@@ -3540,12 +3737,18 @@ export default function Sidebar() {
       }
     };
     add(pinnedThreads, "pinned");
-    add(activeThreads, "active");
-    add(workingThreads, "working");
-    add(snoozedThreads, "snoozed");
-    add(settledThreads, "settled");
+    add(visibleActiveThreads, "active");
+    add(visibleWorkingThreads, "working");
+    add(visibleSnoozedThreads, "snoozed");
+    add(renderedSettledThreads, "settled");
     return map;
-  }, [activeThreads, pinnedThreads, settledThreads, snoozedThreads, workingThreads]);
+  }, [
+    visibleActiveThreads,
+    pinnedThreads,
+    renderedSettledThreads,
+    visibleSnoozedThreads,
+    visibleWorkingThreads,
+  ]);
   const sectionByThreadKeyRef = useRef(sectionByThreadKey);
   sectionByThreadKeyRef.current = sectionByThreadKey;
   // Drag a row action to apply it to the armed rows in the same section.
@@ -3626,10 +3829,10 @@ export default function Sidebar() {
   );
   const activeKeys = useMemo(
     () =>
-      activeThreads.map((thread) =>
+      visibleActiveThreads.map((thread) =>
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       ),
-    [activeThreads],
+    [visibleActiveThreads],
   );
   useEffect(() => {
     if (optimisticDrop === null) return;
@@ -3751,7 +3954,7 @@ export default function Sidebar() {
       listMotionRef.current?.suspend();
       const list = threadListRef.current;
       const header = list?.querySelector<HTMLElement>('[data-testid="sidebar-pinned-header"]');
-      if (list && header) {
+      if (list && header && workstreamController.data === null) {
         const listRect = list.getBoundingClientRect();
         const scale = list.offsetWidth > 0 ? listRect.width / list.offsetWidth : 1;
         dragLabelOffsetRef.current =
@@ -3761,6 +3964,11 @@ export default function Sidebar() {
       }
       setDragState({
         activeKey,
+        selectedKeys: captureDraggedThreadKeys(
+          activeKey,
+          useThreadSelectionStore.getState().selectedThreadKeys,
+          orderedThreadKeysRef.current,
+        ),
         activeSection,
         targetSection: activeSection,
         contextDrag: false,
@@ -3769,7 +3977,7 @@ export default function Sidebar() {
           event.activatorEvent instanceof PointerEvent ? event.activatorEvent.clientY : null,
       });
     },
-    [sectionByThreadKey],
+    [sectionByThreadKey, workstreamController.data],
   );
   // Include every visible row in the measured order. Older servers disable
   // pickup on their rows without changing where those rows render.
@@ -3793,13 +4001,24 @@ export default function Sidebar() {
     ) {
       return [];
     }
-    const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
     const pinnedRows = rowsOf(pinnedThreads, "pinned");
-    items.push(...pinnedRows);
-    items.push({ kind: "marker", marker: "pinned-divider" });
-    const activeRows = rowsOf(activeThreads, "active");
-    items.push({ kind: "marker", marker: "active-placeholder" });
-    items.push(...activeRows);
+    const activeRows = rowsOf(visibleActiveThreads, "active");
+    const items: SidebarListItem[] =
+      workstreamController.data === null
+        ? [
+            { kind: "marker", marker: "pinned-header" },
+            ...pinnedRows,
+            { kind: "marker", marker: "pinned-divider" },
+            { kind: "marker", marker: "active-placeholder" },
+            ...activeRows,
+          ]
+        : [
+            { kind: "marker", marker: "active-placeholder" },
+            ...activeRows,
+            { kind: "marker", marker: "pinned-header" },
+            ...pinnedRows,
+            { kind: "marker", marker: "pinned-divider" },
+          ];
     if (workingThreads.length > 0) {
       items.push({ kind: "marker", marker: "working-header" });
       items.push(...rowsOf(visibleWorkingThreads, "working"));
@@ -3815,6 +4034,7 @@ export default function Sidebar() {
     return items;
   }, [
     activeThreads,
+    visibleActiveThreads,
     workstreamController.data,
     pinnedThreads,
     renderedSettledThreads,
@@ -3941,32 +4161,66 @@ export default function Sidebar() {
     }),
     [threads],
   );
-  const reorderWorkstreamThread = useCallback(
-    async (thread: EnvironmentThreadShell, neighbor: EnvironmentThreadShell, after: boolean) => {
-      const movedId = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+  const reorderWorkstreamSelection = useCallback(
+    async (
+      selected: readonly EnvironmentThreadShell[],
+      neighbor: EnvironmentThreadShell,
+      after: boolean,
+    ) => {
+      const visibleOrder = visibleActiveThreads.map((thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      );
+      const movedIds = selected.map((thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      );
       const neighborId = scopedThreadKey(scopeThreadRef(neighbor.environmentId, neighbor.id));
-      if (
-        movedId === neighborId ||
-        !activeKeys.includes(movedId) ||
-        !activeKeys.includes(neighborId)
-      )
-        return;
-      const orderedIds = moveNativeThreadOrder(activeKeys, movedId, neighborId, after);
-      const assignments = planPinnedReorder({ orderedIds, keysById: activeKeysById, movedId });
+      if (movedIds.includes(neighborId)) return;
+      if (movedIds.some((id) => !visibleOrder.includes(id)))
+        throw new Error("Selected shelf threads cannot be reordered as active Workstream members.");
+      const orderedIds = moveNativeThreadBlock(visibleOrder, movedIds, neighborId, after);
+      const keys = new Map(activeKeysById);
+      if (movedIds.length > 1) for (const id of movedIds) keys.set(id, null);
+      const assignments = planPinnedReorder({ orderedIds, keysById: keys, movedId: movedIds[0]! });
       if (assignments.some((assignment) => !activeReorderableThreadKeys.has(assignment.id)))
         throw new Error("An environment does not support active thread ordering.");
-      for (const assignment of assignments) {
-        const target = threadByKey.get(assignment.id);
-        if (!target) throw new Error("Thread changed while reordering. Try again.");
-        const result = await reorderActiveThread(
-          scopeThreadRef(target.environmentId, target.id),
-          assignment.orderKey,
-        );
-        if (result._tag !== "Success")
-          throw new Error("Active thread reorder did not complete. Refresh before retrying.");
+      try {
+        const completed = await runSelectedThreadSteps({
+          selectedKeys: movedIds,
+          steps: assignments.map(({ id, orderKey }) => ({
+            key: id,
+            operation: "order-active",
+            orderKey,
+          })),
+          run: async (step) => {
+            const target = threadByKey.get(step.key);
+            if (!target) throw new Error("Thread changed while reordering.");
+            const result = await reorderActiveThread(
+              scopeThreadRef(target.environmentId, target.id),
+              step.orderKey!,
+            );
+            if (result._tag !== "Success")
+              throw new Error("Active thread reorder did not complete.");
+          },
+        });
+        useThreadSelectionStore.getState().removeFromSelection(completed);
+      } catch (cause) {
+        if (cause instanceof ThreadMovementError)
+          useThreadSelectionStore.getState().removeFromSelection(cause.completedKeys);
+        throw cause;
       }
     },
-    [activeKeys, activeKeysById, activeReorderableThreadKeys, reorderActiveThread, threadByKey],
+    [
+      visibleActiveThreads,
+      activeKeysById,
+      activeReorderableThreadKeys,
+      reorderActiveThread,
+      threadByKey,
+    ],
+  );
+  const reorderWorkstreamThread = useCallback(
+    (thread: EnvironmentThreadShell, neighbor: EnvironmentThreadShell, after: boolean) =>
+      reorderWorkstreamSelection([thread], neighbor, after),
+    [reorderWorkstreamSelection],
   );
   const draggedThreadKey = dragState?.activeKey;
   const draggedFromSection = dragState?.activeSection;
@@ -3976,7 +4230,7 @@ export default function Sidebar() {
       return createSidebarCollisionDetection(() => true);
     const source = threadByKey.get(draggedThreadKey);
     if (source === undefined) return createSidebarCollisionDetection(() => false);
-    return createSidebarCollisionDetection(
+    const shelfDetection = createSidebarCollisionDetection(
       (id) => {
         const target = resolveSidebarDropTarget(sidebarListItems, draggedThreadKey, id);
         if (target === null) return false;
@@ -4005,6 +4259,21 @@ export default function Sidebar() {
         activationY: dragActivationY ?? null,
       },
     );
+    return ((args) => {
+      const targets = pointerWithin(args).filter(
+        (hit) =>
+          args.droppableContainers.find((container) => container.id === hit.id)?.data.current
+            ?.workstreamThreadDestination !== undefined,
+      );
+      return targets.length
+        ? targets
+        : shelfDetection({
+            ...args,
+            droppableContainers: args.droppableContainers.filter(
+              (container) => container.data.current?.workstreamThreadDestination === undefined,
+            ),
+          });
+    }) satisfies import("@dnd-kit/core").CollisionDetection;
   }, [
     activeKeysById,
     pinnedKeysById,
@@ -4020,9 +4289,162 @@ export default function Sidebar() {
     threadByKey,
     workingShelfEnabled,
   ]);
+  const performSelectedShelfDrop = useCallback(
+    async (selectedKeys: readonly string[], initiator: string, target: SidebarDropTarget) => {
+      const selected = selectedKeys.map((key): SelectedShelfThread => {
+        const thread = threadByKey.get(key);
+        const section = sectionByThreadKey.get(key);
+        if (!thread || !section)
+          throw new Error(`Selected thread ${key} is no longer visible. No threads were moved.`);
+        const capabilities = serverConfigs.get(thread.environmentId)?.environment.capabilities;
+        return {
+          key,
+          section,
+          pinned: thread.pinnedAt != null,
+          settled: thread.settledOverride === "settled",
+          supportsPinning: capabilities?.threadPinning === true,
+          supportsSettlement: capabilities?.threadSettlement === true,
+          supportsSnooze: capabilities?.threadSnooze === true,
+        };
+      });
+      const steps = planSelectedShelfDrop({
+        initiator,
+        threads: selected,
+        target,
+        currentOrder: target.section === "pinned" ? pinnedKeys : activeKeys,
+        keysById: target.section === "pinned" ? pinnedKeysById : activeKeysById,
+        reorderableKeys:
+          target.section === "pinned" ? draggableThreadKeys : activeReorderableThreadKeys,
+      });
+      if (membershipBusyRef.current)
+        throw new Error("A Workstream movement is already in progress.");
+      membershipBusyRef.current = true;
+      try {
+        const completed = await runSelectedShelfSteps({
+          selectedKeys,
+          steps,
+          removeMembership: async () => {
+            if (target.section === "settled") return;
+            const members = selectedKeys
+              .map((key) => threadByKey.get(key)!)
+              .filter((thread) =>
+                workstreamController.placements?.items.some(
+                  (placement) =>
+                    placement.kind === "primary" &&
+                    placement.source_instance_id === thread.environmentId &&
+                    placement.native_thread_id === thread.id,
+                ),
+              );
+            if (members.length === 0) return;
+            try {
+              await moveNativeMembershipThreads({
+                controller: workstreamController,
+                threads: members,
+                destination: null,
+                commandId: workstreamCommandId,
+                now: Date.now(),
+              });
+            } catch (cause) {
+              if (cause instanceof ThreadMovementError) {
+                const scopedKeys = new Map(
+                  members.map((thread) => [
+                    nativeWorkstreamThreadKey(thread.environmentId, thread.id),
+                    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+                  ]),
+                );
+                throw new ThreadMovementError(
+                  cause.message,
+                  [],
+                  scopedKeys.get(cause.stoppedKey) ?? cause.stoppedKey,
+                  selectedKeys,
+                  cause.commandId,
+                );
+              }
+              throw cause;
+            }
+          },
+          run: async (step) => {
+            const thread = threadByKey.get(step.key);
+            if (!thread) throw new Error("Thread changed during movement.");
+            const ref = scopeThreadRef(thread.environmentId, thread.id);
+            const result = await (step.operation === "pin"
+              ? pinThread(ref, step.orderKey ? { orderKey: step.orderKey } : {})
+              : step.operation === "unpin"
+                ? unpinThread(ref)
+                : step.operation === "unsettle"
+                  ? unsettleThread(ref)
+                  : step.operation === "unsnooze"
+                    ? unsnoozeThread(ref)
+                    : step.operation === "settle"
+                      ? settleThread(ref)
+                      : step.operation === "order-active"
+                        ? reorderActiveThread(ref, step.orderKey!)
+                        : reorderPinnedThread(ref, step.orderKey!));
+            if (result._tag !== "Success")
+              throw new Error(
+                "Native movement did not complete; its effect must be checked before retrying.",
+              );
+          },
+        });
+        useThreadSelectionStore.getState().removeFromSelection(completed);
+      } catch (cause) {
+        if (cause instanceof ThreadMovementError)
+          useThreadSelectionStore.getState().removeFromSelection(cause.completedKeys);
+        throw cause;
+      } finally {
+        membershipBusyRef.current = false;
+      }
+    },
+    [
+      workstreamController,
+      threadByKey,
+      sectionByThreadKey,
+      serverConfigs,
+      pinnedKeys,
+      activeKeys,
+      pinnedKeysById,
+      activeKeysById,
+      draggableThreadKeys,
+      activeReorderableThreadKeys,
+      pinThread,
+      unpinThread,
+      unsettleThread,
+      unsnoozeThread,
+      settleThread,
+      reorderActiveThread,
+      reorderPinnedThread,
+    ],
+  );
+  const resolveHtmlShelfDrop = useCallback(
+    (element: EventTarget | null) => {
+      if (!htmlDraggedKeys?.length || !(element instanceof Element)) return null;
+      const destination =
+        element.closest<HTMLElement>("[data-sidebar-drop-id]")?.dataset.sidebarDropId;
+      return destination
+        ? resolveSidebarDropTarget(sidebarListItems, htmlDraggedKeys[0]!, destination)
+        : null;
+    },
+    [htmlDraggedKeys, sidebarListItems],
+  );
   const handleThreadDragEnd = useCallback(
     (event: DragEndEvent) => {
       const activeKey = String(event.active.id);
+      const workstreamTarget = event.over?.data.current?.workstreamThreadDestination;
+      if (workstreamTarget !== undefined) {
+        const keys = dragState?.selectedKeys ?? [activeKey];
+        const selected = keys.map((key) => threadByKey.get(key));
+        if (selected.some((thread) => thread === undefined)) {
+          reportThreadMoveFailure(
+            new Error("A selected thread is no longer visible. Refresh before retrying."),
+          );
+          return;
+        }
+        void moveWorkstreamThreads(
+          selected as EnvironmentThreadShell[],
+          workstreamTarget as string | null,
+        ).catch(reportThreadMoveFailure);
+        return;
+      }
       const activeSection = sectionByThreadKey.get(activeKey);
       const target =
         event.over === null
@@ -4030,6 +4452,16 @@ export default function Sidebar() {
           : resolveSidebarDropTarget(sidebarListItems, activeKey, String(event.over.id));
       const activeThread = threadByKey.get(activeKey);
       if (activeSection === undefined || target === null || activeThread === undefined) return;
+      const selectedKeys = dragState?.selectedKeys ?? [activeKey];
+      if (
+        selectedKeys.length > 1 ||
+        (workstreamController.data !== null && target.section !== "settled")
+      ) {
+        void performSelectedShelfDrop(selectedKeys, activeKey, target).catch(
+          reportThreadMoveFailure,
+        );
+        return;
+      }
       const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
       const plan = planSidebarThreadDrop({
         activeKey,
@@ -4162,6 +4594,11 @@ export default function Sidebar() {
       })();
     },
     [
+      performSelectedShelfDrop,
+      workstreamController.data,
+      dragState,
+      moveWorkstreamThreads,
+      reportThreadMoveFailure,
       activeKeysById,
       pinnedKeysById,
       serverConfigs,
@@ -4261,8 +4698,8 @@ export default function Sidebar() {
       // thread deletion elsewhere) and the menu labels must count only what
       // the actions will touch.
       const selectedThreadKeys = [...useThreadSelectionStore.getState().selectedThreadKeys];
-      const threadKeys = selectedThreadKeys.filter((threadKey) =>
-        threadByKeyRef.current.has(threadKey),
+      const threadKeys = orderedThreadKeysRef.current.filter((threadKey) =>
+        selectedThreadKeys.includes(threadKey),
       );
       if (threadKeys.length === 0) return;
       const count = threadKeys.length;
@@ -4305,6 +4742,21 @@ export default function Sidebar() {
       const clicked = await settlePromise(() =>
         api.contextMenu.show(
           [
+            ...(canEditWorkstreams(workstreamController.data)
+              ? [
+                  {
+                    id: "workstream",
+                    label: `Workstream (${count})`,
+                    children: [
+                      ...(workstreamController.data?.items ?? []).map((item) => ({
+                        id: `workstream:${item.workstreamId}`,
+                        label: `Move to ${item.name}`,
+                      })),
+                      { id: "workstream:remove", label: "Remove primary membership" },
+                    ],
+                  },
+                ]
+              : []),
             ...(unpinMenuItem ? [unpinMenuItem] : []),
             { id: "settle", label: `Settle (${count})` },
             ...(canSnoozeSelection
@@ -4330,6 +4782,13 @@ export default function Sidebar() {
         ),
       );
       if (clicked._tag === "Failure") return;
+      if (clicked.value?.startsWith("workstream:")) {
+        await moveWorkstreamThreads(
+          selectedThreads,
+          clicked.value === "workstream:remove" ? null : clicked.value.slice("workstream:".length),
+        ).catch(reportThreadMoveFailure);
+        return;
+      }
       if (clicked.value?.startsWith("snooze:")) {
         const preset =
           clicked.value === "snooze:custom"
@@ -4455,6 +4914,9 @@ export default function Sidebar() {
       );
     },
     [
+      moveWorkstreamThreads,
+      reportThreadMoveFailure,
+      workstreamController.data,
       attemptUnpin,
       clearSelection,
       confirmThreadDelete,
@@ -5239,6 +5701,23 @@ export default function Sidebar() {
                 <SortableContext items={sortableIds} strategy={sidebarSortingStrategy}>
                   <ul
                     ref={attachListMotionRef}
+                    onDragOverCapture={(event) => {
+                      if (!resolveHtmlShelfDrop(event.target)) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      event.dataTransfer.dropEffect = "move";
+                    }}
+                    onDropCapture={(event) => {
+                      const target = resolveHtmlShelfDrop(event.target);
+                      if (!target || !htmlDraggedKeys?.length) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const keys = htmlDraggedKeys;
+                      setHtmlDraggedKeys(null);
+                      void performSelectedShelfDrop(keys, keys[0]!, target).catch(
+                        reportThreadMoveFailure,
+                      );
+                    }}
                     // VoiceOver treats an exposed list as an interaction boundary,
                     // which hides its rows from ordinary linear navigation. A
                     // presentational list also makes its implicit listitems
@@ -5416,6 +5895,11 @@ export default function Sidebar() {
                               controller={workstreamController}
                               grouping={workstreamGrouping}
                               summaryGrouping={workstreamSummaryGrouping}
+                              captureDrag={captureThreadDrag}
+                              onThreadDragEnd={endHtmlThreadDrag}
+                              onMovementError={reportThreadMoveFailure}
+                              moveThreads={moveWorkstreamThreads}
+                              onVisibleGroupsChange={setVisibleWorkstreamIds}
                               renderThread={(thread) => renderThreadRowInner(thread, "active")}
                               canReorder={(thread) =>
                                 activeReorderableThreadKeys.has(
@@ -5423,10 +5907,28 @@ export default function Sidebar() {
                                 )
                               }
                               reorder={reorderWorkstreamThread}
+                              reorderSelection={reorderWorkstreamSelection}
                             />
                           </li>,
                         );
                       }
+                      if (htmlDraggedKeys !== null)
+                        items.push(
+                          <li
+                            key="html-pin-drop"
+                            data-sidebar-drop-id={sidebarMarkerId("pinned-header")}
+                            className="mx-2 rounded border border-dashed border-primary/40 px-2 py-2 text-xs"
+                          >
+                            Move to Pinned
+                          </li>,
+                          <li
+                            key="html-active-drop"
+                            data-sidebar-drop-id={sidebarMarkerId("pinned-divider")}
+                            className="mx-2 rounded border border-dashed border-primary/40 px-2 py-2 text-xs"
+                          >
+                            Move to Active
+                          </li>,
+                        );
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
                           if (item.section === "active" && workstreamController.data !== null)
@@ -5575,7 +6077,7 @@ export default function Sidebar() {
           ) : null}
           {!isSearchingThreads &&
           visibleDraftSessionCount === 0 &&
-          pinnedThreads.length +
+          classificationPinnedThreads.length +
             activeThreads.length +
             workingThreads.length +
             snoozedThreads.length +

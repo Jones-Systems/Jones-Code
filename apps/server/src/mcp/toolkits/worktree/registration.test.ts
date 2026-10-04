@@ -21,6 +21,7 @@ import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.t
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../../../vcs/VcsStatusBroadcaster.ts";
+import * as WorkstreamGateway from "../../../workstreams/WorkstreamGateway.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
@@ -38,6 +39,11 @@ const StubServicesLive = Layer.mergeAll(
   Layer.mock(GitWorkflowService.GitWorkflowService)({}),
   Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
   Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
+  Layer.mock(WorkstreamGateway.WorkstreamGateway)({
+    purgeAuthorization: () => {
+      throw new Error("Worktree tools-list fixture must not purge authorization.");
+    },
+  }),
 );
 
 const ToolsListPayload = Schema.fromJsonString(

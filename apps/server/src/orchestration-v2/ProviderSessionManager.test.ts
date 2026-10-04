@@ -1085,7 +1085,7 @@ it.effect(
         assert.equal(resolved?.threadId, threadId);
         assert.deepEqual(
           resolved?.capabilities,
-          new Set(["preview", "orchestration", "worktree", "pull-requests"]),
+          new Set(["preview", "orchestration", "worktree", "pull-requests", "organization"]),
         );
 
         yield* manager.close(providerSessionId);
@@ -1142,7 +1142,7 @@ it.effect(
         const resolved = yield* registry.resolve(token!);
         assert.deepEqual(
           resolved?.capabilities,
-          new Set(["orchestration", "worktree", "pull-requests"]),
+          new Set(["orchestration", "worktree", "pull-requests", "organization"]),
         );
 
         yield* manager.close(providerSessionId);
@@ -1443,6 +1443,96 @@ it.effect(
         assert.isDefined(original);
         const originalToken = original?.authorizationHeader.replace(/^Bearer\s+/, "");
         assert.isDefined(originalToken);
+        assert.isTrue((yield* registry.resolve(originalToken!))!.capabilities.has("organization"));
+
+        // Workspace-change handoff on a shared multi-thread session (codex):
+        // the thread detaches while the provider process keeps running, and the
+        // process's MCP client keeps using the credential it was started with.
+        yield* manager.detach({ providerSessionId, threadId, detail: "Workspace changed." });
+        assert.equal(
+          (yield* registry.resolve(originalToken!))?.threadId,
+          threadId,
+          "detach must not revoke the credential the live provider process still holds",
+        );
+
+        // The continuation run re-attaches the same thread to the same session;
+        // the credential must be reused, not rotated, so the provider process's
+        // long-lived MCP client stays authorized.
+        yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.equal(
+          McpProviderSession.readMcpProviderSession(threadId)?.providerSessionId,
+          original?.providerSessionId,
+          "re-attach must reuse the existing credential, not rotate it",
+        );
+        assert.equal((yield* registry.resolve(originalToken!))?.threadId, threadId);
+
+        // Releasing the session (provider process gone) still revokes.
+        yield* manager.close(providerSessionId);
+        assert.isUndefined(yield* registry.resolve(originalToken!));
+      });
+
+      yield* effect.pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: 1_000,
+            mcpConfigs,
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 rotates a legacy credential once for organization and reuses the replacement",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-organization-upgrade");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const legacy = yield* registry.issue({
+          threadId,
+          providerInstanceId: modelSelection.instanceId,
+          browserToolsAvailable: true,
+          capabilities: new Set(["orchestration", "worktree", "pull-requests", "preview"]),
+        });
+        McpProviderSession.setMcpProviderSession(legacy.config);
+        const legacyToken = legacy.config.authorizationHeader.replace(/^Bearer\s+/, "");
+        yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+
+        const original = (yield* Ref.get(mcpConfigs)).at(-1);
+        assert.isDefined(original);
+        assert.notEqual(original?.providerSessionId, legacy.config.providerSessionId);
+        assert.isUndefined(yield* registry.resolve(legacyToken));
+        const originalToken = original?.authorizationHeader.replace(/^Bearer\s+/, "");
+        assert.isDefined(originalToken);
+        assert.isTrue((yield* registry.resolve(originalToken!))!.capabilities.has("organization"));
 
         // Workspace-change handoff on a shared multi-thread session (codex):
         // the thread detaches while the provider process keeps running, and the
@@ -3477,4 +3567,73 @@ it.effect(
       });
       assert.isFalse(denied?.capabilities?.has("device"));
     }),
+);
+
+it.effect.each([
+  {
+    label: "browser and device disabled",
+    enableAgentBrowserAccess: false,
+    projectOverride: false,
+    deviceOverride: false,
+  },
+  {
+    label: "browser and device enabled",
+    enableAgentBrowserAccess: true,
+    projectOverride: true,
+    deviceOverride: true,
+  },
+  {
+    label: "device enabled without browser",
+    enableAgentBrowserAccess: false,
+    projectOverride: false,
+    deviceOverride: true,
+  },
+  {
+    label: "project browser opt-out",
+    enableAgentBrowserAccess: true,
+    projectOverride: false,
+    deviceOverride: false,
+  },
+  {
+    label: "project browser opt-out with device",
+    enableAgentBrowserAccess: true,
+    projectOverride: false,
+    deviceOverride: true,
+  },
+  {
+    label: "project browser opt-in without device",
+    enableAgentBrowserAccess: false,
+    projectOverride: true,
+    deviceOverride: false,
+  },
+  {
+    label: "project device opt-in",
+    enableAgentBrowserAccess: true,
+    projectOverride: false,
+    deviceOverride: true,
+  },
+  {
+    label: "no known thread",
+    enableAgentBrowserAccess: true,
+    projectOverride: true,
+    deviceOverride: false,
+    createThread: false,
+  },
+])("issues organization independently of browser and device access: $label", (input) =>
+  Effect.gen(function* () {
+    const captured = yield* runBrowserAccessScenario(input);
+    assert.isDefined(captured);
+    assert.isTrue(captured?.capabilities?.has("organization"));
+    assert.isTrue(captured?.capabilities?.has("orchestration"));
+    assert.isTrue(captured?.capabilities?.has("worktree"));
+    assert.isTrue(captured?.capabilities?.has("pull-requests"));
+    assert.equal(
+      captured?.browserToolsAvailable,
+      input.createThread !== false && input.projectOverride,
+    );
+    assert.equal(
+      captured?.capabilities?.has("device"),
+      input.createThread !== false && input.deviceOverride,
+    );
+  }),
 );
