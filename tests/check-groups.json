@@ -893,7 +893,7 @@
       ],
       "scope": [
         "packages/contracts/src/workQueueMetadata.ts",
-        "packages/contracts/src/fixtures/work_queue_metadata_v1.json",
+        "packages/contracts/src/fixtures/work_queue_metadata_v1.wire",
         "packages/contracts/src/environmentHttp.ts",
         "packages/contracts/src/environment.ts",
         "packages/contracts/src/index.ts",

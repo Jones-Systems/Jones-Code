@@ -35,7 +35,7 @@ const decode = Schema.decodeUnknownSync(WorkQueueMetadata);
 
 describe("work queue metadata contract", () => {
   it("decodes the exact Python producer golden artifact without changing its identity", () => {
-    const bytes = readFileSync(new URL("./fixtures/work_queue_metadata_v1.json", import.meta.url));
+    const bytes = readFileSync(new URL("./fixtures/work_queue_metadata_v1.wire", import.meta.url));
     expect(bytes.byteLength).toBe(923);
     expect(bytes[bytes.length - 1]).toBe(125);
     const parsed = JSON.parse(bytes.toString("utf8"));

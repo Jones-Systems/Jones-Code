@@ -57,7 +57,7 @@ describe("configured queue metadata service", () => {
     fixture(async (path) => {
       const bytes = await readFile(
         new URL(
-          "../../../../packages/contracts/src/fixtures/work_queue_metadata_v1.json",
+          "../../../../packages/contracts/src/fixtures/work_queue_metadata_v1.wire",
           import.meta.url,
         ),
       );
