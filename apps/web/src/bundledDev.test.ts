@@ -29,7 +29,7 @@ it("initializes React refresh before a shared UI chunk runs in bundled dev", asy
   try {
     await NodeFSP.mkdir(NodePath.join(root, "src/lib"), { recursive: true });
     await NodeFSP.writeFile(NodePath.join(root, "package.json"), '{"type":"module"}');
-    for (const file of ["index.html", "src/bootstrap.ts", "src/lib/bootError.ts"]) {
+    for (const file of ["index.html", "src/bootstrap.ts", "src/env.ts", "src/lib/bootError.ts"]) {
       await NodeFSP.copyFile(new URL(`../${file}`, import.meta.url), NodePath.join(root, file));
     }
     await NodeFSP.writeFile(
@@ -39,7 +39,19 @@ it("initializes React refresh before a shared UI chunk runs in bundled dev", asy
     await NodeFSP.writeFile(
       NodePath.join(root, "src/main.tsx"),
       `import { Shared } from "./shared";
-export const startup = Promise.resolve().then(() => globalThis.onStarted(Shared()));`,
+export const startup = Promise.resolve().then(() =>
+  globalThis.onStarted({ entry: "main", renderedElement: Shared() }),
+);`,
+    );
+
+    await NodeFSP.writeFile(
+      NodePath.join(root, "src/hostedPairing.ts"),
+      "export function isHostedStaticApp() { return true; }",
+    );
+    await NodeFSP.writeFile(
+      NodePath.join(root, "src/workQueuePreview.tsx"),
+      `import { Shared } from "./shared";
+globalThis.onStarted({ entry: "queue", renderedElement: Shared() });`,
     );
 
     server = await createServer({
@@ -93,14 +105,16 @@ export const startup = Promise.resolve().then(() => globalThis.onStarted(Shared(
       await NodeFSP.writeFile(target, code);
     }
 
-    // Run the actual generated ES modules so their import order and refresh
-    // checks execute. These stubs replace only the browser and HMR transport.
+    // Execute both real bootstrap branches and their generated shared UI chunk.
+    // Fixtures replace the entry screens and hosted detection; the runner supplies
+    // browser and HMR transport stubs so import order and refresh checks still run.
     const runner = NodePath.join(output, "check.mjs");
     await NodeFSP.writeFile(
       runner,
       `import assert from "node:assert/strict";
 const started = Promise.withResolvers();
 globalThis.window = globalThis;
+globalThis.window.location = new URL(process.argv[2], "https://preview.example.com");
 globalThis.document = {
   createElement: () => ({ relList: { supports: () => true } }),
   getElementById: () => null,
@@ -113,16 +127,25 @@ globalThis.__rolldown_runtime__ = {
 globalThis.onStarted = started.resolve;
 console.error = (_message, error) => started.reject(error);
 await import("./assets/index.js");
-const element = await started.promise;
-assert.equal(element.props.children, "ready");
+const { entry, renderedElement } = await started.promise;
+assert.equal(entry, process.argv[3]);
+assert.equal(renderedElement.props.children, "ready");
 assert.equal(typeof window.$RefreshReg$, "function");
 console.log("App started with React refresh ready.");`,
     );
-    const result = await execFile("node", [runner]);
-    expect(result.stdout).toContain("App started with React refresh ready.");
+    for (const [pathname, expectedEntry] of [
+      ["/", "main"],
+      ["/work-queue", "queue"],
+    ] as const) {
+      const result = await execFile("node", [runner, pathname, expectedEntry]);
+      expect(result.stdout).toContain("App started with React refresh ready.");
+    }
   } finally {
-    await server?.close();
-    await NodeFSP.rm(root, { recursive: true, force: true });
+    try {
+      await server?.close();
+    } finally {
+      await NodeFSP.rm(root, { recursive: true, force: true });
+    }
   }
 });
 
