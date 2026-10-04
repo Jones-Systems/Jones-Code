@@ -4470,6 +4470,8 @@ const baseLayer: Layer.Layer<
         Effect.gen(function* () {
           const failPrecondition = (reason: NativeCommandPreconditionError["reason"]) => new NativeCommandPreconditionError({ commandId: input.commandId, reason });
           const ordinaryContext = input.ordinaryCheckoutContext;
+          if (ordinaryContext !== undefined)
+            yield* sql`UPDATE worktree_ownership_leases SET lease_id = lease_id WHERE 0`;
           const priorOrdinary = yield* readOrdinaryCheckoutAdmissionsEffect(input.commandId);
           const priorOrdinaryLinks = yield* readOrdinaryCheckoutCommandLinksEffect(input.commandId);
           if ((priorOrdinary.length > 0 || priorOrdinaryLinks.length > 0) && ordinaryContext === undefined) return yield* failPrecondition("identity_conflict");

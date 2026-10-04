@@ -128,6 +128,8 @@ import {
   type NativeCommandCommitContextV2,
   type DeletionWorktreePolicyCaptureV1,
   type NativeCommandTargetSnapshotV2,
+  type OrdinaryCheckoutCommitContextV1,
+  type OrdinaryCheckoutSqlCaptureV1,
   type LegacyImportTranscriptSnapshotV1,
   type ImportedHistoryStartOutcomeV2,
   type ImportedHistoryStartPreparationResultV2,
@@ -136,6 +138,7 @@ import {
   type ProviderRuntimeEvidenceV2,
   type RestartContinuationMarkerV2,
 } from "./EventSink.ts";
+import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import { LegacyV1ThreadImporter } from "./legacy/LegacyV1ThreadImporter.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
@@ -10622,6 +10625,70 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }).pipe(Effect.catch(() => Effect.succeed({ status: "unavailable" as const })));
       }
     }
+    let ordinaryCheckoutContext: OrdinaryCheckoutCommitContextV1 | undefined;
+    const ordinarySubjects = new Set(effects.filter((effect) => [
+      "provider-turn.start", "provider-turn.restart", "provider-turn.steer", "provider-thread.rollback",
+      "provider-runtime.continue", "runtime-request.respond", "checkpoint.capture", "prepared-run.release",
+    ].includes(effect.request.type)).map((effect) => effect.threadId));
+    if (ordinarySubjects.size > 0 && nativeCreation === undefined && nativeRecovery === undefined &&
+        (nativeContext === undefined || nativeContext.identity.kind === "guarded_message_dispatch") &&
+        Schema.is(Schema.toType(OrchestrationV2Command))(command)) {
+      const ordinaryCommand = command;
+      const canonicalCommand = Schema.encodeSync(OrchestrationV2Command)(ordinaryCommand);
+      // Resolve filesystem aliases before the SQL acceptance; revalidate raw target facts inside it.
+      const targets = yield* Effect.forEach([...ordinarySubjects], (threadId) => Effect.gen(function* () {
+        const projected = [...plan.events].reverse().find((event) => event.threadId === threadId &&
+          (event.type === "thread.created" || event.type === "thread.metadata-updated"));
+        const thread = projected?.type === "thread.created" || projected?.type === "thread.metadata-updated"
+          ? projected.payload : yield* projectionStore.getThreadShell(threadId);
+        if (thread === null) return yield* new OrchestratorWorktreeOwnershipError({ threadId, detail: "Checkout subject is unavailable" });
+        const project = Option.getOrNull(yield* projects.get(thread.projectId));
+        if (project === null) return yield* new OrchestratorWorktreeOwnershipError({ threadId, detail: "Checkout project is unavailable" });
+        const root = path.resolve(project.workspaceRoot);
+        const checkout = path.resolve(root, thread.worktreePath ?? root);
+        const canonicalProjectRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
+        const canonicalCheckoutPath = yield* fileSystem.realPath(checkout).pipe(Effect.orElseSucceed(() => checkout));
+        return { threadId, projectId: thread.projectId, branch: thread.branch, canonicalProjectRoot, canonicalCheckoutPath,
+          source: { projectWorkspaceRoot: project.workspaceRoot, worktreePath: thread.worktreePath } };
+      })).pipe(Effect.mapError((cause) => new OrchestratorDispatchError({ commandId: command.commandId, commandType: command.type, cause })));
+      ordinaryCheckoutContext = {
+        command: ordinaryCommand,
+        captureAfterProjection: () => Effect.gen(function* () {
+          const captures: OrdinaryCheckoutSqlCaptureV1[] = [];
+          for (const target of targets) {
+            const thread = yield* projectionStore.getThreadShell(target.threadId);
+            const project = Option.getOrNull(yield* projects.get(target.projectId));
+            const birth = yield* eventSink.readApplicationBirthRecord(target.threadId);
+            if (thread === null || thread.deletedAt !== null || birth === null || project === null ||
+                thread.projectId !== target.projectId || thread.branch !== target.branch ||
+                thread.worktreePath !== target.source.worktreePath || project.workspaceRoot !== target.source.projectWorkspaceRoot)
+              return yield* new OrchestratorWorktreeOwnershipError({ threadId: target.threadId, detail: "Checkout changed before acceptance" });
+            const nowMs = yield* Clock.currentTimeMillis;
+            const lease = yield* worktreeOwnershipLeases.ensureOrdinaryOwnership({ resourcePath: target.canonicalCheckoutPath,
+              leaseId: yield* randomUuidV4, ownerThreadId: target.threadId,
+              ownerIncarnation: OrdinaryCheckout.ordinaryApplicationIncarnationV1(birth), branch: target.branch,
+              nowMs, expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS });
+            if (Option.isNone(lease)) {
+              const conflict = Option.getOrNull(yield* worktreeOwnershipLeases.getByResourcePath(target.canonicalCheckoutPath));
+              if (conflict !== null) return yield* new WorktreeOwnershipConflictError({ resourcePath: conflict.resourcePath,
+                ownerThreadId: conflict.ownerThreadId, requestingThreadId: target.threadId, ownerBranch: conflict.branch, expiresAtMs: conflict.expiresAtMs });
+              return yield* new OrchestratorWorktreeOwnershipError({ threadId: target.threadId, detail: "Checkout ownership was not acquired" });
+            }
+            captures.push({ originalAdmission: null, source: target.source, capture: {
+              version: 1, commandId: ordinaryCommand.commandId, commandType: ordinaryCommand.type, canonicalCommand,
+              commandDigest: OrdinaryCheckout.ordinaryCheckoutCommandDigestV1(canonicalCommand),
+              origin: ordinaryCommand.type === "delegated_task.request" ? { kind: "delegated_child", parentThreadId: ordinaryCommand.parentThreadId }
+                : ordinaryCommand.type === "runtime-request.respond" ? { kind: "runtime_request_answer", requestId: ordinaryCommand.requestId }
+                : { kind: "command" },
+              threadId: target.threadId, applicationBirth: birth, projectId: target.projectId,
+              canonicalProjectRoot: target.canonicalProjectRoot, canonicalCheckoutPath: target.canonicalCheckoutPath,
+              branch: target.branch, lease: lease.value,
+            } });
+          }
+          return captures;
+        }),
+      };
+    }
     const committed = yield* eventSink
       .commitCommand({
         commandId: command.commandId,
@@ -10630,6 +10697,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         acceptedAt,
         events: plan.events,
         effects,
+        ...(ordinaryCheckoutContext === undefined ? {} : { ordinaryCheckoutContext }),
         ...(command.type === "thread.delete" ? { deletionCommand: command } : {}),
         ...(deletionWorktreePolicy === undefined ? {} : { deletionWorktreePolicy }),
         ...(nativeContext === undefined ? {} : { nativeContext }),
