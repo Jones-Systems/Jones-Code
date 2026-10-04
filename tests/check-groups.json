@@ -889,6 +889,33 @@
         ".github/scripts/test-with-performance-sources.mjs",
         ".github/workflows/ci.yml"
       ]
+    },
+    {
+      "group_id": "jones-runtime-qualification",
+      "command": "node --test --test-concurrency=1 scripts/performance-staging/runtime-binding.test.mjs scripts/performance-staging/current-qualification.test.mjs scripts/performance-staging/runtime-qualification.test.mjs scripts/performance-staging/migration-restore.test.mjs",
+      "modules": [
+        "scripts/performance-staging/runtime-binding.test.mjs",
+        "scripts/performance-staging/current-qualification.test.mjs",
+        "scripts/performance-staging/runtime-qualification.test.mjs",
+        "scripts/performance-staging/migration-restore.test.mjs"
+      ],
+      "scope": [
+        "scripts/performance-staging/**",
+        "docs/operations/performance-sqlite.md"
+      ]
+    },
+    {
+      "group_id": "jones-sqlite-benchmark",
+      "command": "vp test run apps/server/scripts/jones-sqlite-benchmark.test.ts",
+      "modules": [
+        "apps/server/scripts/jones-sqlite-benchmark.test.ts"
+      ],
+      "scope": [
+        "apps/server/scripts/jones-sqlite-benchmark.ts",
+        "apps/server/scripts/jones-sqlite-benchmark.test.ts",
+        "scripts/performance-staging/**",
+        "docs/operations/performance-sqlite.md"
+      ]
     }
   ]
 }

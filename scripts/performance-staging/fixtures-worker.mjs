@@ -13,7 +13,7 @@ import {
   syntheticFixtureReceiptSha256,
 } from "./guard.mjs";
 
-import { assertSyntheticDatabaseSource } from "./sources.mjs";
+import { assertQualificationDatabaseSource, assertSyntheticDatabaseSource } from "./sources.mjs";
 
 const requestLimit = 49 * 1024;
 const receiptLimit = 24 * 1024;
@@ -95,14 +95,27 @@ function digest(value) {
     .digest("hex");
 }
 
-function checkedOptions(options) {
+function checkedSource(source) {
+  return assertSyntheticDatabaseSource(source);
+}
+
+function checkedQualificationSource(source) {
+  const bound = assertQualificationDatabaseSource({
+    repository: source?.repository,
+    sourceRevision: source?.sourceRevision,
+    worktreePath: source?.worktreePath,
+  });
+  return freeze({ ...source, ...bound });
+}
+
+function checkedOptions(options, checkSource = checkedSource) {
   if (!options || typeof options !== "object")
     refuse("invalid_options", "fixture options required");
   if (options.profile !== undefined && !profileNames.includes(options.profile))
     refuse("unsupported_profile", "profile must be health-offline-delete or benchmark-wal");
   if (options.signal !== undefined && !(options.signal instanceof AbortSignal))
     refuse("invalid_options", "signal must be an AbortSignal");
-  const databaseSource = assertSyntheticDatabaseSource(options.databaseSource);
+  const databaseSource = checkSource(options.databaseSource);
   const recipe = { kind: "coherent-v1", historyTurns: 3, payloadBytes: 256, ...options.recipe };
   if (
     recipe.kind !== "coherent-v1" ||
@@ -140,6 +153,7 @@ async function loadSource(source) {
     Contracts: "packages/contracts/src/index.ts",
     Config: "apps/server/src/config.ts",
     Sqlite: "apps/server/src/persistence/Layers/Sqlite.ts",
+    Migrations: "apps/server/src/persistence/Migrations.ts",
     NodeSqliteClient: "packages/shared/src/nodeSqliteClient.ts",
     EngineLayer: "apps/server/src/orchestration/Layers/OrchestrationEngine.ts",
     EngineService: "apps/server/src/orchestration/Services/OrchestrationEngine.ts",
@@ -158,7 +172,7 @@ async function loadSource(source) {
     Keybindings: "packages/contracts/src/keybindings.ts",
     Attachments: "apps/server/src/attachmentStore.ts",
   };
-  if (source.sourceRevision === "e5a31aceec91484b64315c63dcce80f6e7581604") {
+  if (source.sourceRevision !== "414bb8da204c3275cd0b76b2ec4d74dfb09a97e4") {
     files.Native = "apps/server/src/persistence/Layers/NativeCreationRepository.ts";
     files.NativePreparation = "apps/server/src/orchestration/NativeCreationPreparation.ts";
   }
@@ -805,6 +819,7 @@ function structuralModelDifferences(snapshot, replay) {
 
 export async function captureFixture(context) {
   const state = requireContext(context);
+  const referenceRoot = state.referenceRoot ?? state.root;
   const { modules } = state;
   const tables = {};
   for (const table of capturedTables) tables[table] = await tableSummary(state, table);
@@ -885,13 +900,13 @@ export async function captureFixture(context) {
       refuse("invalid_capture", "synthetic file identity changed");
     const bytes = await NodeFSP.readFile(path);
     files.push({
-      relativePath: NodePath.relative(state.root, path),
+      relativePath: NodePath.relative(referenceRoot, path),
       sizeBytes: bytes.length,
       sha256: NodeCrypto.createHash("sha256").update(bytes).digest("hex"),
     });
   }
   const reference = (path) => {
-    const relative = NodePath.relative(state.root, path);
+    const relative = NodePath.relative(referenceRoot, path);
     if (
       relative === ".." ||
       relative.startsWith(`..${NodePath.sep}`) ||
@@ -929,7 +944,7 @@ export async function captureFixture(context) {
       attachmentsDir: state.paths.attachmentsDir,
       attachmentId: attachment.id,
     });
-    const file = files.find((entry) => NodePath.join(state.root, entry.relativePath) === path);
+    const file = files.find((entry) => NodePath.join(referenceRoot, entry.relativePath) === path);
     if (!file || file.sizeBytes !== attachment.sizeBytes)
       refuse("incoherent_fixture", "attachment metadata differs from owned file");
     return { id: attachment.id, relativePath: file.relativePath, sha256: file.sha256 };
@@ -1221,7 +1236,10 @@ async function prepareHealthProfile(state, result, priorPermit) {
 
 // Internal producer results carry the genuine owner only within this audited process.
 export async function produceFixture(input, use) {
-  const options = checkedOptions(input);
+  return produceCheckedFixture(checkedOptions(input), use);
+}
+
+async function produceCheckedFixture(options, use) {
   if (typeof use !== "function") refuse("invalid_callback", "fixture callback required");
   const owner = createOwnedRoot(options);
   const root = owner.creationReceipt.canonicalRootPath;
@@ -1352,7 +1370,7 @@ export async function produceFixture(input, use) {
       }
       if (closedProof && !result.error) {
         try {
-          assertSyntheticDatabaseSource(options.databaseSource);
+          checkedQualificationSource(options.databaseSource);
           if (result.profile) {
             options.signal?.throwIfAborted();
             result.profile.stage = "seal";
@@ -1400,6 +1418,198 @@ export async function produceFixture(input, use) {
     }
     result.profile = profileSnapshot(result.profile);
     if (result.capture) result.capture = freeze({ ...result.capture, profile: result.profile });
+  }
+  return result;
+}
+
+// Private qualification callers keep these contexts and owners in this process; no JSON can reopen one.
+export async function seedQualificationFixture(input) {
+  return produceCheckedFixture(
+    checkedOptions(input, checkedQualificationSource),
+    (context) => context,
+  );
+}
+
+export async function withQualificationFixture(seedContext, options, use) {
+  const seed = contexts.get(seedContext);
+  if (!seed || seed.status !== "closed")
+    refuse("invalid_context", "qualification reopen requires the original closed fixture context");
+  const source = checkedQualificationSource(options.databaseSource);
+  const owner = options.owner ?? seed.owner;
+  const root = owner.creationReceipt.canonicalRootPath;
+  const paths = options.paths ?? seed.paths;
+  const permit = assertOwnedDatabase(owner, {
+    databaseRelativePath: NodePath.relative(root, paths.dbPath),
+    access: "readwrite",
+  });
+  const result = { owner, closeKnown: false };
+  let state;
+  let runtime;
+  try {
+    const modules = await loadSource(source);
+    let layer;
+    if (options.mode === "engine") layer = orchestrationLayer(modules, paths, seed.workspace, root);
+    else if (options.mode === "migration")
+      layer = modules.Sqlite.makeSqlitePersistenceLive(paths.dbPath).pipe(
+        modules.Layer.provide(modules.Config.ServerConfig.layerTest(seed.workspace, root)),
+        modules.Layer.provide(modules.NodeServices.layer),
+        modules.Layer.provide(modules.Logger.layer([])),
+      );
+    else if (options.mode === "client")
+      layer = modules.NodeSqliteClient.layer({ filename: permit.canonicalPath }).pipe(
+        modules.Layer.provide(modules.Logger.layer([])),
+      );
+    else refuse("invalid_phase", "qualification phase must be client, migration or engine");
+    runtime = modules.ManagedRuntime.make(layer);
+    const cancellation = new AbortController();
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, cancellation.signal])
+      : cancellation.signal;
+    state = {
+      ...seed,
+      owner,
+      root,
+      paths,
+      modules,
+      runtime,
+      cancellation,
+      active: new Set(),
+      databaseSource: source,
+      status: "open",
+      profile: undefined,
+      profileEvidence: undefined,
+      referenceRoot: options.referenceRoot ?? root,
+      files: options.files ?? seed.files,
+      engine: undefined,
+      snapshotQuery: undefined,
+      native: undefined,
+      nativeHint:
+        seed.nativeHint ??
+        (seed.native
+          ? { claimId: seed.native.claimId, threadId: seed.native.threadId }
+          : undefined),
+    };
+    state.run = (effect) => {
+      if (state.status !== "open")
+        refuse("closed_context", "qualification runtime is closing or closed");
+      const promise = runtime.runPromise(effect, { signal });
+      state.active.add(promise);
+      void promise.then(
+        () => state.active.delete(promise),
+        () => state.active.delete(promise),
+      );
+      return promise;
+    };
+    const context = Object.freeze({
+      owner,
+      paths,
+      databaseSource: source,
+      recipe: seed.recipe,
+      run: state.run,
+      get engine() {
+        return state.engine;
+      },
+      get snapshotQuery() {
+        return state.snapshotQuery;
+      },
+    });
+    contexts.set(context, state);
+    result.context = context;
+    if (options.mode === "engine") {
+      state.engine = await state.run(
+        modules.Effect.service(modules.EngineService.OrchestrationEngineService),
+      );
+      state.snapshotQuery = await state.run(
+        modules.Effect.service(modules.SnapshotService.ProjectionSnapshotQuery),
+      );
+      if (state.nativeHint && modules.Native)
+        state.native = { ...state.nativeHint, repository: await state.run(modules.Native.make) };
+    } else await state.run(modules.Effect.service(modules.SqlClient.SqlClient));
+    result.value = await use({
+      context,
+      modules,
+      query: (text, values) => query(state, text, values),
+      capture: async () => {
+        if (options.mode === "engine") await quiesceEngineLeases(state);
+        const content = await canonicalContent(state);
+        for (const table of [
+          "workstreams_native_attempts",
+          "workstreams_native_enrollments",
+          "auth_sessions",
+        ])
+          content.tables[table] = await tableSummary(state, table);
+        const names = Object.keys(content.tables);
+        const definitions = await query(
+          state,
+          `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE tbl_name IN (${names.map(() => "?").join(",")}) ORDER BY type,name`,
+          names,
+        );
+        const runtimeIdentity = (
+          await query(state, "SELECT sqlite_version() AS version,sqlite_source_id() AS source_id")
+        )[0];
+        return freeze({
+          content,
+          definitions: definitions.map((row) => ({
+            type: row.type,
+            name: row.name,
+            table: row.tbl_name,
+            sql: row.sql,
+          })),
+          integrity: (await query(state, "PRAGMA integrity_check")).map(
+            (row) => Object.values(row)[0],
+          ),
+          foreignKeys: await query(state, "PRAGMA foreign_key_check"),
+          runtime: {
+            nodeVersion: process.versions.node,
+            executable: process.execPath,
+            sqliteVersion: runtimeIdentity.version,
+            sqliteSourceId: runtimeIdentity.source_id,
+            pragmas: await observedPragmas(state),
+          },
+          ...(options.mode === "engine" ? { application: await captureFixture(context) } : {}),
+        });
+      },
+      exerciseNative: async () => {
+        if (!modules.Native)
+          refuse("unsupported_native", "this exact old source has no native API");
+        if (!state.native)
+          await produceNative(state, (command, dispatchOptions) =>
+            state.run(state.engine.dispatch(command, dispatchOptions)),
+          );
+        state.nativeHint = { claimId: state.native.claimId, threadId: state.native.threadId };
+        const history = await state.run(
+          state.native.repository.readHistoryByClaim(state.native.claimId),
+        );
+        return {
+          claimId: history.intent.claimId,
+          normalizedCommandDigest: history.normalizedCommandDigest,
+          phases: history.effects.map((fact) => fact.phase),
+          sha256: digest(history),
+        };
+      },
+    });
+  } catch (error) {
+    result.error = error;
+  } finally {
+    if (state) {
+      state.status = "closing";
+      state.cancellation.abort();
+      await Promise.allSettled([...state.active]);
+    }
+    if (runtime) {
+      try {
+        result.closedProof = await observeSyntheticClose(owner, {
+          permit,
+          producerStep: seed.binding.taskRef,
+          resource: runtime,
+          close: (resource) => resource.dispose(),
+        });
+        result.closeKnown = true;
+      } catch (error) {
+        result.error ??= error;
+      }
+    }
+    if (state) state.status = "closed";
   }
   return result;
 }
