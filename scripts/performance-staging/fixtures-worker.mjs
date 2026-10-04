@@ -1,5 +1,4 @@
 import * as NodeCrypto from "node:crypto";
-import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
@@ -13,11 +12,8 @@ import {
   syntheticFixtureReceiptSha256,
 } from "./guard.mjs";
 
-const sourceParent = "/home/malcolmjones/Projects/Jones-Code-performance-worktrees-20261002";
-const sourceBindings = new Map([
-  ["e5a31aceec91484b64315c63dcce80f6e7581604", NodePath.join(sourceParent, "baseline")],
-  ["414bb8da204c3275cd0b76b2ec4d74dfb09a97e4", NodePath.join(sourceParent, "live-baseline")],
-]);
+import { assertSyntheticDatabaseSource } from "./sources.mjs";
+
 const requestLimit = 49 * 1024;
 const receiptLimit = 24 * 1024;
 const contexts = new WeakMap();
@@ -88,18 +84,6 @@ function digest(value) {
     .digest("hex");
 }
 
-function checkedSource(source) {
-  const expectedPath = sourceBindings.get(source?.sourceRevision);
-  if (
-    source?.repository !== "Jones-Systems/Jones-Code" ||
-    !expectedPath ||
-    source.worktreePath !== expectedPath ||
-    NodeFS.realpathSync(expectedPath) !== expectedPath
-  )
-    refuse("invalid_source", "database source must match an exact root-bound baseline");
-  return freeze({ ...source });
-}
-
 function checkedOptions(options) {
   if (!options || typeof options !== "object")
     refuse("invalid_options", "fixture options required");
@@ -107,7 +91,7 @@ function checkedOptions(options) {
     refuse("unsupported_profile", "core fixtures use observed production defaults only");
   if (options.signal !== undefined && !(options.signal instanceof AbortSignal))
     refuse("invalid_options", "signal must be an AbortSignal");
-  const databaseSource = checkedSource(options.databaseSource);
+  const databaseSource = assertSyntheticDatabaseSource(options.databaseSource);
   const recipe = { kind: "coherent-v1", historyTurns: 3, payloadBytes: 256, ...options.recipe };
   if (
     recipe.kind !== "coherent-v1" ||
@@ -1125,6 +1109,7 @@ export async function produceFixture(input, use) {
       }
       if (closedProof && !result.error) {
         try {
+          assertSyntheticDatabaseSource(options.databaseSource);
           result.receipt = await sealSyntheticFixture(owner, {
             databaseRelativePath: permit.relativePath,
             producerStep: options.binding.taskRef,

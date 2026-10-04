@@ -10,6 +10,7 @@ import {
 } from "./guard.mjs";
 import { runOwnedChild } from "./lifecycle.mjs";
 import { captureFixture, produceFixture } from "./fixtures-worker.mjs";
+import { sourceParentEnvironment, syntheticSourceParent } from "./sources.mjs";
 
 const requestLimit = 49 * 1024;
 const envelopeLimit = 49 * 1024;
@@ -134,7 +135,13 @@ export async function withClosedSyntheticFixture(options, use) {
       owner,
       executable: process.execPath,
       args,
-      env: { HOME: policy.homePath, LANG: "C.UTF-8", TZ: "UTC", NODE_NO_WARNINGS: "1" },
+      env: {
+        HOME: policy.homePath,
+        LANG: "C.UTF-8",
+        TZ: "UTC",
+        NODE_NO_WARNINGS: "1",
+        [sourceParentEnvironment]: syntheticSourceParent(),
+      },
       timeoutMs: options.lifecycle?.timeoutMs ?? 30000,
       terminateGraceMs: options.lifecycle?.terminateGraceMs ?? 2000,
       reapTimeoutMs: options.lifecycle?.reapTimeoutMs ?? 5000,
