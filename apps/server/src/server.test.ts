@@ -149,6 +149,7 @@ const encodeTestJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unk
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import { DeviceDirectGrants } from "./device/DeviceDirectGrants.ts";
 import { HTTP_ROUTER_CONFIG, makeRoutesLayer } from "./server.ts";
 import { resolveAvailableEditorsForConfig, resolveFileManagerRevealKindForConfig } from "./ws.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
@@ -1292,6 +1293,10 @@ const buildAppUnderTest = (options?: {
           Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({}),
           Layer.mock(AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
           Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
+          Layer.mock(DeviceDirectGrants)({
+            issue: () => Effect.succeed(null),
+            admit: () => Effect.succeed({ _tag: "Denied" as const }),
+          }),
           Layer.mock(DeviceService.DeviceService)({
             state: Effect.succeed(EMPTY_DEVICE_STATE),
             currentReadiness: () => Effect.succeed(null),

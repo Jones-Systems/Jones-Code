@@ -2,6 +2,7 @@
   "manifest_version": 1,
   "groups": [
     {
+<<<<<<< HEAD
       "group_id": "jones-workspace-preparation-retry",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/ThreadLaunchService.test.ts packages/client-runtime/src/state/turnItemPresentation.test.ts packages/client-runtime/src/operations/commands.test.ts packages/contracts/src/orchestrationV2.test.ts",
       "modules": [
@@ -26,6 +27,35 @@
         "packages/client-runtime/src/state/turnItemPresentation.test.ts",
         "packages/client-runtime/src/operations/commands.test.ts",
         "packages/contracts/src/orchestrationV2.test.ts"
+=======
+      "group_id": "t3-thread-message-blocking",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts apps/server/src/orchestration-v2/ThreadForkService.test.ts apps/server/src/orchestration-v2/SubagentProjection.test.ts apps/server/src/mcp/ThreadMetadataMcpService.test.ts apps/server/src/mcp/toolkits/thread/handlers.test.ts packages/contracts/src/orchestrationV2.test.ts packages/contracts/src/threadMetadataMcp.test.ts",
+      "modules": [
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts",
+        "apps/server/src/orchestration-v2/ThreadForkService.test.ts",
+        "apps/server/src/orchestration-v2/SubagentProjection.test.ts",
+        "apps/server/src/mcp/ThreadMetadataMcpService.test.ts",
+        "apps/server/src/mcp/toolkits/thread/handlers.test.ts",
+        "packages/contracts/src/orchestrationV2.test.ts",
+        "packages/contracts/src/threadMetadataMcp.test.ts"
+      ],
+      "scope": [
+        "packages/contracts/src/orchestrationV2.ts",
+        "packages/contracts/src/orchestratorMcp.ts",
+        "packages/contracts/src/threadMetadataMcp.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.ts",
+        "apps/server/src/orchestration-v2/ThreadMessageIntake.ts",
+        "apps/server/src/orchestration-v2/ThreadForkService.ts",
+        "apps/server/src/orchestration-v2/SubagentProjection.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.ts",
+        "apps/server/src/mcp/ThreadMetadataMcpService.ts",
+        "apps/server/src/mcp/threadAccess.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+        "apps/server/src/mcp/toolkits/thread/handlers.ts",
+        "apps/server/src/mcp/toolkits/thread/tools.ts"
+>>>>>>> refs/audit/pr-80-current
       ]
     },
     {
@@ -936,7 +966,11 @@
     },
     {
       "group_id": "device-direct-media",
+<<<<<<< HEAD
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/device/DeviceHubProxy.test.ts apps/server/src/device/directDeviceGateway.test.ts apps/server/src/device/SshDeviceHost.test.ts apps/server/src/device/sshDeviceScript.test.ts apps/server/src/device/DeviceService.test.ts apps/server/src/device/DeviceMultiHost.test.ts apps/server/src/device/localSshDeviceHost.test.ts packages/contracts/src/device.test.ts packages/client-runtime/src/device/mediaRoute.test.ts packages/client-runtime/src/device/stream.test.ts apps/web/src/components/device/DeviceStreamView.test.tsx apps/web/src/components/device/useDeviceControls.test.tsx apps/web/src/components/settings/deviceHostConnectionChecks.test.ts apps/desktop/src/ssh/DesktopDeviceMediaTunnel.test.ts apps/desktop/src/ssh/DesktopSshEnvironment.test.ts apps/desktop/src/ipc/methods/sshEnvironment.test.ts apps/web/src/state/device.test.tsx apps/server/src/device/AgentDeviceTarget.test.ts apps/server/src/device/DeviceActions.test.ts apps/server/src/device/DeviceDirectGrants.test.ts apps/server/src/device/DeviceDirectAdmission.test.ts apps/server/src/device/DeviceServiceDirectLifecycle.test.ts",
+=======
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/device/DeviceHubProxy.test.ts apps/server/src/device/directDeviceGateway.test.ts apps/server/src/device/SshDeviceHost.test.ts apps/server/src/device/sshDeviceScript.test.ts apps/server/src/device/DeviceService.test.ts apps/server/src/device/DeviceMultiHost.test.ts apps/server/src/device/localSshDeviceHost.test.ts packages/contracts/src/device.test.ts packages/client-runtime/src/device/mediaRoute.test.ts packages/client-runtime/src/device/stream.test.ts apps/web/src/components/device/DeviceStreamView.test.tsx apps/web/src/components/device/useDeviceControls.test.tsx apps/web/src/components/settings/deviceHostConnectionChecks.test.ts apps/desktop/src/ssh/DesktopDeviceMediaTunnel.test.ts apps/desktop/src/ssh/DesktopSshEnvironment.test.ts apps/desktop/src/ipc/methods/sshEnvironment.test.ts apps/web/src/state/device.test.tsx apps/server/src/server.test.ts apps/server/src/device/AgentDeviceTarget.test.ts apps/server/src/device/DeviceActions.test.ts apps/server/src/device/DeviceDirectGrants.test.ts apps/server/src/device/DeviceDirectAdmission.test.ts apps/server/src/device/DeviceServiceDirectLifecycle.test.ts",
+>>>>>>> refs/audit/pr-80-current
       "modules": [
         "apps/server/src/device/DeviceHubProxy.test.ts",
         "apps/server/src/device/directDeviceGateway.test.ts",
@@ -955,6 +989,10 @@
         "apps/desktop/src/ssh/DesktopSshEnvironment.test.ts",
         "apps/desktop/src/ipc/methods/sshEnvironment.test.ts",
         "apps/web/src/state/device.test.tsx",
+<<<<<<< HEAD
+=======
+        "apps/server/src/server.test.ts",
+>>>>>>> refs/audit/pr-80-current
         "apps/server/src/device/AgentDeviceTarget.test.ts",
         "apps/server/src/device/DeviceActions.test.ts",
         "apps/server/src/device/DeviceDirectGrants.test.ts",
@@ -1000,6 +1038,7 @@
         "apps/server/src/device/DeviceDirectAdmission.ts",
         "apps/server/src/device/DeviceDirectAdmission.test.ts",
         "apps/server/src/device/DeviceService.ts",
+<<<<<<< HEAD
         "apps/server/src/device/DeviceServiceDirectLifecycle.test.ts"
       ]
     },
@@ -1162,6 +1201,10 @@
         "scripts/performance-staging/runtime-binding.mjs",
         "scripts/performance-staging/current-qualification.mjs",
         "docs/operations/performance-sqlite.md"
+=======
+        "apps/server/src/device/DeviceServiceDirectLifecycle.test.ts",
+        "apps/server/src/server.test.ts"
+>>>>>>> refs/audit/pr-80-current
       ]
     }
   ]

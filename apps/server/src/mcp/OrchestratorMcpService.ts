@@ -583,6 +583,7 @@ function listItemFromShell(shell: OrchestrationV2ThreadShell): OrchestratorMcpTh
     model: shell.modelSelection.model,
     runtimeMode: shell.runtimeMode,
     interactionMode: shell.interactionMode,
+    threadMessagesBlocked: shell.threadMessagesBlocked ?? false,
     linkedPullRequest: shell.linkedPullRequest ?? null,
     ...threadSettlement(shell),
     parentThreadId: shell.lineage.parentThreadId,
@@ -612,6 +613,7 @@ function threadDetail(
     model: projection.thread.modelSelection.model,
     runtimeMode: projection.thread.runtimeMode,
     interactionMode: projection.thread.interactionMode,
+    threadMessagesBlocked: projection.thread.threadMessagesBlocked ?? false,
     linkedPullRequest: projection.thread.linkedPullRequest ?? null,
     titleRegeneration:
       projection.thread.titleRegeneration === undefined ||

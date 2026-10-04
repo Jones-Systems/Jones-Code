@@ -148,10 +148,14 @@ const ProjectionOperatingCountsCandidate = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   archivedAt: Schema.Null,
   deletedAt: Schema.Null,
-  pendingRuntimeRequest: Schema.NullOr(Schema.Struct({
-    kind: OrchestrationV2RuntimeRequestJsonSchema.fields.kind,
-  })),
-  activityRunStatus: Schema.NullOr(Schema.Literals(["preparing", "starting", "running", "waiting"])),
+  pendingRuntimeRequest: Schema.NullOr(
+    Schema.Struct({
+      kind: OrchestrationV2RuntimeRequestJsonSchema.fields.kind,
+    }),
+  ),
+  activityRunStatus: Schema.NullOr(
+    Schema.Literals(["preparing", "starting", "running", "waiting"]),
+  ),
   interactionMode: OrchestrationV2AppThreadJsonSchema.fields.interactionMode,
   hasActionableProposedPlan: Schema.Boolean,
   latestRunCompletedAt: OrchestrationV2RunJsonSchema.fields.completedAt,
@@ -334,9 +338,9 @@ export type ProjectionThreadRetainedAttachmentPaths =
   | { readonly status: "unavailable"; readonly reason: string };
 
 export interface ProjectionStoreV2Shape {
-  readonly getOperatingCountsCandidates: (
-    input?: { readonly projectId?: ProjectId },
-  ) => Effect.Effect<ProjectionOperatingCountsCandidates, ProjectionStoreV2Error>;
+  readonly getOperatingCountsCandidates: (input?: {
+    readonly projectId?: ProjectId;
+  }) => Effect.Effect<ProjectionOperatingCountsCandidates, ProjectionStoreV2Error>;
   readonly getThreadAttachmentIds: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<string>, ProjectionStoreV2Error>;
@@ -1188,11 +1192,16 @@ function retainedAttachmentPathsForProjection(
   const attachments: Array<unknown> = [];
   const visibilityFor = (source: OrchestrationV2ThreadProjection) =>
     createOrchestrationV2TurnItemVisibility({
-      runs: source.runs, attempts: source.attempts, items: source.turnItems,
+      runs: source.runs,
+      attempts: source.attempts,
+      items: source.turnItems,
     });
   const visibility = new Map([...sources].map(([id, source]) => [id, visibilityFor(source)]));
   const messagesBySource = new Map(
-    [...sources].map(([id, source]) => [id, new Map(source.messages.map((message) => [message.id, message]))]),
+    [...sources].map(([id, source]) => [
+      id,
+      new Map(source.messages.map((message) => [message.id, message])),
+    ]),
   );
   const isVisible = visibilityFor(projection);
   const representedMessages = new Set<string>();
@@ -1209,7 +1218,8 @@ function retainedAttachmentPathsForProjection(
     if (
       (message.runId !== null && rolledBack.has(message.runId)) ||
       (representedMessages.has(message.id) && !visibleMessages.has(message.id))
-    ) continue;
+    )
+      continue;
     if (!Array.isArray(message.attachments)) {
       return { status: "unavailable", reason: "attachment_representation_unavailable" };
     }
@@ -1273,7 +1283,10 @@ const readRetainedAttachmentPaths = (
       // V1 answers retain files in activity payloads; neither historical importer
       // copies that carrier. A projected message subset cannot prove its absence.
       if (thread.historyOrigin === "v1_import") {
-        return { status: "unavailable", reason: "imported_answer_representation_unavailable" } as const;
+        return {
+          status: "unavailable",
+          reason: "imported_answer_representation_unavailable",
+        } as const;
       }
       if (thread.forkedFrom?.type !== "run") break;
       currentThreadId = thread.forkedFrom.threadId;
@@ -1282,7 +1295,9 @@ const readRetainedAttachmentPaths = (
     for (const id of seen) sources.set(id, yield* getProjection(id));
     return retainedAttachmentPathsForProjection(sources.get(threadId)!, sources);
   }).pipe(
-    Effect.catch(() => Effect.succeed({ status: "unavailable", reason: "projection_unavailable" } as const)),
+    Effect.catch(() =>
+      Effect.succeed({ status: "unavailable", reason: "projection_unavailable" } as const),
+    ),
   );
 
 function localVisibleTurnItems(
@@ -1548,6 +1563,7 @@ export function threadShellFromProjection(
     archivedAt: projection.thread.archivedAt,
     settledOverride: projection.thread.settledOverride,
     settledAt: projection.thread.settledAt,
+    threadMessagesBlocked: projection.thread.threadMessagesBlocked ?? false,
     unsettledAt: projection.thread.unsettledAt ?? null,
     snoozedUntil: projection.thread.snoozedUntil ?? null,
     snoozedAt: projection.thread.snoozedAt ?? null,
@@ -1772,6 +1788,7 @@ function shellFromState(input: {
     archivedAt: input.state.thread.archivedAt,
     settledOverride: input.state.thread.settledOverride,
     settledAt: input.state.thread.settledAt,
+    threadMessagesBlocked: input.state.thread.threadMessagesBlocked ?? false,
     unsettledAt: input.state.thread.unsettledAt ?? null,
     snoozedUntil: input.state.thread.snoozedUntil ?? null,
     snoozedAt: input.state.thread.snoozedAt ?? null,
@@ -4642,10 +4659,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError((cause) => new ProjectionStoreReadError({ threadId, cause })),
       );
 
-    const getThreadRetainedAttachmentPaths: ProjectionStoreV2Shape["getThreadRetainedAttachmentPaths"] = (threadId) =>
-      sql.withTransaction(readRetainedAttachmentPaths(threadId, getThread, getThreadProjection)).pipe(
-        Effect.catch(() => Effect.succeed({ status: "unavailable", reason: "projection_unavailable" } as const)),
-      );
+    const getThreadRetainedAttachmentPaths: ProjectionStoreV2Shape["getThreadRetainedAttachmentPaths"] =
+      (threadId) =>
+        sql
+          .withTransaction(readRetainedAttachmentPaths(threadId, getThread, getThreadProjection))
+          .pipe(
+            Effect.catch(() =>
+              Effect.succeed({ status: "unavailable", reason: "projection_unavailable" } as const),
+            ),
+          );
 
     const getThreadRecords: ProjectionStoreV2Shape["getThreadRecords"] = (
       threadId,
@@ -4920,14 +4942,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ),
         );
 
-    const getOperatingCountsCandidates: ProjectionStoreV2Shape["getOperatingCountsCandidates"] = (input) =>
-      sql.withTransaction(Effect.gen(function* () {
-        const rows = yield* sql<{
-          readonly id: string; readonly projectId: string; readonly activeProviderThreadId: string | null;
-          readonly interactionMode: string; readonly activityRunStatus: string | null;
-          readonly pendingRequestKind: string | null; readonly hasActionableProposedPlan: number;
-          readonly latestRunCompletedAt: string | null;
-        }>`
+    const getOperatingCountsCandidates: ProjectionStoreV2Shape["getOperatingCountsCandidates"] = (
+      input,
+    ) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{
+              readonly id: string;
+              readonly projectId: string;
+              readonly activeProviderThreadId: string | null;
+              readonly interactionMode: string;
+              readonly activityRunStatus: string | null;
+              readonly pendingRequestKind: string | null;
+              readonly hasActionableProposedPlan: number;
+              readonly latestRunCompletedAt: string | null;
+            }>`
           SELECT t.thread_id AS id, t.project_id AS projectId,
             t.active_provider_thread_id AS activeProviderThreadId, t.interaction_mode AS interactionMode,
             (SELECT r.status FROM orchestration_v2_projection_runs r
@@ -4948,21 +4978,38 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             ${input?.projectId === undefined ? sql`` : sql`AND t.project_id = ${input.projectId}`}
           ORDER BY t.thread_id ASC
         `;
-        const threads = yield* Effect.forEach(rows, (row) => Schema.decodeUnknownEffect(ProjectionOperatingCountsCandidate)({
-          id: row.id, projectId: row.projectId, activeProviderThreadId: row.activeProviderThreadId,
-          archivedAt: null, deletedAt: null, interactionMode: row.interactionMode,
-          activityRunStatus: row.activityRunStatus,
-          pendingRuntimeRequest: row.pendingRequestKind === null ? null : { kind: row.pendingRequestKind },
-          hasActionableProposedPlan: row.hasActionableProposedPlan === 1,
-          latestRunCompletedAt: row.latestRunCompletedAt,
-        }));
-        const sequences = yield* sql<{ readonly snapshotSequence: number | null }>`
+            const threads = yield* Effect.forEach(rows, (row) =>
+              Schema.decodeUnknownEffect(ProjectionOperatingCountsCandidate)({
+                id: row.id,
+                projectId: row.projectId,
+                activeProviderThreadId: row.activeProviderThreadId,
+                archivedAt: null,
+                deletedAt: null,
+                interactionMode: row.interactionMode,
+                activityRunStatus: row.activityRunStatus,
+                pendingRuntimeRequest:
+                  row.pendingRequestKind === null ? null : { kind: row.pendingRequestKind },
+                hasActionableProposedPlan: row.hasActionableProposedPlan === 1,
+                latestRunCompletedAt: row.latestRunCompletedAt,
+              }),
+            );
+            const sequences = yield* sql<{ readonly snapshotSequence: number | null }>`
           SELECT MAX(sequence) AS snapshotSequence
           FROM orchestration_events INDEXED BY idx_orchestration_events_application_high_water
           WHERE aggregate_kind = 'project' OR (application_event_version = 2 AND aggregate_kind = 'thread')
         `;
-        return { threads, snapshotSequence: sequences[0]?.snapshotSequence ?? 0 };
-      })).pipe(Effect.mapError((cause) => new ProjectionStoreReadError({ threadId: ThreadId.make("thread:operating-counts"), cause })));
+            return { threads, snapshotSequence: sequences[0]?.snapshotSequence ?? 0 };
+          }),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProjectionStoreReadError({
+                threadId: ThreadId.make("thread:operating-counts"),
+                cause,
+              }),
+          ),
+        );
 
     const selectShellThreadRows = (
       threadId?: ThreadId,
@@ -5704,27 +5751,46 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
     const sequence = yield* Ref.make(0);
 
     const service: ProjectionStoreV2Shape = {
-      getOperatingCountsCandidates: (input) => Effect.gen(function* () {
-        const existing = (yield* Ref.get(replayState)).projections;
-        const threads = [...existing.values()]
-          .filter(({ thread }) => thread.archivedAt === null && thread.deletedAt === null &&
-            (input?.projectId === undefined || thread.projectId === input.projectId))
-          .map((projection): ProjectionOperatingCountsCandidate => {
-            const pending = projection.runtimeRequests.filter((request) => request.status === "pending")
-              .toSorted((left, right) => DateTime.toEpochMillis(right.createdAt) - DateTime.toEpochMillis(left.createdAt) ||
-                String(right.id).localeCompare(String(left.id)))[0];
-            const active = projection.runs.filter(isActivityRunForShell)
-              .toSorted((left, right) => right.ordinal - left.ordinal)[0];
-            return { id: projection.thread.id, projectId: projection.thread.projectId,
-              activeProviderThreadId: projection.thread.activeProviderThreadId,
-              archivedAt: null, deletedAt: null, interactionMode: projection.thread.interactionMode,
-              activityRunStatus: active?.status ?? null,
-              pendingRuntimeRequest: pending === undefined ? null : { kind: pending.kind },
-              hasActionableProposedPlan: projection.plans.some((plan) => plan.kind === "proposed_plan" && plan.status === "active"),
-              latestRunCompletedAt: latestUnheldRun(projection.runs)?.completedAt ?? null };
-          }).toSorted((left, right) => String(left.id).localeCompare(String(right.id)));
-        return { threads, snapshotSequence: yield* Ref.get(sequence) };
-      }),
+      getOperatingCountsCandidates: (input) =>
+        Effect.gen(function* () {
+          const existing = (yield* Ref.get(replayState)).projections;
+          const threads = [...existing.values()]
+            .filter(
+              ({ thread }) =>
+                thread.archivedAt === null &&
+                thread.deletedAt === null &&
+                (input?.projectId === undefined || thread.projectId === input.projectId),
+            )
+            .map((projection): ProjectionOperatingCountsCandidate => {
+              const pending = projection.runtimeRequests
+                .filter((request) => request.status === "pending")
+                .toSorted(
+                  (left, right) =>
+                    DateTime.toEpochMillis(right.createdAt) -
+                      DateTime.toEpochMillis(left.createdAt) ||
+                    String(right.id).localeCompare(String(left.id)),
+                )[0];
+              const active = projection.runs
+                .filter(isActivityRunForShell)
+                .toSorted((left, right) => right.ordinal - left.ordinal)[0];
+              return {
+                id: projection.thread.id,
+                projectId: projection.thread.projectId,
+                activeProviderThreadId: projection.thread.activeProviderThreadId,
+                archivedAt: null,
+                deletedAt: null,
+                interactionMode: projection.thread.interactionMode,
+                activityRunStatus: active?.status ?? null,
+                pendingRuntimeRequest: pending === undefined ? null : { kind: pending.kind },
+                hasActionableProposedPlan: projection.plans.some(
+                  (plan) => plan.kind === "proposed_plan" && plan.status === "active",
+                ),
+                latestRunCompletedAt: latestUnheldRun(projection.runs)?.completedAt ?? null,
+              };
+            })
+            .toSorted((left, right) => String(left.id).localeCompare(String(right.id)));
+          return { threads, snapshotSequence: yield* Ref.get(sequence) };
+        }),
       apply: (event) =>
         Effect.gen(function* () {
           const result = yield* Ref.modify(replayState, (existing) => {

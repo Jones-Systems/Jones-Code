@@ -442,6 +442,8 @@ const PreviewLayerLive = Layer.empty.pipe(
   Layer.provideMerge(PortScannerLayerLive),
 );
 
+const DeviceDirectGrantsLive = DeviceDirectGrants.layer;
+
 const DeviceLayerLive = DeviceService.layer.pipe(
   Layer.provide(ServerSettingsLayerLive),
   Layer.provide(ProcessRunner.layer),
@@ -585,7 +587,7 @@ const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive, DeviceLayerLive)),
-  Layer.provideMerge(DeviceDirectGrants.layer),
+  Layer.provideMerge(DeviceDirectGrantsLive),
   Layer.provideMerge(PersistenceLayerLive),
   // Both read a user-owned file out of the state directory and stream changes
   // to clients; neither depends on the other.
