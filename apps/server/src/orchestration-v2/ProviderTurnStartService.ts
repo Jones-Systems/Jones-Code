@@ -15,6 +15,7 @@ import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -40,6 +41,7 @@ import {
   type ProviderAdapterV2Error,
   type ProviderAdapterV2HistoricalContext,
   type ProviderAdapterV2SessionRuntime,
+  type ProviderAdapterV2TurnInput,
 } from "./ProviderAdapter.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -63,6 +65,24 @@ export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStart
 
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
 
+export interface NativeProviderTurnStart {
+  readonly execution: NonNullable<ProviderAdapterV2TurnInput["nativeCreationExecution"]>;
+  readonly operationId: string;
+  readonly onAcknowledged: (input: {
+    readonly turn: ProviderAdapterV2TurnInput;
+    readonly session: ProviderAdapterV2SessionRuntime;
+    readonly operation: "start_turn" | "compact_thread";
+    readonly runtimeGeneration: string | undefined;
+  }) => Effect.Effect<void, unknown>;
+}
+
+export function acknowledgeProviderTurnStart<E, E2>(
+  start: Effect.Effect<void, E>,
+  acknowledge: Effect.Effect<void, E2>,
+): Effect.Effect<void, E | E2> {
+  return start.pipe(Effect.andThen(acknowledge));
+}
+
 export interface ProviderTurnStartServiceV2Shape {
   /**
    * Starts the run's provider turn. When `willRetry` is true, a session open
@@ -73,6 +93,7 @@ export interface ProviderTurnStartServiceV2Shape {
     readonly threadId: ThreadId;
     readonly runId: RunId;
     readonly willRetry?: boolean;
+    readonly nativeStart?: NativeProviderTurnStart;
   }) => Effect.Effect<void, ProviderTurnStartError>;
 }
 
@@ -217,6 +238,7 @@ export const layer: Layer.Layer<
       readonly threadId: ThreadId;
       readonly runId: RunId;
       readonly willRetry?: boolean;
+      readonly nativeStart?: NativeProviderTurnStart;
     }) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
@@ -528,6 +550,7 @@ export const layer: Layer.Layer<
           providerSessionId,
           modelSelection: run.modelSelection,
           runtimePolicy: resolvedRuntimePolicy,
+          ...(input.nativeStart ? { nativeCreationExecution: input.nativeStart.execution } : {}),
           ...(existingSessionProjection === undefined
             ? {}
             : { resumeFromSession: existingSessionProjection }),
@@ -584,7 +607,42 @@ export const layer: Layer.Layer<
         });
         return;
       }
-      const session = sessionResult.success;
+      const rawSession = sessionResult.success;
+      const nativeOutcome: { acknowledgement?: Exit.Exit<void, unknown> } = {};
+      const startNativeTurn = (
+        turn: ProviderAdapterV2TurnInput,
+        operation: "start_turn" | "compact_thread",
+      ) => {
+        const nativeStart = input.nativeStart;
+        const start = operation === "compact_thread" ? rawSession.compactThread! : rawSession.startTurn;
+        if (!nativeStart) return start(turn);
+        const ownedTurn = {
+          ...turn,
+          nativeCreationExecution: nativeStart.execution,
+          nativeOperation: {
+            operationId: nativeStart.operationId,
+            operation,
+            threadId: turn.threadId,
+            providerThreadId: turn.providerThread.id,
+            providerSessionId: rawSession.providerSessionId,
+            instanceId: rawSession.instanceId,
+            attemptId: turn.attemptId,
+            ...(rawSession.runtimeGeneration ? { runtimeGeneration: rawSession.runtimeGeneration } : {}),
+          },
+        };
+        return acknowledgeProviderTurnStart(start(ownedTurn), Effect.gen(function* () {
+          // Keep ingestion alive after provider acceptance; propagate a failed durable
+          // confirmation outside RunExecution's provider-failure settlement path.
+          nativeOutcome.acknowledgement = yield* Effect.exit(nativeStart.onAcknowledged({
+            turn: ownedTurn, session: rawSession, operation, runtimeGeneration: rawSession.runtimeGeneration,
+          }));
+        }));
+      };
+      const session: ProviderAdapterV2SessionRuntime = {
+        ...rawSession,
+        startTurn: (turn) => startNativeTurn(turn, "start_turn"),
+        ...(rawSession.compactThread ? { compactThread: (turn: ProviderAdapterV2TurnInput) => startNativeTurn(turn, "compact_thread") } : {}),
+      };
       // Only the provider's own thread load fails the run on the last attempt;
       // store, id and handoff failures around it keep their typed errors.
       const loadFromProvider = (
@@ -653,6 +711,7 @@ export const layer: Layer.Layer<
               runtimePolicy: resolvedRuntimePolicy,
               providerSessionId,
               existingProviderThread: providerThread,
+              ...(input.nativeStart ? { nativeCreationExecution: input.nativeStart.execution } : {}),
             }),
           );
         }
@@ -701,6 +760,7 @@ export const layer: Layer.Layer<
             // session instead of retrying the resume that just failed, while
             // still adopting this row's identity.
             existingProviderThread: { ...providerThread, nativeThreadRef: null },
+            ...(input.nativeStart ? { nativeCreationExecution: input.nativeStart.execution } : {}),
           }),
         );
         if (replacement === undefined) return undefined;
@@ -1251,6 +1311,13 @@ export const layer: Layer.Layer<
         modelSelection: run.modelSelection,
         runtimePolicy: resolvedRuntimePolicy,
       });
+      if (input.nativeStart) {
+        const acknowledgement = nativeOutcome.acknowledgement;
+        if (acknowledgement === undefined) {
+          return yield* new ProviderTurnStartError({ runId, cause: "Native provider start was not acknowledged." });
+        }
+        if (Exit.isFailure(acknowledgement)) return yield* Effect.failCause(acknowledgement.cause);
+      }
     });
 
     return ProviderTurnStartServiceV2.of({
