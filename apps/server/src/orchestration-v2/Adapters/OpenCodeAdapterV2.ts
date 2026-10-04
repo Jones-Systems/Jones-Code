@@ -3072,7 +3072,7 @@ export function makeOpenCodeAdapterV2(
               if (threadInput.existingProviderThread?.nativeThreadRef != null) {
                 return yield* runtimeSession.resumeThread({
                   providerThread: threadInput.existingProviderThread,
-                  nativeCreationExecution: threadInput.nativeCreationExecution,
+                  ...(threadInput.nativeCreationExecution === undefined ? {} : { nativeCreationExecution: threadInput.nativeCreationExecution }),
                 });
               }
               // No title: OpenCode generates one from the first prompt only when

@@ -522,7 +522,7 @@ describe("PiAdapterV2", () => {
         providerSessionId: runtime.providerSessionId,
         instanceId: PI_INSTANCE_ID,
         runtimeGeneration: runtime.runtimeGeneration!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
+        nativeThreadId: providerThread.nativeThreadRef!.nativeId ?? undefined,
       };
       assert.isString(runtime.runtimeGeneration);
       assert.isUndefined(runtime.getGoal);
@@ -556,7 +556,7 @@ describe("PiAdapterV2", () => {
         providerSessionId: runtime.providerSessionId,
         instanceId: PI_INSTANCE_ID,
         runtimeGeneration: runtime.runtimeGeneration!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
+        nativeThreadId: providerThread.nativeThreadRef!.nativeId ?? undefined,
       };
       for (const partial of [
         { isStreaming: undefined }, { isCompacting: undefined },

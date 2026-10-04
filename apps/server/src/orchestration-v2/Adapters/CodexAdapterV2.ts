@@ -1359,9 +1359,9 @@ function codexRuntimeIdentity(input: {
   readonly runtimeGeneration: string;
   readonly instanceId: ProviderInstanceId;
   readonly requested: ModelSelection;
-  readonly model?: string | null;
-  readonly modelProvider?: string | null;
-  readonly serviceTier?: string | null;
+  readonly model?: string | null | undefined;
+  readonly modelProvider?: string | null | undefined;
+  readonly serviceTier?: string | null | undefined;
   readonly sourceEvent: string;
 }): RuntimeIdentityAttestation {
   const observed = (value: string | null | undefined) =>
@@ -1395,9 +1395,9 @@ interface CodexRuntimeThreadBinding {
 
 interface CodexNativeIdentityEvidence {
   readonly sourceEvent: string;
-  readonly model?: string | null;
-  readonly modelProvider?: string | null;
-  readonly serviceTier?: string | null;
+  readonly model?: string | null | undefined;
+  readonly modelProvider?: string | null | undefined;
+  readonly serviceTier?: string | null | undefined;
 }
 
 const decodeCodexChildModel = Schema.decodeUnknownEffect(
@@ -1810,7 +1810,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         });
         const nativeDirectoryFor = (providerThread: OrchestrationV2ProviderThread): string | undefined => {
           const nativeId = providerThread.nativeThreadRef?.nativeId;
-          const evidence = nativeId === undefined ? undefined : nativeDirectories.get(nativeId);
+          const evidence = nativeId == null ? undefined : nativeDirectories.get(nativeId);
           return evidence !== undefined && evidence.providerThreadId === providerThread.id && evidence.runtimeGeneration === runtimeGeneration
             ? evidence.cwd : undefined;
         };
@@ -2215,9 +2215,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           readonly providerThread: OrchestrationV2ProviderThread;
           readonly requested: ModelSelection;
           readonly sourceEvent: string;
-          readonly model?: string | null;
-          readonly modelProvider?: string | null;
-          readonly serviceTier?: string | null;
+          readonly model?: string | null | undefined;
+          readonly modelProvider?: string | null | undefined;
+          readonly serviceTier?: string | null | undefined;
           readonly nativeDirectory?: string | undefined;
         }): Effect.Effect<void> =>
           Effect.gen(function* () {
@@ -5991,7 +5991,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             }),
           );
 
-        const handleNativeCompletion = (payload: CodexSchema.V2TurnCompletedNotification) =>
+        const handleNativeCompletion = (payload: CodexSchema.V2TurnCompletedNotification): Effect.Effect<void> =>
           Effect.gen(function* () {
             const request = capacityByTurn.get(payload.turn.id) ?? capacityByThread.get(payload.threadId);
             if (request !== undefined && request.state.binding.nativeThreadId === payload.threadId && request.state.phase === "awaiting_start") {
@@ -6603,7 +6603,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               ),
               Effect.onExit((exit) => Effect.suspend(() => {
                 if (!bindingOperationStarted) return Effect.void;
-                if (exit._tag === "Failure" && threadInput.providerThread.nativeThreadRef)
+                if (exit._tag === "Failure" && threadInput.providerThread.nativeThreadRef?.nativeId != null)
                   nativeDirectories.delete(threadInput.providerThread.nativeThreadRef.nativeId);
                 return (exit._tag === "Failure" ? discardFailedBindingObservations : Effect.void)
                   .pipe(Effect.andThen(finishBindingOperation));
@@ -6670,7 +6670,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             }).pipe(
               Effect.tapError(() => Effect.sync(() => {
                 const nativeId = input.providerThread.nativeThreadRef?.nativeId;
-                if (nativeId !== undefined) nativeDirectories.delete(nativeId);
+                if (nativeId != null) nativeDirectories.delete(nativeId);
               })),
               Effect.mapError(
                 (cause) =>
@@ -6759,7 +6759,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             }).pipe(
               Effect.onError(() => dispatched && request !== undefined ? finishUnknownCapacityStart(request) : Effect.void),
               Effect.onExit((exit) => Effect.sync(() => {
-                if (exit._tag === "Failure" && turnInput.providerThread.nativeThreadRef)
+                if (exit._tag === "Failure" && turnInput.providerThread.nativeThreadRef?.nativeId != null)
                   nativeDirectories.delete(turnInput.providerThread.nativeThreadRef.nativeId);
               })),
               Effect.ensuring(
@@ -6843,7 +6843,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               // interrupts remain goal-neutral; a paused goal does not prove drain.
               if (turnInput.requestRuntimeRestart === true) {
                 const nativeId = turnInput.providerThread.nativeThreadRef?.nativeId;
-                const currentBinding = nativeId === undefined ? undefined : runtimeBindings.get(nativeId)?.binding;
+                const currentBinding = nativeId == null ? undefined : runtimeBindings.get(nativeId)?.binding;
                 if (currentBinding === undefined || (yield* Ref.get(closed)) ||
                     !matchesInterruptBinding(turnInput.providerThread, currentBinding, turnInput.nativeOperation)) {
                   return yield* toProtocolError("Codex user Stop does not match the current runtime binding.");
@@ -7360,7 +7360,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             }).pipe(
               Effect.tapError(() => Effect.sync(() => {
                 const nativeId = threadInput.providerThread.nativeThreadRef?.nativeId;
-                if (nativeId !== undefined) nativeDirectories.delete(nativeId);
+                if (nativeId != null) nativeDirectories.delete(nativeId);
               })),
               Effect.mapError(
                 (cause) =>

@@ -1,5 +1,5 @@
 import { ProviderDriverKind, ProviderInstanceId, type ModelSelection, type ServerProviderModel } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   codexTurnNeedsModelCatalog,
@@ -65,7 +65,7 @@ describe("Codex effective turn settings", () => {
       instanceId,
       selection: explicit,
       get models(): ReadonlyArray<ServerProviderModel> { throw new Error("catalog must not be read"); },
-      get configuredDefaultModelSelection() { throw new Error("configured default must not be read"); },
+      get configuredDefaultModelSelection(): never { throw new Error("configured default must not be read"); },
       managed: false,
     })).toEqual({ type: "resolved", settings: { model: selection.model, effort: "xhigh" } });
   });

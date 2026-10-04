@@ -565,6 +565,7 @@ function makeReplayServerConfig(
       host: undefined,
       cwd: process.cwd(),
       baseDir,
+      authorityStateDir: path.join(baseDir, "authority-state"),
       staticDir: undefined,
       devUrl: undefined,
       devAllowedOrigins: [],

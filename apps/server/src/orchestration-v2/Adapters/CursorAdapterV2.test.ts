@@ -1,3 +1,4 @@
+import { ProviderDriverKind } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import type { InteractionUpdate } from "@cursor/sdk";
@@ -252,7 +253,7 @@ describe("CursorAdapterV2", () => {
         providerSessionId: runtime.providerSessionId,
         instanceId,
         runtimeGeneration: first!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
+        nativeThreadId: providerThread.nativeThreadRef!.nativeId ?? undefined,
       };
       const observed = yield* runtime.observeThreadRuntime!(binding);
       assert.equal(observed.status, "unknown");
@@ -297,12 +298,12 @@ describe("CursorAdapterV2", () => {
             listMessages: Effect.succeed([]), close: Effect.void,
             send: (sent) => Effect.gen(function* () {
               const ordinal = ++sends;
-              yield* sent.onDelta({ type: "text-delta", text: ordinal === 1 ? "Old owner output" : "Fresh owner output" });
+              yield* (sent.onDelta?.({ type: "text-delta", text: ordinal === 1 ? "Old owner output" : "Fresh owner output" }) ?? Effect.void);
               if (ordinal === 1) {
                 yield* Deferred.succeed(received, undefined);
                 yield* Deferred.await(acknowledged);
               }
-              return { runId: `cursor-origin-run-${ordinal}`, cancel: Effect.void,
+              return { agentId: opened.agentId ?? "native-cursor-origin-first", runId: `cursor-origin-run-${ordinal}`, cancel: Effect.void,
                 wait: Effect.succeed({ status: "finished" as const }) };
             }),
           }),
@@ -408,7 +409,7 @@ describe("CursorAdapterV2", () => {
           assert.equal(runtime?.runtimeGeneration, nextGeneration);
           if (rejectRegistration) {
             return yield* new ProviderAdapterProtocolError({
-              driver: "cursor", detail: "replacement registration failed",
+              driver: ProviderDriverKind.make("cursor"), detail: "replacement registration failed",
             });
           }
           yield* Effect.yieldNow;
@@ -451,7 +452,7 @@ describe("CursorAdapterV2", () => {
         providerSessionId: runtime.providerSessionId,
         providerThreadId: providerThread.id,
         runtimeGeneration: runtime.runtimeGeneration!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
+        nativeThreadId: providerThread.nativeThreadRef!.nativeId ?? undefined,
       });
       assert.equal(observation.status, "unknown");
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),

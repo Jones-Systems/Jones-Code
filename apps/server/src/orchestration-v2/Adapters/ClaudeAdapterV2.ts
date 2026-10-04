@@ -7277,7 +7277,7 @@ export function makeClaudeAdapterV2(
               }
               const subagents = yield* Ref.get(sessionSubagentsByTaskId);
               const hasAgent = [...subagents.values()].some(
-                (entry) => entry.task.nativeTaskRef !== null &&
+                (entry) => entry.task.nativeTaskRef?.nativeId != null &&
                   nativeAgentTaskGenerations.get(entry.task.nativeTaskRef.nativeId) === runtimeGeneration &&
                   entry.task.threadId === binding.threadId && entry.task.status === "running",
               );
