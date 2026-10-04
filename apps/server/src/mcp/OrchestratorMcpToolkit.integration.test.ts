@@ -696,6 +696,14 @@ describe("orchestrator MCP toolkit", () => {
             const invoke = (name: string, args: Record<string, unknown>) =>
               invokeAs(invocation, name, args);
 
+            const deniedSettlement = yield* invoke("t3_thread_settle", {
+              clientRequestId: "wrong-credential",
+            });
+            expect(deniedSettlement.isError).toBe(true);
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).thread.selfSettlement,
+            ).toBeUndefined();
+
             const pinned = yield* invoke("t3_thread_organize", { action: "pin" });
             expect(pinned.structuredContent).toHaveProperty("sequence");
             expect((yield* orchestrator.getThreadShell(parentThreadId))?.pinnedAt).not.toBeNull();

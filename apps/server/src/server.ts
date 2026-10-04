@@ -54,7 +54,10 @@ import {
 import * as NativeStoreAuthority from "./environment/NativeStoreAuthority.ts";
 import { jonesUpdatesHttpApiLayer } from "./jonesUpdates/http.ts";
 import * as JonesUpdates from "./jonesUpdates/service.ts";
-import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./voiceReview/http.ts";
+import {
+  voiceReviewHttpApiLayerLive,
+  voiceReviewResponseHeadersLayer,
+} from "./voiceReview/http.ts";
 import { hostStatusHttpApiLayer } from "./hostStatus/http.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
@@ -503,11 +506,15 @@ const OrchestrationApplicationLayerLive = CheckpointDiffQuery.layer.pipe(
 // inactivity and merged pull requests, then settles through the orchestrator
 // so every client sees the same shelf.
 const ThreadSettlementWorkerLive = Layer.effectDiscard(
-  ThreadSettlementService.make.pipe(Effect.flatMap((service) => ServerActivation.forkParked(service.start()))),
+  ThreadSettlementService.make.pipe(
+    Effect.flatMap((service) => ServerActivation.forkParked(service.start())),
+  ),
 ).pipe(Layer.provide(PullRequestServiceLive), Layer.provide(ProjectionStoreV2.layer));
 
 const ThreadPullRequestWorkerLive = Layer.effectDiscard(
-  ThreadPullRequestService.make.pipe(Effect.flatMap((service) => ServerActivation.forkParked(service.start()))),
+  ThreadPullRequestService.make.pipe(
+    Effect.flatMap((service) => ServerActivation.forkParked(service.start())),
+  ),
 ).pipe(Layer.provide(PullRequestServiceLive));
 
 const ProviderInstallationRefreshLive = Layer.effectDiscard(
@@ -545,9 +552,11 @@ const ProviderInstallationRefreshLive = Layer.effectDiscard(
 const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   ThreadSettlementWorkerLive,
-  Layer.effectDiscard(StorageCleanup.make.pipe(Effect.flatMap((service) => ServerActivation.forkParked(service.start())))).pipe(
-    Layer.provide(ProjectionStoreV2.layer),
-  ),
+  Layer.effectDiscard(
+    StorageCleanup.make.pipe(
+      Effect.flatMap((service) => ServerActivation.forkParked(service.start())),
+    ),
+  ).pipe(Layer.provide(ProjectionStoreV2.layer)),
   ThreadPullRequestWorkerLive,
   Layer.effectDiscard(
     Effect.gen(function* () {
@@ -676,7 +685,9 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(nativeWorkstreamsHttpApiLayer),
       Layer.provide(hostStatusHttpApiLayer),
       Layer.provide(jonesUpdatesHttpApiLayer),
-      Layer.provide(voiceReviewHttpApiLayer),
+      Layer.provide(
+        voiceReviewHttpApiLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer)),
+      ),
       Layer.provide(projectHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),

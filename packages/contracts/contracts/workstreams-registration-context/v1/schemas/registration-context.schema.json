@@ -34,7 +34,9 @@
     "AccountProvenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind"],
+      "required": [
+        "kind"
+      ],
       "properties": {
         "kind": {
           "const": "not_account_scoped"
@@ -44,7 +46,11 @@
     "Build": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "sha", "tree"],
+      "required": [
+        "repository",
+        "sha",
+        "tree"
+      ],
       "properties": {
         "repository": {
           "const": "Jones-Systems/Jones-Code"

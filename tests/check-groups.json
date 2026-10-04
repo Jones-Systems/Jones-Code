@@ -3,8 +3,9 @@
   "groups": [
     {
       "group_id": "t3-conditional-dispatch",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/DispatchGuard.test.ts apps/server/src/orchestration-v2/CommandObservation.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/Orchestrator.guarded-dispatch.test.ts packages/contracts/src/orchestrationNative.test.ts packages/contracts/src/orchestrationV2.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/DispatchGuard.test.ts apps/server/src/orchestration-v2/CommandObservation.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/Orchestrator.guarded-dispatch.test.ts packages/contracts/src/orchestrationNative.test.ts packages/contracts/src/orchestrationV2.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts apps/server/src/orchestration-v2/SelfSettlement.test.ts",
       "modules": [
+        "apps/server/src/orchestration-v2/SelfSettlement.test.ts",
         "apps/server/src/orchestration-v2/DispatchGuard.test.ts",
         "apps/server/src/orchestration-v2/CommandObservation.test.ts",
         "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
@@ -16,6 +17,7 @@
         "apps/server/src/relay/AgentAwarenessRelay.test.ts"
       ],
       "scope": [
+        "apps/server/src/orchestration-v2/SelfSettlement.ts",
         "apps/server/src/orchestration-v2/DispatchGuard.ts",
         "apps/server/src/orchestration-v2/CommandObservation.ts",
         "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
@@ -113,19 +115,13 @@
     {
       "group_id": "jones-cli-release-provenance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/cli/update.test.ts",
-      "modules": [
-        "apps/server/src/cli/update.test.ts"
-      ],
-      "scope": [
-        "apps/server/src/cli/update.ts"
-      ]
+      "modules": ["apps/server/src/cli/update.test.ts"],
+      "scope": ["apps/server/src/cli/update.ts"]
     },
     {
       "group_id": "voice-native-bootstrap-conformance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/voiceNativeBootstrap.test.ts",
-      "modules": [
-        "apps/server/src/voiceNativeBootstrap.test.ts"
-      ],
+      "modules": ["apps/server/src/voiceNativeBootstrap.test.ts"],
       "scope": [
         "apps/server/src/voiceNativeBootstrap.test.ts",
         "apps/server/src/voiceNativeBootstrap.fixtures/**",
@@ -144,9 +140,7 @@
         "scripts/runtime-adoption-qualification/browser-storage.test.mjs",
         "scripts/runtime-adoption-qualification/artifact-binding.test.mjs"
       ],
-      "scope": [
-        "scripts/runtime-adoption-qualification/**"
-      ]
+      "scope": ["scripts/runtime-adoption-qualification/**"]
     },
     {
       "group_id": "t3-native-creation-contracts",
@@ -251,14 +245,18 @@
     },
     {
       "group_id": "jones-voice-review",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/voiceReview/bridge.test.ts apps/server/src/voiceReview/http.test.ts apps/web/src/components/sidebar/mainAppLocation.test.ts apps/web/src/components/voiceReview/voiceReviewActions.test.ts packages/client-runtime/src/voice-review.test.ts packages/contracts/src/voiceReview.test.ts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/voiceReview/bridge.test.ts apps/server/src/voiceReview/http.test.ts apps/web/src/components/sidebar/mainAppLocation.test.ts apps/web/src/components/voiceReview/voiceReviewActions.test.ts packages/client-runtime/src/voice-review.test.ts packages/contracts/src/voiceReview.test.ts apps/web/src/components/voiceReview/RecentVoicePrompts.test.tsx apps/server/src/voiceReview/native.test.ts apps/server/src/voiceReview/config.test.ts apps/server/src/voiceReview/composition.test.ts",
       "modules": [
         "apps/server/src/voiceReview/bridge.test.ts",
         "apps/server/src/voiceReview/http.test.ts",
         "apps/web/src/components/sidebar/mainAppLocation.test.ts",
         "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
         "packages/client-runtime/src/voice-review.test.ts",
-        "packages/contracts/src/voiceReview.test.ts"
+        "packages/contracts/src/voiceReview.test.ts",
+        "apps/web/src/components/voiceReview/RecentVoicePrompts.test.tsx",
+        "apps/server/src/voiceReview/native.test.ts",
+        "apps/server/src/voiceReview/config.test.ts",
+        "apps/server/src/voiceReview/composition.test.ts"
       ],
       "scope": [
         "apps/server/src/server.ts",
@@ -283,7 +281,14 @@
         "packages/contracts/src/environmentHttp.ts",
         "packages/contracts/src/index.ts",
         "packages/contracts/src/voiceReview.test.ts",
-        "packages/contracts/src/voiceReview.ts"
+        "packages/contracts/src/voiceReview.ts",
+        "apps/web/src/components/voiceReview/RecentVoicePrompts.tsx",
+        "apps/web/src/components/voiceReview/RoutingDiagnostics.tsx",
+        "apps/server/src/voiceReview/native.ts",
+        "packages/contracts/src/threadRegistry.ts",
+        "packages/client-runtime/src/voiceReview/**",
+        "apps/server/src/voiceReview/composition.ts",
+        "apps/server/src/voiceReview/config.test.ts"
       ]
     },
     {
@@ -437,6 +442,37 @@
         "apps/web/src/components/workstreams/**",
         "apps/web/src/state/workstreams.ts",
         "apps/web/src/components/Sidebar.tsx"
+      ]
+    },
+    {
+      "group_id": "jones-queue-dispatch-capability",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/contracts/src/queueProtocol.test.ts packages/contracts/src/environment.test.ts",
+      "modules": [
+        "packages/contracts/src/queueProtocol.test.ts",
+        "packages/contracts/src/environment.test.ts"
+      ],
+      "scope": [
+        "packages/contracts/src/queueProtocol.ts",
+        "packages/contracts/src/environment.ts",
+        "apps/server/src/environment/ServerEnvironment.ts",
+        "packages/contracts/test-fixtures/queue-dispatch-capability.json"
+      ]
+    },
+    {
+      "group_id": "jones-thread-corpus-capability",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/contracts/src/threadCorpusProtocol.test.ts apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts",
+      "modules": [
+        "packages/contracts/src/threadCorpusProtocol.test.ts",
+        "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts"
+      ],
+      "scope": [
+        "packages/contracts/src/threadCorpusProtocol.ts",
+        "packages/contracts/test-fixtures/thread-corpus-capability.json",
+        "packages/contracts/src/environment.ts",
+        "packages/contracts/src/index.ts",
+        "apps/server/src/environment/ServerEnvironment.ts",
+        "packages/contracts/src/orchestration.ts",
+        "packages/contracts/src/environmentHttp.ts"
       ]
     },
     {
