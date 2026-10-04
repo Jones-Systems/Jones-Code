@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
-import { readFileSync } from "node:fs";
+import producerRaw from "./fixtures/work_queue_metadata_v1.json.fixture?raw";
 import { WorkQueueMetadata, WorkQueueMetadataResult } from "./workQueueMetadata.ts";
 
 const item = {
@@ -35,10 +35,10 @@ const decode = Schema.decodeUnknownSync(WorkQueueMetadata);
 
 describe("work queue metadata contract", () => {
   it("decodes the exact Python producer golden artifact without changing its identity", () => {
-    const bytes = readFileSync(new URL("./fixtures/work_queue_metadata_v1.wire", import.meta.url));
+    const bytes = new TextEncoder().encode(producerRaw);
     expect(bytes.byteLength).toBe(923);
     expect(bytes[bytes.length - 1]).toBe(125);
-    const parsed = JSON.parse(bytes.toString("utf8"));
+    const parsed = JSON.parse(producerRaw);
     const snapshot = decode(parsed);
     expect(snapshot).toEqual(parsed);
     expect(snapshot.snapshot_token).toBe(

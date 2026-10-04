@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - Server-only configuration must validate absolute paths using the same native path semantics as the artifact reader.
 import { WorkQueueMetadataSource } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { isAbsolute } from "node:path";

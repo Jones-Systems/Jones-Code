@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - The native descriptor boundary requires O_NOFOLLOW, descriptor ownership and identity checks, and bounded reads from that same descriptor.
 import {
   WorkQueueMetadata,
   WORK_QUEUE_METADATA_MAX_BYTES,
@@ -33,7 +34,7 @@ function canonical(value: unknown): string {
 
 async function read(
   config: WorkQueueMetadataConfig,
-  now: number,
+  currentTimeMillis: () => number,
 ): Promise<WorkQueueMetadataResult> {
   if (config.status === "unconfigured") return { status: "unconfigured", reason: "not_configured" };
   if (config.status !== "configured")
@@ -111,6 +112,7 @@ async function read(
     )
   )
     return { status: "unavailable", reason: "source_mismatch" };
+  const now = currentTimeMillis();
   if (snapshot.observed_at_ms > now) return { status: "unavailable", reason: "future_sample" };
   const expires_at_ms = snapshot.observed_at_ms + config.maxAgeMs;
   if (!Number.isSafeInteger(expires_at_ms))
@@ -125,8 +127,8 @@ async function read(
 export const layerWithConfig = (config: WorkQueueMetadataConfig) =>
   Layer.succeed(WorkQueueMetadataService, {
     snapshot: Effect.gen(function* () {
-      const now = yield* Clock.currentTimeMillis;
-      return yield* Effect.promise(() => read(config, now));
+      const clock = yield* Clock.Clock;
+      return yield* Effect.promise(() => read(config, () => clock.currentTimeMillisUnsafe()));
     }),
   });
 export const layer = Layer.suspend(() => layerWithConfig(workQueueMetadataConfig(process.env)));

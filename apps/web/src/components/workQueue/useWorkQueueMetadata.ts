@@ -26,7 +26,7 @@ const query = createEnvironmentCommand(connectionAtomRuntime, {
         const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
         const prepared = yield* SubscriptionRef.get(supervisor.prepared);
         if (Option.isNone(prepared))
-          return yield* Effect.fail(new Error("Environment unavailable"));
+          return yield* Effect.fail({ _tag: "WorkQueueMetadataUnavailableError" });
         const signer = yield* Effect.serviceOption(
           ManagedRelay.ManagedRelay.ManagedRelayDpopSigner,
         );

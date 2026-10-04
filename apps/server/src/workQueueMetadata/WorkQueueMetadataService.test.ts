@@ -1,5 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off - Synthetic native file fixtures exercise descriptor permissions, symlink rejection, exact bytes, and cleanup at the reader boundary.
 import { describe, expect, it, vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
 import * as Schema from "effect/Schema";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, rm, symlink, writeFile, mkdir, readFile } from "node:fs/promises";
@@ -19,7 +21,7 @@ function artifact(change: Record<string, unknown> = {}) {
   const value = {
     schema: "codex.t3-work-queue-metadata/v1",
     source,
-    observed_at_ms: Date.now() - 10,
+    observed_at_ms: Effect.runSync(Clock.currentTimeMillis) - 10,
     coverage: "complete",
     items: [],
     authority_effect: "none",
@@ -53,11 +55,43 @@ async function fixture(run: (path: string, config: WorkQueueMetadataConfig) => P
 }
 
 describe("configured queue metadata service", () => {
+  it.each([
+    [1_500, "ready"],
+    [500, "stale"],
+  ] as const)(
+    "classifies observation %i using the clock after asynchronous artifact reading",
+    async (observedAt, status) =>
+      fixture(async (path) => {
+        const value = artifact({ observed_at_ms: observedAt });
+        await writeFile(path, JSON.stringify(value), { mode: 0o600 });
+        let now = 1_000;
+        const baseClock = Effect.runSync(Effect.service(Clock.Clock));
+        const clock: Clock.Clock = {
+          ...baseClock,
+          currentTimeMillisUnsafe: () => now,
+          currentTimeMillis: Effect.sync(() => now),
+        };
+        const result = Effect.runPromise(
+          Effect.flatMap(Service.WorkQueueMetadataService, (service) => service.snapshot).pipe(
+            Effect.provide(
+              Service.layerWithConfig({ status: "configured", path, source, maxAgeMs: 1_000 }),
+            ),
+            Effect.provideService(Clock.Clock, clock),
+          ),
+        );
+        now = 2_000;
+        expect(await result).toEqual({
+          status,
+          snapshot: value,
+          expires_at_ms: observedAt + 1_000,
+        });
+      }),
+  );
   it("validates the exact Python producer bytes and digest while reporting their sample as stale", async () =>
     fixture(async (path) => {
       const bytes = await readFile(
         new URL(
-          "../../../../packages/contracts/src/fixtures/work_queue_metadata_v1.wire",
+          "../../../../packages/contracts/src/fixtures/work_queue_metadata_v1.json.fixture",
           import.meta.url,
         ),
       );
@@ -95,7 +129,7 @@ describe("configured queue metadata service", () => {
       for (const [change, status] of [
         [{}, "ready"],
         [{ coverage: "partial" }, "partial"],
-        [{ observed_at_ms: Date.now() - 60_000 }, "stale"],
+        [{ observed_at_ms: Effect.runSync(Clock.currentTimeMillis) - 60_000 }, "stale"],
       ] as const) {
         const value = artifact(change);
         await writeFile(path, JSON.stringify(value), { mode: 0o600 });
@@ -110,7 +144,10 @@ describe("configured queue metadata service", () => {
     fixture(async (path, config) => {
       for (const [value, reason] of [
         [artifact({ source: { ...source, host_id: "other" } }), "source_mismatch"],
-        [artifact({ observed_at_ms: Date.now() + 60_000 }), "future_sample"],
+        [
+          artifact({ observed_at_ms: Effect.runSync(Clock.currentTimeMillis) + 60_000 }),
+          "future_sample",
+        ],
         [{ ...artifact(), snapshot_token: "0".repeat(64) }, "invalid_artifact"],
         [artifact({ prompt: "private text" }), "invalid_artifact"],
       ] as const) {
