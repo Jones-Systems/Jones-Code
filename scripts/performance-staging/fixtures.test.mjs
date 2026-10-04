@@ -21,19 +21,16 @@ import {
   validateSyntheticFixture,
 } from "./guard.mjs";
 
+import {
+  assertSyntheticDatabaseSource,
+  sourceParentEnvironment,
+  syntheticDatabaseSource,
+} from "./sources.mjs";
+
 const directory = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const worktree = NodePath.resolve(directory, "../..");
-const sourceParent = "/home/malcolmjones/Projects/Jones-Code-performance-worktrees-20261002";
-const oldSource = {
-  repository: "Jones-Systems/Jones-Code",
-  worktreePath: NodePath.join(sourceParent, "baseline"),
-  sourceRevision: "e5a31aceec91484b64315c63dcce80f6e7581604",
-};
-const liveSource = {
-  repository: "Jones-Systems/Jones-Code",
-  worktreePath: NodePath.join(sourceParent, "live-baseline"),
-  sourceRevision: "414bb8da204c3275cd0b76b2ec4d74dfb09a97e4",
-};
+const oldSource = syntheticDatabaseSource("e5a31aceec91484b64315c63dcce80f6e7581604");
+const liveSource = syntheticDatabaseSource("414bb8da204c3275cd0b76b2ec4d74dfb09a97e4");
 const producerBinding = {
   repository: "Jones-Systems/Jones-Code",
   sourceRevision: "67e203c3306b25bca104efbc449e10ebae384763",
@@ -1268,3 +1265,30 @@ NodeTest.test(
     });
   },
 );
+
+NodeTest.test("source binding keeps pinned names and rejects substituted descriptors", async () => {
+  await withInvocation(async ({ outer }) => {
+    const environment = { [sourceParentEnvironment]: outer };
+    const source = syntheticDatabaseSource(oldSource.sourceRevision, environment);
+    NodeAssert.equal(source.worktreePath, NodePath.join(outer, "baseline"));
+    NodeAssert.equal(source.repository, oldSource.repository);
+    NodeAssert.equal(source.sourceRevision, oldSource.sourceRevision);
+    for (const changed of [
+      { ...source, worktreePath: oldSource.worktreePath },
+      { ...source, sourceRevision: "0000000000000000000000000000000000000000" },
+      { ...source, repository: "other/repository" },
+      { ...source, extra: true },
+    ])
+      NodeAssert.throws(() => assertSyntheticDatabaseSource(changed, environment), {
+        code: "invalid_source",
+      });
+  });
+});
+
+NodeTest.test("private qualification pins cannot enter the original core producer", () => {
+  for (const revision of [
+    "c4c68bb0b33eafb72545e6e23b0b7258e49bd613",
+    "da5f4aee0035beec471b38598eaa2857d1e5155c",
+  ])
+    NodeAssert.throws(() => syntheticDatabaseSource(revision), { code: "invalid_source" });
+});

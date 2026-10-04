@@ -13,16 +13,8 @@ import {
   syntheticFixtureReceiptSha256,
 } from "./guard.mjs";
 
-const sourceParent = "/home/malcolmjones/Projects/Jones-Code-performance-worktrees-20261002";
-const sourceBindings = new Map([
-  ["e5a31aceec91484b64315c63dcce80f6e7581604", NodePath.join(sourceParent, "baseline")],
-  ["414bb8da204c3275cd0b76b2ec4d74dfb09a97e4", NodePath.join(sourceParent, "live-baseline")],
-]);
-const qualificationSourceBindings = new Map([
-  ...sourceBindings,
-  ["c4c68bb0b33eafb72545e6e23b0b7258e49bd613", NodePath.join(sourceParent, "history")],
-  ["da5f4aee0035beec471b38598eaa2857d1e5155c", NodePath.join(sourceParent, "lease")],
-]);
+import { assertQualificationDatabaseSource, assertSyntheticDatabaseSource } from "./sources.mjs";
+
 const requestLimit = 49 * 1024;
 const receiptLimit = 24 * 1024;
 const profileNames = ["health-offline-delete", "benchmark-wal"];
@@ -103,24 +95,17 @@ function digest(value) {
     .digest("hex");
 }
 
-function sourceFromBindings(source, bindings) {
-  const expectedPath = bindings.get(source?.sourceRevision);
-  if (
-    source?.repository !== "Jones-Systems/Jones-Code" ||
-    !expectedPath ||
-    source.worktreePath !== expectedPath ||
-    NodeFS.realpathSync(expectedPath) !== expectedPath
-  )
-    refuse("invalid_source", "database source must match an exact root-bound baseline");
-  return freeze({ ...source });
-}
-
 function checkedSource(source) {
-  return sourceFromBindings(source, sourceBindings);
+  return assertSyntheticDatabaseSource(source);
 }
 
 function checkedQualificationSource(source) {
-  return sourceFromBindings(source, qualificationSourceBindings);
+  const bound = assertQualificationDatabaseSource({
+    repository: source?.repository,
+    sourceRevision: source?.sourceRevision,
+    worktreePath: source?.worktreePath,
+  });
+  return freeze({ ...source, ...bound });
 }
 
 function checkedOptions(options, checkSource = checkedSource) {
@@ -1385,6 +1370,7 @@ async function produceCheckedFixture(options, use) {
       }
       if (closedProof && !result.error) {
         try {
+          checkedQualificationSource(options.databaseSource);
           if (result.profile) {
             options.signal?.throwIfAborted();
             result.profile.stage = "seal";

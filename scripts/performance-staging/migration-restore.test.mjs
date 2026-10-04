@@ -10,9 +10,11 @@ import * as NodeURL from "node:url";
 import {
   qualificationCases,
   qualificationProducerIdentity,
+  pinnedHead,
   runMigrationRestoreCase,
 } from "./migration-restore-worker.mjs";
 import { createOwnedRoot, disposeOwnedRoot } from "./guard.mjs";
+import { qualificationDatabaseSource } from "./sources.mjs";
 
 const directory = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const worktree = NodePath.resolve(directory, "../..");
@@ -27,9 +29,24 @@ const expectedForkNames = [
   "ThreadCreationLookupIndex",
 ];
 const expectedSeeds = {
-  e5: { revision: "e5a31aceec91484b64315c63dcce80f6e7581604", forkCount: 4 },
-  live: { revision: "414bb8da204c3275cd0b76b2ec4d74dfb09a97e4", forkCount: 2 },
-  six: { revision: "c4c68bb0b33eafb72545e6e23b0b7258e49bd613", forkCount: 6 },
+  e5: {
+    revision: "e5a31aceec91484b64315c63dcce80f6e7581604",
+    worktreePath: qualificationDatabaseSource("e5a31aceec91484b64315c63dcce80f6e7581604")
+      .worktreePath,
+    forkCount: 4,
+  },
+  live: {
+    revision: "414bb8da204c3275cd0b76b2ec4d74dfb09a97e4",
+    worktreePath: qualificationDatabaseSource("414bb8da204c3275cd0b76b2ec4d74dfb09a97e4")
+      .worktreePath,
+    forkCount: 2,
+  },
+  six: {
+    revision: "c4c68bb0b33eafb72545e6e23b0b7258e49bd613",
+    worktreePath: qualificationDatabaseSource("c4c68bb0b33eafb72545e6e23b0b7258e49bd613")
+      .worktreePath,
+    forkCount: 6,
+  },
 };
 const sha256 = (value) =>
   NodeCrypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -248,6 +265,7 @@ for (const specification of qualificationCases) {
         (phase) => phase.name === "closed-old-source-canonical-state",
       );
       NodeAssert.equal(before.databaseSource.sourceRevision, expected.revision);
+      NodeAssert.equal(before.databaseSource.worktreePath, expected.worktreePath);
       NodeAssert.equal(
         before.capture.content.ledgers.jones_sql_migrations.length,
         expected.forkCount,
@@ -399,3 +417,44 @@ for (const specification of qualificationCases) {
     if (specification.id === "rollback-seven") await unknownCloseCounterexample(test);
   });
 }
+
+NodeTest.test("source HEAD reader accepts ordinary and linked Git metadata", async () => {
+  const outer = await NodeFSP.mkdtemp(NodePath.join(directory, ".migration-source-metadata-test-"));
+  const revision = "1111111111111111111111111111111111111111";
+  const ref = "refs/heads/performance-source";
+  try {
+    const ordinary = NodePath.join(outer, "ordinary");
+    const ordinaryGit = NodePath.join(ordinary, ".git");
+    await NodeFSP.mkdir(NodePath.join(ordinaryGit, "refs/heads"), { recursive: true });
+    await NodeFSP.writeFile(NodePath.join(ordinaryGit, "HEAD"), `ref: ${ref}\n`);
+    await NodeFSP.writeFile(NodePath.join(ordinaryGit, ref), `${revision}\n`);
+    NodeAssert.equal(pinnedHead(ordinary), revision);
+
+    const linked = NodePath.join(outer, "linked");
+    const metadata = NodePath.join(outer, "linked-metadata");
+    const common = NodePath.join(outer, "common-metadata");
+    await NodeFSP.mkdir(linked);
+    await NodeFSP.mkdir(metadata);
+    await NodeFSP.mkdir(NodePath.join(common, "refs/heads"), { recursive: true });
+    await NodeFSP.writeFile(NodePath.join(linked, ".git"), "gitdir: ../linked-metadata\n");
+    await NodeFSP.writeFile(NodePath.join(metadata, "commondir"), "../common-metadata\n");
+    await NodeFSP.writeFile(NodePath.join(metadata, "HEAD"), `ref: ${ref}\n`);
+    await NodeFSP.writeFile(NodePath.join(common, ref), `${revision}\n`);
+    NodeAssert.equal(pinnedHead(linked), revision);
+
+    await NodeFSP.writeFile(NodePath.join(ordinaryGit, "HEAD"), `${revision}\n`);
+    NodeAssert.equal(pinnedHead(ordinary), revision);
+    await NodeFSP.writeFile(NodePath.join(ordinaryGit, "HEAD"), `ref: ${ref}\n`);
+    await NodeFSP.unlink(NodePath.join(ordinaryGit, ref));
+    await NodeFSP.writeFile(NodePath.join(ordinaryGit, "packed-refs"), `${revision} ${ref}\n`);
+    NodeAssert.equal(pinnedHead(ordinary), revision);
+
+    await NodeFSP.writeFile(NodePath.join(common, ref), "not-a-commit\n");
+    NodeAssert.throws(() => pinnedHead(linked));
+    await NodeFSP.writeFile(NodePath.join(linked, ".git"), "../linked-metadata\n");
+    NodeAssert.throws(() => pinnedHead(linked));
+  } finally {
+    await NodeFSP.rm(outer, { recursive: true });
+    NodeAssert.equal(NodeFS.existsSync(outer), false);
+  }
+});

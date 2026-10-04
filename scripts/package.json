@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vp test run"
+    "test": "vp test run && node --test --test-concurrency=1 performance-staging/*.test.mjs"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",

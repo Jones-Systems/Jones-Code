@@ -15,22 +15,17 @@ import {
   observeSyntheticClose,
 } from "./guard.mjs";
 import { runOwnedChild } from "./lifecycle.mjs";
+import { assertQualificationDatabaseSource, qualificationDatabaseSource } from "./sources.mjs";
 
 const directory = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
-const sourceParent = "/home/malcolmjones/Projects/Jones-Code-performance-worktrees-20261002";
 const repository = "Jones-Systems/Jones-Code";
-const source = (child, sourceRevision, forkCount) =>
-  Object.freeze({
-    repository,
-    worktreePath: NodePath.join(sourceParent, child),
-    sourceRevision,
-    forkCount,
-  });
+const source = (sourceRevision, forkCount) =>
+  Object.freeze({ ...qualificationDatabaseSource(sourceRevision), forkCount });
 const sources = Object.freeze({
-  e5: source("baseline", "e5a31aceec91484b64315c63dcce80f6e7581604", 4),
-  live: source("live-baseline", "414bb8da204c3275cd0b76b2ec4d74dfb09a97e4", 2),
-  six: source("history", "c4c68bb0b33eafb72545e6e23b0b7258e49bd613", 6),
-  candidate: source("lease", "da5f4aee0035beec471b38598eaa2857d1e5155c", 7),
+  e5: source("e5a31aceec91484b64315c63dcce80f6e7581604", 4),
+  live: source("414bb8da204c3275cd0b76b2ec4d74dfb09a97e4", 2),
+  six: source("c4c68bb0b33eafb72545e6e23b0b7258e49bd613", 6),
+  candidate: source("da5f4aee0035beec471b38598eaa2857d1e5155c", 7),
 });
 const forkNames = [
   "WorktreeOwnershipLeases",
@@ -99,22 +94,34 @@ export const qualificationCases = Object.freeze(
   ].map(Object.freeze),
 );
 
-function pinnedHead(root) {
+export function pinnedHead(root) {
   NodeAssert.equal(NodeFS.realpathSync(root), root);
-  const gitFile = NodeFS.readFileSync(NodePath.join(root, ".git"), "utf8").trim();
-  NodeAssert.match(gitFile, /^gitdir: /);
-  const gitDirectory = NodePath.resolve(root, gitFile.slice(8));
-  const common = NodePath.resolve(
-    gitDirectory,
-    NodeFS.readFileSync(NodePath.join(gitDirectory, "commondir"), "utf8").trim(),
-  );
+  const metadataPath = NodePath.join(root, ".git");
+  const metadata = NodeFS.lstatSync(metadataPath);
+  NodeAssert.equal(metadata.isSymbolicLink(), false);
+  let gitDirectory = metadataPath;
+  let common = metadataPath;
+  if (!metadata.isDirectory()) {
+    NodeAssert.ok(metadata.isFile());
+    const gitFile = NodeFS.readFileSync(metadataPath, "utf8").trim();
+    NodeAssert.match(gitFile, /^gitdir: /);
+    gitDirectory = NodePath.resolve(root, gitFile.slice(8));
+    common = NodePath.resolve(
+      gitDirectory,
+      NodeFS.readFileSync(NodePath.join(gitDirectory, "commondir"), "utf8").trim(),
+    );
+  }
+  const checkedHead = (value) => {
+    NodeAssert.match(value, /^[a-f0-9]{40}$/);
+    return value;
+  };
   const head = NodeFS.readFileSync(NodePath.join(gitDirectory, "HEAD"), "utf8").trim();
-  if (/^[a-f0-9]{40}$/.test(head)) return head;
+  if (/^[a-f0-9]{40}$/.test(head)) return checkedHead(head);
   NodeAssert.match(head, /^ref: refs\/heads\/[a-zA-Z0-9_./-]+$/);
   const ref = head.slice(5);
   for (const base of [gitDirectory, common]) {
     try {
-      return NodeFS.readFileSync(NodePath.join(base, ref), "utf8").trim();
+      return checkedHead(NodeFS.readFileSync(NodePath.join(base, ref), "utf8").trim());
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
@@ -123,7 +130,7 @@ function pinnedHead(root) {
   NodeAssert.ok(Buffer.byteLength(packed) <= 2 * 1024 * 1024);
   const match = packed.split("\n").find((line) => line.endsWith(` ${ref}`));
   NodeAssert.ok(match, "pinned source ref is missing");
-  return match.split(" ")[0];
+  return checkedHead(match.split(" ")[0]);
 }
 
 function sourceTreeHash(root, relatives) {
@@ -168,6 +175,11 @@ function packageIdentity(entry, snapshots) {
 }
 
 function bindSource(binding) {
+  assertQualificationDatabaseSource({
+    repository: binding.repository,
+    sourceRevision: binding.sourceRevision,
+    worktreePath: binding.worktreePath,
+  });
   NodeAssert.equal(pinnedHead(binding.worktreePath), binding.sourceRevision, "source HEAD drifted");
   const migrationsPath = NodePath.join(
     binding.worktreePath,
@@ -584,6 +596,7 @@ export function qualificationProducerIdentity() {
     sourceRevision: pinnedHead(worktreePath),
     files: [
       "fixtures-worker.mjs",
+      "sources.mjs",
       "migration-restore-worker.mjs",
       "migration-restore.test.mjs",
       "guard.mjs",
