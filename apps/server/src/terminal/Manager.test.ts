@@ -2,6 +2,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_TERMINAL_ID,
+  EventId,
+  ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
@@ -420,6 +422,23 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect("owned custody refuses terminals without an observed application birth", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput());
+      const ownerBirth = {
+        kind: "application_v2_thread_birth" as const,
+        threadId: ThreadId.make("thread-1"),
+        eventId: EventId.make("birth-original"),
+        sequence: 1,
+      };
+      const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+      assert.equal(capture.status, "unknown");
+      assert.deepEqual(capture.targets, []);
+      assert.isFalse(ptyAdapter.processes[0]!.killed);
+    }),
+  );
+
   it.effect("spawns lazily and reuses running terminal per thread", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();
