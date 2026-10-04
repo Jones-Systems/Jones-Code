@@ -458,10 +458,10 @@
     },
     {
       "group_id": "jones-thread-corpus-capability",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/contracts/src/threadCorpusProtocol.test.ts apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/contracts/src/threadCorpusProtocol.test.ts apps/server/src/orchestration-v2/threadHistoryPaging.test.ts",
       "modules": [
         "packages/contracts/src/threadCorpusProtocol.test.ts",
-        "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts"
+        "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts"
       ],
       "scope": [
         "packages/contracts/src/threadCorpusProtocol.ts",
@@ -469,7 +469,7 @@
         "packages/contracts/src/environment.ts",
         "packages/contracts/src/index.ts",
         "apps/server/src/environment/ServerEnvironment.ts",
-        "packages/contracts/src/orchestration.ts",
+        "packages/contracts/src/orchestrationV2.ts",
         "packages/contracts/src/environmentHttp.ts"
       ]
     },

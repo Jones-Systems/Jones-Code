@@ -1,13 +1,15 @@
+import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import capabilityFixture from "../test-fixtures/thread-corpus-capability.json" with { type: "json" };
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
-  OrchestrationShellSnapshot,
-  OrchestrationThreadDetailSnapshot,
-  OrchestrationThreadDetailWindow,
-} from "./orchestration.ts";
+  OrchestrationV2ShellSnapshot,
+  OrchestrationV2ThreadDetailSnapshot,
+  OrchestrationV2ThreadBoundedSnapshot,
+  OrchestrationV2ThreadHistoryPage,
+} from "./orchestrationV2.ts";
 import { QUEUE_DISPATCH_CAPABILITY } from "./queueProtocol.ts";
 import { THREAD_CORPUS_CAPABILITY, ThreadCorpusCapability } from "./threadCorpusProtocol.ts";
 
@@ -39,34 +41,63 @@ const threadShell = {
   interactionMode: "default",
   branch: "work/corpus",
   worktreePath: "/workspace/worktrees/corpus",
-  latestTurn: null,
-  session: null,
+  createdBy: "user",
+  creationSource: "web",
+  providerInstanceId: "codex",
+  lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "thread-1" },
+  forkedFrom: null,
+  activeProviderThreadId: null,
+  latestRunId: null,
+  activeRunId: null,
+  status: "idle",
+  pendingRuntimeRequest: null,
+  latestVisibleMessage: null,
+  itemCount: 1,
+  visibleItemCount: 1,
+  settledOverride: "settled",
+  deletedAt: null,
   createdAt: timestamp,
   updatedAt: timestamp,
   archivedAt: null,
   settledAt: timestamp,
   latestUserMessageAt: timestamp,
-  hasPendingApprovals: false,
-  hasPendingUserInput: false,
   hasActionableProposedPlan: false,
 };
 const message = {
   id: "message-1",
   role: "user",
   text: "A retained prompt",
-  turnId: "turn-1",
+  threadId: "thread-1",
+  runId: "run-1",
+  nodeId: null,
+  createdBy: "user",
+  creationSource: "web",
+  attachments: [],
   streaming: false,
   createdAt: timestamp,
   updatedAt: timestamp,
 };
 const detail = {
   snapshotSequence: 42,
-  thread: {
-    ...threadShell,
-    deletedAt: null,
+  projection: {
+    thread: threadShell,
     messages: [message],
-    activities: [],
+    runs: [],
+    attempts: [],
+    nodes: [],
+    subagents: [],
+    providerSessions: [],
+    providerThreads: [],
+    providerTurns: [],
+    runtimeRequests: [],
+    plans: [],
+    turnItems: [],
+    checkpointScopes: [],
     checkpoints: [],
+    contextHandoffs: [],
+    contextTransfers: [],
+    visibleTurnItems: [],
+    updatedAt: timestamp,
   },
 };
 
@@ -77,6 +108,17 @@ describe("thread corpus capability", () => {
     expect(THREAD_CORPUS_CAPABILITY).toEqual(capabilityFixture);
     expect(decoded.authSession).toBe(QUEUE_DISPATCH_CAPABILITY.authSession);
     expect(Object.keys(decoded)).toHaveLength(5);
+  });
+
+  it("rejects the legacy V1 wire contract", () => {
+    expect(() =>
+      decodeCapability({
+        ...capabilityFixture,
+        schemaVersion: "t3.thread-corpus-capability/v1",
+        shellSnapshot: "t3.thread-corpus-shell/v1",
+        threadDetailPagination: "t3.thread-corpus-pagination/v1",
+      }),
+    ).toThrow();
   });
 
   it("rejects omitted, unsupported and extra capability claims", () => {
@@ -114,10 +156,11 @@ describe("thread corpus capability", () => {
   });
 
   it("parses native shell placement, nullable identity, lifecycle and activity sequence", () => {
-    const decode = Schema.decodeUnknownSync(OrchestrationShellSnapshot);
+    const decode = Schema.decodeUnknownSync(OrchestrationV2ShellSnapshot);
     const snapshot = decode({
+      schemaVersion: 1,
       snapshotSequence: 42,
-      updatedAt: timestamp,
+      archivedThreads: [],
       projects: [project, { ...project, id: "project-2", repositoryIdentity: null }],
       threads: [threadShell, { ...threadShell, id: "thread-2", branch: null, worktreePath: null }],
     });
@@ -127,47 +170,54 @@ describe("thread corpus capability", () => {
     expect(snapshot.projects[1]?.repositoryIdentity).toBeNull();
     expect(snapshot.threads[0]?.worktreePath).toBe(threadShell.worktreePath);
     expect(snapshot.threads[1]?.worktreePath).toBeNull();
-    expect(snapshot.threads[0]?.settledAt).toBe(timestamp);
+    expect(DateTime.formatIso(snapshot.threads[0]!.settledAt!)).toBe(timestamp);
     expect(snapshot.threads[0]?.archivedAt).toBeNull();
-    expect(snapshot.threads[0]?.latestUserMessageAt).toBe(timestamp);
-    expect(snapshot.threads[0]?.updatedAt).toBe(timestamp);
-    expect(() => decode({ ...snapshot, snapshotSequence: -1 })).toThrow();
+    expect(DateTime.formatIso(snapshot.threads[0]!.latestUserMessageAt!)).toBe(timestamp);
+    expect(DateTime.formatIso(snapshot.threads[0]!.updatedAt!)).toBe(timestamp);
+    const encoded = Schema.encodeSync(OrchestrationV2ShellSnapshot)(snapshot);
+    expect(() => decode({ ...encoded, snapshotSequence: -1 })).toThrow();
     expect(() =>
-      decode({ ...snapshot, projects: [{ ...project, workspaceRoot: null }] }),
+      decode({ ...encoded, projects: [{ ...project, workspaceRoot: null }] }),
     ).toThrow();
   });
 
-  it("preserves opt-in windows, opaque exclusive cursors and optional page watermarks", () => {
-    const decodeWindow = Schema.decodeUnknownSync(OrchestrationThreadDetailWindow);
-    expect(decodeWindow({})).toEqual({});
-    const window = { turnLimit: 2, beforeCursor: "opaque-thread-bound-cursor" };
-    expect(decodeWindow(window)).toEqual(window);
-    for (const turnLimit of [0, -1, 1.5]) {
-      expect(() => decodeWindow({ turnLimit })).toThrow();
-    }
-    expect(() => decodeWindow({ turnLimit: 2, beforeCursor: "" })).toThrow();
-    const decodeDetail = Schema.decodeUnknownSync(OrchestrationThreadDetailSnapshot);
-    expect(decodeDetail(detail).page).toBeUndefined();
-    const page = {
-      beforeCursor: window.beforeCursor,
-      hasMore: true,
-      snapshotSequence: 42,
-      threadSequence: 40,
+  it("preserves bounded snapshots and opaque chronological history page cursors", () => {
+    const decodeDetail = Schema.decodeUnknownSync(OrchestrationV2ThreadDetailSnapshot);
+    expect(decodeDetail(detail).historyCursor).toBeUndefined();
+    const decodeBounded = Schema.decodeUnknownSync(OrchestrationV2ThreadBoundedSnapshot);
+    const bounded = {
+      ...detail,
+      historyCursor: "opaque-history-cursor",
+      hasMoreHistory: true,
+      latestLocalTurnOrdinal: 40,
     };
-    expect(decodeDetail({ ...detail, page }).page).toEqual(page);
-    const oldest = { beforeCursor: null, hasMore: false, snapshotSequence: 42 };
-    expect(decodeDetail({ ...detail, page: oldest }).page).toEqual(oldest);
-    expect(() => decodeDetail({ ...detail, page: { ...page, beforeCursor: 123 } })).toThrow();
+    expect(decodeBounded(bounded).historyCursor).toBe(bounded.historyCursor);
+    expect(decodeBounded(bounded).latestLocalTurnOrdinal).toBe(40);
+    expect(() => decodeBounded({ ...bounded, historyCursor: "" })).toThrow();
+    expect(() => decodeBounded({ ...bounded, latestLocalTurnOrdinal: -1 })).toThrow();
+    const decodePage = Schema.decodeUnknownSync(OrchestrationV2ThreadHistoryPage);
+    const page = {
+      snapshotSequence: 42,
+      items: [],
+      nextCursor: "opaque-earlier-cursor",
+      hasMoreHistory: true,
+    };
+    expect(decodePage(page)).toEqual(page);
+    const oldest = { ...page, nextCursor: null, hasMoreHistory: false };
+    expect(decodePage(oldest)).toEqual(oldest);
+    expect(() => decodePage({ ...page, nextCursor: 123 })).toThrow();
+    expect(() => decodePage({ ...page, nextCursor: "" })).toThrow();
+    expect(() => decodePage({ ...page, snapshotSequence: -1 })).toThrow();
   });
 
   it("preserves message text beyond consumer budgets without inventing native truncation", () => {
     const text = "x".repeat(24001);
-    const decoded = Schema.decodeUnknownSync(OrchestrationThreadDetailSnapshot)({
+    const decoded = Schema.decodeUnknownSync(OrchestrationV2ThreadDetailSnapshot)({
       ...detail,
-      thread: { ...detail.thread, messages: [{ ...message, text }] },
+      projection: { ...detail.projection, messages: [{ ...message, text }] },
     });
-    expect(decoded.thread.messages[0]?.text).toBe(text);
-    expect(decoded.thread.messages[0]?.turnId).toBe(message.turnId);
-    expect(decoded.thread.messages[0]?.streaming).toBe(false);
+    expect(decoded.projection.messages[0]?.text).toBe(text);
+    expect(decoded.projection.messages[0]?.runId).toBe(message.runId);
+    expect(decoded.projection.messages[0]?.streaming).toBe(false);
   });
 });
