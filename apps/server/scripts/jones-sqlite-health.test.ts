@@ -34,6 +34,7 @@ import { syntheticDatabaseSource } from "../../../scripts/performance-staging/so
 import { runSqliteHealth, sqliteHealthConsumerOutcome } from "./jones-sqlite-health.ts";
 import {
   countTables,
+  v2CountTables,
   encodeHealthEnvelope,
   healthExitCode,
   healthPolicy,
@@ -511,6 +512,45 @@ describe("jones-sqlite-health — closed fixture integration", () => {
 });
 
 describe("jones-sqlite-health — d-readonly", () => {
+  it("uses explicit V2 counts without reporting historical V1 tables", async () => {
+    await withFixture(async (fixture) => {
+      const before = snapshot(fixture.root);
+      const result = await cli(
+        fixture,
+        argumentsFor(fixture, ["--schema-profile", "orchestration-v2", "--include", "counts"]),
+        JSON.stringify(fixture.receipt),
+      );
+      expect(result.report.schemaProfile).toBe("orchestration-v2");
+      expect(result.report.results.counts.status).toBe("completed");
+      expect(result.report.results.counts.data?.map((row) => [row.name, row.count])).toEqual(
+        v2CountTables.map(([name]) => [name, "1"]),
+      );
+      expect(result.report.results.counts.data?.some((row) => row.name === "activities")).toBe(false);
+      expect(snapshot(fixture.root)).toEqual(before);
+      expect(result.report.cleanup.status).toBe("completed");
+      expect(result.report.child.reaped).toBe(true);
+    }, (database) => {
+      for (const [, table] of countTables) database.exec(`DROP TABLE "${table}"`);
+      for (const [, table] of v2CountTables) {
+        database.exec(`CREATE TABLE "${table}" (id INTEGER PRIMARY KEY)`);
+        database.exec(`INSERT INTO "${table}" VALUES (1)`);
+      }
+    });
+  });
+
+  it("does not reinterpret legacy count evidence as V2 coverage", async () => {
+    await withFixture(async (fixture) => {
+      const result = await cli(
+        fixture,
+        argumentsFor(fixture, ["--schema-profile", "orchestration-v2", "--include", "counts"]),
+        JSON.stringify(fixture.receipt),
+      );
+      expect(result.report.results.counts.reason).toBe("tables_missing");
+      expect(result.report.results.counts.data?.find((row) => row.name === "events")?.status)
+        .toBe("unavailable");
+    });
+  });
+
   it("runs the actual Node CLI with fixed metadata and leaves main/WAL/SHM/journal unchanged", async () => {
     await withFixture(async (fixture) => {
       const before = snapshot(fixture.root);

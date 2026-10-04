@@ -95,7 +95,10 @@ export const defaultHealthLimits: HealthLimits = {
   maxDiagnostics: 64,
 };
 
+export type HealthSchemaProfile = "legacy-v1" | "orchestration-v2";
+
 export interface HealthRequest {
+  readonly schemaProfile: HealthSchemaProfile;
   readonly fixtureRoot: string;
   readonly fixtureReceiptSha256: string;
   readonly fixtureBinding: PerformanceBinding;
@@ -181,7 +184,20 @@ export const countTables = [
   ["projectionState", "projection_state"],
   ["leases", "worktree_ownership_leases"],
 ] as const;
-export type CountName = (typeof countTables)[number][0];
+export const v2CountTables = [
+  ["events", "orchestration_v2_events"],
+  ["commandReceipts", "orchestration_v2_command_receipts"],
+  ["projects", "projection_projects"],
+  ["threads", "orchestration_v2_projection_threads"],
+  ["messages", "orchestration_v2_projection_messages"],
+  ["runs", "orchestration_v2_projection_runs"],
+  ["effectOutbox", "orchestration_v2_effect_outbox"],
+  ["projectionState", "orchestration_v2_projection_metadata"],
+  ["leases", "worktree_ownership_leases"],
+] as const;
+export const healthCountTables = (profile: HealthSchemaProfile) =>
+  profile === "orchestration-v2" ? v2CountTables : countTables;
+export type CountName = (typeof countTables | typeof v2CountTables)[number][0];
 export interface CountEntry {
   readonly name: CountName;
   readonly status: "completed" | "unavailable" | "failed";
@@ -258,6 +274,7 @@ export type HealthWorkerFrame =
 
 export interface HealthEnvelope {
   readonly schema: "jones.sqlite-health/v1";
+  readonly schemaProfile: HealthSchemaProfile;
   readonly status: HealthStatus;
   readonly reason: HealthReason | null;
   readonly toolSource: {
@@ -315,6 +332,7 @@ export function parseHealthArguments(args: readonly string[]): HealthRequest {
     "--fixture-receipt-sha256",
     "--fixture-binding-json",
     "--include",
+    "--schema-profile",
     "--deadline-ms",
     "--max-output-bytes",
     "--max-stderr-bytes",
@@ -354,6 +372,9 @@ export function parseHealthArguments(args: readonly string[]): HealthRequest {
     new Set(requested).size !== requested.length
   )
     throw new HealthInputError("invalid_arguments");
+  const schemaProfile = flags.get("--schema-profile") ?? "legacy-v1";
+  if (schemaProfile !== "legacy-v1" && schemaProfile !== "orchestration-v2")
+    throw new HealthInputError("invalid_arguments");
   const include = includeNames.filter((name) => requested.includes(name));
   const limits = {
     deadlineMs: boundedInteger(
@@ -372,7 +393,7 @@ export function parseHealthArguments(args: readonly string[]): HealthRequest {
     maxRecords: boundedInteger(flags.get("--max-records"), 128, 1, 256),
     maxDiagnostics: boundedInteger(flags.get("--max-diagnostics"), 64, 1, 128),
   };
-  return { fixtureRoot, fixtureReceiptSha256, fixtureBinding, include, limits };
+  return { fixtureRoot, fixtureReceiptSha256, fixtureBinding, schemaProfile, include, limits };
 }
 
 function parseIndependentBinding(text: string | undefined): PerformanceBinding {

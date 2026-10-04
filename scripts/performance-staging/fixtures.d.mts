@@ -119,7 +119,16 @@ export interface HistoricalFixtureSnapshotQuery {
 export interface SyntheticFixtureContext {
   readonly [originalContext]: never;
   readonly owner: OwnedRoot;
-  readonly paths: ServerDerivedPaths;
+  readonly paths: Pick<
+    ServerDerivedPaths,
+    | "dbPath"
+    | "stateDir"
+    | "attachmentsDir"
+    | "worktreesDir"
+    | "settingsPath"
+    | "keybindingsConfigPath"
+    | "environmentIdPath"
+  >;
   readonly databaseSource: SyntheticDatabaseSource;
   readonly recipe: SyntheticFixtureRecipe;
   readonly engine: HistoricalFixtureEngine;

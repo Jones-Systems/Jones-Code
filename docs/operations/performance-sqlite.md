@@ -46,6 +46,14 @@ node apps/server/scripts/jones-sqlite-health.ts \
   < "$FIXTURE_RECEIPT_JSON"
 ```
 
+The default `--schema-profile legacy-v1` preserves historical count semantics.
+For an independently sealed V2 fixture, explicitly select
+`--schema-profile orchestration-v2`; the report records that selection and uses
+V2 events, receipts, threads, messages, runs, effect outbox and projection metadata.
+Projects and Jones leases retain their shared table names. A profile selects fixed
+queries; it does not prove migration, producer compatibility or runtime qualification.
+The pinned historical producer remains V1 and cannot establish V2 coverage.
+
 Missing count tables and DBSTAT support are unavailable results. DBSTAT totals
 cover btree pages, excluding freelist and other non-btree pages. Integrity
 diagnostics omit raw SQLite messages and payloads. An integrity pass does not

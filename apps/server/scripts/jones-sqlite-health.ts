@@ -16,7 +16,7 @@ import { runOwnedChild } from "../../../scripts/performance-staging/lifecycle.mj
 import {
   childSummary,
   component,
-  countTables,
+  healthCountTables,
   defaultHealthLimits,
   emptyHealthResults,
   encodeHealthEnvelope,
@@ -130,10 +130,10 @@ function validResultData(
     case "counts":
       return array(
         value,
-        countTables.length,
+        healthCountTables(request.schemaProfile).length,
         (row) =>
           closed(row, ["name", "status", "count"]) &&
-          countTables.some(([key]) => key === row.name) &&
+          healthCountTables(request.schemaProfile).some(([key]) => key === row.name) &&
           ["completed", "unavailable", "failed"].includes(String(row.status)) &&
           (row.status === "completed" ? decimal(row.count) : row.count === null),
       );
@@ -245,6 +245,7 @@ function initialReport(request: HealthRequest | null): HealthEnvelope {
   const limits = request?.limits ?? defaultHealthLimits;
   return {
     schema: "jones.sqlite-health/v1",
+    schemaProfile: request?.schemaProfile ?? "legacy-v1",
     status: "refused",
     reason: null,
     toolSource: toolSource(),

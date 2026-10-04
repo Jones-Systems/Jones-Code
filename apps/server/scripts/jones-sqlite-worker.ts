@@ -11,7 +11,9 @@ import {
 } from "../../../scripts/performance-staging/guard.mjs";
 import {
   component,
-  countTables,
+  healthCountTables,
+  type HealthSchemaProfile,
+  type CountName,
   emptyHealthResults,
   envelopeReserveBytes,
   HealthInputError,
@@ -147,16 +149,19 @@ function metadata(
   });
 }
 
-function counts(database: NodeSqlite.DatabaseSync): HealthResults["counts"] {
+function counts(
+  database: NodeSqlite.DatabaseSync,
+  profile: HealthSchemaProfile,
+): HealthResults["counts"] {
   const rows: {
-    name: (typeof countTables)[number][0];
+    name: CountName;
     status: "completed" | "unavailable" | "failed";
     count: string | null;
   }[] = [];
   const exists = database.prepare(
     "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ? LIMIT 1",
   );
-  for (const [name, table] of countTables) {
+  for (const [name, table] of healthCountTables(profile)) {
     if (!exists.get(table)) rows.push({ name, status: "unavailable", count: null });
     else {
       try {
@@ -287,6 +292,8 @@ function decodeInput(text: string | undefined): HealthWorkerInput {
   const raw = value.request;
   const limits = value.request.limits;
   const args = [
+    "--schema-profile",
+    String(raw.schemaProfile ?? "legacy-v1"),
     "--fixture-root",
     String(raw.fixtureRoot),
     "--fixture-receipt-sha256",
@@ -393,7 +400,8 @@ export async function runHealthWorker(
         }
       };
       check("metadata", () => metadata(database!, fixture!, input.request.limits.maxRecords));
-      if (input.request.include.includes("counts")) check("counts", () => counts(database!));
+      if (input.request.include.includes("counts"))
+        check("counts", () => counts(database!, input.request.schemaProfile));
       if (input.request.include.includes("allocation"))
         check("allocation", () => allocation(database!, input.request.limits.maxRecords));
       if (input.request.include.includes("integrity"))
