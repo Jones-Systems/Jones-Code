@@ -63,9 +63,11 @@ export const ThreadMetadataMcpAction = Schema.Literals([
   "regenerate_title",
   "link_pull_request",
   "unlink_pull_request",
+  "block_thread_messages",
+  "allow_thread_messages",
 ]).annotate({
   description:
-    "Metadata mutation: rename, regenerate_title, link_pull_request, or unlink_pull_request.",
+    "Metadata mutation: rename, regenerate_title, link_pull_request, unlink_pull_request, block_thread_messages, or allow_thread_messages. Only the calling thread can allow its messages again.",
 });
 export type ThreadMetadataMcpAction = typeof ThreadMetadataMcpAction.Type;
 
@@ -101,6 +103,8 @@ export const ThreadMetadataMcpUpdateInput = Schema.Struct({
           : "link_pull_request requires pullRequest and does not accept title.";
       case "regenerate_title":
       case "unlink_pull_request":
+      case "block_thread_messages":
+      case "allow_thread_messages":
         return input.title === undefined && input.pullRequest === undefined
           ? true
           : `${input.action} does not accept title or pullRequest.`;
@@ -114,6 +118,7 @@ export const ThreadMetadataMcpUpdateResult = Schema.Struct({
   action: ThreadMetadataMcpAction,
   commandId: CommandId,
   sequence: NonNegativeInt,
+  threadMessagesBlocked: Schema.optional(Schema.Boolean),
   title: Schema.String,
   titleRegeneration: Schema.NullOr(ThreadTitleRegeneration),
   linkedPullRequest: Schema.NullOr(ThreadLinkedPullRequest),

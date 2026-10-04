@@ -1253,6 +1253,11 @@ describe("orchestration V2 contracts", () => {
     });
 
     expect(shell.pendingBackgroundTasks).toEqual([]);
+    expect(shell.threadMessagesBlocked ?? false).toBe(false);
+    expect(
+      decodeOrchestrationV2ThreadShell({ ...shell, threadMessagesBlocked: true })
+        .threadMessagesBlocked,
+    ).toBe(true);
   });
 });
 

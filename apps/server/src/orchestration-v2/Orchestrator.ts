@@ -261,6 +261,15 @@ export class OrchestratorProviderAdapterError extends Schema.TaggedError<Orchest
   }
 }
 
+export class OrchestratorThreadMessagesBlockedError extends Schema.TaggedError<OrchestratorThreadMessagesBlockedError>()(
+  "OrchestratorThreadMessagesBlockedError",
+  { commandId: CommandId, threadId: ThreadId },
+) {
+  override get message(): string {
+    return `Thread ${this.threadId} is blocking messages from other threads.`;
+  }
+}
+
 export class OrchestratorSubagentThreadReadOnlyError extends Schema.TaggedError<OrchestratorSubagentThreadReadOnlyError>()(
   "OrchestratorSubagentThreadReadOnlyError",
   { commandId: CommandId, threadId: ThreadId },
@@ -368,6 +377,7 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorCommandIdConflictError,
   OrchestratorSubagentThreadReadOnlyError,
+  OrchestratorThreadMessagesBlockedError,
   OrchestratorImportedContinuationHeldError,
   OrchestratorWorktreeOwnershipError,
   WorktreeOwnershipConflictError,
@@ -3860,6 +3870,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return {
             ...thread,
             ...(command.title === undefined ? {} : { title: command.title }),
+            ...(command.threadMessagesBlocked === undefined
+              ? {}
+              : { threadMessagesBlocked: command.threadMessagesBlocked }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&
@@ -10782,6 +10795,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         sequence: receipt.resultSequence,
         storedEvents,
       } satisfies OrchestratorV2DispatchResult;
+    }
+
+    const incomingTarget =
+      ((command.type === "message.dispatch" && command.createdBy !== "user") ||
+        command.type === "queued-run.edit" ||
+        command.type === "runtime-request.respond") &&
+      command.senderThreadId !== undefined &&
+      command.senderThreadId !== command.threadId
+        ? command.threadId
+        : command.type === "thread.merge_back" &&
+            command.createdBy !== "user" &&
+            command.sourceThreadId !== command.targetThreadId
+          ? command.targetThreadId
+          : undefined;
+    if (incomingTarget !== undefined) {
+      const target = yield* projectionStore
+        .getThread(incomingTarget)
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: incomingTarget, cause }),
+          ),
+        );
+      if (target.threadMessagesBlocked === true) {
+        return yield* new OrchestratorThreadMessagesBlockedError({
+          commandId: command.commandId,
+          threadId: incomingTarget,
+        });
+      }
     }
 
     let nativeContext: NativeCommandCommitContextV2 | undefined;
