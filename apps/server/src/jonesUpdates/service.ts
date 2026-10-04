@@ -132,7 +132,8 @@ export const layer = Layer.effect(
     const qualifiedSelfUpdate = yield* SelfUpdate.withRunningThreadContinuation({
       mode: config.mode,
       selfUpdate,
-      ...continuations,
+      prepare: continuations.prepare,
+      clear: (ids) => ids.length === 0 ? Effect.void : continuations.clear(ids),
     });
     const desktopContinuations = captureServerUpdateContinuations({
       prepare: startup.markOptedInProviderSessionsForContinuation,
