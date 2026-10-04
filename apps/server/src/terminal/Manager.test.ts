@@ -200,6 +200,13 @@ function restartInput(overrides: Partial<TerminalRestartInput> = {}): TerminalRe
   };
 }
 
+const terminalOwnerBirth = (eventId = "birth-original", sequence = 1): TerminalManager.TerminalOwnerBirth => ({
+  kind: "application_v2_thread_birth",
+  threadId: ThreadId.make("thread-1"),
+  eventId: EventId.make(eventId),
+  sequence,
+});
+
 const historyLogPath = (logsDir: string, threadId = "thread-1") =>
   Effect.service(Path.Path).pipe(
     Effect.map(({ join }) => join(logsDir, `terminal_${Encoding.encodeBase64Url(threadId)}.log`)),
@@ -435,6 +442,149 @@ it.layer(
       const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
       assert.equal(capture.status, "unknown");
       assert.deepEqual(capture.targets, []);
+      assert.isFalse(ptyAdapter.processes[0]!.killed);
+    }),
+  );
+
+  it.effect("owned custody closes only captured processes and keeps quiescence evidence unavailable", () =>
+    Effect.gen(function* () {
+      const ownerBirth = terminalOwnerBirth();
+      const { manager, ptyAdapter } = yield* createManager().pipe(
+        Effect.provideService(TerminalManager.TerminalOwnerObservation, {
+          observeCurrentBirth: () => Effect.succeed(ownerBirth),
+        }),
+      );
+      yield* manager.open(openInput());
+      const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+      assert.equal(capture.status, "captured");
+      assert.equal(capture.targets.length, 1);
+      yield* manager.open(openInput({ terminalId: "later-terminal" }));
+      const result = yield* manager.closeOwnedTargets(structuredClone(capture));
+      assert.deepEqual(result, { status: "closed", managedTargetsOnly: true,
+        processExitObserved: false, descendantsQuiescence: "unavailable", futureWakeClosure: "unavailable" });
+      assert.isTrue(ptyAdapter.processes[0]!.killed);
+      assert.isFalse(ptyAdapter.processes[1]!.killed);
+      assert.equal((yield* manager.open(openInput({ terminalId: "later-terminal" }))).pid,
+        ptyAdapter.processes[1]!.pid);
+      assert.equal((yield* manager.closeOwnedTargets(capture)).status, "observed_absent");
+    }),
+  );
+
+  it.effect.each(["restart", "reopen"] as const)(
+    "owned custody rejects a captured handle after terminal %s", (operation) =>
+      Effect.gen(function* () {
+        const ownerBirth = terminalOwnerBirth();
+        const { manager, ptyAdapter } = yield* createManager().pipe(
+          Effect.provideService(TerminalManager.TerminalOwnerObservation, {
+            observeCurrentBirth: () => Effect.succeed(ownerBirth),
+          }),
+        );
+        yield* manager.open(openInput());
+        const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+        if (operation === "restart") yield* manager.restart(restartInput());
+        else {
+          yield* manager.close({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID });
+          yield* manager.open(openInput());
+        }
+        assert.equal((yield* manager.closeOwnedTargets(capture)).status, "mismatch");
+        assert.isFalse(ptyAdapter.processes[1]!.killed);
+        const current = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+        assert.notEqual(current.targets[0]!.handleId, capture.targets[0]!.handleId);
+      }),
+  );
+
+  it.effect("owned custody validates every target before closing and rejects foreign managers", () =>
+    Effect.gen(function* () {
+      const ownerBirth = terminalOwnerBirth();
+      const observation = { observeCurrentBirth: () => Effect.succeed(ownerBirth) };
+      const first = yield* createManager().pipe(
+        Effect.provideService(TerminalManager.TerminalOwnerObservation, observation),
+      );
+      const second = yield* createManager().pipe(
+        Effect.provideService(TerminalManager.TerminalOwnerObservation, observation),
+      );
+      yield* first.manager.open(openInput());
+      yield* second.manager.open(openInput());
+      const capture = yield* first.manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+      assert.equal((yield* second.manager.closeOwnedTargets(capture)).status, "mismatch");
+      assert.isFalse(second.ptyAdapter.processes[0]!.killed);
+      const target = capture.targets[0]!;
+      const invalidCaptures = [
+        { ...capture, targets: [target, { ...target, handleId: "unregistered-handle" }] },
+        { ...capture, targets: [target, target] },
+        { ...capture, targets: [{ ...target, terminalId: "other-terminal" }] },
+        { ...capture, ownerBirth: terminalOwnerBirth("replacement-birth", 2) },
+        { ...capture, threadId: "other-thread" },
+      ];
+      for (const invalid of invalidCaptures) {
+        assert.equal((yield* first.manager.closeOwnedTargets(invalid)).status, "mismatch");
+        assert.isFalse(first.ptyAdapter.processes[0]!.killed);
+      }
+    }),
+  );
+
+  it.effect("owned custody never assigns a replacement birth to an existing process", () =>
+    Effect.gen(function* () {
+      const original = terminalOwnerBirth();
+      const replacement = terminalOwnerBirth("replacement-birth", 2);
+      const birth = yield* Ref.make(original);
+      const { manager, ptyAdapter } = yield* createManager().pipe(
+        Effect.provideService(TerminalManager.TerminalOwnerObservation, {
+          observeCurrentBirth: () => Ref.get(birth),
+        }),
+      );
+      yield* manager.open(openInput());
+      const originalCapture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth: original });
+      yield* Ref.set(birth, replacement);
+      yield* manager.open(openInput());
+      const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth: replacement });
+      assert.equal(capture.status, "unknown");
+      assert.equal((yield* manager.closeOwnedTargets(capture)).status, "unknown");
+      assert.isFalse(ptyAdapter.processes[0]!.killed);
+      assert.equal((yield* manager.closeOwnedTargets(originalCapture)).status, "closed");
+    }),
+  );
+
+  it.effect("owned custody refuses a birth that changes while the PTY is spawning", () =>
+    Effect.gen(function* () {
+      const original = terminalOwnerBirth();
+      const replacement = terminalOwnerBirth("replacement-birth", 2);
+      let observations = 0;
+      const { manager, ptyAdapter } = yield* createManager().pipe(
+        Effect.provideService(TerminalManager.TerminalOwnerObservation, {
+          observeCurrentBirth: () => Effect.sync(() => observations++ === 0 ? original : replacement),
+        }),
+      );
+      yield* manager.open(openInput());
+      for (const ownerBirth of [original, replacement]) {
+        const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+        assert.equal(capture.status, "unknown");
+        assert.deepEqual(capture.targets, []);
+      }
+      assert.isFalse(ptyAdapter.processes[0]!.killed);
+    }),
+  );
+
+  it.effect("owned custody reports an observed PTY exit without claiming descendant quiescence", () =>
+    Effect.gen(function* () {
+      const ownerBirth = terminalOwnerBirth();
+      const { manager, ptyAdapter } = yield* createManager().pipe(
+        Effect.provideService(TerminalManager.TerminalOwnerObservation, {
+          observeCurrentBirth: () => Effect.succeed(ownerBirth),
+        }),
+      );
+      yield* manager.open(openInput());
+      const capture = yield* manager.captureOwnedTargets({ threadId: "thread-1", ownerBirth });
+      const exited = yield* Deferred.make<void>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "exited" ? Deferred.succeed(exited, undefined).pipe(Effect.asVoid) : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      ptyAdapter.processes[0]!.emitExit({ exitCode: 0 });
+      yield* Deferred.await(exited);
+      assert.deepEqual(yield* manager.closeOwnedTargets(capture), { status: "observed_absent",
+        managedTargetsOnly: true, processExitObserved: true,
+        descendantsQuiescence: "unavailable", futureWakeClosure: "unavailable" });
       assert.isFalse(ptyAdapter.processes[0]!.killed);
     }),
   );
