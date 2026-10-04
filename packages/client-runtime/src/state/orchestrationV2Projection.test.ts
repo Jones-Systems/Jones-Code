@@ -665,3 +665,51 @@ it("does not scan every row against every run for a streaming item update", () =
   expect(next?.visibleTurnItems[0]).toBe(projection.visibleTurnItems[0]);
   expect(runReads).toBeLessThanOrEqual(100);
 });
+
+describe("V2 message history characterization", () => {
+  const message = {
+    id: MessageId.make("history-first"), threadId, runId: null, nodeId: null,
+    role: "assistant" as const, text: "original", attachments: [], streaming: false,
+    createdBy: "agent" as const, creationSource: "provider" as const,
+    createdAt: now, updatedAt: now,
+  };
+  const update = (projection: OrchestrationV2ThreadProjection, payload: typeof message) =>
+    applyOrchestrationV2ProjectionEvent(projection, {
+      id: EventId.make("history-update"), type: "message.updated", threadId,
+      occurredAt: now, payload,
+    })!;
+
+  it("replaces only the first duplicate ID and preserves the immutable source", () => {
+    const duplicate = { ...message, text: "second duplicate" };
+    const middle = { ...message, id: MessageId.make("middle") };
+    const source = { ...emptyProjection, messages: [message, middle, duplicate] };
+    const replacement = { ...message, text: "complete replacement", streaming: true };
+    const result = update(source, replacement);
+    expect(result.messages).toEqual([replacement, middle, duplicate]);
+    expect(result.messages[0]).toBe(replacement);
+    expect(result.messages[2]).toBe(duplicate);
+    expect(source.messages).toEqual([message, middle, duplicate]);
+    expect(update(result, replacement).messages).toEqual(result.messages);
+  });
+
+  it("isolates append and update branches across retained large histories", () => {
+    const messages = Array.from({ length: 10_000 }, (_, index) => ({
+      ...message, id: MessageId.make(`history-${index}`),
+    }));
+    const source = { ...emptyProjection, messages };
+    const appendedMessage = { ...message, id: MessageId.make("appended") };
+    const appended = update(source, appendedMessage);
+    const replacement = { ...messages[5_000]!, text: "middle replacement" };
+    const sibling = update(source, replacement);
+    const child = update(appended, { ...appendedMessage, text: "child replacement" });
+    expect(source.messages).toBe(messages);
+    expect(source.messages[5_000]!.text).toBe("original");
+    expect(sibling.messages).toHaveLength(10_000);
+    expect(sibling.messages[5_000]).toBe(replacement);
+    expect(appended.messages).toHaveLength(10_001);
+    expect(appended.messages.at(-1)).toBe(appendedMessage);
+    expect(child.messages.at(-1)!.text).toBe("child replacement");
+    expect(child.messages[5_000]).toBe(messages[5_000]);
+    expect(update(sibling, appendedMessage).messages.at(-1)).toBe(appendedMessage);
+  });
+});
