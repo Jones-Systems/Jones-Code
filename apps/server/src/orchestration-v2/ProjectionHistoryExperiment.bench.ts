@@ -4,7 +4,7 @@ import { performance } from "node:perf_hooks";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { bench, describe } from "vite-plus/test";
+import { test, describe } from "vite-plus/test";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { historyExperimentLayer, historySourceSha256, historyStatements, historyThreadId, mapHistoryRows, seedHistory } from "./ProjectionHistoryExperiment.ts";
 
@@ -12,7 +12,8 @@ import { historyExperimentLayer, historySourceSha256, historyStatements, history
 // network, writer contention, cold-cache, or production-capacity claims.
 describe("V2 history query characterization", () => {
   for (const count of [1_000, 10_000]) {
-    bench(`${count} messages: full, window, source OR and disjoint UNION`, async () => {
+    test(`${count} messages: full, window, source OR and disjoint UNION`, async ({ bench }) => {
+      await bench("controlled history query experiment", async () => {
       const runtime = ManagedRuntime.make(historyExperimentLayer);
       try {
         await runtime.runPromise(seedHistory(count));
@@ -67,6 +68,7 @@ describe("V2 history query characterization", () => {
           console.log(JSON.stringify({ workload: "v2-history", sourceSha256: historySourceSha256, node: process.version, count, options, returnedRows: expected.length, statements, plans, sqlMs: samples, decodeMs: decodeSamples, projectionMs: projectionSamples, limits: "in-memory migrated schema; active run retains one third of messages; UNION is benchmark-only; outer benchmark includes setup" }));
         }
       } finally { await runtime.dispose(); }
-    }, { time: 0, iterations: 1, warmupTime: 0, warmupIterations: 0 });
+      }).run({ time: 0, iterations: 1, warmupTime: 0, warmupIterations: 0 });
+    });
   }
 });
