@@ -1,4 +1,5 @@
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
+import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 import {
   makeCodexCapacityContinuation,
   reduceCodexCapacityContinuation,
@@ -1384,15 +1385,32 @@ function isSensitiveCodexProtocolKey(key: string): boolean {
   );
 }
 
+export const registerCodexAppServerProcess = Effect.fn("registerCodexAppServerProcess")(
+  function* (input: {
+    readonly pid: number;
+    readonly threadId: ThreadId;
+    readonly processAttribution: ProcessAttribution.ProcessAttribution["Service"];
+  }) {
+    yield* input.processAttribution.registerProviderRoot({
+      pid: input.pid,
+      threadId: input.threadId,
+      provider: CODEX_PROVIDER,
+    });
+  },
+);
+
 export const codexAppServerClientFactoryFromSettingsLayer: Layer.Layer<
   CodexAppServerClientFactory,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | ProviderEventLoggers
+  | ChildProcessSpawner.ChildProcessSpawner
+  | ProviderEventLoggers
+  | ProcessAttribution.ProcessAttribution
 > = Layer.effect(
   CodexAppServerClientFactory,
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const { native: nativeEventLogger } = yield* ProviderEventLoggers;
+    const processAttribution = yield* ProcessAttribution.ProcessAttribution;
 
     return CodexAppServerClientFactory.of({
       open: (input) =>
@@ -1420,6 +1438,11 @@ export const codexAppServerClientFactoryFromSettingsLayer: Layer.Layer<
                 }),
             ),
           );
+          yield* registerCodexAppServerProcess({
+            pid: Number(handle.pid),
+            threadId: input.threadId,
+            processAttribution,
+          });
           const protocolLogger = makeCodexAppServerProtocolLogger({
             nativeEventLogger,
             threadId: input.threadId,
