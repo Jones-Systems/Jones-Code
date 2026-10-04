@@ -22,7 +22,8 @@ import type { Tool } from "effect/unstable/ai";
 import { McpInvocationContext, type McpCapability } from "../../McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { OrchestratorProjectionError } from "../../../orchestration-v2/Orchestrator.ts";
-import { ServerConfig } from "../../../config.ts";
+import { ServerConfig, layerTest as serverConfigTestLayer } from "../../../config.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { HttpServer } from "effect/unstable/http";
 import * as NetAddress from "effect/unstable/net/NetAddress";
 import {
@@ -110,8 +111,13 @@ const makeHarness = Effect.fn("organizationTestHarness")(function* (
   let placementCalls = 0;
   let shellCalls = 0;
   const target = options.thread === undefined ? thread : options.thread;
+  const config = yield* ServerConfig.pipe(Effect.provide(
+    serverConfigTestLayer(import.meta.dirname, { prefix: "jones-organization-metadata-" }).pipe(
+      Layer.provide(NodeServices.layer),
+    ),
+  ));
   const dependencies = Layer.mergeAll(
-    Layer.mock(ServerConfig)({ baseDir: "/effective/t3-home" }),
+    Layer.succeed(ServerConfig, config),
     Layer.mock(HttpServer.HttpServer)({ address: options.address ?? NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123) }),
     Layer.mock(ThreadManagementService)({
       getThreadShell: (id) =>
@@ -179,7 +185,7 @@ const makeHarness = Effect.fn("organizationTestHarness")(function* (
       }),
       Effect.provide(dependencies),
     );
-  return { call, commands, submitted, counts: () => ({ placementCalls, shellCalls }) };
+  return { call, commands, submitted, effectiveBaseDir: config.baseDir, counts: () => ({ placementCalls, shellCalls }) };
 });
 
 it.effect("denies organization without reading thread metadata", () =>
@@ -443,7 +449,7 @@ it.effect("returns the invocation's environment and effective directory with a p
   Effect.gen(function* () {
     const h = yield* makeHarness();
     expect(yield* h.call("get_invocation_context", {})).toMatchObject({
-      environmentId: "environment-1", threadId, effectiveBaseDir: "/effective/t3-home",
+      environmentId: "environment-1", threadId, effectiveBaseDir: h.effectiveBaseDir,
       loopbackOrigin: "http://127.0.0.1:43123", serverGeneration: null,
     });
     expect(h.counts().shellCalls).toBe(0);

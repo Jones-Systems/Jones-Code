@@ -3,6 +3,7 @@ import {
   CommandId,
   MessageId,
   OrchestrationV2ThreadProjection,
+  OrchestrationV2ThreadProjectionJson,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
@@ -175,7 +176,7 @@ describe("self settlement lifecycle decisions", () => {
     const notification = Schema.decodeUnknownSync(
       Schema.toCodecJson(OrchestrationV2ThreadProjection),
     )({
-      ...Schema.encodeSync(Schema.toCodecJson(OrchestrationV2ThreadProjection))(queuedProjection),
+      ...Schema.encodeSync(OrchestrationV2ThreadProjectionJson)(queuedProjection),
       messages: [
         {
           createdBy: "system",
@@ -253,7 +254,9 @@ describe("self settlement lifecycle decisions", () => {
       "thread.archive",
       "thread.unarchive",
     ] as const) {
-      expect(cancelsSelfSettlement({ type, commandId, threadId })).toBe(true);
+      expect(cancelsSelfSettlement(type === "thread.unsettle"
+        ? { type, commandId, threadId, reason: "user" }
+        : { type, commandId, threadId })).toBe(true);
     }
     expect(
       cancelsSelfSettlement({
