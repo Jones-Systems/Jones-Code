@@ -724,7 +724,7 @@ export interface EventSinkV2Shape {
   }) => Effect.Effect<OrdinaryCheckout.OrdinaryCheckoutAdmissionV1, OrdinaryCheckoutCommitErrorV1>;
   readonly readOrdinaryCheckoutUse: (operationId: string) => Effect.Effect<OrdinaryCheckoutUseRecordV1 | null, OrdinaryCheckoutCommitErrorV1>;
   readonly beginOrdinaryCheckoutUse: (input: OrdinaryCheckoutUseInputV1) => Effect.Effect<{
-    readonly status: "use_now" | "observe_only"; readonly record: OrdinaryCheckoutUseRecordV1;
+    readonly status: "reserved" | "observe_only"; readonly record: OrdinaryCheckoutUseRecordV1;
   }, OrdinaryCheckoutCommitErrorV1>;
   readonly revalidateOrdinaryCheckoutUse: (use: OrdinaryCheckout.OrdinaryCheckoutUseV1) => Effect.Effect<OrdinaryCheckoutUseRecordV1, OrdinaryCheckoutCommitErrorV1>;
   readonly endOrdinaryCheckoutOutboxUse: (use: OrdinaryCheckout.OrdinaryCheckoutUseV1) => Effect.Effect<boolean, OrdinaryCheckoutCommitErrorV1>;
@@ -4378,14 +4378,14 @@ const baseLayer: Layer.Layer<
             return yield* ordinaryFailure(admission.capture, "unknown_use", "Existing checkout operation has another original subject");
           return { status: "observe_only" as const, record: existing };
         }
-        yield* validateOrdinaryCheckoutCapture(admission.capture, subject.source, { operationId: input.operationId, requireLiveLease: true });
+        yield* validateOrdinaryCheckoutCapture(admission.capture, subject.source, { operationId: input.operationId, requireLiveLease: false });
         yield* validateOrdinaryCheckoutUseSource(subject.use, admission);
         const now = DateTime.formatIso(yield* DateTime.now);
         yield* sql`INSERT INTO orchestration_v2_worktree_path_admissions
           (operation_id, canonical_path, kind, subject_json, state, started_at, outcome_json, recorded_at, updated_at)
           VALUES (${input.operationId}, ${admission.capture.canonicalCheckoutPath}, 'native_operation',
             ${nativeCreationCanonicalJson(Schema.encodeSync(OrdinaryCheckoutUseSubjectV1)(subject))}, 'reserved', NULL, NULL, ${now}, ${now})`;
-        return { status: "use_now" as const, record: { subject, state: "reserved" as const, startedAt: null } };
+        return { status: "reserved" as const, record: { subject, state: "reserved" as const, startedAt: null } };
       }));
     });
     const revalidateOrdinaryCheckoutUse = Effect.fnUntraced(function* (use: OrdinaryCheckout.OrdinaryCheckoutUseV1) {
