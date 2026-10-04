@@ -39,16 +39,18 @@ const primaryHttpRuntime = ManagedRuntime.make(
 
 export type PrimaryHttpEffectRunner = <A, E>(
   effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient.PrimaryEnvironmentHttpClient>,
+  options?: Effect.RunOptions,
 ) => Promise<A>;
 
-const livePrimaryHttpRunner: PrimaryHttpEffectRunner = (effect) =>
-  primaryHttpRuntime.runPromise(effect);
+const livePrimaryHttpRunner: PrimaryHttpEffectRunner = (effect, options) =>
+  primaryHttpRuntime.runPromise(effect, options);
 
 let primaryHttpRunner = livePrimaryHttpRunner;
 
 export const runPrimaryHttp = <A, E>(
   effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient.PrimaryEnvironmentHttpClient>,
-) => primaryHttpRunner(effect);
+  options?: Effect.RunOptions,
+) => primaryHttpRunner(effect, options);
 
 export function __setPrimaryHttpRunnerForTests(runner?: PrimaryHttpEffectRunner): void {
   primaryHttpRunner = runner ?? livePrimaryHttpRunner;
