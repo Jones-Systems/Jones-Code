@@ -51,7 +51,15 @@ export interface AgentDeviceEndpoint {
   readonly entryPath: string;
 }
 
+export interface DeviceDirectMediaEndpoint {
+  readonly target: string;
+  readonly gatewayPort: number;
+  readonly owner: string;
+  readonly generation: string;
+}
+
 export interface DeviceHostReady {
+  readonly directMedia?: DeviceDirectMediaEndpoint;
   readonly nodePath: string;
   readonly hub: DeviceHubEndpoint;
   /**
