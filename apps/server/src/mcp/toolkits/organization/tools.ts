@@ -2,6 +2,9 @@ import {
   CommandId,
   EnvironmentId,
   McpCapabilityUnavailableError,
+  NativeInvocationContext,
+  NonNegativeInt,
+  OrganizationThreadMetadataPage,
   ThreadId,
   T3PlacementLoadRequest,
   Workstream,
@@ -16,9 +19,10 @@ import {
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
+import { HttpServer } from "effect/unstable/http";
+import { ServerConfig } from "../../../config.ts";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
-import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import {
   WorkstreamGateway,
   WorkstreamGatewayError,
@@ -30,6 +34,8 @@ export class OrganizationToolError extends Schema.TaggedError<OrganizationToolEr
     reason: Schema.String,
     threadId: Schema.optional(Schema.String),
     commandId: Schema.optional(Schema.String),
+    expectedSnapshotSequence: Schema.optional(NonNegativeInt),
+    snapshotSequence: Schema.optional(NonNegativeInt),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
@@ -40,8 +46,7 @@ const failure = Schema.Union([
 ]);
 const dependencies = [
   McpInvocationContext,
-  OrchestrationEngineService,
-  ProjectionSnapshotQuery,
+  ThreadManagementService,
   WorkstreamGateway,
 ];
 const limit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }));
@@ -106,6 +111,42 @@ const annotation = <T extends Tool.Any>(tool: T, readonly: boolean): T =>
     .annotate(Tool.Idempotent, readonly)
     .annotate(Tool.OpenWorld, false) as T;
 export const OrganizationToolkit = Toolkit.make(
+  annotation(
+    Tool.make("get_invocation_context", {
+      description:
+        "Read the authenticated current invocation's environment and thread IDs, effective base directory, proved loopback origin, and bundled server version. A null origin means no loopback route is proved; server generation is unavailable. This is not runtime attestation.",
+      // The flipped guard rejects raw keys before Struct strips them. The outer check
+      // supplies MCP's required object schema, which an empty Struct does not generate.
+      parameters: Schema.flip(
+        Schema.flip(Schema.Struct({})).check(
+          Schema.makeFilter((value) => Reflect.ownKeys(value).length === 0),
+        ),
+      ).check(
+        Schema.isMaxProperties(0, {
+          toJsonSchema: () => ({ type: "object", maxProperties: 0 }),
+        }),
+      ),
+      success: NativeInvocationContext,
+      failure: McpCapabilityUnavailableError,
+      dependencies: [McpInvocationContext, ServerConfig, HttpServer.HttpServer],
+    }),
+    true,
+  ),
+  annotation(
+    Tool.make("list_organization_thread_metadata", {
+      description:
+        "Read a bounded environment-wide page of V2 thread navigation and activity metadata without conversation bodies. projectionUpdatedAt is a row timestamp; latest user message and run request/start/completion timestamps describe activity. Pass snapshotSequence as expectedSnapshotSequence on later pages; restart pagination if it changes. Pending request flags describe the shell's current request summary, not an exhaustive request inventory. This grants no attestation, custody, or exclusive ownership.",
+      parameters: Schema.Struct({
+        limit: Schema.optional(limit),
+        offset: Schema.optional(offset),
+        expectedSnapshotSequence: Schema.optional(NonNegativeInt),
+      }),
+      success: OrganizationThreadMetadataPage,
+      failure: Schema.Union([McpCapabilityUnavailableError, OrganizationToolError]),
+      dependencies: [McpInvocationContext, ThreadManagementService],
+    }),
+    true,
+  ),
   annotation(
     Tool.make("list_organization_threads", {
       description:
