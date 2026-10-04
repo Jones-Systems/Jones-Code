@@ -3,6 +3,8 @@
 import * as NodeFS from "node:fs";
 import * as NodeReadline from "node:readline";
 
+import { publishAcpReplayStatus } from "./acpReplayStatusPublication.ts";
+
 interface ReplayEntry {
   readonly type: "emit_inbound" | "expect_outbound" | "runtime_exit";
   readonly label?: string;
@@ -57,16 +59,12 @@ const pendingClientRequestIds = new Map<string, string | number>();
 const pendingAgentRequestMethods = new Map<string, string>();
 
 function writeStatus(failure?: unknown): void {
-  NodeFS.writeFileSync(
-    replayStatusPath,
-    JSON.stringify({
-      scenario: transcript.scenario,
-      cursor,
-      total: transcript.entries.length,
-      ...(failure === undefined ? {} : { failure }),
-    }),
-    "utf8",
-  );
+  publishAcpReplayStatus(replayStatusPath, {
+    scenario: transcript.scenario,
+    cursor,
+    total: transcript.entries.length,
+    ...(failure === undefined ? {} : { failure }),
+  });
 }
 
 function stableStringify(value: unknown): string {
@@ -184,28 +182,26 @@ function materializeInbound(value: unknown): unknown {
   );
 }
 
-function emitInbound(recorded: LogicalFrame): void {
+function inboundMessage(recorded: LogicalFrame): JsonRpcMessage | undefined {
   const frame = materializeInbound(recorded) as LogicalFrame;
   switch (frame.kind) {
     case "notification":
-      send({
+      return {
         jsonrpc: "2.0",
         method: frame.method,
         ...(frame.params === undefined ? {} : { params: frame.params }),
-      });
-      return;
+      };
     case "request": {
       const id = nextAgentRequestId;
       nextAgentRequestId += 1;
       pendingAgentRequestMethods.set(String(id), frame.method);
-      send({
+      return {
         jsonrpc: "2.0",
         id,
         method: frame.method,
         ...(frame.params === undefined ? {} : { params: frame.params }),
         headers: [],
-      });
-      return;
+      };
     }
     case "response": {
       const id = pendingClientRequestId(frame.method);
@@ -214,12 +210,12 @@ function emitInbound(recorded: LogicalFrame): void {
         return;
       }
       pendingClientRequestIds.delete(frame.method);
-      send({
+      return {
         jsonrpc: "2.0",
         id,
         ...(frame.result === undefined ? {} : { result: frame.result }),
         ...(frame.error === undefined ? {} : { error: frame.error }),
-      });
+      };
     }
   }
 }
@@ -246,9 +242,12 @@ function flushInbound(): void {
       stopWithFailure("Invalid emit_inbound logical ACP frame", entry.frame);
       return;
     }
-    emitInbound(frame);
-    if (stopped) return;
+    const message = inboundMessage(frame);
+    if (stopped || message === undefined) return;
+    // The cursor records validated replay entries, not consumer completion.
+    // Publish it before the answer can let the client close this process.
     advance();
+    send(message);
   }
 }
 
