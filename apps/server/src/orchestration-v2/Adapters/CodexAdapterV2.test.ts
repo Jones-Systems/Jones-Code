@@ -19,6 +19,7 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
@@ -1624,7 +1625,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
-      const serverConfig = yield* makeReplayServerConfig(transcript.scenario).pipe(Effect.orDie);
+      const serverConfig = yield* Effect.acquireRelease(
+        makeReplayServerConfig(transcript.scenario).pipe(Effect.orDie),
+        (config) => fileSystem.remove(config.baseDir, { recursive: true }).pipe(Effect.orDie),
+      );
       const continuationRequests: Array<ProviderContinuationRequest> = [];
       const clientFactory: CodexAdapterV2.CodexAppServerClientFactoryShape = {
         open: (openInput) =>
@@ -2545,6 +2549,185 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         assert.equal(items[0]?.id, items[1]?.id);
         assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect("carries a stopped thread's cursor and cwd to a compatible Codex account", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativeThreadId = "saved-codex-conversation";
+        const targetId = CODEX_TEST_MODEL_SELECTION.instanceId;
+        const requests: string[] = [];
+        const transcript = makeCodexReplayTranscript({
+          scenario: "compatible-account-resume",
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: "unused",
+              prompt: "unused",
+            }).slice(0, 5),
+            {
+              type: "expect_outbound",
+              label: "resume saved cursor in shared cwd",
+              frame: {
+                id: 3,
+                method: "thread/resume",
+                params: {
+                  threadId: nativeThreadId,
+                  excludeTurns: true,
+                  cwd: "/shared/project",
+                  model: CODEX_TEST_MODEL_SELECTION.model,
+                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "same conversation",
+              frame: { id: 3, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          () => Effect.void,
+          (method) =>
+            Effect.sync(() => {
+              requests.push(method);
+            }),
+        );
+        const source = {
+          ...harness.providerThread,
+          providerInstanceId: ProviderInstanceId.make("codex_source"),
+          providerSessionId: ProviderSessionId.make("stopped_source_session"),
+          nativeConversationHeadRef: {
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeId: "saved-codex-turn",
+            strength: "strong" as const,
+          },
+        };
+        const resumed = yield* harness.runtime.resumeThread({
+          providerThread: source,
+          modelSelection: { ...CODEX_TEST_MODEL_SELECTION, instanceId: targetId },
+          runtimePolicy: { ...CODEX_TEST_RUNTIME_POLICY, cwd: "/shared/project" },
+        });
+        assert.equal(resumed.id, source.id);
+        assert.equal(resumed.appThreadId, source.appThreadId);
+        assert.equal(resumed.providerInstanceId, targetId);
+        assert.equal(resumed.providerSessionId, harness.runtime.providerSessionId);
+        assert.deepEqual(resumed.nativeThreadRef, source.nativeThreadRef);
+        assert.deepEqual(resumed.nativeConversationHeadRef, source.nativeConversationHeadRef);
+        assert.deepEqual(requests, ["initialize", "thread/start"]);
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect.each(["missing", "null-id", "empty", "blank", "wrong-driver"] as const)(
+    "rejects a required resume with a %s Codex conversation cursor",
+    (invalid) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const requests: string[] = [];
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario: `account-resume-${invalid}`,
+              entries: codexReplayPreamble({
+                nativeThreadId: "saved-thread",
+                nativeTurnId: "unused",
+                prompt: "unused",
+              }).slice(0, 5),
+            }),
+            () => Effect.void,
+            (method) =>
+              Effect.sync(() => {
+                requests.push(method);
+              }),
+          );
+          const error = yield* harness.runtime
+            .resumeThread({
+              providerThread: {
+                ...harness.providerThread,
+                providerInstanceId: ProviderInstanceId.make("codex_source"),
+                nativeThreadRef:
+                  invalid === "missing"
+                    ? null
+                    : {
+                        driver:
+                          invalid === "wrong-driver"
+                            ? ProviderDriverKind.make("claude")
+                            : CodexAdapterV2.CODEX_DRIVER_KIND,
+                        nativeId:
+                          invalid === "null-id"
+                            ? null
+                            : invalid === "empty"
+                              ? ""
+                              : invalid === "blank"
+                                ? "  "
+                                : "saved-thread",
+                        strength: "strong",
+                      },
+              },
+            })
+            .pipe(Effect.flip);
+          assert.equal(error._tag, "ProviderAdapterResumeThreadError");
+          assert.nestedPropertyVal(error, "cause._tag", "ProviderAdapterProtocolError");
+          assert.deepEqual(requests, ["initialize", "thread/start"]);
+        }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect("does not start a fresh conversation when cross-account resume is required", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const requests: string[] = [];
+        const transcript = makeCodexReplayTranscript({
+          scenario: "account-resume-unavailable",
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId: "saved-thread",
+              nativeTurnId: "unused",
+              prompt: "unused",
+            }).slice(0, 5),
+            {
+              type: "expect_outbound",
+              label: "resume same saved conversation",
+              frame: {
+                id: 3,
+                method: "thread/resume",
+                params: {
+                  threadId: "saved-thread",
+                  excludeTurns: true,
+                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "missing conversation",
+              frame: { id: 3, error: { code: -32603, message: "thread not found" } },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          () => Effect.void,
+          (method) =>
+            Effect.sync(() => {
+              requests.push(method);
+            }),
+        );
+        const source = {
+          ...harness.providerThread,
+          providerInstanceId: ProviderInstanceId.make("codex_source"),
+        };
+        const error = yield* harness.runtime
+          .resumeThread({ providerThread: source })
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "ProviderAdapterResumeThreadError");
+        assert.nestedPropertyVal(error, "cause.errorMessage", "thread not found");
+        assert.deepEqual(requests, ["initialize", "thread/start"]);
+        assert.equal(source.nativeThreadRef?.nativeId, "saved-thread");
       }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     ),
   );
