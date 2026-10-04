@@ -345,6 +345,7 @@ import {
   selectProjectGroupingSettings,
 } from "../logicalProject";
 import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRoutes";
+import { clearSubmittedComposer, restoreFailedComposerSend } from "./composerSendRecovery";
 import {
   isSameSidebarThreadRef,
   useSidebarPendingFileDropStore,
@@ -8554,8 +8555,10 @@ export default function ChatView(props: ChatViewProps) {
         interactionMode: followUp.interactionMode,
       });
       if (!followUpSent) {
-        promptRef.current = followUpPromptSnapshot;
-        composerTerminalContextsRef.current = [...followUpTerminalContexts];
+        if (currentRouteThreadKeyRef.current === routeThreadKey) {
+          promptRef.current = followUpPromptSnapshot;
+          composerTerminalContextsRef.current = [...followUpTerminalContexts];
+        }
         restorePlanFollowUpComposer({
           snapshot: {
             prompt: followUpPromptSnapshot,
@@ -8573,7 +8576,11 @@ export default function ChatView(props: ChatViewProps) {
             setComposerDraftPreviewAnnotations(composerDraftTarget, [...annotations]),
           writeThreadContexts: (records) =>
             setComposerDraftThreadContexts(composerDraftTarget, [...records]),
-          resetCursor: (options) => composerRef.current?.resetCursorState(options),
+          resetCursor: (options) => {
+            if (currentRouteThreadKeyRef.current === routeThreadKey) {
+              composerRef.current?.resetCursorState(options);
+            }
+          },
         });
       }
       return;
@@ -9254,9 +9261,13 @@ export default function ChatView(props: ChatViewProps) {
         }),
       );
     }
-    promptRef.current = "";
-    clearComposerDraftContent(composerDraftTarget);
-    composerRef.current?.resetCursorState();
+    clearSubmittedComposer({
+      routeThreadKey,
+      currentRouteThreadKeyRef,
+      composerDraftTarget,
+      promptRef,
+      resetCursor: () => composerRef.current?.resetCursorState(),
+    });
 
     let firstComposerImageName: string | null = null;
     if (composerImagesSnapshot.length > 0) {
@@ -9476,48 +9487,36 @@ export default function ChatView(props: ChatViewProps) {
         );
         clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
       }
-      if (
-        backgroundDraftOpened
-          ? !composerDraftHasUserContent(
-              useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
-            )
-          : promptRef.current.length === 0 &&
-            composerImagesRef.current.length === 0 &&
-            composerFilesRef.current.length === 0 &&
-            composerTerminalContextsRef.current.length === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)
-              ?.previewAnnotations.length ?? 0) === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
-              .length ?? 0) === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.threadContexts
-              .length ?? 0) === 0
-      ) {
-        setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
-          for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
-          }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
-          return next.length === existing.length ? existing : next;
-        });
-        promptRef.current = messageTextForSend;
-        const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
-        composerImagesRef.current = retryComposerImages;
-        composerFilesRef.current = composerFilesSnapshot;
-        composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, messageTextForSend);
-        addComposerDraftImages(composerDraftTarget, retryComposerImages);
-        addComposerDraftFiles(composerDraftTarget, composerFilesSnapshot);
-        setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
-        setComposerDraftPreviewAnnotations(composerDraftTarget, composerPreviewAnnotationsSnapshot);
-        setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
-        setComposerDraftThreadContexts(composerDraftTarget, composerThreadContextsSnapshot);
-        composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(messageTextForSend, messageTextForSend.length),
+      restoreFailedComposerSend({
+        routeThreadKey,
+        currentRouteThreadKeyRef,
+        backgroundDraftOpened,
+        composerDraftTarget,
+        promptRef,
+        composerImagesRef,
+        composerFilesRef,
+        composerTerminalContextsRef,
+        snapshot: {
           prompt: messageTextForSend,
-          detectTrigger: true,
-        });
-      }
+          images: composerImagesSnapshot,
+          files: composerFilesSnapshot,
+          terminalContexts: composerTerminalContextsSnapshot,
+          previewAnnotations: composerPreviewAnnotationsSnapshot,
+          reviewComments: composerReviewCommentsSnapshot,
+          threadContexts: composerThreadContextsSnapshot,
+        },
+        onRestore: () => {
+          setOptimisticUserMessages((existing) => {
+            const removed = existing.filter((message) => message.id === messageIdForSend);
+            for (const message of removed) {
+              revokeUserMessagePreviewUrls(message);
+            }
+            const next = existing.filter((message) => message.id !== messageIdForSend);
+            return next.length === existing.length ? existing : next;
+          });
+        },
+        resetCursor: (options) => composerRef.current?.resetCursorState(options),
+      });
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         setThreadError(

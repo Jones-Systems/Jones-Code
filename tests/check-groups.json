@@ -113,13 +113,19 @@
     {
       "group_id": "jones-cli-release-provenance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/cli/update.test.ts",
-      "modules": ["apps/server/src/cli/update.test.ts"],
-      "scope": ["apps/server/src/cli/update.ts"]
+      "modules": [
+        "apps/server/src/cli/update.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/cli/update.ts"
+      ]
     },
     {
       "group_id": "voice-native-bootstrap-conformance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/voiceNativeBootstrap.test.ts",
-      "modules": ["apps/server/src/voiceNativeBootstrap.test.ts"],
+      "modules": [
+        "apps/server/src/voiceNativeBootstrap.test.ts"
+      ],
       "scope": [
         "apps/server/src/voiceNativeBootstrap.test.ts",
         "apps/server/src/voiceNativeBootstrap.fixtures/**",
@@ -138,7 +144,9 @@
         "scripts/runtime-adoption-qualification/browser-storage.test.mjs",
         "scripts/runtime-adoption-qualification/artifact-binding.test.mjs"
       ],
-      "scope": ["scripts/runtime-adoption-qualification/**"]
+      "scope": [
+        "scripts/runtime-adoption-qualification/**"
+      ]
     },
     {
       "group_id": "t3-native-creation-contracts",
@@ -966,6 +974,19 @@
         "apps/server/src/device/DeviceDirectAdmission.test.ts",
         "apps/server/src/device/DeviceService.ts",
         "apps/server/src/device/DeviceServiceDirectLifecycle.test.ts"
+      ]
+    },
+    {
+      "group_id": "web-composer-send-recovery",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/web/src/components/composerSendRecovery.test.ts apps/web/src/components/ChatView.logic.test.ts apps/web/src/composerDraftStore.test.ts",
+      "modules": [
+        "apps/web/src/components/composerSendRecovery.test.ts",
+        "apps/web/src/components/ChatView.logic.test.ts",
+        "apps/web/src/composerDraftStore.test.ts"
+      ],
+      "scope": [
+        "apps/web/src/components/composerSendRecovery.ts",
+        "apps/web/src/components/ChatView.tsx"
       ]
     }
   ]
