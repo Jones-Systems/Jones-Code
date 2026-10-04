@@ -134,6 +134,12 @@ sending an answer or restarting the agent. Settling also closes the thread's
 terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
+On web and desktop, choose **Stop thread** from the sidebar or chat header menu
+to stop the thread's agent sessions while keeping its conversation, pin, and
+settlement state. Sending another message starts a session again. Stop leaves
+terminals open. Use **Settle thread** to move finished work out of the active
+list, or **Delete** to permanently clear the conversation history.
+
 On web and desktop, press a thread's **Settle** button and drag up or down to
 settle every thread in that section between it and the one you release on.
 The **Un-settle** and **Wake** buttons work the same way in their sections.
