@@ -382,6 +382,10 @@
     "./voice-review": {
       "types": "./src/voice-review.ts",
       "default": "./src/voice-review.ts"
+    },
+    "./voice-review/fixtures": {
+      "types": "./src/voiceReview/fixtures.ts",
+      "default": "./src/voiceReview/fixtures.ts"
     }
   },
   "scripts": {

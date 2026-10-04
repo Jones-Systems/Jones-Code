@@ -22,7 +22,6 @@ export function SidebarActiveThreadsPill({
             type="button"
             aria-label={label}
             aria-pressed={activeOnly}
-            title={`${countLabel}${count === null ? " — unavailable" : `: ${count}`}`}
             onClick={onToggle}
             className={cn(
               "relative z-10 inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs font-medium outline-hidden ring-ring transition-colors focus-visible:ring-2 [-webkit-app-region:no-drag]",
@@ -35,7 +34,10 @@ export function SidebarActiveThreadsPill({
           </button>
         }
       />
-      <TooltipPopup side="bottom">{label}</TooltipPopup>
+      <TooltipPopup side="bottom">
+        {label}. {countLabel}
+        {count === null ? " — unavailable" : `: ${count}`}
+      </TooltipPopup>
     </Tooltip>
   );
 }

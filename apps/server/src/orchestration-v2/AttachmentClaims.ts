@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as FileSystem from "effect/FileSystem";
 import {
   ChatAttachmentId,
@@ -46,7 +46,7 @@ export function attachmentIsPendingUpload(attachment: ChatAttachment): boolean {
 
 const hashFile = Effect.fnUntraced(function* (path: string) {
   const fileSystem = yield* FileSystem.FileSystem;
-  const hash = createHash("sha256");
+  const hash = NodeCrypto.createHash("sha256");
   let sizeBytes = 0;
   yield* fileSystem.stream(path).pipe(
     Stream.runForEach((bytes) =>
