@@ -2,6 +2,34 @@
   "manifest_version": 1,
   "groups": [
     {
+      "group_id": "jones-performance-lease",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism --maxWorkers=1 apps/server/src/orchestration/WorktreeOwnershipLease.test.ts apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts apps/server/src/persistence/Migrations/007_JonesThreadCreationLookupIndex.test.ts apps/server/src/persistence/Migrations.test.ts apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.test.ts apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.test.ts apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.test.ts",
+      "modules": [
+        "apps/server/src/orchestration/WorktreeOwnershipLease.test.ts",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts",
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts",
+        "apps/server/src/persistence/Migrations/007_JonesThreadCreationLookupIndex.test.ts",
+        "apps/server/src/persistence/Migrations.test.ts",
+        "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.test.ts",
+        "apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.test.ts",
+        "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/orchestration/WorktreeOwnershipLease.ts",
+        "apps/server/src/orchestration/WorktreeOwnershipLease.test.ts",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.ts",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts",
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts",
+        "apps/server/src/persistence/Migrations/007_JonesThreadCreationLookupIndex.ts",
+        "apps/server/src/persistence/Migrations/007_JonesThreadCreationLookupIndex.test.ts",
+        "apps/server/src/persistence/Migrations.ts",
+        "apps/server/src/persistence/Migrations.test.ts",
+        "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.test.ts",
+        "apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.test.ts",
+        "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.test.ts"
+      ]
+    },
+    {
       "group_id": "t3-conditional-dispatch",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration/DispatchGuard.test.ts apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts packages/contracts/src/orchestration.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts",
       "modules": [

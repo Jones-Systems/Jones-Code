@@ -134,24 +134,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     } as const;
   };
 
-  const acquireOwnershipRecord = Effect.fn("acquireOwnershipRecord")(function* (
+  const prepareOwnershipRecord = Effect.fn("prepareOwnershipRecord")(function* (
     target: NonNullable<ReturnType<typeof ownershipTargetForThread>>,
   ) {
-    const nowMs = yield* Clock.currentTimeMillis;
-    const ownerIncarnation = yield* worktreeOwnershipLeases
-      .getThreadIncarnation(target.ownerThreadId)
-      .pipe(
-        Effect.flatMap(
-          Option.match({
-            onNone: () =>
-              new OrchestrationCommandInvariantError({
-                commandType: "worktree.ownership.acquire",
-                detail: `thread '${target.ownerThreadId}' has no authoritative creation event`,
-              }),
-            onSome: Effect.succeed,
-          }),
-        ),
-      );
     const resourcePath = yield* fileSystem
       .realPath(target.resourcePath)
       .pipe(Effect.orElseSucceed(() => target.resourcePath));
@@ -165,29 +150,44 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }),
       ),
     );
+    return { ...target, resourcePath, leaseId };
+  });
+
+  const acquireOwnershipRecord = Effect.fn("acquireOwnershipRecord")(function* (
+    prepared: Effect.Success<ReturnType<typeof prepareOwnershipRecord>>,
+  ) {
+    const nowMs = yield* Clock.currentTimeMillis;
+    // This write must be the transaction's first database access. It selects
+    // the authoritative incarnation after reserving the SQLite writer.
     const acquired = yield* worktreeOwnershipLeases.acquire({
-      ...target,
-      ownerIncarnation,
-      resourcePath,
-      leaseId,
+      ...prepared,
       nowMs,
       expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS,
     });
     if (Option.isSome(acquired)) return acquired.value;
 
+    const ownerIncarnation = yield* worktreeOwnershipLeases.getThreadIncarnation(
+      prepared.ownerThreadId,
+    );
+    if (Option.isNone(ownerIncarnation)) {
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: "worktree.ownership.acquire",
+        detail: `thread '${prepared.ownerThreadId}' has no authoritative creation event`,
+      });
+    }
     const conflictingLease = (yield* worktreeOwnershipLeases.listAll()).find(
-      (lease) => lease.resourcePath === resourcePath,
+      (lease) => lease.resourcePath === prepared.resourcePath,
     );
     if (conflictingLease === undefined) {
       return yield* new OrchestrationCommandInvariantError({
         commandType: "worktree.ownership.acquire",
-        detail: `failed to acquire ownership for '${resourcePath}'`,
+        detail: `failed to acquire ownership for '${prepared.resourcePath}'`,
       });
     }
     return yield* new WorktreeOwnershipConflictError({
       resourcePath: conflictingLease.resourcePath,
       ownerThreadId: conflictingLease.ownerThreadId,
-      requestingThreadId: target.ownerThreadId,
+      requestingThreadId: prepared.ownerThreadId,
       ownerBranch: conflictingLease.branch,
       expiresAtMs: conflictingLease.expiresAtMs,
     });
@@ -497,13 +497,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 ...planned,
                 metadata: { ...planned.metadata, origin: envelope.origin },
               }));
+        const preparedOwnershipTarget =
+          ownershipTarget === null ? null : yield* prepareOwnershipRecord(ownershipTarget);
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {
               const committedEvents: OrchestrationEvent[] = [];
               const attachmentCleanups: Effect.Effect<void>[] = [];
               let nextCommandReadModel = commandReadModel;
-              let acquiredLease: WorktreeOwnershipLease | null = null;
+              const acquiredLease =
+                preparedOwnershipTarget === null
+                  ? null
+                  : yield* acquireOwnershipRecord(preparedOwnershipTarget);
 
               // Guarded cleanup names one creation event. Recheck it inside the
               // write transaction so cleanup cannot delete a replacement thread.
@@ -583,10 +588,6 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                     detail: "native creation cleanup thread incarnation changed",
                   });
                 }
-              }
-
-              if (ownershipTarget !== null) {
-                acquiredLease = yield* acquireOwnershipRecord(ownershipTarget);
               }
 
               for (const nextEvent of eventBases) {
@@ -836,7 +837,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
       }
-      const lease = yield* sql.withTransaction(acquireOwnershipRecord({ ...target, resourcePath }));
+      const prepared = yield* prepareOwnershipRecord({ ...target, resourcePath });
+      const lease = yield* sql.withTransaction(acquireOwnershipRecord(prepared));
       locallyOwnedWorktrees.set(lease.resourcePath, lease);
       return lease;
     }).pipe(
