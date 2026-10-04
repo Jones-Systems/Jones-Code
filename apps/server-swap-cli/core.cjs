@@ -262,10 +262,10 @@ function createEngine(adapters = {}) {
         save(p, state, {});
         updateOwnership(p, 'in-progress', true);
       } else F.insist(state, 'No transaction exists');
-      if (operation === 'reconcile') return await reconcileState(p, state, service);
+      if (operation === 'reconcile' || state.phase === 'committed') return await reconcileState(p, state, service);
       return await advance(p, state, service);
     } catch (error) {
-      if (state?.phase === 'committed' && operation === 'reconcile') {
+      if (state?.phase === 'committed' && operation !== 'apply') {
         save(p, state, { status: 'unknown', historicalStatus: 'committed', verification: 'failed', error: error.message });
         try { updateOwnership(p, 'unknown'); } catch { /* A newer transaction retains its durable ownership. */ }
         return state;

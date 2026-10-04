@@ -278,26 +278,28 @@ test('unresolved prior transaction fences a different id and state directory aft
   assert.deepEqual(f.calls, ['stop']);
 });
 
-test('failed revalidation of a historical commit cannot produce a current committed status', async (t) => {
+for (const operation of ['reconcile', 'resume']) {
+test(`${operation}: failed revalidation of a historical commit cannot produce a current committed status`, async (t) => {
   const f = fixture(t);
   assert.equal((await f.engine.apply(f.planPath)).status, 'committed');
   f.targetProofError = true;
   assert.equal((await f.engine.status(f.planPath)).status, 'committed-unverified');
-  const reconciliation = await f.engine.reconcile(f.planPath);
+  const reconciliation = await f.engine[operation](f.planPath);
   assert.equal(reconciliation.status, 'unknown');
   assert.equal(reconciliation.phase, 'committed');
   assert.equal((await f.engine.status(f.planPath)).status, 'unknown');
   assert.equal(F.readJson(path.join(f.home, '.fixture-owner.json')).status, 'unknown');
 });
 
-test('committed payload drift found during preflight also invalidates its durable status and owner', async (t) => {
+test(`${operation}: committed payload drift found during preflight also invalidates its durable status and owner`, async (t) => {
   const f = fixture(t);
   assert.equal((await f.engine.apply(f.planPath)).status, 'committed');
   fs.appendFileSync(f.plan.target.executable.path, 'drift');
-  assert.equal((await f.engine.reconcile(f.planPath)).status, 'unknown');
+  assert.equal((await f.engine[operation](f.planPath)).status, 'unknown');
   assert.equal((await f.engine.status(f.planPath)).status, 'unknown');
   assert.equal(F.readJson(path.join(f.home, '.fixture-owner.json')).status, 'unknown');
 });
+}
 
 for (const [sourceDistribution, targetDistribution] of [['t3', 'jones'], ['jones', 'jones']]) {
   test(`qualified ${sourceDistribution} to ${targetDistribution} exact-version swap retains the source pair`, async (t) => {
