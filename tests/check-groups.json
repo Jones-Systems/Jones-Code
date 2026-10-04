@@ -2,6 +2,33 @@
   "manifest_version": 1,
   "groups": [
     {
+      "group_id": "jones-workspace-preparation-retry",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/ThreadLaunchService.test.ts packages/client-runtime/src/state/turnItemPresentation.test.ts packages/client-runtime/src/operations/commands.test.ts packages/contracts/src/orchestrationV2.test.ts",
+      "modules": [
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "packages/client-runtime/src/state/turnItemPresentation.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "packages/contracts/src/orchestrationV2.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.ts",
+        "apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts",
+        "apps/server/src/ws.ts",
+        "apps/mobile/src/features/threads/thread-work-log.tsx",
+        "apps/web/src/components/ChatView.tsx",
+        "apps/web/src/components/chat/MessagesTimeline.tsx",
+        "packages/client-runtime/src/operations/commands.ts",
+        "packages/client-runtime/src/state/threadCommands.ts",
+        "packages/client-runtime/src/state/turnItemPresentation.ts",
+        "packages/contracts/src/orchestrationV2.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "packages/client-runtime/src/state/turnItemPresentation.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "packages/contracts/src/orchestrationV2.test.ts"
+      ]
+    },
+    {
       "group_id": "t3-conditional-dispatch",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/DispatchGuard.test.ts apps/server/src/orchestration-v2/CommandObservation.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/Orchestrator.guarded-dispatch.test.ts packages/contracts/src/orchestrationNative.test.ts packages/contracts/src/orchestrationV2.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts",
       "modules": [
