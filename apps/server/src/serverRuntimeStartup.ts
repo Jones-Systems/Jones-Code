@@ -787,7 +787,7 @@ const make = (options?: StartupOptions) =>
 
     return {
       awaitCommandReady: commandGate.awaitCommandReady,
-      markHttpListening: Deferred.succeed(httpListening, undefined),
+      markHttpListening: Deferred.succeed(httpListening, undefined).pipe(Effect.asVoid),
       markRunningProviderSessionsForContinuation: markRunningProviderSessionsForContinuation.pipe(
         Effect.provideService(ProviderRuntimeRecovery.ProviderRuntimeRecoveryService, providerRuntimeRecovery),
       ),

@@ -240,6 +240,17 @@ it.effect("clears only the immutable marker batch returned to an update helper",
     assert.isTrue(Exit.isFailure(yield* Effect.exit(captured.clear(firstIds))));
     yield* captured.clear(replacementIds);
     assert.strictEqual(cleared[1], replacement);
+    let attemptedClears = 0;
+    const failing = captureServerUpdateContinuations({
+      prepare: Effect.succeed(first),
+      clear: () => Effect.sync(() => { attemptedClears += 1; }).pipe(
+        Effect.andThen(Effect.fail(new Error("clear outcome unavailable"))),
+      ),
+    });
+    const failedIds = yield* failing.prepare;
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(failing.clear(failedIds))));
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(failing.clear(failedIds))));
+    assert.equal(attemptedClears, 1);
   }),
 );
 

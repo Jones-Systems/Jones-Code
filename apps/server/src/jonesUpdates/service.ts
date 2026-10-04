@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // Native activation receipt and cache paths share the detached launcher protocol.
 import {
-  ThreadId,
+  type ThreadId,
   EnvironmentId,
   type JonesUpdateState,
   type JonesUpdateDownloadInput,
@@ -29,6 +29,7 @@ import * as ServerConfig from "../config.ts";
 import * as SelfUpdate from "../cloud/selfUpdate.ts";
 import * as Launcher from "../cloud/serviceLauncherClient.ts";
 import * as Startup from "../serverRuntimeStartup.ts";
+import type { RestartContinuationMarkerV2 } from "../orchestration-v2/EventSink.ts";
 import * as DesktopReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 
 export class JonesUpdates extends Context.Service<
@@ -49,6 +50,32 @@ const blocked = (message: string): JonesUpdateState => ({
   message,
   capability: { check: false, download: false, install: false, reason: "bootstrap-required" },
 });
+
+export const captureServerUpdateContinuations = <E>(input: {
+  readonly prepare: Effect.Effect<ReadonlyArray<RestartContinuationMarkerV2>, E>;
+  readonly clear: (markers: ReadonlyArray<RestartContinuationMarkerV2>) => Effect.Effect<void, E>;
+}) => {
+  const batches = new WeakMap<ReadonlyArray<string>, ReadonlyArray<RestartContinuationMarkerV2>>();
+  return {
+    prepare: input.prepare.pipe(
+      Effect.map((markers): ReadonlyArray<ThreadId> => {
+        const ids = Object.freeze(markers.map((marker) => marker.threadId));
+        batches.set(ids, markers);
+        return ids;
+      }),
+    ),
+    clear: (ids: ReadonlyArray<string>): Effect.Effect<void, E | ServerSelfUpdateError> =>
+      Effect.suspend((): Effect.Effect<void, E | ServerSelfUpdateError> => {
+        const markers = batches.get(ids);
+        if (!markers) return Effect.fail(new ServerSelfUpdateError({
+          reason: "Continuation batch identity is unavailable or already consumed.",
+        }));
+        // Consume before clearing: a failed or interrupted clear must not authorize a blind retry.
+        batches.delete(ids);
+        return input.clear(markers);
+      }),
+  };
+};
 
 export const layer = Layer.effect(
   JonesUpdates,
@@ -83,9 +110,7 @@ export const layer = Layer.effect(
         install: () => unavailable,
       });
     }
-    const qualifiedSelfUpdate = yield* SelfUpdate.withRunningThreadContinuation({
-      mode: config.mode,
-      selfUpdate,
+    const continuations = captureServerUpdateContinuations({
       prepare: startup.markRunningProviderSessionsForContinuation.pipe(
         Effect.mapError(
           (cause) =>
@@ -102,6 +127,16 @@ export const layer = Layer.effect(
               }),
           ),
         ),
+    });
+
+    const qualifiedSelfUpdate = yield* SelfUpdate.withRunningThreadContinuation({
+      mode: config.mode,
+      selfUpdate,
+      ...continuations,
+    });
+    const desktopContinuations = captureServerUpdateContinuations({
+      prepare: startup.markOptedInProviderSessionsForContinuation,
+      clear: startup.clearProviderSessionContinuationMarkers,
     });
 
     if (config.mode === "desktop") {
@@ -172,13 +207,8 @@ export const layer = Layer.effect(
                 environmentId: input.environmentId,
                 version: input.currentVersion,
                 handle: input.stagedHandle,
-                prepare: () => run(startup.markOptedInProviderSessionsForContinuation),
-                clear: (ids) =>
-                  run(
-                    startup.clearProviderSessionContinuationMarkers(
-                      ids.map((id) => ThreadId.make(id)),
-                    ),
-                  ),
+                prepare: () => run(desktopContinuations.prepare),
+                clear: (ids) => run(desktopContinuations.clear(ids)),
               }),
             catch: (cause) =>
               new ServerSelfUpdateError({

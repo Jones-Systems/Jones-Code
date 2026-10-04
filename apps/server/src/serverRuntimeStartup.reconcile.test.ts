@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   ProjectId, ProviderDriverKind, ProviderInstanceId, ProviderSessionId, ProviderThreadId,
-  RunAttemptId, RunId, ThreadId,
+  RunAttemptId, RunId, ThreadId, ServerSettingsError,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -47,7 +47,7 @@ const source = (id: string) => {
 };
 
 const recoveryLayer = (input: {
-  readonly settings?: Layer.Layer<ServerSettings.ServerSettingsService, ServerSettings.ServerSettingsError>;
+  readonly settings?: Layer.Layer<ServerSettings.ServerSettingsService, ServerSettingsError>;
   readonly projections?: Partial<ProjectionStore.ProjectionStoreV2["Service"]>;
   readonly events?: Partial<EventSink.EventSinkV2["Service"]>;
   readonly sessions?: Partial<ProviderSessions.ProviderSessionManagerV2["Service"]>;
@@ -92,7 +92,7 @@ it.effect("desktop preparation refuses unreadable continuation preferences befor
     const result = yield* Startup.markOptedInProviderSessionsForContinuation.pipe(Effect.exit);
     assert.isTrue(Exit.isFailure(result));
   }).pipe(Effect.provide(recoveryLayer({ settings: Layer.mock(ServerSettings.ServerSettingsService)({
-    getSettings: Effect.fail(new Error("preferences unavailable") as never),
+    getSettings: Effect.fail(new ServerSettingsError({ settingsPath: "/fixture/settings.json", operation: "read-file", cause: "preferences unavailable" })),
   }) }))),
 );
 
