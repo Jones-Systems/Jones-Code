@@ -4466,7 +4466,7 @@ const baseLayer: Layer.Layer<
       input: Parameters<EventSinkV2Shape["commitCommand"]>[0],
     ) {
       yield* assertPublicationScope;
-      const result = yield* sql.withTransaction(
+      const result = yield* withTransaction(
         Effect.gen(function* () {
           const failPrecondition = (reason: NativeCommandPreconditionError["reason"]) => new NativeCommandPreconditionError({ commandId: input.commandId, reason });
           const ordinaryContext = input.ordinaryCheckoutContext;
