@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - Checks immutable fixture bytes synchronously outside an Effect runtime.
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import * as NodeCrypto from "node:crypto";
