@@ -5,13 +5,13 @@ import { AuthSessionId, NativeCreationHistoricalBinding } from "@t3tools/contrac
 import {
   NativeCreationAuthority,
   NativeCreationAuthorityError,
-} from "./orchestration/NativeCreationAuthority.ts";
+} from "./orchestration-v2/NativeCreationAuthority.ts";
 import {
   NativePreparationBinding,
   nativePreparationCommand,
   nativeCreationCanonicalJson,
   nativeCreationSha256,
-} from "./orchestration/NativeCreationPreparation.ts";
+} from "./orchestration-v2/NativeCreationPreparation.ts";
 import * as NativeCreationRepositoryLayer from "./persistence/Layers/NativeCreationRepository.ts";
 import { runMigrations } from "./persistence/Migrations.ts";
 import { makeNativeBootstrapDispatcher } from "./ws.ts";

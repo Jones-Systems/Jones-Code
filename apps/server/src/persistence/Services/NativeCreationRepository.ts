@@ -11,8 +11,8 @@ import * as Schema from "effect/Schema";
 import {
   type NativeCreationAuthorityError,
   type NativeCreationResources,
-} from "../../orchestration/NativeCreationAuthority.ts";
-import { type ValidatedNativeCreationPreparation } from "../../orchestration/NativeCreationPreparation.ts";
+} from "../../orchestration-v2/NativeCreationAuthority.ts";
+import { type ValidatedNativeCreationPreparation } from "../../orchestration-v2/NativeCreationPreparation.ts";
 
 export class NativeCreationRepositoryError extends Schema.TaggedError<NativeCreationRepositoryError>()(
   "NativeCreationRepositoryError",

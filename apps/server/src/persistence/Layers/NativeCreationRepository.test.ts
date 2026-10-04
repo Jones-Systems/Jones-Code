@@ -12,14 +12,14 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { NativeCreationAuthorityError } from "../../orchestration/NativeCreationAuthority.ts";
+import { NativeCreationAuthorityError } from "../../orchestration-v2/NativeCreationAuthority.ts";
 import {
   NativePreparationBinding,
   nativeCreationCanonicalJson,
   nativeCreationSha256,
   nativePreparationCommand,
   validateNativeCreationPreparation,
-} from "../../orchestration/NativeCreationPreparation.ts";
+} from "../../orchestration-v2/NativeCreationPreparation.ts";
 import migration from "../Migrations/003_JonesNativeCreationIntents.ts";
 import identityMigration from "../Migrations/004_JonesNativeCreationCommandIdentities.ts";
 import receiptMigration from "../Migrations/002_OrchestrationCommandReceipts.ts";
