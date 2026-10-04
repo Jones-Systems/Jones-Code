@@ -419,6 +419,17 @@
         "scripts/performance-staging/fixtures.test.mjs"
       ],
       "scope": ["scripts/performance-staging/**", "docs/operations/performance-staging.md"]
+    },
+    {
+      "group_id": "jones-performance-sqlite-tools",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism --maxWorkers=1 apps/server/scripts/jones-sqlite-health.test.ts",
+      "modules": ["apps/server/scripts/jones-sqlite-health.test.ts"],
+      "scope": [
+        "apps/server/scripts/jones-sqlite-health.ts",
+        "apps/server/scripts/jones-sqlite-support.ts",
+        "apps/server/scripts/jones-sqlite-worker.ts",
+        "docs/operations/performance-sqlite.md"
+      ]
     }
   ]
 }
