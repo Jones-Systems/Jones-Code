@@ -38,6 +38,18 @@ export interface ProjectionSnapshotCounts {
   readonly threadCount: number;
 }
 
+export interface ProjectionOperatingCounts {
+  readonly total: number;
+  readonly operating: number;
+  readonly foregroundWaitingApproval: number;
+  readonly foregroundWaitingInput: number;
+  readonly foregroundWaitingPlan: number;
+  readonly backgroundOperating: number;
+  readonly snapshotSequence: number;
+  readonly backgroundSampledAt: string;
+  readonly observedAt: string;
+}
+
 export interface ProjectionSnapshotSequence {
   readonly snapshotSequence: number;
 }
@@ -185,6 +197,10 @@ export interface ProjectionSnapshotQueryShape {
    * Read aggregate projection counts without hydrating the full read model.
    */
   readonly getCounts: () => Effect.Effect<ProjectionSnapshotCounts, ProjectionRepositoryError>;
+
+  readonly getOperatingCounts: (input?: {
+    readonly projectId?: ProjectId;
+  }) => Effect.Effect<ProjectionOperatingCounts, ProjectionRepositoryError>;
 
   /**
    * Measure a persisted event range without decoding its payload bodies.

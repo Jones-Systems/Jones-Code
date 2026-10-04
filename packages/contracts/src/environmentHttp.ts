@@ -4,6 +4,8 @@ import {
   JonesUpdateInstallInput,
 } from "./jonesUpdates.ts";
 import {
+  VoiceReviewRecentList,
+  VoiceReviewDiagnostics,
   VoiceReviewDraft,
   VoiceReviewDraftList,
   VoiceReviewMutationResult,
@@ -12,6 +14,14 @@ import {
   VoiceReviewEditSavePayload,
   VoiceReviewEditCancelPayload,
 } from "./voiceReview.ts";
+import {
+  ThreadRegistryComposedSnapshot,
+  ThreadRegistryWorkstreams,
+  ThreadRegistryEvents,
+  ThreadRegistryAssociationPayload,
+  ThreadRegistryLabelPayload,
+  ThreadRegistryMutationReceipt,
+} from "./threadRegistry.ts";
 import { HostStatusSnapshot } from "./hostStatus.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
@@ -96,6 +106,14 @@ import {
   WorkstreamReceipt,
 } from "./workstreams.ts";
 import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
+import {
+  WorkstreamsNativeContextResponse,
+  WorkstreamsNativeAttestationRequest,
+  WorkstreamsNativeAttestationResponse,
+  WorkstreamsNativeSettlementRequest,
+  WorkstreamsNativeSettlementResponse,
+} from "./workstreamsNativeProvider.ts";
+import { WorkstreamsRegistrationContextResponse } from "./workstreamsRegistrationContext.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { ProviderQueueInventory, ProviderQueueRefreshResult } from "./providerQueue.ts";
 
@@ -729,6 +747,13 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
 
 class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
   .add(
+    HttpApiEndpoint.get("registrationContext", "/api/workstreams/registration-context", {
+      headers: OptionalBearerHeaders,
+      success: WorkstreamsRegistrationContextResponse,
+      error: [...EnvironmentWorkstreamSnapshotErrors, EnvironmentHttpBadRequestError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
     HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
       headers: OptionalBearerHeaders,
       payload: T3PlacementLoadRequest,
@@ -818,6 +843,39 @@ class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
       payload: T3WorkstreamCommandRequest,
       success: WorkstreamReceipt,
       error: EnvironmentOrchestrationDispatchErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
+class EnvironmentWorkstreamsNativeHttpApi extends HttpApiGroup.make("workstreamsNative")
+  .add(
+    HttpApiEndpoint.get("context", "/api/workstreams/native/v1/context", {
+      headers: OptionalBearerHeaders,
+      success: WorkstreamsNativeContextResponse,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("attestations", "/api/workstreams/native/v1/attestations", {
+      headers: OptionalBearerHeaders,
+      payload: WorkstreamsNativeAttestationRequest,
+      success: WorkstreamsNativeAttestationResponse,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("settlements", "/api/workstreams/native/v1/settlements", {
+      headers: OptionalBearerHeaders,
+      payload: WorkstreamsNativeSettlementRequest,
+      success: WorkstreamsNativeSettlementResponse,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("settlementLookup", "/api/workstreams/native/v1/settlements/lookup", {
+      headers: OptionalBearerHeaders,
+      payload: WorkstreamsNativeSettlementRequest,
+      success: WorkstreamsNativeSettlementResponse,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
@@ -946,7 +1004,73 @@ const VoiceReviewParams = Schema.Struct({
   id: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
 });
 const VoiceReviewHeaders = OptionalBearerHeaders;
+const VoiceReviewPageLimit = Schema.optional(
+  Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 200 })),
+);
 class EnvironmentVoiceReviewHttpApi extends HttpApiGroup.make("voiceReview")
+  .add(
+    HttpApiEndpoint.get("recent", "/api/voice-review/recent", {
+      headers: VoiceReviewHeaders,
+      query: { limit: VoiceReviewPageLimit },
+      success: VoiceReviewRecentList,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("registrySnapshot", "/api/voice-review/registry/snapshot", {
+      headers: VoiceReviewHeaders,
+      query: {
+        limit: VoiceReviewPageLimit,
+        cursor: Schema.optional(Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(4096))),
+      },
+      success: ThreadRegistryComposedSnapshot,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("registryWorkstreams", "/api/voice-review/registry/workstreams", {
+      headers: VoiceReviewHeaders,
+      success: ThreadRegistryWorkstreams,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("registryEvents", "/api/voice-review/registry/events", {
+      headers: VoiceReviewHeaders,
+      query: {
+        limit: VoiceReviewPageLimit,
+        after: Schema.optional(
+          Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+        ),
+      },
+      success: ThreadRegistryEvents,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("correctAssociation", "/api/voice-review/registry/associations", {
+      headers: VoiceReviewHeaders,
+      payload: ThreadRegistryAssociationPayload,
+      success: ThreadRegistryMutationReceipt,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("correctLabel", "/api/voice-review/registry/labels", {
+      headers: VoiceReviewHeaders,
+      payload: ThreadRegistryLabelPayload,
+      success: ThreadRegistryMutationReceipt,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("diagnostics", "/api/voice-review/drafts/:id/diagnostics", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      success: VoiceReviewDiagnostics,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
   .add(
     HttpApiEndpoint.get("list", "/api/voice-review/drafts", {
       headers: VoiceReviewHeaders,
@@ -1070,5 +1194,6 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentWorkstreamsHttpApi)
+  .add(EnvironmentWorkstreamsNativeHttpApi)
   .add(EnvironmentConnectHttpApi)
   .add(EnvironmentConversationLibraryHttpApi) {}

@@ -348,6 +348,7 @@ describe("OrchestrationEngine", () => {
   it("bootstraps command handling from persisted projections without reading the full snapshot", async () => {
     let nextSequence = 8;
     const eventStore: OrchestrationEventStoreShape = {
+      readMetadataByCommandId: () => Effect.die("unused command metadata lookup"),
       append: (event) =>
         Effect.sync(() => {
           const savedEvent = {
@@ -432,6 +433,7 @@ describe("OrchestrationEngine", () => {
     const layer = OrchestrationEngineLive.pipe(
       Layer.provide(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getOperatingCounts: () => Effect.die("unused"),
           getUserInputActivity: () => Effect.die("unused"),
           listActivitiesByKind: () => Effect.die("unused"),
           getCommandReadModel: () => Effect.succeed(commandReadModel),
@@ -1491,6 +1493,7 @@ describe("OrchestrationEngine", () => {
     let shouldFailFirstAppend = true;
 
     const flakyStore: OrchestrationEventStoreShape = {
+      readMetadataByCommandId: () => Effect.die("unused command metadata lookup"),
       append(event) {
         if (shouldFailFirstAppend && event.commandId === CommandId.make("cmd-flaky-1")) {
           shouldFailFirstAppend = false;
@@ -1740,6 +1743,7 @@ describe("OrchestrationEngine", () => {
     let nextSequence = 1;
 
     const nonTransactionalStore: OrchestrationEventStoreShape = {
+      readMetadataByCommandId: () => Effect.die("unused command metadata lookup"),
       append(event) {
         const savedEvent = {
           ...event,
@@ -1851,6 +1855,89 @@ describe("OrchestrationEngine", () => {
     ).rejects.toThrow("already archived");
 
     await runtime.dispose();
+  });
+
+  it("does not republish another server's turn when a local dispatch fails", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-shared-db-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const serverA = await createOrchestrationSystem(databasePath);
+    const serverB = await createOrchestrationSystem(databasePath);
+    const threadId = ThreadId.make("thread-shared");
+    const createdAt = now();
+    const sentinelCommandId = CommandId.make("cmd-shared-rename");
+    try {
+      await serverA.run(
+        serverA.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-shared-project-create"),
+          projectId: asProjectId("project-shared"),
+          title: "Shared Project",
+          workspaceRoot: "/tmp/project-shared",
+          createdAt,
+        }),
+      );
+      await serverA.run(
+        serverA.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-shared-thread-create"),
+          threadId,
+          projectId: asProjectId("project-shared"),
+          title: "shared",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      await serverA.run(
+        serverA.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-shared-turn-start"),
+          threadId,
+          message: {
+            messageId: asMessageId("msg-shared"),
+            role: "user",
+            text: "hello",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+
+      const published = await serverB.run(
+        Effect.gen(function* () {
+          const events = yield* serverB.engine.subscribeDomainEvents;
+          // B's command model is still empty, so this fails and reconciles.
+          yield* serverB.engine
+            .dispatch({
+              type: "thread.meta.update",
+              commandId: CommandId.make("cmd-shared-stale-rename"),
+              threadId,
+              title: "stale",
+            })
+            .pipe(Effect.flip);
+          yield* serverB.engine.dispatch({
+            type: "thread.meta.update",
+            commandId: sentinelCommandId,
+            threadId,
+            title: "renamed on B",
+          });
+          return yield* Stream.runCollect(
+            Stream.takeUntil(events, (event) => event.commandId === sentinelCommandId),
+          );
+        }).pipe(Effect.scoped),
+      );
+
+      expect(Array.from(published).map((event) => event.type)).toEqual(["thread.meta-updated"]);
+    } finally {
+      await serverA.dispose();
+      await serverB.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("fails command dispatch when command invariants are violated", async () => {

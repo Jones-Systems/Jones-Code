@@ -1,5 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { QueueDispatchCapability } from "./queueProtocol.ts";
+import { ThreadCorpusCapability } from "./threadCorpusProtocol.ts";
 
 import {
   EnvironmentId,
@@ -107,6 +109,8 @@ export const NativeBootstrapCreationCapability = nativeBootstrapCapabilityStruct
 export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  queueDispatch: Schema.optionalKey(QueueDispatchCapability),
+  threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   nativeBootstrapCreation: Schema.optionalKey(NativeBootstrapCreationCapability),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
@@ -154,6 +158,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   usageLimitSources: Schema.optionalKey(Schema.Boolean),
   /** Server persists custom model rates and applies them to usage summaries. */
   usagePriceOverrides: Schema.optionalKey(Schema.Boolean),
+  /** An enrolled adapter can explicitly read one configured, canonically validated saved report. */
+  savedTokenAccounting: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.pin / thread.unpin commands. Same
       version-skew contract as threadSettlement. */
   threadPinning: Schema.optionalKey(Schema.Boolean),

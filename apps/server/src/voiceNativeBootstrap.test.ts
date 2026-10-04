@@ -48,9 +48,11 @@ import { CheckpointDiffQuery } from "./checkpointing/CheckpointDiffQuery.ts";
 import { Keybindings } from "./keybindings.ts";
 import { EnvironmentThemeService } from "./environmentTheme.ts";
 import { UsageLimitSources } from "./usage/UsageLimitSources.ts";
+import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
 import { ExternalLauncher } from "./process/externalLauncher.ts";
 import { RemoteOpenTargets } from "./environment/RemoteOpenTargets.ts";
 import { GitWorkflowService } from "./git/GitWorkflowService.ts";
+import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { ReviewService } from "./review/ReviewService.ts";
 import { VcsProvisioningService } from "./vcs/VcsProvisioningService.ts";
 import { VcsStatusBroadcaster } from "./vcs/VcsStatusBroadcaster.ts";
@@ -310,6 +312,7 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
     Layer.mock(RemoteOpenTargets)({}),
     Layer.mock(ReviewService)({}),
     Layer.mock(VcsProvisioningService)({}),
+    Layer.mock(GitVcsDriver.GitVcsDriver)({}),
     Layer.mock(TerminalManager)({}),
     Layer.mock(PreviewManager)({}),
     Layer.mock(PreviewAutomationBroker)({}),
@@ -346,6 +349,7 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
     Layer.mock(ProcessResourceMonitor)({}),
     Layer.mock(ResourceTelemetry)({}),
     Layer.mock(UsageService)({}),
+    TokenAccountingService.layer,
     Layer.mock(RelayClient.RelayClient)({}),
     Layer.succeed(HostProcessEnvironment, {}),
     Layer.succeed(HostProcessPlatform, "linux"),

@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./voice-review/fixtures": {
+      "types": "./src/voiceReview/fixtures.ts",
+      "default": "./src/voiceReview/fixtures.ts"
+    },
     "./state/jonesUpdates": {
       "types": "./src/state/jonesUpdates.ts",
       "default": "./src/state/jonesUpdates.ts"

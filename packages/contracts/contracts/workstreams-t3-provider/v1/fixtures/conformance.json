@@ -1,0 +1,1635 @@
+{
+  "contract_family": "workstreams-t3-provider",
+  "contract_version": "1.0.0",
+  "cases": [
+    {
+      "name": "NativeIdentity",
+      "schema": "#/$defs/NativeIdentity",
+      "value": {
+        "provider": "t3",
+        "source_instance_id": "source-synthetic",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_id": "thread-synthetic",
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        }
+      }
+    },
+    {
+      "name": "Build",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "name": "Context",
+      "schema": "#/$defs/Context",
+      "value": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "source_instance_id": "source-synthetic",
+        "authority_namespace": "authority-synthetic",
+        "store_generation": 7,
+        "enrollment_id": "enrollment-synthetic",
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "name": "ContextRequest",
+      "schema": "#/$defs/ContextRequest",
+      "value": {}
+    },
+    {
+      "name": "AttestationRequest",
+      "schema": "#/$defs/AttestationRequest",
+      "value": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "identity": {
+          "provider": "t3",
+          "source_instance_id": "source-synthetic",
+          "resource_kind": "thread",
+          "id_kind": "internal",
+          "native_id": "thread-synthetic",
+          "account_provenance": {
+            "kind": "not_account_scoped"
+          }
+        },
+        "expected_authority_namespace": "authority-synthetic",
+        "expected_store_generation": 7
+      }
+    },
+    {
+      "name": "RegistrationAttestation",
+      "schema": "#/$defs/RegistrationAttestation",
+      "value": {
+        "provider": "t3",
+        "source_instance_id": "source-synthetic",
+        "authority_namespace": "authority-synthetic",
+        "native_id": "thread-synthetic",
+        "store_generation": 7,
+        "evidence_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    },
+    {
+      "name": "Association",
+      "schema": "#/$defs/Association",
+      "value": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "command_id": "command-synthetic-0001",
+        "native_reference_id": "reference-synthetic",
+        "native_action": "settle",
+        "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    },
+    {
+      "name": "SettlementRequest",
+      "schema": "#/$defs/SettlementRequest",
+      "value": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "command_id": "command-synthetic-0001",
+        "native_reference_id": "reference-synthetic",
+        "native_action": "settle",
+        "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "identity": {
+          "provider": "t3",
+          "source_instance_id": "source-synthetic",
+          "resource_kind": "thread",
+          "id_kind": "internal",
+          "native_id": "thread-synthetic",
+          "account_provenance": {
+            "kind": "not_account_scoped"
+          }
+        },
+        "expected_authority_namespace": "authority-synthetic",
+        "expected_store_generation": 7
+      }
+    },
+    {
+      "name": "SettlementLookupRequest",
+      "schema": "#/$defs/SettlementLookupRequest",
+      "value": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "command_id": "command-synthetic-0001",
+        "native_reference_id": "reference-synthetic",
+        "native_action": "settle",
+        "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "identity": {
+          "provider": "t3",
+          "source_instance_id": "source-synthetic",
+          "resource_kind": "thread",
+          "id_kind": "internal",
+          "native_id": "thread-synthetic",
+          "account_provenance": {
+            "kind": "not_account_scoped"
+          }
+        },
+        "expected_authority_namespace": "authority-synthetic",
+        "expected_store_generation": 7
+      }
+    },
+    {
+      "name": "ResultEvidence",
+      "schema": "#/$defs/ResultEvidence",
+      "value": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "command_id": "command-synthetic-0001",
+        "native_reference_id": "reference-synthetic",
+        "native_action": "settle",
+        "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "result_sha256": "f37a37aaa6a491819dcbf80a4dd1f6e41c4e1c6f8d55faadae0708ba4f078553"
+      }
+    },
+    {
+      "name": "TerminalResult",
+      "schema": "#/$defs/TerminalResult",
+      "value": {
+        "native_outcome": "committed",
+        "native_evidence": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "result_sha256": "f37a37aaa6a491819dcbf80a4dd1f6e41c4e1c6f8d55faadae0708ba4f078553"
+        }
+      }
+    },
+    {
+      "name": "AcceptedReceipt",
+      "schema": "#/$defs/AcceptedReceipt",
+      "value": {
+        "commandId": "native-command-synthetic-0001",
+        "aggregateKind": "thread",
+        "aggregateId": "thread-synthetic",
+        "acceptedAt": "2026-10-02T14:00:00Z",
+        "resultSequence": 31,
+        "status": "accepted"
+      }
+    },
+    {
+      "name": "RejectedReceipt",
+      "schema": "#/$defs/RejectedReceipt",
+      "value": {
+        "commandId": "native-command-synthetic-0001",
+        "aggregateKind": "thread",
+        "aggregateId": "thread-synthetic",
+        "acceptedAt": "2026-10-02T14:00:00Z",
+        "resultSequence": 31,
+        "status": "rejected"
+      }
+    },
+    {
+      "name": "SettlementEvent",
+      "schema": "#/$defs/SettlementEvent",
+      "value": {
+        "eventId": "event-synthetic-0031",
+        "commandId": "native-command-synthetic-0001",
+        "aggregateKind": "thread",
+        "aggregateId": "thread-synthetic",
+        "sequence": 31,
+        "type": "thread.settled",
+        "occurredAt": "2026-10-02T14:00:00.000001Z"
+      }
+    },
+    {
+      "name": "context request envelope",
+      "schema": "#/$defs/ProviderRequest",
+      "value": {
+        "operation": "context",
+        "request": {}
+      }
+    },
+    {
+      "name": "context response 0",
+      "schema": "#/$defs/ContextResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "ready",
+        "context": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "source_instance_id": "source-synthetic",
+          "authority_namespace": "authority-synthetic",
+          "store_generation": 7,
+          "enrollment_id": "enrollment-synthetic",
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "build": {
+            "repository": "Jones-Systems/Jones-Code",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        }
+      }
+    },
+    {
+      "name": "context response envelope 0",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "context",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "ready",
+          "context": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "source_instance_id": "source-synthetic",
+            "authority_namespace": "authority-synthetic",
+            "store_generation": 7,
+            "enrollment_id": "enrollment-synthetic",
+            "protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "context response 1",
+      "schema": "#/$defs/ContextResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "unavailable",
+        "reason": "provider_unconfigured"
+      }
+    },
+    {
+      "name": "context response envelope 1",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "context",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "unavailable",
+          "reason": "provider_unconfigured"
+        }
+      }
+    },
+    {
+      "name": "context response 2",
+      "schema": "#/$defs/ContextResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "rejected",
+        "reason": "caller_mismatch"
+      }
+    },
+    {
+      "name": "context response envelope 2",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "context",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "rejected",
+          "reason": "caller_mismatch"
+        }
+      }
+    },
+    {
+      "name": "attestations request envelope",
+      "schema": "#/$defs/ProviderRequest",
+      "value": {
+        "operation": "attestations",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        }
+      }
+    },
+    {
+      "name": "attestations response 0",
+      "schema": "#/$defs/AttestationResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "attested",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "attestation": {
+          "provider": "t3",
+          "source_instance_id": "source-synthetic",
+          "authority_namespace": "authority-synthetic",
+          "native_id": "thread-synthetic",
+          "store_generation": 7,
+          "evidence_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "attested_at": "2026-10-02T14:00:00Z",
+        "expires_at": "2026-10-02T14:05:00Z"
+      }
+    },
+    {
+      "name": "attestations response envelope 0",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "attestations",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "attested",
+          "request": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "identity": {
+              "provider": "t3",
+              "source_instance_id": "source-synthetic",
+              "resource_kind": "thread",
+              "id_kind": "internal",
+              "native_id": "thread-synthetic",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "expected_authority_namespace": "authority-synthetic",
+            "expected_store_generation": 7
+          },
+          "attestation": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "authority_namespace": "authority-synthetic",
+            "native_id": "thread-synthetic",
+            "store_generation": 7,
+            "evidence_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "attested_at": "2026-10-02T14:00:00Z",
+          "expires_at": "2026-10-02T14:05:00Z"
+        }
+      }
+    },
+    {
+      "name": "attestations response 1",
+      "schema": "#/$defs/AttestationResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "unknown",
+        "reason": "authority_changed"
+      }
+    },
+    {
+      "name": "attestations response envelope 1",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "attestations",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "unknown",
+          "reason": "authority_changed"
+        }
+      }
+    },
+    {
+      "name": "attestations response 2",
+      "schema": "#/$defs/AttestationResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "rejected",
+        "reason": "caller_mismatch"
+      }
+    },
+    {
+      "name": "attestations response envelope 2",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "attestations",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "rejected",
+          "reason": "caller_mismatch"
+        }
+      }
+    },
+    {
+      "name": "settlements request envelope",
+      "schema": "#/$defs/ProviderRequest",
+      "value": {
+        "operation": "settlements",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        }
+      }
+    },
+    {
+      "name": "settlements response 0",
+      "schema": "#/$defs/SettlementResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "terminal",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "result": {
+          "native_outcome": "committed",
+          "native_evidence": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "result_sha256": "f37a37aaa6a491819dcbf80a4dd1f6e41c4e1c6f8d55faadae0708ba4f078553"
+          }
+        },
+        "native_receipt": {
+          "commandId": "native-command-synthetic-0001",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "acceptedAt": "2026-10-02T14:00:00Z",
+          "resultSequence": 31,
+          "status": "accepted"
+        },
+        "settlement_event": {
+          "eventId": "event-synthetic-0031",
+          "commandId": "native-command-synthetic-0001",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "sequence": 31,
+          "type": "thread.settled",
+          "occurredAt": "2026-10-02T14:00:00.000001Z"
+        }
+      }
+    },
+    {
+      "name": "settlements response envelope 0",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "terminal",
+          "request": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "identity": {
+              "provider": "t3",
+              "source_instance_id": "source-synthetic",
+              "resource_kind": "thread",
+              "id_kind": "internal",
+              "native_id": "thread-synthetic",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "expected_authority_namespace": "authority-synthetic",
+            "expected_store_generation": 7
+          },
+          "result": {
+            "native_outcome": "committed",
+            "native_evidence": {
+              "owner_id": "owner-synthetic",
+              "principal_id": "principal-synthetic",
+              "command_id": "command-synthetic-0001",
+              "native_reference_id": "reference-synthetic",
+              "native_action": "settle",
+              "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+              "result_sha256": "f37a37aaa6a491819dcbf80a4dd1f6e41c4e1c6f8d55faadae0708ba4f078553"
+            }
+          },
+          "native_receipt": {
+            "commandId": "native-command-synthetic-0001",
+            "aggregateKind": "thread",
+            "aggregateId": "thread-synthetic",
+            "acceptedAt": "2026-10-02T14:00:00Z",
+            "resultSequence": 31,
+            "status": "accepted"
+          },
+          "settlement_event": {
+            "eventId": "event-synthetic-0031",
+            "commandId": "native-command-synthetic-0001",
+            "aggregateKind": "thread",
+            "aggregateId": "thread-synthetic",
+            "sequence": 31,
+            "type": "thread.settled",
+            "occurredAt": "2026-10-02T14:00:00.000001Z"
+          }
+        }
+      }
+    },
+    {
+      "name": "settlements response 1",
+      "schema": "#/$defs/SettlementResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "terminal",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "result": {
+          "native_outcome": "denied",
+          "native_evidence": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "result_sha256": "0238a057bb144fba3b3ba3bc8ab63816b62e84ee22e1e0ef098fcc3570a1a084"
+          }
+        },
+        "native_receipt": {
+          "commandId": "native-command-synthetic-0001",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "acceptedAt": "2026-10-02T14:00:00Z",
+          "resultSequence": 31,
+          "status": "rejected"
+        },
+        "settlement_event": null
+      }
+    },
+    {
+      "name": "settlements response envelope 1",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "terminal",
+          "request": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "identity": {
+              "provider": "t3",
+              "source_instance_id": "source-synthetic",
+              "resource_kind": "thread",
+              "id_kind": "internal",
+              "native_id": "thread-synthetic",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "expected_authority_namespace": "authority-synthetic",
+            "expected_store_generation": 7
+          },
+          "result": {
+            "native_outcome": "denied",
+            "native_evidence": {
+              "owner_id": "owner-synthetic",
+              "principal_id": "principal-synthetic",
+              "command_id": "command-synthetic-0001",
+              "native_reference_id": "reference-synthetic",
+              "native_action": "settle",
+              "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+              "result_sha256": "0238a057bb144fba3b3ba3bc8ab63816b62e84ee22e1e0ef098fcc3570a1a084"
+            }
+          },
+          "native_receipt": {
+            "commandId": "native-command-synthetic-0001",
+            "aggregateKind": "thread",
+            "aggregateId": "thread-synthetic",
+            "acceptedAt": "2026-10-02T14:00:00Z",
+            "resultSequence": 31,
+            "status": "rejected"
+          },
+          "settlement_event": null
+        }
+      }
+    },
+    {
+      "name": "settlements response 2",
+      "schema": "#/$defs/SettlementResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "terminal",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "result": {
+          "native_outcome": "unsupported",
+          "native_evidence": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "result_sha256": "f0d04ddac0fd9568a7ad8db329608c93533aa86d662215da8115633393af8c7c"
+          }
+        },
+        "native_receipt": null,
+        "settlement_event": null
+      }
+    },
+    {
+      "name": "settlements response envelope 2",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "terminal",
+          "request": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "identity": {
+              "provider": "t3",
+              "source_instance_id": "source-synthetic",
+              "resource_kind": "thread",
+              "id_kind": "internal",
+              "native_id": "thread-synthetic",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "expected_authority_namespace": "authority-synthetic",
+            "expected_store_generation": 7
+          },
+          "result": {
+            "native_outcome": "unsupported",
+            "native_evidence": {
+              "owner_id": "owner-synthetic",
+              "principal_id": "principal-synthetic",
+              "command_id": "command-synthetic-0001",
+              "native_reference_id": "reference-synthetic",
+              "native_action": "settle",
+              "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+              "result_sha256": "f0d04ddac0fd9568a7ad8db329608c93533aa86d662215da8115633393af8c7c"
+            }
+          },
+          "native_receipt": null,
+          "settlement_event": null
+        }
+      }
+    },
+    {
+      "name": "settlements response 3",
+      "schema": "#/$defs/SettlementResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "terminal",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "result": {
+          "native_outcome": "failed",
+          "native_evidence": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "result_sha256": "d17abcc6ab9045d785ad172ffcf687d9bdfb8df5f52eee15cf05582cbc8f8442"
+          }
+        },
+        "native_receipt": {
+          "commandId": "native-command-synthetic-0001",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "acceptedAt": "2026-10-02T14:00:00Z",
+          "resultSequence": 31,
+          "status": "rejected"
+        },
+        "settlement_event": null
+      }
+    },
+    {
+      "name": "settlements response envelope 3",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "terminal",
+          "request": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "identity": {
+              "provider": "t3",
+              "source_instance_id": "source-synthetic",
+              "resource_kind": "thread",
+              "id_kind": "internal",
+              "native_id": "thread-synthetic",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "expected_authority_namespace": "authority-synthetic",
+            "expected_store_generation": 7
+          },
+          "result": {
+            "native_outcome": "failed",
+            "native_evidence": {
+              "owner_id": "owner-synthetic",
+              "principal_id": "principal-synthetic",
+              "command_id": "command-synthetic-0001",
+              "native_reference_id": "reference-synthetic",
+              "native_action": "settle",
+              "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+              "result_sha256": "d17abcc6ab9045d785ad172ffcf687d9bdfb8df5f52eee15cf05582cbc8f8442"
+            }
+          },
+          "native_receipt": {
+            "commandId": "native-command-synthetic-0001",
+            "aggregateKind": "thread",
+            "aggregateId": "thread-synthetic",
+            "acceptedAt": "2026-10-02T14:00:00Z",
+            "resultSequence": 31,
+            "status": "rejected"
+          },
+          "settlement_event": null
+        }
+      }
+    },
+    {
+      "name": "settlements response 4",
+      "schema": "#/$defs/SettlementResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "unknown",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "reason": "receipt_missing"
+      }
+    },
+    {
+      "name": "settlements response envelope 4",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "unknown",
+          "request": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "identity": {
+              "provider": "t3",
+              "source_instance_id": "source-synthetic",
+              "resource_kind": "thread",
+              "id_kind": "internal",
+              "native_id": "thread-synthetic",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "expected_authority_namespace": "authority-synthetic",
+            "expected_store_generation": 7
+          },
+          "reason": "receipt_missing"
+        }
+      }
+    },
+    {
+      "name": "settlements response 5",
+      "schema": "#/$defs/SettlementResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "rejected",
+        "reason": "caller_mismatch"
+      }
+    },
+    {
+      "name": "settlements response envelope 5",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "rejected",
+          "reason": "caller_mismatch"
+        }
+      }
+    },
+    {
+      "name": "settlements/lookup request envelope",
+      "schema": "#/$defs/ProviderRequest",
+      "value": {
+        "operation": "settlements/lookup",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        }
+      }
+    },
+    {
+      "name": "settlements/lookup response 0",
+      "schema": "#/$defs/SettlementLookupResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "terminal",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "result": {
+          "native_outcome": "committed",
+          "native_evidence": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "result_sha256": "f37a37aaa6a491819dcbf80a4dd1f6e41c4e1c6f8d55faadae0708ba4f078553"
+          }
+        },
+        "native_receipt": {
+          "commandId": "native-command-synthetic-0001",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "acceptedAt": "2026-10-02T14:00:00Z",
+          "resultSequence": 31,
+          "status": "accepted"
+        },
+        "settlement_event": {
+          "eventId": "event-synthetic-0031",
+          "commandId": "native-command-synthetic-0001",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "sequence": 31,
+          "type": "thread.settled",
+          "occurredAt": "2026-10-02T14:00:00.000001Z"
+        }
+      }
+    },
+    {
+      "name": "settlements/lookup response envelope 0",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements/lookup",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "terminal",
+          "request": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "identity": {
+              "provider": "t3",
+              "source_instance_id": "source-synthetic",
+              "resource_kind": "thread",
+              "id_kind": "internal",
+              "native_id": "thread-synthetic",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "expected_authority_namespace": "authority-synthetic",
+            "expected_store_generation": 7
+          },
+          "result": {
+            "native_outcome": "committed",
+            "native_evidence": {
+              "owner_id": "owner-synthetic",
+              "principal_id": "principal-synthetic",
+              "command_id": "command-synthetic-0001",
+              "native_reference_id": "reference-synthetic",
+              "native_action": "settle",
+              "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+              "result_sha256": "f37a37aaa6a491819dcbf80a4dd1f6e41c4e1c6f8d55faadae0708ba4f078553"
+            }
+          },
+          "native_receipt": {
+            "commandId": "native-command-synthetic-0001",
+            "aggregateKind": "thread",
+            "aggregateId": "thread-synthetic",
+            "acceptedAt": "2026-10-02T14:00:00Z",
+            "resultSequence": 31,
+            "status": "accepted"
+          },
+          "settlement_event": {
+            "eventId": "event-synthetic-0031",
+            "commandId": "native-command-synthetic-0001",
+            "aggregateKind": "thread",
+            "aggregateId": "thread-synthetic",
+            "sequence": 31,
+            "type": "thread.settled",
+            "occurredAt": "2026-10-02T14:00:00.000001Z"
+          }
+        }
+      }
+    },
+    {
+      "name": "settlements/lookup response 1",
+      "schema": "#/$defs/SettlementLookupResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "terminal",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "result": {
+          "native_outcome": "denied",
+          "native_evidence": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "result_sha256": "0238a057bb144fba3b3ba3bc8ab63816b62e84ee22e1e0ef098fcc3570a1a084"
+          }
+        },
+        "native_receipt": {
+          "commandId": "native-command-synthetic-0001",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "acceptedAt": "2026-10-02T14:00:00Z",
+          "resultSequence": 31,
+          "status": "rejected"
+        },
+        "settlement_event": null
+      }
+    },
+    {
+      "name": "settlements/lookup response envelope 1",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements/lookup",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "terminal",
+          "request": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "identity": {
+              "provider": "t3",
+              "source_instance_id": "source-synthetic",
+              "resource_kind": "thread",
+              "id_kind": "internal",
+              "native_id": "thread-synthetic",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "expected_authority_namespace": "authority-synthetic",
+            "expected_store_generation": 7
+          },
+          "result": {
+            "native_outcome": "denied",
+            "native_evidence": {
+              "owner_id": "owner-synthetic",
+              "principal_id": "principal-synthetic",
+              "command_id": "command-synthetic-0001",
+              "native_reference_id": "reference-synthetic",
+              "native_action": "settle",
+              "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+              "result_sha256": "0238a057bb144fba3b3ba3bc8ab63816b62e84ee22e1e0ef098fcc3570a1a084"
+            }
+          },
+          "native_receipt": {
+            "commandId": "native-command-synthetic-0001",
+            "aggregateKind": "thread",
+            "aggregateId": "thread-synthetic",
+            "acceptedAt": "2026-10-02T14:00:00Z",
+            "resultSequence": 31,
+            "status": "rejected"
+          },
+          "settlement_event": null
+        }
+      }
+    },
+    {
+      "name": "settlements/lookup response 2",
+      "schema": "#/$defs/SettlementLookupResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "terminal",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "result": {
+          "native_outcome": "unsupported",
+          "native_evidence": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "result_sha256": "f0d04ddac0fd9568a7ad8db329608c93533aa86d662215da8115633393af8c7c"
+          }
+        },
+        "native_receipt": null,
+        "settlement_event": null
+      }
+    },
+    {
+      "name": "settlements/lookup response envelope 2",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements/lookup",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "terminal",
+          "request": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "identity": {
+              "provider": "t3",
+              "source_instance_id": "source-synthetic",
+              "resource_kind": "thread",
+              "id_kind": "internal",
+              "native_id": "thread-synthetic",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "expected_authority_namespace": "authority-synthetic",
+            "expected_store_generation": 7
+          },
+          "result": {
+            "native_outcome": "unsupported",
+            "native_evidence": {
+              "owner_id": "owner-synthetic",
+              "principal_id": "principal-synthetic",
+              "command_id": "command-synthetic-0001",
+              "native_reference_id": "reference-synthetic",
+              "native_action": "settle",
+              "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+              "result_sha256": "f0d04ddac0fd9568a7ad8db329608c93533aa86d662215da8115633393af8c7c"
+            }
+          },
+          "native_receipt": null,
+          "settlement_event": null
+        }
+      }
+    },
+    {
+      "name": "settlements/lookup response 3",
+      "schema": "#/$defs/SettlementLookupResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "terminal",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "result": {
+          "native_outcome": "failed",
+          "native_evidence": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "result_sha256": "d17abcc6ab9045d785ad172ffcf687d9bdfb8df5f52eee15cf05582cbc8f8442"
+          }
+        },
+        "native_receipt": {
+          "commandId": "native-command-synthetic-0001",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "acceptedAt": "2026-10-02T14:00:00Z",
+          "resultSequence": 31,
+          "status": "rejected"
+        },
+        "settlement_event": null
+      }
+    },
+    {
+      "name": "settlements/lookup response envelope 3",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements/lookup",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "terminal",
+          "request": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "identity": {
+              "provider": "t3",
+              "source_instance_id": "source-synthetic",
+              "resource_kind": "thread",
+              "id_kind": "internal",
+              "native_id": "thread-synthetic",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "expected_authority_namespace": "authority-synthetic",
+            "expected_store_generation": 7
+          },
+          "result": {
+            "native_outcome": "failed",
+            "native_evidence": {
+              "owner_id": "owner-synthetic",
+              "principal_id": "principal-synthetic",
+              "command_id": "command-synthetic-0001",
+              "native_reference_id": "reference-synthetic",
+              "native_action": "settle",
+              "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+              "result_sha256": "d17abcc6ab9045d785ad172ffcf687d9bdfb8df5f52eee15cf05582cbc8f8442"
+            }
+          },
+          "native_receipt": {
+            "commandId": "native-command-synthetic-0001",
+            "aggregateKind": "thread",
+            "aggregateId": "thread-synthetic",
+            "acceptedAt": "2026-10-02T14:00:00Z",
+            "resultSequence": 31,
+            "status": "rejected"
+          },
+          "settlement_event": null
+        }
+      }
+    },
+    {
+      "name": "settlements/lookup response 4",
+      "schema": "#/$defs/SettlementLookupResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "unknown",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "reason": "receipt_missing"
+      }
+    },
+    {
+      "name": "settlements/lookup response envelope 4",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements/lookup",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "unknown",
+          "request": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "principal-synthetic",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "identity": {
+              "provider": "t3",
+              "source_instance_id": "source-synthetic",
+              "resource_kind": "thread",
+              "id_kind": "internal",
+              "native_id": "thread-synthetic",
+              "account_provenance": {
+                "kind": "not_account_scoped"
+              }
+            },
+            "expected_authority_namespace": "authority-synthetic",
+            "expected_store_generation": 7
+          },
+          "reason": "receipt_missing"
+        }
+      }
+    },
+    {
+      "name": "settlements/lookup response 5",
+      "schema": "#/$defs/SettlementLookupResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "rejected",
+        "reason": "caller_mismatch"
+      }
+    },
+    {
+      "name": "settlements/lookup response envelope 5",
+      "schema": "#/$defs/ProviderResponse",
+      "value": {
+        "operation": "settlements/lookup",
+        "response": {
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "state": "rejected",
+          "reason": "caller_mismatch"
+        }
+      }
+    },
+    {
+      "name": "association mismatch requires adapter evaluation",
+      "schema": "#/$defs/SettlementResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "terminal",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "command_id": "command-synthetic-0001",
+          "native_reference_id": "reference-synthetic",
+          "native_action": "settle",
+          "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "result": {
+          "native_outcome": "committed",
+          "native_evidence": {
+            "owner_id": "owner-synthetic",
+            "principal_id": "other-synthetic-principal",
+            "command_id": "command-synthetic-0001",
+            "native_reference_id": "reference-synthetic",
+            "native_action": "settle",
+            "request_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "reservation_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "result_sha256": "f37a37aaa6a491819dcbf80a4dd1f6e41c4e1c6f8d55faadae0708ba4f078553"
+          }
+        },
+        "native_receipt": {
+          "commandId": "native-command-synthetic-0001",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "acceptedAt": "2026-10-02T14:00:00Z",
+          "resultSequence": 31,
+          "status": "accepted"
+        },
+        "settlement_event": {
+          "eventId": "event-synthetic-0031",
+          "commandId": "native-command-synthetic-0001",
+          "aggregateKind": "thread",
+          "aggregateId": "thread-synthetic",
+          "sequence": 31,
+          "type": "thread.settled",
+          "occurredAt": "2026-10-02T14:00:00.000001Z"
+        }
+      }
+    },
+    {
+      "name": "source mismatch requires adapter evaluation",
+      "schema": "#/$defs/AttestationResponse",
+      "value": {
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "state": "attested",
+        "request": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "identity": {
+            "provider": "t3",
+            "source_instance_id": "source-synthetic",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_id": "thread-synthetic",
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            }
+          },
+          "expected_authority_namespace": "authority-synthetic",
+          "expected_store_generation": 7
+        },
+        "attestation": {
+          "provider": "t3",
+          "source_instance_id": "other-synthetic-source",
+          "authority_namespace": "authority-synthetic",
+          "native_id": "thread-synthetic",
+          "store_generation": 7,
+          "evidence_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "attested_at": "2026-10-02T14:00:00Z",
+        "expires_at": "2026-10-02T14:05:00Z"
+      }
+    },
+    {
+      "name": "calendar leap day",
+      "schema": "#/$defs/SettlementEvent",
+      "value": {
+        "eventId": "event-synthetic-0031",
+        "commandId": "native-command-synthetic-0001",
+        "aggregateKind": "thread",
+        "aggregateId": "thread-synthetic",
+        "sequence": 31,
+        "type": "thread.settled",
+        "occurredAt": "2024-02-29T23:59:59.123456Z"
+      }
+    },
+    {
+      "name": "unsettle event",
+      "schema": "#/$defs/SettlementEvent",
+      "value": {
+        "eventId": "event-synthetic-0031",
+        "commandId": "native-command-synthetic-0001",
+        "aggregateKind": "thread",
+        "aggregateId": "thread-synthetic",
+        "sequence": 31,
+        "type": "thread.unsettled",
+        "occurredAt": "2026-10-02T14:00:00.000001Z"
+      }
+    }
+  ]
+}

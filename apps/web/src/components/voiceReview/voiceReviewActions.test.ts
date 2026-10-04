@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import {
   remainingSeconds,
   VoiceReviewActions,
+  RegistryCorrectionActions,
   voiceReviewError,
   type VoiceReviewTransport,
 } from "./voiceReviewActions";
@@ -164,5 +165,57 @@ describe("voice review acknowledged actions", () => {
     expect(remainingSeconds(draft({ state: "editing" }), 300000)).toBe(180);
     expect(voiceReviewError({ _tag: "VoiceReviewNotConfiguredError" })).toContain("not configured");
     expect(voiceReviewError({ _tag: "VoiceReviewNotFoundError" })).toContain("unavailable");
+  });
+});
+
+describe("workstream metadata corrections", () => {
+  const payload = {
+    schema: "voice.association-mutation/v1" as const,
+    subject: "prompt:command-1",
+    workstream_ref: "inferred:voice-review",
+    state: "suppressed" as const,
+    expected_revision: 4,
+    request_id: "correction-1",
+    command_id: "command-1",
+  };
+  it("preserves CAS and command evidence without using a delivery transport", async () => {
+    const receipt = {
+      schema: "voice.registry-receipt/v1" as const,
+      request_id: "correction-1",
+      revision: 5,
+      event_sequence: 7,
+      record: {
+        subject: payload.subject,
+        workstream_ref: payload.workstream_ref,
+        state: payload.state,
+        revision: 5,
+        origin: "owner" as const,
+        job_id: null,
+      },
+    };
+    const correctAssociation = vi.fn().mockResolvedValue(receipt);
+    const actions = new RegistryCorrectionActions({ correctAssociation });
+    expect(await actions.correct(payload)).toEqual(receipt);
+    expect(correctAssociation).toHaveBeenCalledExactlyOnceWith(payload);
+    expect(actions.uncertain).toBe(false);
+    await actions.correct({ ...payload, workstream_ref: "native:readonly" });
+    expect(correctAssociation).toHaveBeenCalledTimes(1);
+  });
+  it("never retries an unconfirmed correction until explicit metadata reconciliation", async () => {
+    const correctAssociation = vi.fn().mockRejectedValue(new Error("lost response"));
+    const actions = new RegistryCorrectionActions({ correctAssociation });
+    await actions.correct(payload);
+    await actions.correct(payload);
+    expect(correctAssociation).toHaveBeenCalledTimes(1);
+    expect(actions.uncertain).toBe(true);
+    actions.reconciled();
+    await actions.correct({ ...payload, request_id: "correction-2", expected_revision: 5 });
+    expect(correctAssociation).toHaveBeenCalledTimes(2);
+  });
+  it("treats an unrelated receipt as unconfirmed", async () => {
+    const correctAssociation = vi.fn().mockResolvedValue({ request_id: "someone-else" });
+    const actions = new RegistryCorrectionActions({ correctAssociation });
+    expect(await actions.correct(payload)).toBeNull();
+    expect(actions.uncertain).toBe(true);
   });
 });

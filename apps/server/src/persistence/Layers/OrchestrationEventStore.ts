@@ -63,6 +63,16 @@ const OrchestrationEventPersistedRowSchema = Schema.Struct({
   metadata: EventMetadataFromJsonString,
 });
 
+const CommandEventMetadataSchema = Schema.Struct({
+  sequence: NonNegativeInt,
+  eventId: EventId,
+  type: OrchestrationEventType,
+  aggregateKind: OrchestrationAggregateKind,
+  aggregateId: Schema.Union([ProjectId, ThreadId]),
+  occurredAt: IsoDateTime,
+  commandId: Schema.NullOr(CommandId),
+});
+
 const HasEventAfterRequestSchema = Schema.Struct({
   aggregateKind: Schema.String,
   aggregateId: Schema.String,
@@ -120,6 +130,26 @@ function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: st
 
 const makeEventStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+
+  const readCommandMetadataRows = SqlSchema.findAll({
+    Request: Schema.String,
+    Result: CommandEventMetadataSchema,
+    execute: (commandId) => sql`SELECT sequence, event_id AS "eventId", event_type AS "type",
+      aggregate_kind AS "aggregateKind", stream_id AS "aggregateId", occurred_at AS "occurredAt",
+      command_id AS "commandId" FROM orchestration_events WHERE command_id = ${commandId}
+      ORDER BY sequence ASC LIMIT 257`,
+  });
+  const readMetadataByCommandId: OrchestrationEventStoreShape["readMetadataByCommandId"] = (
+    commandId,
+  ) =>
+    readCommandMetadataRows(commandId).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "OrchestrationEventStore.readMetadataByCommandId:query",
+          "OrchestrationEventStore.readMetadataByCommandId:decodeRows",
+        ),
+      ),
+    );
 
   const appendEventRow = SqlSchema.findOne({
     Request: AppendEventRequestSchema,
@@ -417,6 +447,7 @@ const makeEventStore = Effect.gen(function* () {
     );
 
   return {
+    readMetadataByCommandId,
     append,
     readFromSequence,
     readAggregateRange,

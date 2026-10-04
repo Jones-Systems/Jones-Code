@@ -8,6 +8,9 @@ import {
   VoiceReviewUnavailableError,
   type EnvironmentSessionPrincipalShape,
   type VoiceReviewDraft,
+  ThreadRegistryAssociationPayload,
+  ThreadRegistryLabelPayload,
+  ThreadRegistrySnapshot,
 } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - native fixtures prove credential permission and symlink defenses, with exact-root cleanup in finally.
 import * as NodeFSP from "node:fs/promises";
@@ -16,6 +19,8 @@ import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import { makeVoiceReviewBridge } from "./bridge.ts";
 import { voiceReviewConfigFromEnv } from "./config.ts";
+import * as Schema from "effect/Schema";
+import * as DateTime from "effect/DateTime";
 
 const principal: EnvironmentSessionPrincipalShape = {
   sessionId: AuthSessionId.make("owner-session"),
@@ -191,4 +196,244 @@ describe("voice review server bridge", () => {
         makeVoiceReviewBridge(config(tokenFile), fetcher).get(principal, "capture"),
       ).rejects.toBeInstanceOf(VoiceReviewUnavailableError);
     }));
+});
+
+describe("voice routing and registry bridge", () => {
+  it("retains released command text while redacting deleted, expired, unavailable and foreign text", async () =>
+    withFixture(async (tokenFile) => {
+      const entry = (state: VoiceReviewDraft["state"], source_id = "microphone") => ({
+        draft: { ...draft, state, source_id, text: "draft text", command_id: "command" },
+        text: "retained literal command",
+        original_source_text: "original transcript",
+        text_state: "available",
+        text_origin: "retained_command",
+        command_id: "command",
+        workstream_refs: ["inferred:voice"],
+      });
+      const bridge = makeVoiceReviewBridge(config(tokenFile), async () =>
+        Response.json({
+          schema: "voice.recent-prompts/v1",
+          server_now: draft.server_now,
+          partial: false,
+          unavailable: [],
+          entries: [
+            entry("released"),
+            entry("deleted"),
+            entry("expired"),
+            { ...entry("released"), text_state: "unavailable" },
+            entry("released", "foreign"),
+          ],
+        }),
+      );
+      const result = await bridge.recent(principal);
+      expect(result.entries).toHaveLength(4);
+      expect(result.entries[0]?.text).toBe("retained literal command");
+      expect(result.entries[0]?.original_source_text).toBe("original transcript");
+      for (const item of result.entries.slice(1)) {
+        expect(item.text).toBeNull();
+        expect(item.original_source_text).toBeNull();
+        expect(item.draft.text).toBeNull();
+      }
+    }));
+  it("keeps a native read outage explicit and accepts additive response fields", async () =>
+    withFixture(async (tokenFile) => {
+      const snapshot = {
+        schema: "voice.registry-read/v1",
+        snapshot_revision: 3,
+        next_cursor: null,
+        partial: false,
+        unavailable: [],
+        extension: "future",
+        threads: [
+          {
+            thread_key: '["host","environment","thread"]',
+            registration: null,
+            summary: null,
+            activity: null,
+            freshness: {},
+            associations: [],
+          },
+        ],
+      };
+      expect(Schema.decodeUnknownSync(ThreadRegistrySnapshot)(snapshot).threads).toHaveLength(1);
+      const bridge = makeVoiceReviewBridge(config(tokenFile), async () => Response.json(snapshot));
+      const result = await bridge.registrySnapshot(principal);
+      expect(result.partial).toBe(true);
+      expect(result.unavailable).toContain("native_memberships");
+      expect(result.threads[0]?.native_memberships).toEqual([]);
+    }));
+  it("composes only qualified native placements with a separate namespace", async () =>
+    withFixture(async (tokenFile) => {
+      const key = '["host","environment","thread"]';
+      const fixedNow = DateTime.makeUnsafe("2026-10-02T12:00:00Z");
+      const placement = {
+        membership_id: "membership",
+        workstream_id: "voice",
+        native_reference_id: "reference",
+        kind: "primary" as const,
+        source_instance_id: "environment",
+        native_thread_id: "thread",
+        attestation_version: 1,
+        attested_at: DateTime.formatIso(DateTime.add(fixedNow, { minutes: -1 })),
+        expires_at: DateTime.formatIso(DateTime.add(fixedNow, { minutes: 1 })),
+        evidence_sha256: "a".repeat(64),
+        source_binding_version: 1,
+        authority_namespace: "authority",
+        store_generation: 1,
+      };
+      const read = vi.fn(async () => ({
+        page: {
+          inventory_sha256: "b".repeat(64),
+          context: {
+            owner_id: "owner",
+            principal_id: "principal",
+            authorization_revision: 1,
+            server_generation: 1,
+            registry_version: 1,
+          },
+          items: [placement],
+          next_cursor: null,
+        },
+        trustedEnvironments: [
+          { environmentId: "environment", authorityNamespace: "authority", storeGeneration: 1 },
+        ],
+        readiness: "ready" as const,
+      }));
+      const bridge = makeVoiceReviewBridge(
+        config(tokenFile),
+        async () =>
+          Response.json({
+            schema: "voice.registry-read/v1",
+            snapshot_revision: 1,
+            next_cursor: null,
+            partial: false,
+            unavailable: [],
+            threads: [
+              {
+                thread_key: key,
+                registration: null,
+                summary: null,
+                activity: null,
+                freshness: {},
+                associations: [
+                  {
+                    subject: `thread:${key}`,
+                    workstream_ref: "inferred:voice",
+                    state: "active",
+                    revision: 1,
+                    origin: "owner",
+                    job_id: null,
+                  },
+                ],
+              },
+            ],
+          }),
+        {
+          identities: () =>
+            new Map([[key, { source_instance_id: "environment", native_thread_id: "thread" }]]),
+          read,
+        },
+        () => DateTime.toEpochMillis(fixedNow),
+      );
+      const result = await bridge.registrySnapshot(principal);
+      expect(read).toHaveBeenCalledWith(principal, [
+        { source_instance_id: "environment", native_thread_id: "thread" },
+      ]);
+      expect(result.threads[0]?.native_memberships[0]?.workstream_ref).toBe("native:voice");
+      expect(result.threads[0]?.associations[0]?.workstream_ref).toBe("inferred:voice");
+      expect(result.unavailable).toEqual([]);
+    }));
+  it("forwards one CAS/idempotent metadata correction without draft or delivery requests", async () =>
+    withFixture(async (tokenFile) => {
+      const payload = {
+        schema: "voice.association-mutation/v1",
+        subject: "prompt:command",
+        workstream_ref: "inferred:voice",
+        state: "suppressed",
+        expected_revision: 2,
+        request_id: "correction",
+        command_id: "command",
+        receipt_id: "receipt",
+      } as const;
+      const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+        expect(JSON.parse(String(init?.body))).toEqual(payload);
+        return Response.json({
+          schema: "voice.registry-receipt/v1",
+          request_id: "correction",
+          revision: 3,
+          event_sequence: 4,
+          record: { ...payload, revision: 3, origin: "owner", job_id: null },
+        });
+      });
+      await makeVoiceReviewBridge(config(tokenFile), fetcher).correctAssociation(
+        principal,
+        payload,
+      );
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+        "http://127.0.0.1:7000/v1/registry/associations?source_id=microphone",
+      );
+      expect(fetcher.mock.calls[0]?.[1]?.method).toBe("POST");
+    }));
+  it("scopes the single label correction POST to the configured reviewer source", async () =>
+    withFixture(async (tokenFile) => {
+      const payload = {
+        schema: "voice.association-mutation/v1",
+        label_id: "inferred:voice",
+        name: "Voice",
+        description: "Routing metadata",
+        state: "active",
+        expected_revision: 0,
+        request_id: "label-correction",
+      } as const;
+      const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+        expect(JSON.parse(String(init?.body))).toEqual(payload);
+        return Response.json({
+          schema: "voice.registry-receipt/v1",
+          request_id: payload.request_id,
+          revision: 1,
+          event_sequence: 5,
+          record: { ...payload, revision: 1, origin: "owner" },
+        });
+      });
+      await makeVoiceReviewBridge(config(tokenFile), fetcher).correctLabel(principal, payload);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+        "http://127.0.0.1:7000/v1/registry/labels?source_id=microphone",
+      );
+      expect(fetcher.mock.calls[0]?.[1]?.method).toBe("POST");
+    }));
+  it("rejects native inferred corrections and extra fields before transport", async () => {
+    const association = {
+      schema: "voice.association-mutation/v1",
+      subject: "prompt:command",
+      workstream_ref: "inferred:voice",
+      state: "active",
+      expected_revision: 0,
+      request_id: "new",
+    };
+    const decode = Schema.decodeUnknownSync(ThreadRegistryAssociationPayload);
+    expect(() => decode({ ...association, workstream_ref: "native:voice" })).toThrow();
+    expect(() => decode({ ...association, dispatch: true })).toThrow();
+    expect(() => decode({ ...association, expected_revision: "0" })).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(ThreadRegistryLabelPayload)({
+        schema: "voice.association-mutation/v1",
+        label_id: "native:voice",
+        name: "name",
+        description: "",
+        state: "active",
+        expected_revision: 0,
+        request_id: "new",
+      }),
+    ).toThrow();
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(
+      makeVoiceReviewBridge(config("/not-read"), fetcher).correctAssociation(principal, {
+        ...association,
+        workstream_ref: "native:voice",
+      } as typeof ThreadRegistryAssociationPayload.Type),
+    ).rejects.toThrow();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });
