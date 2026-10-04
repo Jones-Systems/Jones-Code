@@ -30,6 +30,7 @@ import {
   type SyntheticFixtureReceipt,
 } from "../../../scripts/performance-staging/guard.mjs";
 import { runOwnedChild } from "../../../scripts/performance-staging/lifecycle.mjs";
+import { syntheticDatabaseSource } from "../../../scripts/performance-staging/sources.mjs";
 import { runSqliteHealth, sqliteHealthConsumerOutcome } from "./jones-sqlite-health.ts";
 import {
   countTables,
@@ -412,12 +413,7 @@ describe("jones-sqlite-health — closed fixture integration", () => {
       parentPath: root,
       binding,
       policy,
-      databaseSource: {
-        repository: "Jones-Systems/Jones-Code" as const,
-        sourceRevision: "414bb8da204c3275cd0b76b2ec4d74dfb09a97e4" as const,
-        worktreePath:
-          "/home/malcolmjones/Projects/Jones-Code-performance-worktrees-20261002/live-baseline",
-      },
+      databaseSource: syntheticDatabaseSource("414bb8da204c3275cd0b76b2ec4d74dfb09a97e4"),
       profile: "health-offline-delete" as const,
       recipe: { kind: "coherent-v1" as const, historyTurns: 3, payloadBytes: 256 },
       lifecycle: { timeoutMs: 30_000, terminateGraceMs: 500, reapTimeoutMs: 1_000 },

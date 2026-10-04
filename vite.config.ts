@@ -67,6 +67,9 @@ export default defineConfig({
       "**/dist/**",
       "**/dist-electron/**",
       "**/.{idea,git,cache,output,temp}/**",
+      // The scripts workspace runs these with node:test. Match both root and workspace cwd.
+      "scripts/performance-staging/*.test.mjs",
+      "performance-staging/*.test.mjs",
     ],
     hookTimeout: 60_000,
     testTimeout: 60_000,
