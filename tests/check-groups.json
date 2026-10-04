@@ -1037,6 +1037,35 @@
         "apps/server/src/mcp/toolkits/decisionSnapshot/handlers.ts",
         "apps/server/src/mcp/toolkits/decisionSnapshot/tools.ts"
       ]
+    },
+    {
+      "group_id": "jones-performance-staging",
+      "command": "node --test --test-concurrency=1 scripts/performance-staging/guard.test.mjs scripts/performance-staging/lifecycle.test.mjs scripts/performance-staging/fixtures.test.mjs .github/scripts/test-with-performance-sources.test.mjs",
+      "modules": [
+        "scripts/performance-staging/guard.test.mjs",
+        "scripts/performance-staging/lifecycle.test.mjs",
+        "scripts/performance-staging/fixtures.test.mjs",
+        ".github/scripts/test-with-performance-sources.test.mjs"
+      ],
+      "scope": [
+        "scripts/performance-staging/**",
+        "docs/operations/performance-staging.md",
+        ".github/scripts/test-with-performance-sources.mjs",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "group_id": "jones-performance-sqlite-tools",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism --maxWorkers=1 apps/server/scripts/jones-sqlite-health.test.ts",
+      "modules": [
+        "apps/server/scripts/jones-sqlite-health.test.ts"
+      ],
+      "scope": [
+        "apps/server/scripts/jones-sqlite-health.ts",
+        "apps/server/scripts/jones-sqlite-support.ts",
+        "apps/server/scripts/jones-sqlite-worker.ts",
+        "docs/operations/performance-sqlite.md"
+      ]
     }
   ]
 }
