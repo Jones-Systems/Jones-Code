@@ -69,6 +69,11 @@ export * from "./hostStatus.ts";
 
 export * from "./jonesUpdates.ts";
 export * from "./voiceReview.ts";
+
+export * from "./threadRegistry.ts";
+export * from "./queueProtocol.ts";
+
+export * from "./threadCorpusProtocol.ts";
 export * from "./threadActivity.ts";
 export * from "./workstreamsNativeProvider.ts";
 export * from "./workstreamsRegistrationContext.ts";

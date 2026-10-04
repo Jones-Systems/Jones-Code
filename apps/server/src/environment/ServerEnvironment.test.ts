@@ -211,6 +211,10 @@ it.layer(testServices)("ServerEnvironmentLive", (it) => {
       expect(decoded.capabilities.nativeBootstrapCreation).toEqual(
         second.capabilities.nativeBootstrapCreation,
       );
+      expect(second.capabilities.queueDispatch).toBeUndefined();
+      expect(second.capabilities.threadCorpus).toBeUndefined();
+      expect(decoded.capabilities.queueDispatch).toBeUndefined();
+      expect(decoded.capabilities.threadCorpus).toBeUndefined();
       expect(second.capabilities.repositoryIdentity).toBe(true);
       expect(second.capabilities.connectionProbe).toBe(true);
       expect(second.capabilities.attachmentUploads).toBe(true);

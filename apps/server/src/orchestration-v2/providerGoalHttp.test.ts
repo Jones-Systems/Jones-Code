@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -26,10 +26,10 @@ describe("provider goal HTTP metadata adapter", () => {
     { nativeThreadId: "native-thread", state: "unknown", reasonCode: "context_changed" },
     { nativeThreadId: "native-thread", state: "unknown", reasonCode: "goal_field_omitted" },
   ] satisfies ReadonlyArray<ProviderGoalReadResult>) {
-    it(`preserves ${result.reasonCode} and exposes only metadata`, async () => {
-      const requests: (typeof input)[] = [];
-      const observation = await Effect.runPromise(
-        readProviderGoalState(input).pipe(
+    it.effect(`preserves ${result.reasonCode} and exposes only metadata`, () =>
+      Effect.gen(function* () {
+        const requests: (typeof input)[] = [];
+        const observation = yield* readProviderGoalState(input).pipe(
           Effect.provideService(ProviderSessionGoalService, {
             get: (request) =>
               Effect.sync(() => {
@@ -37,42 +37,44 @@ describe("provider goal HTTP metadata adapter", () => {
                 return { ...result, objective: "private objective", tokenBudget: 1000 };
               }),
           }),
-        ),
-      );
-      expect(requests).toEqual([input]);
-      expect(observation).toEqual({
-        schema: "t3.provider-goal-state/v1",
-        threadId: input.threadId,
-        providerInstanceId: input.expectedInstanceId,
-        ...result,
-        observedAtMs: expect.any(Number),
-      });
-      expect(observation.observedAtMs).toBeGreaterThanOrEqual(0);
-    });
+        );
+        expect(requests).toEqual([input]);
+        expect(observation).toEqual({
+          schema: "t3.provider-goal-state/v1",
+          threadId: input.threadId,
+          providerInstanceId: input.expectedInstanceId,
+          ...result,
+          observedAtMs: expect.any(Number),
+        });
+        expect(observation.observedAtMs).toBeGreaterThanOrEqual(0);
+      }),
+    );
   }
 
-  it("keeps unavailable capability unknown without recovery", async () => {
-    expect(await Effect.runPromise(readProviderGoalState(input))).toMatchObject({
-      threadId: input.threadId,
-      providerInstanceId: input.expectedInstanceId,
-      nativeThreadId: null,
-      state: "unknown",
-      reasonCode: "unsupported",
-    });
-  });
+  it.effect("keeps unavailable capability unknown without recovery", () =>
+    Effect.gen(function* () {
+      expect(yield* readProviderGoalState(input)).toMatchObject({
+        threadId: input.threadId,
+        providerInstanceId: input.expectedInstanceId,
+        nativeThreadId: null,
+        state: "unknown",
+        reasonCode: "unsupported",
+      });
+    }),
+  );
 
-  it("maps a failed resident read to the existing unknown reason", async () => {
-    const result = await Effect.runPromise(
-      readProviderGoalState(input).pipe(
+  it.effect("maps a failed resident read to the existing unknown reason", () =>
+    Effect.gen(function* () {
+      const result = yield* readProviderGoalState(input).pipe(
         Effect.provideService(ProviderSessionGoalService, {
           get: () => Effect.die(new Error("Synthetic provider failure")),
         }),
-      ),
-    );
-    expect(result).toMatchObject({
-      nativeThreadId: null,
-      state: "unknown",
-      reasonCode: "rpc_error",
-    });
-  });
+      );
+      expect(result).toMatchObject({
+        nativeThreadId: null,
+        state: "unknown",
+        reasonCode: "rpc_error",
+      });
+    }),
+  );
 });

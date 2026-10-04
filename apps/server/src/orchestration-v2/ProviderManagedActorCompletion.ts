@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import {
   CheckpointScopeId,
   ProviderDriverKind,
@@ -453,7 +453,7 @@ function makeTicket<E, GuardE>(
   return Effect.gen(function* () {
     const permit = yield* Semaphore.make(1);
     let changed = yield* Deferred.make<void>();
-    const ticketId = randomUUID();
+    const ticketId = NodeCrypto.randomUUID();
     type Actor = {
       readonly handle: ProviderManagedActorV1;
       readonly parentActorId: string | null;
@@ -531,7 +531,9 @@ function makeTicket<E, GuardE>(
               source.providerThreadId !== admission.providerThreadId
             )
               return yield* Effect.fail(reject("actor_source_mismatch"));
-            const handle = Object.freeze({ actorId: randomUUID() }) as ProviderManagedActorV1;
+            const handle = Object.freeze({
+              actorId: NodeCrypto.randomUUID(),
+            }) as ProviderManagedActorV1;
             actors.set(handle, {
               handle,
               parentActorId: parent?.handle.actorId ?? null,

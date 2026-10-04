@@ -4,6 +4,8 @@ import {
   JonesUpdateInstallInput,
 } from "./jonesUpdates.ts";
 import {
+  VoiceReviewRecentList,
+  VoiceReviewDiagnostics,
   VoiceReviewDraft,
   VoiceReviewDraftList,
   VoiceReviewMutationResult,
@@ -12,6 +14,14 @@ import {
   VoiceReviewEditSavePayload,
   VoiceReviewEditCancelPayload,
 } from "./voiceReview.ts";
+import {
+  ThreadRegistryComposedSnapshot,
+  ThreadRegistryWorkstreams,
+  ThreadRegistryEvents,
+  ThreadRegistryAssociationPayload,
+  ThreadRegistryLabelPayload,
+  ThreadRegistryMutationReceipt,
+} from "./threadRegistry.ts";
 import { HostStatusSnapshot } from "./hostStatus.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
@@ -1060,7 +1070,73 @@ const VoiceReviewParams = Schema.Struct({
   id: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
 });
 const VoiceReviewHeaders = OptionalBearerHeaders;
+const VoiceReviewPageLimit = Schema.optional(
+  Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 200 })),
+);
 class EnvironmentVoiceReviewHttpApi extends HttpApiGroup.make("voiceReview")
+  .add(
+    HttpApiEndpoint.get("recent", "/api/voice-review/recent", {
+      headers: VoiceReviewHeaders,
+      query: { limit: VoiceReviewPageLimit },
+      success: VoiceReviewRecentList,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("registrySnapshot", "/api/voice-review/registry/snapshot", {
+      headers: VoiceReviewHeaders,
+      query: {
+        limit: VoiceReviewPageLimit,
+        cursor: Schema.optional(Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(4096))),
+      },
+      success: ThreadRegistryComposedSnapshot,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("registryWorkstreams", "/api/voice-review/registry/workstreams", {
+      headers: VoiceReviewHeaders,
+      success: ThreadRegistryWorkstreams,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("registryEvents", "/api/voice-review/registry/events", {
+      headers: VoiceReviewHeaders,
+      query: {
+        limit: VoiceReviewPageLimit,
+        after: Schema.optional(
+          Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+        ),
+      },
+      success: ThreadRegistryEvents,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("correctAssociation", "/api/voice-review/registry/associations", {
+      headers: VoiceReviewHeaders,
+      payload: ThreadRegistryAssociationPayload,
+      success: ThreadRegistryMutationReceipt,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("correctLabel", "/api/voice-review/registry/labels", {
+      headers: VoiceReviewHeaders,
+      payload: ThreadRegistryLabelPayload,
+      success: ThreadRegistryMutationReceipt,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("diagnostics", "/api/voice-review/drafts/:id/diagnostics", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      success: VoiceReviewDiagnostics,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
   .add(
     HttpApiEndpoint.get("list", "/api/voice-review/drafts", {
       headers: VoiceReviewHeaders,

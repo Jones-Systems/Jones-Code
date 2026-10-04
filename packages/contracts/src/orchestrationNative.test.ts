@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as Option from "effect/Option";
 import * as DateTime from "effect/DateTime";
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as Schema from "effect/Schema";
 import { NativeCreationEffect } from "./nativeCreation.ts";
 import {
@@ -714,7 +714,10 @@ it("retains regenerated V1 bootstrap fields, timestamps, option order and canoni
       }
       return child;
     });
-    assert.strictEqual(createHash("sha256").update(canonical).digest("hex"), vector.commandDigest);
+    assert.strictEqual(
+      NodeCrypto.createHash("sha256").update(canonical).digest("hex"),
+      vector.commandDigest,
+    );
     const decode = Schema.decodeUnknownOption(LegacyNativeBootstrapCommandV1);
     assert.isTrue(Option.isNone(decode({ ...vector.command, bootstrap: undefined })));
     assert.isTrue(
