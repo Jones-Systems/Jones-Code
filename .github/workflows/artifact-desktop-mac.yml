@@ -1,0 +1,147 @@
+name: Mac Desktop Artifact
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/artifact-desktop-mac.yml
+      - apps/desktop/**
+      - scripts/build-desktop-artifact.ts
+      - scripts/update-release-package-versions.ts
+      - scripts/lib/**
+      - native/resource-monitor/**
+      - native/browser-secret/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: artifact-desktop-mac-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Unsigned Apple Silicon DMG
+    if: >-
+      github.repository == 'Jones-Systems/Jones-Code' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: Jones-Systems/Jones-Code
+      TMPDIR: ${{ github.workspace }}/.artifact-desktop-scratch
+      T3CODE_DESKTOP_SIGNED: "false"
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Prepare job scratch
+        run: mkdir -p "$TMPDIR"
+
+      - name: Verify Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Ensure native Rust target
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Configure public T3 Connect build identifiers
+        run: cp .env.example .env
+
+      - name: Stamp preview version in build workspace
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
+          version="${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          node scripts/update-release-package-versions.ts "$version"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Bind Jones source identity
+        run: node scripts/stamp-jones-build.ts
+
+      - name: Build unsigned preview DMG
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
+        run: >-
+          node scripts/build-desktop-artifact.ts
+          --platform mac --target dmg --arch arm64
+          --build-version "$BUILD_VERSION"
+          --output-dir artifacts/desktop-mac
+
+      - name: Verify DMG and write checksum
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts/desktop-mac
+          dmg="T3-Code-${BUILD_VERSION}-arm64.dmg"
+          test -s "$dmg"
+          hdiutil verify "$dmg"
+          shasum -a 256 "$dmg" > "$dmg.sha256"
+          shasum -a 256 -c "$dmg.sha256"
+          git rev-parse HEAD > SOURCE_COMMIT
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const artifact = `T3-Code-${process.env.BUILD_VERSION}-arm64.dmg`;
+            fs.writeFileSync("ARTIFACT.json", JSON.stringify({
+              repository: "Jones-Systems/Jones-Code", source: fs.readFileSync("SOURCE_COMMIT", "utf8").trim(),
+              version: process.env.BUILD_VERSION, platform: "darwin", architecture: "arm64", artifact,
+              sha256: fs.readFileSync(`${artifact}.sha256`, "utf8").split(/\s+/)[0],
+              publicConfigSource: ".env.example", signed: false, notarized: false,
+              updateFeed: null, connectLogin: "untested", peerConnection: "untested",
+              schema: 1, tree: process.env.JONES_SOURCE_TREE,
+              workflow: process.env.GITHUB_WORKFLOW_REF.split("@")[0].replace(`${process.env.GITHUB_REPOSITORY}/`, ""),
+              event: process.env.GITHUB_EVENT_NAME, ref: process.env.GITHUB_REF,
+              runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT
+            }, null, 2) + "\n");
+          '
+          {
+            echo "Artifact: $dmg"
+            echo "Source revision: $(git rev-parse HEAD)"
+            echo 'Unsigned preview for Apple Silicon; no Developer ID signing or notarization.'
+            echo 'Gatekeeper acceptance and application launch have not been tested.'
+            echo 'Preview versions have no automatic update feed. No GitHub Release is created.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload DMG and checksum
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: desktop-mac-arm64-${{ github.run_id }}-${{ github.run_attempt }}--${{ steps.version.outputs.value }}
+          path: |
+            artifacts/desktop-mac/T3-Code-${{ steps.version.outputs.value }}-arm64.dmg
+            artifacts/desktop-mac/T3-Code-${{ steps.version.outputs.value }}-arm64.dmg.sha256
+            artifacts/desktop-mac/SOURCE_COMMIT
+            artifacts/desktop-mac/ARTIFACT.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Clean job scratch
+        if: always()
+        run: rm -rf -- "$GITHUB_WORKSPACE/.artifact-desktop-scratch"

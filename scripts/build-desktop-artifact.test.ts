@@ -2,6 +2,8 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 
+import { extractFile, statFile } from "@electron/asar";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -359,8 +361,29 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
       );
 
+      const previewAttempt = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.41-preview.20260912.1589.2",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      const malformedAttempt = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.41-preview.20260912.1589.2.extra",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+
       assert.notProperty(preview, "publish");
       assert.notProperty(previewChannel, "publish");
+      assert.notProperty(previewAttempt, "publish");
+      assert.deepStrictEqual(malformedAttempt.publish, release.publish);
       assert.deepStrictEqual(release.publish, [
         {
           provider: "github",
@@ -850,6 +873,58 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "**/node_modules/node-pty/third_party/conpty/*/win10-x64/**",
     ]);
   });
+
+  it.effect(
+    "unpacks native files beneath hidden source ancestors while keeping JavaScript archived",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fs.makeTempDirectoryScoped({
+            prefix: "t3-windows-hidden-asar-test-",
+          });
+          const sourceDir = path.join(tempDir, ".hidden", "server-source");
+          const nativeFiles = [
+            "node_modules/native/addon.node",
+            "node_modules/native/helper.dll",
+            "node_modules/native/helper.exe",
+            "node_modules/native/library.so",
+            "node_modules/native/library.so.1",
+            "node_modules/native/library.dylib",
+          ];
+          const packedFiles = [
+            ["node_modules/native/index.js", "module.exports = true;"],
+            ["node_modules/native/package.json", '{"name":"native-fixture"}'],
+          ] as const;
+
+          for (const nativeFile of nativeFiles) {
+            const nativePath = path.join(sourceDir, nativeFile);
+            yield* fs.makeDirectory(path.dirname(nativePath), { recursive: true });
+            yield* fs.writeFileString(nativePath, `native:${nativeFile}`);
+          }
+          for (const [packedFile, contents] of packedFiles) {
+            yield* fs.writeFileString(path.join(sourceDir, packedFile), contents);
+          }
+
+          const asarPath = path.join(tempDir, "server.asar");
+          yield* packWindowsServerAsar({ sourceDir, asarPath, arch: "x64" });
+          const unpackedRoot = `${asarPath}.unpacked`;
+          for (const nativeFile of nativeFiles) {
+            assert.isTrue(statFile(asarPath, nativeFile).unpacked);
+            assert.equal(
+              yield* fs.readFileString(path.join(unpackedRoot, nativeFile)),
+              `native:${nativeFile}`,
+            );
+          }
+          for (const [packedFile, contents] of packedFiles) {
+            assert.isFalse(statFile(asarPath, packedFile).unpacked ?? false);
+            assert.isFalse(yield* fs.exists(path.join(unpackedRoot, packedFile)));
+            assert.equal(extractFile(asarPath, packedFile).toString("utf8"), contents);
+          }
+        }),
+      ),
+  );
 
   it.effect("keeps target native files while excluding the other Windows architecture", () =>
     Effect.scoped(
