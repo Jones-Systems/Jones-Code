@@ -18,14 +18,8 @@ import {
 } from "./DeviceHubPolicy.ts";
 import { layer as DeviceDirectGrantsLive, validDirectClientOrigin } from "./DeviceDirectGrants.ts";
 import { HttpClient, HttpClientResponse, HttpRouter } from "effect/unstable/http";
-import {
-  EnvironmentAuth,
-  ServerAuthMissingCredentialError,
-  ServerAuthSessionCredentialValidationError,
-  type ServerAuthCredentialError,
-  type ServerAuthInternalError,
-} from "../auth/EnvironmentAuth.ts";
-import { DeviceService } from "./DeviceService.ts";
+import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as DeviceService from "./DeviceService.ts";
 import { deviceHubProxyRouteLayer } from "./DeviceHubProxy.ts";
 
 const disposers: Array<() => Promise<void>> = [];
@@ -37,7 +31,7 @@ afterEach(async () => {
 const fixture = (
   scopes: ReadonlyArray<AuthEnvironmentScope>,
   fail = false,
-  authError?: ServerAuthCredentialError | ServerAuthInternalError,
+  authError?: EnvironmentAuth.ServerAuthCredentialError | EnvironmentAuth.ServerAuthInternalError,
   direct = false,
 ) => {
   let finalized = 0;
@@ -62,7 +56,7 @@ const fixture = (
     deviceHubProxyRouteLayer.pipe(
       Layer.provideMerge(DeviceDirectGrantsLive),
       Layer.provideMerge(
-        Layer.succeed(EnvironmentAuth, {
+        Layer.succeed(EnvironmentAuth.EnvironmentAuth, {
           authenticateWebSocketUpgrade: () =>
             authError
               ? Effect.fail(authError)
@@ -72,10 +66,10 @@ const fixture = (
                   method: "bearer-access-token",
                   scopes,
                 }),
-        } as unknown as EnvironmentAuth["Service"]),
+        } as unknown as EnvironmentAuth.EnvironmentAuth["Service"]),
       ),
       Layer.provideMerge(
-        Layer.succeed(DeviceService, {
+        Layer.succeed(DeviceService.DeviceService, {
           currentReadiness: () =>
             Effect.succeed({
               hostId: LOCAL_DEVICE_HOST_ID,
@@ -83,7 +77,7 @@ const fixture = (
               ...(direct ? { directMedia: endpoint() } : {}),
             }),
           state: Effect.succeed({ devices: [{ hostId: "local", id: "phone", platform: "ios" }] }),
-        } as unknown as DeviceService["Service"]),
+        } as unknown as DeviceService.DeviceService["Service"]),
       ),
       Layer.provideMerge(
         Layer.succeed(SessionStore, {
@@ -96,7 +90,7 @@ const fixture = (
             ),
           verifyWebSocketToken: (token: string) =>
             token !== "private-vps-token" || revoked
-              ? Effect.fail(new ServerAuthMissingCredentialError({}))
+              ? Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError({}))
               : Effect.succeed({ scopes: tokenScopes }),
         } as unknown as SessionStore["Service"]),
       ),
@@ -201,9 +195,9 @@ describe("device hub proxy", () => {
 });
 
 it.each([
-  [new ServerAuthMissingCredentialError({}), 401],
+  [new EnvironmentAuth.ServerAuthMissingCredentialError({}), 401],
   [
-    new ServerAuthSessionCredentialValidationError({
+    new EnvironmentAuth.ServerAuthSessionCredentialValidationError({
       cause: new Error("private credential diagnostic"),
     }),
     500,

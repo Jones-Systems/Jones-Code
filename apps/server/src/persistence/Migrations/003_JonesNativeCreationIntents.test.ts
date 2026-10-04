@@ -20,6 +20,9 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 4, name: "NativeCreationCommandIdentities" },
         { migration_id: 5, name: "WorkstreamsNativeAttempts" },
         { migration_id: 6, name: "WorkstreamsProviderEnrollments" },
+        { migration_id: 7, name: "V2NativeAcceptance" },
+        { migration_id: 8, name: "DeletionWorktreeAdmission" },
+        { migration_id: 9, name: "OrdinaryCheckoutOwnership" },
       ],
     );
     assert.deepEqual(
@@ -38,6 +41,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         "native_creation_normalized_commands",
         "native_creation_reserved_command_identities",
         "native_creation_reserved_commands",
+        "native_creation_thread_recovery_commands",
       ],
     );
   }).pipe(Effect.provide(memory)),

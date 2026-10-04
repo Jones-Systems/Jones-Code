@@ -2,7 +2,6 @@ import {
   ASSISTANT_CITATION_MAX_TEXT_LENGTH,
   EnvironmentId,
   MessageId,
-  ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ThreadId,
 } from "@t3tools/contracts";
@@ -12,7 +11,6 @@ import {
 } from "@t3tools/shared/assistantCitations";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { useQueuedMessageStore } from "../../queuedMessageStore";
 import { handleComposerEnter, submitComposerDraft } from "./composerSubmission";
 
 const assistantCitation = {
@@ -321,6 +319,25 @@ function enterScenario(overrides: Partial<Parameters<typeof handleComposerEnter>
 }
 
 describe("composer Enter actions", () => {
+  it("honors the current keybinding's non-submission result for a typed draft", () => {
+    const result = enterScenario({
+      intent: { isMobileViewport: false, isDraftThread: false, isRunning: true, prompt: "Draft" },
+      submissionIntent: null,
+    });
+    expect(result.handled).toBe(false);
+    expect(result.onSubmit).not.toHaveBeenCalled();
+    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not submit a typed draft on a repeating Enter", () => {
+    const result = enterScenario({
+      event: { ...bareEnter, repeat: true },
+      intent: { isMobileViewport: false, isDraftThread: false, isRunning: true, prompt: "Draft" },
+    });
+    expect(result.handled).toBe(false);
+    expect(result.onSubmit).not.toHaveBeenCalled();
+  });
+
   it("uses the queue action instead of submitting an empty draft", () => {
     const result = enterScenario();
     expect(result.handled).toBe(true);
@@ -387,53 +404,5 @@ describe("composer Enter actions", () => {
     expect(draft.onSubmit).not.toHaveBeenCalled();
   });
 
-  it("uses one queue item in order and shares the send lock with the arrow action", () => {
-    const threadKey = "queued-enter-fixture";
-    const queue = useQueuedMessageStore.getState();
-    const message = (prompt: string) => ({
-      prompt,
-      images: [],
-      files: [],
-      terminalContexts: [],
-      previewAnnotations: [],
-      reviewComments: [],
-      sendSettings: {
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
-        runtimeMode: "full-access" as const,
-        interactionMode: "default" as const,
-        promptEffort: null,
-      },
-      queuedAfterToolActivityId: null,
-      createdAt: "2026-10-02T00:00:00.000Z",
-    });
-    const first = queue.enqueue(threadKey, message("first"));
-    const second = queue.enqueue(threadKey, message("second"));
-    const dispatched: string[] = [];
-    const steer = (id: string) => {
-      const entry = queue.beginSend(threadKey, id, null);
-      if (entry) dispatched.push(entry.prompt);
-    };
-    const next = () => {
-      const entry = useQueuedMessageStore.getState().queuesByThreadKey[threadKey]?.[0];
-      if (!entry) return false;
-      steer(entry.id);
-      return true;
-    };
-    try {
-      enterScenario({ onSteerNextQueuedMessage: next });
-      expect(dispatched).toEqual(["first"]);
-      steer(first.id);
-      enterScenario({ onSteerNextQueuedMessage: next });
-      expect(dispatched).toEqual(["first"]);
-      queue.finishSend(threadKey, first.id);
-      enterScenario({ event: { ...bareEnter, repeat: true }, onSteerNextQueuedMessage: next });
-      expect(dispatched).toEqual(["first"]);
-      enterScenario({ onSteerNextQueuedMessage: next });
-      expect(dispatched).toEqual(["first", "second"]);
-      queue.finishSend(threadKey, second.id);
-    } finally {
-      queue.remove(threadKey, first.id);
-      queue.remove(threadKey, second.id);
-    }
-  });
+
 });

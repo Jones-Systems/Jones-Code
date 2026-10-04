@@ -2,7 +2,7 @@ import { MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { type CxOptions, cx } from "class-variance-authority";
 import * as Encoding from "effect/Encoding";
 import { extendTailwindMerge } from "tailwind-merge";
-import { DraftId } from "../composerDraftStore";
+import { DraftId } from "../draftId";
 
 // The theme's extra font sizes (index.css). Unregistered, tailwind-merge reads
 // text-2xs as a colour and drops it next to text-muted-foreground.
@@ -32,10 +32,6 @@ export function getLocalFileManagerName(platform: string): string {
     return "File Explorer";
   }
   return "Files";
-}
-
-export function randomHex(byteLength: number): string {
-  return Encoding.encodeHex(globalThis.crypto.getRandomValues(new Uint8Array(byteLength)));
 }
 
 export function randomUUID(): string {

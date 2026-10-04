@@ -8,11 +8,13 @@ import {
   resolveCurrentWorkspaceLabel,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
+  resolveAutomaticWorktreeBaseBranch,
   resolveEnvModeLabel,
   resolveBranchTriggerLabel,
   resolveBranchToolbarPrBranch,
   resolveBranchToolbarValue,
   resolveLockedWorkspaceLabel,
+  resolveWorkspaceDisplayName,
   resolveLocalCheckoutBranchMismatch,
   resolvePreviousWorktreeLabel,
   resolvePreviousWorktreeSeed,
@@ -424,9 +426,28 @@ describe("shouldShowEnvironmentIndicator", () => {
 });
 
 describe("shouldShowComposerContextStrip", () => {
+  it.each([false, true])(
+    "honors the active-thread preference with resting controls %s",
+    (hostsRestingComposerControls) => {
+      const input = {
+        isDraftHeroState: false,
+        hasActiveProject: true,
+        isGitRepo: true,
+        showEnvironmentIndicator: true,
+        hostsRestingComposerControls,
+      };
+      expect(shouldShowComposerContextStrip({ ...input, persistInActiveThreads: false })).toBe(
+        false,
+      );
+      expect(shouldShowComposerContextStrip({ ...input, persistInActiveThreads: true })).toBe(true);
+    },
+  );
+
   it("keeps the environment indicator visible for a non-Git project", () => {
     expect(
       shouldShowComposerContextStrip({
+        isDraftHeroState: true,
+        persistInActiveThreads: false,
         hasActiveProject: true,
         isGitRepo: false,
         showEnvironmentIndicator: true,
@@ -438,6 +459,8 @@ describe("shouldShowComposerContextStrip", () => {
   it("hides the strip when a non-Git project has nothing to show", () => {
     expect(
       shouldShowComposerContextStrip({
+        isDraftHeroState: true,
+        persistInActiveThreads: false,
         hasActiveProject: true,
         isGitRepo: false,
         showEnvironmentIndicator: false,
@@ -449,6 +472,8 @@ describe("shouldShowComposerContextStrip", () => {
   it("keeps the strip for visible resting composer controls in a non-Git thread", () => {
     expect(
       shouldShowComposerContextStrip({
+        isDraftHeroState: true,
+        persistInActiveThreads: false,
         hasActiveProject: true,
         isGitRepo: false,
         showEnvironmentIndicator: false,
@@ -460,6 +485,8 @@ describe("shouldShowComposerContextStrip", () => {
   it("shows Git controls without requiring an environment indicator", () => {
     expect(
       shouldShowComposerContextStrip({
+        isDraftHeroState: true,
+        persistInActiveThreads: false,
         hasActiveProject: true,
         isGitRepo: true,
         showEnvironmentIndicator: false,
@@ -539,6 +566,18 @@ describe("resolveLockedWorkspaceLabel", () => {
 
   it("describes a worktree that is still being created as a new worktree", () => {
     expect(resolveLockedWorkspaceLabel(null, "worktree")).toBe("New worktree");
+  });
+});
+
+describe("resolveWorkspaceDisplayName", () => {
+  it("returns the final folder for POSIX and Windows paths", () => {
+    expect(resolveWorkspaceDisplayName("/repo/.t3/worktrees/feature-a")).toBe("feature-a");
+    expect(resolveWorkspaceDisplayName("C:\\code\\project\\feature-b\\")).toBe("feature-b");
+  });
+
+  it("handles missing and root paths", () => {
+    expect(resolveWorkspaceDisplayName(null)).toBeNull();
+    expect(resolveWorkspaceDisplayName("/")).toBe("/");
   });
 });
 
@@ -856,5 +895,56 @@ describe("sanitizeNewRefName", () => {
   it("does not collapse dashes the user typed", () => {
     expect(sanitizeNewRefName("new - branch")).toBe("new---branch");
     expect(sanitizeNewRefName("foo--bar")).toBe("foo--bar");
+  });
+});
+
+describe("resolveAutomaticWorktreeBaseBranch", () => {
+  const pendingSelection = {
+    effectiveEnvMode: "worktree" as const,
+    envLocked: false,
+    activeWorktreePath: null,
+    activeThreadBranch: null,
+    worktreeBaseBranchCandidate: null,
+  };
+
+  it("suppresses a late default during submission and after bootstrap writes the worktree", () => {
+    const metadataWrites: Array<{ branch: string; worktreePath: null }> = [];
+    const applyAutomaticSelection = (
+      input: Parameters<typeof resolveAutomaticWorktreeBaseBranch>[0],
+    ) => {
+      const branch = resolveAutomaticWorktreeBaseBranch(input);
+      if (branch !== null) metadataWrites.push({ branch, worktreePath: null });
+    };
+    applyAutomaticSelection(pendingSelection);
+    applyAutomaticSelection({
+      ...pendingSelection,
+      envLocked: true,
+      worktreeBaseBranchCandidate: "develop",
+    });
+    applyAutomaticSelection({
+      ...pendingSelection,
+      activeWorktreePath: "/repo/worktree",
+      worktreeBaseBranchCandidate: "develop",
+    });
+    expect(metadataWrites).toEqual([]);
+    applyAutomaticSelection({ ...pendingSelection, worktreeBaseBranchCandidate: "develop" });
+    expect(metadataWrites).toEqual([{ branch: "develop", worktreePath: null }]);
+  });
+
+  it("keeps an explicit choice and never auto-selects in the local checkout", () => {
+    expect(
+      resolveAutomaticWorktreeBaseBranch({
+        ...pendingSelection,
+        activeThreadBranch: "chosen/base",
+        worktreeBaseBranchCandidate: "develop",
+      }),
+    ).toBeNull();
+    expect(
+      resolveAutomaticWorktreeBaseBranch({
+        ...pendingSelection,
+        effectiveEnvMode: "local",
+        worktreeBaseBranchCandidate: "develop",
+      }),
+    ).toBeNull();
   });
 });

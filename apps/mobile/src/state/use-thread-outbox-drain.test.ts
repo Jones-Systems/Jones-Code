@@ -8,6 +8,8 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
+import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { PreparedTurnAttachments } from "../lib/attachmentUpload";
@@ -66,7 +68,6 @@ vi.mock("expo-file-system", () => ({
 
 vi.mock("../lib/composerImages", () => ({
   removePersistedComposerAttachmentFile: harness.removePersistedFile,
-  toUploadChatImageAttachments: () => [],
 }));
 
 vi.mock("../lib/uuid", () => ({
@@ -138,11 +139,16 @@ import {
   clearPendingThreadCreationOutcome,
   pendingThreadCreationOutcomesAtom,
 } from "./pending-thread-creation";
-import type { QueuedThreadMessage } from "./thread-outbox-model";
+import {
+  decodeQueuedThreadMessage,
+  encodeQueuedThreadMessage,
+  type QueuedThreadMessage,
+} from "./thread-outbox-model";
 import * as composerDrafts from "./use-composer-drafts";
 import { recoverFailedThreadDraft } from "./recover-failed-thread-draft";
 import { editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 import {
+  buildQueuedThreadCreationStartTurnInput,
   completeQueuedMessageDelivery,
   prepareQueuedMessageAttachments,
   recoverEditedCreationAfterDelivery,
@@ -215,6 +221,173 @@ afterEach(() => {
   harness.removeOutboxMessage.mockClear();
   harness.prepareTurnAttachments.mockReset();
   harness.setPendingConnectionError.mockClear();
+});
+
+describe("queued worktree creation command", () => {
+  it.each([true, false])(
+    "preserves queued context and uploaded attachments at delivery (%s)",
+    (inlineMessageContext) => {
+      const terminal = {
+        version: 1 as const,
+        kind: "terminal" as const,
+        contextId: ComposerContextId.make("build-output"),
+        label: "Build output",
+        terminalId: "main",
+        terminalLabel: "Terminal",
+        lineStart: 4,
+        lineEnd: 5,
+        text: "build failed\nretry",
+      };
+      const image = {
+        version: 1 as const,
+        kind: "image" as const,
+        contextId: ComposerContextId.make("screenshot"),
+        label: "Screenshot",
+        attachmentId: "draft-photo",
+        name: "shot.png",
+        mimeType: "image/png",
+        sizeBytes: 123,
+      };
+      const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
+      const uploadedAttachment = {
+        type: "image" as const,
+        id: "server-photo",
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+      };
+      const context = { version: 1 as const, records: [terminal, image] };
+      const creation = {
+        projectId: ProjectId.make("project"),
+        workspaceMode: "worktree" as const,
+        branch: null,
+        worktreePath: null,
+      };
+      const message = decodeQueuedThreadMessage(
+        encodeQueuedThreadMessage({
+          ...queuedMessage({
+            messageId: "context-worktree",
+            text: context.records.map(formatComposerContextReference).join(" "),
+          }),
+          modelSelection,
+          creation,
+          context,
+          attachments: [
+            {
+              ...uploadedAttachment,
+              id: image.attachmentId,
+              fileUri: "file:///draft-photo.png",
+              previewUri: "file:///draft-photo.png",
+            },
+          ],
+        }),
+      );
+      const input = buildQueuedThreadCreationStartTurnInput({
+        message,
+        creation,
+        projectCwd: "/current/workspace",
+        attachments: [uploadedAttachment],
+        settings: { modelSelection, runtimeMode: "full-access", interactionMode: "default" },
+        serverResolvesWorktreeBase: true,
+        inlineMessageContext,
+      });
+
+      expect(input.message.attachments).toEqual([uploadedAttachment]);
+      if (inlineMessageContext) {
+        expect(input.message.text).toBe(message.text);
+        expect(input.message.context?.records).toEqual([
+          terminal,
+          { ...image, attachmentId: uploadedAttachment.id },
+        ]);
+      } else {
+        expect(input.message).not.toHaveProperty("context");
+        expect(input.message.text).not.toContain("t3-context://");
+        expect(
+          upgradeLegacyContextMessage(input.message.text).records.find(
+            (record) => record.kind === "terminal",
+          ),
+        ).toMatchObject({
+          text: terminal.text,
+          lineStart: terminal.lineStart,
+          lineEnd: terminal.lineEnd,
+        });
+      }
+      expect(message.context).toEqual(context);
+    },
+  );
+
+  it.each([true, false])(
+    "delivers persisted automatic intent with current server support (%s)",
+    (serverResolvesWorktreeBase) => {
+      const message = decodeQueuedThreadMessage(
+        encodeQueuedThreadMessage({
+          ...queuedMessage({ messageId: "automatic-worktree", text: "  queued task  " }),
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+          creation: {
+            projectId: ProjectId.make("project"),
+            workspaceMode: "worktree",
+            branch: null,
+            worktreePath: null,
+            startFromOrigin: true,
+          },
+        }),
+      );
+      const input = buildQueuedThreadCreationStartTurnInput({
+        message,
+        creation: message.creation!,
+        projectCwd: "/current/workspace",
+        attachments: [],
+        settings: {
+          modelSelection: message.modelSelection!,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        },
+        serverResolvesWorktreeBase,
+      });
+
+      expect(input.bootstrap.prepareWorktree).toMatchObject({
+        projectCwd: "/current/workspace",
+        startFromOrigin: true,
+      });
+      expect(input.bootstrap.prepareWorktree).not.toHaveProperty("baseBranch");
+      expect(input.bootstrap.createThread.branch).toBeNull();
+      expect(input.serverResolvesWorktreeBase).toBe(serverResolvesWorktreeBase);
+      expect(input.commandId).toBe(message.commandId);
+      expect(input.threadId).toBe(message.threadId);
+      expect(input.message.messageId).toBe(message.messageId);
+      expect(input.createdAt).toBe(message.createdAt);
+      expect(input.message.text).toBe("queued task");
+    },
+  );
+
+  it("keeps a persisted explicit base and origin setting when delivered to an older server", () => {
+    const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
+    const message = decodeQueuedThreadMessage(
+      encodeQueuedThreadMessage({
+        ...queuedMessage({ messageId: "explicit-worktree", text: "queued task" }),
+        modelSelection,
+        creation: {
+          projectId: ProjectId.make("project"),
+          workspaceMode: "worktree",
+          branch: "upstream/release",
+          worktreePath: null,
+          startFromOrigin: false,
+        },
+      }),
+    );
+    const input = buildQueuedThreadCreationStartTurnInput({
+      message,
+      creation: message.creation!,
+      projectCwd: "/current/workspace",
+      attachments: [],
+      settings: { modelSelection, runtimeMode: "full-access", interactionMode: "default" },
+      serverResolvesWorktreeBase: false,
+    });
+
+    expect(input.bootstrap.prepareWorktree).toMatchObject({ baseBranch: "upstream/release" });
+    expect(input.bootstrap.prepareWorktree).not.toHaveProperty("startFromOrigin");
+    expect(input.bootstrap.createThread.branch).toBe("upstream/release");
+  });
 });
 
 describe("thread outbox attachment preparation", () => {

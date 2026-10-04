@@ -1,13 +1,16 @@
 import * as NativeCreationRepositoryLayer from "./persistence/Layers/NativeCreationRepository.ts";
 import { NativeCreationRepository } from "./persistence/Services/NativeCreationRepository.ts";
 import {
+  NativeCreationAuthority,
   NativeCreationAuthorityLive,
   NativeCreationAuthorityError,
   NativeCreationGrantResolver,
   NativeCreationBindingResolver,
   NativeCreationGrantResolverUnavailable,
   NativeCreationBindingResolverUnavailable,
-} from "./orchestration/NativeCreationAuthority.ts";
+  getNativeCreationExecutionReference,
+  authorizeNativeCreationExecution,
+} from "./orchestration-v2/NativeCreationAuthority.ts";
 import * as AuthSessions from "./persistence/AuthSessions.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
@@ -15,7 +18,8 @@ import {
   nativePreparationCommand,
   nativeCreationCanonicalJson,
   nativeCreationSha256,
-} from "./orchestration/NativeCreationPreparation.ts";
+  nativeCreationV2CommandDigest,
+} from "./orchestration-v2/NativeCreationPreparation.ts";
 import { NativeCreationHistoricalBinding } from "@t3tools/contracts";
 import { nativeWorktreePath } from "./vcs/worktreePath.ts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -34,7 +38,6 @@ import {
   CommandId,
   NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES,
   NativeBootstrapSubmission,
-  ClientOrchestrationCommand,
   DEFAULT_SERVER_SETTINGS,
   type DpopFailureReason,
   EnvironmentId,
@@ -43,32 +46,41 @@ import {
   KeybindingRule,
   MessageId,
   ExternalLauncherCommandNotFoundError,
-  OrchestrationShellSnapshot,
-  type OrchestrationShellStreamItem,
-  OrchestrationThreadDetailSnapshot,
-  type OrchestrationThreadStreamItem,
-  type OrchestrationThreadActivity,
-  type OrchestrationThreadShell,
+  OrchestrationV2ShellSnapshot,
+  OrchestrationV2ThreadDetailSnapshot,
   TerminalNotRunningError,
-  type OrchestrationCommand,
-  type OrchestrationCommandObservation,
-  type OrchestrationEvent,
-  ORCHESTRATION_WS_METHODS,
+  ORCHESTRATION_V2_WS_METHODS,
+  ORCHESTRATION_PROTOCOL_VERSION,
+  ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+  OrchestrationV2Command,
+  type ThreadTurnDispatchGuardV2,
+  type OrchestrationV2StoredEvent,
+  type OrchestrationV2ThreadStreamItem,
+  type OrchestrationV2ShellStreamItem,
+  type OrchestrationV2TurnItem,
+  type OrchestrationV2DomainEvent,
+  TurnItemId,
+  ProviderSessionId,
+  ProviderThreadId,
   type PreviewEvent,
   ProjectId,
+  ProjectMutation,
   type ProviderAuthState,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderQueueRefreshResult,
   type ProviderQueueInventory,
-  type ServerProvider,
+  ServerProvider,
   type ProviderInstallState,
   ProviderSetupError,
+  SourceControlRepositoryError,
   ResolvedKeybindingRule,
   type ServerLifecycleStreamEvent,
   ThreadId,
   TurnId,
   UsageLimitSourceId,
+  USAGE_CONTRACT_VERSION,
+  type UsagePricing,
   WS_METHODS,
   WsRpcGroup,
   EditorId,
@@ -127,10 +139,10 @@ const SUCCESSFUL_GIT_EXECUTION = {
   stderrTruncated: false,
 };
 const decodeTransferThreadSnapshot = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(OrchestrationThreadDetailSnapshot),
+  Schema.fromJsonString(OrchestrationV2ThreadDetailSnapshot),
 );
 const decodeTransferShellSnapshot = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(OrchestrationShellSnapshot),
+  Schema.fromJsonString(OrchestrationV2ShellSnapshot),
 );
 const encodeTestJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -139,11 +151,7 @@ import * as ServerConfig from "./config.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { DeviceDirectGrants } from "./device/DeviceDirectGrants.ts";
 import { HTTP_ROUTER_CONFIG, makeRoutesLayer } from "./server.ts";
-import {
-  isThreadDetailEvent,
-  resolveAvailableEditorsForConfig,
-  resolveFileManagerRevealKindForConfig,
-} from "./ws.ts";
+import { resolveAvailableEditorsForConfig, resolveFileManagerRevealKindForConfig } from "./ws.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
@@ -151,23 +159,49 @@ import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
-import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
+import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
+import * as EventSink from "./orchestration-v2/EventSink.ts";
+import * as EffectOutbox from "./orchestration-v2/EffectOutbox.ts";
+import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
+import * as ResourceCleanup from "./orchestration-v2/ResourceCleanupService.ts";
+import { makeThreadLiveEventCoalescer } from "./orchestration-v2/ThreadLiveEventCoalescer.ts";
+import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
+import * as ThreadLaunch from "./orchestration-v2/ThreadLaunchService.ts";
+import * as CommandReceiptStore from "./orchestration-v2/CommandReceiptStore.ts";
+import * as EventStore from "./orchestration-v2/EventStore.ts";
+import * as TurnItemPositionStore from "./orchestration-v2/TurnItemPositionStore.ts";
+import * as ThreadCommandExecutor from "./orchestration-v2/ThreadCommandExecutor.ts";
+import * as IdAllocator from "./orchestration-v2/IdAllocator.ts";
+import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
+import * as ProjectService from "./project/ProjectService.ts";
+import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts";
+import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
+import * as CheckpointStore from "./checkpointing/CheckpointStore.ts";
+import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
+import * as TextGeneration from "./textGeneration/TextGeneration.ts";
+import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
+import * as ProviderSessionGoalService from "./orchestration-v2/ProviderSessionGoalService.ts";
+import * as AcpRegistrySupport from "./provider/acp/AcpRegistrySupport.ts";
+import * as AcpRegistryRuntimeCoordinator from "./provider/acp/AcpRegistryRuntimeCoordinator.ts";
+import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
+import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
+import { CodexProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/CodexAdapterV2.ts";
+import { ClaudeProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import {
-  OrchestrationCommandInvariantError,
-  OrchestrationThreadSettleBlockedError,
-} from "./orchestration/Errors.ts";
-import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
-import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
+  OrchestrationV2ProductionLayerLive,
+  OrchestrationV2EventSinkLayerLive,
+} from "./orchestration-v2/runtimeLayer.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
-import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore.ts";
-import { OrchestrationCommandReceiptRepositoryLive } from "./persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SessionStore, type SessionCredentialInternalError } from "./auth/SessionStore.ts";
 import { OrchestrationEventStore } from "./persistence/Services/OrchestrationEventStore.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
-import * as ProviderService from "./provider/Services/ProviderService.ts";
+import {
+  ProviderAdapterProtocolError,
+  type ProviderAdapterV2SessionRuntime,
+} from "./orchestration-v2/ProviderAdapter.ts";
 import { ProviderAuthService } from "./provider/Services/ProviderAuthService.ts";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
 import {
@@ -176,14 +210,13 @@ import {
 } from "./provider/AntigravityInstallation.ts";
 import { CodexInstallation } from "./provider/CodexInstallation.ts";
 import type { ProviderInstance } from "./provider/ProviderDriver.ts";
-import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
-import { ProviderAdapterRequestError } from "./provider/Errors.ts";
 import {
   makeManualOnlyProviderMaintenanceCapabilities,
   ProviderVersionCache,
 } from "./provider/providerMaintenance.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
+import * as ServerActivation from "./serverActivation.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -207,6 +240,11 @@ import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitHubCli from "./sourceControl/GitHubCli.ts";
+import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
+import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
+import * as ForgejoCli from "./sourceControl/ForgejoCli.ts";
+import * as GitLabCli from "./sourceControl/GitLabCli.ts";
+import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
@@ -232,28 +270,19 @@ import * as TokenAccountingService from "./tokenAccounting/TokenAccountingServic
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as Data from "effect/Data";
 
-import { makeOrchestrationIntegrationHarness } from "../integration/OrchestrationEngineHarness.integration.ts";
 import {
   measureHttpGet,
   openMeasuredWsClient,
-  transferDelta,
 } from "../integration/NetworkTransferMeasurement.integration.ts";
 import { makeSqlStatementCounter } from "../integration/SqlStatementCounter.integration.ts";
 import {
-  awaitSubscriptionSynchronized,
-  collectQueueUntil,
-  expectedMeasuredAssistantText,
-  queueMeasuredTransferTurn,
-  seedTransferBudgetHistory,
-  subscribeShellItems,
-  subscribeThreadItems,
+  diagnosticOutput,
   TRANSFER_HISTORY_TURN_COUNT,
-  TRANSFER_MEASURED_TURN_CREATED_AT,
-  TRANSFER_MEASURED_TURN_INDEX,
-  TRANSFER_THREAD_ID,
-  transferModelSelection,
-  waitForTurnQuiesced,
-} from "../integration/TransferBudgetScenario.integration.ts";
+  TRANSFER_HISTORY_TOOLS_PER_TURN,
+  TRANSFER_HISTORY_MCP_RESULT_BYTES,
+  TRANSFER_MEASURED_TOOLS,
+  TRANSFER_MEASURED_MCP_RESULT_BYTES,
+} from "../integration/fixtures/transferBudget.ts";
 import {
   formatTransferBudgetReport,
   formatTransferBudgetResult,
@@ -302,7 +331,7 @@ const providerSetupInstance: ProviderInstance = {
     driverKind: providerSetupDriver,
     continuationKey: providerSetupInstanceId,
   },
-  get adapter(): never {
+  get orchestrationAdapter(): never {
     throw new Error("Provider setup must not start a chat session.");
   },
   get snapshot(): never {
@@ -313,43 +342,39 @@ const providerSetupInstance: ProviderInstance = {
   },
 };
 
-const makeLiveToolActivityEvent = (
-  sequence: number,
-  kind: "tool.updated" | "tool.completed" = "tool.updated",
-  options: {
-    readonly toolCallId?: string;
-    readonly title?: string;
-    readonly path?: string;
-  } = {},
-): Extract<OrchestrationEvent, { type: "thread.activity-appended" }> => {
-  const { toolCallId = "call-edit", title = "Editing app.ts", path = "src/app.ts" } = options;
-  const activity: OrchestrationThreadActivity = {
-    id: EventId.make(`activity-${sequence}`),
-    tone: "tool",
-    kind,
-    summary: title,
-    payload: {
-      itemType: "file_change",
-      title,
-      data: { toolCallId, path },
-    },
-    turnId: TurnId.make("turn-edit"),
-    createdAt: "2026-01-01T00:00:01.000Z",
-  };
+const makeRouterProviderInstance = (
+  driver = ProviderDriverKind.make("codex"),
+): ProviderInstance => {
+  const instanceId = ProviderInstanceId.make(driver);
   return {
-    sequence,
-    eventId: EventId.make(`event-tool-${sequence}`),
-    aggregateKind: "thread",
-    aggregateId: defaultThreadId,
-    occurredAt: "2026-01-01T00:00:01.000Z",
-    commandId: null,
-    causationEventId: null,
-    correlationId: null,
-    metadata: {},
-    type: "thread.activity-appended",
-    payload: { threadId: defaultThreadId, activity },
+    instanceId: instanceId,
+    driverKind: driver,
+    enabled: true,
+    displayName: "Synthetic router provider",
+    continuationIdentity: {
+      driverKind: driver,
+      continuationKey: "router-test-synthetic",
+    },
+    orchestrationAdapter: {
+      instanceId: instanceId,
+      driver: driver,
+      getCapabilities: () =>
+        Effect.succeed(
+          driver === "claudeAgent" ? ClaudeProviderCapabilitiesV2 : CodexProviderCapabilitiesV2,
+        ),
+      planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+      openSession: () => Effect.die("Router fixtures must not launch a live provider."),
+    },
+    get snapshot(): never {
+      throw new Error("Router fixtures must not probe a live provider.");
+    },
+    get textGeneration(): never {
+      throw new Error("Router fixtures must not generate provider text.");
+    },
   };
 };
+const routerProviderInstance = makeRouterProviderInstance();
+
 const testEnvironmentDescriptor = {
   environmentId: EnvironmentId.make("environment-test"),
   label: "Test environment",
@@ -358,87 +383,26 @@ const testEnvironmentDescriptor = {
     arch: "arm64" as const,
   },
   serverVersion: "0.0.0-test",
+  orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
   capabilities: {
     repositoryIdentity: true,
   },
 };
-const makeDefaultOrchestrationReadModel = () => {
-  const now = "2026-01-01T00:00:00.000Z";
-  return {
-    snapshotSequence: 0,
-    updatedAt: now,
-    projects: [
-      {
-        id: defaultProjectId,
-        title: "Default Project",
-        workspaceRoot: "/tmp/default-project",
-        defaultModelSelection,
-        scripts: [],
-        createdAt: now,
-        updatedAt: now,
-        deletedAt: null,
-      },
-    ],
-    threads: [
-      {
-        id: defaultThreadId,
-        projectId: defaultProjectId,
-        title: "Default Thread",
-        modelSelection: defaultModelSelection,
-        interactionMode: "default" as const,
-        runtimeMode: "full-access" as const,
-        branch: null,
-        worktreePath: null,
-        pullRequests: [],
-        createdAt: now,
-        updatedAt: now,
-        archivedAt: null,
-        settledOverride: null,
-        settledAt: null,
-        latestTurn: null,
-        messages: [],
-        session: null,
-        activities: [],
-        proposedPlans: [],
-        checkpoints: [],
-        deletedAt: null,
-      },
-    ],
-  };
+const nativeRouterEnvironmentDescriptor: Effect.Success<
+  ServerEnvironment.ServerEnvironment["Service"]["getDescriptor"]
+> = {
+  ...testEnvironmentDescriptor,
+  capabilities: {
+    ...testEnvironmentDescriptor.capabilities,
+    nativeBootstrapCreation: {
+      submissionSchema: "t3.native-bootstrap-submission/v1",
+      preparationSchema: "voice.t3-bootstrap-preparation/v1",
+      observationSchema: "t3.native-creation-observation/v2",
+      guardRequired: true,
+    },
+  },
 };
-
-const makeDefaultOrchestrationThreadShell = (
-  overrides: Partial<OrchestrationThreadShell> = {},
-): OrchestrationThreadShell => {
-  const now = "2026-01-01T00:00:00.000Z";
-  return {
-    id: defaultThreadId,
-    projectId: defaultProjectId,
-    title: "Default Thread",
-    modelSelection: defaultModelSelection,
-    runtimeMode: "full-access",
-    interactionMode: "default",
-    branch: null,
-    worktreePath: null,
-    pullRequests: [],
-    latestTurn: null,
-    createdAt: now,
-    updatedAt: now,
-    archivedAt: null,
-    settledOverride: null,
-    settledAt: null,
-    session: null,
-    latestUserMessageAt: null,
-    hasPendingApprovals: false,
-    hasPendingUserInput: false,
-    hasActionableProposedPlan: false,
-    ...overrides,
-  };
-};
-
-const makeGuardedQueueTransportCommand = (
-  suffix: string,
-): Extract<OrchestrationCommand, { type: "thread.turn.start" }> => ({
+const makeGuardedQueueTransportCommand = (suffix: string) => ({
   type: "thread.turn.start",
   commandId: CommandId.make(`cmd-queue-${suffix}`),
   threadId: defaultThreadId,
@@ -462,11 +426,294 @@ const makeGuardedQueueTransportCommand = (
   createdAt: "2026-01-01T00:00:00.000Z",
 });
 
+type RouterV2Services =
+  | Orchestrator.OrchestratorV2
+  | ThreadManagement.ThreadManagementService
+  | ThreadLaunch.ThreadLaunchService
+  | ThreadCommandExecutor.ThreadCommandExecutor
+  | ProjectService.ProjectService
+  | ProjectStore.ProjectStoreV2
+  | ProjectionStore.ProjectionStoreV2
+  | EventSink.EventSinkV2
+  | EventStore.EventStoreV2
+  | OrchestrationEventStore
+  | CommandReceiptStore.CommandReceiptStoreV2
+  | TurnItemPositionStore.TurnItemPositionStoreV2
+  | IdAllocator.IdAllocatorV2
+  | EffectOutbox.EffectOutboxV2
+  | EffectWorker.OrchestrationEffectWorkerV2
+  | ProviderSessionManager.ProviderSessionManagerV2
+  | ProviderAuthService
+  | AuthSessions.AuthSessionRepository
+  | NativeCreationRepository
+  | NativeCreationAuthority
+  | ServerConfig.ServerConfig
+  | SqlClient.SqlClient;
+
+type AwaitedObservation = Effect.Success<
+  ReturnType<Orchestrator.OrchestratorV2["Service"]["observeCommand"]>
+>;
+
+const routerMessageDispatch = (
+  suffix: string,
+): Extract<OrchestrationV2Command, { type: "message.dispatch" }> => ({
+  type: "message.dispatch",
+  commandId: CommandId.make("router:message:" + suffix),
+  threadId: defaultThreadId,
+  messageId: MessageId.make("router:message:" + suffix),
+  text: "Synthetic queue request",
+  attachments: [],
+  modelSelection: defaultModelSelection,
+  dispatchMode: { type: "start_immediately" },
+  createdBy: "user",
+  creationSource: "web",
+});
+
+const routerThreadCreate = (
+  threadId = defaultThreadId,
+  projectId = defaultProjectId,
+): Extract<OrchestrationV2Command, { type: "thread.create" }> => ({
+  type: "thread.create",
+  commandId: CommandId.make("router:create:" + threadId),
+  threadId,
+  projectId,
+  title: "Default Thread",
+  modelSelection: defaultModelSelection,
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  branch: null,
+  worktreePath: null,
+  createdBy: "user",
+  creationSource: "web",
+});
+
+const seedRouterProject = Effect.fnUntraced(function* (
+  context: Context.Context<ProjectService.ProjectService>,
+  projectId = defaultProjectId,
+  workspaceRoot?: string,
+) {
+  const projects = Context.get(context, ProjectService.ProjectService);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root =
+    workspaceRoot ?? (yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-project-" }));
+  yield* fs.makeDirectory(root, { recursive: true });
+  return yield* projects.create({
+    commandId: CommandId.make("router:create:" + projectId),
+    projectId,
+    title: "Default Project",
+    workspaceRoot: path.resolve(root),
+    defaultModelSelection,
+    scripts: [],
+  });
+});
+
+const seedRouterThread = Effect.fnUntraced(function* (
+  context: Context.Context<
+    ProjectService.ProjectService | ThreadManagement.ThreadManagementService
+  >,
+  threadId = defaultThreadId,
+  projectId = defaultProjectId,
+) {
+  yield* seedRouterProject(context, projectId);
+  const threads = Context.get(context, ThreadManagement.ThreadManagementService);
+  return yield* threads.dispatch(routerThreadCreate(threadId, projectId));
+});
+
+const routerLaunchInput = (suffix: string) => ({
+  commandId: CommandId.make("router:launch:" + suffix),
+  threadId: ThreadId.make("router:launch:" + suffix),
+  projectId: defaultProjectId,
+  title: "Synthetic launch",
+  modelSelection: defaultModelSelection,
+  runtimeMode: "full-access" as const,
+  interactionMode: "default" as const,
+  workspaceStrategy: { type: "root" as const },
+  initialMessage: { text: "Synthetic first send", attachments: [] },
+});
+
+const routerTurnItem = (
+  ordinal: number,
+  changes: Partial<Extract<OrchestrationV2TurnItem, { type: "command_execution" }>> = {},
+): Extract<OrchestrationV2TurnItem, { type: "command_execution" }> => ({
+  type: "command_execution",
+  id: TurnItemId.make("router:tool:" + ordinal),
+  threadId: defaultThreadId,
+  runId: null,
+  nodeId: null,
+  providerThreadId: null,
+  providerTurnId: null,
+  nativeItemRef: null,
+  parentItemId: null,
+  ordinal,
+  status: "completed",
+  title: "Synthetic tool",
+  startedAt: TEST_EPOCH,
+  completedAt: TEST_EPOCH,
+  updatedAt: TEST_EPOCH,
+  input: "synthetic command",
+  output: "ok",
+  ...changes,
+});
+
+const routerItemEvent = (
+  item: OrchestrationV2TurnItem,
+  suffix: string = item.id,
+): OrchestrationV2DomainEvent => ({
+  id: EventId.make("router:event:" + suffix),
+  threadId: item.threadId,
+  type: "turn-item.updated",
+  occurredAt: item.updatedAt,
+  payload: item,
+});
+
+const writeRouterItems = (
+  context: Context.Context<EventSink.EventSinkV2>,
+  items: ReadonlyArray<OrchestrationV2TurnItem>,
+  batch = "initial",
+) =>
+  Context.get(context, EventSink.EventSinkV2).write({
+    events: items.map((item, index) => routerItemEvent(item, batch + ":" + index + ":" + item.id)),
+  });
+
+const awaitRouterRunStatus = (
+  context: Context.Context<RouterV2Services>,
+  threadId: ThreadId,
+  status: "failed" | "queued" | "cancelled" | "starting",
+) =>
+  Context.get(context, ThreadManagement.ThreadManagementService)
+    .streamStoredEventsFrom({ threadId, afterSequence: 0 })
+    .pipe(
+      Stream.filter(
+        (stored) => stored.event.type === "run.updated" && stored.event.payload.status === status,
+      ),
+      Stream.runHead,
+    );
+
+const seedRouterProvider = Effect.fnUntraced(function* (
+  context: Context.Context<RouterV2Services>,
+  status: "ready" | "stopped" = "ready",
+  threadId = defaultThreadId,
+) {
+  const projection = yield* Context.get(context, Orchestrator.OrchestratorV2).getThreadProjection(
+    threadId,
+  );
+  const sessionId = ProviderSessionId.make("router:synthetic-session");
+  const providerThreadId = ProviderThreadId.make("router:synthetic-provider-thread");
+  yield* Context.get(context, EventSink.EventSinkV2).write({
+    events: [
+      {
+        id: EventId.make("router:session-attached"),
+        threadId,
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        type: "provider-session.attached",
+        occurredAt: TEST_EPOCH,
+        payload: {
+          id: sessionId,
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          status,
+          cwd: projection.thread.worktreePath ?? "/synthetic/router-project",
+          model: defaultModelSelection.model,
+          capabilities: CodexProviderCapabilitiesV2,
+          createdAt: TEST_EPOCH,
+          updatedAt: TEST_EPOCH,
+          lastError: null,
+        },
+      },
+      {
+        id: EventId.make("router:provider-thread"),
+        threadId,
+        type: "provider-thread.updated",
+        occurredAt: TEST_EPOCH,
+        payload: {
+          id: providerThreadId,
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerSessionId: sessionId,
+          appThreadId: threadId,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: null,
+          lastRunOrdinal: null,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: TEST_EPOCH,
+          updatedAt: TEST_EPOCH,
+        },
+      },
+    ],
+  });
+  return sessionId;
+});
+
+const makeRouterFeedbackRuntime = (
+  sessionId: ProviderSessionId,
+  uploadFeedback: NonNullable<ProviderAdapterV2SessionRuntime["uploadFeedback"]>,
+): ProviderAdapterV2SessionRuntime => {
+  const driver = ProviderDriverKind.make("codex");
+  const instanceId = ProviderInstanceId.make("codex");
+  const unused = () => Effect.die("Feedback routing must not invoke another provider operation");
+  return {
+    instanceId,
+    driver,
+    providerSessionId: sessionId,
+    providerSession: {
+      id: sessionId,
+      driver,
+      providerInstanceId: instanceId,
+      status: "ready",
+      cwd: "/synthetic/router-project",
+      model: defaultModelSelection.model,
+      capabilities: CodexProviderCapabilitiesV2,
+      createdAt: TEST_EPOCH,
+      updatedAt: TEST_EPOCH,
+      lastError: null,
+    },
+    events: Stream.empty,
+    uploadFeedback,
+    ensureThread: unused,
+    resumeThread: unused,
+    startTurn: unused,
+    steerTurn: unused,
+    interruptTurn: unused,
+    respondToRuntimeRequest: unused,
+    readThreadSnapshot: unused,
+    rollbackThread: unused,
+    forkThread: unused,
+  };
+};
+
 const browserOtlpTracingLayer = Layer.mergeAll(
   FetchHttpClient.layer,
   OtlpSerialization.layerJson,
   Layer.succeed(HttpClient.TracerDisabledWhen, () => true),
 );
+
+const routerUsagePricing: UsagePricing = {
+  status: "unavailable",
+  source: "synthetic-router-rates",
+  fetchedAt: null,
+  knownModels: 0,
+};
+const routerUsageLayer = Layer.succeed(UsageService.UsageService, {
+  readSummary: (input) =>
+    Effect.succeed({
+      contractVersion: USAGE_CONTRACT_VERSION,
+      readAt: "1970-01-01T00:00:00.000Z",
+      timeZone: input.timeZone,
+      sinceDay: input.sinceDay,
+      untilDay: input.untilDay,
+      buckets: [],
+      sources: [],
+      pricing: routerUsagePricing,
+      scanDurationMs: 0,
+    }),
+  refreshRates: Effect.succeed(routerUsagePricing),
+});
 
 const makeAuthTestLayer = () =>
   EnvironmentAuth.layer.pipe(
@@ -589,7 +836,6 @@ const buildAppUnderTest = (options?: {
     modelManifest?: Partial<ModelManifest.ModelManifest["Service"]>;
     usageLimitSources?: Partial<UsageLimitSources.UsageLimitSources["Service"]>;
     tokenAccounting?: TokenAccountingService.TokenAccountingService["Service"];
-    providerService?: Partial<ProviderService.ProviderService["Service"]>;
     providerAuth?: Partial<ProviderAuthService["Service"]>;
     providerInstanceRegistry?: Partial<ProviderInstanceRegistry["Service"]>;
     antigravityInstallation?: Partial<AntigravityInstallation["Service"]>;
@@ -608,9 +854,6 @@ const buildAppUnderTest = (options?: {
     projectSetupScriptRunner?: Partial<
       ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]
     >;
-    providerSessionDirectory?: Partial<
-      ProviderSessionDirectory.ProviderSessionDirectory["Service"]
-    >;
     terminalManager?: Partial<TerminalManager.TerminalManager["Service"]>;
     nativeCreationGrantResolver?: NativeCreationGrantResolver["Service"];
     nativeCreationBindingResolver?: NativeCreationBindingResolver["Service"];
@@ -622,10 +865,30 @@ const buildAppUnderTest = (options?: {
     onAuthSessionStore?: (
       sessions: SessionStore["Service"],
     ) => Effect.Effect<void, SessionCredentialInternalError>;
-    orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
-    threadDeletionReactor?: Partial<ThreadDeletionReactor["Service"]>;
+    orchestrator?: Partial<Orchestrator.OrchestratorV2["Service"]>;
+    threadManagement?: Partial<ThreadManagement.ThreadManagementService["Service"]>;
+    threadLaunch?: Partial<ThreadLaunch.ThreadLaunchService["Service"]>;
+    projectService?: Partial<ProjectService.ProjectService["Service"]>;
+    providerSessionManager?: Partial<ProviderSessionManager.ProviderSessionManagerV2["Service"]>;
+    providerGoalService?: Partial<ProviderSessionGoalService.ProviderSessionGoalService["Service"]>;
+    wrapThreadManagement?: (
+      service: ThreadManagement.ThreadManagementService["Service"],
+    ) => ThreadManagement.ThreadManagementService["Service"];
+    wrapProjectService?: (
+      service: ProjectService.ProjectService["Service"],
+    ) => ProjectService.ProjectService["Service"];
+    wrapApplicationEvents?: (
+      service: OrchestrationEventStore["Service"],
+    ) => OrchestrationEventStore["Service"];
+    onV2Services?: (
+      context: Context.Context<RouterV2Services>,
+    ) => Effect.Effect<
+      void,
+      unknown,
+      FileSystem.FileSystem | Path.Path | import("effect/Scope").Scope
+    >;
     analyticsService?: Partial<AnalyticsService.AnalyticsService["Service"]>;
-    projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
+    projectionStore?: Partial<ProjectionStore.ProjectionStoreV2["Service"]>;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
     serverLifecycleEvents?: Partial<ServerLifecycleEvents.ServerLifecycleEvents["Service"]>;
@@ -787,6 +1050,28 @@ const buildAppUnderTest = (options?: {
     const gitManagerLayer = Layer.mock(GitManager.GitManager)({
       ...options?.layers?.gitManager,
     });
+    const serverSettingsLayer = Layer.mock(ServerSettings.ServerSettingsService)({
+      start: Effect.void,
+      ready: Effect.void,
+      getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+      updateSettings: () => Effect.succeed(DEFAULT_SERVER_SETTINGS),
+      streamChanges: Stream.empty,
+      ...options?.layers?.serverSettings,
+    });
+    const sourceControlProviderRegistryLayer = SourceControlProviderRegistry.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          AzureDevOpsCli.layer,
+          BitbucketApi.layer,
+          GitHubCli.layer,
+          GitLabCli.layer,
+          ForgejoCli.layer,
+        ),
+      ),
+      Layer.provide(gitVcsDriverLayer),
+      Layer.provide(vcsDriverRegistryLayer),
+      Layer.provide(serverSettingsLayer),
+    );
     const workspacePathsLayer =
       options?.layers?.onWorkspaceNormalization === undefined
         ? WorkspacePaths.layer
@@ -857,13 +1142,86 @@ const buildAppUnderTest = (options?: {
       Layer.provide(Layer.succeed(HostProcessEnvironment, {})),
     );
 
+    // This is the production V2 service graph over one task-owned in-memory
+    // database. Its workers remain parked; a transport test must explicitly
+    // drain a synthetic effect and cannot accidentally start a provider CLI.
+    const v2RuntimeLayer = OrchestrationV2ProductionLayerLive.pipe(
+      Layer.provideMerge(OrchestrationV2EventSinkLayerLive),
+      Layer.flatMap((context) => {
+        const orchestrator = Context.get(context, Orchestrator.OrchestratorV2);
+        const threads = Context.get(context, ThreadManagement.ThreadManagementService);
+        const projects = Context.get(context, ProjectService.ProjectService);
+        const projections = Context.get(context, ProjectionStore.ProjectionStoreV2);
+        const providerSessions = Context.get(
+          context,
+          ProviderSessionManager.ProviderSessionManagerV2,
+        );
+        const applicationEvents = Context.get(context, OrchestrationEventStore);
+        const providerGoals = Context.get(
+          context,
+          ProviderSessionGoalService.ProviderSessionGoalService,
+        );
+        let decorated = Context.add(context, Orchestrator.OrchestratorV2, {
+          ...orchestrator,
+          ...options?.layers?.orchestrator,
+        });
+        decorated = Context.add(decorated, ThreadManagement.ThreadManagementService, {
+          ...(options?.layers?.wrapThreadManagement?.(threads) ?? threads),
+          ...options?.layers?.threadManagement,
+        });
+        decorated = Context.add(decorated, ProjectService.ProjectService, {
+          ...(options?.layers?.wrapProjectService?.(projects) ?? projects),
+          ...options?.layers?.projectService,
+        });
+        decorated = Context.add(decorated, ProjectionStore.ProjectionStoreV2, {
+          ...projections,
+          ...options?.layers?.projectionStore,
+        });
+        decorated = Context.add(decorated, ProviderSessionManager.ProviderSessionManagerV2, {
+          ...providerSessions,
+          ...options?.layers?.providerSessionManager,
+        });
+        decorated = Context.add(
+          decorated,
+          OrchestrationEventStore,
+          options?.layers?.wrapApplicationEvents?.(applicationEvents) ?? applicationEvents,
+        );
+        decorated = Context.add(decorated, ProviderSessionGoalService.ProviderSessionGoalService, {
+          ...providerGoals,
+          ...options?.layers?.providerGoalService,
+        });
+        return Layer.succeedContext(decorated);
+      }),
+      Layer.provide(ResourceCleanup.live.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive))),
+      Layer.provide(Layer.succeed(ServerActivation.ServerActivation, Effect.never)),
+      Layer.provideMerge(ProjectEnrichmentService.layer),
+      Layer.provide(CheckpointStore.layer.pipe(Layer.provide(vcsDriverRegistryLayer))),
+      Layer.provideMerge(ThreadSearch.layer),
+      Layer.provideMerge(ProjectStore.layer),
+    );
+
+    const routerRuntimeLayer = Layer.fresh(ThreadLaunch.layer).pipe(
+      Layer.provideMerge(v2RuntimeLayer),
+      Layer.provideMerge(IdAllocator.layer),
+      Layer.provide(
+        CommandReceiptStore.layerFromApplicationReceipts.pipe(Layer.provide(v2RuntimeLayer)),
+      ),
+      Layer.flatMap((context) =>
+        Layer.succeedContext(
+          Context.add(context, ThreadLaunch.ThreadLaunchService, {
+            ...Context.get(context, ThreadLaunch.ThreadLaunchService),
+            ...options?.layers?.threadLaunch,
+          }),
+        ),
+      ),
+    );
+
     const servedRoutesLayer = HttpRouter.serve(
       // Route repositories and auth share this in-memory database so enrollment
       // resolves the same synthetic session records that authentication reads.
       makeRoutesLayer.pipe(
-        Layer.provide(
-          Layer.mergeAll(OrchestrationEventStoreLive, OrchestrationCommandReceiptRepositoryLive),
-        ),
+        Layer.provideMerge(routerRuntimeLayer),
+        Layer.provideMerge(McpSessionRegistry.layer),
         Layer.provide(Layer.mergeAll(serviceLauncherClientLayer, SqlitePersistenceMemory)),
       ),
       {
@@ -913,16 +1271,15 @@ const buildAppUnderTest = (options?: {
             streamChanges: Stream.empty,
             ...options?.layers?.providerRegistry,
           }),
-          Layer.mock(ProviderService.ProviderService)({
-            uploadFeedback: () => Effect.die("Provider feedback is not stubbed in this test"),
-            ...options?.layers?.providerService,
-          }),
           Layer.mock(ProviderAuthService)({
             ...options?.layers?.providerAuth,
           }),
           Layer.mock(ProviderInstanceRegistry)({
-            getInstance: () => Effect.undefined,
-            listInstances: Effect.succeed([]),
+            getInstance: (id) =>
+              Effect.succeed(
+                id === defaultModelSelection.instanceId ? routerProviderInstance : undefined,
+              ),
+            listInstances: Effect.succeed([routerProviderInstance]),
             ...options?.layers?.providerInstanceRegistry,
           }),
           Layer.mock(CodexInstallation)({
@@ -933,13 +1290,9 @@ const buildAppUnderTest = (options?: {
             managedDirectory: "unused-test-antigravity-runtime",
             ...options?.layers?.antigravityInstallation,
           }),
-          Layer.mock(ProviderSessionDirectory.ProviderSessionDirectory)({
-            upsert: () => Effect.void,
-            getBinding: () => Effect.succeedNone,
-            listThreadIds: () => Effect.succeed([]),
-            listBindings: () => Effect.succeed([]),
-            ...options?.layers?.providerSessionDirectory,
-          }),
+          Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({}),
+          Layer.mock(AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
+          Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
           Layer.mock(DeviceDirectGrants)({
             issue: () => Effect.succeed(null),
             admit: () => Effect.succeed({ _tag: "Denied" as const }),
@@ -951,16 +1304,7 @@ const buildAppUnderTest = (options?: {
           }),
         ),
       ),
-      Layer.provide(
-        Layer.mock(ServerSettings.ServerSettingsService)({
-          start: Effect.void,
-          ready: Effect.void,
-          getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
-          updateSettings: () => Effect.succeed(DEFAULT_SERVER_SETTINGS),
-          streamChanges: Stream.empty,
-          ...options?.layers?.serverSettings,
-        }),
-      ),
+      Layer.provide(serverSettingsLayer),
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ExternalLauncher.ExternalLauncher)({
@@ -1093,83 +1437,16 @@ const buildAppUnderTest = (options?: {
         ),
       ),
       Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
-            readEvents: () => Stream.empty,
-            readThreadEvents: () => Stream.empty,
-            getThreadReplayStats: () =>
-              Effect.succeed({
-                eventCount: 0,
-                payloadBytes: 0,
-                hasCreateEvent: false,
-              }),
-            dispatch: () => Effect.succeed({ sequence: 0 }),
-            streamDomainEvents: Stream.empty,
-            latestSequence: Effect.succeed(0),
-            acquireWorktreeOwnership: (threadId) =>
-              Effect.succeed({
-                resourcePath: `/tmp/${threadId}`,
-                leaseId: `lease-${threadId}`,
-                ownerThreadId: threadId,
-                ownerIncarnation: `event-${threadId}`,
-                branch: null,
-                acquiredAtMs: 0,
-                renewedAtMs: 0,
-                expiresAtMs: 300_000,
-              }),
-            releaseWorktreeOwnership: () => Effect.void,
-            listWorktreeOwnershipLeases: Effect.succeed([]),
-            getThreadOwnershipIncarnation: () => Effect.succeed(Option.none()),
-            ...options?.layers?.orchestrationEngine,
-          }),
-          Layer.mock(ThreadDeletionReactor)({
-            start: () => Effect.void,
-            drainThrough: () => Effect.void,
-            ...options?.layers?.threadDeletionReactor,
-          }),
-          Layer.mock(PullRequestSyncReactor.PullRequestSyncReactor)({
-            start: () => Effect.void,
-            drain: Effect.void,
-            requestSync: () => Effect.void,
-          }),
-        ),
+        Layer.mock(PullRequestSyncReactor.PullRequestSyncReactor)({
+          start: () => Effect.void,
+          drain: Effect.void,
+          requestSync: () => Effect.void,
+        }),
       ),
       Layer.provide(
-        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
-          getUserInputActivity: () => Effect.die("unused"),
-          getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
-            }),
-          getArchivedShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
-            }),
-          searchThreads: () => Effect.succeed({ matches: [] }),
-          getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
-          getProjectShellById: () => Effect.succeedNone,
-          getThreadShellById: () => Effect.succeedNone,
-          getThreadDetailById: () => Effect.succeedNone,
-          getThreadDetailSnapshot: () => Effect.succeedNone,
-          getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
-          getEventReplayStats: ({ fromSequenceExclusive, toSequenceInclusive }) =>
-            Effect.succeed({
-              eventCount: Math.max(0, toSequenceInclusive - fromSequenceExclusive),
-              payloadBytes: 0,
-            }),
-          getActiveProjectByWorkspaceRoot: () => Effect.succeedNone,
-          getFirstActiveThreadIdByProjectId: () => Effect.succeedNone,
-          getImportedAgentSessionSources: () => Effect.succeed([]),
-          getThreadCheckpointContext: () => Effect.succeedNone,
-          ...options?.layers?.projectionSnapshotQuery,
+        Layer.mock(TextGeneration.TextGeneration)({
+          generateBranchName: () => Effect.succeed({ branch: "router-test-branch" }),
+          generateThreadTitle: () => Effect.succeed({ title: "Router test thread" }),
         }),
       ),
       Layer.provide(
@@ -1196,7 +1473,7 @@ const buildAppUnderTest = (options?: {
     const appLayer = servedRoutesLayer
       .pipe(
         Layer.provide(resourceTelemetryLayer),
-        Layer.provide(UsageService.layerTest),
+        Layer.provide(routerUsageLayer),
         Layer.provide(
           options?.layers?.tokenAccounting
             ? Layer.succeed(
@@ -1383,7 +1660,7 @@ const buildAppUnderTest = (options?: {
                     options.layers.nativeCreationBindingResolver,
                   ),
             ),
-            Layer.provide(AuthSessions.layer),
+            Layer.provideMerge(AuthSessions.layer),
             Layer.provideMerge(
               Layer.effect(
                 NativeCreationRepository,
@@ -1401,16 +1678,20 @@ const buildAppUnderTest = (options?: {
         Layer.provideMerge(makeAuthTestLayer()),
         Layer.provideMerge(ServerSecretStore.layer),
         Layer.provide(workspaceAndProjectServicesLayer),
+        Layer.provideMerge(sourceControlProviderRegistryLayer),
         Layer.provideMerge(
           options?.layers?.httpClient === undefined
             ? FetchHttpClient.layer
             : Layer.succeed(HttpClient.HttpClient, options.layers.httpClient),
         ),
         Layer.provide(GitHubCli.layer.pipe(Layer.provideMerge(VcsProcess.layer))),
-        Layer.provide(layerConfig),
+        Layer.provideMerge(layerConfig),
       );
 
     const appContext = yield* Layer.build(appLayer);
+    if (options?.layers?.onV2Services !== undefined) {
+      yield* options.layers.onV2Services(appContext);
+    }
     if (options?.layers?.onAuthSessionStore !== undefined) {
       yield* options.layers.onAuthSessionStore(Context.get(appContext, SessionStore));
     }
@@ -1860,7 +2141,12 @@ const getWsServerUrl = (
   Effect.gen(function* () {
     const server = yield* HttpServer.HttpServer;
     const address = server.address as NetAddress.InetAddress;
-    const baseUrl = `ws://127.0.0.1:${address.port}${pathname}`;
+    const next = new URL(`ws://127.0.0.1:${address.port}${pathname}`);
+    next.searchParams.set(
+      ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+      String(ORCHESTRATION_PROTOCOL_VERSION),
+    );
+    const baseUrl = next.toString();
     if (options?.authenticated === false) {
       return baseUrl;
     }
@@ -2339,7 +2625,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     () =>
       Effect.gen(function* () {
         let bearer = "";
-        const dispatched: OrchestrationCommand[] = [];
+        let sql: SqlClient.SqlClient | undefined;
         yield* buildAppUnderTest({
           layers: {
             onAuthSessionStore: (sessions) =>
@@ -2358,13 +2644,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                     bearer = session.token;
                   }),
                 ),
-            orchestrationEngine: {
-              dispatch: (command) =>
-                Effect.sync(() => {
-                  dispatched.push(command);
-                  return { sequence: 1 };
-                }),
-            },
+            onV2Services: (context) =>
+              Effect.sync(() => {
+                sql = Context.get(context, SqlClient.SqlClient);
+              }),
           },
         });
         const cookie = yield* getAuthenticatedSessionCookieHeader();
@@ -2404,11 +2687,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           {
             method: "POST",
             headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
-            body: jsonRequestBody(makeGuardedQueueTransportCommand("native-denied")),
+            body: jsonRequestBody(routerMessageDispatch("native-denied")),
           },
         );
         assert.equal(dispatch.status, 403);
-        assert.deepEqual(dispatched, []);
+        const committed = yield* sql!<{
+          count: number;
+        }>`SELECT count(*) AS count FROM orchestration_events`;
+        assert.equal(committed[0]?.count, 0);
         const registration = yield* fetchEffect(
           yield* getHttpServerUrl("/api/workstreams/registration-context"),
           {
@@ -2443,18 +2729,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const refreshes: ProviderInstanceId[] = [];
         const goalReads: unknown[] = [];
         const observationReads: unknown[] = [];
-        const command = makeGuardedQueueTransportCommand("routes");
-        const observation: OrchestrationCommandObservation = {
-          threadId: command.threadId,
-          commandId: command.commandId,
-          messageId: command.message.messageId,
-          snapshotSequence: 0,
-          commandStatus: "not_found",
-          acceptedSequence: null,
-          correlation: "missing",
-          turn: null,
-          target: null,
-        };
+        const command = routerMessageDispatch("routes");
+        let underlyingObserve: Orchestrator.OrchestratorV2["Service"]["observeCommand"];
+        let observation: AwaitedObservation | undefined;
         const goal = {
           schema: "t3.provider-goal-state/v1" as const,
           threadId: defaultThreadId,
@@ -2474,36 +2751,31 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   return providers;
                 }),
             },
-            providerService: {
-              getProviderGoalState: (input) =>
+            providerGoalService: {
+              get: (input) =>
                 Effect.sync(() => {
                   goalReads.push(input);
                   return { ...goal, objective: "private synthetic objective" };
                 }),
             },
-            projectionSnapshotQuery: {
-              getThreadShellById: () =>
-                Effect.succeedSome(
-                  makeDefaultOrchestrationThreadShell({
-                    session: {
-                      threadId: defaultThreadId,
-                      status: "ready",
-                      providerName: "codex",
-                      providerInstanceId: instanceId,
-                      runtimeMode: "full-access",
-                      activeTurnId: null,
-                      lastError: null,
-                      updatedAt: "2026-01-01T00:00:00.000Z",
-                    },
-                  }),
-                ),
-            },
-            orchestrationEngine: {
+            onV2Services: (context) =>
+              Effect.gen(function* () {
+                yield* seedRouterThread(context);
+                underlyingObserve = Context.get(
+                  context,
+                  Orchestrator.OrchestratorV2,
+                ).observeCommand;
+                observation = yield* underlyingObserve({
+                  threadId: command.threadId,
+                  commandId: command.commandId,
+                  messageId: command.messageId,
+                });
+              }),
+            threadManagement: {
               observeCommand: (input) =>
-                Effect.sync(() => {
-                  observationReads.push(input);
-                  return observation;
-                }),
+                Effect.sync(() => observationReads.push(input)).pipe(
+                  Effect.andThen(underlyingObserve(input)),
+                ),
             },
           },
         });
@@ -2513,7 +2785,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(operateToken.response.status, 200);
         const queuePath = `/api/provider-queue/instances/${instanceId}`;
         const goalPath = `/api/orchestration/threads/${defaultThreadId}/provider-goal-state?expectedInstanceId=${instanceId}`;
-        const observationPath = `/api/orchestration/threads/${defaultThreadId}/commands/${command.commandId}?messageId=${command.message.messageId}`;
+        const observationPath = `/api/orchestration/v2/threads/${defaultThreadId}/commands/${command.commandId}?messageId=${command.messageId}`;
         for (const path of [
           "/api/provider-queue/inventory",
           `${queuePath}/usage`,
@@ -2581,7 +2853,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           headers: readHeaders,
         });
         assert.equal(goalResponse.status, 200);
-        assert.deepEqual(yield* responseJsonEffect(goalResponse), goal);
+        const goalBody = yield* responseJsonEffect<typeof goal>(goalResponse);
+        assert.deepEqual({ ...goalBody, observedAtMs: goal.observedAtMs }, goal);
         const observationResponse = yield* fetchEffect(yield* getHttpServerUrl(observationPath), {
           headers: readHeaders,
         });
@@ -2594,7 +2867,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           {
             threadId: defaultThreadId,
             commandId: command.commandId,
-            messageId: command.message.messageId,
+            messageId: command.messageId,
           },
         ]);
         assert.deepEqual(refreshes, []);
@@ -2650,68 +2923,92 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("preserves guarded WebSocket command IDs through HTTP command observation", () =>
     Effect.gen(function* () {
-      const command = makeGuardedQueueTransportCommand("observation");
-      const dispatched: OrchestrationCommand[] = [];
+      const command = routerMessageDispatch("guarded-observation");
+      let guard!: ThreadTurnDispatchGuardV2;
+      let services!: Context.Context<RouterV2Services>;
+      const dispatched: unknown[] = [];
       const observed: unknown[] = [];
-      const observation: OrchestrationCommandObservation = {
-        threadId: command.threadId,
-        commandId: command.commandId,
-        messageId: command.message.messageId,
-        snapshotSequence: 17,
-        commandStatus: "accepted",
-        acceptedSequence: 17,
-        correlation: "pending",
-        turn: null,
-        target: null,
-      };
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            dispatch: (input) =>
-              Effect.sync(() => {
-                dispatched.push(input);
-                return { sequence: 17 };
-              }),
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              services = context;
+              yield* seedRouterThread(context);
+              const observation = yield* Context.get(
+                context,
+                Orchestrator.OrchestratorV2,
+              ).observeCommand(command);
+              const target = observation.target;
+              assertTrue(target !== null && target.incarnation !== null);
+              assert.isTrue(target.complete);
+              assert.isTrue(target.idle);
+              guard = {
+                version: 2,
+                observedSnapshotSequence: target.snapshotSequence,
+                expectedIncarnation: target.incarnation,
+                expectedModelSelection: target.modelSelection,
+                expectedActiveRunId: target.activeRunId,
+                expectedLatestRunId: target.latestRunId,
+                expectedActiveRunAttemptId: target.activeRunAttemptId,
+                expectedActiveProviderThreadId: target.activeProviderThreadId,
+                expectedProviderSessionId: target.providerSessionId,
+                expectedProviderSessionStatus: target.providerSessionStatus,
+                ...(target.runtimeGeneration === undefined
+                  ? {}
+                  : { expectedRuntimeGeneration: target.runtimeGeneration }),
+                requireIdle: true,
+              };
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            dispatchGuarded: (input, expected) =>
+              Effect.sync(() => dispatched.push({ input, expected })).pipe(
+                Effect.andThen(service.dispatchGuarded(input, expected)),
+              ),
             observeCommand: (input) =>
-              Effect.sync(() => {
-                assert.equal(dispatched.length, 1);
-                observed.push(input);
-                return observation;
-              }),
-          },
+              Effect.sync(() => observed.push(input)).pipe(
+                Effect.andThen(service.observeCommand(input)),
+              ),
+          }),
         },
       });
       const receipt = yield* Effect.scoped(
         withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand](command),
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchGuarded]({ command, guard }),
         ),
       );
-      assert.deepEqual(receipt, { sequence: 17 });
-      const dispatchedCommand = dispatched[0];
-      assertTrue(dispatchedCommand?.type === "thread.turn.start");
-      if (dispatchedCommand?.type === "thread.turn.start") {
-        assertTrue(Number.isFinite(Date.parse(dispatchedCommand.createdAt)));
-        assert.deepEqual(dispatched, [{ ...command, createdAt: dispatchedCommand.createdAt }]);
-      }
+      assert.isAbove(receipt.sequence, guard.observedSnapshotSequence);
+      assert.deepEqual(dispatched, [{ input: command, expected: guard }]);
       const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
         scope: "orchestration:read",
       });
       assert.equal(token.response.status, 200);
       const response = yield* fetchEffect(
         yield* getHttpServerUrl(
-          `/api/orchestration/threads/${command.threadId}/commands/${command.commandId}?messageId=${command.message.messageId}`,
+          "/api/orchestration/v2/threads/" +
+            command.threadId +
+            "/commands/" +
+            command.commandId +
+            "?messageId=" +
+            command.messageId,
         ),
-        { headers: { authorization: `Bearer ${token.body.access_token}` } },
+        { headers: { authorization: "Bearer " + token.body.access_token } },
       );
       assert.equal(response.status, 200);
-      assert.deepEqual(yield* responseJsonEffect(response), observation);
+      const observation = yield* responseJsonEffect<AwaitedObservation>(response);
+      assert.equal(observation.commandId, command.commandId);
+      assert.equal(observation.messageId, command.messageId);
+      assert.equal(observation.receipt?.resultSequence, receipt.sequence);
+      assert.equal(observation.commandStatus, "accepted");
+      assert.equal(observation.correlation, "exact");
       assert.deepEqual(observed, [
-        {
-          threadId: command.threadId,
-          commandId: command.commandId,
-          messageId: command.message.messageId,
-        },
+        { threadId: command.threadId, commandId: command.commandId, messageId: command.messageId },
       ]);
+      const durable = yield* Context.get(services, Orchestrator.OrchestratorV2).observeCommand(
+        command,
+      );
+      assert.equal(durable.receipt?.resultSequence, receipt.sequence);
+      assert.equal(durable.correlation, "exact");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -2719,41 +3016,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     "rejects guarded HTTP bootstrap while WebSocket prepares before final guarded dispatch",
     () =>
       Effect.gen(function* () {
+        const value = yield* qualifiedNativeRouterFixture("guarded-http-bootstrap", false);
         const baseCommand = makeGuardedQueueTransportCommand("bootstrap");
         const command = {
           ...baseCommand,
-          bootstrap: {
-            createThread: {
-              projectId: defaultProjectId,
-              title: "Synthetic bootstrap",
-              modelSelection: defaultModelSelection,
-              runtimeMode: "full-access" as const,
-              interactionMode: "default" as const,
-              branch: null,
-              worktreePath: null,
-              createdAt: baseCommand.createdAt,
-            },
-          },
+          commandId: CommandId.make(value.fixture.command.commandId),
+          threadId: ThreadId.make(value.fixture.command.threadId),
+          bootstrap: value.fixture.command.bootstrap,
         };
-        const dispatched: OrchestrationCommand[] = [];
-        const drains: unknown[] = [];
-        yield* buildAppUnderTest({
-          layers: {
-            orchestrationEngine: {
-              dispatch: (input) =>
-                Effect.sync(() => {
-                  dispatched.push(input);
-                  return { sequence: dispatched.length };
-                }),
-            },
-            threadDeletionReactor: {
-              drainThrough: (sequence, threadId) =>
-                Effect.sync(() => {
-                  drains.push({ sequence, threadId });
-                }),
-            },
-          },
-        });
         const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
           scope: "orchestration:operate",
         });
@@ -2772,45 +3042,66 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(rejected.status, 400);
         const failure = yield* responseJsonEffect<{ reason: string }>(rejected);
         assert.equal(failure.reason, "dispatch_guard_bootstrap_unsupported");
-        assert.deepEqual(dispatched, []);
-        assert.deepEqual(drains, []);
+        assert.deepEqual(value.stages, []);
+        assert.deepEqual(value.detachments, []);
+        assert.deepEqual(value.nativeCalls, []);
         const receipt = yield* Effect.scoped(
-          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-            client[ORCHESTRATION_WS_METHODS.dispatchCommand](command),
+          withWsRpcClient(value.url, (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap](value.fixture.submission),
           ),
         );
-        assert.deepEqual(receipt, { sequence: 3 });
+        assert.equal(receipt.commandAcceptance, "accepted");
+        assert.isAbove(receipt.creation?.finalReceipt?.resultSequence ?? 0, 0);
         assert.deepEqual(
-          dispatched.map((input) => input.type),
-          ["thread.create", "thread.message.user.append", "thread.turn.start"],
+          value.stages.map((input) => input.type),
+          ["thread.create", "message.dispatch", "prepared-run.release"],
         );
-        assert.deepEqual(drains, [{ sequence: 1, threadId: command.threadId }]);
-        const finalCommand = dispatched[2];
-        assertTrue(finalCommand?.type === "thread.turn.start");
-        if (finalCommand?.type !== "thread.turn.start") return;
-        assertTrue(Number.isFinite(Date.parse(finalCommand.createdAt)));
-        assert.deepEqual(dispatched[0], {
-          type: "thread.create",
-          commandId: dispatched[0]!.commandId,
-          threadId: command.threadId,
-          ...command.bootstrap.createThread,
-          createdAt: finalCommand.createdAt,
+        assert.deepEqual(value.order, [
+          "thread.create",
+          "message.dispatch",
+          "checkout",
+          "prepared-run.release",
+        ]);
+        assert.deepEqual(value.detachments, [{ threadId: command.threadId, status: "stopped" }]);
+        const finalCommand = value.stages[2];
+        assertTrue(finalCommand?.type === "prepared-run.release");
+        assert.deepEqual(value.stages, value.expectedCommands());
+        assert.equal(finalCommand.commandId, command.commandId);
+        assert.equal(finalCommand.threadId, command.threadId);
+        assert.notEqual(value.stages[0]!.commandId, command.commandId);
+        assert.notEqual(value.stages[1]!.commandId, command.commandId);
+        assert.notEqual(value.stages[0]!.commandId, value.stages[1]!.commandId);
+        const creation = receipt.creation;
+        assertTrue(creation !== null && creation.incarnation !== null);
+        const sequences = creation.stageCommands.map((stage) => {
+          assertTrue(stage.receipt !== null && stage.event !== null);
+          assertTrue(Number.isFinite(Date.parse(DateTime.formatIso(stage.receipt.acceptedAt))));
+          assert.equal(stage.receipt.resultSequence, stage.event.sequence);
+          return stage.event.sequence;
         });
-        assert.deepEqual(dispatched[1], {
-          type: "thread.message.user.append",
-          commandId: dispatched[1]!.commandId,
-          threadId: command.threadId,
-          message: {
-            messageId: command.message.messageId,
-            text: command.message.text,
-            attachments: [],
-          },
-          createdAt: finalCommand.createdAt,
+        assert.isAbove(sequences[1]!, sequences[0]!);
+        assert.isAbove(sequences[2]!, sequences[1]!);
+        assert.deepEqual(creation.incarnation, creation.stageCommands[0]!.event);
+        const threads = Context.get(value.services, ThreadManagement.ThreadManagementService);
+        const birth = Option.getOrThrow(
+          yield* threads.getThreadOwnershipIncarnation(command.threadId),
+        );
+        const leases = yield* threads.listWorktreeOwnershipLeases;
+        const checkout = nativeWorktreePath({
+          worktreesDir: value.config.worktreesDir,
+          cwd: value.fixture.binding.project_cwd,
+          branch: value.fixture.historical.requestedBranch,
         });
-        assert.notEqual(dispatched[0]!.commandId, command.commandId);
-        assert.notEqual(dispatched[1]!.commandId, command.commandId);
-        assert.notEqual(dispatched[0]!.commandId, dispatched[1]!.commandId);
-        assert.deepEqual(finalCommand, { ...baseCommand, createdAt: finalCommand.createdAt });
+        assert.isTrue(
+          leases.some(
+            (lease) =>
+              lease.ownerThreadId === command.threadId &&
+              lease.ownerIncarnation === birth &&
+              lease.resourcePath === checkout &&
+              lease.branch === value.fixture.historical.requestedBranch,
+          ),
+        );
+        assert.deepEqual(value.nativeCalls, []);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -2819,33 +3110,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const threadId = ThreadId.make(
         "thread:mcp:abfba0d2-b591-4b7e-aad1-e943d89811fa:handoff%3A0ae5edf4-2ea3-4ee3-ba7c-48de3ac92896%3A2026-08-24T17%3A08%3A52.138Z:0",
       );
-      const thread = {
-        ...makeDefaultOrchestrationReadModel().threads[0]!,
-        id: threadId,
-      };
       yield* buildAppUnderTest({
         layers: {
-          projectionSnapshotQuery: {
-            getThreadDetailSnapshot: (requestedThreadId) =>
-              Effect.succeed(
-                requestedThreadId === threadId
-                  ? Option.some({ snapshotSequence: 1, thread })
-                  : Option.none(),
-              ),
-          },
+          onV2Services: (context) => seedRouterThread(context, threadId).pipe(Effect.asVoid),
         },
       });
-
       const response = yield* fetchEffect(
-        yield* getHttpServerUrl(`/api/orchestration/threads/${encodeURIComponent(threadId)}`),
+        yield* getHttpServerUrl("/api/orchestration/threads/" + encodeURIComponent(threadId)),
         { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
       );
-      const snapshot = yield* responseJsonEffect<{
-        readonly thread: { readonly id: ThreadId };
-      }>(response);
-
+      const snapshot = yield* responseJsonEffect<{ projection: { thread: { id: ThreadId } } }>(
+        response,
+      );
       assert.equal(response.status, 200);
-      assert.equal(snapshot.thread.id, threadId);
+      assert.equal(snapshot.projection.thread.id, threadId);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -5246,7 +5524,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(overbroadPairingBody.requiredScope, "orchestration:read");
       assert.equal(pairingResponse.status, 200);
       assert.equal(wsTicketResponse.status, 200);
-      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(wsTicketBody.ticket)}`;
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&wsTicket=${encodeURIComponent(wsTicketBody.ticket)}`;
       const rpcError = yield* Effect.flip(
         Effect.scoped(withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverGetConfig]({}))),
       );
@@ -5304,7 +5582,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         headers: { authorization: `Bearer ${tokenBody.access_token ?? ""}` },
       });
       const ticket = (yield* ticketResponse.json) as { readonly ticket: string };
-      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket.ticket)}`;
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&wsTicket=${encodeURIComponent(ticket.ticket)}`;
       const denied = yield* Effect.flip(
         Effect.scoped(
           withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverReadTokenAccounting]({})),
@@ -5654,7 +5932,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       });
       assert.equal(ticketResponse.status, 200);
       const { ticket } = (yield* ticketResponse.json) as { ticket: string };
-      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket)}`;
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&wsTicket=${encodeURIComponent(ticket)}`;
       const frames: string[] = [];
       yield* withWsRpcClient(
         wsUrl,
@@ -6051,201 +6329,131 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("creates the Scratch project once and restores its folder on reuse", () =>
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const created: Array<{ readonly projectId: ProjectId; readonly workspaceRoot: string }> = [];
-      const iconUpdates: Array<unknown> = [];
+      const fs = yield* FileSystem.FileSystem;
+      let sql: SqlClient.SqlClient | undefined;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                if (command.type === "project.create") {
-                  created.push({
-                    projectId: command.projectId,
-                    workspaceRoot: command.workspaceRoot,
-                  });
-                }
-                if (command.type === "project.meta.update") iconUpdates.push(command.projectIcon);
-                return { sequence: created.length + iconUpdates.length };
-              }),
-          },
-          projectionSnapshotQuery: {
-            getActiveProjectByWorkspaceRoot: (workspaceRoot) =>
-              Effect.succeed(
-                Option.fromNullishOr(
-                  created.find((project) => project.workspaceRoot === workspaceRoot),
-                ).pipe(
-                  Option.map((project) => ({
-                    ...makeDefaultOrchestrationReadModel().projects[0]!,
-                    id: project.projectId,
-                    workspaceRoot,
-                  })),
-                ),
-              ),
-          },
+          onV2Services: (context) =>
+            Effect.sync(() => {
+              sql = Context.get(context, SqlClient.SqlClient);
+            }),
         },
       });
-
-      yield* Effect.scoped(
-        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-          Effect.gen(function* () {
-            const config = yield* client[WS_METHODS.serverGetConfig]({});
-            const scratchRoot = config.scratchWorkspaceRoot ?? "";
-            const first = yield* client[WS_METHODS.projectsEnsureScratch]({});
-            // A user may delete the folder; reuse must bring it back.
-            yield* fileSystem.remove(scratchRoot, { recursive: true });
-            const second = yield* client[WS_METHODS.projectsEnsureScratch]({});
-
-            assert.isTrue(scratchRoot.endsWith("scratch"));
-            assert.equal(created.length, 1);
-            assert.equal(created[0]?.workspaceRoot, scratchRoot);
-            assert.equal(first.projectId, created[0]?.projectId);
-            assert.equal(second.projectId, first.projectId);
-            // The icon is set once, at create.
-            assert.deepEqual(iconUpdates, [
-              { kind: "lucide", name: "message-square-dashed", color: "gray" },
-            ]);
-            assert.isTrue(yield* fileSystem.exists(scratchRoot));
-          }),
-        ),
+      yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+        Effect.gen(function* () {
+          const config = yield* client[WS_METHODS.serverGetConfig]({});
+          const scratchRoot = config.scratchWorkspaceRoot ?? "";
+          const first = yield* client[WS_METHODS.projectsEnsureScratch]({});
+          yield* fs.remove(scratchRoot, { recursive: true });
+          const second = yield* client[WS_METHODS.projectsEnsureScratch]({});
+          assert.isTrue(scratchRoot.endsWith("scratch"));
+          assert.equal(second.projectId, first.projectId);
+          assert.isTrue(yield* fs.exists(scratchRoot));
+          const rows = yield* sql!<{ id: string; projectIcon: string }>`
+          SELECT project_id AS id, project_icon_json AS projectIcon FROM projection_projects
+          WHERE workspace_root = ${scratchRoot} AND deleted_at IS NULL
+        `;
+          assert.lengthOf(rows, 1);
+          assert.equal(rows[0]?.id, first.projectId);
+          assert.deepEqual(
+            Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(rows[0]!.projectIcon),
+            {
+              kind: "lucide",
+              name: "message-square-dashed",
+              color: "gray",
+            },
+          );
+        }),
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("resolves a lost Scratch create race to the winning project", () =>
     Effect.gen(function* () {
-      const winnerId = ProjectId.make("project-scratch-winner");
-      let lookups = 0;
-      yield* buildAppUnderTest({
-        layers: {
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.fail(
-                new OrchestrationCommandInvariantError({
-                  commandType: command.type,
-                  detail: "Active project already exists for workspace root.",
-                }),
-              ),
-          },
-          projectionSnapshotQuery: {
-            // Empty before the create, then the other client's project.
-            getActiveProjectByWorkspaceRoot: (workspaceRoot) =>
-              Effect.sync(() =>
-                lookups++ === 0
-                  ? Option.none()
-                  : Option.some({
-                      ...makeDefaultOrchestrationReadModel().projects[0]!,
-                      id: winnerId,
-                      workspaceRoot,
-                    }),
-              ),
-          },
-        },
-      });
-
-      const result = yield* Effect.scoped(
-        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-          client[WS_METHODS.projectsEnsureScratch]({}),
-        ),
+      yield* buildAppUnderTest();
+      const firstClient = yield* getWsServerUrl("/ws");
+      const secondClient = yield* getWsServerUrl("/ws");
+      const requests = yield* Effect.all(
+        [
+          withWsRpcClient(firstClient, (client) => client[WS_METHODS.projectsEnsureScratch]({})),
+          withWsRpcClient(secondClient, (client) => client[WS_METHODS.projectsEnsureScratch]({})),
+        ],
+        { concurrency: 2 },
       );
-      assert.equal(result.projectId, winnerId);
+      assert.equal(requests[0]!.projectId, requests[1]!.projectId);
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/snapshot"), {
+        headers: { cookie },
+      });
+      const snapshot = yield* responseJsonEffect<{
+        projects: ReadonlyArray<{ id: ProjectId; title: string }>;
+      }>(response);
+      assert.equal(response.status, 200);
+      assert.deepEqual(
+        snapshot.projects
+          .filter((project) => project.title === "Scratch")
+          .map((project) => project.id),
+        [requests[0]!.projectId],
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("gives each new Scratch thread its own folder", () =>
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
+      const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const scratchProjectId = ProjectId.make("project-scratch");
-      let scratchRoot = "";
-      const created: Array<string | null> = [];
+      let context:
+        | Context.Context<ProjectService.ProjectService | ThreadManagement.ThreadManagementService>
+        | undefined;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                if (command.type === "thread.create") created.push(command.worktreePath);
-                return { sequence: created.length };
-              }),
-            readEvents: () => Stream.empty,
-          },
-          projectionSnapshotQuery: {
-            getProjectShellById: (projectId) =>
-              Effect.succeed(
-                projectId === scratchProjectId
-                  ? Option.some({
-                      id: scratchProjectId,
-                      title: "Scratch",
-                      workspaceRoot: scratchRoot,
-                      defaultModelSelection: null,
-                      scripts: [],
-                      createdAt: "2026-09-25T00:00:00.000Z",
-                      updatedAt: "2026-09-25T00:00:00.000Z",
-                    })
-                  : Option.none(),
-              ),
-          },
+          onV2Services: (services) =>
+            Effect.sync(() => {
+              context = services;
+            }),
         },
       });
-
-      yield* Effect.scoped(
-        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
-          Effect.gen(function* () {
-            scratchRoot =
-              (yield* client[WS_METHODS.serverGetConfig]({})).scratchWorkspaceRoot ?? "";
-            const createdAt = "2026-09-25T10:00:00.000Z";
-            // The second id shares the first's short prefix, the third tries to
-            // climb out of the scratch root, and the fourth pastes a long token.
-            const text = "Convert these PNGs to WebP, please!";
-            const starts = [
-              { id: "a1b2c3d4-scratch-thread", text },
-              { id: "a1b2c3d4-other", text },
-              { id: "../../escape", text },
-              { id: "f00dcafe-long", text: "x".repeat(300) },
-            ];
-            for (const [index, { id, text: messageText }] of starts.entries()) {
-              yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-                type: "thread.turn.start",
-                commandId: CommandId.make(`cmd-scratch-turn-start-${index}`),
-                threadId: ThreadId.make(id),
-                message: {
-                  messageId: MessageId.make(`msg-scratch-${index}`),
-                  role: "user",
-                  text: messageText,
-                  attachments: [],
-                },
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                bootstrap: {
-                  createThread: {
-                    projectId: scratchProjectId,
-                    title: "New thread",
-                    modelSelection: defaultModelSelection,
-                    runtimeMode: "full-access",
-                    interactionMode: "default",
-                    branch: null,
-                    worktreePath: null,
-                    createdAt,
-                  },
-                },
-                createdAt,
-              });
-            }
-          }),
-        ),
+      const folders: string[] = [];
+      yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+        Effect.gen(function* () {
+          const config = yield* client[WS_METHODS.serverGetConfig]({});
+          const scratchRoot = config.scratchWorkspaceRoot ?? "";
+          const project = yield* client[WS_METHODS.projectsEnsureScratch]({});
+          const starts = [
+            { id: "a1b2c3d4-scratch-thread", text: "Convert these PNGs to WebP, please!" },
+            { id: "a1b2c3d4-other", text: "Convert these PNGs to WebP, please!" },
+            { id: "../../escape", text: "Convert these PNGs to WebP, please!" },
+            { id: "f00dcafe-long", text: "x".repeat(300) },
+          ];
+          for (const [index, start] of starts.entries()) {
+            const launch = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+              commandId: CommandId.make("scratch:launch:" + index),
+              threadId: ThreadId.make(start.id),
+              projectId: project.projectId,
+              title: "New thread",
+              modelSelection: defaultModelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              workspaceStrategy: { type: "root" },
+              initialMessage: { text: start.text, attachments: [] },
+            });
+            const projection = yield* Context.get(
+              context!,
+              ThreadManagement.ThreadManagementService,
+            ).getThreadProjection(launch.threadId);
+            const folder = projection.thread.worktreePath ?? "";
+            assert.equal(path.dirname(folder), scratchRoot);
+            assert.isTrue(yield* fs.exists(folder));
+            folders.push(folder);
+          }
+        }),
       );
-
-      // The date is the server's receipt time, not the client's createdAt.
-      const names = created.map((folder) => path.basename(folder ?? ""));
+      const names = folders.map((folder) => path.basename(folder));
       assert.match(names[0] ?? "", /^\d{4}-\d{2}-\d{2}-convert-these-pngs-to-webp-a1b2c3d4$/);
       assert.match(names[1] ?? "", /-convert-these-pngs-to-webp-a1b2c3d4other$/);
       assert.match(names[2] ?? "", /-convert-these-pngs-to-webp-escape$/);
       assert.match(names[3] ?? "", /^\d{4}-\d{2}-\d{2}-x{48}-f00dcafe$/);
-      for (const folder of created) {
-        assert.equal(path.dirname(folder ?? ""), scratchRoot);
-        assert.isTrue(yield* fileSystem.exists(folder ?? ""));
-      }
+      assert.equal(new Set(folders).size, 4);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -6272,19 +6480,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const created: Array<{ readonly title: string; readonly workspaceRoot: string }> = [];
+      let projects: ProjectService.ProjectService["Service"] | undefined;
       const gitCalls: Array<string> = [];
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                if (command.type === "project.create") {
-                  created.push({ title: command.title, workspaceRoot: command.workspaceRoot });
-                }
-                return { sequence: created.length };
-              }),
-          },
+          onV2Services: (context) =>
+            Effect.sync(() => {
+              projects = Context.get(context, ProjectService.ProjectService);
+            }),
           gitVcsDriver: {
             readConfigValue: () => Effect.succeed(null),
             execute: (input) =>
@@ -6310,9 +6513,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
             assert.equal(result.workspaceRoot, path.join(root, "pinball-stats"));
             assert.isUndefined(result.commitError);
-            assert.deepEqual(created, [
-              { title: "Pinball Stats", workspaceRoot: result.workspaceRoot },
-            ]);
+            const created = Option.getOrThrow(yield* projects!.getById(result.projectId));
+            assert.equal(created.title, "Pinball Stats");
+            assert.equal(created.workspaceRoot, result.workspaceRoot);
             assert.deepEqual(gitCalls, [
               "init --initial-branch=main",
               "add --force -- README.md assets/icon.svg",
@@ -6396,7 +6599,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const { cookie } = yield* bootstrapBrowserSession();
         assert.isDefined(cookie);
         const sessionToken = extractSessionTokenFromSetCookie(cookie ?? "");
-        const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?token=${encodeURIComponent(sessionToken)}`;
+        const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&token=${encodeURIComponent(sessionToken)}`;
 
         const error = yield* Effect.flip(
           Effect.scoped(withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverGetConfig]({}))),
@@ -6424,7 +6627,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const wsTicketBody = yield* responseJsonEffect<{
           readonly ticket: string;
         }>(wsTicketResponse);
-        const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(wsTicketBody.ticket)}`;
+        const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&wsTicket=${encodeURIComponent(wsTicketBody.ticket)}`;
 
         const response = yield* Effect.scoped(
           withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverGetConfig]({})),
@@ -7020,12 +7223,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               },
             }),
           },
-          projectionSnapshotQuery: {
-            getProjectShellById: (requestedProjectId) =>
-              Effect.succeed(
-                requestedProjectId === projectId ? Option.some(project) : Option.none(),
-              ),
-          },
+          onV2Services: (context) =>
+            seedRouterProject(context, projectId, workspaceRoot).pipe(Effect.asVoid),
         },
       });
 
@@ -7053,12 +7252,36 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         threadId: ThreadId.make("thread-feedback"),
         reason: "The agent stopped early.",
       };
-      const uploadFeedback = vi.fn<ProviderService.ProviderService["Service"]["uploadFeedback"]>(
+      const uploadFeedback = vi.fn<NonNullable<ProviderAdapterV2SessionRuntime["uploadFeedback"]>>(
         () => Effect.succeed({ feedbackId: "codex-thread-feedback" }),
+      );
+      let providerThread:
+        | Parameters<
+            NonNullable<ProviderAdapterV2SessionRuntime["uploadFeedback"]>
+          >[0]["providerThread"]
+        | undefined;
+      let sessionId: ProviderSessionId | undefined;
+      const getRuntime = vi.fn<ProviderSessionManager.ProviderSessionManagerV2["Service"]["get"]>(
+        (id) =>
+          Effect.succeed(
+            id === sessionId
+              ? Option.some(makeRouterFeedbackRuntime(id, uploadFeedback))
+              : Option.none(),
+          ),
       );
       yield* buildAppUnderTest({
         layers: {
-          providerService: { uploadFeedback },
+          providerSessionManager: { get: getRuntime },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context, input.threadId);
+              sessionId = yield* seedRouterProvider(context, "ready", input.threadId);
+              const records = yield* Context.get(
+                context,
+                ThreadManagement.ThreadManagementService,
+              ).getThreadRecords(input.threadId, ["providerThreads"]);
+              providerThread = records.providerThreads.at(-1);
+            }),
         },
       });
 
@@ -7068,7 +7291,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assert.deepStrictEqual(response, { feedbackId: "codex-thread-feedback" });
-      assert.deepStrictEqual(uploadFeedback.mock.calls, [[input]]);
+      assertTrue(providerThread !== undefined);
+      assert.deepStrictEqual(getRuntime.mock.calls, [[sessionId]]);
+      assert.deepStrictEqual(uploadFeedback.mock.calls, [
+        [{ providerThread, reason: input.reason }],
+      ]);
+      assert.strictEqual(providerThread?.appThreadId, input.threadId);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -7295,16 +7523,26 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const threadId = ThreadId.make("thread-feedback-failure");
       yield* buildAppUnderTest({
         layers: {
-          providerService: {
-            uploadFeedback: () =>
-              Effect.fail(
-                new ProviderAdapterRequestError({
-                  provider: "codex",
-                  method: "feedback/upload",
-                  detail: "private provider detail",
-                }),
+          providerSessionManager: {
+            get: (sessionId) =>
+              Effect.succeed(
+                Option.some(
+                  makeRouterFeedbackRuntime(sessionId, () =>
+                    Effect.fail(
+                      new ProviderAdapterProtocolError({
+                        driver: ProviderDriverKind.make("codex"),
+                        detail: "private provider detail",
+                      }),
+                    ),
+                  ),
+                ),
               ),
           },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context, threadId);
+              yield* seedRouterProvider(context, "ready", threadId);
+            }),
         },
       });
 
@@ -7442,7 +7680,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
       });
       const { ticket } = yield* responseJsonEffect<{ readonly ticket: string }>(ticketResponse);
-      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket)}`;
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&wsTicket=${encodeURIComponent(ticket)}`;
       yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           Effect.gen(function* () {
@@ -7819,8 +8057,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               streamChanges: Stream.empty,
               applyUsageLimits: () => Effect.void,
             },
-            adapter: {} as ProviderInstance["adapter"],
-            textGeneration: {} as ProviderInstance["textGeneration"],
+            get orchestrationAdapter(): never {
+              throw new Error("Maintenance refresh must not open a provider runtime");
+            },
+            get textGeneration(): never {
+              throw new Error("Maintenance refresh must not generate provider text");
+            },
           }) satisfies ProviderInstance,
       );
       const expected =
@@ -7922,7 +8164,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("counts macOS reclaimable memory once and shares concurrent samples", () =>
     Effect.gen(function* () {
       const commandCalls = yield* Ref.make(0);
-      const hostResources = yield* HostResources.make().pipe(
+      const hostResources = yield* Layer.build(HostResources.layer).pipe(
+        Effect.map((context) => Context.get(context, HostResources.HostResources)),
         Effect.provideService(HostProcessPlatform, "darwin"),
         Effect.provide(
           Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({
@@ -7951,7 +8194,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();
       const commandCalls = yield* Ref.make(0);
-      const hostResources = yield* HostResources.make().pipe(
+      const hostResources = yield* Layer.build(HostResources.layer).pipe(
+        Effect.map((context) => Context.get(context, HostResources.HostResources)),
         Effect.provideService(HostProcessPlatform, "darwin"),
         Effect.provide(
           Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({
@@ -8743,7 +8987,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const wsUrl = yield* getWsServerUrl("/ws");
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+          client[WS_METHODS.projectsMutate]({
             type: "project.create",
             commandId: CommandId.make("cmd-project-create-missing-root"),
             projectId: ProjectId.make("project-create-missing-root"),
@@ -8754,13 +8998,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               instanceId: ProviderInstanceId.make("codex"),
               model: "gpt-5-codex",
             },
-            createdAt: "2026-01-01T00:00:00.000Z",
           }),
         ),
       );
       const stat = yield* fs.stat(missingWorkspaceRoot);
 
-      assert.isAtLeast(response.sequence, 0);
+      assert.equal(response.id, ProjectId.make("project-create-missing-root"));
       assert.equal(stat.type, "Directory");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -8769,28 +9012,23 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const parentDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-clone-" });
-      const destinationPath = path.join(parentDir, "t3code");
-      const projectId = ProjectId.make("project-clone-1");
-      const dispatched: Array<string> = [];
+      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-clone-" });
+      const destinationPath = path.join(parent, "repository");
+      const projectId = ProjectId.make("router:clone");
       const cloneGate = yield* Deferred.make<void>();
-      const metaUpdateDispatched = yield* Deferred.make<void>();
-
+      const updated = yield* Deferred.make<void>();
+      let projects!: ProjectService.ProjectService["Service"];
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                dispatched.push(command.type);
-                return { sequence: dispatched.length };
-              }).pipe(
-                Effect.tap(() =>
-                  command.type === "project.meta.update"
-                    ? Deferred.succeed(metaUpdateDispatched, undefined)
-                    : Effect.void,
-                ),
-              ),
-          },
+          onV2Services: (context) =>
+            Effect.sync(() => {
+              projects = Context.get(context, ProjectService.ProjectService);
+            }),
+          wrapProjectService: (service) => ({
+            ...service,
+            update: (input) =>
+              service.update(input).pipe(Effect.tap(() => Deferred.succeed(updated, undefined))),
+          }),
           sourceControlRepositoryService: {
             prepareClone: (input) =>
               Effect.succeed({
@@ -8810,55 +9048,37 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
           Effect.gen(function* () {
             const started = yield* client[WS_METHODS.projectCloneStart]({
               projectId,
-              title: "t3code",
+              title: "Clone",
               createdAt: "2026-01-01T00:00:00.000Z",
-              remoteUrl: "git@github.com:octocat/t3code.git",
+              remoteUrl: "https://example.invalid/synthetic.git",
               destinationPath,
             });
             assert.equal(started.cwd, destinationPath);
-            // The project exists before the clone finishes.
-            assert.deepEqual(dispatched, ["project.create"]);
-
-            const blocked = yield* Effect.flip(
-              client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-                type: "thread.create",
-                commandId: CommandId.make("cmd-thread-create-while-cloning"),
-                threadId: ThreadId.make("thread-while-cloning"),
-                projectId,
-                title: "Draft",
-                modelSelection: {
-                  instanceId: ProviderInstanceId.make("codex"),
-                  model: "gpt-5-codex",
-                },
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: null,
-                worktreePath: null,
-                createdAt: "2026-01-01T00:00:01.000Z",
-              }),
-            );
-            assert.include(String(blocked.message), "still being cloned");
-
+            assertTrue(Option.isSome(yield* projects.getById(projectId)));
+            const blocked = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+              ...routerLaunchInput("clone-blocked"),
+              projectId,
+            }).pipe(Effect.result);
+            assertTrue(blocked._tag === "Failure");
+            assert.include(JSON.stringify(blocked.failure), "still being cloned");
             const snapshots = yield* client[WS_METHODS.subscribeProjectClones]({}).pipe(
               Stream.takeUntil((clones) => clones[0]?.phase === "done"),
               Stream.runCollect,
               Effect.forkChild,
             );
-            yield* Effect.yieldNow;
             yield* Deferred.succeed(cloneGate, undefined);
-            const lists = yield* Fiber.join(snapshots);
-            assert.equal(lists.at(-1)?.[0]?.phase, "done");
-            // The finished clone refreshes the project so its repository
-            // identity updates. That hook runs after the done snapshot.
-            yield* Deferred.await(metaUpdateDispatched);
-            assert.deepEqual(dispatched, ["project.create", "project.meta.update"]);
+            assert.equal((yield* Fiber.join(snapshots)).at(-1)?.[0]?.phase, "done");
+            yield* Deferred.await(updated);
+            const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+              ...routerLaunchInput("clone-ready"),
+              projectId,
+            });
+            assert.equal(launched.projection.thread.projectId, projectId);
           }),
         ),
       );
@@ -8869,33 +9089,18 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const parentDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-clone-favicon-" });
-      const destinationPath = path.join(parentDir, "app");
-      const projectId = ProjectId.make("project-clone-favicon");
+      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-clone-icon-" });
+      const destinationPath = path.join(parent, "repository");
+      const projectId = ProjectId.make("router:clone-icon");
       const cloneGate = yield* Deferred.make<void>();
-      const metaUpdateDispatched = yield* Deferred.make<void>();
-
+      const updated = yield* Deferred.make<void>();
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            dispatch: (command) =>
-              (command.type === "project.meta.update"
-                ? Deferred.succeed(metaUpdateDispatched, undefined)
-                : Effect.void
-              ).pipe(Effect.as({ sequence: 1 })),
-          },
-          projectionSnapshotQuery: {
-            getActiveProjectByWorkspaceRoot: (workspaceRoot) =>
-              Effect.succeed(
-                workspaceRoot === destinationPath
-                  ? Option.some({
-                      ...makeDefaultOrchestrationReadModel().projects[0]!,
-                      id: projectId,
-                      workspaceRoot,
-                    })
-                  : Option.none(),
-              ),
-          },
+          wrapProjectService: (service) => ({
+            ...service,
+            update: (input) =>
+              service.update(input).pipe(Effect.tap(() => Deferred.succeed(updated, undefined))),
+          }),
           sourceControlRepositoryService: {
             prepareClone: (input) =>
               Effect.succeed({
@@ -8907,9 +9112,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             cloneRepository: (input) =>
               Deferred.await(cloneGate).pipe(
                 Effect.andThen(
-                  fs.writeFileString(path.join(input.destinationPath, "favicon.svg"), "<svg/>"),
+                  fs
+                    .writeFileString(path.join(input.destinationPath, "favicon.svg"), "<svg/>")
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new SourceControlRepositoryError({
+                            operation: "cloneRepository",
+                            provider: "unknown",
+                            detail: "Synthetic clone fixture could not create favicon",
+                            cause,
+                          }),
+                      ),
+                    ),
                 ),
-                Effect.orDie,
                 Effect.as({
                   cwd: input.destinationPath,
                   remoteUrl: input.remoteUrl ?? "",
@@ -8919,27 +9135,28 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
           Effect.gen(function* () {
             yield* client[WS_METHODS.projectCloneStart]({
               projectId,
-              title: "app",
+              title: "Clone",
               createdAt: "2026-01-01T00:00:00.000Z",
-              remoteUrl: "git@github.com:octocat/app.git",
+              remoteUrl: "https://example.invalid/synthetic.git",
               destinationPath,
             });
             const resource = { _tag: "project-favicon" as const, cwd: destinationPath };
-            const duringClone = yield* client[WS_METHODS.assetsCreateUrl]({ resource });
-            assert.isTrue(duringClone.relativeUrl.endsWith("/project-favicon-missing"));
-
+            assert.isTrue(
+              (yield* client[WS_METHODS.assetsCreateUrl]({ resource })).relativeUrl.endsWith(
+                "/project-favicon-missing",
+              ),
+            );
             yield* Deferred.succeed(cloneGate, undefined);
-            yield* Deferred.await(metaUpdateDispatched);
-            // The lookup during the clone must not leave a cached miss behind.
-            const afterClone = yield* client[WS_METHODS.assetsCreateUrl]({ resource });
-            assert.equal(afterClone.sourcePath, "favicon.svg");
+            yield* Deferred.await(updated);
+            assert.equal(
+              (yield* client[WS_METHODS.assetsCreateUrl]({ resource })).sourcePath,
+              "favicon.svg",
+            );
           }),
         ),
       );
@@ -8949,113 +9166,60 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("records thread analytics only after a client command succeeds", () =>
     Effect.gen(function* () {
       const effects: string[] = [];
-      const analyticsProperties: Array<Readonly<Record<string, unknown>> | undefined> = [];
-      const failedCommandId = CommandId.make("cmd-thread-create-failed");
-
+      const properties: Array<Readonly<Record<string, unknown>> | undefined> = [];
+      let dispatch!: ThreadManagement.ThreadManagementService["Service"]["dispatch"];
       yield* buildAppUnderTest({
         layers: {
-          analyticsService: {
-            record: (event, properties) =>
-              Effect.sync(() => {
-                effects.push(`analytics:${event}`);
-                analyticsProperties.push(properties);
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              dispatch = Context.get(context, Orchestrator.OrchestratorV2).dispatch;
+            }),
+          threadManagement: {
+            dispatch: (command) =>
+              Effect.gen(function* () {
+                effects.push("dispatch:" + command.commandId);
+                return yield* dispatch(command);
               }),
           },
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => effects.push(`dispatch:${command.commandId}`)).pipe(
-                Effect.flatMap(() =>
-                  command.commandId === failedCommandId
-                    ? Effect.fail(
-                        new PersistenceSqlError({
-                          operation: "OrchestrationEventStore.append:query",
-                          detail: "thread creation failed",
-                        }),
-                      )
-                    : Effect.succeed({ sequence: 1 }),
-                ),
-              ),
+          analyticsService: {
+            record: (event, props) =>
+              Effect.sync(() => {
+                effects.push("analytics:" + event);
+                properties.push(props);
+              }),
           },
         },
       });
-
-      const createThreadCommand = (commandId: CommandId, threadId: ThreadId) =>
-        ({
-          type: "thread.create",
-          commandId,
-          threadId,
-          projectId: defaultProjectId,
-          title: "Analytics test",
-          modelSelection: defaultModelSelection,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-          createdAt: "2026-01-01T00:00:00.000Z",
-        }) as const;
-
       const wsUrl = yield* getWsServerUrl(
         "/ws?clientSurface=mobile&clientAppVersion=1.2.3&clientDeviceType=phone&clientOs=iOS&clientOsMajorVersion=18&clientDeviceModel=iPhone+15+Pro&connectionMethod=relay",
       );
       yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           Effect.gen(function* () {
-            const failed = yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](
-              createThreadCommand(failedCommandId, ThreadId.make("thread-create-failed")),
-            ).pipe(Effect.result);
-
+            const failed = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+              ...routerMessageDispatch("analytics-failed"),
+              threadId: ThreadId.make("missing-analytics-thread"),
+            }).pipe(Effect.result);
             assert.equal(failed._tag, "Failure");
-            assert.deepEqual(effects, [
-              "analytics:client.connected",
-              "dispatch:cmd-thread-create-failed",
-            ]);
-
-            const succeeded = yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](
-              createThreadCommand(
-                CommandId.make("cmd-thread-create-succeeded"),
-                ThreadId.make("thread-create-succeeded"),
-              ),
+            assert.isFalse(effects.includes("analytics:client.turn.requested"));
+            const accepted = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+              routerMessageDispatch("analytics-accepted"),
             );
-
-            assert.equal(succeeded.sequence, 1);
+            assert.isAbove(accepted.sequence, 0);
           }),
         ),
       );
-
       assert.deepEqual(effects, [
         "analytics:client.connected",
-        "dispatch:cmd-thread-create-failed",
-        "dispatch:cmd-thread-create-succeeded",
-        "analytics:client.thread.started",
+        "dispatch:router:message:analytics-failed",
+        "dispatch:router:message:analytics-accepted",
+        "analytics:client.turn.requested",
       ]);
-      assert.deepEqual(analyticsProperties, [
-        {
-          surface: "mobile",
-          appVersion: "1.2.3",
-          clientAppVersion: "1.2.3",
-          clientOs: "iOS",
-          os: "iOS",
-          clientDeviceType: "phone",
-          osMajorVersion: 18,
-          clientOsMajorVersion: 18,
-          deviceModel: "iPhone 15 Pro",
-          clientDeviceModel: "iPhone 15 Pro",
-          connectionMethod: "relay",
-        },
-        {
-          surface: "mobile",
-          appVersion: "1.2.3",
-          clientAppVersion: "1.2.3",
-          clientOs: "iOS",
-          os: "iOS",
-          clientDeviceType: "phone",
-          osMajorVersion: 18,
-          clientOsMajorVersion: 18,
-          deviceModel: "iPhone 15 Pro",
-          clientDeviceModel: "iPhone 15 Pro",
-          connectionMethod: "relay",
-        },
-      ]);
+      assert.deepEqual(properties[0], properties[1]);
+      assert.equal(properties[1]?.surface, "mobile");
+      assert.equal(properties[1]?.clientDeviceModel, "iPhone 15 Pro");
+      assert.equal(properties[1]?.connectionMethod, "relay");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -9072,9 +9236,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             record: (event, properties) =>
               Effect.sync(() => analyticsEvents.push({ event, properties })),
           },
-          orchestrationEngine: {
-            dispatch: () => Effect.succeed({ sequence: 1 }),
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterProject(context);
+              const threads = Context.get(context, ThreadManagement.ThreadManagementService);
+              yield* threads.dispatch(routerThreadCreate(ThreadId.make("thread-web")));
+              yield* threads.dispatch(routerThreadCreate(ThreadId.make("thread-mobile")));
+            }),
         },
       });
 
@@ -9084,28 +9252,27 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const mobileUrl = yield* getWsServerUrl(
         "/ws?clientSurface=mobile&clientAppVersion=3.0.0&clientDeviceType=tablet&clientOs=Android&clientOsMajorVersion=15&clientDeviceModel=Pixel+Tablet&connectionMethod=relay",
       );
-      const turnCommand = (client: string) => ({
-        type: "thread.turn.start" as const,
+      const turnCommand = (
+        client: string,
+      ): Extract<OrchestrationV2Command, { type: "message.dispatch" }> => ({
+        ...routerMessageDispatch("telemetry-" + client),
+
         commandId: CommandId.make(`cmd-${client}-turn`),
         threadId: ThreadId.make(`thread-${client}`),
-        message: {
-          messageId: MessageId.make(`message-${client}`),
-          role: "user" as const,
-          text: "hello",
-          attachments: [],
-        },
+        messageId: MessageId.make(`message-${client}`),
+        text: "hello",
+        attachments: [],
         modelSelection: defaultModelSelection,
-        runtimeMode: "full-access" as const,
-        interactionMode: "default" as const,
-        createdAt: "2026-01-01T00:00:00.000Z",
       });
 
       yield* Effect.scoped(
         withWsRpcClient(webUrl, (webClient) =>
           withWsRpcClient(mobileUrl, (mobileClient) =>
             Effect.gen(function* () {
-              yield* mobileClient[ORCHESTRATION_WS_METHODS.dispatchCommand](turnCommand("mobile"));
-              yield* webClient[ORCHESTRATION_WS_METHODS.dispatchCommand](turnCommand("web"));
+              yield* mobileClient[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+                turnCommand("mobile"),
+              );
+              yield* webClient[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](turnCommand("web"));
             }),
           ),
         ),
@@ -9957,81 +10124,25 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("routes websocket rpc orchestration methods", () =>
     Effect.gen(function* () {
-      const now = "2026-01-01T00:00:00.000Z";
-      const snapshot = {
-        snapshotSequence: 1,
-        updatedAt: now,
-        projects: [
-          {
-            id: ProjectId.make("project-a"),
-            title: "Project A",
-            workspaceRoot: "/tmp/project-a",
-            defaultModelSelection,
-            scripts: [],
-            createdAt: now,
-            updatedAt: now,
-            deletedAt: null,
-          },
-        ],
-        threads: [
-          {
-            id: ThreadId.make("thread-1"),
-            projectId: ProjectId.make("project-a"),
-            title: "Thread A",
-            modelSelection: defaultModelSelection,
-            interactionMode: "default" as const,
-            runtimeMode: "full-access" as const,
-            branch: null,
-            worktreePath: null,
-            pullRequests: [],
-            createdAt: now,
-            updatedAt: now,
-            archivedAt: null,
-            settledOverride: null,
-            settledAt: null,
-            latestTurn: null,
-            messages: [],
-            session: null,
-            activities: [],
-            proposedPlans: [],
-            checkpoints: [],
-            deletedAt: null,
-          },
-        ],
-      };
-
+      let threads!: ThreadManagement.ThreadManagementService["Service"];
       yield* buildAppUnderTest({
         layers: {
-          projectionSnapshotQuery: {
-            getSnapshot: () => Effect.succeed(snapshot),
-            searchThreads: () =>
-              Effect.succeed({
-                matches: [
-                  {
-                    threadId: ThreadId.make("thread-1"),
-                    projectId: ProjectId.make("project-a"),
-                    source: "assistant",
-                    snippet: "Search reached the final response.",
-                    messageCreatedAt: now,
-                  },
-                ],
-              }),
-          },
-          orchestrationEngine: {
-            dispatch: () => Effect.succeed({ sequence: 7 }),
-            readEvents: () => Stream.empty,
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              threads = Context.get(context, ThreadManagement.ThreadManagementService);
+            }),
           checkpointDiffQuery: {
             getTurnDiff: () =>
               Effect.succeed({
-                threadId: ThreadId.make("thread-1"),
+                threadId: defaultThreadId,
                 fromTurnCount: 0,
                 toTurnCount: 1,
                 diff: "turn-diff",
               }),
             getFullThreadDiff: () =>
               Effect.succeed({
-                threadId: ThreadId.make("thread-1"),
+                threadId: defaultThreadId,
                 fromTurnCount: 0,
                 toTurnCount: 1,
                 diff: "full-diff",
@@ -10039,358 +10150,89 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
         },
       });
-
       const wsUrl = yield* getWsServerUrl("/ws");
-      const dispatchResult = yield* Effect.scoped(
+      yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.session.stop",
-            commandId: CommandId.make("cmd-1"),
-            threadId: ThreadId.make("thread-1"),
-            createdAt: now,
+          Effect.gen(function* () {
+            const accepted = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+              type: "thread.metadata.update",
+              commandId: CommandId.make("router:rename"),
+              threadId: defaultThreadId,
+              title: "RPC persisted title",
+            });
+            assert.isAbove(accepted.sequence, 0);
+            yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+              ...routerMessageDispatch("search"),
+              text: "Search reached the final response.",
+            });
+            const matches = yield* client[ORCHESTRATION_V2_WS_METHODS.searchThreads]({
+              query: "final response",
+            });
+            assert.equal(matches.matches[0]?.threadId, defaultThreadId);
+            assert.equal(matches.matches[0]?.source, "user");
+            assert.include(matches.matches[0]?.snippet ?? "", "final response");
+            const projection = yield* client[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+              threadId: defaultThreadId,
+            });
+            assert.equal(projection.thread.title, "RPC persisted title");
+            assert.equal(
+              (yield* threads.getThreadProjection(defaultThreadId)).thread.title,
+              "RPC persisted title",
+            );
+            const shell = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+              requestCompletionMarker: true,
+            }).pipe(Stream.runHead);
+            assertTrue(Option.isSome(shell) && shell.value.kind === "snapshot");
+            if (Option.isSome(shell) && shell.value.kind === "snapshot")
+              assert.equal(shell.value.snapshot.threads[0]?.id, defaultThreadId);
+            assert.equal(
+              (yield* client[ORCHESTRATION_V2_WS_METHODS.getTurnDiff]({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 1,
+              })).diff,
+              "turn-diff",
+            );
+            assert.equal(
+              (yield* client[ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff]({
+                threadId: defaultThreadId,
+                toTurnCount: 1,
+              })).diff,
+              "full-diff",
+            );
           }),
         ),
       );
-      assert.equal(dispatchResult.sequence, 7);
-
-      const turnDiffResult = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.getTurnDiff]({
-            threadId: ThreadId.make("thread-1"),
-            fromTurnCount: 0,
-            toTurnCount: 1,
-          }),
-        ),
-      );
-      assert.equal(turnDiffResult.diff, "turn-diff");
-
-      const fullDiffResult = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.getFullThreadDiff]({
-            threadId: ThreadId.make("thread-1"),
-            toTurnCount: 1,
-          }),
-        ),
-      );
-      assert.equal(fullDiffResult.diff, "full-diff");
-
-      const searchResult = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.searchThreads]({
-            query: "final response",
-          }),
-        ),
-      );
-      assert.deepEqual(searchResult.matches, [
-        {
-          threadId: ThreadId.make("thread-1"),
-          projectId: ProjectId.make("project-a"),
-          source: "assistant",
-          snippet: "Search reached the final response.",
-          messageCreatedAt: now,
-        },
-      ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("routes websocket rpc orchestration shell snapshot errors", () =>
     Effect.gen(function* () {
-      const projectionError = new PersistenceSqlError({
-        operation: "ProjectionSnapshotQuery.getShellSnapshot:test",
-        detail: "failed to read projection shell snapshot",
+      const cause = new Orchestrator.OrchestratorProjectionError({
+        threadId: defaultThreadId,
+        cause: new Error("synthetic shell read failure"),
       });
       yield* buildAppUnderTest({
-        layers: {
-          projectionSnapshotQuery: {
-            getShellSnapshot: () => Effect.fail(projectionError),
-          },
-        },
+        layers: { threadManagement: { getShellSnapshot: () => Effect.fail(cause) } },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const result = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(Stream.runCollect),
-        ).pipe(Effect.result),
-      );
-
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}).pipe(Stream.runCollect),
+        ),
+      ).pipe(Effect.result);
       assertTrue(result._tag === "Failure");
-      assertTrue(result.failure._tag === "OrchestrationGetSnapshotError");
-      assertTrue(result.failure.cause instanceof Error);
-      assert.include(result.failure.cause.message, projectionError.message);
+      assert.equal(result.failure._tag, "OrchestrationV2GetShellSnapshotError");
+      assert.include(JSON.stringify(result.failure), "synthetic shell read failure");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("marks an empty shell catch-up replay as synchronized when requested", () =>
     Effect.gen(function* () {
-      yield* buildAppUnderTest({
-        layers: {
-          orchestrationEngine: {
-            readEvents: () => Stream.empty,
-          },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const firstItem = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+      yield* buildAppUnderTest();
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
             afterSequence: 0,
-            requestCompletionMarker: true,
-          }).pipe(Stream.runHead),
-        ),
-      );
-
-      assert.deepEqual(Option.getOrThrow(firstItem), { kind: "synchronized" });
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  for (const reasoningMessages of [undefined, true] as const) {
-    it.effect(`preserves reasoning wire compatibility with opt-in ${reasoningMessages}`, () =>
-      Effect.gen(function* () {
-        const message = {
-          id: MessageId.make("thinking-compatibility"),
-          role: "reasoning" as const,
-          text: "Checking the available evidence.",
-          turnId: null,
-          streaming: false,
-          createdAt: "2026-01-01T00:00:01.000Z",
-          updatedAt: "2026-01-01T00:00:01.000Z",
-        };
-        const thread = { ...makeDefaultOrchestrationReadModel().threads[0]!, messages: [message] };
-        const event = {
-          sequence: 2,
-          eventId: EventId.make("thinking-compatibility-event"),
-          aggregateKind: "thread" as const,
-          aggregateId: defaultThreadId,
-          occurredAt: message.createdAt,
-          commandId: null,
-          causationEventId: null,
-          correlationId: null,
-          metadata: {},
-          type: "thread.message-sent" as const,
-          payload: {
-            messageId: message.id,
-            threadId: defaultThreadId,
-            role: message.role,
-            text: message.text,
-            turnId: message.turnId,
-            streaming: message.streaming,
-            createdAt: message.createdAt,
-            updatedAt: message.updatedAt,
-          },
-        } satisfies OrchestrationEvent;
-        const answer = {
-          ...event,
-          sequence: 3,
-          eventId: EventId.make("thinking-answer-event"),
-          payload: {
-            ...event.payload,
-            messageId: MessageId.make("thinking-answer"),
-            role: "assistant" as const,
-            text: "Here is the answer.",
-          },
-        };
-        const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
-        yield* buildAppUnderTest({
-          layers: {
-            orchestrationEngine: {
-              streamDomainEvents: Stream.fromPubSub(liveEvents),
-              latestSequence: Effect.succeed(3),
-              getThreadReplayStats: () =>
-                Effect.succeed({ eventCount: 2, payloadBytes: 200, hasCreateEvent: false }),
-              readThreadEvents: () => Stream.make(event, answer),
-            },
-            projectionSnapshotQuery: {
-              getThreadDetailSnapshot: () =>
-                Effect.gen(function* () {
-                  yield* PubSub.publishAll(liveEvents, [event, answer]);
-                  return Option.some({
-                    snapshotSequence: 1,
-                    thread,
-                    page: {
-                      beforeCursor: null,
-                      hasMore: false,
-                      snapshotSequence: 1,
-                      threadSequence: 2,
-                    },
-                  });
-                }),
-            },
-          },
-        });
-        const role = reasoningMessages ? "reasoning" : "system";
-        const response = yield* fetchEffect(
-          yield* getHttpServerUrl(
-            `/api/orchestration/threads/${defaultThreadId}?turnLimit=1${reasoningMessages ? "&reasoningMessages=true" : ""}`,
-          ),
-          { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
-        );
-        const httpSnapshot = yield* responseJsonEffect<OrchestrationThreadDetailSnapshot>(response);
-        assert.equal(response.status, 200);
-        assert.deepEqual(httpSnapshot.thread.messages, [{ ...message, role }]);
-        assert.equal(httpSnapshot.page?.threadSequence, 2);
-        const wsUrl = yield* getWsServerUrl("/ws");
-        for (const afterSequence of [undefined, 1]) {
-          const items = yield* Effect.scoped(
-            withWsRpcClient(wsUrl, (client) =>
-              client[ORCHESTRATION_WS_METHODS.subscribeThread]({
-                threadId: defaultThreadId,
-                requestCompletionMarker: true,
-                ...(reasoningMessages ? { reasoningMessages } : {}),
-                ...(afterSequence !== undefined ? { afterSequence } : {}),
-              }).pipe(
-                Stream.takeUntil((item) => item.kind === "synchronized"),
-                Stream.runCollect,
-              ),
-            ),
-          );
-          if (afterSequence === undefined) {
-            const first = items[0];
-            assertTrue(first?.kind === "snapshot");
-            assert.deepEqual(first.snapshot.thread.messages, [{ ...message, role }]);
-            assert.equal(first.snapshot.page?.threadSequence, 2);
-          }
-          const events = items.filter((item) => item.kind === "event");
-          assert.equal(events.length, 2);
-          assert.deepEqual(events[0]?.event, { ...event, payload: { ...event.payload, role } });
-          assert.deepEqual(events[1]?.event, answer);
-          assert.deepEqual(items.at(-1), { kind: "synchronized" });
-        }
-        assert.equal(message.role, "reasoning");
-        assert.equal(event.payload.role, "reasoning");
-      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-    );
-  }
-
-  it.effect("marks a socket thread snapshot as synchronized when requested", () =>
-    Effect.gen(function* () {
-      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-      yield* buildAppUnderTest({
-        layers: {
-          projectionSnapshotQuery: {
-            getThreadDetailSnapshot: () => Effect.succeedSome({ snapshotSequence: 1, thread }),
-          },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
-            threadId: defaultThreadId,
-            requestCompletionMarker: true,
-          }).pipe(Stream.take(2), Stream.runCollect),
-        ),
-      );
-
-      assert.equal(items[0]?.kind, "snapshot");
-      assert.deepEqual(items[1], { kind: "synchronized" });
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("buffers shell events published while the fallback snapshot loads", () =>
-    Effect.gen(function* () {
-      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
-      const deletedEvent = {
-        sequence: 2,
-        eventId: EventId.make("event-shell-thread-deleted"),
-        aggregateKind: "thread",
-        aggregateId: defaultThreadId,
-        occurredAt: "2026-01-01T00:00:01.000Z",
-        commandId: null,
-        causationEventId: null,
-        correlationId: null,
-        metadata: {},
-        type: "thread.deleted",
-        payload: {
-          threadId: defaultThreadId,
-          deletedAt: "2026-01-01T00:00:01.000Z",
-        },
-      } satisfies Extract<OrchestrationEvent, { type: "thread.deleted" }>;
-
-      yield* buildAppUnderTest({
-        layers: {
-          orchestrationEngine: {
-            streamDomainEvents: Stream.fromPubSub(liveEvents),
-          },
-          projectionSnapshotQuery: {
-            getShellSnapshot: () =>
-              Effect.gen(function* () {
-                yield* PubSub.publish(liveEvents, deletedEvent);
-                return {
-                  snapshotSequence: 1,
-                  projects: [],
-                  threads: [makeDefaultOrchestrationThreadShell()],
-                  updatedAt: "2026-01-01T00:00:00.000Z",
-                };
-              }),
-          },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
-            requestCompletionMarker: true,
-          }).pipe(Stream.take(3), Stream.runCollect),
-        ),
-      ).pipe(Effect.timeout("2 seconds"));
-
-      assert.equal(items[0]?.kind, "snapshot");
-      assert.equal(items[1]?.kind, "thread-removed");
-      assert.deepEqual(items[2], { kind: "synchronized" });
-    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
-  );
-
-  it.effect("buffers thread events published while the initial snapshot loads", () =>
-    Effect.gen(function* () {
-      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
-      const messageEvent = {
-        sequence: 2,
-        eventId: EventId.make("event-message"),
-        aggregateKind: "thread",
-        aggregateId: defaultThreadId,
-        occurredAt: "2026-01-01T00:00:01.000Z",
-        commandId: null,
-        causationEventId: null,
-        correlationId: null,
-        metadata: {},
-        type: "thread.message-sent",
-        payload: {
-          threadId: defaultThreadId,
-          messageId: MessageId.make("message-1"),
-          role: "user",
-          text: "First message",
-          turnId: null,
-          streaming: false,
-          createdAt: "2026-01-01T00:00:01.000Z",
-          updatedAt: "2026-01-01T00:00:01.000Z",
-        },
-      } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
-
-      yield* buildAppUnderTest({
-        layers: {
-          orchestrationEngine: {
-            streamDomainEvents: Stream.fromPubSub(liveEvents),
-          },
-          projectionSnapshotQuery: {
-            getThreadDetailSnapshot: () =>
-              Effect.gen(function* () {
-                yield* PubSub.publish(liveEvents, messageEvent);
-                return Option.some({ snapshotSequence: 1, thread });
-              }),
-          },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
-            threadId: defaultThreadId,
             requestCompletionMarker: true,
           }).pipe(
             Stream.takeUntil((item) => item.kind === "synchronized"),
@@ -10398,359 +10240,397 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           ),
         ),
       );
+      assert.deepEqual(items.at(-1), { kind: "synchronized" });
+      assert.isFalse(
+        items.some((item) => item.kind === "thread.updated" || item.kind === "thread.removed"),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
+  for (const reasoningMessages of [undefined, true] as const) {
+    it.effect(`preserves reasoning wire compatibility with opt-in ${reasoningMessages}`, () =>
+      Effect.gen(function* () {
+        yield* buildAppUnderTest({
+          layers: {
+            onV2Services: (context) =>
+              Effect.gen(function* () {
+                yield* seedRouterThread(context);
+                const tool = routerTurnItem(1);
+                const {
+                  input: _input,
+                  output: _output,
+                  exitCode: _exit,
+                  outputIndicatesFailure: _failed,
+                  ...base
+                } = tool;
+                yield* writeRouterItems(context, [
+                  {
+                    ...base,
+                    type: "reasoning",
+                    text: "Checking the available evidence.",
+                    streaming: false,
+                  },
+                ]);
+              }),
+          },
+        });
+        const response = yield* fetchEffect(
+          yield* getHttpServerUrl(
+            "/api/orchestration/threads/" +
+              defaultThreadId +
+              (reasoningMessages ? "?reasoningMessages=true" : ""),
+          ),
+          {
+            headers: { cookie: yield* getAuthenticatedSessionCookieHeader() },
+          },
+        );
+        assert.equal(response.status, 200);
+        const snapshot = yield* responseJsonEffect<{
+          projection: { turnItems: ReadonlyArray<{ type: string; text?: string }> };
+        }>(response);
+        assert.equal(snapshot.projection.turnItems[0]?.type, "reasoning");
+        assert.equal(snapshot.projection.turnItems[0]?.text, "Checking the available evidence.");
+        const first = yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: defaultThreadId }).pipe(
+              Stream.runHead,
+            ),
+          ),
+        );
+        assertTrue(Option.isSome(first) && first.value.kind === "snapshot");
+        if (Option.isSome(first) && first.value.kind === "snapshot")
+          assert.equal(first.value.projection.turnItems[0]?.type, "reasoning");
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+  }
+
+  it.effect("marks a socket thread snapshot as synchronized when requested", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: { onV2Services: (context) => seedRouterThread(context).pipe(Effect.asVoid) },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+      assertTrue(items[0]?.kind === "snapshot");
+      if (items[0]?.kind === "snapshot")
+        assert.equal(items[0].projection.thread.id, defaultThreadId);
+      assert.deepEqual(items[1], { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("buffers shell events published while the fallback snapshot loads", () =>
+    Effect.gen(function* () {
+      let snapshot!: Effect.Success<
+        ReturnType<ThreadManagement.ThreadManagementService["Service"]["getShellSnapshot"]>
+      >;
+      let events!: OrchestrationEventStore["Service"];
+      let removed!: ReadonlyArray<OrchestrationV2StoredEvent>;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              const threads = Context.get(context, Orchestrator.OrchestratorV2);
+              snapshot = yield* threads.getShellSnapshot({ location: "active" });
+              events = Context.get(context, OrchestrationEventStore);
+              removed = (yield* threads.dispatch({
+                type: "thread.delete",
+                commandId: CommandId.make("router:delete-race"),
+                threadId: defaultThreadId,
+              })).storedEvents;
+            }),
+          threadManagement: {
+            getShellSnapshot: () => events.publishCommitted(removed).pipe(Effect.as(snapshot)),
+          },
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "thread.removed"),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
       assert.equal(items[0]?.kind, "snapshot");
-      assert.equal(items[1]?.kind, "event");
-      assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 2);
-      assert.equal(items[2]?.kind, "synchronized");
+      const removal = items.find((item) => item.kind === "thread.removed");
+      assertTrue(removal?.kind === "thread.removed");
+      assert.equal(removal.threadId, defaultThreadId);
+      assert.isTrue(items.some((item) => item.kind === "synchronized"));
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("buffers thread events published while the initial snapshot loads", () =>
+    Effect.gen(function* () {
+      let context!: Context.Context<RouterV2Services>;
+      let eventSequence = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            getThreadSnapshot: (threadId) =>
+              service.getThreadSnapshot(threadId).pipe(
+                Effect.tap(() =>
+                  writeRouterItems(context, [routerTurnItem(1)]).pipe(
+                    Effect.mapError(
+                      (cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause }),
+                    ),
+                    Effect.tap((events) =>
+                      Effect.sync(() => {
+                        eventSequence = events[0]!.sequence;
+                      }),
+                    ),
+                  ),
+                ),
+              ),
+          }),
+        },
+      });
+      const items = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      );
+      assert.deepEqual(
+        items.map((item) => item.kind),
+        ["snapshot", "synchronized", "event"],
+      );
+      assertTrue(items[2]?.kind === "event");
+      assert.equal(items[2].sequence, eventSequence);
+      assert.equal(items[2].event.type, "turn-item.updated");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   for (const subscription of ["thread", "shell"] as const) {
     it.effect("delivers large raw tool results through the " + subscription + " stream", () =>
       Effect.gen(function* () {
-        const eventThreadId =
-          subscription === "thread" ? defaultThreadId : ThreadId.make("other-live-thread");
-        const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-        const baseEvent = makeLiveToolActivityEvent(2, "tool.completed");
-        const event: OrchestrationEvent = {
-          ...baseEvent,
-          aggregateId: eventThreadId,
-          payload: {
-            threadId: eventThreadId,
-            activity: {
-              ...baseEvent.payload.activity,
-              summary: "Build complete",
-              payload: {
-                itemType: "command_execution",
-                toolCallId: "call-build",
-                status: "completed",
-                title: "Build complete",
-                data: {
-                  item: {
-                    command: "build",
-                    aggregatedOutput: "Build complete\n" + "x".repeat(9 * 1024 * 1024),
-                  },
-                },
-              },
-            },
-          },
-        };
+        const output = "Build complete\n" + "x".repeat(9 * 1024 * 1024);
+        let afterSequence = 0;
+        let threads!: ThreadManagement.ThreadManagementService["Service"];
         yield* buildAppUnderTest({
           layers: {
-            orchestrationEngine: {
-              streamDomainEvents: Stream.concat(Stream.make(event), Stream.never),
-            },
-            projectionSnapshotQuery: {
-              getThreadDetailSnapshot: () => Effect.succeedSome({ snapshotSequence: 1, thread }),
-              getThreadShellById: (threadId) =>
-                Effect.succeedSome({
-                  ...makeDefaultOrchestrationThreadShell(),
-                  id: threadId,
-                  title: "Build complete",
-                }),
-            },
+            onV2Services: (context) =>
+              Effect.gen(function* () {
+                yield* seedRouterThread(context);
+                threads = Context.get(context, ThreadManagement.ThreadManagementService);
+                afterSequence = (yield* threads.getThreadSnapshot(defaultThreadId))
+                  .snapshotSequence;
+                yield* writeRouterItems(context, [routerTurnItem(1, { output })]);
+              }),
           },
         });
-
-        const wsUrl = yield* getWsServerUrl("/ws");
-        const items =
-          subscription === "thread"
-            ? yield* Effect.scoped(
-                withWsRpcClient(wsUrl, (client) =>
-                  client[ORCHESTRATION_WS_METHODS.subscribeThread]({
-                    threadId: defaultThreadId,
-                    requestCompletionMarker: true,
-                  }).pipe(
-                    Stream.takeUntil((item) => item.kind === "synchronized"),
-                    Stream.runCollect,
+        const items = yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            (subscription === "thread"
+              ? client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                  threadId: defaultThreadId,
+                  afterSequence,
+                  requestCompletionMarker: true,
+                }).pipe(
+                  Stream.map(
+                    (item): OrchestrationV2ThreadStreamItem | OrchestrationV2ShellStreamItem =>
+                      item,
                   ),
-                ),
-              )
-            : yield* Effect.scoped(
-                withWsRpcClient(wsUrl, (client) =>
-                  client[ORCHESTRATION_WS_METHODS.subscribeShell]({
-                    requestCompletionMarker: true,
-                  }).pipe(
-                    Stream.takeUntil((item) => item.kind === "synchronized"),
-                    Stream.runCollect,
+                )
+              : client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+                  afterSequence,
+                  requestCompletionMarker: true,
+                }).pipe(
+                  Stream.map(
+                    (item): OrchestrationV2ThreadStreamItem | OrchestrationV2ShellStreamItem =>
+                      item,
                   ),
-                ),
-              );
-
-        assert.equal(items[0]?.kind, "snapshot");
-        const update = items[1];
-        if (subscription === "thread") {
-          assertTrue(update?.kind === "event" && update.event.type === "thread.activity-appended");
-          assert.equal(update.event.sequence, 2);
-          assert.deepEqual(update.event.payload.activity.payload, {
-            itemType: "command_execution",
-            toolCallId: "call-build",
-            status: "completed",
-            title: "Build complete",
-            data: { item: { command: "build", aggregatedOutput: "Build complete" } },
-          });
-        } else {
-          assertTrue(update?.kind === "thread-upserted");
-          assert.equal(update.sequence, 2);
-          assert.equal(update.thread.id, eventThreadId);
-          assert.equal(update.thread.title, "Build complete");
-        }
-        assert.deepEqual(items[2], { kind: "synchronized" });
+                )
+            ).pipe(
+              Stream.takeUntil((item) => item.kind === "synchronized"),
+              Stream.runCollect,
+            ),
+          ),
+        );
+        assert.deepEqual(items.at(-1), { kind: "synchronized" });
+        assert.isBelow(Buffer.byteLength(JSON.stringify(items)), 128 * 1024);
+        assert.isFalse(JSON.stringify(items).includes(output));
+        assert.isTrue(items.some((item) => item.kind === "snapshot"));
+        const persisted = (yield* threads.getThreadProjection(defaultThreadId)).turnItems[0];
+        assertTrue(persisted?.type === "command_execution");
+        assert.equal(persisted.output, output);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
     );
   }
 
   it.effect("coalesces buffered live tool updates to the latest state", () =>
     Effect.gen(function* () {
-      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
-
+      let snapshot!: Effect.Success<
+        ReturnType<ThreadManagement.ThreadManagementService["Service"]["getThreadSnapshot"]>
+      >;
+      let lastSequence = 0;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            streamDomainEvents: Stream.fromPubSub(liveEvents),
-          },
-          projectionSnapshotQuery: {
-            getThreadDetailSnapshot: () =>
-              Effect.gen(function* () {
-                yield* Effect.sleep("25 millis");
-                yield* PubSub.publishAll(liveEvents, [
-                  makeLiveToolActivityEvent(2),
-                  makeLiveToolActivityEvent(3),
-                  makeLiveToolActivityEvent(4),
-                ]);
-                return Option.some({ snapshotSequence: 1, thread });
-              }),
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              snapshot = yield* Context.get(context, Orchestrator.OrchestratorV2).getThreadSnapshot(
+                defaultThreadId,
+              );
+              const written = yield* writeRouterItems(
+                context,
+                [1, 2, 3].map((version) =>
+                  routerTurnItem(1, {
+                    status: "running",
+                    completedAt: null,
+                    output: String(version),
+                  }),
+                ),
+              );
+              lastSequence = written.at(-1)!.sequence;
+            }),
+          threadManagement: { getThreadSnapshot: () => Effect.succeed(snapshot) },
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
-            threadId: defaultThreadId,
-          }).pipe(Stream.take(2), Stream.runCollect),
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: defaultThreadId }).pipe(
+            Stream.take(2),
+            Stream.runCollect,
+          ),
         ),
       ).pipe(Effect.timeout("2 seconds"));
-
       assert.equal(items[0]?.kind, "snapshot");
-      assert.equal(items[1]?.kind, "event");
-      assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 4);
+      assertTrue(items[1]?.kind === "event");
+      assert.equal(items[1].sequence, lastSequence);
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
   it.effect("flushes more than one tool chunk before the synchronization marker", () =>
     Effect.gen(function* () {
-      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
-
-      yield* buildAppUnderTest({
-        layers: {
-          orchestrationEngine: {
-            streamDomainEvents: Stream.fromPubSub(liveEvents),
-          },
-          projectionSnapshotQuery: {
-            getThreadDetailSnapshot: () =>
-              Effect.gen(function* () {
-                yield* Effect.sleep("25 millis");
-                yield* PubSub.publishAll(liveEvents, [
-                  ...Array.from({ length: 512 }, (_, index) =>
-                    makeLiveToolActivityEvent(index + 2),
-                  ),
-                  makeLiveToolActivityEvent(514, "tool.updated", {
-                    toolCallId: "call-read",
-                    title: "Reading server.test.ts",
-                    path: "apps/server/src/server.test.ts",
-                  }),
-                ]);
-                return Option.some({ snapshotSequence: 1, thread });
-              }),
-          },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
-            threadId: defaultThreadId,
-            requestCompletionMarker: true,
-          }).pipe(Stream.take(4), Stream.runCollect),
-        ),
-      ).pipe(Effect.timeout("2 seconds"));
-
-      assert.equal(items[0]?.kind, "snapshot");
-      assert.deepEqual(
-        items.slice(1, 3).map((item) => {
-          assert.equal(item?.kind, "event");
-          if (item?.kind !== "event" || item.event.type !== "thread.activity-appended") {
-            return null;
-          }
-          return {
-            sequence: item.event.sequence,
-            summary: item.event.payload.activity.summary,
-            payload: item.event.payload.activity.payload,
-          };
+      const coalescer = yield* makeThreadLiveEventCoalescer();
+      const events: Array<Extract<OrchestrationV2ThreadStreamItem, { kind: "event" }>> = Array.from(
+        { length: 514 },
+        (_, index) => ({
+          kind: "event",
+          sequence: index + 1,
+          event: routerItemEvent(routerTurnItem(index, { status: "running", completedAt: null })),
         }),
-        [
-          {
-            sequence: 513,
-            summary: "Editing app.ts",
-            payload: {
-              itemType: "file_change",
-              title: "Editing app.ts",
-              data: {
-                files: [{ path: "src/app.ts" }],
-                toolCallId: "call-edit",
-              },
-            },
-          },
-          {
-            sequence: 514,
-            summary: "Reading server.test.ts",
-            payload: {
-              itemType: "file_change",
-              title: "Reading server.test.ts",
-              data: {
-                files: [{ path: "apps/server/src/server.test.ts" }],
-                toolCallId: "call-read",
-              },
-            },
-          },
-        ],
       );
-      assert.deepEqual(items[3], { kind: "synchronized" });
-    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+      yield* coalescer.offerAll([...events, { kind: "synchronized" }]);
+      const items = yield* coalescer.stream.pipe(
+        Stream.takeUntil((item) => item.kind === "synchronized"),
+        Stream.runCollect,
+      );
+      assert.equal(items.filter((item) => item.kind === "event").length, 514);
+      assert.deepEqual(items.at(-1), { kind: "synchronized" });
+      assert.deepEqual(
+        items.flatMap((item) => (item.kind === "event" ? [item.sequence] : [])),
+        events.map((event) => event.sequence),
+      );
+    }).pipe(Effect.scoped),
   );
 
   it.effect("flushes a tool update before an interleaved message", () =>
     Effect.gen(function* () {
-      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
-      const messageEvent = {
-        sequence: 3,
-        eventId: EventId.make("event-interleaved-message"),
-        aggregateKind: "thread",
-        aggregateId: defaultThreadId,
-        occurredAt: "2026-01-01T00:00:02.000Z",
-        commandId: null,
-        causationEventId: null,
-        correlationId: null,
-        metadata: {},
-        type: "thread.message-sent",
-        payload: {
-          threadId: defaultThreadId,
-          messageId: MessageId.make("message-interleaved"),
-          role: "assistant",
-          text: "Still working",
-          turnId: TurnId.make("turn-edit"),
-          streaming: false,
-          createdAt: "2026-01-01T00:00:02.000Z",
-          updatedAt: "2026-01-01T00:00:02.000Z",
-        },
-      } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
-
+      let snapshot!: Effect.Success<
+        ReturnType<ThreadManagement.ThreadManagementService["Service"]["getThreadSnapshot"]>
+      >;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            streamDomainEvents: Stream.fromPubSub(liveEvents),
-          },
-          projectionSnapshotQuery: {
-            getThreadDetailSnapshot: () =>
-              Effect.gen(function* () {
-                yield* Effect.sleep("25 millis");
-                yield* PubSub.publishAll(liveEvents, [
-                  makeLiveToolActivityEvent(2),
-                  messageEvent,
-                  makeLiveToolActivityEvent(4, "tool.completed"),
-                ]);
-                return Option.some({ snapshotSequence: 1, thread });
-              }),
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              snapshot = yield* Context.get(context, Orchestrator.OrchestratorV2).getThreadSnapshot(
+                defaultThreadId,
+              );
+              const tool = routerTurnItem(1, { status: "running", completedAt: null });
+              const message = {
+                ...tool,
+                type: "assistant_message" as const,
+                id: TurnItemId.make("router:answer"),
+                messageId: MessageId.make("router:answer"),
+                text: "An interleaved answer",
+                streaming: false,
+              };
+              yield* writeRouterItems(context, [tool, message]);
+            }),
+          threadManagement: { getThreadSnapshot: () => Effect.succeed(snapshot) },
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
-            threadId: defaultThreadId,
-          }).pipe(Stream.take(4), Stream.runCollect),
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: defaultThreadId }).pipe(
+            Stream.take(3),
+            Stream.runCollect,
+          ),
         ),
-      ).pipe(Effect.timeout("2 seconds"));
-
-      assert.equal(items[0]?.kind, "snapshot");
-      assert.deepEqual(
-        items
-          .slice(1)
-          .map((item) => (item.kind === "event" ? [item.event.sequence, item.event.type] : null)),
-        [
-          [2, "thread.activity-appended"],
-          [3, "thread.message-sent"],
-          [4, "thread.activity-appended"],
-        ],
       );
-      assert.equal(
-        items[3]?.kind === "event" && items[3].event.type === "thread.activity-appended"
-          ? items[3].event.payload.activity.kind
-          : null,
-        "tool.completed",
-      );
-    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+      const events = items.filter((item) => item.kind === "event");
+      assert.equal(events.length, 2);
+      assertTrue(events[0]?.event.type === "turn-item.updated");
+      assert.equal(events[0].event.payload.type, "command_execution");
+      assertTrue(events[1]?.event.type === "turn-item.updated");
+      assert.equal(events[1].event.payload.type, "assistant_message");
+      assert.isBelow(events[0].sequence, events[1].sequence);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect(
     "subscribeThread sends a fresh snapshot when its event count exceeds the replay limit",
     () =>
       Effect.gen(function* () {
-        let readEventsCalls = 0;
-        const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-
+        let afterSequence = 0;
+        let decodeCalls = 0;
         yield* buildAppUnderTest({
           layers: {
-            orchestrationEngine: {
-              latestSequence: Effect.succeed(100_000),
-              getThreadReplayStats: () =>
-                Effect.succeed({
-                  eventCount: 1_001,
-                  payloadBytes: 1_000,
-                  hasCreateEvent: false,
-                }),
-              readThreadEvents: () =>
-                Stream.sync(() => {
-                  readEventsCalls += 1;
-                  return {} as OrchestrationEvent;
-                }),
-            },
-            projectionSnapshotQuery: {
-              getThreadDetailSnapshot: () =>
-                Effect.succeedSome({ snapshotSequence: 100_000, thread }),
-            },
+            onV2Services: (context) =>
+              Effect.gen(function* () {
+                yield* seedRouterThread(context);
+                afterSequence = (yield* Context.get(
+                  context,
+                  Orchestrator.OrchestratorV2,
+                ).getThreadSnapshot(defaultThreadId)).snapshotSequence;
+                yield* writeRouterItems(
+                  context,
+                  Array.from({ length: 129 }, (_, index) => routerTurnItem(index)),
+                );
+              }),
+            wrapApplicationEvents: (service) => ({
+              ...service,
+              readAgentEvents: (input) => {
+                decodeCalls += 1;
+                return service.readAgentEvents(input);
+              },
+            }),
           },
         });
-
-        const wsUrl = yield* getWsServerUrl("/ws");
         const items = yield* Effect.scoped(
-          withWsRpcClient(wsUrl, (client) =>
-            client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
               threadId: defaultThreadId,
-              afterSequence: 5,
+              afterSequence,
               requestCompletionMarker: true,
-            }).pipe(Stream.take(2), Stream.runCollect),
+            }).pipe(
+              Stream.takeUntil((item) => item.kind === "synchronized"),
+              Stream.runCollect,
+            ),
           ),
         );
-
-        const [first, second] = Array.from(items);
-        // Never truncate a thread's replay at the event limit.
-        assert.equal(first?.kind, "snapshot");
-        if (first?.kind === "snapshot") {
-          assert.equal(first.snapshot.thread.id, defaultThreadId);
-          assert.equal(first.snapshot.snapshotSequence, 100_000);
-        }
-        assert.equal(second?.kind, "synchronized");
-        assert.equal(readEventsCalls, 0);
+        assert.equal(items[0]?.kind, "snapshot");
+        assert.deepEqual(items.at(-1), { kind: "synchronized" });
+        assert.equal(decodeCalls, 0);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -10758,136 +10638,85 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     "stops an overflowing thread producer without an ACK and replays the missing events",
     () =>
       Effect.gen(function* () {
-        const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
-        const attached = yield* Deferred.make<void>();
-        const detached = yield* Deferred.make<void>();
         const ackHeld = yield* Deferred.make<void>();
         const releaseAck = yield* Deferred.make<void>();
+        const attached = yield* Deferred.make<void>();
+        const detached = yield* Deferred.make<void>();
         const firstApplied = yield* Deferred.make<void>();
-        const replayStarted = yield* Deferred.make<void>();
-        const replayCalls: Array<{ afterSequence: number; headSequence: number }> = [];
-        let headSequence = 0;
-        let snapshotCalls = 0;
-        const message = (sequence: number, text: string) =>
-          ({
-            sequence,
-            eventId: EventId.make(`slow-thread-${sequence}`),
-            aggregateKind: "thread",
-            aggregateId: defaultThreadId,
-            occurredAt: "2026-01-01T00:00:01.000Z",
-            commandId: null,
-            causationEventId: null,
-            correlationId: null,
-            metadata: {},
-            type: "thread.message-sent",
-            payload: {
-              threadId: defaultThreadId,
-              messageId: MessageId.make(`slow-message-${sequence}`),
-              role: "assistant",
-              text,
-              turnId: TurnId.make("turn-edit"),
-              streaming: false,
-              createdAt: "2026-01-01T00:00:01.000Z",
-              updatedAt: "2026-01-01T00:00:01.000Z",
-            },
-          }) satisfies OrchestrationEvent;
-        const events = [
-          message(1, "a".repeat(4 * 1024 * 1024)),
-          message(2, "b".repeat(4 * 1024 * 1024)),
-          makeLiveToolActivityEvent(3, "tool.completed"),
-          message(4, "Finished"),
-        ] as const;
-
+        let context!: Context.Context<RouterV2Services>;
+        let cursor = 0;
         yield* buildAppUnderTest({
           layers: {
-            orchestrationEngine: {
-              latestSequence: Effect.sync(() => headSequence),
-              streamDomainEvents: Stream.unwrap(
-                Effect.gen(function* () {
-                  const subscription = yield* PubSub.subscribe(liveEvents);
-                  yield* Deferred.succeed(attached, undefined);
-                  return Stream.fromSubscription(subscription);
-                }),
-              ).pipe(Stream.ensuring(Deferred.succeed(detached, undefined))),
-              readThreadEvents: ({ fromSequenceExclusive, toSequenceInclusive }) => {
-                replayCalls.push({
-                  afterSequence: fromSequenceExclusive,
-                  headSequence: toSequenceInclusive,
-                });
-                const range = events.filter(
-                  (event) =>
-                    event.sequence > fromSequenceExclusive && event.sequence <= toSequenceInclusive,
+            onV2Services: (services) =>
+              Effect.gen(function* () {
+                context = services;
+                yield* seedRouterThread(services);
+                cursor = yield* Context.get(services, OrchestrationEventStore).latestAgentSequence(
+                  defaultThreadId,
                 );
-                return Stream.concat(
-                  Stream.fromEffect(Deferred.succeed(replayStarted, undefined)).pipe(Stream.drain),
-                  Stream.fromIterable(range),
-                );
-              },
-              getThreadReplayStats: ({ fromSequenceExclusive, toSequenceInclusive }) => {
-                const range = events.filter(
-                  (event) =>
-                    event.sequence > fromSequenceExclusive && event.sequence <= toSequenceInclusive,
-                );
-                return Effect.succeed({
-                  eventCount: range.length,
-                  payloadBytes: range.reduce(
-                    (bytes, event) => bytes + Buffer.byteLength(jsonRequestBody(event.payload)),
-                    0,
+              }),
+            wrapThreadManagement: (service) => ({
+              ...service,
+              streamStoredEventsFrom: (input) =>
+                Stream.unwrap(
+                  Deferred.succeed(attached, undefined).pipe(
+                    Effect.as(service.streamStoredEventsFrom(input)),
                   ),
-                  hasCreateEvent: false,
-                });
-              },
-            },
-            projectionSnapshotQuery: {
-              getThreadDetailSnapshot: () =>
-                Effect.sync(() => {
-                  snapshotCalls += 1;
-                  return Option.none();
-                }),
-            },
+                ).pipe(Stream.ensuring(Deferred.succeed(detached, undefined))),
+            }),
           },
         });
-
+        const answer = (ordinal: number, text: string): OrchestrationV2TurnItem => {
+          const base = routerTurnItem(ordinal);
+          return {
+            ...base,
+            type: "assistant_message",
+            messageId: MessageId.make("router:answer:" + ordinal),
+            text,
+            streaming: false,
+          };
+        };
         const wsUrl = yield* getWsServerUrl("/ws");
         yield* makeWsRpcClient.pipe(
           Effect.flatMap((client) =>
             Effect.gen(function* () {
-              let cursor = 0;
               const received: number[] = [];
-              const attempt = yield* client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+              const attempt = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
                 threadId: defaultThreadId,
                 afterSequence: cursor,
               }).pipe(
-                Stream.tap((item) => {
-                  if (item.kind !== "event") return Effect.void;
-                  cursor = item.event.sequence;
-                  received.push(cursor);
-                  return Deferred.succeed(firstApplied, undefined);
-                }),
+                Stream.tap((item) =>
+                  item.kind === "event"
+                    ? Effect.sync(() => {
+                        cursor = item.sequence;
+                        received.push(cursor);
+                      }).pipe(Effect.andThen(Deferred.succeed(firstApplied, undefined)))
+                    : Effect.void,
+                ),
                 Stream.runDrain,
                 Effect.result,
                 Effect.forkScoped,
               );
               yield* Deferred.await(attached);
-              yield* Deferred.await(replayStarted);
-              headSequence = 1;
-              yield* PubSub.publish(liveEvents, events[0]!);
+              yield* writeRouterItems(
+                context,
+                [answer(1, "a".repeat(8 * 1024 * 1024 - 2048))],
+                "first-held",
+              );
               yield* Deferred.await(ackHeld);
               yield* Deferred.await(firstApplied);
-              headSequence = 4;
-              yield* PubSub.publishAll(liveEvents, events.slice(1));
-
-              // This must finish while the server is still waiting for the first
-              // batch's ACK. A failed output queue alone would leave PubSub live.
+              const missing = yield* writeRouterItems(
+                context,
+                [2, 3, 4].map((ordinal) => answer(ordinal, "b".repeat(4096))),
+                "after-held",
+              );
               yield* Deferred.await(detached);
-              assert.equal(yield* PubSub.size(liveEvents), 0);
-              assert.deepEqual(received, [1]);
+              assert.equal(received.length, 1);
               yield* Deferred.succeed(releaseAck, undefined);
-              const result = yield* Fiber.join(attempt);
-              assertTrue(result._tag === "Failure");
-              assert.equal(result.failure._tag, "OrchestrationGetSnapshotError");
-
-              const recovered = yield* client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+              const failed = yield* Fiber.join(attempt);
+              assertTrue(failed._tag === "Failure");
+              assert.equal(failed.failure._tag, "OrchestrationV2GetThreadProjectionError");
+              const recovered = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
                 threadId: defaultThreadId,
                 afterSequence: cursor,
                 requestCompletionMarker: true,
@@ -10896,22 +10725,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 Stream.runCollect,
               );
               assert.deepEqual(
-                recovered.map((item) => (item.kind === "event" ? item.event.sequence : item.kind)),
-                [2, 3, 4, "synchronized"],
+                recovered.flatMap((item) => (item.kind === "event" ? [item.sequence] : [])),
+                missing.map((stored) => stored.sequence),
               );
-              const first = recovered[0];
-              assertTrue(first?.kind === "event" && first.event.type === "thread.message-sent");
-              assert.equal(first.event.payload.text, events[1]!.payload.text);
-              const completed = recovered[1];
-              assertTrue(
-                completed?.kind === "event" && completed.event.type === "thread.activity-appended",
-              );
-              assert.equal(completed.event.payload.activity.kind, "tool.completed");
-              assert.deepEqual(replayCalls, [
-                { afterSequence: 0, headSequence: 0 },
-                { afterSequence: 1, headSequence: 4 },
-              ]);
-              assert.equal(snapshotCalls, 0);
+              assert.deepEqual(recovered.at(-1), { kind: "synchronized" });
             }),
           ),
           Effect.provide(withFirstWsAckHeld(wsUrl, ackHeld, releaseAck)),
@@ -10921,90 +10738,82 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("stops an overflowing shell producer without an ACK and recovers deleted entries", () =>
     Effect.gen(function* () {
-      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const liveEvents = yield* PubSub.unbounded<OrchestrationV2StoredEvent>();
       const detached = yield* Deferred.make<void>();
+      const attached = yield* Deferred.make<void>();
       const ackHeld = yield* Deferred.make<void>();
       const releaseAck = yield* Deferred.make<void>();
-      let headSequence = 1;
-      let snapshotCalls = 0;
-      let replayCalls = 0;
-      const thread = makeDefaultOrchestrationThreadShell();
-      const project = makeDefaultOrchestrationReadModel().projects[0]!;
-      const events: OrchestrationEvent[] = Array.from({ length: 1_001 }, (_, index) =>
-        makeLiveToolActivityEvent(index + 2, "tool.completed"),
-      );
-      events.push(
-        {
-          ...events[0]!,
-          sequence: 1_003,
-          type: "thread.archived",
-          payload: {
-            threadId: defaultThreadId,
-            archivedAt: "2026-01-01T00:00:02.000Z",
-            updatedAt: "2026-01-01T00:00:02.000Z",
-          },
-        },
-        {
-          ...events[0]!,
-          sequence: 1_004,
-          aggregateKind: "project",
-          aggregateId: defaultProjectId,
-          type: "project.deleted",
-          payload: { projectId: defaultProjectId, deletedAt: "2026-01-01T00:00:02.000Z" },
-        },
-      );
+      let context!: Context.Context<RouterV2Services>;
+      let head = 0;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            latestSequence: Effect.sync(() => headSequence),
-            streamDomainEvents: Stream.fromPubSub(liveEvents).pipe(
-              Stream.ensuring(Deferred.succeed(detached, undefined)),
-            ),
-            readEvents: () => {
-              replayCalls += 1;
-              return Stream.empty;
-            },
-          },
-          projectionSnapshotQuery: {
-            getShellSnapshot: () =>
-              Effect.sync(() => {
-                snapshotCalls += 1;
-                return {
-                  snapshotSequence: headSequence,
-                  projects: headSequence === 1 ? [project] : [],
-                  threads: headSequence === 1 ? [thread] : [],
-                  updatedAt: "2026-01-01T00:00:02.000Z",
-                };
-              }),
-          },
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              head = yield* Context.get(services, OrchestrationEventStore)
+                .latestApplicationSequence;
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            latestApplicationSequence: Effect.sync(() => head),
+            streamProjectedApplicationEvents: (input) =>
+              Stream.unwrap(
+                Effect.gen(function* () {
+                  const subscription = yield* PubSub.subscribe(liveEvents);
+                  yield* Deferred.succeed(attached, undefined);
+                  return Stream.fromSubscription(subscription).pipe(Stream.map(input.project));
+                }),
+              ).pipe(Stream.ensuring(Deferred.succeed(detached, undefined))),
+          }),
         },
       });
       const wsUrl = yield* getWsServerUrl("/ws");
       yield* makeWsRpcClient.pipe(
         Effect.flatMap((client) =>
           Effect.gen(function* () {
-            const received: OrchestrationShellStreamItem[] = [];
-            const attempt = yield* client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
-              Stream.tap((item) => Effect.sync(() => received.push(item))),
+            const received: OrchestrationV2ShellStreamItem[] = [];
+            const attempt = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}).pipe(
+              Stream.tap((item) =>
+                Effect.sync(() => {
+                  received.push(item);
+                }),
+              ),
               Stream.runDrain,
               Effect.result,
               Effect.forkScoped,
             );
             yield* Deferred.await(ackHeld);
-            headSequence = 1_004;
-            yield* PubSub.publishAll(liveEvents, events);
+            yield* Deferred.await(attached);
+            yield* Context.get(context, Orchestrator.OrchestratorV2).dispatch({
+              type: "thread.delete",
+              commandId: CommandId.make("router:overflow-delete"),
+              threadId: defaultThreadId,
+            });
+            yield* Context.get(context, ProjectService.ProjectService).delete({
+              commandId: CommandId.make("router:overflow-project-delete"),
+              projectId: defaultProjectId,
+              force: true,
+            });
+            head += 1004;
+            const burst = Array.from({ length: 1001 }, (_, index) => ({
+              sequence: head - 1001 + index,
+              commandId: null,
+              event: routerItemEvent(
+                routerTurnItem(index, { threadId: ThreadId.make("router:overflow:" + index) }),
+              ),
+            }));
+            yield* PubSub.publishAll(liveEvents, burst);
             yield* Deferred.await(detached);
             assert.equal(yield* PubSub.size(liveEvents), 0);
             yield* Deferred.succeed(releaseAck, undefined);
-            const result = yield* Fiber.join(attempt);
-            assertTrue(result._tag === "Failure");
-            assert.equal(result.failure._tag, "OrchestrationGetSnapshotError");
-            assert.equal(received.length, 1);
+            const failed = yield* Fiber.join(attempt);
+            assertTrue(failed._tag === "Failure");
+            assert.equal(failed.failure._tag, "OrchestrationV2GetShellSnapshotError");
+            assert.equal(received[0]?.kind, "snapshot");
             const initial = received[0];
             assertTrue(initial?.kind === "snapshot");
-            assert.equal(initial.snapshot.threads.length, 1);
-
-            const recovered = yield* client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            const recovered = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
               afterSequence: initial.snapshot.snapshotSequence,
               requestCompletionMarker: true,
             }).pipe(
@@ -11013,86 +10822,76 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             );
             const snapshot = recovered[0];
             assertTrue(snapshot?.kind === "snapshot");
-            assert.equal(snapshot.snapshot.snapshotSequence, 1_004);
             assert.deepEqual(snapshot.snapshot.projects, []);
             assert.deepEqual(snapshot.snapshot.threads, []);
-            assert.deepEqual(recovered[1], { kind: "synchronized" });
-            assert.equal(snapshotCalls, 2);
-            assert.equal(replayCalls, 0);
+            assert.deepEqual(recovered.at(-1), { kind: "synchronized" });
           }),
         ),
         Effect.provide(withFirstWsAckHeld(wsUrl, ackHeld, releaseAck)),
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeHttpServer.layerTest)),
+    }).pipe(Effect.scoped, Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
   it.effect("subscribeThread replaces a cursor ahead of the authoritative head", () =>
     Effect.gen(function* () {
-      let readEventsCalls = 0;
-      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-
+      let head = 0;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            latestSequence: Effect.succeed(5),
-            getThreadReplayStats: () =>
-              Effect.die("An invalid cursor must not start a replay query"),
-            readThreadEvents: () =>
-              Stream.sync(() => {
-                readEventsCalls += 1;
-                return {} as OrchestrationEvent;
-              }),
-          },
-          projectionSnapshotQuery: {
-            getThreadDetailSnapshot: () => Effect.succeedSome({ snapshotSequence: 5, thread }),
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              head = yield* Context.get(context, OrchestrationEventStore).latestAgentSequence(
+                defaultThreadId,
+              );
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            getAgentReplayStats: () =>
+              Effect.die("A cursor ahead of the head must not measure replay"),
+            readAgentEvents: () => Stream.die("A cursor ahead of the head must not decode replay"),
+          }),
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const first = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
-            afterSequence: 10,
+            afterSequence: head + 10,
           }).pipe(Stream.runHead),
         ),
       );
-
       assert.equal(Option.getOrThrow(first).kind, "snapshot");
-      assert.equal(readEventsCalls, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscribeThread replays a small thread range across a large global gap", () =>
     Effect.gen(function* () {
-      const event = makeLiveToolActivityEvent(99_999, "tool.completed");
+      let afterSequence = 0;
+      let sequence = 0;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            latestSequence: Effect.succeed(100_000),
-            getThreadReplayStats: () =>
-              Effect.succeed({
-                eventCount: 1,
-                payloadBytes: Buffer.byteLength(jsonRequestBody(event.payload)),
-                hasCreateEvent: false,
-              }),
-            readThreadEvents: () => Stream.make(event),
-            readEvents: () => Stream.die("Thread replay must not read the global log"),
-          },
-          projectionSnapshotQuery: {
-            getEventReplayStats: () => Effect.die("Thread replay must not measure the global log"),
-            getThreadDetailSnapshot: () =>
-              Effect.die("Unrelated activity must not force a snapshot"),
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              afterSequence = yield* Context.get(
+                context,
+                OrchestrationEventStore,
+              ).latestAgentSequence(defaultThreadId);
+              sequence = (yield* writeRouterItems(context, [routerTurnItem(1)]))[0]!.sequence;
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            latestApplicationSequence: Effect.succeed(100_000),
+            getReplayStats: () => Effect.die("Thread replay must not measure the global log"),
+            readApplicationEvents: () => Stream.die("Thread replay must not decode the global log"),
+          }),
         },
       });
-      const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
-            afterSequence: 5,
+            afterSequence,
             requestCompletionMarker: true,
           }).pipe(
             Stream.takeUntil((item) => item.kind === "synchronized"),
@@ -11101,49 +10900,40 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
       assert.deepEqual(
-        items.map((item) => (item.kind === "event" ? item.event.sequence : item.kind)),
-        [99_999, "synchronized"],
+        items.map((item) => (item.kind === "event" ? item.sequence : item.kind)),
+        [sequence, "synchronized"],
       );
-      const first = items[0];
-      assertTrue(first?.kind === "event" && first.event.type === "thread.activity-appended");
-      assert.equal(first.event.payload.activity.kind, "tool.completed");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscribeThread resets cached history when its ID is created again", () =>
     Effect.gen(function* () {
-      const thread = {
-        ...makeDefaultOrchestrationReadModel().threads[0]!,
-        title: "Recreated thread",
-      };
-      let requestedTurnLimit: number | undefined;
+      let afterSequence = 0;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            latestSequence: Effect.succeed(5),
-            getThreadReplayStats: () =>
-              Effect.succeed({
-                eventCount: 3,
-                payloadBytes: 1_000,
-                hasCreateEvent: true,
-              }),
-            readThreadEvents: () => Stream.die("A recreated thread must not reuse cached history"),
-          },
-          projectionSnapshotQuery: {
-            getThreadDetailSnapshot: (_threadId, options) => {
-              requestedTurnLimit = options?.turnLimit;
-              return Effect.succeedSome({ snapshotSequence: 5, thread });
-            },
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              const threads = Context.get(context, Orchestrator.OrchestratorV2);
+              afterSequence = (yield* threads.getThreadSnapshot(defaultThreadId)).snapshotSequence;
+              yield* threads.dispatch({
+                type: "thread.delete",
+                commandId: CommandId.make("router:delete"),
+                threadId: defaultThreadId,
+              });
+              yield* threads.dispatch({
+                ...routerThreadCreate(),
+                commandId: CommandId.make("router:recreate"),
+                title: "Recreated thread",
+              });
+            }),
         },
       });
-      const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
-            afterSequence: 2,
-            turnLimit: 1,
+            afterSequence,
             requestCompletionMarker: true,
           }).pipe(
             Stream.takeUntil((item) => item.kind === "synchronized"),
@@ -11151,12 +10941,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           ),
         ),
       );
-      const first = items[0];
-      assertTrue(first?.kind === "snapshot");
-      assert.equal(first.snapshot.thread.title, "Recreated thread");
-      assert.equal(first.snapshot.snapshotSequence, 5);
-      assert.equal(requestedTurnLimit, 1);
-      assert.deepEqual(items[1], { kind: "synchronized" });
+      assertTrue(items[0]?.kind === "snapshot");
+      assert.equal(items[0].projection.thread.title, "Recreated thread");
+      assert.deepEqual(items.at(-1), { kind: "synchronized" });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -11171,71 +10958,37 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         : `synchronizes an absent thread and removes its shell after ${createBeforeDelete ? "creation and deletion" : "deletion"}`,
       () =>
         Effect.gen(function* () {
-          const store = yield* OrchestrationEventStore;
-          const base = makeLiveToolActivityEvent(0, "tool.completed");
-          if (createBeforeDelete) {
-            const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-            yield* store.append({
-              ...base,
-              eventId: EventId.make(`create-before-final-delete-${oversized}`),
-              type: "thread.created",
-              payload: {
-                threadId: defaultThreadId,
-                projectId: thread.projectId,
-                title: thread.title,
-                modelSelection: thread.modelSelection,
-                runtimeMode: thread.runtimeMode,
-                interactionMode: thread.interactionMode,
-                branch: thread.branch,
-                worktreePath: thread.worktreePath,
-                createdAt: thread.createdAt,
-                updatedAt: thread.updatedAt,
-              },
-            });
-          }
-          if (oversized) {
-            yield* Effect.forEach(
-              Array.from({ length: 1_000 }, (_, index) => index + 1),
-              (sequence) => store.append(makeLiveToolActivityEvent(sequence, "tool.completed")),
-              { discard: true },
-            );
-          }
-          const deleted = yield* store.append({
-            ...base,
-            eventId: EventId.make(`deleted-replay-${createBeforeDelete}-${oversized}`),
-            type: "thread.deleted",
-            payload: { threadId: defaultThreadId, deletedAt: base.occurredAt },
-          });
+          let afterSequence = 0;
           yield* buildAppUnderTest({
             layers: {
-              orchestrationEngine: {
-                latestSequence: Effect.succeed(deleted.sequence),
-                getThreadReplayStats: ({ threadId, ...range }) =>
-                  store.getAggregateReplayStats({
-                    ...range,
-                    aggregateKind: "thread",
-                    aggregateId: threadId,
-                  }),
-                readThreadEvents: ({ threadId, ...range }) =>
-                  store.readAggregateRange({
-                    ...range,
-                    aggregateKind: "thread",
-                    aggregateId: threadId,
-                  }),
-                readEvents: store.readFromSequence,
-              },
-              projectionSnapshotQuery: {
-                getThreadDetailSnapshot: () => Effect.succeedNone,
-              },
+              onV2Services: (context) =>
+                Effect.gen(function* () {
+                  yield* seedRouterThread(context);
+                  const threads = Context.get(context, Orchestrator.OrchestratorV2);
+                  if (!createBeforeDelete)
+                    afterSequence = yield* Context.get(
+                      context,
+                      OrchestrationEventStore,
+                    ).latestAgentSequence(defaultThreadId);
+                  if (oversized)
+                    yield* writeRouterItems(
+                      context,
+                      Array.from({ length: 129 }, (_, index) => routerTurnItem(index)),
+                    );
+                  yield* threads.dispatch({
+                    type: "thread.delete",
+                    commandId: CommandId.make("router:final-delete"),
+                    threadId: defaultThreadId,
+                  });
+                }),
             },
           });
-          const wsUrl = yield* getWsServerUrl("/ws");
           yield* Effect.scoped(
-            withWsRpcClient(wsUrl, (client) =>
+            withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
               Effect.gen(function* () {
-                const threadResult = yield* client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+                const result = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
                   threadId: defaultThreadId,
-                  afterSequence: 0,
+                  afterSequence,
                   requestCompletionMarker: true,
                 }).pipe(
                   Stream.takeUntil((item) => item.kind === "synchronized"),
@@ -11243,104 +10996,70 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   Effect.result,
                 );
                 if (oversized) {
-                  assertTrue(threadResult._tag === "Failure");
-                  assert.equal(threadResult.failure._tag, "OrchestrationGetSnapshotError");
-                  assert.equal(
-                    threadResult.failure.message,
-                    `Thread ${defaultThreadId} was not found`,
-                  );
+                  assertTrue(result._tag === "Failure");
+                  assert.equal(result.failure._tag, "OrchestrationV2GetThreadProjectionError");
                   return;
                 }
-                assertTrue(threadResult._tag === "Success");
-                assert.deepEqual(threadResult.success, [{ kind: "synchronized" }]);
-                const shellItems = yield* client[ORCHESTRATION_WS_METHODS.subscribeShell]({
-                  afterSequence: 0,
+                assertTrue(result._tag === "Success");
+                assert.deepEqual(result.success.at(-1), { kind: "synchronized" });
+                const shell = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+                  afterSequence,
                   requestCompletionMarker: true,
                 }).pipe(
                   Stream.takeUntil((item) => item.kind === "synchronized"),
                   Stream.runCollect,
                 );
-                assert.deepEqual(shellItems, [
-                  { kind: "thread-removed", sequence: deleted.sequence, threadId: defaultThreadId },
-                  { kind: "synchronized" },
-                ]);
+                assert.isTrue(
+                  shell.some(
+                    (item) => item.kind === "thread.removed" && item.threadId === defaultThreadId,
+                  ),
+                );
               }),
             ),
           );
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              OrchestrationEventStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
-              NodeHttpServer.layerTest,
-            ),
-          ),
-        ),
+        }).pipe(Effect.provide(NodeHttpServer.layerTest)),
     );
   }
 
   it.effect("subscribeThread bounds catch-up replay to the captured head", () =>
     Effect.gen(function* () {
-      let replayHead: number | undefined;
-      let headSequence = 50;
-      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
-      const now = "2026-01-01T00:00:00.000Z";
-      const messageEvent = {
-        sequence: 3,
-        eventId: EventId.make("event-replay-message"),
-        aggregateKind: "thread",
-        aggregateId: defaultThreadId,
-        occurredAt: now,
-        commandId: null,
-        causationEventId: null,
-        correlationId: null,
-        metadata: {},
-        type: "thread.message-sent",
-        payload: {
-          threadId: defaultThreadId,
-          messageId: MessageId.make("message-replay"),
-          role: "user",
-          text: "Replayed message",
-          turnId: null,
-          streaming: false,
-          createdAt: now,
-          updatedAt: now,
-        },
-      } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
-
+      let context!: Context.Context<RouterV2Services>;
+      let afterSequence = 0;
+      let capturedHead = 0;
+      let queriedHead: number | undefined;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            latestSequence: Effect.sync(() => headSequence),
-            streamDomainEvents: Stream.fromPubSub(liveEvents),
-            getThreadReplayStats: () =>
-              Effect.sync(() => {
-                headSequence = 100;
-                return { eventCount: 1, payloadBytes: 100, hasCreateEvent: false };
-              }),
-            readThreadEvents: ({ toSequenceInclusive }) => {
-              replayHead = toSequenceInclusive;
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              afterSequence = yield* Context.get(
+                services,
+                OrchestrationEventStore,
+              ).latestAgentSequence(defaultThreadId);
+              capturedHead = (yield* writeRouterItems(services, [routerTurnItem(1)]))[0]!.sequence;
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            readAgentEvents: (input) => {
+              queriedHead = input?.throughSequence;
               return Stream.fromEffect(
-                PubSub.publish(liveEvents, {
-                  ...messageEvent,
-                  sequence: 51,
-                  eventId: EventId.make("event-live-after-head"),
-                  payload: {
-                    ...messageEvent.payload,
-                    messageId: MessageId.make("message-live-after-head"),
-                  },
-                }),
-              ).pipe(Stream.flatMap(() => Stream.make(messageEvent)));
+                writeRouterItems(context, [routerTurnItem(2)], "arrives-after-head").pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new PersistenceSqlError({ operation: "fixture.readAgentEvents", cause }),
+                  ),
+                ),
+              ).pipe(Stream.flatMap(() => service.readAgentEvents(input)));
             },
-          },
+          }),
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
-            afterSequence: 0,
+            afterSequence,
             requestCompletionMarker: true,
           }).pipe(
             Stream.takeUntil((item) => item.kind === "synchronized"),
@@ -11348,751 +11067,505 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           ),
         ),
       );
-
+      assert.equal(queriedHead, capturedHead);
       assert.deepEqual(
-        items.map((item) => (item.kind === "event" ? item.event.sequence : item.kind)),
-        [3, 51, "synchronized"],
+        items.map((item) => (item.kind === "event" ? item.sequence : item.kind)),
+        [capturedHead, "synchronized"],
       );
-      assert.equal(replayHead, 50);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscribeShell sends a fresh snapshot instead of replaying a large gap", () =>
     Effect.gen(function* () {
-      let readEventsCalls = 0;
-      const snapshotThreadId = ThreadId.make("thread-from-snapshot");
-      const now = "2026-01-01T00:00:00.000Z";
-
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            // Head is far ahead of the client's afterSequence (gap > 1000).
-            latestSequence: Effect.succeed(100_000),
-            readEvents: () =>
-              Stream.sync(() => {
-                readEventsCalls += 1;
-                return {
-                  sequence: 1,
-                  eventId: EventId.make("event-should-not-be-read"),
-                  aggregateKind: "thread",
-                  aggregateId: snapshotThreadId,
-                  occurredAt: now,
-                  commandId: null,
-                  causationEventId: null,
-                  correlationId: null,
-                  metadata: {},
-                  type: "thread.created",
-                  payload: {} as never,
-                } satisfies OrchestrationEvent;
-              }),
-          },
-          projectionSnapshotQuery: {
-            getShellSnapshot: () =>
-              Effect.succeed({
-                snapshotSequence: 100_000,
-                projects: [],
-                threads: [makeDefaultOrchestrationThreadShell({ id: snapshotThreadId })],
-                updatedAt: now,
-              }),
-          },
+          onV2Services: (context) => seedRouterThread(context).pipe(Effect.asVoid),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            latestApplicationSequence: Effect.succeed(100_000),
+            getReplayStats: () => Effect.die("A large gap must not measure replay"),
+            readApplicationEvents: () => Stream.die("A large gap must not decode replay"),
+          }),
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
             afterSequence: 5,
             requestCompletionMarker: true,
-          }).pipe(Stream.take(2), Stream.runCollect),
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
         ),
       );
-
-      const [first, second] = Array.from(items);
-      // Large gap => fresh snapshot, and the unbounded replay is never started.
-      assert.equal(first?.kind, "snapshot");
-      if (first?.kind === "snapshot") {
-        assert.equal(first.snapshot.threads[0]?.id, snapshotThreadId);
-      }
-      assert.equal(second?.kind, "synchronized");
-      assert.equal(readEventsCalls, 0);
+      assertTrue(items[0]?.kind === "snapshot");
+      assert.equal(items[0].snapshot.snapshotSequence, 100_000);
+      assert.equal(items[0].snapshot.threads[0]?.id, defaultThreadId);
+      assert.deepEqual(items.at(-1), { kind: "synchronized" });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscriptions snapshot instead of decoding an oversized replay range", () =>
     Effect.gen(function* () {
-      let readEventsCalls = 0;
-      let replayStatsCalls = 0;
-      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-      const shell = makeDefaultOrchestrationThreadShell({ id: thread.id });
-
+      let afterSequence = 0;
+      let measurements = 0;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            latestSequence: Effect.succeed(5),
-            getThreadReplayStats: () =>
-              Effect.sync(() => {
-                replayStatsCalls += 1;
-                return {
-                  eventCount: 5,
-                  payloadBytes: 8 * 1024 * 1024 + 1,
-                  hasCreateEvent: false,
-                };
-              }),
-            readThreadEvents: () => {
-              readEventsCalls += 1;
-              return Stream.empty;
-            },
-            readEvents: () =>
-              Stream.sync(() => {
-                readEventsCalls += 1;
-                return {} as OrchestrationEvent;
-              }),
-          },
-          projectionSnapshotQuery: {
-            getEventReplayStats: () =>
-              Effect.sync(() => {
-                replayStatsCalls += 1;
-                return { eventCount: 5, payloadBytes: 8 * 1024 * 1024 + 1 };
-              }),
-            getThreadDetailSnapshot: () => Effect.succeedSome({ snapshotSequence: 5, thread }),
-            getShellSnapshot: () =>
-              Effect.succeed({
-                snapshotSequence: 5,
-                projects: [],
-                threads: [shell],
-                updatedAt: "2026-01-01T00:00:00.000Z",
-              }),
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              afterSequence = yield* Context.get(context, OrchestrationEventStore)
+                .latestApplicationSequence;
+              yield* writeRouterItems(context, [
+                routerTurnItem(1, { output: "x".repeat(8 * 1024 * 1024 + 1) }),
+              ]);
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            getAgentReplayStats: (input) =>
+              service.getAgentReplayStats(input).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    measurements += 1;
+                  }),
+                ),
+              ),
+            getReplayStats: (input) =>
+              service.getReplayStats(input).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    measurements += 1;
+                  }),
+                ),
+              ),
+            readAgentEvents: () => Stream.die("Oversized thread replay must not decode"),
+            readApplicationEvents: () => Stream.die("Oversized shell replay must not decode"),
+          }),
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const threadItems = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
-            threadId: thread.id,
-            afterSequence: 0,
-            requestCompletionMarker: true,
-          }).pipe(Stream.take(2), Stream.runCollect),
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const thread = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+              threadId: defaultThreadId,
+              afterSequence,
+            }).pipe(Stream.runHead);
+            const shell = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+              afterSequence,
+            }).pipe(Stream.runHead);
+            assert.equal(Option.getOrThrow(thread).kind, "snapshot");
+            assert.equal(Option.getOrThrow(shell).kind, "snapshot");
+          }),
         ),
       );
-      const shellItems = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
-            afterSequence: 0,
-            requestCompletionMarker: true,
-          }).pipe(Stream.take(2), Stream.runCollect),
-        ),
-      );
-
-      assert.equal(threadItems[0]?.kind, "snapshot");
-      assert.equal(threadItems[1]?.kind, "synchronized");
-      assert.equal(shellItems[0]?.kind, "snapshot");
-      assert.equal(shellItems[1]?.kind, "synchronized");
-      assert.equal(replayStatsCalls, 2);
-      assert.equal(readEventsCalls, 0);
+      assert.equal(measurements, 2);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscribeShell replaces a cursor ahead of the authoritative head", () =>
     Effect.gen(function* () {
-      let readEventsCalls = 0;
-
+      let head = 0;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            latestSequence: Effect.succeed(5),
-            readEvents: () =>
-              Stream.sync(() => {
-                readEventsCalls += 1;
-                return {} as OrchestrationEvent;
-              }),
-          },
-          projectionSnapshotQuery: {
-            getShellSnapshot: () =>
-              Effect.succeed({
-                snapshotSequence: 5,
-                projects: [],
-                threads: [],
-                updatedAt: "2026-01-01T00:00:00.000Z",
-              }),
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              head = yield* Context.get(context, OrchestrationEventStore).latestApplicationSequence;
+            }),
+          wrapApplicationEvents: (service) => ({
+            ...service,
+            getReplayStats: () =>
+              Effect.die("A cursor ahead of the shell head must not measure replay"),
+            readApplicationEvents: () =>
+              Stream.die("A cursor ahead of the shell head must not decode replay"),
+          }),
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const first = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({ afterSequence: 10 }).pipe(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({ afterSequence: head + 10 }).pipe(
             Stream.runHead,
           ),
         ),
       );
-
       assert.equal(Option.getOrThrow(first).kind, "snapshot");
-      assert.equal(readEventsCalls, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscribeShell coalesces a per-thread burst without stalling other threads", () =>
     Effect.gen(function* () {
-      const busyThreadId = ThreadId.make("thread-busy");
-      const newThreadId = ThreadId.make("thread-new");
-      const now = "2026-01-01T00:00:00.000Z";
-      const shellFetches: Array<string> = [];
-      let replayLimit: number | undefined;
-
-      const messageEvent = (sequence: number): OrchestrationEvent =>
-        ({
-          sequence,
-          eventId: EventId.make(`event-${sequence}`),
-          aggregateKind: "thread",
-          aggregateId: busyThreadId,
-          occurredAt: now,
-          commandId: null,
-          causationEventId: null,
-          correlationId: null,
-          metadata: {},
-          type: "thread.message-sent",
-          payload: {} as never,
-        }) satisfies OrchestrationEvent;
-
-      const createdEvent: OrchestrationEvent = {
-        sequence: 50,
-        eventId: EventId.make("event-created"),
-        aggregateKind: "thread",
-        aggregateId: newThreadId,
-        occurredAt: now,
-        commandId: null,
-        causationEventId: null,
-        correlationId: null,
-        metadata: {},
-        type: "thread.created",
-        payload: {} as never,
-      };
-
+      const other = ThreadId.make("router:other");
+      let afterSequence = 0;
+      const reads: ThreadId[] = [];
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            latestSequence: Effect.succeed(50),
-            // A burst of message-sent deltas for the busy thread, plus one
-            // thread.created for a different thread, all within one batch.
-            readEvents: (_afterSequence, limit) => {
-              replayLimit = limit;
-              return Stream.fromIterable([
-                ...Array.from({ length: 20 }, (_unused, index) => messageEvent(index + 1)),
-                createdEvent,
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              yield* Context.get(context, Orchestrator.OrchestratorV2).dispatch(
+                routerThreadCreate(other),
+              );
+              afterSequence = yield* Context.get(context, OrchestrationEventStore)
+                .latestApplicationSequence;
+              yield* writeRouterItems(context, [
+                ...Array.from({ length: 200 }, (_, index) => routerTurnItem(index)),
+                routerTurnItem(201, { threadId: other }),
               ]);
-            },
-          },
-          projectionSnapshotQuery: {
-            getThreadShellById: (threadId) =>
-              Effect.sync(() => {
-                shellFetches.push(threadId);
-                return Option.some(makeDefaultOrchestrationThreadShell({ id: threadId }));
-              }),
-          },
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            getThreadShell: (threadId) =>
+              Effect.sync(() => reads.push(threadId)).pipe(
+                Effect.andThen(service.getThreadShell(threadId)),
+              ),
+          }),
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
-            afterSequence: 0,
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence,
             requestCompletionMarker: true,
-          }).pipe(Stream.take(3), Stream.runCollect),
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
         ),
       );
-
-      const collected = Array.from(items);
-      const upsertedIds = collected.flatMap((item) =>
-        item.kind === "thread-upserted" ? [item.thread.id] : [],
+      const updates = items.filter((item) => item.kind === "thread.updated");
+      assert.deepEqual(
+        updates.map((item) => item.thread.id).sort(),
+        [defaultThreadId, other].sort(),
       );
-      // Both threads surface, and the busy thread's 20-event burst collapses to
-      // a single shell refetch (not 20). The new thread is not stuck behind it.
-      assert.include(upsertedIds, busyThreadId);
-      assert.include(upsertedIds, newThreadId);
-      assert.equal(collected[2]?.kind, "synchronized");
-      assert.equal(shellFetches.filter((id) => id === busyThreadId).length, 1);
-      assert.equal(replayLimit, 50);
+      assert.equal(reads.length, 2);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscribeShell coalesces live bursts after the synchronization marker", () =>
     Effect.gen(function* () {
-      const busyThreadId = ThreadId.make("thread-live-busy");
-      const newThreadId = ThreadId.make("thread-live-new");
-      const now = "2026-01-01T00:00:00.000Z";
-      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
-      const synchronized = yield* Deferred.make<void>();
-      const shellFetches: Array<string> = [];
-      const observedLiveThreadIds = new Set<string>();
-
-      const messageEvent = (sequence: number): OrchestrationEvent =>
-        ({
-          sequence,
-          eventId: EventId.make(`event-live-${sequence}`),
-          aggregateKind: "thread",
-          aggregateId: busyThreadId,
-          occurredAt: now,
-          commandId: null,
-          causationEventId: null,
-          correlationId: null,
-          metadata: {},
-          type: "thread.message-sent",
-          payload: {} as never,
-        }) satisfies OrchestrationEvent;
-
-      const createdEvent: OrchestrationEvent = {
-        sequence: 50,
-        eventId: EventId.make("event-live-created"),
-        aggregateKind: "thread",
-        aggregateId: newThreadId,
-        occurredAt: now,
-        commandId: null,
-        causationEventId: null,
-        correlationId: null,
-        metadata: {},
-        type: "thread.created",
-        payload: {} as never,
-      };
-
+      let context!: Context.Context<RouterV2Services>;
+      let afterSequence = 0;
+      const reads: ThreadId[] = [];
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            streamDomainEvents: Stream.fromPubSub(liveEvents),
-          },
-          projectionSnapshotQuery: {
-            getThreadShellById: (threadId) =>
-              Effect.sync(() => {
-                shellFetches.push(threadId);
-                return Option.some(makeDefaultOrchestrationThreadShell({ id: threadId }));
-              }),
-          },
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              afterSequence = yield* Context.get(services, OrchestrationEventStore)
+                .latestApplicationSequence;
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            getThreadShell: (threadId) =>
+              Effect.sync(() => reads.push(threadId)).pipe(
+                Effect.andThen(service.getThreadShell(threadId)),
+              ),
+          }),
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const itemsFiber = yield* withWsRpcClient(wsUrl, (client) =>
-            client[ORCHESTRATION_WS_METHODS.subscribeShell]({
-              requestCompletionMarker: true,
-            }).pipe(
-              Stream.tap((item) =>
-                item.kind === "synchronized"
-                  ? Deferred.succeed(synchronized, undefined).pipe(Effect.ignore)
-                  : Effect.void,
-              ),
-              Stream.takeUntil((item) => {
-                if (item.kind === "thread-upserted") {
-                  observedLiveThreadIds.add(item.thread.id);
-                }
-                return (
-                  observedLiveThreadIds.has(busyThreadId) && observedLiveThreadIds.has(newThreadId)
-                );
-              }),
-              Stream.runCollect,
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.tap((item) =>
+              item.kind === "synchronized"
+                ? writeRouterItems(
+                    context,
+                    Array.from({ length: 20 }, (_, index) => routerTurnItem(index)),
+                  ).pipe(Effect.asVoid)
+                : Effect.void,
             ),
-          ).pipe(Effect.forkScoped);
-
-          yield* Deferred.await(synchronized);
-          for (const event of [
-            ...Array.from({ length: 20 }, (_unused, index) => messageEvent(index + 1)),
-            createdEvent,
-          ]) {
-            yield* PubSub.publish(liveEvents, event);
-          }
-
-          return yield* Fiber.join(itemsFiber);
-        }),
+            Stream.takeUntil((item) => item.kind === "thread.updated"),
+            Stream.runCollect,
+          ),
+        ),
       ).pipe(Effect.timeout("2 seconds"));
-
-      assert.equal(items[0]?.kind, "snapshot");
-      assert.equal(items[1]?.kind, "synchronized");
-      const liveUpsertedIds = Array.from(items)
-        .slice(2)
-        .flatMap((item) => (item.kind === "thread-upserted" ? [item.thread.id] : []));
-      assert.include(liveUpsertedIds, busyThreadId);
-      assert.include(liveUpsertedIds, newThreadId);
-      assert.isBelow(shellFetches.filter((id) => id === busyThreadId).length, 20);
+      assert.isTrue(items.some((item) => item.kind === "synchronized"));
+      assert.equal(items.at(-1)?.kind, "thread.updated");
+      assert.equal(reads.length, 1);
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
   it.effect("subscribeShell coalescing still emits a removal for a deleted thread", () =>
     Effect.gen(function* () {
-      const goneThreadId = ThreadId.make("thread-gone");
-      const now = "2026-01-01T00:00:00.000Z";
-
-      const makeThreadEvent = (
-        sequence: number,
-        type: "thread.deleted" | "thread.message-sent",
-      ): OrchestrationEvent =>
-        ({
-          sequence,
-          eventId: EventId.make(`event-${sequence}`),
-          aggregateKind: "thread",
-          aggregateId: goneThreadId,
-          occurredAt: now,
-          commandId: null,
-          causationEventId: null,
-          correlationId: null,
-          metadata: {},
-          type,
-          payload: type === "thread.deleted" ? { threadId: goneThreadId, deletedAt: now } : {},
-        }) as OrchestrationEvent;
-
+      let afterSequence = 0;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            latestSequence: Effect.succeed(2),
-            // A thread.deleted followed, within the same coalescing window, by a
-            // later refetchable event for the same thread. The later event wins
-            // coalescing; its shell refetch returns none (the row is gone), which
-            // must still surface a removal rather than be swallowed.
-            readEvents: () =>
-              Stream.fromIterable([
-                makeThreadEvent(1, "thread.deleted"),
-                makeThreadEvent(2, "thread.message-sent"),
-              ]),
-          },
-          projectionSnapshotQuery: {
-            getThreadShellById: () => Effect.succeedNone,
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              afterSequence = yield* Context.get(context, OrchestrationEventStore)
+                .latestApplicationSequence;
+              yield* Context.get(context, Orchestrator.OrchestratorV2).dispatch({
+                type: "thread.delete",
+                commandId: CommandId.make("router:delete-trailing"),
+                threadId: defaultThreadId,
+              });
+              yield* writeRouterItems(context, [routerTurnItem(1)]);
+            }),
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({ afterSequence: 0 }).pipe(
-            Stream.take(1),
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
             Stream.runCollect,
           ),
         ),
       );
-
-      const [first] = Array.from(items);
-      assert.equal(first?.kind, "thread-removed");
-      assert.equal(first?.kind === "thread-removed" ? first.threadId : null, goneThreadId);
+      const removals = items.filter((item) => item.kind === "thread.removed");
+      assert.equal(removals.length, 1);
+      assert.equal(removals[0]?.threadId, defaultThreadId);
+      assert.isFalse(items.some((item) => item.kind === "thread.updated"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscribeShell retries a transient shell projection refetch failure", () =>
     Effect.gen(function* () {
-      const threadId = ThreadId.make("thread-transient-refetch");
-      const now = "2026-01-01T00:00:00.000Z";
+      let afterSequence = 0;
       let attempts = 0;
-
-      const event: OrchestrationEvent = {
-        sequence: 1,
-        eventId: EventId.make("event-transient-refetch"),
-        aggregateKind: "thread",
-        aggregateId: threadId,
-        occurredAt: now,
-        commandId: null,
-        causationEventId: null,
-        correlationId: null,
-        metadata: {},
-        type: "thread.message-sent",
-        payload: {} as never,
-      };
-
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            latestSequence: Effect.succeed(1),
-            readEvents: () => Stream.make(event),
-          },
-          projectionSnapshotQuery: {
-            getThreadShellById: () =>
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              afterSequence = yield* Context.get(context, OrchestrationEventStore)
+                .latestApplicationSequence;
+              yield* writeRouterItems(context, [routerTurnItem(1)]);
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            getThreadShell: (threadId) =>
               Effect.suspend(() => {
                 attempts += 1;
                 return attempts === 1
                   ? Effect.fail(
-                      new PersistenceSqlError({
-                        operation: "test.shell-refetch",
-                        detail: "transient failure",
+                      new Orchestrator.OrchestratorProjectionError({
+                        threadId,
+                        cause: new Error("synthetic transient shell refetch"),
                       }),
                     )
-                  : Effect.succeedSome(makeDefaultOrchestrationThreadShell({ id: threadId }));
+                  : service.getThreadShell(threadId);
               }),
-          },
+          }),
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({ afterSequence: 0 }).pipe(
-            Stream.take(1),
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
             Stream.runCollect,
           ),
         ),
       );
-
-      const [first] = Array.from(items);
-      assert.equal(first?.kind, "thread-upserted");
-      assert.equal(first?.kind === "thread-upserted" ? first.thread.id : null, threadId);
+      assert.isTrue(
+        items.some((item) => item.kind === "thread.updated" && item.thread.id === defaultThreadId),
+      );
       assert.equal(attempts, 2);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscribeShell coalescing still removes a project after a trailing update", () =>
     Effect.gen(function* () {
-      const projectId = ProjectId.make("project-gone");
-      const now = "2026-01-01T00:00:00.000Z";
-
-      const makeProjectEvent = (
-        sequence: number,
-        type: "project.deleted" | "project.meta-updated",
-      ): OrchestrationEvent =>
-        ({
-          sequence,
-          eventId: EventId.make(`event-project-${sequence}`),
-          aggregateKind: "project",
-          aggregateId: projectId,
-          occurredAt: now,
-          commandId: null,
-          causationEventId: null,
-          correlationId: null,
-          metadata: {},
-          type,
-          payload:
-            type === "project.deleted"
-              ? { projectId, deletedAt: now }
-              : { projectId, title: "Still deleted", updatedAt: now },
-        }) as OrchestrationEvent;
-
+      let afterSequence = 0;
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            latestSequence: Effect.succeed(2),
-            readEvents: () =>
-              Stream.fromIterable([
-                makeProjectEvent(1, "project.deleted"),
-                makeProjectEvent(2, "project.meta-updated"),
-              ]),
-          },
-          projectionSnapshotQuery: {
-            getProjectShellById: () => Effect.succeedNone,
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterProject(context);
+              const projects = Context.get(context, ProjectService.ProjectService);
+              const events = Context.get(context, OrchestrationEventStore);
+              afterSequence = yield* events.latestApplicationSequence;
+              yield* projects.delete({
+                commandId: CommandId.make("router:project-delete"),
+                projectId: defaultProjectId,
+              });
+              const retained = yield* events
+                .readApplicationEvents({
+                  afterSequence,
+                  throughSequence: yield* events.latestApplicationSequence,
+                })
+                .pipe(Stream.runCollect);
+              const deleted = retained[0];
+              assertTrue(
+                deleted !== undefined &&
+                  "aggregateKind" in deleted &&
+                  deleted.aggregateKind === "project",
+              );
+              if (
+                deleted !== undefined &&
+                "aggregateKind" in deleted &&
+                deleted.aggregateKind === "project"
+              ) {
+                yield* events.appendProjectEvent({
+                  ...deleted,
+                  type: "project.meta-updated",
+                  eventId: EventId.make("router:trailing-project-update"),
+                  payload: {
+                    projectId: defaultProjectId,
+                    title: "Still deleted",
+                    updatedAt: "2026-01-01T00:00:01.000Z",
+                  },
+                });
+              }
+            }),
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({ afterSequence: 0 }).pipe(
-            Stream.take(1),
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+            afterSequence,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
             Stream.runCollect,
           ),
         ),
       );
-
-      const [first] = Array.from(items);
-      assert.equal(first?.kind, "project-removed");
-      assert.equal(first?.kind === "project-removed" ? first.projectId : null, projectId);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("stops the provider session and closes thread terminals after archive", () =>
-    Effect.gen(function* () {
-      const threadId = ThreadId.make("thread-archive");
-      const effects: string[] = [];
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const now = "2026-01-01T00:00:00.000Z";
-
-      yield* buildAppUnderTest({
-        layers: {
-          terminalManager: {
-            close: (input) =>
-              Effect.sync(() => {
-                effects.push(`terminal.close:${input.threadId}`);
-              }),
-          },
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                dispatchedCommands.push(command);
-                effects.push(`dispatch:${command.type}`);
-                return { sequence: dispatchedCommands.length };
-              }),
-          },
-          projectionSnapshotQuery: {
-            getThreadShellById: () =>
-              Effect.succeedSome(
-                makeDefaultOrchestrationThreadShell({
-                  id: threadId,
-                  updatedAt: now,
-                  session: {
-                    threadId,
-                    status: "ready",
-                    providerName: "claudeAgent",
-                    runtimeMode: "full-access",
-                    activeTurnId: null,
-                    lastError: null,
-                    updatedAt: now,
-                  },
-                }),
-              ),
-          },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const dispatchResult = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.archive",
-            commandId: CommandId.make("cmd-thread-archive"),
-            threadId,
-          }),
+      assert.isTrue(
+        items.some(
+          (item) => item.kind === "project.removed" && item.projectId === defaultProjectId,
         ),
       );
-
-      assert.equal(dispatchResult.sequence, 1);
-      assert.deepEqual(effects, [
-        "dispatch:thread.archive",
-        "dispatch:thread.session.stop",
-        `terminal.close:${threadId}`,
-      ]);
-      const sessionStopCommand = dispatchedCommands[1];
-      assert.equal(sessionStopCommand?.type, "thread.session.stop");
-      if (sessionStopCommand?.type === "thread.session.stop") {
-        assert.equal(sessionStopCommand.threadId, threadId);
-      }
+      assert.isFalse(items.some((item) => item.kind === "project.updated"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("checks session status before archiving removes the thread from active lookups", () =>
+  it.effect("persists V2 provider detach and terminal cleanup when archiving", () =>
     Effect.gen(function* () {
-      const threadId = ThreadId.make("thread-archive-precheck");
-      const effects: string[] = [];
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const now = "2026-01-01T00:00:00.000Z";
-      let archived = false;
-
+      let context!: Context.Context<RouterV2Services>;
+      const closed: string[] = [];
       yield* buildAppUnderTest({
         layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              yield* seedRouterProvider(services);
+            }),
           terminalManager: {
             close: (input) =>
               Effect.sync(() => {
-                effects.push(`terminal.close:${input.threadId}`);
-              }),
-          },
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                dispatchedCommands.push(command);
-                effects.push(`dispatch:${command.type}`);
-                if (command.type === "thread.archive") {
-                  archived = true;
-                }
-                return { sequence: dispatchedCommands.length };
-              }),
-          },
-          projectionSnapshotQuery: {
-            getThreadShellById: () =>
-              Effect.sync(() => {
-                effects.push(`query:thread-shell:${archived ? "archived" : "active"}`);
-                return archived
-                  ? Option.none()
-                  : Option.some(
-                      makeDefaultOrchestrationThreadShell({
-                        id: threadId,
-                        updatedAt: now,
-                        session: {
-                          threadId,
-                          status: "ready",
-                          providerName: "claudeAgent",
-                          runtimeMode: "full-access",
-                          activeTurnId: null,
-                          lastError: null,
-                          updatedAt: now,
-                        },
-                      }),
-                    );
+                closed.push(input.threadId);
               }),
           },
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const dispatchResult = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+      const commandId = CommandId.make("router:archive");
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
             type: "thread.archive",
-            commandId: CommandId.make("cmd-thread-archive-precheck"),
-            threadId,
+            commandId,
+            threadId: defaultThreadId,
           }),
         ),
       );
-
-      assert.equal(dispatchResult.sequence, 1);
-      assert.deepEqual(effects, [
-        "query:thread-shell:active",
-        "dispatch:thread.archive",
-        "dispatch:thread.session.stop",
-        `terminal.close:${threadId}`,
-      ]);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        ["thread.archive", "thread.session.stop"],
+      const queued = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
       );
+      assert.deepEqual(queued.map((effect) => effect.request.type).sort(), [
+        "provider-session.detach",
+        "terminal.cleanup",
+      ]);
+      assert.deepEqual(closed, []);
+      yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
+      assert.deepEqual(closed, [defaultThreadId]);
+      assert.isNotNull(
+        (yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(
+          defaultThreadId,
+        )).thread.archivedAt,
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("captures the V2 attached session before archive removes the active shell", () =>
+    Effect.gen(function* () {
+      let context!: Context.Context<RouterV2Services>;
+      let sessionId!: ProviderSessionId;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              sessionId = yield* seedRouterProvider(services);
+            }),
+        },
+      });
+      const commandId = CommandId.make("router:archive-attached");
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.archive",
+            commandId,
+            threadId: defaultThreadId,
+          }),
+        ),
+      );
+      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
+      );
+      const detach = effects.find((effect) => effect.request.type === "provider-session.detach");
+      assertTrue(detach?.request.type === "provider-session.detach");
+      assert.equal(detach.request.providerSessionId, sessionId);
+      assert.isTrue(detach.request.revokeMcpCredential);
+      const active = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getShellSnapshot({ location: "active" });
+      assert.isFalse(active.threads.some((thread) => thread.id === defaultThreadId));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("archives without dispatching session stop when the thread has no session", () =>
     Effect.gen(function* () {
-      const threadId = ThreadId.make("thread-archive-no-session");
-      const effects: string[] = [];
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-
+      let context!: Context.Context<RouterV2Services>;
+      const closed: string[] = [];
       yield* buildAppUnderTest({
         layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+            }),
           terminalManager: {
             close: (input) =>
               Effect.sync(() => {
-                effects.push(`terminal.close:${input.threadId}`);
+                closed.push(input.threadId);
               }),
-          },
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                dispatchedCommands.push(command);
-                effects.push(`dispatch:${command.type}`);
-                return { sequence: dispatchedCommands.length };
-              }),
-          },
-          projectionSnapshotQuery: {
-            getThreadShellById: () =>
-              Effect.succeedSome(
-                makeDefaultOrchestrationThreadShell({ id: threadId, session: null }),
-              ),
           },
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const dispatchResult = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+      const commandId = CommandId.make("router:archive-no-detach");
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
             type: "thread.archive",
-            commandId: CommandId.make("cmd-thread-archive-no-session"),
-            threadId,
+            commandId,
+            threadId: defaultThreadId,
           }),
         ),
       );
-
-      assert.equal(dispatchResult.sequence, 1);
-      assert.deepEqual(effects, ["dispatch:thread.archive", `terminal.close:${threadId}`]);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        ["thread.archive"],
+      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
       );
+      assert.deepEqual(
+        effects.map((effect) => effect.request.type),
+        ["terminal.cleanup"],
+      );
+      yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
+      assert.deepEqual(closed, [defaultThreadId]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -12100,707 +11573,346 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     "archives without dispatching session stop when the thread session is already stopped",
     () =>
       Effect.gen(function* () {
-        const threadId = ThreadId.make("thread-archive-stopped-session");
-        const effects: string[] = [];
-        const dispatchedCommands: Array<OrchestrationCommand> = [];
-        const now = "2026-01-01T00:00:00.000Z";
-
+        let context!: Context.Context<RouterV2Services>;
+        const closed: string[] = [];
         yield* buildAppUnderTest({
           layers: {
+            onV2Services: (services) =>
+              Effect.gen(function* () {
+                context = services;
+                yield* seedRouterThread(services);
+                yield* seedRouterProvider(services, "stopped");
+              }),
             terminalManager: {
               close: (input) =>
                 Effect.sync(() => {
-                  effects.push(`terminal.close:${input.threadId}`);
+                  closed.push(input.threadId);
                 }),
-            },
-            orchestrationEngine: {
-              dispatch: (command) =>
-                Effect.sync(() => {
-                  dispatchedCommands.push(command);
-                  effects.push(`dispatch:${command.type}`);
-                  return { sequence: dispatchedCommands.length };
-                }),
-            },
-            projectionSnapshotQuery: {
-              getThreadShellById: () =>
-                Effect.succeedSome(
-                  makeDefaultOrchestrationThreadShell({
-                    id: threadId,
-                    updatedAt: now,
-                    session: {
-                      threadId,
-                      status: "stopped",
-                      providerName: "claudeAgent",
-                      runtimeMode: "full-access",
-                      activeTurnId: null,
-                      lastError: null,
-                      updatedAt: now,
-                    },
-                  }),
-                ),
             },
           },
         });
-
-        const wsUrl = yield* getWsServerUrl("/ws");
-        const dispatchResult = yield* Effect.scoped(
-          withWsRpcClient(wsUrl, (client) =>
-            client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+        const commandId = CommandId.make("router:archive-no-detach");
+        yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
               type: "thread.archive",
-              commandId: CommandId.make("cmd-thread-archive-stopped-session"),
-              threadId,
+              commandId,
+              threadId: defaultThreadId,
             }),
           ),
         );
-
-        assert.equal(dispatchResult.sequence, 1);
-        assert.deepEqual(effects, ["dispatch:thread.archive", `terminal.close:${threadId}`]);
-        assert.deepEqual(
-          dispatchedCommands.map((command) => command.type),
-          ["thread.archive"],
+        const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+          commandId,
         );
+        assert.deepEqual(
+          effects.map((effect) => effect.request.type),
+          ["terminal.cleanup"],
+        );
+        yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
+        assert.deepEqual(closed, [defaultThreadId]);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("leaves settle cleanup to the event reactor", () =>
+  it.effect("leaves V2 settle provider detach to the durable effect worker", () =>
     Effect.gen(function* () {
-      const threadId = ThreadId.make("thread-settle");
-      const effects: string[] = [];
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const now = "2026-01-01T00:00:00.000Z";
-
+      let context!: Context.Context<RouterV2Services>;
+      const closed: string[] = [];
       yield* buildAppUnderTest({
         layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+              yield* seedRouterProvider(services);
+            }),
           terminalManager: {
             close: (input) =>
               Effect.sync(() => {
-                effects.push(`terminal.close:${input.threadId}`);
+                closed.push(input.threadId);
               }),
-          },
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                dispatchedCommands.push(command);
-                effects.push(`dispatch:${command.type}`);
-                return { sequence: dispatchedCommands.length };
-              }),
-          },
-          projectionSnapshotQuery: {
-            getThreadShellById: () =>
-              Effect.succeedSome(
-                makeDefaultOrchestrationThreadShell({
-                  id: threadId,
-                  updatedAt: now,
-                  session: {
-                    threadId,
-                    status: "ready",
-                    providerName: "claudeAgent",
-                    runtimeMode: "full-access",
-                    activeTurnId: null,
-                    lastError: null,
-                    updatedAt: now,
-                  },
-                }),
-              ),
           },
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const dispatchResult = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+      const commandId = CommandId.make("router:settle");
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
             type: "thread.settle",
-            commandId: CommandId.make("cmd-thread-settle"),
-            threadId,
+            commandId,
+            threadId: defaultThreadId,
           }),
         ),
       );
-
-      assert.equal(dispatchResult.sequence, 1);
-      assert.deepEqual(effects, ["dispatch:thread.settle"]);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        ["thread.settle"],
+      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
       );
+      assert.deepEqual(
+        effects.map((effect) => effect.request.type),
+        ["provider-session.detach"],
+      );
+      assert.deepEqual(closed, []);
+      yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
+      assert.deepEqual(closed, []);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("forwards the friendly blocked-settlement message over websocket rpc", () =>
     Effect.gen(function* () {
-      const threadId = ThreadId.make("thread-settle-blocked");
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
-            dispatch: () => Effect.fail(new OrchestrationThreadSettleBlockedError({ threadId })),
-          },
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              yield* seedRouterThread(context);
+              yield* Context.get(context, ThreadManagement.ThreadManagementService).dispatch({
+                ...routerMessageDispatch("blocked-settle"),
+                dispatchMode: { type: "defer_start" },
+              });
+            }),
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const error = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+      const failed = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
             type: "thread.settle",
-            commandId: CommandId.make("cmd-thread-settle-blocked"),
-            threadId,
+            commandId: CommandId.make("router:settle-blocked"),
+            threadId: defaultThreadId,
           }),
-        ).pipe(Effect.flip),
-      );
-
-      assert.equal(error._tag, "OrchestrationDispatchCommandError");
+        ),
+      ).pipe(Effect.result);
+      assertTrue(failed._tag === "Failure");
+      assert.equal(failed.failure._tag, "OrchestrationV2DispatchCommandError");
       assert.equal(
-        error.message,
-        "This thread still needs attention. Resolve or interrupt it first, then try again.",
+        failed.failure.message,
+        "Thread " + defaultThreadId + " has active or blocked work and cannot be settled.",
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("archives and still closes terminals when session stop fails", () =>
+  it.effect("keeps V2 archive committed when terminal cleanup fails", () =>
     Effect.gen(function* () {
-      const threadId = ThreadId.make("thread-archive-stop-failure");
-      const effects: string[] = [];
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const now = "2026-01-01T00:00:00.000Z";
-
+      let context!: Context.Context<RouterV2Services>;
+      let attempts = 0;
       yield* buildAppUnderTest({
         layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+            }),
           terminalManager: {
-            close: (input) =>
+            close: () =>
               Effect.sync(() => {
-                effects.push(`terminal.close:${input.threadId}`);
-              }),
-          },
-          orchestrationEngine: {
-            dispatch: (command) => {
-              dispatchedCommands.push(command);
-              effects.push(`dispatch:${command.type}`);
-              if (command.type === "thread.session.stop") {
-                return Effect.fail(
-                  new PersistenceSqlError({
-                    operation: "OrchestrationEventStore.append:query",
-                    detail: "simulated archive stop failure",
-                  }),
-                );
-              }
-              return Effect.succeed({ sequence: dispatchedCommands.length });
-            },
-          },
-          projectionSnapshotQuery: {
-            getThreadShellById: () =>
-              Effect.succeedSome(
-                makeDefaultOrchestrationThreadShell({
-                  id: threadId,
-                  updatedAt: now,
-                  session: {
-                    threadId,
-                    status: "ready",
-                    providerName: "claudeAgent",
-                    runtimeMode: "full-access",
-                    activeTurnId: null,
-                    lastError: null,
-                    updatedAt: now,
-                  },
-                }),
+                attempts += 1;
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new TerminalNotRunningError({
+                      threadId: defaultThreadId,
+                      terminalId: "default",
+                    }),
+                  ),
+                ),
               ),
           },
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const dispatchResult = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+      const commandId = CommandId.make("router:archive-cleanup-failure");
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
             type: "thread.archive",
-            commandId: CommandId.make("cmd-thread-archive-stop-failure"),
-            threadId,
+            commandId,
+            threadId: defaultThreadId,
           }),
         ),
       );
-
-      assert.equal(dispatchResult.sequence, 1);
-      assert.deepEqual(effects, [
-        "dispatch:thread.archive",
-        "dispatch:thread.session.stop",
-        `terminal.close:${threadId}`,
-      ]);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        ["thread.archive", "thread.session.stop"],
+      yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
+      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
+      );
+      assert.equal(attempts, 1);
+      assert.equal(effects[0]?.request.type, "terminal.cleanup");
+      assert.isFalse(effects[0]?.status === "succeeded");
+      assert.isNotNull(
+        (yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(
+          defaultThreadId,
+        )).thread.archivedAt,
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("archives and still closes terminals when session stop defects", () =>
+  it.effect("keeps V2 archive committed when terminal cleanup defects", () =>
     Effect.gen(function* () {
-      const threadId = ThreadId.make("thread-archive-stop-defect");
-      const effects: string[] = [];
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const now = "2026-01-01T00:00:00.000Z";
-
+      let context!: Context.Context<RouterV2Services>;
+      let attempts = 0;
       yield* buildAppUnderTest({
         layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterThread(services);
+            }),
           terminalManager: {
-            close: (input) =>
+            close: () =>
               Effect.sync(() => {
-                effects.push(`terminal.close:${input.threadId}`);
-              }),
+                attempts += 1;
+              }).pipe(Effect.andThen(Effect.die(new Error("synthetic terminal cleanup defect")))),
           },
-          orchestrationEngine: {
-            dispatch: (command) => {
-              dispatchedCommands.push(command);
-              effects.push(`dispatch:${command.type}`);
-              if (command.type === "thread.session.stop") {
-                return Effect.die(new Error("simulated archive stop defect"));
-              }
-              return Effect.succeed({ sequence: dispatchedCommands.length });
-            },
+        },
+      });
+      const commandId = CommandId.make("router:archive-cleanup-failure");
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.archive",
+            commandId,
+            threadId: defaultThreadId,
+          }),
+        ),
+      );
+      yield* Context.get(context, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
+      const effects = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+        commandId,
+      );
+      assert.equal(attempts, 1);
+      assert.equal(effects[0]?.request.type, "terminal.cleanup");
+      assert.isFalse(effects[0]?.status === "succeeded");
+      assert.isNotNull(
+        (yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(
+          defaultThreadId,
+        )).thread.archivedAt,
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("prepares a visible V2 worktree thread before releasing its first run", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-worktree-" });
+      const setupStarted = yield* Deferred.make<void>();
+      const setupReleased = yield* Deferred.make<void>();
+      let context!: Context.Context<RouterV2Services>;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+          gitVcsDriver: {
+            execute: () =>
+              Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
+            createWorktree: () =>
+              Effect.succeed({ worktree: { path: worktreePath, refName: "feature/router" } }),
           },
-          projectionSnapshotQuery: {
-            getThreadShellById: () =>
-              Effect.succeedSome(
-                makeDefaultOrchestrationThreadShell({
-                  id: threadId,
-                  updatedAt: now,
-                  session: {
-                    threadId,
-                    status: "ready",
-                    providerName: "claudeAgent",
-                    runtimeMode: "full-access",
-                    activeTurnId: null,
-                    lastError: null,
-                    updatedAt: now,
-                  },
-                }),
+          projectSetupScriptRunner: {
+            runForThread: () =>
+              Deferred.succeed(setupStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(setupReleased)),
+                Effect.as({ status: "no-script" as const }),
               ),
           },
         },
       });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const dispatchResult = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.archive",
-            commandId: CommandId.make("cmd-thread-archive-stop-defect"),
-            threadId,
-          }),
+      const input = {
+        ...routerLaunchInput("prepared"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
         ),
       );
-
-      assert.equal(dispatchResult.sequence, 1);
-      assert.deepEqual(effects, [
-        "dispatch:thread.archive",
-        "dispatch:thread.session.stop",
-        `terminal.close:${threadId}`,
-      ]);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        ["thread.archive", "thread.session.stop"],
-      );
+      yield* Deferred.await(setupStarted);
+      const before = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
+      assert.equal(before.messages[0]?.text, input.initialMessage.text);
+      assert.equal(before.runs[0]?.status, "preparing");
+      assert.equal(before.thread.worktreePath, worktreePath);
+      yield* Deferred.succeed(setupReleased, undefined);
+      yield* awaitRouterRunStatus(context, launched.threadId, "starting");
+      const after = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
+      assert.equal(after.runs[0]?.status, "starting");
+      assert.equal(after.messages.length, 1);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect(
-    "bootstraps first-send worktree turns on the server before dispatching turn start",
-    () =>
-      Effect.gen(function* () {
-        const dispatchedCommands: Array<OrchestrationCommand> = [];
-        const bootstrapGitOperations: string[] = [];
-        const setupLifecycle: string[] = [];
-        const refreshStatus = vi.fn((_: string) =>
-          Effect.succeed({
-            isRepo: true,
-            hasPrimaryRemote: true,
-            isDefaultRef: false,
-            refName: "t3code/bootstrap-refName",
-            hasWorkingTreeChanges: false,
-            workingTree: {
-              files: [],
-              insertions: 0,
-              deletions: 0,
-            },
-            hasUpstream: true,
-            aheadCount: 0,
-            behindCount: 0,
-            pr: null,
-          }),
-        );
-        const remoteExists = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["remoteExists"]>[0]) =>
-            Effect.sync(() => {
-              bootstrapGitOperations.push("remote-exists");
-              return true;
-            }),
-        );
-        const fetchRemote = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"]>[0]) =>
-            Effect.sync(() => {
-              bootstrapGitOperations.push("fetch");
-            }),
-        );
-        const remoteBranchExists = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["remoteBranchExists"]>[0]) =>
-            Effect.sync(() => {
-              bootstrapGitOperations.push("remote-branch-exists");
-              return true;
-            }),
-        );
-        const fetchedOriginCommit = "0123456789abcdef0123456789abcdef01234567";
-        const resolveRemoteTrackingCommit = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["resolveRemoteTrackingCommit"]>[0]) =>
-            Effect.sync(() => {
-              bootstrapGitOperations.push("resolve-remote-commit");
-              return {
-                commitSha: fetchedOriginCommit,
-                remoteRefName: "origin/main",
-              };
-            }),
-        );
-        const createWorktree = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-            Effect.sync(() => {
-              bootstrapGitOperations.push("create-worktree");
-              return {
-                worktree: {
-                  refName: "t3code/bootstrap-refName",
-                  path: "/tmp/bootstrap-worktree",
-                },
-              };
-            }),
-        );
-        const runForThread = vi.fn(
-          (
-            _: Parameters<
-              ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"]
-            >[0],
-          ) =>
-            Effect.sync(() => {
-              setupLifecycle.push("setup");
-              return {
-                status: "started" as const,
-                scriptId: "setup",
-                scriptName: "Setup",
-                scriptCommand: "npm install",
-                terminalId: "setup-setup",
-                cwd: "/tmp/bootstrap-worktree",
-                async: true,
-              };
-            }),
-        );
-
-        yield* buildAppUnderTest({
-          layers: {
-            vcsDriver: {
-              isInsideWorkTree: () => Effect.succeed(true),
-            },
-            gitVcsDriver: {
-              execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
-              remoteExists,
-              fetchRemote,
-              remoteBranchExists,
-              resolveRemoteTrackingCommit,
-              createWorktree,
-            },
-            vcsStatusBroadcaster: {
-              refreshStatus,
-            },
-            orchestrationEngine: {
-              dispatch: (command) =>
-                Effect.sync(() => {
-                  dispatchedCommands.push(command);
-                  return { sequence: dispatchedCommands.length };
-                }),
-              readEvents: () => Stream.empty,
-              acquireWorktreeOwnership: (threadId) =>
-                Effect.sync(() => {
-                  setupLifecycle.push("ownership");
-                  return {
-                    resourcePath: "/tmp/bootstrap-worktree",
-                    leaseId: "lease-bootstrap",
-                    ownerThreadId: threadId,
-                    ownerIncarnation: "event-thread-bootstrap-created",
-                    branch: "t3code/bootstrap-refName",
-                    acquiredAtMs: 0,
-                    renewedAtMs: 0,
-                    expiresAtMs: 300_000,
-                  };
-                }),
-            },
-            projectSetupScriptRunner: {
-              runForThread,
-            },
-          },
-        });
-
-        const createdAt = "2026-01-01T00:00:00.000Z";
-        const wsUrl = yield* getWsServerUrl("/ws");
-        const response = yield* Effect.scoped(
-          withWsRpcClient(wsUrl, (client) =>
-            client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-              type: "thread.turn.start",
-              commandId: CommandId.make("cmd-bootstrap-turn-start"),
-              threadId: ThreadId.make("thread-bootstrap"),
-              message: {
-                messageId: MessageId.make("msg-bootstrap"),
-                role: "user",
-                text: "hello",
-                attachments: [],
-              },
-              modelSelection: defaultModelSelection,
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              bootstrap: {
-                createThread: {
-                  projectId: defaultProjectId,
-                  title: "Bootstrap Thread",
-                  modelSelection: defaultModelSelection,
-                  runtimeMode: "full-access",
-                  interactionMode: "default",
-                  branch: "main",
-                  worktreePath: null,
-                  createdAt,
-                },
-                prepareWorktree: {
-                  projectCwd: "/tmp/project",
-                  baseBranch: "main",
-                  branch: "t3code/bootstrap-refName",
-                  startFromOrigin: true,
-                },
-                runSetupScript: true,
-              },
-              createdAt,
-            }),
-          ),
-        );
-
-        assert.equal(response.sequence, 8);
-        assert.deepEqual(
-          dispatchedCommands.map((command) => command.type),
-          [
-            "thread.create",
-            "thread.message.user.append",
-            "thread.activity.append",
-            "thread.session.set",
-            "thread.meta.update",
-            "thread.activity.append",
-            "thread.activity.append",
-            "thread.turn.start",
-            "thread.activity.append",
-          ],
-        );
-        // The checkout can take minutes, so the thread reads as working from
-        // the moment setup starts rather than only once the turn is dispatched.
-        const preparingCommand = dispatchedCommands[3];
-        assertTrue(preparingCommand?.type === "thread.session.set");
-        if (preparingCommand?.type === "thread.session.set") {
-          assert.equal(preparingCommand.session.status, "starting");
-          assert.equal(preparingCommand.session.activeTurnId, null);
-          assert.equal(
-            preparingCommand.session.providerInstanceId,
-            defaultModelSelection.instanceId,
-          );
-        }
-        assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
-          cwd: "/tmp/project",
-          refName: fetchedOriginCommit,
-          newRefName: "t3code/bootstrap-refName",
-          baseRefName: "main",
-          path: null,
-        });
-        assert.deepEqual(fetchRemote.mock.calls[0]?.[0], {
-          cwd: "/tmp/project",
-          remoteName: "origin",
-          refName: "main",
-        });
-        assert.deepEqual(remoteBranchExists.mock.calls[0]?.[0], {
-          cwd: "/tmp/project",
-          remoteName: "origin",
-          refName: "main",
-        });
-        assert.deepEqual(resolveRemoteTrackingCommit.mock.calls[0]?.[0], {
-          cwd: "/tmp/project",
-          refName: "main",
-          fallbackRemoteName: "origin",
-        });
-        assert.deepEqual(bootstrapGitOperations, [
-          "remote-exists",
-          "fetch",
-          "remote-branch-exists",
-          "resolve-remote-commit",
-          "create-worktree",
-        ]);
-        const runForThreadInput = runForThread.mock.calls[0]?.[0];
-        assert.deepEqual(
-          runForThreadInput && {
-            threadId: runForThreadInput.threadId,
-            projectId: runForThreadInput.projectId,
-            projectCwd: runForThreadInput.projectCwd,
-            worktreePath: runForThreadInput.worktreePath,
-          },
-          {
-            threadId: ThreadId.make("thread-bootstrap"),
-            projectId: defaultProjectId,
-            projectCwd: "/tmp/project",
-            worktreePath: "/tmp/bootstrap-worktree",
-          },
-        );
-        // Worktree bootstraps observe script completion so the setup card can show the exit code.
-        assert.isDefined(runForThreadInput?.observeCompletion);
-        assert.deepEqual(refreshStatus.mock.calls[0]?.[0], "/tmp/bootstrap-worktree");
-        assert.deepEqual(setupLifecycle, ["ownership", "setup"]);
-
-        const setupActivities = dispatchedCommands.filter(
-          (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
-            command.type === "thread.activity.append",
-        );
-        assert.deepEqual(
-          setupActivities.map((command) => command.activity.kind),
-          ["worktree-setup", "setup-script.requested", "setup-script.started", "worktree-setup"],
-        );
-        // The setup record is upserted under one id: running once the thread
-        // exists, settled at the end, so a late client renders the outcome
-        // without the in-memory tracker.
-        const runningActivity = setupActivities[0]?.activity;
-        const settledActivity = setupActivities.at(-1)?.activity;
-        assert.equal(runningActivity?.id, settledActivity?.id);
-        assert.equal(settledActivity?.tone, "info");
-        assertTrue(Schema.is(WorktreeSetupSnapshot)(runningActivity?.payload));
-        if (Schema.is(WorktreeSetupSnapshot)(runningActivity?.payload)) {
-          assert.equal(runningActivity.payload.phase, "running");
-        }
-        assertTrue(Schema.is(WorktreeSetupSnapshot)(settledActivity?.payload));
-        if (Schema.is(WorktreeSetupSnapshot)(settledActivity?.payload)) {
-          assert.equal(settledActivity.payload.phase, "done");
-          assert.equal(settledActivity.payload.threadId, ThreadId.make("thread-bootstrap"));
-        }
-        const finalCommand = dispatchedCommands[7];
-        assertTrue(finalCommand?.type === "thread.turn.start");
-        if (finalCommand?.type === "thread.turn.start") {
-          assert.equal(finalCommand.bootstrap, undefined);
-        }
-      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect.each([
     { caseName: "the origin remote is missing", hasOrigin: false },
     { caseName: "the base branch exists only locally", hasOrigin: true },
-  ])("falls back to the local base branch when $caseName", ({ hasOrigin }) =>
+  ])("uses the local V2 worktree base when $caseName", ({ hasOrigin }) =>
     Effect.gen(function* () {
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const remoteExists = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["remoteExists"]>[0]) =>
-          Effect.succeed(hasOrigin),
-      );
-      const fetchRemote = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"]>[0]) => Effect.void,
-      );
-      const resolveRemoteTrackingCommit = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["resolveRemoteTrackingCommit"]>[0]) =>
-          Effect.succeed({
-            commitSha: "0123456789abcdef0123456789abcdef01234567",
-            remoteRefName: "origin/main",
-          }),
-      );
-      const remoteBranchExists = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["remoteBranchExists"]>[0]) =>
-          Effect.succeed(false),
-      );
-      const createWorktree = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-          Effect.succeed({
-            worktree: {
-              refName: "t3code/bootstrap-refName",
-              path: "/tmp/bootstrap-worktree",
-            },
-          }),
-      );
-
+      const fs = yield* FileSystem.FileSystem;
+      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-local-base-" });
+      let context!: Context.Context<RouterV2Services>;
+      let fetches = 0;
+      let remoteChecks = 0;
+      let createInput:
+        | Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]
+        | undefined;
       yield* buildAppUnderTest({
         layers: {
-          vcsDriver: {
-            isInsideWorkTree: () => Effect.succeed(true),
-          },
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
           gitVcsDriver: {
-            execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
-            remoteExists,
-            fetchRemote,
-            remoteBranchExists,
-            resolveRemoteTrackingCommit,
-            createWorktree,
-          },
-          orchestrationEngine: {
-            dispatch: (command) =>
+            execute: () =>
+              Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
+            remoteExists: () => Effect.succeed(hasOrigin),
+            fetchRemote: () =>
               Effect.sync(() => {
-                dispatchedCommands.push(command);
-                return { sequence: dispatchedCommands.length };
+                fetches += 1;
               }),
-            readEvents: () => Stream.empty,
+            resolveRemoteTrackingCommitIfExists: () =>
+              Effect.sync(() => {
+                remoteChecks += 1;
+                return null;
+              }),
+            remoteBranchExists: () => Effect.die("The origin base must use a single commit lookup"),
+            resolveRemoteTrackingCommit: () =>
+              Effect.die("The origin base must use a single commit lookup"),
+            createWorktree: (input) =>
+              Effect.sync(() => {
+                createInput = input;
+                return { worktree: { path: worktreePath, refName: "feature/router" } };
+              }),
           },
         },
       });
-
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const wsUrl = yield* getWsServerUrl("/ws");
-      yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.turn.start",
-            commandId: CommandId.make("cmd-bootstrap-turn-start-no-origin"),
-            threadId: ThreadId.make("thread-bootstrap-no-origin"),
-            message: {
-              messageId: MessageId.make("msg-bootstrap-no-origin"),
-              role: "user",
-              text: "hello",
-              attachments: [],
-            },
-            modelSelection: defaultModelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            bootstrap: {
-              createThread: {
-                projectId: defaultProjectId,
-                title: "Bootstrap Thread",
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: "main",
-                worktreePath: null,
-                createdAt,
-              },
-              prepareWorktree: {
-                projectCwd: "/tmp/project",
-                baseBranch: "main",
-                branch: "t3code/bootstrap-refName",
-                startFromOrigin: true,
-              },
-            },
-            createdAt,
-          }),
+      const input = {
+        ...routerLaunchInput("local-base"),
+        workspaceStrategy: {
+          type: "worktree" as const,
+          baseRef: "main",
+          branch: "feature/router",
+          startFromOrigin: true,
+        },
+      };
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
         ),
       );
-
-      assert.deepEqual(remoteExists.mock.calls[0]?.[0], {
-        cwd: "/tmp/project",
-        remoteName: "origin",
-      });
-      assert.equal(fetchRemote.mock.calls.length, hasOrigin ? 1 : 0);
-      assert.equal(remoteBranchExists.mock.calls.length, hasOrigin ? 1 : 0);
-      if (hasOrigin) {
-        assert.deepEqual(remoteBranchExists.mock.calls[0]?.[0], {
-          cwd: "/tmp/project",
-          remoteName: "origin",
-          refName: "main",
-        });
-      }
-      assert.equal(resolveRemoteTrackingCommit.mock.calls.length, 0);
-      assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
-        cwd: "/tmp/project",
-        refName: "main",
-        newRefName: "t3code/bootstrap-refName",
-        baseRefName: "main",
-        path: null,
-      });
+      yield* awaitRouterRunStatus(context, launched.threadId, "starting");
+      assert.equal(fetches, hasOrigin ? 1 : 0);
+      assert.equal(remoteChecks, hasOrigin ? 1 : 0);
+      assert.equal(createInput?.refName, "main");
+      assert.equal(createInput?.baseRefName, "main");
+      assert.equal(
+        (yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(
+          launched.threadId,
+        )).thread.worktreePath,
+        worktreePath,
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -12809,195 +11921,135 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     { caseName: "a base without a commit", isRepository: true, failFetch: false },
     { caseName: "a fetch failure", isRepository: true, failFetch: true },
   ])(
-    "rejects required worktree bootstrap before creating a thread for $caseName",
+    "keeps the V2 failed worktree request visible and prevents provider start for $caseName",
     ({ isRepository, failFetch }) =>
       Effect.gen(function* () {
-        const dispatchedCommands: Array<OrchestrationCommand> = [];
-        const createWorktree = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-            Effect.die(new Error("createWorktree must not run before a valid base is found")),
-        );
-
+        let context!: Context.Context<RouterV2Services>;
+        let worktrees = 0;
         yield* buildAppUnderTest({
           layers: {
-            vcsDriver: {
-              isInsideWorkTree: () => Effect.succeed(isRepository),
-            },
+            onV2Services: (services) =>
+              Effect.gen(function* () {
+                context = services;
+                yield* seedRouterProject(services);
+              }),
+            vcsDriver: { isInsideWorkTree: () => Effect.succeed(isRepository) },
             gitVcsDriver: {
               execute: () =>
-                Effect.succeed({
-                  ...SUCCESSFUL_GIT_EXECUTION,
-                  exitCode: ChildProcessSpawner.ExitCode(128),
-                  stderr: "fatal: Needed a single revision",
-                }),
+                Effect.succeed(
+                  failFetch
+                    ? { ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }
+                    : {
+                        ...SUCCESSFUL_GIT_EXECUTION,
+                        exitCode: ChildProcessSpawner.ExitCode(128),
+                        stderr: "fatal: Needed a single revision",
+                      },
+                ),
               remoteExists: () => Effect.succeed(true),
-              fetchRemote: () => Effect.die(new Error("fetch failed before thread creation")),
-              createWorktree,
-            },
-            orchestrationEngine: {
-              dispatch: (command) =>
+              fetchRemote: (input) =>
+                Effect.fail(
+                  new GitCommandError({
+                    operation: "synthetic.fetch",
+                    command: "git",
+                    cwd: input.cwd,
+                    detail: "synthetic fetch failed",
+                  }),
+                ),
+              createWorktree: () =>
                 Effect.sync(() => {
-                  dispatchedCommands.push(command);
-                  return { sequence: dispatchedCommands.length };
-                }),
-              readEvents: () => Stream.empty,
+                  worktrees += 1;
+                }).pipe(Effect.andThen(Effect.die("Invalid worktree base must not provision"))),
             },
           },
         });
-
-        const createdAt = "2026-01-01T00:00:00.000Z";
-        const wsUrl = yield* getWsServerUrl("/ws");
-        const result = yield* Effect.scoped(
-          withWsRpcClient(wsUrl, (client) =>
-            client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-              type: "thread.turn.start",
-              commandId: CommandId.make("cmd-required-worktree"),
-              threadId: ThreadId.make("thread-required-worktree"),
-              message: {
-                messageId: MessageId.make("msg-required-worktree"),
-                role: "user",
-                text: "hello",
-                attachments: [],
-              },
-              modelSelection: defaultModelSelection,
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              bootstrap: {
-                createThread: {
-                  projectId: defaultProjectId,
-                  title: "Bootstrap Thread",
-                  modelSelection: defaultModelSelection,
-                  runtimeMode: "full-access",
-                  interactionMode: "default",
-                  branch: "main",
-                  worktreePath: null,
-                  createdAt,
-                },
-                prepareWorktree: {
-                  projectCwd: "/tmp/project",
-                  baseBranch: "main",
-                  requireWorktree: true,
-                  startFromOrigin: failFetch,
-                },
-              },
-              createdAt,
-            }),
-          ).pipe(Effect.result),
+        const input = {
+          ...routerLaunchInput("required-worktree"),
+          workspaceStrategy: {
+            type: "worktree" as const,
+            baseRef: "main",
+            branch: "feature/router",
+            startFromOrigin: failFetch,
+          },
+        };
+        const launched = yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
+          ),
         );
-
-        assertTrue(result._tag === "Failure");
-        assertTrue(result.failure._tag === "OrchestrationDispatchCommandError");
-        assert.strictEqual(result.failure.bootstrapThreadDisposition, "not-created");
-        assert.include(
-          result.failure.message,
-          failFetch ? "fetch failed" : "separate worktree requires",
+        yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+        const projection = yield* Context.get(
+          context,
+          ThreadManagement.ThreadManagementService,
+        ).getThreadProjection(launched.threadId);
+        assert.equal(projection.messages[0]?.text, input.initialMessage.text);
+        assert.equal(projection.runs[0]?.status, "failed");
+        assert.isNull(projection.thread.deletedAt);
+        assert.isNull(projection.thread.worktreePath);
+        const outbox = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+          CommandId.make(input.commandId + ":release"),
         );
-        assert.equal(createWorktree.mock.calls.length, 0);
-        assert.deepEqual(
-          dispatchedCommands.map((command) => command.type),
-          ["thread.activity.append"],
-        );
+        assert.isFalse(outbox.some((effect) => effect.request.type === "provider-turn.start"));
+        assert.equal(worktrees, 0);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("falls back to the project checkout when worktree mode targets a non-repository", () =>
+  it.effect("keeps the V2 failed thread visible when worktree mode targets a non-repository", () =>
     Effect.gen(function* () {
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const createWorktree = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-          Effect.die(new Error("createWorktree must not run for a non-repository")),
-      );
-
+      let context!: Context.Context<RouterV2Services>;
+      let worktrees = 0;
       yield* buildAppUnderTest({
         layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(false) },
           gitVcsDriver: {
             execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
-            createWorktree,
-          },
-          orchestrationEngine: {
-            dispatch: (command) =>
+            createWorktree: () =>
               Effect.sync(() => {
-                dispatchedCommands.push(command);
-                return { sequence: dispatchedCommands.length };
-              }),
-            readEvents: () => Stream.empty,
+                worktrees += 1;
+              }).pipe(
+                Effect.andThen(Effect.die("Invalid worktree base must not create a worktree")),
+              ),
           },
         },
       });
-
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const response = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.turn.start",
-            commandId: CommandId.make("cmd-bootstrap-turn-start-non-repo"),
-            threadId: ThreadId.make("thread-bootstrap-non-repo"),
-            message: {
-              messageId: MessageId.make("msg-bootstrap-non-repo"),
-              role: "user",
-              text: "hello",
-              attachments: [],
-            },
-            modelSelection: defaultModelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            bootstrap: {
-              createThread: {
-                projectId: defaultProjectId,
-                title: "Bootstrap Thread",
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: null,
-                worktreePath: null,
-                createdAt,
-              },
-              prepareWorktree: {
-                projectCwd: "/tmp/project",
-                baseBranch: "main",
-                branch: "t3code/bootstrap-refName",
-              },
-              runSetupScript: true,
-            },
-            createdAt,
-          }),
+      const input = {
+        ...routerLaunchInput("invalid-base"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
         ),
       );
-
-      assert.equal(response.sequence, 4);
-      assert.equal(createWorktree.mock.calls.length, 0);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        [
-          "thread.create",
-          "thread.message.user.append",
-          "thread.activity.append",
-          "thread.turn.start",
-          "thread.activity.append",
-        ],
-      );
-      const finalCommand = dispatchedCommands[3];
-      assertTrue(finalCommand?.type === "thread.turn.start");
-      if (finalCommand?.type === "thread.turn.start") {
-        assert.equal(finalCommand.bootstrap, undefined);
-      }
+      yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+      const projection = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
+      assert.equal(projection.messages[0]?.text, input.initialMessage.text);
+      assert.equal(projection.runs[0]?.status, "failed");
+      assert.isNull(projection.thread.deletedAt);
+      assert.isNull(projection.thread.worktreePath);
+      assert.equal(worktrees, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("falls back to the project checkout when the worktree base has no commit", () =>
+  it.effect("keeps the V2 failed thread visible when the worktree base has no commit", () =>
     Effect.gen(function* () {
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const createWorktree = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-          Effect.die(new Error("createWorktree must not run without a base commit")),
-      );
-
+      let context!: Context.Context<RouterV2Services>;
+      let worktrees = 0;
       yield* buildAppUnderTest({
         layers: {
-          vcsDriver: {
-            isInsideWorkTree: () => Effect.succeed(true),
-          },
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
           gitVcsDriver: {
             execute: () =>
               Effect.succeed({
@@ -13005,327 +12057,128 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 exitCode: ChildProcessSpawner.ExitCode(128),
                 stderr: "fatal: Needed a single revision",
               }),
-            createWorktree,
-          },
-          orchestrationEngine: {
-            dispatch: (command) =>
+            createWorktree: () =>
               Effect.sync(() => {
-                dispatchedCommands.push(command);
-                return { sequence: dispatchedCommands.length };
-              }),
-            readEvents: () => Stream.empty,
+                worktrees += 1;
+              }).pipe(
+                Effect.andThen(Effect.die("Invalid worktree base must not create a worktree")),
+              ),
           },
         },
       });
-
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const response = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.turn.start",
-            commandId: CommandId.make("cmd-bootstrap-turn-start-unborn-head"),
-            threadId: ThreadId.make("thread-bootstrap-unborn-head"),
-            message: {
-              messageId: MessageId.make("msg-bootstrap-unborn-head"),
-              role: "user",
-              text: "hello",
-              attachments: [],
-            },
-            modelSelection: defaultModelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            bootstrap: {
-              createThread: {
-                projectId: defaultProjectId,
-                title: "Bootstrap Thread",
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: "main",
-                worktreePath: null,
-                createdAt,
-              },
-              prepareWorktree: {
-                projectCwd: "/tmp/project",
-                baseBranch: "main",
-                branch: "t3code/bootstrap-refName",
-              },
-              runSetupScript: true,
-            },
-            createdAt,
-          }),
+      const input = {
+        ...routerLaunchInput("invalid-base"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
         ),
       );
-
-      assert.equal(response.sequence, 4);
-      assert.equal(createWorktree.mock.calls.length, 0);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        [
-          "thread.create",
-          "thread.message.user.append",
-          "thread.activity.append",
-          "thread.turn.start",
-          "thread.activity.append",
-        ],
-      );
+      yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+      const projection = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
+      assert.equal(projection.messages[0]?.text, input.initialMessage.text);
+      assert.equal(projection.runs[0]?.status, "failed");
+      assert.isNull(projection.thread.deletedAt);
+      assert.isNull(projection.thread.worktreePath);
+      assert.equal(worktrees, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("records setup-script failures without aborting bootstrap turn start", () =>
+  it.effect("keeps the V2 first message visible and fails its run when setup cannot start", () =>
     Effect.gen(function* () {
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const createWorktree = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-          Effect.succeed({
-            worktree: {
-              refName: "t3code/bootstrap-refName",
-              path: "/tmp/bootstrap-worktree",
-            },
-          }),
-      );
-      const runForThread = vi.fn(
-        (
-          input: Parameters<
-            ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"]
-          >[0],
-        ) =>
-          Effect.fail(
-            new ProjectSetupScriptRunner.ProjectSetupScriptOperationError({
-              threadId: input.threadId,
-              worktreePath: input.worktreePath,
-              operation: "openTerminal",
-              cause: { message: "pty unavailable" },
+      let context!: Context.Context<RouterV2Services>;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
             }),
-          ),
-      );
-
-      yield* buildAppUnderTest({
-        layers: {
-          vcsDriver: {
-            isInsideWorkTree: () => Effect.succeed(true),
-          },
-          gitVcsDriver: {
-            execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
-            createWorktree,
-          },
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                dispatchedCommands.push(command);
-                return { sequence: dispatchedCommands.length };
-              }),
-            readEvents: () => Stream.empty,
-          },
           projectSetupScriptRunner: {
-            runForThread,
+            runForThread: (input) =>
+              Effect.fail(
+                new ProjectSetupScriptRunner.ProjectSetupScriptOperationError({
+                  threadId: input.threadId,
+                  worktreePath: input.worktreePath,
+                  operation: "openTerminal",
+                  cause: new Error("synthetic pty unavailable"),
+                }),
+              ),
           },
         },
       });
-
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const response = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.turn.start",
-            commandId: CommandId.make("cmd-bootstrap-turn-start-setup-failure"),
-            threadId: ThreadId.make("thread-bootstrap-setup-failure"),
-            message: {
-              messageId: MessageId.make("msg-bootstrap-setup-failure"),
-              role: "user",
-              text: "hello",
-              attachments: [],
-            },
-            modelSelection: defaultModelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            bootstrap: {
-              createThread: {
-                projectId: defaultProjectId,
-                title: "Bootstrap Thread",
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: "main",
-                worktreePath: null,
-                createdAt,
-              },
-              prepareWorktree: {
-                projectCwd: "/tmp/project",
-                baseBranch: "main",
-                branch: "t3code/bootstrap-refName",
-              },
-              runSetupScript: true,
-            },
-            createdAt,
-          }),
+      const input = routerLaunchInput("setup-failure");
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
         ),
       );
-
-      assert.equal(response.sequence, 7);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        [
-          "thread.create",
-          "thread.message.user.append",
-          "thread.activity.append",
-          "thread.session.set",
-          "thread.meta.update",
-          "thread.activity.append",
-          "thread.turn.start",
-          "thread.activity.append",
-        ],
-      );
-      const setupFailureActivity = dispatchedCommands.find(
-        (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
-          command.type === "thread.activity.append" && command.activity.kind !== "worktree-setup",
-      );
-      assert.equal(setupFailureActivity?.activity.kind, "setup-script.failed");
-      assert.deepEqual(setupFailureActivity?.activity.payload, {
-        detail: "pty unavailable",
-        worktreePath: "/tmp/bootstrap-worktree",
-      });
-      assertTrue(dispatchedCommands.every((command) => command.type !== "thread.delete"));
+      yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+      const projection = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
+      assert.equal(projection.runs[0]?.status, "failed");
+      assert.equal(projection.messages[0]?.text, input.initialMessage.text);
+      assert.isNull(projection.thread.deletedAt);
+      assert.isTrue(JSON.stringify(projection.turnItems).includes("synthetic pty unavailable"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("does not misattribute setup activity dispatch failures as setup launch failures", () =>
+  it.effect("keeps V2 preparation progress failure distinct from setup launch failure", () =>
     Effect.gen(function* () {
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const createWorktree = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-          Effect.succeed({
-            worktree: {
-              refName: "t3code/bootstrap-refName",
-              path: "/tmp/bootstrap-worktree",
-            },
-          }),
-      );
-      const runForThread = vi.fn(
-        (
-          _: Parameters<
-            ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"]
-          >[0],
-        ) =>
-          Effect.succeed({
-            status: "started" as const,
-            scriptId: "setup",
-            scriptName: "Setup",
-            scriptCommand: "npm install",
-            terminalId: "setup-setup",
-            cwd: "/tmp/bootstrap-worktree",
-            async: true,
-          }),
-      );
-      let setupActivityAppendAttempt = 0;
-
+      let context!: Context.Context<RouterV2Services>;
+      let setupCalls = 0;
       yield* buildAppUnderTest({
         layers: {
-          vcsDriver: {
-            isInsideWorkTree: () => Effect.succeed(true),
-          },
-          gitVcsDriver: {
-            execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
-            createWorktree,
-          },
-          orchestrationEngine: {
-            dispatch: (command) => {
-              if (
-                command.type === "thread.activity.append" &&
-                command.activity.kind.startsWith("setup-script.")
-              ) {
-                setupActivityAppendAttempt += 1;
-                if (setupActivityAppendAttempt === 2) {
-                  return Effect.fail(
-                    new PersistenceSqlError({
-                      operation: "OrchestrationEventStore.append:query",
-                      detail: "failed to append setup-script.started activity",
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            dispatch: (command) =>
+              command.type === "prepared-run.progress" && command.phase === "setup"
+                ? Effect.fail(
+                    new Orchestrator.OrchestratorDispatchError({
+                      commandId: command.commandId,
+                      commandType: command.type,
+                      cause: "synthetic preparation progress refused",
                     }),
-                  );
-                }
-              }
-
-              return Effect.sync(() => {
-                dispatchedCommands.push(command);
-                return { sequence: dispatchedCommands.length };
-              });
-            },
-            readEvents: () => Stream.empty,
-          },
+                  )
+                : service.dispatch(command),
+          }),
           projectSetupScriptRunner: {
-            runForThread,
+            runForThread: () =>
+              Effect.sync(() => {
+                setupCalls += 1;
+                return { status: "no-script" as const };
+              }),
           },
         },
       });
-
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const response = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.turn.start",
-            commandId: CommandId.make("cmd-bootstrap-turn-start-setup-activity-failure"),
-            threadId: ThreadId.make("thread-bootstrap-setup-activity-failure"),
-            message: {
-              messageId: MessageId.make("msg-bootstrap-setup-activity-failure"),
-              role: "user",
-              text: "hello",
-              attachments: [],
-            },
-            modelSelection: defaultModelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            bootstrap: {
-              createThread: {
-                projectId: defaultProjectId,
-                title: "Bootstrap Thread",
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: "main",
-                worktreePath: null,
-                createdAt,
-              },
-              prepareWorktree: {
-                projectCwd: "/tmp/project",
-                baseBranch: "main",
-                branch: "t3code/bootstrap-refName",
-              },
-              runSetupScript: true,
-            },
-            createdAt,
-          }),
+      const launched = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[ORCHESTRATION_V2_WS_METHODS.launchThread](routerLaunchInput("progress-failure")),
         ),
       );
-
-      assert.equal(response.sequence, 7);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        [
-          "thread.create",
-          "thread.message.user.append",
-          "thread.activity.append",
-          "thread.session.set",
-          "thread.meta.update",
-          "thread.activity.append",
-          "thread.turn.start",
-          "thread.activity.append",
-        ],
+      yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+      const projection = yield* Context.get(
+        context,
+        ThreadManagement.ThreadManagementService,
+      ).getThreadProjection(launched.threadId);
+      assert.equal(setupCalls, 0);
+      assert.equal(projection.runs[0]?.status, "failed");
+      assert.isTrue(
+        JSON.stringify(projection.turnItems).includes("synthetic preparation progress refused"),
       );
-      const setupActivities = dispatchedCommands.filter(
-        (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
-          command.type === "thread.activity.append",
-      );
-      assert.deepEqual(
-        setupActivities.map((command) => command.activity.kind),
-        ["worktree-setup", "setup-script.requested", "worktree-setup"],
-      );
-      assertTrue(
-        setupActivities.every((command) => command.activity.kind !== "setup-script.failed"),
-      );
-      assertTrue(dispatchedCommands.every((command) => command.type !== "thread.delete"));
+      assert.isTrue(JSON.stringify(projection.turnItems).includes("update thread"));
+      assert.isFalse(JSON.stringify(projection.turnItems).includes("run setup script"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -13341,507 +12194,300 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       cancel: false,
     },
     {
-      caseName: "cancelling worktree setup publishes its outcome and cleans up the thread",
+      caseName:
+        "cancelling worktree setup publishes its outcome and keeps the failed thread visible",
       async: false,
       cancel: true,
     },
   ])("$caseName", ({ async, cancel }) =>
     Effect.gen(function* () {
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const fs = yield* FileSystem.FileSystem;
+      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-setup-timing-" });
+      const completionEntered = yield* Deferred.make<void>();
       const scriptExit = yield* Deferred.make<void>();
-      const runForThread = vi.fn(
-        (
-          _: Parameters<
-            ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"]
-          >[0],
-        ) =>
-          Effect.succeed({
-            status: "started" as const,
-            scriptId: "setup",
-            scriptName: "Setup",
-            scriptCommand: "npm install",
-            terminalId: "setup-setup",
-            cwd: "/tmp/bootstrap-worktree",
-            async,
-            completion: Deferred.await(scriptExit).pipe(Effect.as({ exitCode: 0, durationMs: 1 })),
-          }),
-      );
-
+      let context!: Context.Context<RouterV2Services>;
       yield* buildAppUnderTest({
         layers: {
-          vcsDriver: {
-            isInsideWorkTree: () => Effect.succeed(true),
-          },
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
           gitVcsDriver: {
-            execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
+            execute: () =>
+              Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
             createWorktree: () =>
-              Effect.succeed({
-                worktree: {
-                  refName: "t3code/bootstrap-refName",
-                  path: "/tmp/bootstrap-worktree",
-                },
-              }),
+              Effect.succeed({ worktree: { path: worktreePath, refName: "feature/router" } }),
+            removeWorktree: () => Effect.void,
           },
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                dispatchedCommands.push(command);
-                return { sequence: dispatchedCommands.length };
-              }),
-            readEvents: () => Stream.empty,
-          },
+          terminalManager: { close: () => Effect.void },
           projectSetupScriptRunner: {
-            runForThread,
+            runForThread: (input) =>
+              Effect.succeed({
+                status: "started" as const,
+                scriptId: "router:setup",
+                scriptName: "Synthetic setup",
+                scriptCommand: "synthetic",
+                terminalId: "router:setup",
+                cwd: input.worktreePath,
+                async,
+                completion: Deferred.succeed(completionEntered, undefined).pipe(
+                  Effect.andThen(Deferred.await(scriptExit)),
+                  Effect.as({ exitCode: 0, durationMs: 0 }),
+                ),
+              }),
           },
         },
       });
-
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const threadId = ThreadId.make(`thread-bootstrap-${async ? "async" : "sync"}-setup`);
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const dispatchFiber = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.turn.start",
-            commandId: CommandId.make(`cmd-bootstrap-${async ? "async" : "sync"}-setup`),
-            threadId,
-            message: {
-              messageId: MessageId.make("msg-bootstrap-setup"),
-              role: "user",
-              text: "hello",
-              attachments: [],
-            },
-            modelSelection: defaultModelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            bootstrap: {
-              createThread: {
-                projectId: defaultProjectId,
-                title: "Bootstrap Thread",
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: "main",
-                worktreePath: null,
-                createdAt,
-              },
-              prepareWorktree: {
-                projectCwd: "/tmp/project",
-                baseBranch: "main",
-                branch: "t3code/bootstrap-refName",
-              },
-              runSetupScript: true,
-            },
-            createdAt,
+      const input = {
+        ...routerLaunchInput("setup-timing"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread](input);
+            yield* Deferred.await(completionEntered);
+            const before = yield* Context.get(
+              context,
+              ThreadManagement.ThreadManagementService,
+            ).getThreadProjection(launched.threadId);
+            assert.equal(before.runs[0]?.status, async ? "starting" : "preparing");
+            if (cancel) {
+              assert.deepEqual(
+                yield* client[WS_METHODS.worktreeSetupCancel]({ threadId: launched.threadId }),
+                { cancelled: true },
+              );
+              yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+            } else {
+              yield* Deferred.succeed(scriptExit, undefined);
+              yield* awaitRouterRunStatus(context, launched.threadId, "starting");
+            }
+            const after = yield* Context.get(
+              context,
+              ThreadManagement.ThreadManagementService,
+            ).getThreadProjection(launched.threadId);
+            assert.isNull(after.thread.deletedAt);
+            assert.equal(after.messages.length, 1);
+            assert.equal(after.runs[0]?.status, cancel ? "failed" : "starting");
           }),
         ),
-      ).pipe(Effect.forkChild);
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
 
-      const turnStarted = () =>
-        dispatchedCommands.some((command) => command.type === "thread.turn.start");
-      const snapshotWhere = (predicate: (snapshot: WorktreeSetupSnapshot) => boolean) =>
-        Effect.scoped(
-          withWsRpcClient(wsUrl, (client) =>
-            client[WS_METHODS.subscribeWorktreeSetup]({ threadId }).pipe(
-              Stream.filter(
-                (snapshot): snapshot is WorktreeSetupSnapshot =>
-                  snapshot !== null && predicate(snapshot),
-              ),
-              Stream.runHead,
-              Effect.map(Option.getOrThrow),
-            ),
+  it.effect(
+    "keeps a V2 failed worktree thread and its first message visible after a preparation defect",
+    () =>
+      Effect.gen(function* () {
+        let context!: Context.Context<RouterV2Services>;
+        yield* buildAppUnderTest({
+          layers: {
+            onV2Services: (services) =>
+              Effect.gen(function* () {
+                context = services;
+                yield* seedRouterProject(services);
+              }),
+            vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+            gitVcsDriver: {
+              execute: () =>
+                Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
+              createWorktree: () => Effect.die(new Error("synthetic worktree exploded")),
+            },
+          },
+        });
+        const input = {
+          ...routerLaunchInput("worktree-defect"),
+          workspaceStrategy: {
+            type: "worktree" as const,
+            baseRef: "main",
+            branch: "feature/router",
+          },
+        };
+        const launched = yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
           ),
         );
-      const stageStatus = (snapshot: WorktreeSetupSnapshot, id: WorktreeSetupStageId) =>
-        snapshot.stages.find((stage) => stage.id === id)?.status;
-
-      if (async) {
-        // The turn is dispatched while the script is still running.
-        const started = yield* snapshotWhere(
-          (snapshot) => stageStatus(snapshot, "agent") === "done",
-        );
-        assertTrue(turnStarted());
-        assert.equal(started.phase, "running");
-        assert.equal(stageStatus(started, "setup-script"), "running");
-        yield* Fiber.join(dispatchFiber);
-
-        yield* Deferred.succeed(scriptExit, undefined);
-        const settled = yield* snapshotWhere((snapshot) => snapshot.phase !== "running");
-        assert.equal(settled.phase, "done");
-        assert.equal(stageStatus(settled, "setup-script"), "done");
-        return;
-      }
-
-      // The script is running and the turn has not been dispatched yet.
-      const running = yield* snapshotWhere(
-        (snapshot) => stageStatus(snapshot, "setup-script") === "running",
-      );
-      assert.equal(stageStatus(running, "agent"), "pending");
-      assert.isFalse(turnStarted());
-
-      if (cancel) {
-        const cancelled = yield* Effect.scoped(
-          withWsRpcClient(wsUrl, (client) => client[WS_METHODS.worktreeSetupCancel]({ threadId })),
-        );
-        assert.isTrue(cancelled.cancelled);
-        assertTrue(dispatchedCommands.some((command) => command.type === "thread.delete"));
-        const outcome = dispatchedCommands.findLast(
-          (command) =>
-            command.type === "thread.activity.append" && command.activity.kind === "worktree-setup",
-        );
-        assertTrue(outcome?.type === "thread.activity.append");
-        assert.propertyVal(outcome.activity.payload, "phase", "cancelled");
-        const result = yield* Fiber.join(dispatchFiber).pipe(Effect.result);
-        assertTrue(result._tag === "Failure");
-        assert.propertyVal(result.failure, "message", "Worktree setup cancelled.");
-        assert.propertyVal(result.failure, "bootstrapThreadDisposition", "deleted");
-        assert.isFalse(turnStarted());
-        return;
-      }
-
-      // The client that sent the message goes away mid-setup (a reload or a
-      // dropped socket). The bootstrap belongs to the server, not the
-      // connection: the thread already exists for every client, so it must
-      // finish and start the turn regardless.
-      yield* Fiber.interrupt(dispatchFiber);
-      assert.isFalse(turnStarted());
-
-      yield* Deferred.succeed(scriptExit, undefined);
-      yield* snapshotWhere((snapshot) => stageStatus(snapshot, "agent") === "done");
-      assertTrue(turnStarted());
-      const settled = yield* snapshotWhere((snapshot) => snapshot.phase !== "running");
-      assert.equal(settled.phase, "done");
-      assert.equal(stageStatus(settled, "setup-script"), "done");
-      assert.equal(stageStatus(settled, "agent"), "done");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+        yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+        const projection = yield* Context.get(
+          context,
+          ThreadManagement.ThreadManagementService,
+        ).getThreadProjection(launched.threadId);
+        assert.equal(projection.messages[0]?.text, input.initialMessage.text);
+        assert.equal(projection.runs[0]?.status, "failed");
+        assert.isNull(projection.thread.deletedAt);
+        assert.isTrue(JSON.stringify(projection.turnItems).includes("synthetic worktree exploded"));
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("cleans up created bootstrap threads when worktree creation defects", () =>
+  it.effect("cancels V2 preparation and releases its created worktree and setup terminal", () =>
     Effect.gen(function* () {
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const createWorktree = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-          Effect.die(new Error("worktree exploded")),
-      );
-
-      const config = yield* buildAppUnderTest({
-        layers: {
-          vcsDriver: {
-            isInsideWorkTree: () => Effect.succeed(true),
-          },
-          gitVcsDriver: {
-            execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
-            createWorktree,
-          },
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                dispatchedCommands.push(command);
-                return { sequence: dispatchedCommands.length };
-              }),
-            readEvents: () => Stream.empty,
-          },
-        },
-      });
-
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const wsUrl = yield* getWsServerUrl("/ws");
-      let pendingAttachmentId: string | undefined;
-      const result = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          Effect.gen(function* () {
-            const upload = yield* client[WS_METHODS.attachmentsCreateUploadUrl]({
-              name: "screenshot.png",
-              mimeType: "image/png",
-              sizeBytes: 6,
-            });
-            pendingAttachmentId = upload.attachmentId;
-            const uploadResponse = yield* HttpClient.post(upload.relativeUrl, {
-              body: HttpBody.uint8Array(new Uint8Array([1, 2, 3, 4, 5, 6]), "image/png"),
-            });
-            assert.equal(uploadResponse.status, 204);
-
-            return yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-              type: "thread.turn.start",
-              commandId: CommandId.make("cmd-bootstrap-turn-start-defect"),
-              threadId: ThreadId.make("thread-bootstrap-defect"),
-              message: {
-                messageId: MessageId.make("msg-bootstrap-defect"),
-                role: "user",
-                text: "hello",
-                attachments: [
-                  {
-                    type: "image",
-                    id: upload.attachmentId,
-                    name: "screenshot.png",
-                    mimeType: "image/png",
-                    sizeBytes: 6,
-                  },
-                ],
-              },
-              modelSelection: defaultModelSelection,
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              bootstrap: {
-                createThread: {
-                  projectId: defaultProjectId,
-                  title: "Bootstrap Thread",
-                  modelSelection: defaultModelSelection,
-                  runtimeMode: "full-access",
-                  interactionMode: "default",
-                  branch: "main",
-                  worktreePath: null,
-                  createdAt,
-                },
-                prepareWorktree: {
-                  projectCwd: "/tmp/project",
-                  baseBranch: "main",
-                  branch: "t3code/bootstrap-refName",
-                },
-                runSetupScript: false,
-              },
-              createdAt,
-            });
-          }),
-        ).pipe(Effect.result),
-      );
-
-      assertTrue(result._tag === "Failure");
-      assertTrue(result.failure._tag === "OrchestrationDispatchCommandError");
-      assert.include(result.failure.message, "worktree exploded");
-      assert.strictEqual(result.failure.bootstrapThreadDisposition, "deleted");
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        [
-          "thread.create",
-          "thread.message.user.append",
-          "thread.activity.append",
-          "thread.session.set",
-          "thread.activity.append",
-          "thread.delete",
-        ],
-      );
-      assert.isDefined(pendingAttachmentId);
-      assert.isTrue(
-        yield* fileSystem.exists(path.join(config.attachmentsDir, `${pendingAttachmentId}.png`)),
-      );
-      assert.deepEqual(yield* fileSystem.readDirectory(config.attachmentsDir), [
-        `${pendingAttachmentId}.png`,
-      ]);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("drains deletion cleanup through the re-created thread event", () =>
-    Effect.gen(function* () {
-      // A draft retry reuses the thread id its failed bootstrap deleted. The
-      // deletion reactor stops sessions and closes terminals by that id, so
-      // both thread.create paths use the created event as a fence, then drain
-      // cleanup before handing the new incarnation to resource-owning work.
-      const trace: Array<string> = [];
-      const drainRequested = yield* Deferred.make<void>();
-      const cleanupDone = yield* Deferred.make<void>();
+      const fs = yield* FileSystem.FileSystem;
+      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-cancel-" });
+      const completionEntered = yield* Deferred.make<void>();
+      const closes: string[] = [];
+      const removals: string[] = [];
+      let context!: Context.Context<RouterV2Services>;
       yield* buildAppUnderTest({
         layers: {
-          threadDeletionReactor: {
-            drainThrough: (sequence) =>
-              Effect.gen(function* () {
-                trace.push(`drain:${sequence}`);
-                yield* Deferred.succeed(drainRequested, undefined);
-                yield* Deferred.await(cleanupDone);
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+          gitVcsDriver: {
+            execute: () =>
+              Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
+            createWorktree: () =>
+              Effect.succeed({ worktree: { path: worktreePath, refName: "feature/router" } }),
+            removeWorktree: (input) =>
+              Effect.sync(() => {
+                removals.push(input.path);
+              }).pipe(Effect.andThen(Effect.void)),
+          },
+          terminalManager: {
+            close: (input) =>
+              Effect.sync(() => {
+                closes.push(input.terminalId ?? "all");
               }),
           },
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                trace.push(command.type);
-                return { sequence: trace.length };
+          projectSetupScriptRunner: {
+            runForThread: (input) =>
+              Effect.succeed({
+                status: "started" as const,
+                scriptId: "router:setup",
+                scriptName: "Synthetic setup",
+                scriptCommand: "synthetic",
+                terminalId: "router:setup",
+                cwd: input.worktreePath,
+                async: false,
+                completion: Deferred.succeed(completionEntered, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                ),
               }),
-            readEvents: () => Stream.empty,
           },
         },
       });
-
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const threadId = ThreadId.make("thread-retry-after-delete");
-      const wsUrl = yield* getWsServerUrl("/ws");
-
+      const input = {
+        ...routerLaunchInput("cancel"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
       yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
           Effect.gen(function* () {
-            const directCreate = yield* Effect.forkChild(
-              client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-                type: "thread.create",
-                commandId: CommandId.make("cmd-retry-create"),
-                threadId,
-                projectId: defaultProjectId,
-                title: "Retry",
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: null,
-                worktreePath: null,
-                createdAt,
-              }),
+            const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread](input);
+            yield* Deferred.await(completionEntered);
+            assert.deepEqual(
+              yield* client[WS_METHODS.worktreeSetupCancel]({ threadId: launched.threadId }),
+              { cancelled: true },
             );
-            yield* Deferred.await(drainRequested);
-            assert.deepEqual(trace, ["thread.create", "drain:1"]);
-            yield* Deferred.succeed(cleanupDone, undefined);
-            yield* Fiber.join(directCreate);
+            yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+            const projection = yield* Context.get(
+              context,
+              ThreadManagement.ThreadManagementService,
+            ).getThreadProjection(launched.threadId);
+            assert.equal(projection.messages[0]?.text, input.initialMessage.text);
+            assert.equal(projection.runs[0]?.status, "failed");
+            assert.isNull(projection.thread.deletedAt);
+            assert.isNull(projection.thread.worktreePath);
           }),
         ),
       );
-      assert.deepEqual(trace, ["thread.create", "drain:1"]);
-
-      // Cleanup is already released; the bootstrap path must still drain
-      // between creating the thread and starting its turn.
-      trace.length = 0;
-      yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          Effect.gen(function* () {
-            const bootstrapCreate = yield* Effect.forkChild(
-              client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-                type: "thread.turn.start",
-                commandId: CommandId.make("cmd-retry-bootstrap"),
-                threadId,
-                message: {
-                  messageId: MessageId.make("msg-retry-bootstrap"),
-                  role: "user",
-                  text: "hello",
-                  attachments: [],
-                },
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                bootstrap: {
-                  createThread: {
-                    projectId: defaultProjectId,
-                    title: "Retry",
-                    modelSelection: defaultModelSelection,
-                    runtimeMode: "full-access",
-                    interactionMode: "default",
-                    branch: null,
-                    worktreePath: null,
-                    createdAt,
-                  },
-                  runSetupScript: false,
-                },
-                createdAt,
-              }),
-            );
-            yield* Fiber.join(bootstrapCreate);
-          }),
-        ),
-      );
-      assert.deepEqual(trace, [
-        "thread.create",
-        "drain:1",
-        "thread.message.user.append",
-        "thread.turn.start",
-      ]);
+      assert.deepEqual(closes, ["router:setup"]);
+      assert.deepEqual(removals, [worktreePath]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("does not report a deleted bootstrap thread when cleanup fails", () =>
+  it.effect("keeps the V2 failed thread visible when cancelled worktree cleanup fails", () =>
     Effect.gen(function* () {
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const createWorktree = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-          Effect.die(new Error("worktree exploded")),
-      );
-
+      const fs = yield* FileSystem.FileSystem;
+      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-cancel-" });
+      const completionEntered = yield* Deferred.make<void>();
+      const closes: string[] = [];
+      const removals: string[] = [];
+      let context!: Context.Context<RouterV2Services>;
       yield* buildAppUnderTest({
         layers: {
-          vcsDriver: {
-            isInsideWorkTree: () => Effect.succeed(true),
-          },
+          onV2Services: (services) =>
+            Effect.gen(function* () {
+              context = services;
+              yield* seedRouterProject(services);
+            }),
+          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
           gitVcsDriver: {
-            execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
-            createWorktree,
+            execute: () =>
+              Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
+            createWorktree: () =>
+              Effect.succeed({ worktree: { path: worktreePath, refName: "feature/router" } }),
+            removeWorktree: (input) =>
+              Effect.sync(() => {
+                removals.push(input.path);
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new GitCommandError({
+                      operation: "synthetic.removeWorktree",
+                      command: "git",
+                      cwd: input.cwd,
+                      detail: "synthetic cleanup refused",
+                    }),
+                  ),
+                ),
+              ),
           },
-          orchestrationEngine: {
-            dispatch: (command) => {
-              dispatchedCommands.push(command);
-              if (command.type === "thread.delete") {
-                return Effect.fail(
-                  new PersistenceSqlError({
-                    operation: "OrchestrationEventStore.append:query",
-                    detail: "thread cleanup exploded",
-                  }),
-                );
-              }
-              return Effect.succeed({ sequence: dispatchedCommands.length });
-            },
-            readEvents: () => Stream.empty,
+          terminalManager: {
+            close: (input) =>
+              Effect.sync(() => {
+                closes.push(input.terminalId ?? "all");
+              }),
+          },
+          projectSetupScriptRunner: {
+            runForThread: (input) =>
+              Effect.succeed({
+                status: "started" as const,
+                scriptId: "router:setup",
+                scriptName: "Synthetic setup",
+                scriptCommand: "synthetic",
+                terminalId: "router:setup",
+                cwd: input.worktreePath,
+                async: false,
+                completion: Deferred.succeed(completionEntered, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                ),
+              }),
           },
         },
       });
-
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const result = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.turn.start",
-            commandId: CommandId.make("cmd-bootstrap-turn-start-cleanup-defect"),
-            threadId: ThreadId.make("thread-bootstrap-cleanup-defect"),
-            message: {
-              messageId: MessageId.make("msg-bootstrap-cleanup-defect"),
-              role: "user",
-              text: "hello",
-              attachments: [],
-            },
-            modelSelection: defaultModelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            bootstrap: {
-              createThread: {
-                projectId: defaultProjectId,
-                title: "Bootstrap Thread",
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: "main",
-                worktreePath: null,
-                createdAt,
-              },
-              prepareWorktree: {
-                projectCwd: "/tmp/project",
-                baseBranch: "main",
-                branch: "t3code/bootstrap-refName",
-              },
-              runSetupScript: false,
-            },
-            createdAt,
+      const input = {
+        ...routerLaunchInput("cancel"),
+        workspaceStrategy: { type: "worktree" as const, baseRef: "main", branch: "feature/router" },
+      };
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const launched = yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread](input);
+            yield* Deferred.await(completionEntered);
+            assert.deepEqual(
+              yield* client[WS_METHODS.worktreeSetupCancel]({ threadId: launched.threadId }),
+              { cancelled: true },
+            );
+            yield* awaitRouterRunStatus(context, launched.threadId, "failed");
+            const projection = yield* Context.get(
+              context,
+              ThreadManagement.ThreadManagementService,
+            ).getThreadProjection(launched.threadId);
+            assert.equal(projection.messages[0]?.text, input.initialMessage.text);
+            assert.equal(projection.runs[0]?.status, "failed");
+            assert.isNull(projection.thread.deletedAt);
+            assert.isNull(projection.thread.worktreePath);
           }),
-        ).pipe(Effect.result),
+        ),
       );
-
-      assertTrue(result._tag === "Failure");
-      assertTrue(result.failure._tag === "OrchestrationDispatchCommandError");
-      assert.include(result.failure.message, "worktree exploded");
-      assert.strictEqual(result.failure.bootstrapThreadDisposition, undefined);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        [
-          "thread.create",
-          "thread.message.user.append",
-          "thread.activity.append",
-          "thread.session.set",
-          "thread.activity.append",
-          "thread.delete",
-          "thread.session.set",
-        ],
-      );
-      // The surviving thread must not keep its preparing session, or it would
-      // read as working forever.
-      const failedSession = dispatchedCommands[6];
-      assertTrue(failedSession?.type === "thread.session.set");
-      if (failedSession?.type === "thread.session.set") {
-        assert.equal(failedSession.session.status, "error");
-        assert.include(failedSession.session.lastError ?? "", "worktree exploded");
-      }
+      assert.deepEqual(closes, ["router:setup"]);
+      assert.deepEqual(removals, [worktreePath]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -13864,7 +12510,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       yield* buildAppUnderTest({
         layers: {
-          orchestrationEngine: {
+          threadManagement: {
             acquireWorktreeOwnership: (threadId) =>
               Effect.sync(() => {
                 acquired.push(threadId);
@@ -13993,301 +12639,277 @@ it.live(
   "reports thread HTTP and WebSocket transfer budgets",
   () =>
     Effect.gen(function* () {
-      const providers = [
-        ProviderDriverKind.make("codex"),
-        ProviderDriverKind.make("claudeAgent"),
-      ] as const;
-
       const runs = yield* Effect.forEach(
-        providers,
+        [ProviderDriverKind.make("codex"), ProviderDriverKind.make("claudeAgent")],
         (provider) => {
-          // One counter for the orchestration runtime and the HTTP/WS handlers,
-          // so reactor writes and subscription reads land in the same total.
           const sqlCounter = makeSqlStatementCounter();
-          return Effect.acquireUseRelease(
-            makeOrchestrationIntegrationHarness({ provider, tracer: sqlCounter.tracer }),
-            (harness) =>
-              Effect.gen(function* () {
-                yield* seedTransferBudgetHistory(harness, provider);
-                yield* buildAppUnderTest({
-                  layers: {
-                    orchestrationEngine: harness.engine,
-                    projectionSnapshotQuery: harness.snapshotQuery,
-                  },
-                });
-
-                const baseUrl = yield* getHttpServerUrl();
-                const cookie = yield* getAuthenticatedSessionCookieHeader();
-                const wsUrl = baseUrl.replace(/^http:/, "ws:") + "/ws";
-
-                return yield* Effect.scoped(
-                  Effect.gen(function* () {
-                    const threadSnapshot = yield* measureHttpGet({
-                      url: `${baseUrl}/api/orchestration/threads/${TRANSFER_THREAD_ID}`,
-                      headers: { cookie },
-                    });
-                    assert.equal(threadSnapshot.status, 200);
-                    assert.equal(threadSnapshot.contentEncoding, "gzip");
-                    const decodedThread = yield* decodeTransferThreadSnapshot(
-                      Buffer.from(threadSnapshot.decodedBody).toString("utf8"),
-                    );
-                    assert.equal(
-                      decodedThread.thread.messages.length,
-                      TRANSFER_HISTORY_TURN_COUNT * 2,
-                    );
-                    const shellSnapshot = yield* measureHttpGet({
-                      url: `${baseUrl}/api/orchestration/shell`,
-                      headers: { cookie },
-                    });
-                    assert.equal(shellSnapshot.status, 200);
-                    const decodedShell = yield* decodeTransferShellSnapshot(
-                      Buffer.from(shellSnapshot.decodedBody).toString("utf8"),
-                    );
-                    assert.equal(decodedShell.threads.length, 1);
-
-                    // Three sockets, the way real installs look: the capped
-                    // thread-only client, a shell-only socket that isolates the
-                    // sidebar cost, and a second device holding both.
-                    const threadClient = yield* openMeasuredWsClient({ url: wsUrl, cookie });
-                    const shellClient = yield* openMeasuredWsClient({ url: wsUrl, cookie });
-                    const secondClient = yield* openMeasuredWsClient({ url: wsUrl, cookie });
-                    assert.include(
-                      threadClient.recorder.negotiatedExtensions(),
-                      "permessage-deflate",
-                    );
-
-                    const threadItems = yield* subscribeThreadItems(
-                      threadClient,
-                      decodedThread.snapshotSequence,
-                    );
-                    const shellItems = yield* subscribeShellItems(
-                      shellClient,
-                      decodedShell.snapshotSequence,
-                    );
-                    const secondThreadItems = yield* subscribeThreadItems(
-                      secondClient,
-                      decodedThread.snapshotSequence,
-                    );
-                    const secondShellItems = yield* subscribeShellItems(
-                      secondClient,
-                      decodedShell.snapshotSequence,
-                    );
-                    assert.equal(
-                      yield* awaitSubscriptionSynchronized(
-                        threadItems,
-                        `${provider} thread subscription to synchronize`,
-                      ),
-                      "replay",
-                    );
-                    assert.equal(
-                      yield* awaitSubscriptionSynchronized(
-                        shellItems,
-                        `${provider} shell subscription to synchronize`,
-                      ),
-                      "replay",
-                    );
-                    assert.equal(
-                      yield* awaitSubscriptionSynchronized(
-                        secondThreadItems,
-                        `${provider} second client thread subscription to synchronize`,
-                      ),
-                      "replay",
-                    );
-                    assert.equal(
-                      yield* awaitSubscriptionSynchronized(
-                        secondShellItems,
-                        `${provider} second client shell subscription to synchronize`,
-                      ),
-                      "replay",
-                    );
-
-                    yield* queueMeasuredTransferTurn(harness, provider);
-                    const turnStartTotals = threadClient.recorder.totals();
-                    const shellTurnStartTotals = shellClient.recorder.totals();
-                    const secondTurnStartTotals = secondClient.recorder.totals();
-                    const turnStartSqlStatements = sqlCounter.count();
-                    yield* threadClient.client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-                      type: "thread.turn.start",
-                      commandId: CommandId.make(`transfer:${provider}:measured-turn`),
-                      threadId: TRANSFER_THREAD_ID,
-                      message: {
-                        messageId: MessageId.make("transfer-user-measured"),
-                        role: "user",
-                        text: "Measure the client-bound transfer for this turn.",
-                        attachments: [],
-                      },
-                      modelSelection: transferModelSelection(provider),
-                      runtimeMode: "approval-required",
-                      interactionMode: "default",
-                      createdAt: TRANSFER_MEASURED_TURN_CREATED_AT,
-                    });
-                    yield* waitForTurnQuiesced(harness, TRANSFER_MEASURED_TURN_INDEX + 1);
-                    const finalSequences = yield* harness.engine
-                      .readEvents(decodedThread.snapshotSequence, 10_000)
-                      .pipe(
-                        Stream.runFold(
-                          () => ({
-                            detail: decodedThread.snapshotSequence,
-                            aggregate: decodedShell.snapshotSequence,
-                          }),
-                          (sequences, event) =>
-                            event.aggregateId !== TRANSFER_THREAD_ID
-                              ? sequences
-                              : {
-                                  detail: isThreadDetailEvent(event)
-                                    ? Math.max(sequences.detail, event.sequence)
-                                    : sequences.detail,
-                                  aggregate: Math.max(sequences.aggregate, event.sequence),
-                                },
-                        ),
-                      );
-                    const finalThreadSequence = finalSequences.detail;
-                    assert.isAbove(finalThreadSequence, decodedThread.snapshotSequence);
-
-                    const reachedFinalThreadEvent = (item: OrchestrationThreadStreamItem) =>
-                      item.kind === "event" && item.event.sequence === finalThreadSequence;
-                    // Shell items carry the sequence of the latest coalesced
-                    // event for the thread, so the last one lands at or past
-                    // the final thread event.
-                    const reachedFinalShellEvent = (item: OrchestrationShellStreamItem) =>
-                      item.kind === "thread-upserted" && item.sequence >= finalSequences.aggregate;
-                    yield* collectQueueUntil(
-                      threadItems,
-                      reachedFinalThreadEvent,
-                      `${provider} thread stream to reach sequence ${finalThreadSequence}`,
-                    );
-                    yield* collectQueueUntil(
-                      secondThreadItems,
-                      reachedFinalThreadEvent,
-                      `${provider} second client thread stream to reach sequence ${finalThreadSequence}`,
-                    );
-                    yield* collectQueueUntil(
-                      shellItems,
-                      reachedFinalShellEvent,
-                      `${provider} shell stream to reach sequence ${finalSequences.aggregate}`,
-                    );
-                    yield* collectQueueUntil(
-                      secondShellItems,
-                      reachedFinalShellEvent,
-                      `${provider} second client shell stream to reach sequence ${finalSequences.aggregate}`,
-                    );
-                    const measuredTurnWebSocket = transferDelta(
-                      turnStartTotals,
-                      threadClient.recorder.totals(),
-                    );
-                    const measuredTurnShellWebSocket = transferDelta(
-                      shellTurnStartTotals,
-                      shellClient.recorder.totals(),
-                    );
-                    const measuredTurnSecondClientWebSocket = transferDelta(
-                      secondTurnStartTotals,
-                      secondClient.recorder.totals(),
-                    );
-                    const measuredTurnSqlStatements = sqlCounter.count() - turnStartSqlStatements;
-
-                    // The second device drops and comes back with the cursors it
-                    // held before the turn, one subscription at a time so the
-                    // catch-up bytes stay separable.
-                    yield* secondClient.close;
-                    const reconnectSqlStart = sqlCounter.count();
-                    const reconnected = yield* openMeasuredWsClient({ url: wsUrl, cookie });
-                    const reconnectStartTotals = reconnected.recorder.totals();
-                    const reconnectThreadItems = yield* subscribeThreadItems(
-                      reconnected,
-                      decodedThread.snapshotSequence,
-                    );
-                    const reconnectThreadMode = yield* awaitSubscriptionSynchronized(
-                      reconnectThreadItems,
-                      `${provider} reconnected thread subscription to synchronize`,
-                    );
-                    const reconnectThreadTotals = reconnected.recorder.totals();
-                    const reconnectShellItems = yield* subscribeShellItems(
-                      reconnected,
-                      decodedShell.snapshotSequence,
-                    );
-                    const reconnectShellMode = yield* awaitSubscriptionSynchronized(
-                      reconnectShellItems,
-                      `${provider} reconnected shell subscription to synchronize`,
-                    );
-                    const reconnectShellTotals = reconnected.recorder.totals();
-                    const reconnectSqlStatements = sqlCounter.count() - reconnectSqlStart;
-
-                    const finalThreadSnapshot = yield* harness.snapshotQuery
-                      .getThreadDetailSnapshot(TRANSFER_THREAD_ID)
-                      .pipe(Effect.map(Option.getOrThrow));
-                    const expectedAssistantText = expectedMeasuredAssistantText(provider);
-                    const measuredAssistant = finalThreadSnapshot.thread.messages.find(
-                      (message) =>
-                        message.role === "assistant" && message.text === expectedAssistantText,
-                    );
-                    assert.isDefined(measuredAssistant);
-                    assert.isTrue(
-                      finalThreadSnapshot.thread.messages.length >= TRANSFER_HISTORY_TURN_COUNT * 2,
-                    );
-                    assert.equal(measuredAssistant?.streaming, false);
-                    assert.equal(finalThreadSnapshot.thread.session?.status, "ready");
-                    assert.equal(
-                      finalThreadSnapshot.thread.checkpoints.length,
-                      TRANSFER_HISTORY_TURN_COUNT + 1,
-                    );
-
-                    return {
-                      provider,
-                      threadSnapshot,
-                      measuredTurnWebSocket,
-                      shellSnapshot,
-                      measuredTurnShellWebSocket,
-                      measuredTurnSecondClientWebSocket,
-                      reconnectThread: {
-                        mode: reconnectThreadMode,
-                        ...transferDelta(reconnectStartTotals, reconnectThreadTotals),
-                      },
-                      reconnectShell: {
-                        mode: reconnectShellMode,
-                        ...transferDelta(reconnectThreadTotals, reconnectShellTotals),
-                      },
-                      measuredTurnSqlStatements,
-                      reconnectSqlStatements,
-                    } satisfies TransferBudgetRun;
+          const providerInstance = makeRouterProviderInstance(provider);
+          const modelSelection = {
+            instanceId: providerInstance.instanceId,
+            model: provider === "codex" ? "gpt-5-codex" : "claude-sonnet-4",
+          };
+          return Effect.gen(function* () {
+            let services!: Context.Context<RouterV2Services>;
+            const dynamicResult = (ordinal: number, bytes: number): OrchestrationV2TurnItem => {
+              const { input: _input, output: _output, ...base } = routerTurnItem(ordinal);
+              return {
+                ...base,
+                type: "dynamic_tool",
+                toolName: "synthetic.result",
+                input: {},
+                output: diagnosticOutput({
+                  provider,
+                  turnIndex: ordinal,
+                  toolIndex: 0,
+                  targetBytes: bytes,
+                }),
+              };
+            };
+            const history: Array<OrchestrationV2TurnItem> = [];
+            for (let turn = 0; turn < TRANSFER_HISTORY_TURN_COUNT; turn += 1) {
+              for (let tool = 0; tool < TRANSFER_HISTORY_TOOLS_PER_TURN; tool += 1) {
+                history.push(
+                  routerTurnItem(history.length, {
+                    title: "History command",
+                    output: "Retained command output",
                   }),
                 );
-              }),
-            (harness) => harness.dispose,
-          ).pipe(
+              }
+              history.push(dynamicResult(history.length, TRANSFER_HISTORY_MCP_RESULT_BYTES));
+            }
+            yield* buildAppUnderTest({
+              layers: {
+                providerInstanceRegistry: {
+                  getInstance: (id) =>
+                    Effect.succeed(
+                      id === providerInstance.instanceId ? providerInstance : undefined,
+                    ),
+                  listInstances: Effect.succeed([providerInstance]),
+                },
+                onV2Services: (context) =>
+                  Effect.gen(function* () {
+                    services = context;
+                    yield* seedRouterProject(context);
+                    yield* Context.get(context, ThreadManagement.ThreadManagementService).dispatch({
+                      ...routerThreadCreate(),
+                      modelSelection,
+                    });
+                    yield* writeRouterItems(context, history, "transfer-history");
+                  }),
+              },
+            });
+            const threads = Context.get(services, ThreadManagement.ThreadManagementService);
+            const baseUrl = yield* getHttpServerUrl();
+            const { cookie, url } = parseSessionCookieFromWsUrl(yield* getWsServerUrl("/ws"));
+            assert.isDefined(cookie);
+            const threadSnapshot = yield* measureHttpGet({
+              url: `${baseUrl}/api/orchestration/threads/${defaultThreadId}`,
+              headers: { cookie: cookie! },
+            });
+            assert.equal(threadSnapshot.status, 200);
+            assert.equal(threadSnapshot.contentEncoding, "gzip");
+            const decodedThread = yield* decodeTransferThreadSnapshot(
+              Buffer.from(threadSnapshot.decodedBody).toString("utf8"),
+            );
+            assert.equal(decodedThread.projection.turnItems.length, history.length);
+            const shellSnapshot = yield* measureHttpGet({
+              url: `${baseUrl}/api/orchestration/snapshot`,
+              headers: { cookie: cookie! },
+            });
+            assert.equal(shellSnapshot.status, 200);
+            const decodedShell = yield* decodeTransferShellSnapshot(
+              Buffer.from(shellSnapshot.decodedBody).toString("utf8"),
+            );
+            assert.equal(decodedShell.threads.length, 1);
+            const threadClient = yield* openMeasuredWsClient({ url, cookie: cookie! });
+            const shellClient = yield* openMeasuredWsClient({ url, cookie: cookie! });
+            const secondClient = yield* openMeasuredWsClient({ url, cookie: cookie! });
+            assert.include(threadClient.recorder.negotiatedExtensions(), "permessage-deflate");
+            const subscribeThread = Effect.fnUntraced(function* (
+              measured: typeof threadClient,
+              afterSequence: number,
+            ) {
+              const queue = yield* Queue.unbounded<OrchestrationV2ThreadStreamItem>();
+              yield* measured.client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                threadId: defaultThreadId,
+                afterSequence,
+                requestCompletionMarker: true,
+              }).pipe(
+                Stream.runForEach((item) => Queue.offer(queue, item)),
+                Effect.forkIn(measured.scope),
+              );
+              return queue;
+            });
+            const subscribeShell = Effect.fnUntraced(function* (
+              measured: typeof shellClient,
+              afterSequence: number,
+            ) {
+              const queue = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
+              yield* measured.client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+                afterSequence,
+                requestCompletionMarker: true,
+              }).pipe(
+                Stream.runForEach((item) => Queue.offer(queue, item)),
+                Effect.forkIn(measured.scope),
+              );
+              return queue;
+            });
+            const synchronized = <A extends { readonly kind: string }>(queue: Queue.Queue<A>) =>
+              Effect.gen(function* () {
+                let mode: "replay" | "snapshot" = "replay";
+                while (true) {
+                  const item = yield* Queue.take(queue);
+                  if (item.kind === "snapshot") mode = "snapshot";
+                  if (item.kind === "synchronized") return mode;
+                }
+              }).pipe(Effect.timeout("10 seconds"));
+            const reach = <A>(queue: Queue.Queue<A>, predicate: (item: A) => boolean) =>
+              Effect.gen(function* () {
+                while (!predicate(yield* Queue.take(queue))) {}
+              }).pipe(Effect.timeout("10 seconds"));
+            const threadItems = yield* subscribeThread(
+              threadClient,
+              decodedThread.snapshotSequence,
+            );
+            const shellItems = yield* subscribeShell(shellClient, decodedShell.snapshotSequence);
+            const secondThreadItems = yield* subscribeThread(
+              secondClient,
+              decodedThread.snapshotSequence,
+            );
+            const secondShellItems = yield* subscribeShell(
+              secondClient,
+              decodedShell.snapshotSequence,
+            );
+            for (const queue of [threadItems, secondThreadItems])
+              assert.equal(yield* synchronized(queue), "replay");
+            for (const queue of [shellItems, secondShellItems])
+              assert.equal(yield* synchronized(queue), "replay");
+            const threadStart = threadClient.recorder.totals();
+            const shellStart = shellClient.recorder.totals();
+            const secondStart = secondClient.recorder.totals();
+            const sqlStart = sqlCounter.count();
+            const measured: Array<OrchestrationV2TurnItem> = Array.from(
+              { length: TRANSFER_MEASURED_TOOLS },
+              (_, tool) =>
+                routerTurnItem(history.length + tool, {
+                  title: "Measured command",
+                  output: "Retained measured output",
+                }),
+            );
+            measured.push(
+              dynamicResult(history.length + measured.length, TRANSFER_MEASURED_MCP_RESULT_BYTES),
+            );
+            const committed = yield* writeRouterItems(services, measured, "transfer-measured");
+            const sequence = committed.at(-1)!.sequence;
+            for (const queue of [threadItems, secondThreadItems]) {
+              yield* reach(queue, (item) => item.kind === "event" && item.sequence === sequence);
+            }
+            for (const queue of [shellItems, secondShellItems]) {
+              yield* reach(
+                queue,
+                (item) => item.kind === "thread.updated" && item.sequence >= sequence,
+              );
+            }
+            const delta = (
+              start: ReturnType<typeof threadClient.recorder.totals>,
+              end: ReturnType<typeof threadClient.recorder.totals>,
+            ) => ({
+              wireBytes: end.wireBytes - start.wireBytes,
+              decodedBytes: end.decodedBytes - start.decodedBytes,
+              messages: end.messages - start.messages,
+            });
+            const measuredTurnWebSocket = delta(threadStart, threadClient.recorder.totals());
+            const measuredTurnShellWebSocket = delta(shellStart, shellClient.recorder.totals());
+            const measuredTurnSecondClientWebSocket = delta(
+              secondStart,
+              secondClient.recorder.totals(),
+            );
+            const measuredTurnSqlStatements = sqlCounter.count() - sqlStart;
+            yield* secondClient.close;
+            const reconnectSqlStart = sqlCounter.count();
+            const reconnected = yield* openMeasuredWsClient({ url, cookie: cookie! });
+            const reconnectStart = reconnected.recorder.totals();
+            const reconnectThreadMode = yield* synchronized(
+              yield* subscribeThread(reconnected, decodedThread.snapshotSequence),
+            );
+            const reconnectThreadEnd = reconnected.recorder.totals();
+            const reconnectShellMode = yield* synchronized(
+              yield* subscribeShell(reconnected, decodedShell.snapshotSequence),
+            );
+            const reconnectShellEnd = reconnected.recorder.totals();
+            const finalProjection = yield* threads.getThreadProjection(defaultThreadId);
+            assert.equal(
+              finalProjection.thread.modelSelection.instanceId,
+              providerInstance.instanceId,
+            );
+            assert.equal(finalProjection.turnItems.length, history.length + measured.length);
+            const retained = finalProjection.turnItems.find(
+              (item) => item.id === measured.at(-1)!.id,
+            );
+            assertTrue(retained?.type === "dynamic_tool");
+            assert.equal(
+              Buffer.byteLength(String(retained.output), "utf8"),
+              TRANSFER_MEASURED_MCP_RESULT_BYTES,
+            );
+            assert.isBelow(measuredTurnWebSocket.decodedBytes, TRANSFER_MEASURED_MCP_RESULT_BYTES);
+            return {
+              provider,
+              threadSnapshot,
+              shellSnapshot,
+              measuredTurnWebSocket,
+              measuredTurnShellWebSocket,
+              measuredTurnSecondClientWebSocket,
+              measuredTurnSqlStatements,
+              reconnectThread: {
+                mode: reconnectThreadMode,
+                ...delta(reconnectStart, reconnectThreadEnd),
+              },
+              reconnectShell: {
+                mode: reconnectShellMode,
+                ...delta(reconnectThreadEnd, reconnectShellEnd),
+              },
+              reconnectSqlStatements: sqlCounter.count() - reconnectSqlStart,
+            } satisfies TransferBudgetRun;
+          }).pipe(
+            Effect.scoped,
             Effect.provideService(Tracer.Tracer, sqlCounter.tracer),
             Effect.provide(NodeHttpServerTestWithWsDeflate),
           );
         },
         { concurrency: 1 },
       );
-
-      const report = formatTransferBudgetReport(runs);
-      yield* Effect.logInfo(`\n${report}`);
+      yield* Effect.logInfo("\n" + formatTransferBudgetReport(runs));
       const reportPath = yield* Config.String("T3CODE_TRANSFER_BUDGET_REPORT_PATH").pipe(
         Config.option,
       );
-      if (Option.isSome(reportPath)) {
-        const fileSystem = yield* FileSystem.FileSystem;
-        yield* fileSystem.writeFileString(reportPath.value, report);
-      }
+      if (Option.isSome(reportPath))
+        yield* (yield* FileSystem.FileSystem).writeFileString(
+          reportPath.value,
+          formatTransferBudgetReport(runs),
+        );
       const resultPath = yield* Config.String("T3CODE_TRANSFER_BUDGET_RESULT_PATH").pipe(
         Config.option,
       );
-      if (Option.isSome(resultPath)) {
-        const fileSystem = yield* FileSystem.FileSystem;
-        yield* fileSystem.writeFileString(resultPath.value, formatTransferBudgetResult(runs));
-      }
+      if (Option.isSome(resultPath))
+        yield* (yield* FileSystem.FileSystem).writeFileString(
+          resultPath.value,
+          formatTransferBudgetResult(runs),
+        );
       assert.deepEqual(transferBudgetViolations(runs), []);
     }).pipe(Effect.provide(NodeServices.layer)),
   120_000,
 );
 
-const nativeCreationWsFixture = (runSetupScript = false) => {
+const nativeCreationWsFixture = (
+  runSetupScript = false,
+  projectCwd = "/synthetic/project",
+  operationId = "synthetic-native-ws",
+) => {
   const binding = Schema.decodeUnknownSync(NativePreparationBinding)({
     backend_instance: "synthetic-backend",
     environment_id: "synthetic-env",
     project_id: defaultProjectId,
-    project_cwd: "/synthetic/project",
+    project_cwd: projectCwd,
     account_ref: "synthetic-account",
     runtime_mode: "full-access",
     interaction_mode: "default",
@@ -14297,7 +12919,7 @@ const nativeCreationWsFixture = (runSetupScript = false) => {
     provider_model_selection: { instanceId: "codex", model: "synthetic-model" },
   });
   const command = nativePreparationCommand(
-    "synthetic-native-ws",
+    operationId,
     binding,
     "Synthetic native WS text",
     "Synthetic thread",
@@ -14305,7 +12927,7 @@ const nativeCreationWsFixture = (runSetupScript = false) => {
   );
   const preparation = nativeCreationCanonicalJson({
     schema: "voice.t3-bootstrap-preparation/v1",
-    operation_id: "synthetic-native-ws",
+    operation_id: operationId,
     preparation_id: command.commandId.replace("voice-command-", "voice-bootstrap-"),
     binding,
     command,
@@ -14345,96 +12967,254 @@ const nativeCreationWsFixture = (runSetupScript = false) => {
     },
   };
 };
-const nativeWsFixture = nativeCreationWsFixture();
-it.effect(
-  "actual guarded WS capability and unavailable authority produce zero bootstrap commands",
-  () =>
-    Effect.gen(function* () {
-      let dispatches = 0;
-      yield* buildAppUnderTest({
-        layers: {
-          orchestrationEngine: {
-            dispatch: () =>
-              Effect.sync(() => {
-                dispatches++;
-                return { sequence: 1 };
-              }),
-          },
-        },
-      });
-      const url = yield* getWsServerUrl("/ws");
-      yield* withWsRpcClient(url, (client) =>
-        Effect.gen(function* () {
-          const config = yield* client[WS_METHODS.serverGetConfig]({});
-          assert.deepEqual(config.environment.capabilities.nativeBootstrapCreation, {
-            submissionSchema: "t3.native-bootstrap-submission/v1",
-            preparationSchema: "voice.t3-bootstrap-preparation/v1",
-            observationSchema: "t3.native-creation-observation/v1",
-            guardRequired: true,
-          });
-          const result = yield* client[ORCHESTRATION_WS_METHODS.dispatchBootstrap](
-            nativeWsFixture.submission,
-          ).pipe(Effect.result);
-          assert.equal(result._tag, "Failure");
-          assert.equal(dispatches, 0);
+const qualifiedNativeRouterFixture = Effect.fnUntraced(function* (
+  name: string,
+  runSetupScript: boolean,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-native-" });
+  const fixture = nativeCreationWsFixture(
+    runSetupScript,
+    workspaceRoot,
+    `synthetic-native-${name}`,
+  );
+  let config!: ServerConfig.ServerConfig["Service"];
+  let services!: Context.Context<RouterV2Services>;
+  let repository!: NativeCreationRepository["Service"];
+  let sql!: SqlClient.SqlClient;
+  const stages: OrchestrationV2Command[] = [];
+  const order: string[] = [];
+  const nativeCalls: string[] = [];
+  const detachments: Array<{ threadId: ThreadId; status: string }> = [];
+  const closeCalls: Array<{ threadId: string; terminalId?: string }> = [];
+  const expectedCommands = () => {
+    const original = fixture.command;
+    const initial = original.bootstrap.createThread;
+    const worktreePath = nativeWorktreePath({
+      worktreesDir: config.worktreesDir,
+      cwd: workspaceRoot,
+      branch: fixture.historical.requestedBranch,
+    });
+    return [
+      Schema.decodeUnknownSync(OrchestrationV2Command)({
+        type: "thread.create",
+        commandId: `${original.commandId}:native:v2:create`,
+        threadId: original.threadId,
+        projectId: initial.projectId,
+        title: initial.title,
+        modelSelection: initial.modelSelection,
+        runtimeMode: initial.runtimeMode,
+        interactionMode: initial.interactionMode,
+        branch: fixture.historical.requestedBranch,
+        worktreePath,
+        createdBy: "user",
+        creationSource: "server",
+      }),
+      Schema.decodeUnknownSync(OrchestrationV2Command)({
+        type: "message.dispatch",
+        commandId: `${original.commandId}:native:v2:message`,
+        threadId: original.threadId,
+        messageId: original.message.messageId,
+        text: original.message.text,
+        attachments: [],
+        modelSelection: initial.modelSelection,
+        dispatchMode: { type: "defer_start" },
+        createdBy: "user",
+        creationSource: "server",
+      }),
+      Schema.decodeUnknownSync(OrchestrationV2Command)({
+        type: "prepared-run.release",
+        commandId: original.commandId,
+        threadId: original.threadId,
+        runId: Context.get(services, IdAllocator.IdAllocatorV2).derive.run({
+          threadId: ThreadId.make(original.threadId),
+          ordinal: 1,
         }),
+      }),
+    ];
+  };
+  const assertReservedInventory = Effect.fnUntraced(function* () {
+    const expected = expectedCommands();
+    const identities = yield* sql<{ command_id: string; claim_id: string; thread_id: string }>`
+      SELECT command_id, claim_id, thread_id FROM native_creation_reserved_command_identities ORDER BY command_id`;
+    assert.deepEqual(
+      identities.map((row) => row.command_id),
+      expected.map((command) => command.commandId).sort(),
+    );
+    assert.isTrue(
+      identities.every(
+        (row) =>
+          row.claim_id === `native:v2:${fixture.command.commandId}` &&
+          row.thread_id === fixture.command.threadId,
+      ),
+    );
+    for (const command of expected) {
+      const reservation = yield* repository.getReservedCommand(command.commandId);
+      assertTrue(Option.isSome(reservation));
+      assert.equal(reservation.value.claimId, `native:v2:${fixture.command.commandId}`);
+      assert.equal(reservation.value.threadId, fixture.command.threadId);
+      assert.equal(reservation.value.commandDigest, nativeCreationV2CommandDigest(command));
+      assert.deepEqual(
+        yield* Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2Command))(
+          reservation.value.canonicalCommand,
+        ),
+        command,
       );
-    }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
-);
-
-it.effect(
-  "real permanent marker denies actual legacy WS even with unavailable creation grants",
-  () =>
+    }
+  });
+  const checkNativeStart = (
+    operation: string,
+    execution: Parameters<
+      ProviderInstance["orchestrationAdapter"]["openSession"]
+    >[0]["nativeCreationExecution"],
+  ) =>
     Effect.gen(function* () {
-      let capturedSql: SqlClient.SqlClient | undefined;
-      let dispatches = 0;
-      yield* buildAppUnderTest({
-        layers: {
-          onNativeCreationServices: (_repository, sql) =>
-            Effect.sync(() => {
-              capturedSql = sql;
-            }),
-          orchestrationEngine: {
-            dispatch: () =>
-              Effect.sync(() => {
-                dispatches++;
-                return { sequence: 1 };
-              }),
-          },
-        },
+      assertTrue(execution !== undefined);
+      const reference = getNativeCreationExecutionReference(execution.context);
+      assertTrue(reference !== null);
+      assert.equal(reference.claimId, `native:v2:${fixture.command.commandId}`);
+      assert.equal(reference.stageCommandId, fixture.command.commandId);
+      const history = yield* repository.readHistoryByClaim(reference.claimId);
+      const starts = history.effectsV2.filter(
+        (fact) => fact.effectId === reference.effectId && fact.phase === "started",
+      );
+      assert.equal(starts.length, 1);
+      assert.equal(starts[0]!.commandId, reference.stageCommandId);
+      assert.equal(starts[0]!.commandDigest, nativeCreationV2CommandDigest(expectedCommands()[2]!));
+      assert.isFalse(
+        history.effectsV2.some(
+          (fact) => fact.effectId === reference.effectId && fact.phase === "completed",
+        ),
+      );
+      yield* authorizeNativeCreationExecution(execution.context, {
+        stage: "native_command",
+        resources: execution.resources,
       });
-      const url = yield* getWsServerUrl("/ws");
-      const sql = capturedSql!;
-      const sessions = yield* sql<{
-        sessionId: string;
-      }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
-      assert.equal(sessions.length, 1);
-      yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessions[0]!.sessionId}, '2026-10-02T12:00:00Z')`;
-      yield* withWsRpcClient(url, (client) =>
+      nativeCalls.push(operation);
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderAdapterProtocolError({
+            driver: ProviderDriverKind.make("codex"),
+            detail: "Synthetic native callee could not validate its original committed start",
+            cause,
+          }),
+      ),
+    );
+  const baseInstance = makeRouterProviderInstance();
+  const nativeSnapshot = Schema.decodeUnknownSync(ServerProvider)({
+    instanceId: baseInstance.instanceId,
+    driver: baseInstance.driverKind,
+    enabled: true,
+    installed: false,
+    version: null,
+    status: "ready",
+    auth: { status: "unknown" },
+    checkedAt: "2026-10-02T12:00:00Z",
+    supportedRuntimeModes: ["full-access", "approval-required"],
+    models: [
+      {
+        slug: fixture.binding.provider_model_selection.model,
+        name: "Synthetic native fixture model",
+        isCustom: true,
+        capabilities: null,
+      },
+    ],
+    skills: [],
+    slashCommands: [],
+  });
+  const nativeInstance: ProviderInstance = {
+    instanceId: baseInstance.instanceId,
+    driverKind: baseInstance.driverKind,
+    enabled: true,
+    displayName: baseInstance.displayName,
+    continuationIdentity: baseInstance.continuationIdentity,
+    snapshot: {
+      getSnapshot: Effect.succeed(nativeSnapshot),
+      refresh: Effect.die("Native fixture must not probe a live provider"),
+      streamChanges: Stream.die("Native fixture must not watch a live provider"),
+      applyUsageLimits: () => Effect.die("Native fixture must not mutate provider usage limits"),
+      resolveMaintenance: () =>
+        Effect.die("Native fixture must not resolve live provider maintenance"),
+    },
+    get textGeneration(): never {
+      throw new Error("Native fixture must not generate provider text");
+    },
+    orchestrationAdapter: {
+      ...baseInstance.orchestrationAdapter,
+      openSession: (input) =>
         Effect.gen(function* () {
-          const legacy = yield* Schema.decodeUnknownEffect(ClientOrchestrationCommand)(
-            nativeWsFixture.command,
-          );
-          const result = yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](legacy).pipe(
-            Effect.result,
-          );
-          assert.equal(result._tag, "Failure");
-          assert.equal(dispatches, 0);
+          yield* checkNativeStart("open_session", input.nativeCreationExecution);
+          const now = yield* DateTime.now;
+          const runtime: ProviderAdapterV2SessionRuntime = {
+            ...(input.nativeOperation?.runtimeGeneration === undefined
+              ? {}
+              : { runtimeGeneration: input.nativeOperation.runtimeGeneration }),
+            instanceId: input.modelSelection.instanceId,
+            driver: ProviderDriverKind.make("codex"),
+            providerSessionId: input.providerSessionId,
+            providerSession: {
+              id: input.providerSessionId,
+              driver: ProviderDriverKind.make("codex"),
+              providerInstanceId: input.modelSelection.instanceId,
+              status: "ready",
+              cwd: input.runtimePolicy.cwd ?? workspaceRoot,
+              model: input.modelSelection.model,
+              capabilities: CodexProviderCapabilitiesV2,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
+            },
+            events: Stream.never,
+            ensureThread: (request) =>
+              checkNativeStart("ensure_thread", request.nativeCreationExecution).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    assertTrue(request.existingProviderThread !== undefined);
+                    return {
+                      ...request.existingProviderThread,
+                      providerSessionId: input.providerSessionId,
+                      nativeThreadRef: {
+                        driver: ProviderDriverKind.make("codex"),
+                        nativeId: `synthetic-native-thread:${name}`,
+                        strength: "strong" as const,
+                      },
+                    };
+                  }),
+                ),
+              ),
+            resumeThread: (request) =>
+              checkNativeStart("resume_thread", request.nativeCreationExecution).pipe(
+                Effect.as(request.providerThread),
+              ),
+            startTurn: (request) => checkNativeStart("start_turn", request.nativeCreationExecution),
+            steerTurn: () => Effect.die("Native bootstrap must not steer a turn"),
+            interruptTurn: () => Effect.void,
+            respondToRuntimeRequest: () =>
+              Effect.die("Native bootstrap must not respond to a provider request"),
+            readThreadSnapshot: () => Effect.die("Native bootstrap must not read native history"),
+            rollbackThread: () => Effect.die("Native bootstrap must not roll back native history"),
+            forkThread: () => Effect.die("Native bootstrap must not fork native history"),
+          };
+          return runtime;
         }),
-      );
-    }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
-);
-
-it.effect(
-  "qualified synthetic ports drive actual guarded WS only after immutable SQL claim and identities",
-  () =>
-    Effect.gen(function* () {
-      const nativeWsFixture = nativeCreationWsFixture(true);
-      let capturedSql: SqlClient.SqlClient | undefined;
-      let capturedRepository: NativeCreationRepository["Service"] | undefined;
-      let nativeConfig: ServerConfig.ServerConfig["Service"] | undefined;
-      let nativeCommands = 0;
-      const grantResolver: NativeCreationGrantResolver["Service"] = {
+    },
+  };
+  config = yield* buildAppUnderTest({
+    config: { cwd: workspaceRoot },
+    layers: {
+      serverEnvironment: { getDescriptor: Effect.succeed(nativeRouterEnvironmentDescriptor) },
+      onNativeCreationServices: (current, database) =>
+        Effect.sync(() => {
+          repository = current;
+          sql = database;
+        }),
+      onV2Services: (context) =>
+        Effect.gen(function* () {
+          services = context;
+          yield* seedRouterProject(context, defaultProjectId, workspaceRoot);
+        }),
+      nativeCreationGrantResolver: {
         resolveCurrent: ({ actorSessionId, guard }) =>
           Effect.succeed({
             enrolledSessionId: actorSessionId,
@@ -14446,23 +13226,21 @@ it.effect(
               issuerId: "synthetic-issuer",
               expiresAt: DateTime.makeUnsafe("2099-01-01T00:00:00Z"),
               revoked: false,
-              operationId: "synthetic-native-ws",
-              preparationId: nativeWsFixture.command.commandId.replace(
+              operationId: `synthetic-native-${name}`,
+              preparationId: fixture.command.commandId.replace(
                 "voice-command-",
                 "voice-bootstrap-",
               ),
-              preparationSha256: nativeCreationSha256(nativeWsFixture.preparation),
-              bindingDigest: nativeCreationSha256(
-                nativeCreationCanonicalJson(nativeWsFixture.binding),
-              ),
-              binding: nativeWsFixture.historical,
+              preparationSha256: nativeCreationSha256(fixture.preparation),
+              bindingDigest: nativeCreationSha256(nativeCreationCanonicalJson(fixture.binding)),
+              binding: fixture.historical,
               resources: {
-                projectCwd: "/synthetic/project",
-                branch: nativeWsFixture.historical.requestedBranch,
+                projectCwd: workspaceRoot,
+                branch: fixture.historical.requestedBranch,
                 worktreePath: nativeWorktreePath({
-                  worktreesDir: nativeConfig!.worktreesDir,
-                  cwd: "/synthetic/project",
-                  branch: nativeWsFixture.historical.requestedBranch,
+                  worktreesDir: config.worktreesDir,
+                  cwd: workspaceRoot,
+                  branch: fixture.historical.requestedBranch,
                 }),
               },
               allowedStages: [
@@ -14484,83 +13262,215 @@ it.effect(
               recoveryScopes: [],
             },
           }),
-      };
-      nativeConfig = yield* buildAppUnderTest({
+      },
+      nativeCreationBindingResolver: { resolveCurrent: () => Effect.succeed(fixture.historical) },
+      providerInstanceRegistry: {
+        getInstance: (id) =>
+          Effect.succeed(id === nativeInstance.instanceId ? nativeInstance : undefined),
+        listInstances: Effect.succeed([nativeInstance]),
+      },
+      providerAuth: { tryHandlePromptCommand: () => Effect.succeed(false) },
+      terminalManager: {
+        close: (input) =>
+          Effect.sync(() => {
+            closeCalls.push(input);
+          }),
+      },
+      projectSetupScriptRunner: {
+        runForThread: ({ worktreePath }) =>
+          Effect.sync(() => {
+            order.push("setup");
+            return {
+              status: "started" as const,
+              scriptId: "synthetic-setup",
+              scriptName: "Synthetic setup",
+              scriptCommand: "synthetic",
+              terminalId: "synthetic-setup-terminal",
+              cwd: worktreePath,
+              async: false,
+              completion: Effect.succeed({ exitCode: 0, durationMs: 1 }),
+            };
+          }),
+      },
+      vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+      gitVcsDriver: {
+        execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
+        createWorktree: (input) =>
+          Effect.gen(function* () {
+            yield* assertReservedInventory();
+            const history = Option.getOrThrow(
+              yield* repository.readHistory(fixture.command.commandId),
+            );
+            assert.isTrue(
+              history.effects.some(
+                (fact) =>
+                  fact.kind === "worktree" &&
+                  fact.phase === "started" &&
+                  fact.worktreePath === input.path,
+              ),
+            );
+            assert.deepEqual(nativeCalls, []);
+            order.push("checkout");
+            assertTrue(typeof input.path === "string");
+            yield* fs.makeDirectory(input.path, { recursive: true });
+            return { worktree: { refName: fixture.historical.requestedBranch, path: input.path } };
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitCommandError({
+                  operation: "createWorktree",
+                  command: "synthetic fixture checkout",
+                  cwd: workspaceRoot,
+                  detail: "Synthetic SQL or fixture checkout failed",
+                  cause,
+                }),
+            ),
+          ),
+      },
+      wrapThreadManagement: (service) => ({
+        ...service,
+        readCurrentThreadRuntimeAttachment: (threadId) =>
+          service.readCurrentThreadRuntimeAttachment(threadId).pipe(
+            Effect.tap((attachment) =>
+              Effect.sync(() => {
+                detachments.push({ threadId, status: attachment.status });
+              }),
+            ),
+          ),
+        dispatchNativeCreationStage: (command, input) =>
+          Effect.gen(function* () {
+            yield* assertReservedInventory();
+            assert.deepEqual(command, expectedCommands()[stages.length]);
+            const before = yield* repository.readHistoryByClaim(input.claimId);
+            assert.deepEqual(before.effectsV2, []);
+            assert.deepEqual(nativeCalls, []);
+            stages.push(command);
+            order.push(command.type);
+            const result = yield* service.dispatchNativeCreationStage(command, input);
+            const receipt = (yield* Context.get(
+              services,
+              EventSink.EventSinkV2,
+            ).readCommandReceiptIdentity(command.commandId)).receipt;
+            assert.equal(receipt?.status, "accepted");
+            assert.equal(receipt?.commandType, command.type);
+            assert.equal(receipt?.resultSequence, result.sequence);
+            return result;
+          }).pipe(
+            Effect.mapError((cause) =>
+              cause instanceof NativeCreationAuthorityError
+                ? cause
+                : new NativeCreationAuthorityError({
+                    code: "unresolved_claim",
+                    message: "Synthetic stage reservation or acceptance observer failed",
+                  }),
+            ),
+          ),
+      }),
+    },
+  });
+  const url = yield* getWsServerUrl("/ws");
+  const sessions = yield* sql<{
+    sessionId: string;
+  }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
+  assert.equal(sessions.length, 1);
+  yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessions[0]!.sessionId}, '2026-10-02T12:00:00Z')`;
+  return {
+    fixture,
+    config,
+    services,
+    repository,
+    sql,
+    url,
+    stages,
+    order,
+    nativeCalls,
+    detachments,
+    closeCalls,
+    expectedCommands,
+    assertReservedInventory,
+  };
+});
+
+const nativeWsFixture = nativeCreationWsFixture();
+it.effect(
+  "actual guarded WS capability and unavailable authority produce zero bootstrap commands",
+  () =>
+    Effect.gen(function* () {
+      let dispatches = 0;
+      let capturedSql!: SqlClient.SqlClient;
+      yield* buildAppUnderTest({
         layers: {
-          onNativeCreationServices: (repository, sql) =>
+          serverEnvironment: { getDescriptor: Effect.succeed(nativeRouterEnvironmentDescriptor) },
+          onNativeCreationServices: (_repository, sql) =>
             Effect.sync(() => {
               capturedSql = sql;
-              capturedRepository = repository;
             }),
-          nativeCreationGrantResolver: grantResolver,
-          nativeCreationBindingResolver: {
-            resolveCurrent: () => Effect.succeed(nativeWsFixture.historical),
-          },
-          projectSetupScriptRunner: {
-            runForThread: ({ worktreePath }) =>
-              Effect.succeed({
-                status: "started",
-                scriptId: "synthetic-setup",
-                scriptName: "Synthetic setup",
-                scriptCommand: "synthetic",
-                terminalId: "synthetic-setup-terminal",
-                cwd: worktreePath,
-                async: false,
-                completion: Effect.succeed({ exitCode: 0, durationMs: 1 }),
-              }),
-          },
-          vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
-          gitVcsDriver: {
-            execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
-            createWorktree: () =>
-              Effect.gen(function* () {
-                const identities =
-                  yield* capturedSql!`SELECT command_id FROM native_creation_reserved_command_identities`;
-                assert.equal(identities.length, 14);
-                return {
-                  worktree: {
-                    refName: nativeWsFixture.historical.requestedBranch,
-                    path: nativeWorktreePath({
-                      worktreesDir: nativeConfig!.worktreesDir,
-                      cwd: "/synthetic/project",
-                      branch: nativeWsFixture.historical.requestedBranch,
-                    }),
-                  },
-                };
-              }).pipe(
-                Effect.mapError(
-                  () =>
-                    new GitCommandError({
-                      operation: "createWorktree",
-                      command: "synthetic SQL reservation assertion",
-                      cwd: "/synthetic/project",
-                      detail: "Synthetic reservation lookup failed",
-                    }),
-                ),
-              ),
-          },
-          orchestrationEngine: {
-            dispatch: (command, options) =>
-              Effect.gen(function* () {
-                assert.isDefined(options?.bootstrapEffect);
-                const reservation = yield* capturedRepository!.getReservedCommand(
-                  command.commandId,
-                );
-                assert.isTrue(Option.isSome(reservation));
-                const history = yield* capturedRepository!.readHistoryByClaim(
-                  options!.bootstrapEffect!.claimId,
-                );
-                assert.isTrue(
-                  history.effects.some(
-                    (fact) =>
-                      fact.effectId === options!.bootstrapEffect!.effectId &&
-                      fact.phase === "started",
-                  ),
-                );
-                nativeCommands++;
-                return { sequence: nativeCommands };
-              }).pipe(Effect.orDie),
-          },
+          wrapThreadManagement: (service) => ({
+            ...service,
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatches++;
+              }).pipe(Effect.andThen(service.dispatch(command))),
+            dispatchNativeCreationStage: (command, input) =>
+              Effect.sync(() => {
+                dispatches++;
+              }).pipe(Effect.andThen(service.dispatchNativeCreationStage(command, input))),
+          }),
+        },
+      });
+      const url = yield* getWsServerUrl("/ws");
+      const sessions = yield* capturedSql<{
+        sessionId: string;
+      }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
+      assert.equal(sessions.length, 1);
+      yield* capturedSql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessions[0]!.sessionId}, '2026-10-02T12:00:00Z')`;
+      yield* withWsRpcClient(url, (client) =>
+        Effect.gen(function* () {
+          const config = yield* client[WS_METHODS.serverGetConfig]({});
+          assert.deepEqual(config.environment.capabilities.nativeBootstrapCreation, {
+            submissionSchema: "t3.native-bootstrap-submission/v1",
+            preparationSchema: "voice.t3-bootstrap-preparation/v1",
+            observationSchema: "t3.native-creation-observation/v2",
+            guardRequired: true,
+          });
+          const result = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap](
+            nativeWsFixture.submission,
+          ).pipe(Effect.result);
+          assert.equal(result._tag, "Failure");
+          assertTrue(result._tag === "Failure");
+          assert.equal(result.failure._tag, "OrchestrationDispatchCommandError");
+          if (result.failure._tag === "OrchestrationDispatchCommandError")
+            assert.equal(result.failure.creationRejectionCode, "unsupported_authority");
+          assert.equal(dispatches, 0);
+        }),
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
+);
+
+it.effect(
+  "real permanent marker denies actual legacy WS even with unavailable creation grants",
+  () =>
+    Effect.gen(function* () {
+      let capturedSql: SqlClient.SqlClient | undefined;
+      let dispatches = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) => seedRouterProject(context).pipe(Effect.asVoid),
+          onNativeCreationServices: (_repository, sql) =>
+            Effect.sync(() => {
+              capturedSql = sql;
+            }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatches++;
+              }).pipe(Effect.andThen(service.dispatch(command))),
+            dispatchNativeCreationStage: (command, input) =>
+              Effect.sync(() => {
+                dispatches++;
+              }).pipe(Effect.andThen(service.dispatchNativeCreationStage(command, input))),
+          }),
         },
       });
       const url = yield* getWsServerUrl("/ws");
@@ -14572,31 +13482,132 @@ it.effect(
       yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessions[0]!.sessionId}, '2026-10-02T12:00:00Z')`;
       yield* withWsRpcClient(url, (client) =>
         Effect.gen(function* () {
-          const accepted = yield* client[ORCHESTRATION_WS_METHODS.dispatchBootstrap](
-            nativeWsFixture.submission,
+          const legacy = routerThreadCreate(ThreadId.make(nativeWsFixture.command.threadId));
+          yield* Schema.decodeUnknownEffect(OrchestrationV2Command)(legacy);
+          const result = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](legacy).pipe(
+            Effect.result,
           );
-          assert.isAbove(accepted.sequence, 0);
-          const effectsBeforeDuplicate = nativeCommands;
-          const duplicate = yield* client[ORCHESTRATION_WS_METHODS.dispatchBootstrap](
-            nativeWsFixture.submission,
-          ).pipe(Effect.result);
-          assert.equal(duplicate._tag, "Failure");
-          assert.equal(nativeCommands, effectsBeforeDuplicate);
-          const history = yield* capturedRepository!.readHistory(nativeWsFixture.command.commandId);
+          assert.equal(result._tag, "Failure");
+          assert.equal(dispatches, 0);
+          yield* sql`DELETE FROM native_creation_automation_enrollments WHERE session_id = ${sessions[0]!.sessionId}`;
+          const allowed = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](legacy);
+          assert.isAbove(allowed.sequence, 0);
+          assert.equal(dispatches, 1);
+        }),
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
+);
+
+it.effect(
+  "qualified synthetic ports drive actual guarded WS only after immutable SQL claim and identities",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* qualifiedNativeRouterFixture("qualified-reservations", true);
+      yield* withWsRpcClient(value.url, (client) =>
+        Effect.gen(function* () {
+          const accepted = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap](
+            value.fixture.submission,
+          );
+          assert.equal(accepted.commandAcceptance, "accepted");
+          assert.isAbove(accepted.creation?.finalReceipt?.resultSequence ?? 0, 0);
+          assert.deepEqual(value.stages, value.expectedCommands());
+          assert.deepEqual(value.order, [
+            "thread.create",
+            "message.dispatch",
+            "checkout",
+            "setup",
+            "prepared-run.release",
+          ]);
+          assert.deepEqual(value.nativeCalls, []);
+          yield* value.assertReservedInventory();
+          const history = yield* value.repository.readHistory(value.fixture.command.commandId);
           assert.isTrue(Option.isSome(history));
-          if (Option.isSome(history)) {
-            assert.isNotNull(history.value.normalizedCommandDigest);
-            assert.isAbove(history.value.effects.length, 0);
-            assert.isTrue(
-              history.value.effects.some(
-                (fact) =>
-                  fact.kind === "setup" &&
-                  fact.phase === "completed" &&
-                  fact.terminalId === "synthetic-setup-terminal" &&
-                  fact.exitCode === 0,
-              ),
-            );
+          assertTrue(Option.isSome(history));
+          assert.isNotNull(history.value.normalizedCommandDigest);
+          assert.isAbove(history.value.effects.length, 0);
+          assert.isTrue(
+            history.value.effects.some(
+              (fact) =>
+                fact.kind === "setup" &&
+                fact.phase === "completed" &&
+                fact.terminalId === "synthetic-setup-terminal" &&
+                fact.exitCode === 0,
+            ),
+          );
+          assert.deepEqual(history.value.effectsV2, []);
+          assert.isTrue(
+            value.closeCalls.some((input) => input.terminalId === "synthetic-setup-terminal"),
+          );
+          yield* Context.get(value.services, EffectWorker.OrchestrationEffectWorkerV2).drain(10);
+          assert.deepEqual(value.nativeCalls, ["open_session", "ensure_thread", "start_turn"]);
+          const execution = yield* value.repository.readHistoryByClaim(
+            history.value.intent.claimId,
+          );
+          assert.equal(execution.effectsV2.filter((fact) => fact.phase === "started").length, 1);
+          const effectsBeforeDuplicate = {
+            stages: value.stages.length,
+            native: value.nativeCalls.length,
+            order: [...value.order],
+            history: execution,
+          };
+          const duplicate = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap](
+            value.fixture.submission,
+          ).pipe(Effect.result);
+          assertTrue(duplicate._tag === "Success");
+          assert.equal(duplicate.success.commandAcceptance, "accepted");
+          assert.equal(duplicate.success.commandId, accepted.commandId);
+          assert.equal(duplicate.success.threadId, accepted.threadId);
+          assert.equal(duplicate.success.messageId, accepted.messageId);
+          const originalCreation = accepted.creation;
+          const replayCreation = duplicate.success.creation;
+          assertTrue(originalCreation !== null && replayCreation !== null);
+          for (const field of [
+            "version",
+            "schema",
+            "preparationId",
+            "operationId",
+            "preparationSha256",
+            "bindingDigest",
+            "promptDigest",
+            "commandDigest",
+            "normalizedCommandDigest",
+            "claimId",
+            "claimedBootId",
+            "claimedAt",
+            "actorSessionId",
+            "grantId",
+            "grantRevision",
+            "binding",
+            "incarnation",
+          ] as const) {
+            assert.deepEqual(replayCreation[field], originalCreation[field]);
           }
+          assert.deepEqual(replayCreation.stageCommands, originalCreation.stageCommands);
+          assert.deepEqual(replayCreation.finalReceipt, originalCreation.finalReceipt);
+          assert.equal(
+            replayCreation.finalReceipt?.resultSequence,
+            originalCreation.finalReceipt?.resultSequence,
+          );
+          assert.deepEqual(
+            replayCreation.stageCommands.map((stage) => ({
+              commandId: stage.commandId,
+              commandType: stage.commandType,
+              commandDigest: stage.commandDigest,
+            })),
+            value.expectedCommands().map((command) => ({
+              commandId: command.commandId,
+              commandType: command.type,
+              commandDigest: nativeCreationV2CommandDigest(command),
+            })),
+          );
+          yield* value.assertReservedInventory();
+          assert.equal(value.stages.length, effectsBeforeDuplicate.stages);
+          assert.equal(value.nativeCalls.length, effectsBeforeDuplicate.native);
+          assert.deepEqual(value.order, effectsBeforeDuplicate.order);
+          assert.deepEqual(
+            yield* value.repository.readHistoryByClaim(history.value.intent.claimId),
+            effectsBeforeDuplicate.history,
+          );
         }),
       );
     }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
@@ -14635,13 +13646,24 @@ it.effect(
                 ),
               ),
           },
-          orchestrationEngine: {
-            dispatch: () =>
+          wrapProjectService: (service) => ({
+            ...service,
+            create: (input) =>
               Effect.sync(() => {
                 commands++;
-                return { sequence: commands };
-              }),
-          },
+              }).pipe(Effect.andThen(service.create(input))),
+          }),
+          wrapThreadManagement: (service) => ({
+            ...service,
+            dispatch: (command) =>
+              Effect.sync(() => {
+                commands++;
+              }).pipe(Effect.andThen(service.dispatch(command))),
+            dispatchNativeCreationStage: (command, input) =>
+              Effect.sync(() => {
+                commands++;
+              }).pipe(Effect.andThen(service.dispatchNativeCreationStage(command, input))),
+          }),
           gitVcsDriver: {
             createWorktree: () =>
               Effect.sync(() => {
@@ -14661,25 +13683,24 @@ it.effect(
       const sibling = {
         _tag: "Request",
         id: "101",
-        tag: ORCHESTRATION_WS_METHODS.dispatchCommand,
+        tag: WS_METHODS.projectsMutate,
         payload: {
           type: "project.create",
           commandId: "oversize-sibling-command",
           projectId: "oversize-sibling-project",
           title: "Synthetic sibling",
           workspaceRoot: config.cwd,
-          createdAt: "2026-10-02T12:00:00Z",
         },
         headers: [],
       };
       const guarded = {
         _tag: "Request",
         id: "102",
-        tag: ORCHESTRATION_WS_METHODS.dispatchBootstrap,
+        tag: ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
         payload: nativeWsFixture.submission,
         headers: [],
       };
-      yield* Schema.decodeUnknownEffect(ClientOrchestrationCommand)(sibling.payload);
+      yield* Schema.decodeUnknownEffect(ProjectMutation)(sibling.payload);
       yield* Schema.decodeUnknownEffect(NativeBootstrapSubmission)(guarded.payload);
       const encodedBatch = yield* Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
         [sibling, guarded],
@@ -14717,4 +13738,323 @@ it.effect(
       Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer)),
       TestClock.withLive,
     ),
+);
+
+it.effect(
+  "observes actual pending and unknown deletion cleanup under Read scope without effects",
+  () =>
+    Effect.gen(function* () {
+      let services!: Context.Context<RouterV2Services>;
+      const effects: string[] = [];
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.gen(function* () {
+              services = context;
+              yield* seedRouterProject(context);
+              const threads = Context.get(context, ThreadManagement.ThreadManagementService);
+              yield* threads.dispatch({
+                ...routerThreadCreate(),
+                branch: "feature/deletion-observer",
+                worktreePath: "/synthetic/router-project/deletion-observer",
+              });
+              yield* threads.acquireWorktreeOwnership(defaultThreadId);
+            }),
+          serverRuntimeStartup: {
+            enqueueCommand: () =>
+              Effect.sync(() => {
+                effects.push("startup");
+              }).pipe(Effect.andThen(Effect.die("Read observation must not enqueue a command"))),
+          },
+          terminalManager: {
+            close: () =>
+              Effect.sync(() => {
+                effects.push("terminal");
+              }),
+          },
+          gitVcsDriver: {
+            removeWorktree: () =>
+              Effect.sync(() => {
+                effects.push("worktree");
+              }).pipe(Effect.andThen(Effect.die("Read observation must not remove a worktree"))),
+          },
+          threadLaunch: {
+            dispatchNativeBootstrap: () =>
+              Effect.sync(() => {
+                effects.push("native");
+              }).pipe(
+                Effect.andThen(Effect.die("Read observation must not dispatch native bootstrap")),
+              ),
+          },
+        },
+      });
+      const threads = Context.get(services, ThreadManagement.ThreadManagementService);
+      const sink = Context.get(services, EventSink.EventSinkV2);
+      const sql = Context.get(services, SqlClient.SqlClient);
+      const lease = (yield* threads.listWorktreeOwnershipLeases).find(
+        (entry) => entry.ownerThreadId === defaultThreadId,
+      );
+      assertTrue(lease !== undefined);
+      const input = {
+        threadId: defaultThreadId,
+        commandId: CommandId.make("router:observe-deletion"),
+      };
+      const deletion = yield* threads.dispatch({
+        type: "thread.delete",
+        ...input,
+        worktreeRemoval: {
+          projectId: defaultProjectId,
+          path: lease.resourcePath,
+          branch: lease.branch,
+          force: true,
+        },
+      });
+      const pending = yield* sink.observeThreadDeletionCleanup(input);
+      assert.equal(pending.state, "pending");
+      assert.equal(pending.receipt?.status, "accepted");
+      assert.equal(pending.receipt?.resultSequence, deletion.sequence);
+      assert.equal(pending.removalOutcome, null);
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "orchestration:read",
+      });
+      assert.equal(token.response.status, 200);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+      });
+      assert.equal(ticketResponse.status, 200);
+      const ticket = yield* ticketResponse.json;
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&wsTicket=${encodeURIComponent(Schema.decodeUnknownSync(Schema.Struct({ ticket: Schema.String }))(ticket).ticket)}`;
+      const before = {
+        events: yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`,
+        receipts: yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`,
+        outbox: yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
+        leases: yield* threads.listWorktreeOwnershipLeases,
+      };
+      const original = yield* sink.readThreadDeletionCommand(input.commandId);
+      let unknownOutbox!: typeof before.outbox;
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            assert.deepEqual(
+              yield* client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input),
+              pending,
+            );
+            assert.deepEqual(
+              yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
+              before.outbox,
+            );
+            const outbox = Context.get(services, EffectOutbox.EffectOutboxV2);
+            const effectId = EventSink.deletionWorktreeEffectIdV1(input.commandId, input.threadId);
+            const binding = yield* sink.readDeletionWorktreeTask(effectId);
+            assertTrue(binding !== null);
+            assert.equal(binding.threadId, input.threadId);
+            const workerId = "router:deletion-observation-unknown";
+            const queued = yield* outbox.listByCommandId(input.commandId);
+            assert.isTrue(
+              queued.every((effect) => effect.status === "pending" && effect.leaseOwner === null),
+            );
+            assert.isTrue(
+              queued.some(
+                (effect) => effect.id === effectId && effect.request.type === "worktree.cleanup",
+              ),
+            );
+            assert.deepEqual(yield* outbox.listHeldByThreadId(input.threadId), []);
+            const siblings = queued.filter((effect) => effect.id !== effectId);
+            assert.isTrue(siblings.every((effect) => effect.request.type !== "worktree.cleanup"));
+            const cancelled = yield* outbox.cancelUnsettled({
+              threadId: input.threadId,
+              effectTypes: [...new Set(siblings.map((effect) => effect.request.type))],
+              reason: "Fixture isolates an unexecuted worktree cleanup observation claim",
+            });
+            assert.deepEqual([...cancelled].sort(), siblings.map((effect) => effect.id).sort());
+            assert.deepEqual(
+              yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${input.threadId} AND status = 'running'`,
+              [],
+            );
+            const claimed = Option.getOrUndefined(
+              yield* outbox.claimNext({ workerId, leaseDurationMs: 60_000 }),
+            );
+            assertTrue(claimed !== undefined);
+            assert.equal(claimed.id, effectId);
+            assert.equal(claimed.commandId, input.commandId);
+            assert.equal(claimed.threadId, input.threadId);
+            assert.equal(claimed.request.type, "worktree.cleanup");
+            const expectedAttempt = claimed.attemptCount;
+            yield* sink.recordLeaseCleanupTaskOutcome({
+              effectId,
+              workerId,
+              expectedAttempt,
+              outcome: { taskId: effectId, result: null, effect: "unknown" },
+              evidence: { reason: "fixture_has_no_physical_completion_observation" },
+            });
+            const unknown = yield* sink.observeThreadDeletionCleanup(input);
+            assert.equal(unknown.state, "unknown");
+            assert.equal(unknown.reason, "complete_worktree_removal_proof_unavailable");
+            assert.deepEqual(unknown.receipt, pending.receipt);
+            assert.deepEqual(unknown.deletion, pending.deletion);
+            assert.deepEqual(unknown.worktree, pending.worktree);
+            assert.deepEqual(unknown.removalOutcome, { result: null, effect: "unknown" });
+            unknownOutbox =
+              yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
+            const holds = yield* outbox.listHeldByThreadId(input.threadId);
+            assert.isTrue(
+              holds.some(
+                (hold) =>
+                  hold.effectId === binding.effectId && hold.expectedAttempt === expectedAttempt,
+              ),
+            );
+            const outcomes =
+              yield* sql`SELECT * FROM orchestration_v2_lease_cleanup_task_outcomes WHERE effect_id = ${effectId} ORDER BY ordinal`;
+            assert.deepEqual(
+              yield* client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input),
+              unknown,
+            );
+            assert.deepEqual(yield* outbox.listHeldByThreadId(input.threadId), holds);
+            assert.deepEqual(
+              yield* sql`SELECT * FROM orchestration_v2_lease_cleanup_task_outcomes WHERE effect_id = ${effectId} ORDER BY ordinal`,
+              outcomes,
+            );
+          }),
+        ),
+      );
+      assert.deepEqual(yield* sink.readThreadDeletionCommand(input.commandId), original);
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`,
+        before.events,
+      );
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`,
+        before.receipts,
+      );
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
+        unknownOutbox,
+      );
+      assert.deepEqual(yield* threads.listWorktreeOwnershipLeases, before.leases);
+      assert.deepEqual(effects, []);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("denies deletion cleanup observation before its SQL read without Read scope", () =>
+  Effect.gen(function* () {
+    let services!: Context.Context<RouterV2Services>;
+    yield* buildAppUnderTest({
+      layers: {
+        onV2Services: (context) =>
+          Effect.sync(() => {
+            services = context;
+          }),
+      },
+    });
+    const sink = Context.get(services, EventSink.EventSinkV2);
+    const originalRead = sink.observeThreadDeletionCleanup;
+    const reads: Array<Parameters<typeof originalRead>[0]> = [];
+    Object.defineProperty(sink, "observeThreadDeletionCleanup", {
+      configurable: true,
+      value: (input: Parameters<typeof originalRead>[0]) =>
+        Effect.sync(() => {
+          reads.push(input);
+        }).pipe(Effect.andThen(originalRead(input))),
+    });
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        Object.defineProperty(sink, "observeThreadDeletionCleanup", { value: originalRead });
+      }),
+    );
+    const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+      scope: "orchestration:operate",
+    });
+    assert.equal(token.response.status, 200);
+    const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+      headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+    });
+    assert.equal(ticketResponse.status, 200);
+    const ticket = Schema.decodeUnknownSync(Schema.Struct({ ticket: Schema.String }))(
+      yield* ticketResponse.json,
+    );
+    const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&wsTicket=${encodeURIComponent(ticket.ticket)}`;
+    const input = {
+      threadId: ThreadId.make("router:denied-delete-thread"),
+      commandId: CommandId.make("router:denied-delete-command"),
+    };
+    const sql = Context.get(services, SqlClient.SqlClient);
+    const before = yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`;
+    const failure = yield* Effect.scoped(
+      withWsRpcClient(wsUrl, (client) =>
+        client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input),
+      ),
+    ).pipe(Effect.flip);
+    assert.equal(failure._tag, "EnvironmentAuthorizationError");
+    assertTrue(failure._tag === "EnvironmentAuthorizationError");
+    assert.equal(failure.requiredScope, "orchestration:read");
+    assert.deepEqual(reads, []);
+    assert.deepEqual(yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`, before);
+  }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "returns requested deletion IDs and null proofs when the actual SQL observation fails",
+  () =>
+    Effect.gen(function* () {
+      let services!: Context.Context<RouterV2Services>;
+      yield* buildAppUnderTest({
+        layers: {
+          onV2Services: (context) =>
+            Effect.sync(() => {
+              services = context;
+            }),
+        },
+      });
+      const sql = Context.get(services, SqlClient.SqlClient);
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "orchestration:read",
+      });
+      assert.equal(token.response.status, 200);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+      });
+      assert.equal(ticketResponse.status, 200);
+      const ticket = Schema.decodeUnknownSync(Schema.Struct({ ticket: Schema.String }))(
+        yield* ticketResponse.json,
+      );
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}&wsTicket=${encodeURIComponent(ticket.ticket)}`;
+      const input = {
+        threadId: ThreadId.make("router:unavailable-delete-thread"),
+        commandId: CommandId.make("router:unavailable-delete-command"),
+      };
+      const before = yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`;
+      const outbox = yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
+      yield* Effect.acquireUseRelease(
+        sql`ALTER TABLE orchestration_command_receipts RENAME TO router_unavailable_deletion_receipts`,
+        () =>
+          Effect.scoped(
+            withWsRpcClient(wsUrl, (client) =>
+              Effect.gen(function* () {
+                const result =
+                  yield* client[ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup](input);
+                assert.deepEqual(result, {
+                  ...input,
+                  state: "unknown",
+                  receipt: null,
+                  deletion: null,
+                  worktree: null,
+                  removalOutcome: null,
+                  currentLease: "unavailable",
+                  reason: "deletion_cleanup_observation_unavailable",
+                });
+              }),
+            ),
+          ),
+        () =>
+          sql`ALTER TABLE router_unavailable_deletion_receipts RENAME TO orchestration_command_receipts`.pipe(
+            Effect.orDie,
+          ),
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`, before);
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
+        outbox,
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM orchestration_command_receipts`, []);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
