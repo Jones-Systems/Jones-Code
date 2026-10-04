@@ -142,13 +142,24 @@ export const getInitialServerConfig = Effect.fn("EnvironmentRpc.getInitialServer
 
 export const request = Effect.fn("EnvironmentRpc.request")(function* <
   TTag extends EnvironmentUnaryRpcTag,
->(tag: TTag, input: EnvironmentRpcInput<TTag>) {
+  E = never,
+  R = never,
+>(
+  tag: TTag,
+  input: EnvironmentRpcInput<TTag>,
+  options?: {
+    readonly validateSession: (session: RpcSession) => Effect.Effect<void, E, R>;
+  },
+) {
   const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
   yield* Effect.annotateCurrentSpan({
     "environment.id": supervisor.target.environmentId,
     "rpc.method": tag,
   });
   const session = yield* currentSession();
+  if (options !== undefined) {
+    yield* options.validateSession(session);
+  }
   const observer = yield* EnvironmentRpcRequestObserver;
   const method = session.client[tag] as (
     input: EnvironmentRpcInput<TTag>,

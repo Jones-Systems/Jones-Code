@@ -13004,6 +13004,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   return OrchestratorV2.of({
     requestSelfSettlement,
     resumeQueuedRuns,
+    requestSelfSettlement,
     dispatch: dispatchWithReceipt,
     dispatchRestartContinuation,
     dispatchGuarded,

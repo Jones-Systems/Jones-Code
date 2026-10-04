@@ -1117,21 +1117,20 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:read-token-accounting",
       tag: WS_METHODS.serverReadTokenAccounting,
       execute: (input) =>
-        Effect.gen(function* () {
-          const supervisor = yield* EnvironmentSupervisor;
-          const session = yield* SubscriptionRef.get(supervisor.session);
-          if (Option.isSome(session)) {
-            const config = yield* session.value.initialConfig;
-            if (config.environment.capabilities.savedTokenAccounting !== true) {
-              return yield* Effect.fail(
-                new EnvironmentRpcUnavailableError({
-                  environmentId: supervisor.target.environmentId,
-                  message: "This environment does not advertise a saved accounting reader.",
-                }),
-              );
-            }
-          }
-          return yield* request(WS_METHODS.serverReadTokenAccounting, input);
+        request(WS_METHODS.serverReadTokenAccounting, input, {
+          validateSession: (session) =>
+            Effect.gen(function* () {
+              const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+              const config = yield* session.initialConfig;
+              if (config.environment.capabilities.savedTokenAccounting !== true) {
+                return yield* Effect.fail(
+                  new EnvironmentRpcUnavailableError({
+                    environmentId: supervisor.target.environmentId,
+                    message: "This environment does not advertise a saved accounting reader.",
+                  }),
+                );
+              }
+            }),
         }),
       concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
     }),
