@@ -2,6 +2,36 @@
   "manifest_version": 1,
   "groups": [
     {
+      "group_id": "t3-thread-message-blocking",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts apps/server/src/orchestration-v2/ThreadForkService.test.ts apps/server/src/orchestration-v2/SubagentProjection.test.ts apps/server/src/mcp/ThreadMetadataMcpService.test.ts apps/server/src/mcp/toolkits/thread/handlers.test.ts packages/contracts/src/orchestrationV2.test.ts packages/contracts/src/threadMetadataMcp.test.ts",
+      "modules": [
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts",
+        "apps/server/src/orchestration-v2/ThreadForkService.test.ts",
+        "apps/server/src/orchestration-v2/SubagentProjection.test.ts",
+        "apps/server/src/mcp/ThreadMetadataMcpService.test.ts",
+        "apps/server/src/mcp/toolkits/thread/handlers.test.ts",
+        "packages/contracts/src/orchestrationV2.test.ts",
+        "packages/contracts/src/threadMetadataMcp.test.ts"
+      ],
+      "scope": [
+        "packages/contracts/src/orchestrationV2.ts",
+        "packages/contracts/src/orchestratorMcp.ts",
+        "packages/contracts/src/threadMetadataMcp.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.ts",
+        "apps/server/src/orchestration-v2/ThreadMessageIntake.ts",
+        "apps/server/src/orchestration-v2/ThreadForkService.ts",
+        "apps/server/src/orchestration-v2/SubagentProjection.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.ts",
+        "apps/server/src/mcp/ThreadMetadataMcpService.ts",
+        "apps/server/src/mcp/threadAccess.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+        "apps/server/src/mcp/toolkits/thread/handlers.ts",
+        "apps/server/src/mcp/toolkits/thread/tools.ts"
+      ]
+    },
+    {
       "group_id": "t3-conditional-dispatch",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/DispatchGuard.test.ts apps/server/src/orchestration-v2/CommandObservation.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/Orchestrator.guarded-dispatch.test.ts packages/contracts/src/orchestrationNative.test.ts packages/contracts/src/orchestrationV2.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts",
       "modules": [
