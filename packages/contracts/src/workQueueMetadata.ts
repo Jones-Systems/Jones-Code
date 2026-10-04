@@ -16,6 +16,7 @@ const Id = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,1
 const NativeId = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(512),
+  // oxlint-disable-next-line no-control-regex -- Native identifiers must exclude control characters.
   Schema.isPattern(/^[^\u0000-\u001f\u007f]+$/),
 );
 const Integer = Schema.Number.check(

@@ -4,10 +4,10 @@ import {
   WORK_QUEUE_METADATA_MAX_BYTES,
   type WorkQueueMetadataResult,
 } from "@t3tools/contracts";
-import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
-import { resolve } from "node:path";
-import { createHash } from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -21,6 +21,8 @@ export class WorkQueueMetadataService extends Context.Service<
     readonly snapshot: Effect.Effect<WorkQueueMetadataResult>;
   }
 >()("t3/workQueueMetadata/WorkQueueMetadataService") {}
+
+const decodeMetadata = Schema.decodeUnknownSync(WorkQueueMetadata);
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -42,11 +44,12 @@ async function read(
   let bytes: Uint8Array;
   try {
     // Reject symlinked ancestors as well as the final component; never follow an alternate source.
-    if ((await realpath(config.path)) !== resolve(config.path)) throw new Error("Invalid artifact");
-    const before = await lstat(config.path);
-    const handle = await open(
+    if ((await NodeFSP.realpath(config.path)) !== NodePath.resolve(config.path))
+      throw new Error("Invalid artifact");
+    const before = await NodeFSP.lstat(config.path);
+    const handle = await NodeFSP.open(
       config.path,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
     );
     try {
       const opened = await handle.stat();
@@ -70,7 +73,7 @@ async function read(
         length += result.bytesRead;
       }
       const after = await handle.stat();
-      const current = await lstat(config.path);
+      const current = await NodeFSP.lstat(config.path);
       if (
         length > WORK_QUEUE_METADATA_MAX_BYTES ||
         length !== opened.size ||
@@ -85,7 +88,7 @@ async function read(
         current.isSymbolicLink()
       )
         throw new Error("Invalid artifact");
-      if ((await realpath(config.path)) !== resolve(config.path))
+      if ((await NodeFSP.realpath(config.path)) !== NodePath.resolve(config.path))
         throw new Error("Invalid artifact");
       bytes = buffer.subarray(0, length);
     } finally {
@@ -96,12 +99,14 @@ async function read(
   }
   let snapshot: WorkQueueMetadata;
   try {
-    snapshot = Schema.decodeUnknownSync(WorkQueueMetadata)(
-      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
-      { onExcessProperty: "error" },
-    );
+    snapshot = decodeMetadata(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)), {
+      onExcessProperty: "error",
+    });
     const { snapshot_token, ...unsigned } = snapshot;
-    if (createHash("sha256").update(canonical(unsigned), "utf8").digest("hex") !== snapshot_token)
+    if (
+      NodeCrypto.createHash("sha256").update(canonical(unsigned), "utf8").digest("hex") !==
+      snapshot_token
+    )
       throw new Error("Invalid digest");
   } catch {
     return { status: "unavailable", reason: "invalid_artifact" };

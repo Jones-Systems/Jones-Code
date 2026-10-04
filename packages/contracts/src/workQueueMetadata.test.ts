@@ -32,6 +32,7 @@ const fixture = {
   authority_effect: "none",
 };
 const decode = Schema.decodeUnknownSync(WorkQueueMetadata);
+const decodeResult = Schema.decodeUnknownSync(WorkQueueMetadataResult);
 
 describe("work queue metadata contract", () => {
   it("decodes the exact Python producer golden artifact without changing its identity", () => {
@@ -80,7 +81,7 @@ describe("work queue metadata contract", () => {
     ];
     for (const value of variants) expect(() => decode(value)).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(WorkQueueMetadataResult)({
+      decodeResult({
         status: "unavailable",
         reason: "source_unavailable",
         error: "private",

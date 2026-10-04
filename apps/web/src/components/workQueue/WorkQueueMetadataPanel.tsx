@@ -38,7 +38,7 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
   const [result, setResult] = useState<WorkQueueMetadataResult | null>(null);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [expired, setExpired] = useState(false);
+  const [observedAt, setObservedAt] = useState(Date.now);
   const active = useRef<AbortController | null>(null);
   const refresh = useCallback(async () => {
     active.current?.abort();
@@ -49,7 +49,10 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
     setResult(null);
     try {
       const next = await load(controller.signal);
-      if (!controller.signal.aborted) setResult(next);
+      if (!controller.signal.aborted) {
+        setObservedAt(Date.now());
+        setResult(next);
+      }
     } catch {
       if (!controller.signal.aborted) setFailed(true);
     } finally {
@@ -63,18 +66,18 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
     };
   }, [refresh]);
   useEffect(() => {
-    setExpired(false);
-    if (!result || !("snapshot" in result)) return;
+    if (!result || !("snapshot" in result) || result.expires_at_ms <= observedAt) return;
     const remaining = result.expires_at_ms - Date.now();
-    if (remaining <= 0) {
-      setExpired(true);
-      return;
-    }
-    const timer = window.setTimeout(() => setExpired(true), Math.min(remaining, 2_147_483_647));
+    const timer = window.setTimeout(
+      () => setObservedAt(Date.now()),
+      Math.max(0, Math.min(remaining, 2_147_483_647)),
+    );
     return () => window.clearTimeout(timer);
-  }, [result]);
+  }, [result, observedAt]);
   const snapshot = result && "snapshot" in result ? result.snapshot : null;
-  const stale = result?.status === "stale" || expired;
+  const stale =
+    result?.status === "stale" ||
+    (result !== null && "snapshot" in result && result.expires_at_ms <= observedAt);
   return (
     <section aria-label="Queue metadata" className="space-y-4">
       <div className="flex items-center justify-between gap-4">
