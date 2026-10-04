@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - Synthetic native file fixtures exercise descriptor permissions, symlink rejection, exact bytes, and cleanup at the reader boundary.
+// @effect-diagnostics nodeBuiltinImport:off preferSchemaOverJson:off - Synthetic native JSON fixtures exercise malformed shapes, exact digest bytes, descriptor permissions, symlink rejection, and scoped cleanup at the reader boundary.
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
