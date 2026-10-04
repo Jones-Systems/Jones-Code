@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   NativeCreationHistoricalBinding,
-  OrchestrationCommand,
+  OrchestrationV2Command, ProviderThreadId, ProviderSessionId, ProviderInstanceId, RunAttemptId,
   ThreadId,
   AuthSessionId,
   EventId,
@@ -20,11 +20,12 @@ import {
   nativePreparationCommand,
   validateNativeCreationPreparation,
 } from "../../orchestration-v2/NativeCreationPreparation.ts";
+import { runMigrations } from "../Migrations.ts";
 import migration from "../Migrations/003_JonesNativeCreationIntents.ts";
 import identityMigration from "../Migrations/004_JonesNativeCreationCommandIdentities.ts";
 import receiptMigration from "../Migrations/002_OrchestrationCommandReceipts.ts";
 import {
-  NativeCreationRepository,
+  NativeCreationRepository, NativeCreationCommand,
   type NativeCreationClaimInput,
 } from "../Services/NativeCreationRepository.ts";
 import { layer, make } from "./NativeCreationRepository.ts";
@@ -41,7 +42,7 @@ const repositoryLayer = layer.pipe(Layer.provideMerge(database));
 const timestamp = "2026-10-02T12:34:56Z";
 const decodeFixtureBinding = Schema.decodeUnknownSync(NativePreparationBinding);
 const decodeFixtureHistory = Schema.decodeUnknownSync(NativeCreationHistoricalBinding);
-const decodeFixtureCommand = Schema.decodeUnknownSync(OrchestrationCommand);
+const decodeFixtureCommand = Schema.decodeUnknownSync(NativeCreationCommand);
 const enrolledSessionId = AuthSessionId.make("fixture-enrolled-session");
 const fixture = Effect.fnUntraced(function* (
   operationId = "fixture-operation",
@@ -617,7 +618,7 @@ it.effect("invalid inventories and unowned bodies reject without reserving any I
       (yield* repository
         .reserveCommand(
           value.input.claimId,
-          yield* Schema.decodeEffect(OrchestrationCommand)(value.preparation.command),
+          yield* Schema.decodeEffect(NativeCreationCommand)(value.preparation.command),
         )
         .pipe(Effect.flip)).code,
       "conflict",
@@ -846,7 +847,7 @@ it.effect(
       const history = yield* repository.readHistoryByClaim(value.input.claimId);
       assert.strictEqual(history.effects.length, 2);
       assert.deepEqual(
-        yield* Schema.decodeEffect(Schema.fromJsonString(OrchestrationCommand))(
+        yield* Schema.decodeEffect(Schema.fromJsonString(NativeCreationCommand))(
           reserved.canonicalCommand,
         ),
         command,
@@ -871,7 +872,7 @@ it.effect("a receipt appearing after identity reservation prevents later body bi
       (yield* repository
         .recordNormalizedCommand(
           value.input.claimId,
-          yield* Schema.decodeEffect(OrchestrationCommand)(value.preparation.command),
+          yield* Schema.decodeEffect(NativeCreationCommand)(value.preparation.command),
         )
         .pipe(Effect.flip)).code,
       "conflict",
@@ -883,4 +884,185 @@ it.effect("a receipt appearing after identity reservation prevents later body bi
       (yield* repository.readHistoryByClaim(value.input.claimId)).normalizedCommandDigest,
     );
   }).pipe(Effect.provide(repositoryLayer)),
+);
+
+const v2RepositoryLayer = layer.pipe(Layer.provideMerge(
+  Layer.effectDiscard(runMigrations()).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" }))),
+));
+const acceptedStageFixture = Effect.fnUntraced(function* () {
+  const repository = yield* NativeCreationRepository;
+  const sql = yield* SqlClient.SqlClient;
+  const value = yield* fixture();
+  yield* repository.claim(value.input, value.authorize);
+  const command = Schema.decodeUnknownSync(OrchestrationV2Command)({
+    type: "prepared-run.release", commandId: value.preparation.command.commandId,
+    threadId: value.preparation.command.threadId, runId: "run:native-repository",
+  });
+  if (command.type !== "prepared-run.release") return yield* Effect.die("Expected release fixture");
+  yield* repository.reserveCommandIdentities(value.input.claimId, [command.commandId]);
+  yield* repository.recordNormalizedCommand(value.input.claimId, command);
+  const digest = Option.getOrThrow(yield* repository.getReservedCommand(command.commandId)).commandDigest;
+  const eventId = EventId.make("event:native-repository");
+  const events = yield* sql<{ sequence: number }>`INSERT INTO orchestration_events
+    (event_id, aggregate_kind, stream_id, stream_version, event_type, payload_json, occurred_at, command_id, actor_kind, metadata_json, application_event_version)
+    VALUES (${eventId}, 'thread', ${command.threadId}, 1, 'run.updated', '{}', ${timestamp}, ${command.commandId}, 'system', '{}', 2) RETURNING sequence`;
+  const sequence = events[0]!.sequence;
+  yield* sql`INSERT INTO orchestration_command_receipts (command_id, aggregate_kind, aggregate_id, command_type, accepted_at, result_sequence, status)
+    VALUES (${command.commandId}, 'thread', ${command.threadId}, ${command.type}, ${timestamp}, ${sequence}, 'accepted')`;
+  yield* sql`INSERT INTO orchestration_v2_native_command_identities
+    (command_id, kind, version, command_type, aggregate_kind, aggregate_id, normalized_command_digest, binding_digest)
+    VALUES (${command.commandId}, 'native_creation_stage', 2, ${command.type}, 'thread', ${command.threadId}, ${digest}, ${value.preparation.bindingDigest})`;
+  const reference = { version: 2 as const, claimId: value.input.claimId, stageCommandId: command.commandId,
+    effectId: `effect:${command.commandId}:provider-turn.start:${command.runId}`, stage: "native_command" as const };
+  yield* sql`INSERT INTO orchestration_v2_effect_outbox (effect_id, command_id, thread_id, effect_type, payload_json,
+    status, attempt_count, available_at, created_at, updated_at)
+    VALUES (${reference.effectId}, ${command.commandId}, ${command.threadId}, 'provider-turn.start',
+      ${nativeCreationCanonicalJson({ request: { type: "provider-turn.start", runId: command.runId }, nativeCreationExecutionReference: reference })},
+      'pending', 0, ${timestamp}, ${timestamp}, ${timestamp})`;
+  return { repository, sql, value, command, digest, eventId, sequence, reference };
+});
+
+it.effect("reads bounded V2 history without converting the original V1 preparation", () =>
+  Effect.gen(function* () {
+    const { repository, value, command, digest, eventId, sequence } = yield* acceptedStageFixture();
+    const history = yield* repository.readBoundedHistoryByThread(command.threadId);
+    assert.strictEqual(history?.commandDigest, value.preparation.commandDigest);
+    assert.strictEqual(history?.normalizedCommandDigest, digest);
+    assert.deepEqual(history?.effectsV1, []);
+    assert.deepEqual(history?.effectsV2, []);
+    assert.strictEqual(history?.stageCommands[0]?.commandType, "prepared-run.release");
+    assert.deepEqual(history?.stageCommands[0]?.event, { eventId, sequence });
+    assert.strictEqual(history?.overflow, false);
+    assert.isNull(yield* repository.readBoundedHistoryByThread(ThreadId.make("missing")));
+  }).pipe(Effect.provide(Layer.fresh(v2RepositoryLayer))),
+);
+
+it.effect("requires exact V2 reservation, receipt, identity and event before execution", () =>
+  Effect.gen(function* () {
+    const { repository, value, command, digest, eventId, sequence, reference } = yield* acceptedStageFixture();
+    const acceptance = { commandId: command.commandId, threadId: command.threadId, commandType: command.type,
+      commandDigest: digest, bindingDigest: value.preparation.bindingDigest, eventId, sequence };
+    yield* repository.validateCommandAcceptanceV2(acceptance);
+    for (const changed of [
+      { ...acceptance, bindingDigest: "0".repeat(64) }, { ...acceptance, commandDigest: "0".repeat(64) },
+      { ...acceptance, eventId: EventId.make("other") }, { ...acceptance, sequence: sequence + 1 },
+      { ...acceptance, threadId: ThreadId.make("other") },
+    ]) assert.strictEqual((yield* repository.validateCommandAcceptanceV2(changed).pipe(Effect.result))._tag, "Failure");
+    const resolved = yield* repository.readExecutionReference(reference);
+    assert.deepEqual(resolved.command, command);
+    assert.strictEqual(resolved.preparation.canonicalText, value.preparation.canonicalText);
+    assert.strictEqual((yield* repository.readExecutionReference({ ...reference, claimId: "other" }).pipe(Effect.result))._tag, "Failure");
+  }).pipe(Effect.provide(Layer.fresh(v2RepositoryLayer))),
+);
+
+it.effect("commits one authorized V2 start and preserves unknown prior effects on retry", () =>
+  Effect.gen(function* () {
+    const { repository, value, reference, eventId, sequence } = yield* acceptedStageFixture();
+    const denied = Effect.fail(new NativeCreationAuthorityError({ code: "unsupported_authority", message: "revoked" }));
+    assert.strictEqual((yield* repository.startEffectV2(reference, timestamp, denied).pipe(Effect.result))._tag, "Failure");
+    assert.deepEqual((yield* repository.readHistoryByClaim(reference.claimId)).effectsV2, []);
+    const started = yield* repository.startEffectV2(reference, timestamp, value.authorize);
+    assert.strictEqual(started.fact.ordinal, 0);
+    assert.strictEqual((yield* repository.startEffectV2(reference, timestamp, value.authorize).pipe(Effect.result))._tag, "Failure");
+    assert.strictEqual((yield* repository.startEffectV2({ ...reference, effectId: "replacement" }, timestamp, value.authorize).pipe(Effect.result))._tag, "Failure");
+    assert.strictEqual((yield* repository.completeEffectV2(reference, { timestamp, eventId, sequence: sequence + 1 }).pipe(Effect.result))._tag, "Failure");
+    const completed = yield* repository.completeEffectV2(reference, { timestamp, eventId, sequence });
+    assert.strictEqual(completed.ordinal, 1);
+    assert.strictEqual((yield* repository.completeEffectV2(reference, { timestamp, eventId, sequence }).pipe(Effect.result))._tag, "Failure");
+    const history = yield* repository.readHistoryByClaim(reference.claimId);
+    assert.deepEqual(history.effects, []);
+    assert.deepEqual(history.effectsV2, [started.fact, completed]);
+  }).pipe(Effect.provide(Layer.fresh(v2RepositoryLayer))),
+);
+
+it.effect("rolls back a V2 effect start when the containing acceptance transaction fails", () =>
+  Effect.gen(function* () {
+    const { repository, sql, value, reference } = yield* acceptedStageFixture();
+    yield* sql.withTransaction(Effect.gen(function* () {
+      yield* repository.startEffectV2(reference, timestamp, value.authorize);
+      return yield* Effect.fail("outer transaction rejected");
+    })).pipe(Effect.result);
+    assert.deepEqual((yield* repository.readHistoryByClaim(reference.claimId)).effectsV2, []);
+    yield* repository.startEffectV2(reference, timestamp, value.authorize);
+  }).pipe(Effect.provide(Layer.fresh(v2RepositoryLayer))),
+);
+
+it.effect("reserves exact thread recovery without weakening the immutable stage inventory", () =>
+  Effect.gen(function* () {
+    const { repository, value, command, eventId, sequence } = yield* acceptedStageFixture();
+    const resource = { kind: "thread" as const, threadId: command.threadId, incarnation: { eventId, sequence } };
+    const cleanup = yield* repository.startEffect(value.input.claimId, { kind: "cleanup", phase: "started",
+      effectId: "cleanup:repository", timestamp, recoveryScopeId: "scope:repository", resource }, value.authorize);
+    const recoveryCommand = Schema.decodeUnknownSync(OrchestrationV2Command)({ type: "thread.delete",
+      commandId: `${value.preparation.command.commandId}:bootstrap-thread-delete`, threadId: command.threadId });
+    if (recoveryCommand.type !== "thread.delete") return yield* Effect.die("Expected deletion fixture");
+    const recovery = { version: 2 as const, claimId: value.input.claimId, commandId: recoveryCommand.commandId,
+      threadId: command.threadId, commandType: "thread.delete" as const, canonicalCommand: recoveryCommand,
+      commandDigest: nativeCreationSha256(nativeCreationCanonicalJson(recoveryCommand)), commandStartEffectId: "delete:repository",
+      cleanupStartEffectId: cleanup.effectId, cleanupStartOrdinal: cleanup.ordinal, recoveryScopeId: "scope:repository", resource };
+    assert.strictEqual((yield* repository.reserveThreadRecoveryCommand({ ...recovery, cleanupStartOrdinal: 1 }).pipe(Effect.result))._tag, "Failure");
+    assert.isNull(yield* repository.readThreadRecoveryCommand(recovery.commandId));
+    yield* repository.reserveThreadRecoveryCommand(recovery);
+    yield* repository.reserveThreadRecoveryCommand(recovery);
+    assert.deepEqual(yield* repository.readThreadRecoveryCommand(recovery.commandId), recovery);
+    assert.strictEqual((yield* repository.reserveThreadRecoveryCommand({ ...recovery, commandStartEffectId: "another" }).pipe(Effect.result))._tag, "Failure");
+    yield* repository.startEffect(value.input.claimId, { kind: "native_command", phase: "started", effectId: recovery.commandStartEffectId,
+      timestamp, commandId: recovery.commandId, commandType: "thread.delete", threadId: command.threadId,
+      commandDigest: recovery.commandDigest }, value.authorize);
+  }).pipe(Effect.provide(Layer.fresh(v2RepositoryLayer))),
+);
+
+it.effect("native success acknowledgement atomically commits proof, completion and outbox success", () =>
+  Effect.gen(function* () {
+    const { repository, sql, value, command, reference } = yield* acceptedStageFixture();
+    yield* repository.startEffectV2(reference, timestamp, value.authorize);
+    const binding = { threadId: command.threadId, providerThreadId: ProviderThreadId.make("provider:repository"),
+      providerSessionId: ProviderSessionId.make("session:repository"), instanceId: ProviderInstanceId.make("codex"),
+      runtimeGeneration: "generation:repository", nativeThreadId: "native:repository" };
+    const attemptId = RunAttemptId.make("attempt:repository");
+    yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'running', attempt_count = 1,
+      lease_owner = 'worker:repository', lease_expires_at = '2099-01-01T00:00:00Z' WHERE effect_id = ${reference.effectId}`;
+    yield* sql`INSERT INTO orchestration_v2_projection_threads
+      (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json)
+      VALUES (${command.threadId}, 'fixture-project', 'Synthetic', 'codex', 'full-access', 'default', ${timestamp}, ${timestamp},
+        ${JSON.stringify({ activeProviderThreadId: binding.providerThreadId, modelSelection: { instanceId: binding.instanceId } })})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_provider_sessions
+      (provider_session_id, thread_id, provider, driver, provider_instance_id, status, updated_at, payload_json)
+      VALUES (${binding.providerSessionId}, ${command.threadId}, 'codex', 'codex', 'codex', 'ready', ${timestamp}, '{}')`;
+    yield* sql`INSERT INTO orchestration_v2_projection_provider_threads
+      (provider_thread_id, thread_id, provider, driver, provider_instance_id, provider_session_id, status, updated_at, payload_json)
+      VALUES (${binding.providerThreadId}, ${command.threadId}, 'codex', 'codex', 'codex', ${binding.providerSessionId}, 'running', ${timestamp},
+        ${JSON.stringify({ nativeThreadRef: { nativeId: binding.nativeThreadId } })})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_provider_session_bindings (provider_session_id, thread_id)
+      VALUES (${binding.providerSessionId}, ${command.threadId})`;
+    yield* sql`INSERT INTO orchestration_v2_provider_runtime_evidence
+      (thread_id, provider_thread_id, provider_session_id, provider_instance_id, driver, native_thread_id, runtime_generation, evidence_revision, registered_at)
+      VALUES (${command.threadId}, ${binding.providerThreadId}, ${binding.providerSessionId}, 'codex', 'codex', ${binding.nativeThreadId}, ${binding.runtimeGeneration}, 1, ${timestamp})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, payload_json)
+      VALUES (${command.runId}, ${command.threadId}, 1, 'codex', ${binding.providerThreadId}, 'running', ${timestamp},
+        ${JSON.stringify({ activeAttemptId: attemptId })})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_run_attempts
+      (attempt_id, thread_id, run_id, attempt_ordinal, root_node_id, provider, provider_thread_id, status, payload_json)
+      VALUES (${attemptId}, ${command.threadId}, ${command.runId}, 1, 'node:repository', 'codex', ${binding.providerThreadId}, 'running', '{}')`;
+    const input = { effectId: reference.effectId, workerId: "worker:repository", expectedAttempt: 1,
+      runId: command.runId, attemptId, binding, expectedEvidenceRevision: 1,
+      evidence: { operationId: reference.effectId, operation: "start_turn" as const, outcome: "confirmed_success" as const,
+        threadId: binding.threadId, providerThreadId: binding.providerThreadId, providerSessionId: binding.providerSessionId,
+        instanceId: binding.instanceId, runtimeGeneration: binding.runtimeGeneration, attemptId } };
+    for (const invalid of [{ ...input, expectedAttempt: 2 }, { ...input, workerId: "other" },
+      { ...input, expectedEvidenceRevision: 2 }, { ...input, evidence: { ...input.evidence, outcome: "unknown" as const } }])
+      assert.strictEqual((yield* repository.recordNativeEffectConfirmation(invalid).pipe(Effect.result))._tag, "Failure");
+    yield* sql`CREATE TRIGGER fixture_confirmation_failure BEFORE INSERT ON orchestration_v2_native_effect_confirmations
+      BEGIN SELECT RAISE(ABORT, 'injected acknowledgement failure'); END`;
+    assert.strictEqual((yield* repository.recordNativeEffectConfirmation(input).pipe(Effect.result))._tag, "Failure");
+    assert.strictEqual((yield* repository.readHistoryByClaim(reference.claimId)).effectsV2.length, 1);
+    assert.isNull(yield* repository.readNativeEffectConfirmation(reference.effectId));
+    assert.deepEqual(yield* sql`SELECT status FROM orchestration_v2_effect_outbox WHERE effect_id = ${reference.effectId}`, [{ status: "running" }]);
+    yield* sql`DROP TRIGGER fixture_confirmation_failure`;
+    const proof = yield* repository.recordNativeEffectConfirmation(input);
+    assert.deepEqual(yield* repository.readNativeEffectConfirmation(reference.effectId), proof);
+    assert.deepEqual(yield* repository.recordNativeEffectConfirmation(input), proof);
+    assert.strictEqual((yield* repository.readHistoryByClaim(reference.claimId)).effectsV2.length, 2);
+    assert.deepEqual(yield* sql`SELECT status FROM orchestration_v2_effect_outbox WHERE effect_id = ${reference.effectId}`, [{ status: "succeeded" }]);
+  }).pipe(Effect.provide(Layer.fresh(v2RepositoryLayer))),
 );

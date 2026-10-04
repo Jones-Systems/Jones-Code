@@ -1,7 +1,11 @@
 import {
   NativeCreationEffect,
   NativeCreationHistoricalBinding,
-  type OrchestrationCommand,
+  OrchestrationV2Command,
+  ThreadTurnStartCommand,
+  CommandId, ThreadId, EventId, RunId, RunAttemptId, IsoDateTime,
+  NativeThreadIncarnationV2, NativeCreationEffectV2,
+  type NativeCreationObservationV2, type NativeCommandIdentityV2,
   type AuthSessionId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -12,7 +16,50 @@ import {
   type NativeCreationAuthorityError,
   type NativeCreationResources,
 } from "../../orchestration-v2/NativeCreationAuthority.ts";
+import type { ProviderRuntimeBinding, ProviderNativeEffectEvidence } from "../../orchestration-v2/ProviderAdapter.ts";
+import { type NativeCreationExecutionReferenceV2 } from "../../orchestration-v2/NativeCreationAuthority.ts";
 import { type ValidatedNativeCreationPreparation } from "../../orchestration-v2/NativeCreationPreparation.ts";
+
+// Retained V1 activity bodies are historical ledger input, never V2 execution commands.
+const LegacyNativeActivityCommand = Schema.Struct({
+  type: Schema.Literal("thread.activity.append"), commandId: CommandId, threadId: ThreadId,
+  activity: Schema.Struct({ id: Schema.String, tone: Schema.String, kind: Schema.String,
+    summary: Schema.String, payload: Schema.Record(Schema.String, Schema.Unknown),
+    turnId: Schema.NullOr(Schema.String), createdAt: IsoDateTime }), createdAt: IsoDateTime,
+});
+export const NativeCreationCommand = Schema.Union([OrchestrationV2Command, ThreadTurnStartCommand, LegacyNativeActivityCommand]);
+export type NativeCreationCommand = typeof NativeCreationCommand.Type;
+export type NativeCreationStageCommandV2 = Extract<OrchestrationV2Command,
+  { type: "thread.create" | "message.dispatch" | "prepared-run.release" }>;
+
+export type NativeCreationBoundedHistoryV2 = Omit<NativeCreationObservationV2,
+  "version" | "schema" | "incarnation" | "outcome"> & {
+  readonly originalCommandId: CommandId; readonly threadId: ThreadId; readonly messageId: string;
+};
+export interface NativeCreationResolvedExecutionV2 {
+  readonly reference: NativeCreationExecutionReferenceV2;
+  readonly command: NativeCreationStageCommandV2;
+  readonly nativeIdentity: NativeCommandIdentityV2;
+  readonly preparation: ValidatedNativeCreationPreparation;
+  readonly history: NativeCreationHistory;
+}
+export const NativeCreationThreadRecoveryCommandV2 = Schema.Struct({
+  version: Schema.Literal(2), claimId: Schema.NonEmptyString, commandId: CommandId, threadId: ThreadId,
+  commandType: Schema.Literal("thread.delete"),
+  canonicalCommand: Schema.Struct({ type: Schema.Literal("thread.delete"), commandId: CommandId, threadId: ThreadId }),
+  commandDigest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  commandStartEffectId: Schema.NonEmptyString, cleanupStartEffectId: Schema.NonEmptyString,
+  cleanupStartOrdinal: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)), recoveryScopeId: Schema.NonEmptyString,
+  resource: Schema.Struct({ kind: Schema.Literal("thread"), threadId: ThreadId, incarnation: NativeThreadIncarnationV2 }),
+});
+export type NativeCreationThreadRecoveryCommandV2 = typeof NativeCreationThreadRecoveryCommandV2.Type;
+export interface NativeEffectConfirmationV1 {
+  readonly version: 1; readonly effectId: string; readonly commandId: CommandId; readonly threadId: ThreadId;
+  readonly workerId: string; readonly operationId: string; readonly runId: RunId; readonly attemptId: RunAttemptId;
+  readonly expectedAttempt: number; readonly binding: ProviderRuntimeBinding; readonly evidence: ProviderNativeEffectEvidence;
+  readonly evidenceRevision: number; readonly nativeExecutionReference: NativeCreationExecutionReferenceV2 | null;
+  readonly commandEventId: EventId; readonly commandEventSequence: number; readonly confirmedAt: string;
+}
 
 export class NativeCreationRepositoryError extends Schema.TaggedError<NativeCreationRepositoryError>()(
   "NativeCreationRepositoryError",
@@ -49,6 +96,8 @@ export interface NativeCreationHistory {
   readonly intent: NativeCreationStoredIntent;
   readonly normalizedCommandDigest: string | null;
   readonly effects: ReadonlyArray<NativeCreationEffect>;
+  readonly effectsV2: ReadonlyArray<NativeCreationEffectV2>;
+  readonly effectOverflow: boolean;
 }
 
 export interface NativeCreationClaimInput {
@@ -72,7 +121,7 @@ export interface NativeCreationReservedCommand {
   readonly claimId: string;
   readonly commandId: string;
   readonly threadId: string;
-  readonly commandType: OrchestrationCommand["type"];
+  readonly commandType: string;
   readonly commandDigest: string;
   readonly canonicalCommand: string;
 }
@@ -84,6 +133,27 @@ export type NativeCreationCompletedFact = Extract<NativeCreationEffect, { phase:
 export class NativeCreationRepository extends Context.Service<
   NativeCreationRepository,
   {
+    readonly readBoundedHistoryByThread: (threadId: ThreadId) => Effect.Effect<NativeCreationBoundedHistoryV2 | null, NativeCreationRepositoryError>;
+    readonly readThreadRecoveryCommand: (commandId: string) => Effect.Effect<NativeCreationThreadRecoveryCommandV2 | null, NativeCreationRepositoryError>;
+    readonly reserveThreadRecoveryCommand: (input: NativeCreationThreadRecoveryCommandV2) => Effect.Effect<void, NativeCreationRepositoryError>;
+    readonly readNativeEffectConfirmation: (effectId: string) => Effect.Effect<NativeEffectConfirmationV1 | null, NativeCreationRepositoryError>;
+    readonly recordNativeEffectConfirmation: (input: {
+      readonly effectId: string; readonly workerId: string; readonly expectedAttempt: number;
+      readonly runId: RunId; readonly attemptId: RunAttemptId; readonly binding: ProviderRuntimeBinding;
+      readonly expectedEvidenceRevision: number; readonly evidence: ProviderNativeEffectEvidence;
+    }) => Effect.Effect<NativeEffectConfirmationV1, NativeCreationRepositoryError>;
+    readonly validateCommandAcceptanceV2: (input: {
+      readonly commandId: CommandId; readonly threadId: ThreadId; readonly commandType: NativeCreationStageCommandV2["type"];
+      readonly commandDigest: string; readonly bindingDigest: string; readonly eventId: EventId; readonly sequence: number;
+    }) => Effect.Effect<void, NativeCreationRepositoryError>;
+    readonly readExecutionReference: (reference: NativeCreationExecutionReferenceV2) => Effect.Effect<NativeCreationResolvedExecutionV2, NativeCreationRepositoryError>;
+    readonly startEffectV2: (reference: NativeCreationExecutionReferenceV2, timestamp: string,
+      authorize: Effect.Effect<NativeCreationHistoricalBinding, NativeCreationAuthorityError>) => Effect.Effect<{
+        readonly status: "started"; readonly fact: Extract<NativeCreationEffectV2, {phase: "started"}>;
+      }, NativeCreationRepositoryError | NativeCreationAuthorityError>;
+    readonly completeEffectV2: (reference: NativeCreationExecutionReferenceV2, input: {
+      readonly timestamp: string; readonly eventId: EventId; readonly sequence: number;
+    }) => Effect.Effect<Extract<NativeCreationEffectV2, {phase: "completed"}>, NativeCreationRepositoryError>;
     readonly hasAutomationEnrollment: (
       actorSessionId: AuthSessionId,
     ) => Effect.Effect<boolean, NativeCreationRepositoryError>;
@@ -115,11 +185,11 @@ export class NativeCreationRepository extends Context.Service<
     >;
     readonly recordNormalizedCommand: (
       claimId: string,
-      command: OrchestrationCommand,
+      command: NativeCreationCommand,
     ) => Effect.Effect<void, NativeCreationRepositoryError>;
     readonly reserveCommand: (
       claimId: string,
-      command: OrchestrationCommand,
+      command: NativeCreationCommand,
     ) => Effect.Effect<void, NativeCreationRepositoryError>;
     readonly getReservedCommand: (
       commandId: string,
