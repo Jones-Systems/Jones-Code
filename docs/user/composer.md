@@ -196,6 +196,8 @@ Queue sends compatible messages after the current foreground tool calls finish,
 even when you switch threads or disconnect the client. It waits while the agent needs an
 approval or answer. Providers that cannot accept input without restarting, commands such as
 `/compact`, and messages that change the provider, model, or modes wait for a later turn instead.
+At a tool boundary, messages follow their selected queue order. Later messages wait for earlier
+delivery to succeed, including any retries.
 Failed or interrupted tools do not release the queue on their own; it waits for the next
 qualifying tool completion or the end of the turn. Stopping the thread keeps its queue held.
 

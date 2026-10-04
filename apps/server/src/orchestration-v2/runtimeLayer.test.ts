@@ -790,7 +790,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
             },
           ],
         });
-        for (const text of ["First", "Second"]) {
+        const texts = Array.from({ length: 12 }, (_, index) => `Queued-${index + 1}`);
+        for (const text of texts) {
           yield* orchestrator.dispatch({
             type: "message.dispatch",
             threadId,
@@ -805,6 +806,16 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         }
         const queued = (yield* orchestrator.getThreadProjection(threadId)).runs.filter(
           (candidate) => candidate.status === "queued",
+        );
+        yield* orchestrator.dispatch({
+          type: "queued-run.reorder",
+          commandId: CommandId.make(`${prefix}-reorder`),
+          threadId,
+          runId: queued.at(-1)!.id,
+          beforeRunId: queued[0]!.id,
+        });
+        const expectedMessageIds = [texts.at(-1)!, ...texts.slice(0, -1)].map((text) =>
+          MessageId.make(`${prefix}-${text}`),
         );
         const delivered = yield* Queue.unbounded<MessageId>();
         yield* sink
@@ -848,13 +859,18 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           ],
         });
         assert.deepEqual(
-          [yield* Queue.take(delivered), yield* Queue.take(delivered)],
-          [MessageId.make(`${prefix}-First`), MessageId.make(`${prefix}-Second`)],
+          yield* Effect.forEach(expectedMessageIds, () => Queue.take(delivered)),
+          expectedMessageIds,
         );
         const after = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(after.runs.find((candidate) => candidate.id === run.id)?.status, "running");
         assert.isFalse(after.runs.some((candidate) => candidate.status === "queued"));
         const outbox = yield* EffectOutbox.EffectOutboxV2;
+        yield* outbox.cancelUnsettled({
+          threadId,
+          effectTypes: ["provider-turn.start"],
+          reason: "Fixture start is already represented by the running provider turn",
+        });
         for (const queuedRun of queued) {
           const effects = yield* outbox.listByCommandId(
             CommandId.make(
@@ -865,6 +881,17 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
             effects.map((effect) => effect.request.type),
             ["provider-turn.steer"],
           );
+        }
+        const workerId = `${prefix}-claim-worker`;
+        for (const expectedMessageId of expectedMessageIds) {
+          const effect = Option.getOrThrow(
+            yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 }),
+          );
+          assert.equal(effect.threadId, threadId);
+          assert.equal(effect.request.type, "provider-turn.steer");
+          if (effect.request.type !== "provider-turn.steer") return;
+          assert.equal(effect.request.messageId, expectedMessageId);
+          assert.isTrue(yield* outbox.succeed({ effectId: effect.id, workerId }));
         }
       }),
     { timeout: 6000 },
