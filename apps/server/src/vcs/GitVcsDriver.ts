@@ -286,6 +286,12 @@ export interface GitResolveRemoteTrackingCommitResult {
   remoteRefName: string;
 }
 
+export interface GitResolveRemoteTrackingCommitIfExistsInput {
+  readonly cwd: string;
+  readonly remoteName: string;
+  readonly branchName: string;
+}
+
 export interface GitSetBranchUpstreamInput {
   cwd: string;
   branch: string;
@@ -376,6 +382,9 @@ export class GitVcsDriver extends Context.Service<
     readonly resolveRemoteTrackingCommit: (
       input: GitResolveRemoteTrackingCommitInput,
     ) => Effect.Effect<GitResolveRemoteTrackingCommitResult, GitCommandError>;
+    readonly resolveRemoteTrackingCommitIfExists: (
+      input: GitResolveRemoteTrackingCommitIfExistsInput,
+    ) => Effect.Effect<GitResolveRemoteTrackingCommitResult | null, GitCommandError>;
     readonly fetchRemoteBranch: (
       input: GitFetchRemoteBranchInput,
     ) => Effect.Effect<void, GitCommandError>;

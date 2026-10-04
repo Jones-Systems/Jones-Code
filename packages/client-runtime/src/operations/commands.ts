@@ -6,6 +6,7 @@ import {
   CheckpointScopeId,
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationV2CheckpointUnavailableError,
+  OrchestrationDispatchCommandError,
   WS_METHODS,
   type ChatAttachment,
   type MessageId,
@@ -37,6 +38,7 @@ import {
   type ThreadEnvMode,
   type UploadChatAttachment,
 } from "@t3tools/contracts";
+import { resolveDefaultWorktreeBaseBranch } from "@t3tools/shared/git";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Crypto from "effect/Crypto";
@@ -168,7 +170,7 @@ interface StartThreadBootstrap {
     /** V2 worktree launches always fail rather than falling back to the project checkout. */
     readonly requireWorktree?: boolean;
     readonly projectCwd: string;
-    readonly baseBranch: string;
+    readonly baseBranch?: string;
     readonly branch?: string;
     readonly startFromOrigin?: boolean;
   };
@@ -176,6 +178,8 @@ interface StartThreadBootstrap {
 }
 
 export interface StartThreadTurnInput extends ThreadCommandInput {
+  /** Client-only capability hint; never sent in the launch payload. */
+  readonly serverResolvesWorktreeBase?: boolean;
   readonly manualContinuationOfRunId?: RunId;
   readonly message: {
     readonly messageId: MessageId;
@@ -715,7 +719,27 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     attachments,
   );
   const bootstrap = input.bootstrap?.createThread;
-  const prepareWorktree = input.bootstrap?.prepareWorktree;
+  let prepareWorktree = input.bootstrap?.prepareWorktree;
+  if (
+    prepareWorktree !== undefined &&
+    prepareWorktree.baseBranch === undefined &&
+    input.serverResolvesWorktreeBase !== true
+  ) {
+    const result = yield* request(WS_METHODS.vcsListRefs, {
+      cwd: prepareWorktree.projectCwd,
+      limit: 100,
+    });
+    const baseBranch = result.isRepo ? resolveDefaultWorktreeBaseBranch(result.refs) : null;
+    if (baseBranch === null) {
+      return yield* Effect.fail(
+        new OrchestrationDispatchCommandError({
+          message:
+            "Unable to select a base branch for the new worktree. Choose a base ref and retry.",
+        }),
+      );
+    }
+    prepareWorktree = { ...prepareWorktree, baseBranch };
+  }
   if (bootstrap !== undefined || prepareWorktree !== undefined) {
     const existingProjection =
       bootstrap === undefined ? yield* getProjection(input.threadId) : null;
@@ -724,7 +748,9 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       prepareWorktree !== undefined
         ? {
             type: "worktree" as const,
-            baseRef: prepareWorktree.baseBranch,
+            ...(prepareWorktree.baseBranch === undefined
+              ? {}
+              : { baseRef: prepareWorktree.baseBranch }),
             ...(prepareWorktree.branch === undefined ? {} : { branch: prepareWorktree.branch }),
             ...(prepareWorktree.startFromOrigin === undefined
               ? {}
@@ -972,10 +998,9 @@ export const revertThreadCheckpoint = Effect.fn("EnvironmentCommands.revertThrea
   },
 );
 
-export const stopCurrentThreadRuntime = Effect.fn(
-  "EnvironmentCommands.stopCurrentThreadRuntime",
-)((input: OrchestrationV2StopCurrentThreadRuntimeInput) =>
-  request(ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime, input),
+export const stopCurrentThreadRuntime = Effect.fn("EnvironmentCommands.stopCurrentThreadRuntime")(
+  (input: OrchestrationV2StopCurrentThreadRuntimeInput) =>
+    request(ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime, input),
 );
 
 export const observeCurrentThreadRuntimeStop = Effect.fn(
@@ -996,10 +1021,9 @@ export const getThreadRuntimeObservation = Effect.fn(
   request(ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation, input),
 );
 
-export const getOperatingCounts = Effect.fn(
-  "EnvironmentCommands.getOperatingCounts",
-)((input: OrchestrationV2GetOperatingCountsInput) =>
-  request(ORCHESTRATION_V2_WS_METHODS.getOperatingCounts, input),
+export const getOperatingCounts = Effect.fn("EnvironmentCommands.getOperatingCounts")(
+  (input: OrchestrationV2GetOperatingCountsInput) =>
+    request(ORCHESTRATION_V2_WS_METHODS.getOperatingCounts, input),
 );
 
 export const stopThreadSession = Effect.fn("EnvironmentCommands.stopThreadSession")(function* (

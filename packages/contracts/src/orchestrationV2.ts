@@ -71,9 +71,13 @@ import { ThreadTokenUsageSnapshot } from "./providerRuntime.ts";
 const closedOrchestrationV2Struct = <Fields extends Schema.Struct.Fields>(fields: Fields) => {
   const schema = Schema.Struct(fields);
   // Reject original wire overrides before struct decoding can discard them.
-  return Schema.flip(Schema.flip(schema).check(Schema.makeFilter(
-    (value) => Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
-  )));
+  return Schema.flip(
+    Schema.flip(schema).check(
+      Schema.makeFilter((value) =>
+        Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
+      ),
+    ),
+  );
 };
 
 export const OrchestrationV2Actor = Schema.Literals(["user", "agent", "system"]);
@@ -2922,10 +2926,19 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 const OrchestrationV2ClientCommandSchema = OrchestrationV2Command.pipe(
   Schema.refine<
     typeof OrchestrationV2Command,
-    Exclude<OrchestrationV2Command, { readonly type: "thread.pull-request.sync" | "thread.imported-history.start" }>
+    Exclude<
+      OrchestrationV2Command,
+      { readonly type: "thread.pull-request.sync" | "thread.imported-history.start" }
+    >
   >(
-    (command): command is Exclude<OrchestrationV2Command, { readonly type: "thread.pull-request.sync" | "thread.imported-history.start" }> =>
-      command.type !== "thread.pull-request.sync" && command.type !== "thread.imported-history.start",
+    (
+      command,
+    ): command is Exclude<
+      OrchestrationV2Command,
+      { readonly type: "thread.pull-request.sync" | "thread.imported-history.start" }
+    > =>
+      command.type !== "thread.pull-request.sync" &&
+      command.type !== "thread.imported-history.start",
     { message: "Command requires a dedicated server entry point" },
   ),
 );
@@ -2933,8 +2946,11 @@ const OrchestrationV2ClientCommandSchema = OrchestrationV2Command.pipe(
 export const OrchestrationV2ClientCommand = Schema.flip(
   Schema.flip(OrchestrationV2ClientCommandSchema).check(
     Schema.makeFilter(
-      (command) => command !== null && typeof command === "object" &&
-        !Object.hasOwn(command, "guard") && !Object.hasOwn(command, "dispatchGuard"),
+      (command) =>
+        command !== null &&
+        typeof command === "object" &&
+        !Object.hasOwn(command, "guard") &&
+        !Object.hasOwn(command, "dispatchGuard"),
       { message: "Guard fields require orchestration.dispatchGuarded" },
     ),
   ),
@@ -3038,7 +3054,7 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("worktree"),
-    baseRef: TrimmedNonEmptyString,
+    baseRef: Schema.optional(TrimmedNonEmptyString),
     branch: Schema.optional(TrimmedNonEmptyString),
     startFromOrigin: Schema.optional(Schema.Boolean),
   }),
