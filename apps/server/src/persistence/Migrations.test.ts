@@ -115,6 +115,7 @@ it.effect("runs fork migration 1 after completing historical upstream replay", (
       { migration_id: 4, name: "NativeCreationCommandIdentities" },
       { migration_id: 5, name: "WorkstreamsNativeAttempts" },
       { migration_id: 6, name: "WorkstreamsProviderEnrollments" },
+      { migration_id: 7, name: "ThreadCreationLookupIndex" },
     ]);
     assert.deepEqual(
       yield* sql`SELECT name FROM sqlite_master WHERE name = 'worktree_ownership_leases'`,
