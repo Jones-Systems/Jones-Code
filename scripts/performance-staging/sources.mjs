@@ -4,7 +4,6 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 export const sourceParentEnvironment = "JONES_PERFORMANCE_SOURCE_PARENT";
-const defaultParent = "/home/malcolmjones/Projects/Jones-Code-performance-worktrees-20261002";
 export const syntheticSourcePins = Object.freeze([
   Object.freeze({
     directory: "baseline",
@@ -17,6 +16,21 @@ export const syntheticSourcePins = Object.freeze([
     tree: "57a0d6d07aa2f67976018d9e7a6cca2a925d5e1c",
   }),
 ]);
+export const qualificationSourcePins = Object.freeze([
+  ...syntheticSourcePins,
+  Object.freeze({
+    directory: "history",
+    sourceRevision: "c4c68bb0b33eafb72545e6e23b0b7258e49bd613",
+    tree: "47f2cef2ba09c3212103a0152daf200557a05115",
+    lockSha256: "68549e7f8c7fb39bc313b1314374d3303c0461bfe9c1af0740a719b999df6cfd",
+  }),
+  Object.freeze({
+    directory: "lease",
+    sourceRevision: "da5f4aee0035beec471b38598eaa2857d1e5155c",
+    tree: "e4cc6a712c634cfff25979dcbadb4b753d3f7309",
+    lockSha256: "68549e7f8c7fb39bc313b1314374d3303c0461bfe9c1af0740a719b999df6cfd",
+  }),
+]);
 const lockSha256 = "34460ca4290c8132ae0f26ba0224476b22c39983e8bcd735e357f15989592fc4";
 
 function refuse(message, cause) {
@@ -24,7 +38,7 @@ function refuse(message, cause) {
 }
 
 export function syntheticSourceParent(environment = process.env) {
-  const parent = environment[sourceParentEnvironment] ?? defaultParent;
+  const parent = environment[sourceParentEnvironment];
   try {
     if (
       typeof parent !== "string" ||
@@ -41,8 +55,8 @@ export function syntheticSourceParent(environment = process.env) {
   }
 }
 
-export function syntheticDatabaseSource(sourceRevision, environment = process.env) {
-  const pin = syntheticSourcePins.find((entry) => entry.sourceRevision === sourceRevision);
+function databaseSource(sourceRevision, pins, environment) {
+  const pin = pins.find((entry) => entry.sourceRevision === sourceRevision);
   if (!pin) refuse("database source revision is not pinned");
   return Object.freeze({
     repository: "Jones-Systems/Jones-Code",
@@ -51,9 +65,9 @@ export function syntheticDatabaseSource(sourceRevision, environment = process.en
   });
 }
 
-export function assertSyntheticDatabaseSource(source, environment = process.env) {
+function assertDatabaseSource(source, pins, environment) {
   try {
-    const expected = syntheticDatabaseSource(source?.sourceRevision, environment);
+    const expected = databaseSource(source?.sourceRevision, pins, environment);
     if (
       !source ||
       Object.keys(source).sort().join(",") !== "repository,sourceRevision,worktreePath" ||
@@ -62,7 +76,7 @@ export function assertSyntheticDatabaseSource(source, environment = process.env)
       NodeFS.realpathSync(expected.worktreePath) !== expected.worktreePath
     )
       refuse("database source must match an exact root-bound baseline");
-    const pin = syntheticSourcePins.find((entry) => entry.sourceRevision === source.sourceRevision);
+    const pin = pins.find((entry) => entry.sourceRevision === source.sourceRevision);
     const git = (...args) =>
       NodeChildProcess.execFileSync(
         "git",
@@ -85,7 +99,7 @@ export function assertSyntheticDatabaseSource(source, environment = process.env)
       git("status", "--porcelain", "--untracked-files=no") !== "" ||
       NodeCrypto.createHash("sha256")
         .update(NodeFS.readFileSync(NodePath.join(source.worktreePath, "pnpm-lock.yaml")))
-        .digest("hex") !== lockSha256
+        .digest("hex") !== (pin.lockSha256 ?? lockSha256)
     )
       refuse("database source commit, tree, clean tracked inputs or frozen lock differ");
     return expected;
@@ -93,4 +107,20 @@ export function assertSyntheticDatabaseSource(source, environment = process.env)
     if (error.code === "invalid_source") throw error;
     refuse("database source identity could not be established", error);
   }
+}
+
+export function syntheticDatabaseSource(sourceRevision, environment = process.env) {
+  return databaseSource(sourceRevision, syntheticSourcePins, environment);
+}
+
+export function assertSyntheticDatabaseSource(source, environment = process.env) {
+  return assertDatabaseSource(source, syntheticSourcePins, environment);
+}
+
+export function qualificationDatabaseSource(sourceRevision, environment = process.env) {
+  return databaseSource(sourceRevision, qualificationSourcePins, environment);
+}
+
+export function assertQualificationDatabaseSource(source, environment = process.env) {
+  return assertDatabaseSource(source, qualificationSourcePins, environment);
 }

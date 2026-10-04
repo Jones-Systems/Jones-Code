@@ -5,10 +5,10 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
 import {
-  assertSyntheticDatabaseSource,
+  assertQualificationDatabaseSource,
   sourceParentEnvironment,
-  syntheticDatabaseSource,
-  syntheticSourcePins,
+  qualificationDatabaseSource,
+  qualificationSourcePins,
 } from "../../scripts/performance-staging/sources.mjs";
 
 function groupExists(pid) {
@@ -150,7 +150,7 @@ async function main() {
         const environment = { ...process.env, [sourceParentEnvironment]: root };
         const sources = [];
         const verifySource = (source) => {
-          assertSyntheticDatabaseSource(source, environment);
+          assertQualificationDatabaseSource(source, environment);
           const status = NodeChildProcess.execFileSync(
             "git",
             [
@@ -167,8 +167,8 @@ async function main() {
           if (status !== "")
             throw new Error("prepared source contains changed or untracked inputs");
         };
-        for (const pin of syntheticSourcePins) {
-          const source = syntheticDatabaseSource(pin.sourceRevision, environment);
+        for (const pin of qualificationSourcePins) {
+          const source = qualificationDatabaseSource(pin.sourceRevision, environment);
           sources.push(source);
           await NodeFSP.mkdir(source.worktreePath);
           await run("git", ["init", "--quiet"], source.worktreePath, sourceEnvironment);
