@@ -1,0 +1,12 @@
+{
+  "name": "@jones/server-swap-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone, journaled Jones/T3 server runtime swap worker",
+  "bin": { "server-swap": "./cli.cjs" },
+  "engines": { "node": ">=24.13.1" },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 core.test.cjs native.test.cjs transport.test.cjs",
+    "build:standalone": "node build.cjs"
+  }
+}
