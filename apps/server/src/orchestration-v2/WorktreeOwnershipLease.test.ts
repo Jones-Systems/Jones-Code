@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as Statement from "effect/unstable/sql/Statement";
 
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as EventSink from "./EventSink.ts";
@@ -145,6 +146,33 @@ const ordinaryOwnUseFixture = Effect.fn("WorktreeOwnershipLease.test.ordinaryOwn
 });
 
 it.layer(TestLayer)("WorktreeOwnershipLeaseStore", (it) => {
+  it.effect("reserves the writer before ownership reads and rolls back failed acquisition", () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const store = yield* makeWorktreeOwnershipLeaseStore();
+      const statements: string[] = [];
+      const resourcePath = "/workspace/first-write-rollback";
+      const result = yield* sink.withWorktreeOwnershipTransaction(Effect.gen(function* () {
+        assert.isTrue(Option.isNone(yield* store.getByResourcePath(resourcePath)));
+        assert.isTrue(Option.isSome(yield* store.acquire({
+          resourcePath, leaseId: "first-write-lease", ownerThreadId: ThreadId.make("first-write-owner"),
+          ownerIncarnation: "first-write-birth", branch: null, nowMs: 1_000, expiresAtMs: 2_000,
+        })));
+        return yield* Effect.fail("abort-acquisition");
+      })).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (statement) => Effect.sync(() => {
+          statements.push(statement.compile()[0]);
+          return statement;
+        })),
+        Effect.result,
+      );
+      assert.equal(result._tag, "Failure");
+      assert.match(statements[0]!.trim(), /^(?:INSERT|UPDATE|DELETE)\b/i);
+      assert.isTrue(statements.some((statement) => /^\s*SELECT\b/i.test(statement)));
+      assert.isTrue(Option.isNone(yield* store.getByResourcePath(resourcePath)));
+    }),
+  );
+
   it.effect("an expired exact owner reservation renews before live entry while generic mutations remain fenced", () =>
     Effect.gen(function* () {
       const value = yield* ordinaryOwnUseFixture("expired-positive", false, true);

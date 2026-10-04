@@ -638,7 +638,7 @@ export interface EventSinkV2Shape {
   readonly readDeletionWorktreePathAdmission: (input: { readonly path: string }) =>
     Effect.Effect<DeletionWorktreePathAdmissionV1, EventSinkV2Error>;
   /** SQL mutation only; native Git work must not run inside this transaction. */
-  readonly withDeletionWorktreeSqlMutation: <A, E, R>(input: { readonly path: string }, mutation: Effect.Effect<A, E, R>) =>
+  readonly withDeletionWorktreeSqlMutation: <A, E, R>(input: { readonly path: string; readonly ordinaryMutation?: OrdinaryCheckout.OrdinaryCheckoutOwnMutationV1 }, mutation: Effect.Effect<A, E, R>) =>
     Effect.Effect<A, E | EventSinkV2Error, R>;
   readonly readLeaseCleanupStoreBasis: (lease: WorktreeOwnershipLease) => Effect.Effect<LeaseCleanupStoreBasisV2, EventSinkV2Error>;
   readonly readLeaseCleanupTask: (effectId: string) => Effect.Effect<LeaseCleanupTaskBindingV2 | null, EventSinkV2Error>;
@@ -768,6 +768,7 @@ export interface EventSinkV2Shape {
     readonly revalidateAfterTrial: Effect.Effect<void, unknown>;
   }) => Effect.Effect<boolean, EventSinkV2Error | RestartContinuationMarkerError>;
   readonly onCommit: (effect: Effect.Effect<void>) => Effect.Effect<void, EventSinkWriteError>;
+  readonly withWorktreeOwnershipTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | EventSinkWriteError, R>;
   readonly withTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | EventSinkWriteError, R>;
   readonly getThreadIncarnation: (threadId: ThreadId) => Effect.Effect<NativeThreadIncarnationV2 | null, EventSinkV2Error>;
   readonly readNativeCommandFacts: (input: {
@@ -1023,6 +1024,14 @@ const baseLayer: Layer.Layer<
         return result;
       })).pipe(Effect.mapError((cause) => SqlError.isSqlError(cause)
         ? new EventSinkWriteError({ eventCount: 0, cause }) : cause));
+
+    const withWorktreeOwnershipTransaction: EventSinkV2Shape["withWorktreeOwnershipTransaction"] = (effect) =>
+      withTransaction(Effect.gen(function* () {
+        // Reserve the SQLite writer before birth/path reads can pin a stale WAL snapshot.
+        // The empty update changes no lease and also works before the first lease exists.
+        yield* sql`UPDATE worktree_ownership_leases SET lease_id = lease_id WHERE 0`;
+        return yield* effect;
+      }));
 
     const readIncarnation = Effect.fnUntraced(function* (threadId: ThreadId) {
       const rows = yield* sql<{ readonly eventId: string; readonly sequence: number; readonly payload: string; readonly birthPayload: string }>`
@@ -5607,10 +5616,31 @@ const baseLayer: Layer.Layer<
       readDeletionWorktreePathAdmission: (input) => sql.withTransaction(readDeletionWorktreePathAdmissionEffect(input)).pipe(
         Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       observeThreadDeletionCleanup,
-      withDeletionWorktreeSqlMutation: (input, mutation) => sql.withTransaction(
-        assertDeletionWorktreePathWritable(input.path).pipe(
-          Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })), Effect.andThen(mutation))).pipe(
-          Effect.mapError((cause) => SqlError.isSqlError(cause) ? new EventSinkWriteError({ eventCount: 0, cause }) : cause)),
+      withWorktreeOwnershipTransaction,
+      withDeletionWorktreeSqlMutation: (input, mutation) => withWorktreeOwnershipTransaction(Effect.gen(function* () {
+        if (input.ordinaryMutation === undefined) {
+          yield* assertDeletionWorktreePathWritable(input.path);
+          return yield* mutation;
+        }
+        const own = yield* Schema.decodeUnknownEffect(Schema.toType(OrdinaryCheckout.OrdinaryCheckoutOwnMutationV1))(
+          input.ordinaryMutation, { onExcessProperty: "error" });
+        const use = own.ordinaryUse;
+        const record = yield* exactOrdinaryCheckoutUse(use);
+        const admission = yield* resolveOrdinaryCheckoutAdmission(use.admission);
+        if (input.path !== admission.capture.canonicalCheckoutPath ||
+            (record.state !== "reserved" && record.state !== "started"))
+          return yield* ordinaryFailure(admission.capture, "unknown_use", "Own lease mutation requires its exact entered checkout operation");
+        const before = yield* validateOrdinaryCheckoutCapture(admission.capture, record.subject.source,
+          { operationId: use.operationId, requireLiveLease: false });
+        yield* validateOrdinaryCheckoutUseSource(use, admission);
+        const result = yield* mutation;
+        const after = yield* validateOrdinaryCheckoutCapture(admission.capture, record.subject.source,
+          { operationId: use.operationId, requireLiveLease: false });
+        if (after.renewedAtMs < before.renewedAtMs || after.expiresAtMs < before.expiresAtMs)
+          return yield* ordinaryFailure(admission.capture, "target_changed", "Own lease mutation cannot decrease captured lease liveness");
+        return result;
+      })).pipe(Effect.mapError((cause) => cause instanceof EventSinkWriteError ? cause :
+        new EventSinkWriteError({ eventCount: 0, cause }))),
       readConfirmedImportedHistoryBinding,
       readConfirmedImportedHistoryContinuation,
       registerProviderRuntime: (input) => registerProviderRuntimeEffect(input).pipe(

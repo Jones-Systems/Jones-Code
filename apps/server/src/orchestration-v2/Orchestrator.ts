@@ -1433,7 +1433,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     threadId: ThreadId,
     requestedPath: string | undefined,
     kind: "native" | "ordinary",
-  ) => eventSink.withTransaction(Effect.gen(function* () {
+  ) => eventSink.withWorktreeOwnershipTransaction(Effect.gen(function* () {
     const { thread, resourcePath } = yield* resolveWorktreeOwnershipTarget(threadId, requestedPath);
     const ownershipError = (detail: string) => new OrchestratorWorktreeOwnershipError({ threadId, detail });
     const birth = yield* (kind === "ordinary"
