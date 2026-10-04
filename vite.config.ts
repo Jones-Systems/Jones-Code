@@ -83,6 +83,9 @@ export default defineConfig({
   fmt: {
     ignorePatterns: [
       ".repos/**",
+      // Schema bytes are immutable and pinned by their contract manifests.
+      "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json",
+      "packages/contracts/contracts/workstreams-registration-context/v1/schemas/registration-context.schema.json",
       // Macroscope's glob-per-line ignore grammar, not Markdown: formatting
       // it rewrites `*` as `_` and joins lines.
       ".macroscope/ignore.md",

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import manifest from "../contracts/workstreams-t3-provider/v1/manifest.json" with { type: "json" };
 import conformanceCorpus from "../contracts/workstreams-t3-provider/v1/fixtures/conformance.json" with { type: "json" };
 import negativeCorpus from "../contracts/workstreams-t3-provider/v1/fixtures/negative-cases.json" with { type: "json" };
@@ -51,6 +53,13 @@ function decode(fixture: Fixture): unknown {
 }
 
 describe("workstreams-t3-provider/1.0.0 native contract", () => {
+  it.each(manifest.files)("preserves manifest-pinned bytes for $path", ({ path, sha256 }) => {
+    const bytes = NodeFS.readFileSync(
+      new URL(`../contracts/workstreams-t3-provider/v1/${path}`, import.meta.url),
+    );
+    expect(NodeCrypto.createHash("sha256").update(bytes).digest("hex")).toBe(sha256);
+  });
+
   it("selects the pinned family and complete versioned fixture corpus", () => {
     expect(manifest.contract_family).toBe(Provider.WORKSTREAMS_T3_PROVIDER_FAMILY);
     expect(manifest.contract_version).toBe(Provider.WORKSTREAMS_T3_PROVIDER_VERSION);
