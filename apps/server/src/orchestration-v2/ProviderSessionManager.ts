@@ -195,6 +195,13 @@ export type ProviderPinnedRuntimeStopResultV1 =
   | { readonly status: "unknown"; readonly reason: string };
 
 export interface ProviderSessionManagerV2Shape {
+  readonly isMcpCallerAttached: (input: {
+    readonly threadId: ThreadId;
+    readonly providerSessionId: ProviderSessionId;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly mcpCredentialId: string;
+  }) => Effect.Effect<boolean>;
+
   readonly shutdown: Effect.Effect<void>;
   readonly open: (input: {
     readonly threadId: ThreadId;
@@ -2385,6 +2392,21 @@ export const layerWithOptions = (
       }).pipe(Effect.catchCause(() => Effect.succeed({ status: "unknown" as const, reason: "pinned_stop_unavailable" })));
 
       return ProviderSessionManagerV2.of({
+        isMcpCallerAttached: (input) =>
+          Ref.get(sessions).pipe(
+            Effect.map((entries) => {
+              const entry = entries.get(sessionKey(input.providerSessionId));
+              return (
+                entry !== undefined &&
+                entry.managedStopReservation === undefined &&
+                entry.runtimeReplacementReservation === undefined &&
+                entry.runtime.instanceId === input.providerInstanceId &&
+                entry.attachedThreadIds.has(input.threadId) &&
+                entry.mcpCredentialIdByThread.get(input.threadId) === input.mcpCredentialId
+              );
+            }),
+          ),
+
         onNativeEffectConfirmed,
         readCurrentThreadRuntimeAttachment,
         observeCurrentThreadRuntime,

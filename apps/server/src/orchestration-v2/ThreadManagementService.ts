@@ -286,6 +286,7 @@ export interface ThreadManagementServiceShape {
   readonly observeThreadDeletionCleanup: Orchestrator.OrchestratorV2["Service"]["observeThreadDeletionCleanup"];
   readonly stopCurrentThreadRuntime: Orchestrator.OrchestratorV2["Service"]["stopCurrentThreadRuntime"];
   readonly startWithImportedHistory: (command: Parameters<Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"]>[0]) => ReturnType<Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"]>;
+  readonly requestSelfSettlement: Orchestrator.OrchestratorV2["Service"]["requestSelfSettlement"];
   readonly observeCommand: Orchestrator.OrchestratorV2["Service"]["observeCommand"];
   readonly observeLegacyCommand: Orchestrator.OrchestratorV2["Service"]["observeLegacyCommand"];
   readonly readCurrentThreadRuntimeAttachment: Orchestrator.OrchestratorV2["Service"]["readCurrentThreadRuntimeAttachment"];
@@ -746,6 +747,7 @@ const make = Effect.gen(function* () {
     observeThreadDeletionCleanup: orchestrator.observeThreadDeletionCleanup,
     stopCurrentThreadRuntime: orchestrator.stopCurrentThreadRuntime,
     startWithImportedHistory: (command) => orchestrator.startWithImportedHistory(command, legacyImporter.readTranscriptSnapshotEvidence(command.threadId)),
+    requestSelfSettlement: orchestrator.requestSelfSettlement,
     observeCommand: orchestrator.observeCommand,
     observeLegacyCommand: orchestrator.observeLegacyCommand,
     readCurrentThreadRuntimeAttachment: orchestrator.readCurrentThreadRuntimeAttachment,

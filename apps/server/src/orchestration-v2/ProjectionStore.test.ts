@@ -68,6 +68,13 @@ const metadataAndRuntimeIdentityRoundtrip = Effect.gen(function* () {
     id: threadId,
     projectId: ProjectId.make("project:metadata-identity-roundtrip"),
     title: "Preserved metadata",
+    selfSettlement: {
+      mcpCredentialId: "credential-1",
+      commandId: CommandId.make("settle-intent"),
+      runId,
+      providerSessionId: ProviderSessionId.make("settle-session"),
+      providerInstanceId,
+    },
     providerInstanceId,
     modelSelection,
     createdBy: "user",
@@ -124,6 +131,7 @@ const metadataAndRuntimeIdentityRoundtrip = Effect.gen(function* () {
     assert.strictEqual(projectDomainEventForWire(event), event);
     yield* store.apply(event);
     assert.deepEqual(yield* store.getThread(threadId), payload);
+    assert.deepEqual(yield* store.getRecoveryThreadIds("self-settlement"), [threadId]);
     const projection = yield* store.getThreadProjection(threadId);
     assert.deepEqual(projectThreadProjectionForWire(projection).thread, payload);
     const shell = yield* store.getThreadShell(threadId);

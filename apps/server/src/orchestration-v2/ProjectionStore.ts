@@ -136,6 +136,7 @@ export const ProjectionStoreV2Error = Schema.Union([
 export type ProjectionStoreV2Error = typeof ProjectionStoreV2Error.Type;
 
 export type ProjectionRecoveryKind =
+  | "self-settlement"
   | "queued-runs"
   | "runtime"
   | "subagent-results"
@@ -522,6 +523,8 @@ function needsRecovery(
 ): boolean {
   if (projection.thread.deletedAt !== null) return false;
   switch (kind) {
+    case "self-settlement":
+      return projection.thread.selfSettlement != null;
     case "queued-runs":
       return (
         projection.thread.archivedAt === null &&
@@ -3523,6 +3526,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       function* (kind: ProjectionRecoveryKind) {
         const candidates = (() => {
           switch (kind) {
+            case "self-settlement":
+              return sql`SELECT thread_id FROM orchestration_v2_projection_threads
+                WHERE CASE WHEN json_valid(payload_json)
+                  THEN json_type(payload_json, '$.selfSettlement') = 'object' ELSE 0 END`;
             case "queued-runs":
               return sql`
                 SELECT thread_id FROM orchestration_v2_projection_runs

@@ -1002,6 +1002,41 @@
         "apps/server/src/orchestration-v2/ProjectionStore.ts",
         "apps/server/src/ws.ts"
       ]
+    },
+    {
+      "group_id": "t3-native-mcp-metadata-self-settlement",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/SelfSettlement.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/mcp/toolkits/orchestrator/tools.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/mcp/toolkits/organization/handlers.test.ts packages/contracts/src/environment.test.ts apps/server/src/orchestration-v2/ProjectionStore.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/mcp/toolkits/decisionSnapshot/handlers.test.ts apps/server/src/mcp/toolkits/decisionSnapshot/collector.test.ts",
+      "modules": [
+        "apps/server/src/orchestration-v2/SelfSettlement.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/mcp/toolkits/organization/handlers.test.ts",
+        "packages/contracts/src/environment.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/mcp/toolkits/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/mcp/toolkits/decisionSnapshot/collector.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/mcp/toolkits/organization/handlers.ts",
+        "apps/server/src/mcp/toolkits/organization/tools.ts",
+        "apps/server/src/orchestration-v2/SelfSettlement.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+        "packages/contracts/src/environment.ts",
+        "packages/contracts/src/orchestratorMcp.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+        "packages/contracts/src/orchestrationV2.ts",
+        "apps/server/src/mcp/OrganizationMetadataMcpService.ts",
+        "apps/server/src/mcp/toolkits/decisionSnapshot/handlers.ts",
+        "apps/server/src/mcp/toolkits/decisionSnapshot/tools.ts"
+      ]
     }
   ]
 }

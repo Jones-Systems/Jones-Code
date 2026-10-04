@@ -400,6 +400,17 @@ export const OrchestrationV2AppThread = Schema.Struct({
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,
   archivedAt: Schema.NullOr(Schema.DateTimeUtc),
+  selfSettlement: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        mcpCredentialId: TrimmedNonEmptyString,
+        commandId: CommandId,
+        runId: RunId,
+        providerSessionId: ProviderSessionId,
+        providerInstanceId: ProviderInstanceId,
+      }),
+    ),
+  ),
   settledOverride: Schema.NullOr(Schema.Literals(["settled", "active"])).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
