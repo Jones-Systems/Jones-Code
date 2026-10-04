@@ -221,6 +221,7 @@ export const make = Effect.gen(function* () {
         observationSchema: "t3.native-creation-observation/v2",
         guardRequired: true,
       },
+      workQueueMetadata: true,
       repositoryIdentity: true,
       connectionProbe: true,
       attachmentUploads: true,

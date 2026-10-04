@@ -116,13 +116,19 @@
     {
       "group_id": "jones-cli-release-provenance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/cli/update.test.ts",
-      "modules": ["apps/server/src/cli/update.test.ts"],
-      "scope": ["apps/server/src/cli/update.ts"]
+      "modules": [
+        "apps/server/src/cli/update.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/cli/update.ts"
+      ]
     },
     {
       "group_id": "voice-native-bootstrap-conformance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/voiceNativeBootstrap.test.ts",
-      "modules": ["apps/server/src/voiceNativeBootstrap.test.ts"],
+      "modules": [
+        "apps/server/src/voiceNativeBootstrap.test.ts"
+      ],
       "scope": [
         "apps/server/src/voiceNativeBootstrap.test.ts",
         "apps/server/src/voiceNativeBootstrap.fixtures/**",
@@ -141,7 +147,9 @@
         "scripts/runtime-adoption-qualification/browser-storage.test.mjs",
         "scripts/runtime-adoption-qualification/artifact-binding.test.mjs"
       ],
-      "scope": ["scripts/runtime-adoption-qualification/**"]
+      "scope": [
+        "scripts/runtime-adoption-qualification/**"
+      ]
     },
     {
       "group_id": "t3-native-creation-contracts",
@@ -871,6 +879,30 @@
         "packages/contracts/src/environmentHttp.ts",
         "apps/server/src/orchestration-v2/ProjectionStore.ts",
         "apps/server/src/orchestration-v2/threadHistoryPaging.ts"
+      ]
+    },
+    {
+      "group_id": "t3-work-queue-metadata",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/contracts/src/workQueueMetadata.test.ts apps/server/src/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/workQueueMetadata/http.test.ts packages/client-runtime/src/environment/workQueueMetadata.test.ts apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
+      "modules": [
+        "packages/contracts/src/workQueueMetadata.test.ts",
+        "apps/server/src/workQueueMetadata/WorkQueueMetadataService.test.ts",
+        "apps/server/src/workQueueMetadata/http.test.ts",
+        "packages/client-runtime/src/environment/workQueueMetadata.test.ts",
+        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx"
+      ],
+      "scope": [
+        "packages/contracts/src/workQueueMetadata.ts",
+        "packages/contracts/src/fixtures/work_queue_metadata_v1.json",
+        "packages/contracts/src/environmentHttp.ts",
+        "packages/contracts/src/environment.ts",
+        "packages/contracts/src/index.ts",
+        "apps/server/src/workQueueMetadata/**",
+        "apps/server/src/environment/ServerEnvironment.ts",
+        "apps/server/src/server.ts",
+        "packages/client-runtime/src/environment/workQueueMetadata.ts",
+        "packages/client-runtime/src/environment/index.ts",
+        "apps/web/src/components/workQueue/**"
       ]
     }
   ]

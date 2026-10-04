@@ -1,3 +1,5 @@
+import * as WorkQueueMetadataService from "./workQueueMetadata/WorkQueueMetadataService.ts";
+import { workQueueMetadataHttpApiLayer } from "./workQueueMetadata/http.ts";
 import * as NativeCreationRepositoryLayer from "./persistence/Layers/NativeCreationRepository.ts";
 import { NativeCreationAuthorityUnavailable } from "./orchestration-v2/NativeCreationAuthority.ts";
 import * as AuthSessions from "./persistence/AuthSessions.ts";
@@ -698,6 +700,9 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(workstreamHttpApiLayer),
       Layer.provide(nativeWorkstreamsHttpApiLayer),
       Layer.provide(hostStatusHttpApiLayer),
+      Layer.provide(
+        workQueueMetadataHttpApiLayer.pipe(Layer.provide(WorkQueueMetadataService.layer)),
+      ),
       Layer.provide(jonesUpdatesHttpApiLayer),
       Layer.provide(
         voiceReviewHttpApiLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer)),

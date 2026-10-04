@@ -81,3 +81,4 @@ export * from "./workstreamsRegistrationContext.ts";
 export * from "./nativeCreation.ts";
 export * from "./orchestrationNative.ts";
 export * from "./runtimeIdentity.ts";
+export * from "./workQueueMetadata.ts";

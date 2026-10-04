@@ -1,3 +1,4 @@
+import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
 import {
   JonesUpdateState,
   JonesUpdateDownloadInput,
@@ -1250,7 +1251,16 @@ export class ProviderQueueHttpApi extends HttpApiGroup.make("providerQueue")
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+export class EnvironmentWorkQueueMetadataHttpApi extends HttpApiGroup.make("workQueueMetadata").add(
+  HttpApiEndpoint.get("snapshot", "/api/work-queue/metadata", {
+    headers: OptionalBearerHeaders,
+    success: WorkQueueMetadataResult,
+    error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
+  .add(EnvironmentWorkQueueMetadataHttpApi)
   .add(EnvironmentHostStatusHttpApi)
   .add(EnvironmentJonesUpdatesHttpApi)
   .add(EnvironmentVoiceReviewHttpApi)
