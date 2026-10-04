@@ -6,7 +6,8 @@ import type {
   LegacyStoppedRuntimeProofV1,
   ProviderSessionRuntime,
 } from "../persistence/ProviderSessionRuntime.ts";
-import type { ApplicationThreadBirthV2, DeletionWorktreePathAdmissionV1 } from "./EventSink.ts";
+import type { ApplicationThreadBirthV2 } from "./Orchestrator.ts";
+import type { DeletionWorktreePathAdmissionV1 } from "./EventSink.ts";
 import type { WorktreeOwnershipLease } from "./WorktreeOwnershipLease.ts";
 
 export interface LegacyLeaseOwnerV1 {

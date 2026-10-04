@@ -2953,7 +2953,13 @@ export function makeCursorAdapterV2(
               const retained = Effect.suspend(() =>
                 managedRuns.get(key) === managed
                   ? Effect.void
-                  : Effect.fail(new Error("Cursor managed completion source changed.")),
+                  : Effect.fail(
+                      new ProviderAdapter.ProviderAdapterProtocolError({
+                        driver: CursorAgentSdk.CURSOR_PROVIDER,
+                        detail: "Cursor managed completion source changed.",
+                        cause: new Error("Cursor managed completion source changed."),
+                      }),
+                    ),
               );
               return {
                 revalidateCompletion: retained,
@@ -2961,7 +2967,13 @@ export function makeCursorAdapterV2(
                   Effect.andThen(
                     Effect.suspend(() =>
                       managedRuntimeClosed
-                        ? Effect.fail(new Error("Cursor managed runtime closed."))
+                        ? Effect.fail(
+                            new ProviderAdapter.ProviderAdapterProtocolError({
+                              driver: CursorAgentSdk.CURSOR_PROVIDER,
+                              detail: "Cursor managed runtime closed.",
+                              cause: new Error("Cursor managed runtime closed."),
+                            }),
+                          )
                         : Effect.void,
                     ),
                   ),

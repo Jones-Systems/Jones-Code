@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
 import type { ProviderSessionRuntime } from "../persistence/ProviderSessionRuntime.ts";
@@ -105,9 +105,10 @@ describe("legacy continuation qualification", () => {
   it.each([undefined, "starting", "running", "error"])(
     "holds a source with unproved stopped status %s",
     (status) => {
+      const { status: _storedStatus, ...sourceWithoutStatus } = source;
       expect(
         qualifyProviderContinuation({
-          source: { ...source, status },
+          source: status === undefined ? sourceWithoutStatus : { ...source, status },
           target,
           accessibility,
           stoppedProof,
@@ -150,9 +151,10 @@ describe("legacy continuation qualification", () => {
   });
 
   it("uses exact native accessibility when the legacy row has no historical key", () => {
+    const { continuationKey: _historicalKey, ...sourceWithoutKey } = source;
     expect(
       qualifyProviderContinuation({
-        source: { ...source, continuationKey: undefined },
+        source: sourceWithoutKey,
         target,
         stoppedProof,
         accessibility: { ...accessibility, source: "native_read" },

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   EventId,
   MessageId,
@@ -51,7 +51,10 @@ const message = (id: string, role = "system"): ImportedApplicationAttachmentCarr
   attachments: [],
   sourceRowSha256: importedApplicationAttachmentSha256V1({ id, role }),
 });
-const answer = (id: string, files = [file]): ImportedApplicationAttachmentCarrierV1 => {
+const answer = (
+  id: string,
+  files = [file],
+): Extract<ImportedApplicationAttachmentCarrierV1, { readonly kind: "legacy_answer" }> => {
   const payload = {
     requestId: "same-request",
     questionTextById: { first: "Preserve this question" },

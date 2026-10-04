@@ -425,7 +425,7 @@ describe("commandName", () => {
 class MutationCurrentness extends Context.Service<
   MutationCurrentness,
   { readonly current: boolean }
->()("test/processRunner/MutationCurrentness") {}
+>()("t3/processRunner.test/MutationCurrentness") {}
 
 it.effect("revalidates mutation after executable resolution and preserves the guard failure", () =>
   Effect.gen(function* () {

@@ -615,7 +615,7 @@
     },
     {
       "group_id": "t3-v2-native-atomic",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/StoreNativeAcceptance.integration.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts apps/server/src/persistence/Layers/NativeCreationRepository.test.ts apps/server/src/persistence/Migrations/007_JonesV2NativeAcceptance.test.ts apps/server/src/persistence/Migrations/010_JonesAttachmentCleanup.test.ts apps/server/src/persistence/Migrations/012_JonesImportedApplicationAttachments.test.ts apps/server/src/orchestration-v2/NormalizationWitness.test.ts apps/server/src/persistence/Migrations/013_JonesCommandNormalizationWitness.test.ts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/StoreNativeAcceptance.integration.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts apps/server/src/persistence/Layers/NativeCreationRepository.test.ts apps/server/src/persistence/Migrations/007_JonesV2NativeAcceptance.test.ts apps/server/src/persistence/Migrations/010_JonesAttachmentCleanup.test.ts apps/server/src/persistence/Migrations/012_JonesImportedApplicationAttachments.test.ts apps/server/src/orchestration-v2/NormalizationWitness.test.ts apps/server/src/persistence/Migrations/013_JonesCommandNormalizationWitness.test.ts apps/server/src/orchestration-v2/EventSinkJsonCodec.test.ts",
       "modules": [
         "apps/server/src/orchestration-v2/StoreNativeAcceptance.integration.test.ts",
         "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
@@ -624,7 +624,8 @@
         "apps/server/src/persistence/Migrations/010_JonesAttachmentCleanup.test.ts",
         "apps/server/src/persistence/Migrations/012_JonesImportedApplicationAttachments.test.ts",
         "apps/server/src/orchestration-v2/NormalizationWitness.test.ts",
-        "apps/server/src/persistence/Migrations/013_JonesCommandNormalizationWitness.test.ts"
+        "apps/server/src/persistence/Migrations/013_JonesCommandNormalizationWitness.test.ts",
+        "apps/server/src/orchestration-v2/EventSinkJsonCodec.test.ts"
       ],
       "scope": [
         "apps/server/src/orchestration-v2/EventSink.ts",
@@ -635,7 +636,8 @@
         "apps/server/src/persistence/Migrations/010_JonesAttachmentCleanup.ts",
         "apps/server/src/persistence/Migrations/012_JonesImportedApplicationAttachments.ts",
         "apps/server/src/orchestration-v2/NormalizationWitness.ts",
-        "apps/server/src/persistence/Migrations/013_JonesCommandNormalizationWitness.ts"
+        "apps/server/src/persistence/Migrations/013_JonesCommandNormalizationWitness.ts",
+        "apps/server/src/orchestration-v2/EventSinkJsonCodec.ts"
       ]
     },
     {

@@ -79,6 +79,7 @@ import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
 import type {
   ProviderOrdinaryExecutionAttachmentV1,
   ProviderPinnedRuntimeStopResultV1,
+  ProviderSessionActivityError,
 } from "./ProviderSessionManager.ts";
 import * as ProviderManagedActorCompletion from "./ProviderManagedActorCompletion.ts";
 
@@ -95,18 +96,46 @@ export interface OrdinaryManagedRunStartObservationV1 {
   readonly observedAt: string;
 }
 
+type OrdinaryManagedRunRevalidationError =
+  | RunExecutionStartError
+  | ProviderSessionActivityError
+  | ProviderManagedActorCompletion.ProviderManagedActorCompletionError;
+
 const issuedOrdinaryManagedStarts = new WeakMap<
   object,
   {
     readonly bytes: string;
-    readonly revalidateIssued: Effect.Effect<void, unknown>;
+    readonly revalidateIssued: Effect.Effect<void, OrdinaryManagedRunRevalidationError>;
   }
 >();
+
+function issueOrdinaryManagedRunStartObservation(
+  observation: OrdinaryManagedRunStartObservationV1,
+  revalidateIssued: Effect.Effect<void, OrdinaryManagedRunRevalidationError>,
+): void {
+  issuedOrdinaryManagedStarts.set(observation, {
+    bytes: JSON.stringify(observation),
+    revalidateIssued,
+  });
+}
+
+// Encoded JSON text compares exact persisted checkout identities. An encoding failure stays a defect.
+const encodeOrdinaryCheckoutUseJson = (use: OrdinaryCheckout.OrdinaryCheckoutUseV1) =>
+  Schema.encodeEffect(Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutUseV1))(use).pipe(
+    Effect.orDie,
+  );
+
+const encodeOrdinaryCheckoutExecutionRefJson = (
+  ref: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+) =>
+  Schema.encodeEffect(Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1))(
+    ref,
+  ).pipe(Effect.orDie);
 
 // Descriptive fields cannot issue a start: only the original returned object has this retained producer closure.
 export function readIssuedOrdinaryManagedRunStartObservation(input: unknown): {
   readonly observation: OrdinaryManagedRunStartObservationV1;
-  readonly revalidateIssued: Effect.Effect<void, unknown>;
+  readonly revalidateIssued: Effect.Effect<void, OrdinaryManagedRunRevalidationError>;
 } | null {
   if (typeof input !== "object" || input === null) return null;
   const issued = issuedOrdinaryManagedStarts.get(input);
@@ -131,9 +160,12 @@ export interface OrdinaryManagedRunExecutionHandleV1 {
   readonly managedExecutor: OrdinaryManagedRunExecutorV1;
   readonly actualStartObservation: OrdinaryManagedRunStartObservationV1;
   readonly attachment: ProviderOrdinaryExecutionAttachmentV1;
-  readonly revalidateCaptured: Effect.Effect<void, unknown>;
-  readonly revalidateMutation: Effect.Effect<void, unknown>;
-  readonly revalidateCompletionBinding: Effect.Effect<void, unknown>;
+  readonly revalidateCaptured: Effect.Effect<void, OrdinaryManagedRunRevalidationError>;
+  readonly revalidateMutation: Effect.Effect<
+    void,
+    RunExecutionStartError | ProviderSessionActivityError
+  >;
+  readonly revalidateCompletionBinding: Effect.Effect<void, OrdinaryManagedRunRevalidationError>;
   readonly nativeCompletion?: ProviderManagedActorCompletion.ProviderManagedActorRunReaderV1;
   readonly requireActivatedExecution: Effect.Effect<
     OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
@@ -142,9 +174,7 @@ export interface OrdinaryManagedRunExecutionHandleV1 {
   readonly activate: (
     ref: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
   ) => Effect.Effect<void, RunExecutionStartError>;
-  readonly lose: (
-    reason: string,
-  ) => Effect.Effect<ProviderPinnedRuntimeStopResultV1 | undefined, unknown>;
+  readonly lose: (reason: string) => Effect.Effect<ProviderPinnedRuntimeStopResultV1 | undefined>;
   readonly awaitIngestionExit: Effect.Effect<Exit.Exit<void, RunExecutionIngestError>>;
   /** Closing this owned output scope does not certify adapter mutation completion or retire its SQL participant. */
   readonly close: Effect.Effect<void>;
@@ -897,6 +927,10 @@ export const layer: Layer.Layer<
       readonly checkpointScope: OrchestrationV2CheckpointScope;
       readonly providerThread: OrchestrationV2ProviderThread;
       readonly attempt: OrchestrationV2RunAttempt;
+      readonly acceptedPrimaryState?: Effect.Effect<{
+        readonly attempt: OrchestrationV2RunAttempt;
+        readonly rootNode: OrchestrationV2ExecutionNode;
+      }>;
       readonly shouldFinalizeRun?: () => Effect.Effect<boolean, never>;
       readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
       readonly openRunOwnedSubagents?: OpenRunOwnedSubagentProjection;
@@ -910,11 +944,6 @@ export const layer: Layer.Layer<
     }) =>
       Effect.gen(function* () {
         const completedAt = yield* DateTime.now;
-        const finalizedAttempt: OrchestrationV2RunAttempt | null = {
-          ...input.attempt,
-          status: input.terminal.status,
-          completedAt,
-        };
         const shouldFinalizeRun =
           input.shouldFinalizeRun === undefined ? true : yield* input.shouldFinalizeRun();
         if (!shouldFinalizeRun) {
@@ -953,6 +982,15 @@ export const layer: Layer.Layer<
           }
           return;
         }
+        const acceptedPrimary =
+          input.acceptedPrimaryState === undefined
+            ? { attempt: input.attempt, rootNode: input.rootNode }
+            : yield* input.acceptedPrimaryState;
+        const finalizedAttempt: OrchestrationV2RunAttempt | null = {
+          ...acceptedPrimary.attempt,
+          status: input.terminal.status,
+          completedAt,
+        };
         const allocateEventId = () => idAllocator.allocate.event({ threadId: input.run.threadId });
         const open = input.openRunOwnedSubagents ?? emptyOpenRunOwnedSubagentProjection();
         const hasOpenSubagentProjection =
@@ -983,7 +1021,7 @@ export const layer: Layer.Layer<
           completedAt: input.terminal.status === "completed" ? null : completedAt,
         };
         const finalizedRootNode: OrchestrationV2ExecutionNode = {
-          ...input.rootNode,
+          ...acceptedPrimary.rootNode,
           status: persistedStatus,
           completedAt: input.terminal.status === "completed" ? null : completedAt,
           checkpointScopeId: input.checkpointScope.id,
@@ -1002,6 +1040,8 @@ export const layer: Layer.Layer<
         // Stopped runs capture too: their checkpoint is the rollback point for
         // the next message. The capture is enqueued with these terminal events,
         // ahead of any later run's start on this thread's effect lane.
+        // Failed captured runs also need this physical result to settle their
+        // original managed checkout participant while retaining failed status.
         const ordinaryExecution =
           input.ordinaryCheckoutExecution === undefined
             ? undefined
@@ -1017,14 +1057,16 @@ export const layer: Layer.Layer<
             path: ordinaryExecution.originalUse.lease.resourcePath,
             message: "Run finalization has no original checkout admission",
           });
+        const capturesTerminalCheckpoint =
+          input.terminal.status === "completed" ||
+          input.terminal.status === "interrupted" ||
+          input.terminal.status === "cancelled" ||
+          (input.terminal.status === "failed" &&
+            ordinaryExecution?.executor.kind === "captured_managed_run");
         const finalization = {
           ...(ordinaryExecution === undefined ||
           ordinaryUseRecord === null ||
-          !(
-            input.terminal.status === "completed" ||
-            input.terminal.status === "interrupted" ||
-            input.terminal.status === "cancelled"
-          )
+          !capturesTerminalCheckpoint
             ? {}
             : {
                 ordinaryCheckoutEffects: [
@@ -1037,23 +1079,20 @@ export const layer: Layer.Layer<
                   },
                 ],
               }),
-          effects:
-            input.terminal.status === "completed" ||
-            input.terminal.status === "interrupted" ||
-            input.terminal.status === "cancelled"
-              ? [
-                  {
-                    id: `effect:checkpoint.capture:${input.run.id}`,
-                    commandId: checkpointCaptureCommandId,
-                    threadId: input.run.threadId,
-                    request: {
-                      type: "checkpoint.capture" as const,
-                      runId: input.run.id,
-                      scopeId: input.checkpointScope.id,
-                    },
+          effects: capturesTerminalCheckpoint
+            ? [
+                {
+                  id: `effect:checkpoint.capture:${input.run.id}`,
+                  commandId: checkpointCaptureCommandId,
+                  threadId: input.run.threadId,
+                  request: {
+                    type: "checkpoint.capture" as const,
+                    runId: input.run.id,
+                    scopeId: input.checkpointScope.id,
                   },
-                ]
-              : [],
+                },
+              ]
+            : [],
           events: [
             // Terminalize open run-owned subagent rows before the root run
             // settles so projections never keep a forever-running subagent card.
@@ -1194,16 +1233,8 @@ export const layer: Layer.Layer<
               ordinaryAdmission.run.nodeId !== input.rootNode.id ||
               ordinaryAdmission.run.messageId !== input.message.messageId ||
               (input.ordinaryCheckoutUse !== undefined &&
-                JSON.stringify(
-                  Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
-                    input.ordinaryCheckoutUse,
-                  ),
-                ) !==
-                  JSON.stringify(
-                    Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
-                      ordinaryStartExecution.originalUse,
-                    ),
-                  ))
+                (yield* encodeOrdinaryCheckoutUseJson(input.ordinaryCheckoutUse)) !==
+                  (yield* encodeOrdinaryCheckoutUseJson(ordinaryStartExecution.originalUse)))
             )
               return yield* ordinaryFailure(
                 "The ordinary run has no exact original start actor, accepted run, or captured runtime producer.",
@@ -1262,7 +1293,7 @@ export const layer: Layer.Layer<
             yield* readImportedHistoryStartExecution(
               input.importedHistoryStartExecution,
               eventSink,
-            );
+            ).pipe(Effect.mapError(ordinaryFailure));
           }
           // Startup failure and stream shutdown can report the same attempt.
           const refreshAfterTurn = yield* Effect.cached(
@@ -1412,6 +1443,10 @@ export const layer: Layer.Layer<
           );
           const latestTurnItemOrdinal = yield* Ref.make(input.providerTurnOrdinal * 100);
           const latestProviderThread = yield* Ref.make(input.providerThread);
+          const acceptedPrimaryState = yield* Ref.make({
+            attempt: input.attempt,
+            rootNode: input.rootNode,
+          });
           const routeIdentity: ProviderEventRouteIdentity = {
             threadId: input.run.threadId,
             runId: input.run.id,
@@ -1479,6 +1514,7 @@ export const layer: Layer.Layer<
                 checkpointScope: input.checkpointScope,
                 providerThread,
                 attempt: input.attempt,
+                acceptedPrimaryState: Ref.get(acceptedPrimaryState),
                 ...(input.shouldFinalizeRun === undefined
                   ? {}
                   : { shouldFinalizeRun: input.shouldFinalizeRun }),
@@ -1921,6 +1957,13 @@ export const layer: Layer.Layer<
                   const isRootProviderThreadUpdate =
                     event.type === "provider_thread.updated" &&
                     event.providerThread.id === input.providerThread.id;
+                  const isRootProviderTurnUpdate =
+                    !rootTerminalAlreadySeen &&
+                    event.type === "provider_turn.updated" &&
+                    event.providerTurn.runAttemptId === input.attempt.id &&
+                    event.providerTurn.nodeId === input.rootNode.id &&
+                    event.providerTurn.providerThreadId === input.providerThread.id &&
+                    (event.threadId === undefined || event.threadId === input.run.threadId);
                   const storedEvents = yield* providerEventIngestor
                     .ingestNormalized({
                       analyticsContext: {
@@ -1937,7 +1980,7 @@ export const layer: Layer.Layer<
                       ...(origin === undefined
                         ? {}
                         : { revalidateCurrentOwner: origin.producer.revalidateCurrent }),
-                      ...(isRootProviderThreadUpdate
+                      ...(isRootProviderThreadUpdate || isRootProviderTurnUpdate
                         ? rootTerminalAlreadySeen
                           ? {
                               writeIfProviderThreadOwner: {
@@ -1962,6 +2005,35 @@ export const layer: Layer.Layer<
                       ),
                     );
                   storedEventCount = storedEvents.length;
+                  if (isRootProviderTurnUpdate) {
+                    const acceptedAttempt = storedEvents
+                      .map((stored) => stored.event)
+                      .find(
+                        (stored) =>
+                          stored.type === "run-attempt.updated" &&
+                          stored.payload.id === input.attempt.id &&
+                          stored.payload.runId === input.run.id &&
+                          stored.payload.rootNodeId === input.rootNode.id,
+                      );
+                    const acceptedRoot = storedEvents
+                      .map((stored) => stored.event)
+                      .find(
+                        (stored) =>
+                          stored.type === "node.updated" &&
+                          stored.payload.id === input.rootNode.id &&
+                          stored.payload.runId === input.run.id,
+                      );
+                    if (
+                      acceptedAttempt?.type === "run-attempt.updated" &&
+                      acceptedRoot?.type === "node.updated"
+                    ) {
+                      // Only committed companion rows may replace the preparation snapshots.
+                      yield* Ref.set(acceptedPrimaryState, {
+                        attempt: acceptedAttempt.payload,
+                        rootNode: acceptedRoot.payload,
+                      });
+                    }
+                  }
                   if (
                     isRootProviderThreadUpdate &&
                     rootTerminalAlreadySeen &&
@@ -2039,6 +2111,7 @@ export const layer: Layer.Layer<
                                                 checkpointScope: input.checkpointScope,
                                                 providerThread,
                                                 attempt: input.attempt,
+                                                acceptedPrimaryState: Ref.get(acceptedPrimaryState),
                                                 ...(input.shouldFinalizeRun === undefined
                                                   ? {}
                                                   : { shouldFinalizeRun: input.shouldFinalizeRun }),
@@ -2229,6 +2302,7 @@ export const layer: Layer.Layer<
                             checkpointScope: input.checkpointScope,
                             providerThread,
                             attempt: input.attempt,
+                            acceptedPrimaryState: Ref.get(acceptedPrimaryState),
                             ...(input.shouldFinalizeRun === undefined
                               ? {}
                               : { shouldFinalizeRun: input.shouldFinalizeRun }),
@@ -2286,31 +2360,33 @@ export const layer: Layer.Layer<
             Effect.mapError(ordinaryFailure),
           );
           const managedExecutor = freezeOrdinaryExecutionFacts(
-            Schema.decodeUnknownSync(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)({
-              kind: "captured_managed_run",
-              captureId: captured.captureId,
-              run: ordinaryAdmission!.run,
-              checkpointScopeId: input.checkpointScope.id,
-              driver: captured.driver,
-              binding: {
-                threadId: captured.binding.threadId,
-                providerThreadId: captured.binding.providerThreadId,
-                providerSessionId: captured.binding.providerSessionId,
-                instanceId: captured.binding.instanceId,
+            yield* Schema.decodeUnknownEffect(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)(
+              {
+                kind: "captured_managed_run",
+                captureId: captured.captureId,
+                run: ordinaryAdmission!.run,
+                checkpointScopeId: input.checkpointScope.id,
+                driver: captured.driver,
+                binding: {
+                  threadId: captured.binding.threadId,
+                  providerThreadId: captured.binding.providerThreadId,
+                  providerSessionId: captured.binding.providerSessionId,
+                  instanceId: captured.binding.instanceId,
+                },
+                ...(captured.binding.runtimeGeneration === undefined
+                  ? {}
+                  : { runtimeGeneration: captured.binding.runtimeGeneration }),
+                ...(captured.binding.nativeThreadId === undefined
+                  ? {}
+                  : { nativeThreadId: captured.binding.nativeThreadId }),
+                ...(captured.binding.evidenceRevision === undefined
+                  ? {}
+                  : { evidenceRevision: captured.binding.evidenceRevision }),
+                ...(captured.providerTurnId === undefined
+                  ? {}
+                  : { providerTurnId: captured.providerTurnId }),
               },
-              ...(captured.binding.runtimeGeneration === undefined
-                ? {}
-                : { runtimeGeneration: captured.binding.runtimeGeneration }),
-              ...(captured.binding.nativeThreadId === undefined
-                ? {}
-                : { nativeThreadId: captured.binding.nativeThreadId }),
-              ...(captured.binding.evidenceRevision === undefined
-                ? {}
-                : { evidenceRevision: captured.binding.evidenceRevision }),
-              ...(captured.providerTurnId === undefined
-                ? {}
-                : { providerTurnId: captured.providerTurnId }),
-            }),
+            ).pipe(Effect.orDie),
           ) as OrdinaryManagedRunExecutorV1;
           if (
             captured.runId !== input.run.id ||
@@ -2323,19 +2399,21 @@ export const layer: Layer.Layer<
             return yield* ordinaryFailure(
               "The returned dispatch capture differs from this exact run target.",
             );
-          const revalidateMutation = Effect.suspend(() =>
-            !scopeCurrent || lossSignaled
-              ? Effect.fail(ordinaryFailure("The captured run scope is no longer current."))
-              : captured.revalidateCaptured,
+          const revalidateMutation = Effect.suspend(
+            (): Effect.Effect<void, RunExecutionStartError | ProviderSessionActivityError> =>
+              !scopeCurrent || lossSignaled
+                ? Effect.fail(ordinaryFailure("The captured run scope is no longer current."))
+                : captured.revalidateCaptured,
           );
-          const revalidateCompletionBinding = Effect.suspend(() =>
-            !scopeCurrent || lossSignaled
-              ? Effect.fail(ordinaryFailure("The captured run completion binding was lost."))
-              : nativeCompletion === undefined
-                ? revalidateMutation
-                : captured.revalidateCompletionBinding.pipe(
-                    Effect.andThen(nativeCompletion.revalidateCompletionBinding),
-                  ),
+          const revalidateCompletionBinding = Effect.suspend(
+            (): Effect.Effect<void, OrdinaryManagedRunRevalidationError> =>
+              !scopeCurrent || lossSignaled
+                ? Effect.fail(ordinaryFailure("The captured run completion binding was lost."))
+                : nativeCompletion === undefined
+                  ? revalidateMutation
+                  : captured.revalidateCompletionBinding.pipe(
+                      Effect.andThen(nativeCompletion.revalidateCompletionBinding),
+                    ),
           );
           // The optional native producer can qualify historical completion; default runs keep their current captured owner.
           const revalidateCaptured =
@@ -2344,9 +2422,9 @@ export const layer: Layer.Layer<
               : revalidateMutation.pipe(Effect.catch(() => revalidateCompletionBinding));
           const startExecution = freezeOrdinaryExecutionFacts(
             OrdinaryCheckout.decodeOrdinaryCheckoutExecutionRefV1(
-              Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
+              yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
                 ordinaryStartExecution,
-              ),
+              ).pipe(Effect.orDie),
             ),
           );
           const observation = Object.freeze({
@@ -2359,10 +2437,7 @@ export const layer: Layer.Layer<
             managedExecutor,
             observedAt: DateTime.formatIso(yield* DateTime.now),
           });
-          issuedOrdinaryManagedStarts.set(observation, {
-            bytes: JSON.stringify(observation),
-            revalidateIssued: revalidateCaptured,
-          });
+          issueOrdinaryManagedRunStartObservation(observation, revalidateCaptured);
           return Object.freeze({
             startExecution,
             managedExecutor,
@@ -2386,12 +2461,8 @@ export const layer: Layer.Layer<
                   executor: managedExecutor,
                 });
                 if (
-                  JSON.stringify(
-                    Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(ref),
-                  ) !==
-                  JSON.stringify(
-                    Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(expected),
-                  )
+                  (yield* encodeOrdinaryCheckoutExecutionRefJson(ref)) !==
+                  (yield* encodeOrdinaryCheckoutExecutionRefJson(expected))
                 )
                   return yield* ordinaryFailure(
                     "Activation returned a different managed checkout participant.",
@@ -2402,7 +2473,9 @@ export const layer: Layer.Layer<
                   .pipe(Effect.mapError(ordinaryFailure));
                 const retainedRef = freezeOrdinaryExecutionFacts(
                   OrdinaryCheckout.decodeOrdinaryCheckoutExecutionRefV1(
-                    Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(ref),
+                    yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
+                      ref,
+                    ).pipe(Effect.orDie),
                   ),
                 );
                 yield* (

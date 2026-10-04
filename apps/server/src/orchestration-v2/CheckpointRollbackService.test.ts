@@ -6,6 +6,9 @@ import {
   CommandId,
   EventId,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ProviderThread,
+  ProviderDriverKind,
+  RunId,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
@@ -28,7 +31,10 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
-import type { ProviderAdapterV2RollbackThreadInput } from "./ProviderAdapter.ts";
+import {
+  ProviderAdapterRollbackThreadError,
+  type ProviderAdapterV2RollbackThreadInput,
+} from "./ProviderAdapter.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
@@ -145,7 +151,7 @@ it.effect("rejects a non-ready checkpoint before opening a session or restoring 
       })
       .pipe(Effect.flip);
 
-    assert.equal(error.reason, "rollback-target-invalid");
+    assert.equal(rollbackError(error).reason, "rollback-target-invalid");
     assert.equal(
       error.message,
       `Rollback target ${checkpointId} for provider thread ${providerThreadId} on thread ${threadId} is incomplete or invalid.`,
@@ -225,7 +231,7 @@ it.effect("rejects a rollback when another provider thread became active", () =>
       })
       .pipe(Effect.flip);
 
-    assert.equal(error.reason, "active-provider-changed");
+    assert.equal(rollbackError(error).reason, "active-provider-changed");
     assert.equal(
       error.message,
       `Active provider changed before rollback target ${checkpointId} could execute on thread ${threadId}.`,
@@ -308,7 +314,7 @@ it.effect("rejects a rollback when provider selection changed before execution",
       })
       .pipe(Effect.flip);
 
-    assert.equal(error.reason, "active-provider-changed");
+    assert.equal(rollbackError(error).reason, "active-provider-changed");
     assert.equal(
       error.message,
       `Active provider changed before rollback target ${checkpointId} could execute on thread ${threadId}.`,
@@ -389,7 +395,7 @@ it.effect("reports a missing provider turn as a structured rollback failure", ()
       })
       .pipe(Effect.flip);
 
-    assert.equal(error.reason, "provider-turn-unavailable");
+    assert.equal(rollbackError(error).reason, "provider-turn-unavailable");
     assert.equal(
       error.message,
       `Provider turn for rollback target ${checkpointId} is unavailable on provider thread ${providerThreadId}.`,
@@ -466,11 +472,11 @@ it.effect.each([
       commandId: sourceEffect.commandId,
       cause: "Synthetic committed completion reply was lost",
     });
-    const providerThread = {
+    const providerThread: OrchestrationV2ProviderThread = {
       id: providerThreadId,
       providerSessionId,
       providerInstanceId: instanceId,
-      driver: "codex",
+      driver: ProviderDriverKind.make("codex"),
       appThreadId: threadId,
       ownerNodeId: null,
       nativeThreadRef: null,
@@ -657,7 +663,11 @@ it.effect.each([
                 }
                 calls.push("files");
                 if (failure === "files")
-                  return yield* Effect.fail(new Error("Synthetic file restore failed"));
+                  return yield* new CheckpointService.CheckpointRestoreError({
+                    scopeId: input.scope.id,
+                    checkpointId: input.checkpoint.id,
+                    cause: new Error("Synthetic file restore failed"),
+                  });
               }),
           }),
           Layer.mock(EventSink.EventSinkV2)({
@@ -703,6 +713,7 @@ it.effect.each([
                   ),
                 );
                 assert.equal(commandId, sourceEffect.commandId);
+                assert.ok(commandId);
                 assert.equal(effects.length, 1);
                 const trigger = events.find((event) => event.type === "provider-thread.updated");
                 assert.ok(trigger);
@@ -719,7 +730,9 @@ it.effect.each([
                     rollbackEffectId: sourceEffect.effectId,
                   },
                 });
-                const expectedRunIds = targetOrdinal === 0 ? ["run-1", "run-2"] : ["run-2"];
+                const expectedRunIds = (targetOrdinal === 0 ? ["run-1", "run-2"] : ["run-2"]).map(
+                  (id) => RunId.make(id),
+                );
                 assert.deepEqual(
                   events
                     .filter((event) => event.type === "run.updated")
@@ -742,12 +755,12 @@ it.effect.each([
                   reference: effects[0]!.attachmentNamespaceCleanup,
                   triggerSequence: 2,
                 };
-                committedTask = Schema.decodeUnknownSync(
+                committedTask = yield* Schema.decodeUnknownEffect(
                   EventSink.AttachmentNamespaceCleanupTaskV1,
                 )({
                   ...subject,
                   bindingSha256: nativeCreationSha256(nativeCreationCanonicalJson(subject)),
-                });
+                }).pipe(Effect.orDie);
                 if (replay === "lost_response") return yield* lostReplyError;
                 return ordinary === "joined" && completion !== "unqualified"
                   ? events.map((event, index) => ({
@@ -811,7 +824,12 @@ it.effect.each([
                       assert.equal(count, 2 - targetOrdinal);
                       calls.push("provider");
                       if (failure === "provider")
-                        return yield* Effect.fail(new Error("Synthetic provider rollback failed"));
+                        return yield* new ProviderAdapterRollbackThreadError({
+                          driver: providerThread.driver,
+                          providerThreadId,
+                          checkpointId,
+                          cause: new Error("Synthetic provider rollback failed"),
+                        });
                       return { providerThread };
                     }),
                 } as never;
@@ -836,7 +854,9 @@ it.effect.each([
           })
           .pipe(Effect.flip);
         assert.equal(
-          error.reason,
+          Schema.is(OrdinaryCheckout.OrdinaryCheckoutOwnershipError)(error)
+            ? error.reason
+            : rollbackError(error).reason,
           ["missing", "wrong_claim", "wrong_request"].includes(ordinary)
             ? "rollback-target-invalid"
             : "claim_mismatch",
@@ -866,7 +886,7 @@ it.effect.each([
             sourceEffect,
           }),
         );
-        assert.equal(error.reason, "shared-workspace");
+        assert.equal(rollbackError(error).reason, "shared-workspace");
         assert.deepEqual(calls, []);
         assert.equal(opened, 0);
         return;
@@ -884,7 +904,7 @@ it.effect.each([
           .pipe(Effect.flip);
         const physicalFailure = failure === "provider" || failure === "files";
         assert.equal(
-          error.reason,
+          rollbackError(error).reason,
           ["birth", "receipt", "new_birth"].includes(failure)
             ? "rollback-target-invalid"
             : "unexpected-failure",
@@ -915,7 +935,7 @@ it.effect.each([
           ...ordinaryContext,
         };
         const error = yield* service.execute(input).pipe(Effect.flip);
-        assert.equal(error.reason, "unexpected-failure");
+        assert.equal(rollbackError(error).reason, "unexpected-failure");
         assert.strictEqual(rollbackError(error).cause, lostReplyError);
         assert.ok(committedTask);
         assert.equal(opened, 1);
@@ -930,7 +950,7 @@ it.effect.each([
             },
           })
           .pipe(Effect.flip);
-        assert.equal(mismatch.reason, "rollback-target-invalid");
+        assert.equal(rollbackError(mismatch).reason, "rollback-target-invalid");
         yield* service.execute(input);
         assert.equal(opened, 1);
         assert.equal(projectionReads, 1);

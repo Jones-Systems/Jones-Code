@@ -486,7 +486,7 @@ const OrchestrationV2RuntimeLayerLive = OrchestrationV2ProductionLayerLive.pipe(
   Layer.provide(ProviderEventIngestor.analyticsLive),
   Layer.provide(CheckpointStoreLayerLive),
   Layer.provide(GitWorkflowLayerLive),
-  Layer.provide(
+  Layer.provideMerge(
     ThreadDeletion.worktreeCleanupLayer.pipe(
       Layer.provide(
         ResourceCleanupService.live.pipe(
@@ -494,7 +494,7 @@ const OrchestrationV2RuntimeLayerLive = OrchestrationV2ProductionLayerLive.pipe(
           Layer.provide(ThreadCommandExecutor.layer),
         ),
       ),
-      Layer.provide(OrchestrationV2EventSinkLayerLive),
+      Layer.provideMerge(OrchestrationV2EventSinkLayerLive),
       Layer.provide(ServerSettingsLayerLive),
       Layer.provide(GitVcsDriver.layer),
     ),

@@ -1,5 +1,8 @@
 import { assert, it } from "@effect/vitest";
 import {
+  AuthSessionId,
+  MessageId,
+  OrchestrationV2ImportedHistoryReviewBasis,
   CheckpointId,
   CheckpointScopeId,
   CommandId,
@@ -16,6 +19,7 @@ import {
   type OrchestrationV2AppThread,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import type * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -24,6 +28,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
@@ -578,8 +583,11 @@ for (const mode of [
             ? "attachment_namespace_retained"
             : "cleanup_completed",
         );
-        if (result !== undefined && "revalidate" in result)
-          assert.equal(yield* result.revalidate, mode !== "unavailable");
+        if (result !== undefined && "revalidate" in result) {
+          const revalidated = yield* Effect.exit(result.revalidate);
+          assert.isTrue(Exit.isSuccess(revalidated));
+          if (Exit.isSuccess(revalidated)) assert.equal(revalidated.value, mode !== "unavailable");
+        }
       }),
   );
 }
@@ -745,8 +753,11 @@ for (const mode of ["claimed", "denied", "same_attempt_replay"] as const) {
             result !== undefined && "status" in result ? result.status : undefined,
             "attachment_namespace_retained",
           );
-          if (result !== undefined && "revalidate" in result)
-            assert.isTrue(yield* result.revalidate);
+          if (result !== undefined && "revalidate" in result) {
+            const revalidated = yield* Effect.exit(result.revalidate);
+            assert.isTrue(Exit.isSuccess(revalidated));
+            if (Exit.isSuccess(revalidated)) assert.isTrue(revalidated.value);
+          }
           assert.isEmpty(yield* Ref.get(events));
           return;
         }
@@ -834,7 +845,9 @@ function makeExecutorLayer(input: {
   readonly readDeletionCleanupTask?: EventSink.EventSinkV2["Service"]["readDeletionCleanupTask"];
   readonly readDeletionCleanupTaskOutcome?: EventSink.EventSinkV2["Service"]["readDeletionCleanupTaskOutcome"];
   readonly recordLeaseCleanupTaskOutcome?: EventSink.EventSinkV2["Service"]["recordLeaseCleanupTaskOutcome"];
-  readonly resourceCleanup?: Partial<ResourceCleanupService.ResourceCleanupService["Service"]>;
+  readonly resourceCleanup?: Partial<
+    Context.Service.Shape<typeof ResourceCleanupService.ResourceCleanupService>
+  >;
   readonly checkpointRollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
   readonly interruptAndAwaitTerminal?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interruptAndAwaitTerminal"];
   readonly ensureApplicationAttachmentInventory?: ThreadManagementService.ThreadManagementService["Service"]["ensureApplicationAttachmentInventory"];
@@ -1295,12 +1308,33 @@ it.effect(
             runId,
             effectId: claimed.id,
             commandDigest,
-            receipt: { status: "accepted" },
-            command: { delivery: { type: "queued_run", runId } },
+            actorSessionId: AuthSessionId.make("session:imported-history-head-wait"),
+            messageId: MessageId.make("message:imported-history-head-wait"),
+            rejectionReason: null,
+            receipt: {
+              commandId,
+              threadId,
+              commandType: "thread.imported-history.start",
+              acceptedAt: now,
+              resultSequence: 1,
+              status: "accepted",
+              error: null,
+            },
+            command: {
+              type: "thread.imported-history.start",
+              commandId,
+              threadId,
+              reviewedBasis: OrchestrationV2ImportedHistoryReviewBasis.make("review:head-wait"),
+              delivery: {
+                type: "queued_run",
+                runId,
+                messageId: MessageId.make("message:imported-history-head-wait"),
+              },
+            },
             basis: {
               snapshot: { records: { run_attempts: [{ run_id: runId, attempt_id: attemptId }] } },
             },
-          } as EventSink.ImportedHistoryStartOutcomeV2),
+          } satisfies EventSink.ImportedHistoryStartOutcomeV2),
       }).pipe(Layer.provide(preparation));
       yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
         Effect.flatMap((worker) => worker.runOnce),
@@ -1526,7 +1560,7 @@ it.effect("holds an accepted targeted stop when its pinned managed cleanup remai
       commandId,
       request: { type: "provider-session.detach", providerSessionId: oldSessionId },
       leaseOwner: workerId,
-      leaseExpiresAt: new Date(Date.parse(DateTime.formatIso(now)) + 60_000).toISOString(),
+      leaseExpiresAt: DateTime.formatIso(DateTime.add(now, { minutes: 1 })),
     };
     const binding = {
       threadId,
@@ -1741,11 +1775,9 @@ it.effect(
           resourcePath: "/workspace/deleted-provider-owner",
           leaseId: "deleted-provider-lease",
           ownerThreadId: threadId,
-          ownerIncarnation: JSON.stringify([
-            "t3.orchestration-v2.thread-birth/v1",
-            ownerBirth.eventId,
-            ownerBirth.sequence,
-          ]),
+          ownerIncarnation: yield* Schema.encodeEffect(
+            Schema.fromJsonString(Schema.Tuple([Schema.String, EventId, Schema.Number])),
+          )(["t3.orchestration-v2.thread-birth/v1", ownerBirth.eventId, ownerBirth.sequence]),
           branch: "deleted-provider-branch",
           acquiredAtMs: 1,
           renewedAtMs: 2,
@@ -1825,7 +1857,7 @@ it.effect(
       assert.deepEqual(yield* Ref.get(outcomes), [
         {
           effectId: effect.id,
-          workerId: effect.leaseOwner,
+          workerId: effect.leaseOwner!,
           expectedAttempt: effect.attemptCount,
           outcome: { taskId: effect.id, result: null, effect: "unknown" },
           evidence: {
@@ -1915,7 +1947,9 @@ for (const mode of ["leased", "unleased", "existing_hold", "prehold_unavailable"
                   resourcePath: "/workspace/managed-provider-deletion",
                   leaseId: "managed-provider-deletion-lease",
                   ownerThreadId: threadId,
-                  ownerIncarnation: JSON.stringify([
+                  ownerIncarnation: yield* Schema.encodeEffect(
+                    Schema.fromJsonString(Schema.Tuple([Schema.String, EventId, Schema.Number])),
+                  )([
                     "t3.orchestration-v2.thread-birth/v1",
                     ownerBirth.eventId,
                     ownerBirth.sequence,
@@ -2250,11 +2284,9 @@ for (const kind of ["terminal", "attachment"] as const) {
             resourcePath: "/workspace/owned-resource-cleanup",
             leaseId: `owned-${kind}-lease`,
             ownerThreadId: threadId,
-            ownerIncarnation: JSON.stringify([
-              "t3.orchestration-v2.thread-birth/v1",
-              ownerBirth.eventId,
-              ownerBirth.sequence,
-            ]),
+            ownerIncarnation: yield* Schema.encodeEffect(
+              Schema.fromJsonString(Schema.Tuple([Schema.String, EventId, Schema.Number])),
+            )(["t3.orchestration-v2.thread-birth/v1", ownerBirth.eventId, ownerBirth.sequence]),
             branch: "owned-resource-branch",
             acquiredAtMs: 1,
             renewedAtMs: 2,
@@ -3007,7 +3039,7 @@ for (const mode of [
         projectId,
         path: "/workspace/owned-worktree",
         branch: "owned-worktree-branch",
-        force: true,
+        force: true as const,
       };
       const subject = {
         version: 1 as const,

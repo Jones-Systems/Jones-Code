@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Direct lstat distinguishes ENOENT from unreadable targets.
-import * as NodeFS from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
 import * as DateTime from "effect/DateTime";
@@ -59,19 +59,19 @@ export class DeletionWorktreeRemovalPreconditionError extends Schema.TaggedError
   { reason: Schema.String, cause: Schema.optional(Schema.Defect()) },
 ) {}
 
-export type DeletionWorktreeStartRevalidation = (
+export type DeletionWorktreeStartRevalidation<E> = (
   start: DeletionWorktreeRemovalStartV1,
   startOrdinal: number,
-) => Effect.Effect<void, unknown>;
+) => Effect.Effect<void, E>;
 
 export interface DeletionWorktreeRemovalProducer {
   readonly inspectTarget: (
     target: DeletionWorktreeRemovalTargetV1,
   ) => Effect.Effect<DeletionWorktreeReadbackV1>;
-  readonly executeStarted: (
+  readonly executeStarted: <E>(
     start: DeletionWorktreeRemovalStartV1,
     startOrdinal: number,
-    revalidateStart: DeletionWorktreeStartRevalidation,
+    revalidateStart: DeletionWorktreeStartRevalidation<E>,
   ) => Effect.Effect<
     DeletionWorktreeRemovalObservationV1,
     DeletionWorktreeRemovalPreconditionError
@@ -202,19 +202,25 @@ export const makeDeletionWorktreeRemoval = Effect.gen(function* () {
       Effect.catch(() =>
         Effect.succeed({ status: "unavailable", reason: "registration_read_failed" } as const),
       ),
-      Effect.map(Object.freeze),
+      Effect.map((value) => Object.freeze(value)),
     );
 
   const inspectFilesystem = (path: string): Effect.Effect<DeletionWorktreeFilesystemV1> =>
-    Effect.tryPromise({ try: () => NodeFS.lstat(path), catch: (cause) => cause }).pipe(
+    Effect.tryPromise({
+      try: () => NodeFSP.lstat(path),
+      catch: (cause) =>
+        typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT"
+          ? ("absent" as const)
+          : ("unavailable" as const),
+    }).pipe(
       Effect.match({
         onSuccess: () => ({ status: "present", path }) as const,
-        onFailure: (cause) =>
-          typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT"
+        onFailure: (status) =>
+          status === "absent"
             ? ({ status: "absent", path } as const)
             : ({ status: "unavailable", path, reason: "lstat_failed" } as const),
       }),
-      Effect.map(Object.freeze),
+      Effect.map((value) => Object.freeze(value)),
     );
 
   const inspectTarget: DeletionWorktreeRemovalProducer["inspectTarget"] = (target) =>

@@ -129,6 +129,7 @@ export function makeReplayServerConfig(
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
       stateDir,
+      authorityStateDir: path.join(baseDir, "native-store-authority"),
       dbPath: path.join(stateDir, "state.sqlite"),
       keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
       settingsPath: path.join(stateDir, "settings.json"),
@@ -517,7 +518,7 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
   // the effect worker claims anything, as in serverRuntimeStartup.
   const startupRecovery: Layer.Layer<
     never,
-    MigrationError | PlatformError.PlatformError | SqlError
+    Error | MigrationError | PlatformError.PlatformError | SqlError
   > =
     options.recoverOnStartup === true
       ? Layer.effectDiscard(
@@ -527,8 +528,15 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
         ).pipe(
           Layer.provide(ProviderRuntimeRecoveryService.layer),
           Layer.provide(
-            Layer.mergeAll(storesLayer, eventSinkProvided, IdAllocator.layer, serverSettingsLayer),
+            Layer.mergeAll(
+              storesLayer,
+              eventSinkProvided,
+              IdAllocator.layer,
+              serverSettingsLayer,
+              providerSessionManagerProvided,
+            ),
           ),
+          Layer.provide(NodeServices.layer),
         )
       : Layer.empty;
   return Layer.effect(

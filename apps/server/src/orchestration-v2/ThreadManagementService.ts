@@ -284,6 +284,7 @@ export interface ThreadManagementServiceShape {
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
+    prepare?: Effect.Effect<void, Orchestrator.OrchestratorV2Error>,
   ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
   readonly dispatchNativeWorkstreamSettlement: Orchestrator.OrchestratorV2["Service"]["dispatchNativeWorkstreamSettlement"];
   readonly observeNativeWorkstreamSettlementBinding: Orchestrator.OrchestratorV2["Service"]["observeNativeWorkstreamSettlementBinding"];
@@ -312,6 +313,7 @@ export interface ThreadManagementServiceShape {
   readonly readOrdinaryCheckoutAdmissionForRun: Orchestrator.OrchestratorV2["Service"]["readOrdinaryCheckoutAdmissionForRun"];
   readonly beginOrdinaryPreparedCheckoutUse: Orchestrator.OrchestratorV2["Service"]["beginOrdinaryPreparedCheckoutUse"];
   readonly revalidateOrdinaryCheckoutUse: Orchestrator.OrchestratorV2["Service"]["revalidateOrdinaryCheckoutUse"];
+  readonly dispatchOrdinaryPreparedBranchRename: Orchestrator.OrchestratorV2["Service"]["dispatchOrdinaryPreparedBranchRename"];
   readonly dispatchOrdinaryPreparedRunRelease: Orchestrator.OrchestratorV2["Service"]["dispatchOrdinaryPreparedRunRelease"];
   readonly registerOrdinaryCheckoutExecution: Orchestrator.OrchestratorV2["Service"]["registerOrdinaryCheckoutExecution"];
   readonly revalidateOrdinaryCheckoutExecution: Orchestrator.OrchestratorV2["Service"]["revalidateOrdinaryCheckoutExecution"];
@@ -488,8 +490,11 @@ const make = Effect.gen(function* () {
       Effect.andThen(orchestrator.getThreadSnapshotWindow(threadId, options)),
     );
 
-  const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
-    orchestrator.dispatch(command, ensureCommandTranscripts(command));
+  const dispatch: ThreadManagementServiceShape["dispatch"] = (command, prepare) =>
+    orchestrator.dispatch(
+      command,
+      ensureCommandTranscripts(command).pipe(Effect.andThen(prepare ?? Effect.void)),
+    );
 
   const getProjectThread: ThreadManagementServiceShape["getProjectThread"] = (input) =>
     getThreadProjection(input.threadId).pipe(
@@ -830,6 +835,7 @@ const make = Effect.gen(function* () {
     readOrdinaryCheckoutAdmissionForRun: orchestrator.readOrdinaryCheckoutAdmissionForRun,
     beginOrdinaryPreparedCheckoutUse: orchestrator.beginOrdinaryPreparedCheckoutUse,
     revalidateOrdinaryCheckoutUse: orchestrator.revalidateOrdinaryCheckoutUse,
+    dispatchOrdinaryPreparedBranchRename: orchestrator.dispatchOrdinaryPreparedBranchRename,
     dispatchOrdinaryPreparedRunRelease: orchestrator.dispatchOrdinaryPreparedRunRelease,
     registerOrdinaryCheckoutExecution: orchestrator.registerOrdinaryCheckoutExecution,
     revalidateOrdinaryCheckoutExecution: orchestrator.revalidateOrdinaryCheckoutExecution,

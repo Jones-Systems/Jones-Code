@@ -7,6 +7,7 @@ import {
   ProviderThreadId,
   RunAttemptId,
   RunId,
+  ServerSettingsError,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -96,10 +97,7 @@ const source = (id: string) => {
 };
 
 const recoveryLayer = (input: {
-  readonly settings?: Layer.Layer<
-    ServerSettings.ServerSettingsService,
-    ServerSettings.ServerSettingsError
-  >;
+  readonly settings?: Layer.Layer<ServerSettings.ServerSettingsService, ServerSettingsError>;
   readonly projections?: Partial<ProjectionStore.ProjectionStoreV2["Service"]>;
   readonly events?: Partial<EventSink.EventSinkV2["Service"]>;
   readonly sessions?: Partial<ProviderSessions.ProviderSessionManagerV2["Service"]>;

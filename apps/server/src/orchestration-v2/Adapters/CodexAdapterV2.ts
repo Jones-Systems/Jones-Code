@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
@@ -1282,7 +1282,7 @@ const captureCodexOwnedProcess = (
     instanceId: input.instanceId,
     providerSessionId: input.providerSessionId,
     runtimeGeneration: input.runtimeGeneration,
-    handleToken: randomUUID(),
+    handleToken: NodeCrypto.randomUUID(),
     pid: Number(handle.pid),
     handle,
   });
@@ -1843,7 +1843,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
     openSession: (input) =>
       Effect.gen(function* () {
         const scope = yield* Scope.Scope;
-        let runtimeGeneration = input.nativeOperation?.runtimeGeneration ?? randomUUID();
+        let runtimeGeneration = input.nativeOperation?.runtimeGeneration ?? NodeCrypto.randomUUID();
         let replacingRuntime = false;
         const continuationHomeLayout =
           adapterOptions.continuationHomeLayout === undefined
@@ -1895,7 +1895,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           outcome: ProviderNativeEffectEvidence["outcome"] = "unknown",
         ): ProviderNativeEffectEvidence => ({
           ...context,
-          operationId: context?.operationId ?? randomUUID(),
+          operationId: context?.operationId ?? NodeCrypto.randomUUID(),
           operation,
           instanceId: adapterOptions.instanceId,
           providerSessionId: input.providerSessionId,
@@ -1907,7 +1907,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           providerThread: OrchestrationV2ProviderThread,
         ): string | undefined => {
           const nativeId = providerThread.nativeThreadRef?.nativeId;
-          const evidence = nativeId === undefined ? undefined : nativeDirectories.get(nativeId);
+          const evidence = nativeId == null ? undefined : nativeDirectories.get(nativeId);
           return evidence !== undefined &&
             evidence.providerThreadId === providerThread.id &&
             evidence.runtimeGeneration === runtimeGeneration
@@ -2352,7 +2352,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           nativeThreadId: string,
           nativeTurnId?: string,
         ): ProviderManagedActorSourceV1 => ({
-          sourceId: randomUUID(),
+          sourceId: NodeCrypto.randomUUID(),
           driver: CODEX_PROVIDER,
           instanceId: adapterOptions.instanceId,
           providerSessionId: input.providerSessionId,
@@ -2372,10 +2372,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               yield* cohort.issuer.retainUnknown(actor, reason).pipe(Effect.ignore);
           });
         // Missing completion evidence cannot replace the existing native dispatch and currentness guards.
-        const managedEvidence = <A>(
-          cohort: ManagedCodexCohort,
-          effect: Effect.Effect<A, unknown>,
-        ) =>
+        const managedEvidence = <A, E>(cohort: ManagedCodexCohort, effect: Effect.Effect<A, E>) =>
           effect.pipe(
             Effect.catch(() =>
               managedUnknown(cohort, "native_actor_evidence_unavailable").pipe(
@@ -2421,11 +2418,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               run === undefined ||
               execution.associationId !== cohort.admission.startExecution.associationId ||
               nativeCreationCanonicalJson(
-                Schema.encodeSync(OrdinaryCheckoutExecutionRefV1)(execution).originalUse,
+                (yield* Schema.encodeEffect(OrdinaryCheckoutExecutionRefV1)(execution).pipe(
+                  Effect.orDie,
+                )).originalUse,
               ) !==
                 nativeCreationCanonicalJson(
-                  Schema.encodeSync(OrdinaryCheckoutExecutionRefV1)(cohort.admission.startExecution)
-                    .originalUse,
+                  (yield* Schema.encodeEffect(OrdinaryCheckoutExecutionRefV1)(
+                    cohort.admission.startExecution,
+                  ).pipe(Effect.orDie)).originalUse,
                 ) ||
               run.runId !== turnInput.runId ||
               run.runAttemptId !== turnInput.attemptId ||
@@ -2515,7 +2515,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               return yield* Fiber.join(task);
             }
             cohort.actors.add(actor);
-            const taskId = randomUUID();
+            const taskId = NodeCrypto.randomUUID();
             yield* managedEvidence(
               cohort,
               cohort.issuer.requireTaskJoin(actor, { taskId, fiber: task }),
@@ -5272,7 +5272,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 sourceEvent: "thread/settings/updated",
                 model: payload.threadSettings.model,
                 modelProvider: payload.threadSettings.modelProvider,
-                serviceTier: payload.threadSettings.serviceTier,
+                ...(payload.threadSettings.serviceTier === undefined
+                  ? {}
+                  : { serviceTier: payload.threadSettings.serviceTier }),
               }),
             ),
           ),
@@ -7431,7 +7433,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               return yield* toProtocolError(
                 "Codex has no new-incarnation target directory proof for the bundled managed resume.",
               );
-            const nextGeneration = randomUUID();
+            const nextGeneration = NodeCrypto.randomUUID();
             const replace = Effect.gen(function* () {
               if (replacingRuntime || (yield* Ref.get(closed)) || !matchesRuntimeBinding(current))
                 return yield* toProtocolError(
@@ -7535,9 +7537,13 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 providerThread: restored,
                 requested: turnInput.modelSelection,
                 sourceEvent: "thread/resume",
-                model: response.model,
-                modelProvider: response.modelProvider,
-                serviceTier: response.serviceTier,
+                ...(response.model === undefined ? {} : { model: response.model }),
+                ...(response.modelProvider === undefined
+                  ? {}
+                  : { modelProvider: response.modelProvider }),
+                ...(response.serviceTier === undefined
+                  ? {}
+                  : { serviceTier: response.serviceTier }),
                 nativeDirectory,
               });
               yield* emitProviderEvent(
@@ -7605,7 +7611,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             const dispatch = yield* Deferred.make<void>();
             let dispatched = false;
             const managedActorRef: { current?: ManagedCodexActor } = {};
-            const managedTaskId = randomUUID();
+            const managedTaskId = NodeCrypto.randomUUID();
             const cohort = request.managed;
             if (cohort !== undefined) cohort.requests++;
             let fiber!: Fiber.Fiber<
@@ -8092,7 +8098,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   sourceEvent: "thread/start",
                   model: response.model,
                   modelProvider: response.modelProvider,
-                  serviceTier: response.serviceTier,
+                  ...(response.serviceTier === undefined
+                    ? {}
+                    : { serviceTier: response.serviceTier }),
                   nativeDirectory,
                 });
                 return providerThread;
@@ -8244,9 +8252,13 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     providerThread: resumed,
                     requested: threadInput.modelSelection ?? input.modelSelection,
                     sourceEvent: "thread/resume",
-                    model: response.model,
-                    modelProvider: response.modelProvider,
-                    serviceTier: response.serviceTier,
+                    ...(response.model === undefined ? {} : { model: response.model }),
+                    ...(response.modelProvider === undefined
+                      ? {}
+                      : { modelProvider: response.modelProvider }),
+                    ...(response.serviceTier === undefined
+                      ? {}
+                      : { serviceTier: response.serviceTier }),
                     nativeDirectory,
                   });
                 }
@@ -8286,8 +8298,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 Effect.onExit((exit) =>
                   Effect.suspend(() => {
                     if (!bindingOperationStarted) return Effect.void;
-                    if (exit._tag === "Failure" && threadInput.providerThread.nativeThreadRef)
-                      nativeDirectories.delete(threadInput.providerThread.nativeThreadRef.nativeId);
+                    const nativeId = threadInput.providerThread.nativeThreadRef?.nativeId;
+                    if (exit._tag === "Failure" && nativeId != null)
+                      nativeDirectories.delete(nativeId);
                     return (
                       exit._tag === "Failure" ? discardFailedBindingObservations : Effect.void
                     ).pipe(Effect.andThen(finishBindingOperation));
@@ -8429,7 +8442,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               Effect.tapError(() =>
                 Effect.sync(() => {
                   const nativeId = input.providerThread.nativeThreadRef?.nativeId;
-                  if (nativeId !== undefined) nativeDirectories.delete(nativeId);
+                  if (nativeId != null) nativeDirectories.delete(nativeId);
                 }),
               ),
               Effect.mapError(
@@ -8540,7 +8553,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   earlyStarts: new Map(),
                   startOperation: Object.freeze({
                     ...(turnInput.nativeOperation ?? {
-                      operationId: randomUUID(),
+                      operationId: NodeCrypto.randomUUID(),
                       operation: "start_turn" as const,
                       instanceId: adapterOptions.instanceId,
                       threadId: turnInput.threadId,
@@ -8576,8 +8589,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 ),
                 Effect.onExit((exit) =>
                   Effect.sync(() => {
-                    if (exit._tag === "Failure" && turnInput.providerThread.nativeThreadRef)
-                      nativeDirectories.delete(turnInput.providerThread.nativeThreadRef.nativeId);
+                    const nativeId = turnInput.providerThread.nativeThreadRef?.nativeId;
+                    if (exit._tag === "Failure" && nativeId != null)
+                      nativeDirectories.delete(nativeId);
                   }),
                 ),
                 Effect.ensuring(
@@ -8672,7 +8686,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               if (turnInput.requestRuntimeRestart === true) {
                 const nativeId = turnInput.providerThread.nativeThreadRef?.nativeId;
                 const currentBinding =
-                  nativeId === undefined ? undefined : runtimeBindings.get(nativeId)?.binding;
+                  nativeId == null ? undefined : runtimeBindings.get(nativeId)?.binding;
                 if (
                   currentBinding === undefined ||
                   (yield* Ref.get(closed)) ||
@@ -9275,7 +9289,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               Effect.tapError(() =>
                 Effect.sync(() => {
                   const nativeId = threadInput.providerThread.nativeThreadRef?.nativeId;
-                  if (nativeId !== undefined) nativeDirectories.delete(nativeId);
+                  if (nativeId != null) nativeDirectories.delete(nativeId);
                 }),
               ),
               Effect.mapError(

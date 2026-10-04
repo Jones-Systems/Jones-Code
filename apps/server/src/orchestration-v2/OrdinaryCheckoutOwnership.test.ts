@@ -1,5 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
 import {
@@ -75,7 +77,7 @@ const managed = {
 it.effect(
   "execution reference identity uses canonical encoded immutable seed excluding its own association ID",
   () =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       assert.equal(
         claimRef.associationId,
         "2c6a1fd6a68018d0f8ce3ee62bfc467347938bb5dcde66494e22daf4029044ff",
@@ -88,7 +90,9 @@ it.effect(
           executor: claimExecutor,
         }),
       );
-      const encoded = Schema.encodeSync(OrdinaryCheckoutExecutionRefV1)(claimRef);
+      const encoded = yield* Schema.encodeEffect(OrdinaryCheckoutExecutionRefV1)(claimRef).pipe(
+        Effect.orDie,
+      );
       assert.deepEqual(decodeOrdinaryCheckoutExecutionRefV1(encoded), claimRef);
       const reordered = {
         executor: encoded.executor,
@@ -107,12 +111,14 @@ it.effect(
 it.effect(
   "managed and real prepared executor variants preserve absent provider evidence and original prepared source",
   () =>
-    Effect.sync(() => {
-      const executor = Schema.decodeUnknownSync(OrdinaryCheckoutExecutionExecutorV1, {
+    Effect.gen(function* () {
+      const executor = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutExecutionExecutorV1, {
         onExcessProperty: "error",
-      })(managed);
+      })(managed).pipe(Effect.orDie);
       const ref = makeOrdinaryCheckoutExecutionRefV1({ originalUse, executor });
-      const encoded = Schema.encodeSync(OrdinaryCheckoutExecutionRefV1)(ref);
+      const encoded = yield* Schema.encodeEffect(OrdinaryCheckoutExecutionRefV1)(ref).pipe(
+        Effect.orDie,
+      );
       assert.notEqual(ref.associationId, claimRef.associationId);
       assert.deepEqual(decodeOrdinaryCheckoutExecutionRefV1(encoded), ref);
       for (const key of [
@@ -147,26 +153,28 @@ it.effect(
           branch: "fixture-branch",
         },
       ]) {
-        const preparedUse = Schema.decodeUnknownSync(OrdinaryCheckoutUseV1, {
+        const preparedUse = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutUseV1, {
           onExcessProperty: "error",
         })({
-          ...Schema.encodeSync(OrdinaryCheckoutUseV1)(originalUse),
+          ...(yield* Schema.encodeEffect(OrdinaryCheckoutUseV1)(originalUse).pipe(Effect.orDie)),
           source: prepared,
-        });
-        const producer = Schema.decodeUnknownSync(OrdinaryCheckoutExecutionExecutorV1, {
+        }).pipe(Effect.orDie);
+        const producer = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutExecutionExecutorV1, {
           onExcessProperty: "error",
         })({
           kind: "actual_prepared_producer",
           producerId: "producer:prepared-fixture",
           source: prepared,
-        });
+        }).pipe(Effect.orDie);
         const preparedRef = makeOrdinaryCheckoutExecutionRefV1({
           originalUse: preparedUse,
           executor: producer,
         });
         assert.deepEqual(
           decodeOrdinaryCheckoutExecutionRefV1(
-            Schema.encodeSync(OrdinaryCheckoutExecutionRefV1)(preparedRef),
+            yield* Schema.encodeEffect(OrdinaryCheckoutExecutionRefV1)(preparedRef).pipe(
+              Effect.orDie,
+            ),
           ),
           preparedRef,
         );
@@ -175,8 +183,10 @@ it.effect(
 );
 
 it.effect("changed immutable use or requesting claim cannot reuse an old association digest", () =>
-  Effect.sync(() => {
-    const raw = Schema.encodeSync(OrdinaryCheckoutExecutionRefV1)(claimRef);
+  Effect.gen(function* () {
+    const raw = yield* Schema.encodeEffect(OrdinaryCheckoutExecutionRefV1)(claimRef).pipe(
+      Effect.orDie,
+    );
     if (raw.executor.kind !== "actual_outbox_claim")
       throw new Error("Expected actual claim fixture");
     for (const changed of [
@@ -236,8 +246,8 @@ it.effect("changed immutable use or requesting claim cannot reuse an old associa
 it.effect(
   "closed executor codec rejects substitute proof booleans, invented kinds and invalid optional evidence",
   () =>
-    Effect.sync(() => {
-      const decode = Schema.decodeUnknownSync(OrdinaryCheckoutExecutionExecutorV1, {
+    Effect.gen(function* () {
+      const decode = Schema.decodeUnknownEffect(OrdinaryCheckoutExecutionExecutorV1, {
         onExcessProperty: "error",
       });
       for (const invalid of [
@@ -255,8 +265,14 @@ it.effect(
           producerId: "producer",
           source: { ...source, kind: "prepared_run" },
         },
-      ])
-        assert.throws(() => decode(invalid));
+      ]) {
+        const exit = yield* decode(invalid).pipe(Effect.orDie, Effect.exit);
+        assert.isTrue(Exit.isFailure(exit));
+        if (Exit.isFailure(exit)) {
+          assert.isTrue(Cause.hasDies(exit.cause));
+          assert.isTrue(Schema.isSchemaError(Cause.squash(exit.cause)));
+        }
+      }
       assert.throws(() =>
         decodeOrdinaryCheckoutExecutionRefV1({
           ...Schema.encodeSync(OrdinaryCheckoutExecutionRefV1)(claimRef),
@@ -269,7 +285,7 @@ it.effect(
 it.effect(
   "new outbox operations bind positive actual attempts while historical operation IDs remain unchanged reads",
   () =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       assert.equal(
         ordinaryCheckoutOutboxOperationIdV1("effect:execution-fixture", 1),
         "effect:execution-fixture:ordinary-checkout:attempt:1",
@@ -284,12 +300,12 @@ it.effect(
         );
       for (const id of ["", " ", " effect:execution-fixture", "effect:execution-fixture "])
         assert.throws(() => ordinaryCheckoutOutboxOperationIdV1(id, 1));
-      const historical = Schema.decodeUnknownSync(OrdinaryCheckoutUseV1, {
+      const historical = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutUseV1, {
         onExcessProperty: "error",
       })({
-        ...Schema.encodeSync(OrdinaryCheckoutUseV1)(originalUse),
+        ...(yield* Schema.encodeEffect(OrdinaryCheckoutUseV1)(originalUse).pipe(Effect.orDie)),
         operationId: "effect:execution-fixture:ordinary-checkout",
-      });
+      }).pipe(Effect.orDie);
       assert.equal(historical.operationId, "effect:execution-fixture:ordinary-checkout");
     }),
 );

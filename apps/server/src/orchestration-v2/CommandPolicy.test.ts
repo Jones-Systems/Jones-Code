@@ -59,9 +59,9 @@ it.effect("rejects imported-history consent at generic ingress before hydration 
       type: "thread.imported-history.start",
       commandId: CommandId.make("server:imported-history:forged"),
       threadId,
-      reviewedBasis: Schema.decodeUnknownSync(OrchestrationV2ImportedHistoryReviewBasis)(
+      reviewedBasis: yield* Schema.decodeUnknownEffect(OrchestrationV2ImportedHistoryReviewBasis)(
         "reviewed-basis",
-      ),
+      ).pipe(Effect.orDie),
       delivery: {
         type: "queued_run",
         runId: activeRunId,

@@ -21,6 +21,7 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
@@ -198,7 +199,7 @@ describe("Codex replay fixture cleanup", () => {
         Effect.gen(function* () {
           const config = yield* makeReplayServerConfig("cleanup-interrupted");
           yield* Deferred.succeed(ready, config.baseDir);
-          yield* Effect.never;
+          return yield* Effect.never;
         }),
       ).pipe(Effect.forkChild);
       const baseDir = yield* Deferred.await(ready);
@@ -1998,7 +1999,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       readonly ownedClientFactory?: CodexAdapterV2.CodexAppServerClientFactoryShape;
       readonly onFactoryOpen?: (
         input: Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0],
-      ) => Effect.Effect<void>;
+      ) => Effect.Effect<void, ProviderAdapterOpenSessionError, Scope.Scope>;
       readonly onRuntimeOpened?: (
         runtime: import("../ProviderAdapter.ts").ProviderAdapterV2SessionRuntime,
       ) => Effect.Effect<void>;
@@ -2221,14 +2222,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     readonly threadId: ThreadId;
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly runtime: import("../ProviderAdapter.ts").ProviderAdapterV2SessionRuntime;
-  }) => ({
-    threadId: harness.threadId,
-    providerThreadId: harness.providerThread.id,
-    providerSessionId: harness.runtime.providerSessionId,
-    instanceId: harness.runtime.instanceId,
-    runtimeGeneration: harness.runtime.runtimeGeneration!,
-    nativeThreadId: harness.providerThread.nativeThreadRef!.nativeId,
-  });
+  }) => {
+    const nativeThreadId = harness.providerThread.nativeThreadRef?.nativeId;
+    if (nativeThreadId == null) throw new Error("Replay fixture has no native thread ID.");
+    return {
+      threadId: harness.threadId,
+      providerThreadId: harness.providerThread.id,
+      providerSessionId: harness.runtime.providerSessionId,
+      instanceId: harness.runtime.instanceId,
+      runtimeGeneration: harness.runtime.runtimeGeneration!,
+      nativeThreadId,
+    };
+  };
 
   const prepareManagedCodexTurn = (
     runtime: import("../ProviderAdapter.ts").ProviderAdapterV2SessionRuntime,
@@ -2244,7 +2249,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         eventId: `managed-birth-${turn.attemptId}`,
         sequence: 1,
       };
-      const capture = Schema.decodeUnknownSync(OrdinaryCheckoutCaptureV1)({
+      const capture = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutCaptureV1)({
         version: 1,
         commandId,
         commandType: command.type,
@@ -2262,18 +2267,20 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           leaseId: `managed-lease-${turn.attemptId}`,
           ownerThreadId: turn.threadId,
           ownerIncarnation: ordinaryApplicationIncarnationV1(
-            Schema.decodeUnknownSync(OrdinaryCheckoutCaptureV1.fields.applicationBirth)(birth),
+            yield* Schema.decodeUnknownEffect(OrdinaryCheckoutCaptureV1.fields.applicationBirth)(
+              birth,
+            ).pipe(Effect.orDie),
           ),
           branch: "fixture-branch",
           acquiredAtMs: 1,
           renewedAtMs: 1,
           expiresAtMs: 300001,
         },
-      });
-      const admission = Schema.decodeUnknownSync(OrdinaryCheckoutAdmissionV1)({
+      }).pipe(Effect.orDie);
+      const admission = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutAdmissionV1)({
         version: 1,
         admissionId: ordinaryCheckoutAdmissionIdV1(capture),
-        capture: Schema.encodeSync(OrdinaryCheckoutCaptureV1)(capture),
+        capture: yield* Schema.encodeEffect(OrdinaryCheckoutCaptureV1)(capture).pipe(Effect.orDie),
         receipt: {
           commandId,
           threadId: turn.threadId,
@@ -2299,7 +2306,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           messageId: turn.message.messageId,
         },
         recordedAt: at,
-      });
+      }).pipe(Effect.orDie);
       const source = {
         kind: "outbox",
         link: {
@@ -2315,20 +2322,20 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         expectedAttempt: 1,
         leaseExpiresAt: "2026-10-03T00:05:00.000Z",
       };
-      const originalUse = Schema.decodeUnknownSync(OrdinaryCheckoutUseV1)({
+      const originalUse = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutUseV1)({
         version: 1,
         kind: "ordinary_checkout_use",
         operationId: `${source.link.effectId}:ordinary-checkout:attempt:1`,
         admission: source.link.admission,
         source,
         lease: capture.lease,
-      });
+      }).pipe(Effect.orDie);
       const startExecution = makeOrdinaryCheckoutExecutionRefV1({
         originalUse,
-        executor: Schema.decodeUnknownSync(OrdinaryCheckoutExecutionExecutorV1)({
+        executor: yield* Schema.decodeUnknownEffect(OrdinaryCheckoutExecutionExecutorV1)({
           kind: "actual_outbox_claim",
           source,
-        }),
+        }).pipe(Effect.orDie),
       });
       const offer: ProviderManagedActorAdmissionV1 = {
         startExecution,
@@ -2340,7 +2347,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       yield* Effect.addFinalizer(() => reader.release);
       const managedExecution = makeOrdinaryCheckoutExecutionRefV1({
         originalUse,
-        executor: Schema.decodeUnknownSync(OrdinaryCheckoutExecutionExecutorV1)({
+        executor: yield* Schema.decodeUnknownEffect(OrdinaryCheckoutExecutionExecutorV1)({
           kind: "captured_managed_run",
           captureId: `managed-capture-${turn.attemptId}`,
           run: admission.run,
@@ -2356,7 +2363,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             ? {}
             : { runtimeGeneration: runtime.runtimeGeneration }),
           nativeThreadId: turn.providerThread.nativeThreadRef!.nativeId,
-        }),
+        }).pipe(Effect.orDie),
       });
       return { reader, startExecution, managedExecution };
     });
@@ -2370,14 +2377,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           const now = yield* DateTime.now;
           const prepared: OrchestrationV2ProviderThread = {
             id: ProviderThreadId.make("prepared-jones-provider-thread"),
-            driver: "codex",
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
             providerInstanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
             providerSessionId: null,
             appThreadId: ThreadId.make(`thread-${scenario}`),
             ownerNodeId: null,
             nativeThreadRef: null,
             nativeConversationHeadRef: {
-              driver: "codex",
+              driver: CodexAdapterV2.CODEX_DRIVER_KIND,
               nativeId: "prior-native-head",
               strength: "strong",
             },
@@ -2403,7 +2410,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               onRuntimeOpened: (runtime) =>
                 Effect.gen(function* () {
                   const foreignTargets: ReadonlyArray<OrchestrationV2ProviderThread> = [
-                    { ...prepared, driver: "pi" },
+                    { ...prepared, driver: ProviderDriverKind.make("pi") },
                     {
                       ...prepared,
                       providerInstanceId: ProviderInstanceId.make("foreign-instance"),
@@ -3322,7 +3329,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           } else {
             assert.equal(result._tag, "Failure");
             if (result._tag !== "Failure") return;
-            assert.equal(result.failure.nativeEffect?.outcome, "unknown");
+            assert.equal(
+              "nativeEffect" in result.failure ? result.failure.nativeEffect?.outcome : undefined,
+              "unknown",
+            );
             assert.equal(resumes, 0);
             if (outcome === "different-home" || outcome === "failed-open") {
               assert.equal(opens, 2);
@@ -3619,7 +3629,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     threadId: string,
     turnId: string,
     code = "serverOverloaded",
-  ): CodexReplay.CodexAppServerReplayEntry => ({
+  ): Extract<CodexReplay.CodexAppServerReplayEntry, { type: "emit_inbound" }> => ({
     type: "emit_inbound",
     frame: {
       method: "error",
@@ -4544,12 +4554,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         let reservations = 0;
         let expectedStop: ProviderPendingStartStopInput | undefined;
         const preamble = capacityPreamble(nativeThreadId, "unacknowledged-initial");
+        const initialReply = preamble[6];
+        if (initialReply?.type !== "emit_inbound")
+          return yield* Effect.die("The initial turn/start reply must be an inbound replay entry.");
         const harness = yield* makeCodexReplayHarness(
           makeCodexReplayTranscript({
             scenario: "initial-dispatched-stop",
             entries: [
               ...preamble.slice(0, 6),
-              { ...preamble[6]!, label: "turn/start/held-initial-reply" },
+              { ...initialReply, label: "turn/start/held-initial-reply" },
             ],
           }),
           undefined,
@@ -10911,7 +10924,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.equal((error.cause as { _tag: string })._tag, "CodexNativeInterruptTimeoutError");
         assert.equal((error.cause as { nativeThreadId: string }).nativeThreadId, nativeThreadId);
         assert.equal((error.cause as { nativeTurnId: string }).nativeTurnId, nativeTurnId);
-        assert.equal(error.nativeEffect?.outcome, "unknown");
+        assert.equal("nativeEffect" in error ? error.nativeEffect?.outcome : undefined, "unknown");
         assert.lengthOf(harness.terminalEvents(), 0);
         assert.isFalse(
           harness.events.some(
@@ -11053,7 +11066,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                         target.turnId,
                         `fleet-child-turn-${target.threadId.slice("fleet-child-".length)}`,
                       );
-                    yield* Effect.never;
+                    return yield* Effect.never;
                   })
                 : Effect.void,
           );
@@ -11109,7 +11122,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             (failure.failure.cause as { _tag: string })._tag,
             "CodexNativeInterruptTimeoutError",
           );
-          assert.equal(failure.failure.nativeEffect?.outcome, "unknown");
+          assert.equal(
+            "nativeEffect" in failure.failure ? failure.failure.nativeEffect?.outcome : undefined,
+            "unknown",
+          );
           assert.lengthOf(harness.terminalEvents(), 0);
           assert.isFalse(
             harness.events.some(

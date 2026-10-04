@@ -1,7 +1,7 @@
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import {
   ModelSelection,
   OrchestrationV2DomainEvent,
@@ -33,6 +33,8 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
+import * as SchemaIssue from "effect/SchemaIssue";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -49,6 +51,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EventSink from "./EventSink.ts";
+import { jsonCause } from "./EventSinkJsonCodec.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import {
   LegacyLeaseInventoryError,
@@ -98,6 +101,28 @@ import {
   type ProviderOperatingCounts,
   type ProviderThreadRuntimeAttachment,
 } from "./ProviderThreadRuntimeObservation.ts";
+
+// Byte-exact JSON.stringify for currentness comparisons. Key order stays
+// significant, an absent value still yields undefined, and a native stringify
+// exception remains the defect.
+const decodeComparisonJson = Schema.decodeEffect(
+  Schema.Unknown.pipe(
+    Schema.decodeTo(Schema.UndefinedOr(Schema.String), {
+      decode: SchemaGetter.onSome<string | undefined, unknown>((input, options) => {
+        try {
+          return Effect.succeed(Option.some(JSON.stringify(input)));
+        } catch (cause) {
+          return Effect.fail(
+            new SchemaIssue.InvalidValue({ nativeJsonCause: cause }, input, options),
+          );
+        }
+      }),
+      encode: SchemaGetter.forbiddenEncoding,
+    }),
+  ),
+);
+const comparisonJson = (value: unknown) =>
+  decodeComparisonJson(value).pipe(Effect.catch((error) => Effect.die(jsonCause(error))));
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
@@ -2091,7 +2116,7 @@ export const layerWithOptions = (
           const current = (yield* Ref.get(sessions)).get(sessionKey(binding.providerSessionId));
           if (
             stored === null ||
-            JSON.stringify(stored) !== JSON.stringify(proof) ||
+            (yield* comparisonJson(stored)) !== (yield* comparisonJson(proof)) ||
             current?.runtime !== entry.runtime ||
             !current.attachedThreadIds.has(binding.threadId) ||
             entry.runtime.runtimeGeneration !== binding.runtimeGeneration ||
@@ -2202,7 +2227,7 @@ export const layerWithOptions = (
                 const latestIdentity = latest.providerSessions.find(
                   (candidate) => candidate.id === runtime.providerSessionId,
                 )?.runtimeIdentity;
-                if (JSON.stringify(latestIdentity) !== JSON.stringify(identity))
+                if ((yield* comparisonJson(latestIdentity)) !== (yield* comparisonJson(identity)))
                   return yield* reject();
               }),
             ),
@@ -2276,7 +2301,7 @@ export const layerWithOptions = (
         ): ProviderNativeOperationContext => ({
           ...supplied,
           ...target,
-          operationId: supplied?.operationId ?? `${kind}:${randomUUID()}`,
+          operationId: supplied?.operationId ?? `${kind}:${NodeCrypto.randomUUID()}`,
           operation: kind,
           instanceId: runtime.instanceId,
           providerSessionId,
@@ -3691,7 +3716,7 @@ export const layerWithOptions = (
                 ? [...request.providerTurnIds][0]
                 : undefined;
             return Object.freeze({
-              captureId: randomUUID(),
+              captureId: NodeCrypto.randomUUID(),
               driver: entry.runtime.driver,
               binding: Object.freeze({
                 threadId: input.threadId,
@@ -3882,12 +3907,13 @@ export const layerWithOptions = (
                 const sessionScope = yield* Scope.make();
                 const nativeOperation: ProviderNativeOperationContext = {
                   ...input.nativeOperation,
-                  operationId: input.nativeOperation?.operationId ?? `open-session:${randomUUID()}`,
+                  operationId:
+                    input.nativeOperation?.operationId ?? `open-session:${NodeCrypto.randomUUID()}`,
                   operation: "open_session",
                   instanceId: input.modelSelection.instanceId,
                   threadId: input.threadId,
                   providerSessionId: input.providerSessionId,
-                  runtimeGeneration: randomUUID(),
+                  runtimeGeneration: NodeCrypto.randomUUID(),
                 };
                 const runtime = yield* withProviderNativeEffect(
                   adapter.openSession({
@@ -4651,7 +4677,7 @@ export const layerWithOptions = (
                   activeTurns,
                   (turn) => {
                     const nativeOperation: ProviderNativeOperationContext = {
-                      operationId: `detach-interrupt:${randomUUID()}`,
+                      operationId: `detach-interrupt:${NodeCrypto.randomUUID()}`,
                       operation: "interrupt_turn",
                       instanceId: currentEntry.runtime.instanceId,
                       threadId: input.threadId,
@@ -4784,7 +4810,7 @@ export const layerWithOptions = (
                     detachedProviderThreads.filter((thread) => thread.nativeThreadRef !== null),
                     (providerThread) => {
                       const nativeOperation: ProviderNativeOperationContext = {
-                        operationId: `detach-unload:${randomUUID()}`,
+                        operationId: `detach-unload:${NodeCrypto.randomUUID()}`,
                         operation: "unload_thread",
                         instanceId: entry.runtime.instanceId,
                         threadId: input.threadId,

@@ -140,11 +140,12 @@ const SUCCESSFUL_GIT_EXECUTION = {
   stdoutTruncated: false,
   stderrTruncated: false,
 };
+// HTTP bodies use the JSON codec, which carries V2 DateTime.Utc fields as ISO strings.
 const decodeTransferThreadSnapshot = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(OrchestrationV2ThreadDetailSnapshot),
+  Schema.fromJsonString(Schema.toCodecJson(OrchestrationV2ThreadDetailSnapshot)),
 );
 const decodeTransferShellSnapshot = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(OrchestrationV2ShellSnapshot),
+  Schema.fromJsonString(Schema.toCodecJson(OrchestrationV2ShellSnapshot)),
 );
 const encodeTestJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeTestJsonEffect = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -611,6 +612,34 @@ const awaitRouterRunStatus = (
       ),
       Stream.runHead,
     );
+
+// Plays Git for one router worktree launch: the checkout happens only after the
+// caller's mutation gate passes, at exactly the requested path and branch, and
+// local status reads that branch back only at the created checkout.
+const makeRouterWorktreeGit = () => {
+  let checkout: { readonly path: string; readonly refName: string } | null = null;
+  const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = (input, options) =>
+    Effect.gen(function* () {
+      const { path, newRefName } = input;
+      assertTrue(path !== null && newRefName !== undefined);
+      yield* options?.revalidateMutation ?? Effect.void;
+      checkout = { path, refName: newRefName };
+      return { worktree: { path, refName: newRefName } };
+    });
+  const gitManager: Partial<GitManager.GitManager["Service"]> = {
+    invalidateLocalStatus: () => Effect.void,
+    localStatus: (input) =>
+      Effect.succeed({
+        isRepo: true,
+        hasPrimaryRemote: false,
+        isDefaultRef: false,
+        refName: checkout !== null && input.cwd === checkout.path ? checkout.refName : null,
+        hasWorkingTreeChanges: false,
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+      }),
+  };
+  return { createWorktree, gitManager, checkoutPath: () => checkout?.path ?? null };
+};
 
 const seedRouterProvider = Effect.fnUntraced(function* (
   context: Context.Context<RouterV2Services>,
@@ -1186,6 +1215,7 @@ const buildAppUnderTest = <SetupError = never>(options?: {
           context,
           ProviderSessionGoalService.ProviderSessionGoalService,
         );
+        const providerAuth = Context.get(context, ProviderAuthService);
         let decorated = Context.add(context, Orchestrator.OrchestratorV2, {
           ...orchestrator,
           ...options?.layers?.orchestrator,
@@ -1215,9 +1245,14 @@ const buildAppUnderTest = <SetupError = never>(options?: {
           ...providerGoals,
           ...options?.layers?.providerGoalService,
         });
+        // The V2 graph exports ProviderAuthService, which shadows the outer mock for routes.
+        decorated = Context.add(decorated, ProviderAuthService, {
+          ...providerAuth,
+          ...options?.layers?.providerAuth,
+        });
         return Layer.succeedContext(decorated);
       }),
-      Layer.provide(
+      Layer.provideMerge(
         ResourceCleanup.live.pipe(
           Layer.provide(OrchestrationV2EventSinkLayerLive),
           Layer.provide(ThreadCommandExecutor.layer),
@@ -1257,255 +1292,254 @@ const buildAppUnderTest = <SetupError = never>(options?: {
       ),
     );
 
-    const servedRoutesLayer = HttpRouter.serve(
-      // Route repositories and auth share this in-memory database so enrollment
-      // resolves the same synthetic session records that authentication reads.
-      makeRoutesLayer.pipe(
+    const servedRoutesLayer = HttpRouter.serve(makeRoutesLayer, {
+      disableListenLog: true,
+      disableLogger: true,
+      routerConfig: HTTP_ROUTER_CONFIG,
+    })
+      .pipe(
+        // Provide after serve so route construction and deferred HTTP handlers
+        // share the same runtime services and in-memory authentication database.
         Layer.provideMerge(routerRuntimeLayer),
         Layer.provideMerge(McpSessionRegistry.layer),
         Layer.provide(Layer.mergeAll(serviceLauncherClientLayer, SqlitePersistenceMemory)),
-      ),
-      {
-        disableListenLog: true,
-        disableLogger: true,
-        routerConfig: HTTP_ROUTER_CONFIG,
-      },
-    ).pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(Keybindings.Keybindings)({
-            loadConfigState: Effect.succeed({
-              keybindings: [],
-              issues: [],
-            }),
-            streamChanges: Stream.empty,
-            ...options?.layers?.keybindings,
-          }),
-          Layer.mock(EnvironmentTheme.EnvironmentThemeService)({
-            current: Effect.succeed([]),
-            streamChanges: Stream.empty,
-            ...options?.layers?.environmentTheme,
-          }),
-          Layer.mock(UsageLimitSources.UsageLimitSources)({
-            current: Effect.succeed([]),
-            streamChanges: Stream.make([]),
-            refresh: Effect.void,
-            ...options?.layers?.usageLimitSources,
-          }),
-        ),
-      ),
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(ModelManifest.ModelManifest)({
-            forceRefresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
-            ...options?.layers?.modelManifest,
-          }),
-          Layer.mock(ProviderRegistry.ProviderRegistry)({
-            getProviders: Effect.succeed([]),
-            refresh: () => Effect.succeed([]),
-            refreshInstance: () => Effect.succeed([]),
-            getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
-              Effect.succeed(
-                makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
-              ),
-            setProviderMaintenanceActionState: () => Effect.succeed([]),
-            streamChanges: Stream.empty,
-            ...options?.layers?.providerRegistry,
-          }),
-          Layer.mock(ProviderAuthService)({
-            ...options?.layers?.providerAuth,
-          }),
-          Layer.mock(ProviderInstanceRegistry)({
-            getInstance: (id) =>
-              Effect.succeed(
-                id === defaultModelSelection.instanceId ? routerProviderInstance : undefined,
-              ),
-            listInstances: Effect.succeed([routerProviderInstance]),
-            ...options?.layers?.providerInstanceRegistry,
-          }),
-          Layer.mock(CodexInstallation)({
-            managedDirectory: "unused-test-codex-runtime",
-            ...options?.layers?.codexInstallation,
-          }),
-          Layer.mock(AntigravityInstallation)({
-            managedDirectory: "unused-test-antigravity-runtime",
-            ...options?.layers?.antigravityInstallation,
-          }),
-          Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({}),
-          Layer.mock(AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
-          Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
-          Layer.mock(DeviceService.DeviceService)({
-            state: Effect.succeed(EMPTY_DEVICE_STATE),
-            currentReadiness: () => Effect.succeed(null),
-            sessionsForThread: () => Effect.succeed([]),
-          }),
-        ),
-      ),
-      Layer.provide(serverSettingsLayer),
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(ExternalLauncher.ExternalLauncher)({
-            resolveAvailableEditors: () => Effect.succeed([]),
-            resolveFileManagerRevealKind: () => Effect.undefined,
-            ...options?.layers?.externalLauncher,
-          }),
-          Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
-            resolveTargets: () => Effect.succeed([]),
-          }),
-        ),
-      ),
-      Layer.provide(
-        Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({
-          read: Effect.succeed({
-            serverPid: process.pid,
-            readAt: TEST_EPOCH,
-            processCount: 0,
-            totalRssBytes: 0,
-            totalCpuPercent: 0,
-            processes: [],
-            error: Option.none(),
-          }),
-          signal: (input) =>
-            Effect.succeed({
-              pid: input.pid,
-              signal: input.signal,
-              signaled: true,
-              message: Option.none(),
-            }),
-        }),
-      ),
-      Layer.provide([
-        HostResources.layer,
-        Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
-          readHistory: (input) =>
-            Effect.succeed({
-              readAt: TEST_EPOCH,
-              windowMs: input.windowMs,
-              bucketMs: input.bucketMs,
-              sampleIntervalMs: 5_000,
-              retainedSampleCount: 0,
-              totalCpuSecondsApprox: 0,
-              buckets: [],
-              topProcesses: [],
-              error: Option.none(),
-            }),
-        }),
-      ]),
-      Layer.provide(
-        Layer.mock(TraceDiagnostics.TraceDiagnostics)({
-          read: () =>
-            Effect.succeed({
-              traceFilePath: "",
-              scannedFilePaths: [],
-              readAt: TEST_EPOCH,
-              recordCount: 0,
-              parseErrorCount: 0,
-              firstSpanAt: Option.none(),
-              lastSpanAt: Option.none(),
-              failureCount: 0,
-              interruptionCount: 0,
-              slowSpanThresholdMs: 1_000,
-              slowSpanCount: 0,
-              logLevelCounts: {},
-              topSpansByCount: [],
-              slowestSpans: [],
-              commonFailures: [],
-              latestFailures: [],
-              latestWarningAndErrorLogs: [],
-              partialFailure: Option.none(),
-              error: Option.none(),
-            }),
-        }),
-      ),
-      Layer.provide(gitManagerLayer),
-      Layer.provide(gitVcsDriverLayer),
-      Layer.provide(gitWorkflowLayer),
-      Layer.provide(reviewLayer),
-      Layer.provide(vcsProvisioningLayer),
-      Layer.provide(
-        Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
-          ...options?.layers?.sourceControlRepositoryService,
-        }),
-      ),
-      Layer.provideMerge(vcsStatusBroadcasterLayer),
-      Layer.provide(
-        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
-          runForThread: () => Effect.succeed({ status: "no-script" as const }),
-          ...options?.layers?.projectSetupScriptRunner,
-        }),
-      ),
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(TerminalManager.TerminalManager)({
-            ...options?.layers?.terminalManager,
-          }),
-          WorktreeSetupTracker.layer,
-          ProjectCloneTracker.layer.pipe(
-            Layer.provide(
-              Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
-                ...options?.layers?.sourceControlRepositoryService,
+      )
+      .pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(Keybindings.Keybindings)({
+              loadConfigState: Effect.succeed({
+                keybindings: [],
+                issues: [],
               }),
+              streamChanges: Stream.empty,
+              ...options?.layers?.keybindings,
+            }),
+            Layer.mock(EnvironmentTheme.EnvironmentThemeService)({
+              current: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              ...options?.layers?.environmentTheme,
+            }),
+            Layer.mock(UsageLimitSources.UsageLimitSources)({
+              current: Effect.succeed([]),
+              streamChanges: Stream.make([]),
+              refresh: Effect.void,
+              ...options?.layers?.usageLimitSources,
+            }),
+          ),
+        ),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(ModelManifest.ModelManifest)({
+              forceRefresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
+              ...options?.layers?.modelManifest,
+            }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed([]),
+              refresh: () => Effect.succeed([]),
+              refreshInstance: () => Effect.succeed([]),
+              getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+                Effect.succeed(
+                  makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
+                ),
+              setProviderMaintenanceActionState: () => Effect.succeed([]),
+              streamChanges: Stream.empty,
+              ...options?.layers?.providerRegistry,
+            }),
+            Layer.mock(ProviderAuthService)({
+              ...options?.layers?.providerAuth,
+            }),
+            Layer.mock(ProviderInstanceRegistry)({
+              getInstance: (id) =>
+                Effect.succeed(
+                  id === defaultModelSelection.instanceId ? routerProviderInstance : undefined,
+                ),
+              listInstances: Effect.succeed([routerProviderInstance]),
+              ...options?.layers?.providerInstanceRegistry,
+            }),
+            Layer.mock(CodexInstallation)({
+              managedDirectory: "unused-test-codex-runtime",
+              ...options?.layers?.codexInstallation,
+            }),
+            Layer.mock(AntigravityInstallation)({
+              managedDirectory: "unused-test-antigravity-runtime",
+              ...options?.layers?.antigravityInstallation,
+            }),
+            Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({}),
+            Layer.mock(AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
+            Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
+            Layer.mock(DeviceService.DeviceService)({
+              state: Effect.succeed(EMPTY_DEVICE_STATE),
+              currentReadiness: () => Effect.succeed(null),
+              sessionsForThread: () => Effect.succeed([]),
+            }),
+          ),
+        ),
+        Layer.provide(serverSettingsLayer),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(ExternalLauncher.ExternalLauncher)({
+              resolveAvailableEditors: () => Effect.succeed([]),
+              resolveFileManagerRevealKind: () => Effect.undefined,
+              ...options?.layers?.externalLauncher,
+            }),
+            Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
+              resolveTargets: () => Effect.succeed([]),
+            }),
+          ),
+        ),
+        Layer.provide(
+          Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({
+            read: Effect.succeed({
+              serverPid: process.pid,
+              readAt: TEST_EPOCH,
+              processCount: 0,
+              totalRssBytes: 0,
+              totalCpuPercent: 0,
+              processes: [],
+              error: Option.none(),
+            }),
+            signal: (input) =>
+              Effect.succeed({
+                pid: input.pid,
+                signal: input.signal,
+                signaled: true,
+                message: Option.none(),
+              }),
+          }),
+        ),
+        Layer.provide([
+          HostResources.layer,
+          Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
+            readHistory: (input) =>
+              Effect.succeed({
+                readAt: TEST_EPOCH,
+                windowMs: input.windowMs,
+                bucketMs: input.bucketMs,
+                sampleIntervalMs: 5_000,
+                retainedSampleCount: 0,
+                totalCpuSecondsApprox: 0,
+                buckets: [],
+                topProcesses: [],
+                error: Option.none(),
+              }),
+          }),
+        ]),
+        Layer.provide(
+          Layer.mock(TraceDiagnostics.TraceDiagnostics)({
+            read: () =>
+              Effect.succeed({
+                traceFilePath: "",
+                scannedFilePaths: [],
+                readAt: TEST_EPOCH,
+                recordCount: 0,
+                parseErrorCount: 0,
+                firstSpanAt: Option.none(),
+                lastSpanAt: Option.none(),
+                failureCount: 0,
+                interruptionCount: 0,
+                slowSpanThresholdMs: 1_000,
+                slowSpanCount: 0,
+                logLevelCounts: {},
+                topSpansByCount: [],
+                slowestSpans: [],
+                commonFailures: [],
+                latestFailures: [],
+                latestWarningAndErrorLogs: [],
+                partialFailure: Option.none(),
+                error: Option.none(),
+              }),
+          }),
+        ),
+        Layer.provide(gitManagerLayer),
+        Layer.provide(gitVcsDriverLayer),
+        Layer.provide(gitWorkflowLayer),
+        Layer.provide(reviewLayer),
+        Layer.provide(vcsProvisioningLayer),
+        Layer.provide(
+          Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+            ...options?.layers?.sourceControlRepositoryService,
+          }),
+        ),
+        Layer.provideMerge(vcsStatusBroadcasterLayer),
+        Layer.provide(
+          Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
+            runForThread: () => Effect.succeed({ status: "no-script" as const }),
+            ...options?.layers?.projectSetupScriptRunner,
+          }),
+        ),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(TerminalManager.TerminalManager)({
+              ...options?.layers?.terminalManager,
+            }),
+            WorktreeSetupTracker.layer,
+            ProjectCloneTracker.layer.pipe(
+              Layer.provide(
+                Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+                  ...options?.layers?.sourceControlRepositoryService,
+                }),
+              ),
             ),
           ),
         ),
-      ),
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(PreviewManager.PreviewManager)({
-            open: () => Effect.die("PreviewManager not stubbed in this test"),
-            navigate: () => Effect.die("PreviewManager not stubbed in this test"),
-            resize: () => Effect.die("PreviewManager not stubbed in this test"),
-            reportStatus: () => Effect.void,
-            refresh: () => Effect.void,
-            close: () => Effect.void,
-            list: () => Effect.succeed({ sessions: [], serverEpoch: "test-server", revision: 0 }),
-            events: Stream.empty,
-            subscribeEvents: Effect.flatMap(PubSub.unbounded<PreviewEvent>(), (pubsub) =>
-              PubSub.subscribe(pubsub),
-            ),
-          }),
-          Layer.mock(PortScanner.PortDiscovery)({
-            scan: () => Effect.succeed([]),
-            subscribe: () => Effect.void,
-            retain: Effect.void,
-            registerTerminalProcesses: () => Effect.void,
-            unregisterTerminal: () => Effect.void,
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(PreviewManager.PreviewManager)({
+              open: () => Effect.die("PreviewManager not stubbed in this test"),
+              navigate: () => Effect.die("PreviewManager not stubbed in this test"),
+              resize: () => Effect.die("PreviewManager not stubbed in this test"),
+              reportStatus: () => Effect.void,
+              refresh: () => Effect.void,
+              close: () => Effect.void,
+              list: () => Effect.succeed({ sessions: [], serverEpoch: "test-server", revision: 0 }),
+              events: Stream.empty,
+              subscribeEvents: Effect.flatMap(PubSub.unbounded<PreviewEvent>(), (pubsub) =>
+                PubSub.subscribe(pubsub),
+              ),
+            }),
+            Layer.mock(PortScanner.PortDiscovery)({
+              scan: () => Effect.succeed([]),
+              subscribe: () => Effect.void,
+              retain: Effect.void,
+              registerTerminalProcesses: () => Effect.void,
+              unregisterTerminal: () => Effect.void,
+            }),
+          ),
+        ),
+        Layer.provide(
+          Layer.mock(PullRequestSyncReactor.PullRequestSyncReactor)({
+            start: () => Effect.void,
+            drain: Effect.void,
+            requestSync: () => Effect.void,
           }),
         ),
-      ),
-      Layer.provide(
-        Layer.mock(PullRequestSyncReactor.PullRequestSyncReactor)({
-          start: () => Effect.void,
-          drain: Effect.void,
-          requestSync: () => Effect.void,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(TextGeneration.TextGeneration)({
-          generateBranchName: () => Effect.succeed({ branch: "router-test-branch" }),
-          generateThreadTitle: () => Effect.succeed({ title: "Router test thread" }),
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
-          getTurnDiff: () =>
-            Effect.succeed({
-              threadId: defaultThreadId,
-              fromTurnCount: 0,
-              toTurnCount: 0,
-              diff: "",
-            }),
-          getFullThreadDiff: () =>
-            Effect.succeed({
-              threadId: defaultThreadId,
-              fromTurnCount: 0,
-              toTurnCount: 0,
-              diff: "",
-            }),
-          ...options?.layers?.checkpointDiffQuery,
-        }),
-      ),
-    );
+        Layer.provide(
+          Layer.mock(TextGeneration.TextGeneration)({
+            generateBranchName: () => Effect.succeed({ branch: "router-test-branch" }),
+            generateThreadTitle: () => Effect.succeed({ title: "Router test thread" }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
+            getTurnDiff: () =>
+              Effect.succeed({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 0,
+                diff: "",
+              }),
+            getFullThreadDiff: () =>
+              Effect.succeed({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 0,
+                diff: "",
+              }),
+            ...options?.layers?.checkpointDiffQuery,
+          }),
+        ),
+      );
 
     const appLayer = servedRoutesLayer
       .pipe(
@@ -1781,12 +1815,15 @@ const withWsRpcClient = <A, E, R>(
   onMessage?: (message: string) => void,
 ) => makeWsRpcClient.pipe(Effect.flatMap(f), Effect.provide(wsRpcProtocolLayer(wsUrl, onMessage)));
 
+// Holds the first ACK after `passedAcks` earlier ACKs have been sent unchanged.
 const withFirstWsAckHeld = (
   wsUrl: string,
   held: Deferred.Deferred<void>,
   release: Deferred.Deferred<void>,
+  passedAcks = 0,
 ) => {
   let holdNextAck = true;
+  let remainingPassedAcks = passedAcks;
   return Layer.effect(RpcClient.Protocol)(
     Effect.map(RpcClient.Protocol, (protocol) =>
       RpcClient.Protocol.of({
@@ -1794,6 +1831,10 @@ const withFirstWsAckHeld = (
         send: (clientId, request, transferables) => {
           const send = protocol.send(clientId, request, transferables);
           if (request._tag !== "Ack" || !holdNextAck) {
+            return send;
+          }
+          if (remainingPassedAcks > 0) {
+            remainingPassedAcks -= 1;
             return send;
           }
           holdNextAck = false;
@@ -2728,7 +2769,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           {
             method: "POST",
             headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
-            body: jsonRequestBody(routerMessageDispatch("native-denied")),
+            // The endpoint decodes ThreadTurnStartCommand before its scope check.
+            body: jsonRequestBody(makeGuardedQueueTransportCommand("native-denied")),
           },
         );
         assert.equal(dispatch.status, 403);
@@ -6427,17 +6469,22 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         { concurrency: 2 },
       );
       assert.equal(requests[0]!.projectId, requests[1]!.projectId);
+      // Scratch is identified by its configured root; its project title is "No project".
+      const config = yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+        client[WS_METHODS.serverGetConfig]({}),
+      );
+      assert.isString(config.scratchWorkspaceRoot);
       const cookie = yield* getAuthenticatedSessionCookieHeader();
       const response = yield* fetchEffect(yield* getHttpServerUrl("/api/projects"), {
         headers: { cookie },
       });
       const snapshot = yield* responseJsonEffect<{
-        projects: ReadonlyArray<{ id: ProjectId; title: string }>;
+        projects: ReadonlyArray<{ id: ProjectId; workspaceRoot: string }>;
       }>(response);
       assert.equal(response.status, 200);
       assert.deepEqual(
         snapshot.projects
-          .filter((project) => project.title === "Scratch")
+          .filter((project) => project.workspaceRoot === config.scratchWorkspaceRoot)
           .map((project) => project.id),
         [requests[0]!.projectId],
       );
@@ -9291,10 +9338,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
           onV2Services: (context) =>
             Effect.gen(function* () {
+              // Each client works in its own checkout; one local checkout has one owning thread.
+              const mobileProjectId = ProjectId.make("project-mobile");
               yield* seedRouterProject(context);
+              yield* seedRouterProject(context, mobileProjectId);
               const threads = Context.get(context, ThreadManagement.ThreadManagementService);
               yield* threads.dispatch(routerThreadCreate(ThreadId.make("thread-web")));
-              yield* threads.dispatch(routerThreadCreate(ThreadId.make("thread-mobile")));
+              yield* threads.dispatch(
+                routerThreadCreate(ThreadId.make("thread-mobile"), mobileProjectId),
+              );
             }),
         },
       });
@@ -10857,7 +10909,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         Effect.flatMap((client) =>
           Effect.gen(function* () {
             const received: OrchestrationV2ShellStreamItem[] = [];
-            const attempt = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}).pipe(
+            // The live producer attaches only after the snapshot's ACK, so the
+            // completion marker's ACK is the one held while the burst arrives.
+            const attempt = yield* client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
+              requestCompletionMarker: true,
+            }).pipe(
               Stream.tap((item) =>
                 Effect.sync(() => {
                   received.push(item);
@@ -10911,7 +10967,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             assert.deepEqual(recovered.at(-1), { kind: "synchronized" });
           }),
         ),
-        Effect.provide(withFirstWsAckHeld(wsUrl, ackHeld, releaseAck)),
+        Effect.provide(withFirstWsAckHeld(wsUrl, ackHeld, releaseAck, 1)),
       );
     }).pipe(Effect.scoped, Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
@@ -11905,8 +11961,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("prepares a visible V2 worktree thread before releasing its first run", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-worktree-" });
+      const worktreeGit = makeRouterWorktreeGit();
       const setupStarted = yield* Deferred.make<void>();
       const setupReleased = yield* Deferred.make<void>();
       let context!: Context.Context<RouterV2Services>;
@@ -11921,9 +11976,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           gitVcsDriver: {
             execute: () =>
               Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
-            createWorktree: () =>
-              Effect.succeed({ worktree: { path: worktreePath, refName: "feature/router" } }),
+            createWorktree: worktreeGit.createWorktree,
           },
+          gitManager: worktreeGit.gitManager,
           projectSetupScriptRunner: {
             runForThread: () =>
               Deferred.succeed(setupStarted, undefined).pipe(
@@ -11949,7 +12004,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       ).getThreadProjection(launched.threadId);
       assert.equal(before.messages[0]?.text, input.initialMessage.text);
       assert.equal(before.runs[0]?.status, "preparing");
-      assert.equal(before.thread.worktreePath, worktreePath);
+      assert.equal(before.thread.worktreePath, worktreeGit.checkoutPath());
       yield* Deferred.succeed(setupReleased, undefined);
       yield* awaitRouterRunStatus(context, launched.threadId, "starting");
       const after = yield* Context.get(
@@ -11966,8 +12021,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     { caseName: "the base branch exists only locally", hasOrigin: true },
   ])("uses the local V2 worktree base when $caseName", ({ hasOrigin }) =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-local-base-" });
+      const worktreeGit = makeRouterWorktreeGit();
       let context!: Context.Context<RouterV2Services>;
       let fetches = 0;
       let remoteChecks = 0;
@@ -11997,12 +12051,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               }),
             resolveRemoteTrackingCommit: () =>
               Effect.die("An absent remote branch must not be resolved"),
-            createWorktree: (input) =>
+            createWorktree: (input, options) =>
               Effect.sync(() => {
                 createInput = input;
-                return { worktree: { path: worktreePath, refName: "feature/router" } };
-              }),
+              }).pipe(Effect.andThen(worktreeGit.createWorktree(input, options))),
           },
+          gitManager: worktreeGit.gitManager,
         },
       });
       const input = {
@@ -12028,7 +12082,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         (yield* Context.get(context, ThreadManagement.ThreadManagementService).getThreadProjection(
           launched.threadId,
         )).thread.worktreePath,
-        worktreePath,
+        worktreeGit.checkoutPath(),
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -12101,12 +12155,36 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(projection.messages[0]?.text, input.initialMessage.text);
         assert.equal(projection.runs[0]?.status, "failed");
         assert.isNull(projection.thread.deletedAt);
-        assert.isNull(projection.thread.worktreePath);
+        if (failFetch) {
+          // A transient fetch failure proves no base defect: the accepted planned target
+          // stays visible for diagnosis and retry, while nothing was created there.
+          assert.isNotNull(launched.projection.thread.worktreePath);
+          assert.equal(projection.thread.worktreePath, launched.projection.thread.worktreePath);
+        } else assert.isNull(projection.thread.worktreePath);
         const outbox = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
           CommandId.make(input.commandId + ":release"),
         );
         assert.isFalse(outbox.some((effect) => effect.request.type === "provider-turn.start"));
         assert.equal(worktrees, 0);
+        if (failFetch) {
+          const replay = yield* Effect.scoped(
+            withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+              client[ORCHESTRATION_V2_WS_METHODS.launchThread](input),
+            ),
+          );
+          assert.isTrue(replay.resumed);
+          assert.equal(replay.projection.runs[0]?.id, projection.runs[0]?.id);
+          assert.equal(replay.projection.runs[0]?.status, "failed");
+          assert.equal(
+            replay.projection.thread.worktreePath,
+            launched.projection.thread.worktreePath,
+          );
+          const replayed = yield* Context.get(context, EffectOutbox.EffectOutboxV2).listByCommandId(
+            CommandId.make(input.commandId + ":release"),
+          );
+          assert.isFalse(replayed.some((effect) => effect.request.type === "provider-turn.start"));
+          assert.equal(worktrees, 0);
+        }
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -12324,8 +12402,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     },
   ])("$caseName", ({ async, cancel }) =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-setup-timing-" });
+      const worktreeGit = makeRouterWorktreeGit();
       const completionEntered = yield* Deferred.make<void>();
       const scriptExit = yield* Deferred.make<void>();
       let context!: Context.Context<RouterV2Services>;
@@ -12340,10 +12417,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           gitVcsDriver: {
             execute: () =>
               Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
-            createWorktree: () =>
-              Effect.succeed({ worktree: { path: worktreePath, refName: "feature/router" } }),
+            createWorktree: worktreeGit.createWorktree,
             removeWorktree: () => Effect.void,
           },
+          gitManager: worktreeGit.gitManager,
           terminalManager: { close: () => Effect.void },
           projectSetupScriptRunner: {
             runForThread: (input) =>
@@ -12451,8 +12528,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("cancels V2 preparation and releases its created worktree and setup terminal", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-cancel-" });
+      const worktreeGit = makeRouterWorktreeGit();
       const completionEntered = yield* Deferred.make<void>();
       const closes: string[] = [];
       const removals: string[] = [];
@@ -12468,13 +12544,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           gitVcsDriver: {
             execute: () =>
               Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
-            createWorktree: () =>
-              Effect.succeed({ worktree: { path: worktreePath, refName: "feature/router" } }),
+            createWorktree: worktreeGit.createWorktree,
             removeWorktree: (input) =>
               Effect.sync(() => {
                 removals.push(input.path);
               }).pipe(Effect.andThen(Effect.void)),
           },
+          gitManager: worktreeGit.gitManager,
           terminalManager: {
             close: (input) =>
               Effect.sync(() => {
@@ -12524,14 +12600,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
       assert.deepEqual(closes, ["router:setup"]);
-      assert.deepEqual(removals, [worktreePath]);
+      assert.deepEqual(removals, [worktreeGit.checkoutPath()]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("keeps the V2 failed thread visible when cancelled worktree cleanup fails", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-router-cancel-" });
+      const worktreeGit = makeRouterWorktreeGit();
       const completionEntered = yield* Deferred.make<void>();
       const closes: string[] = [];
       const removals: string[] = [];
@@ -12547,8 +12622,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           gitVcsDriver: {
             execute: () =>
               Effect.succeed({ ...SUCCESSFUL_GIT_EXECUTION, stdout: "0123456789abcdef" }),
-            createWorktree: () =>
-              Effect.succeed({ worktree: { path: worktreePath, refName: "feature/router" } }),
+            createWorktree: worktreeGit.createWorktree,
             removeWorktree: (input) =>
               Effect.sync(() => {
                 removals.push(input.path);
@@ -12565,6 +12639,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 ),
               ),
           },
+          gitManager: worktreeGit.gitManager,
           terminalManager: {
             close: (input) =>
               Effect.sync(() => {
@@ -12614,7 +12689,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
       assert.deepEqual(closes, ["router:setup"]);
-      assert.deepEqual(removals, [worktreePath]);
+      assert.deepEqual(removals, [worktreeGit.checkoutPath()]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -12960,15 +13035,26 @@ it.live(
               );
               return queue;
             });
-            const synchronized = <A extends { readonly kind: string }>(queue: Queue.Queue<A>) =>
+            const synchronized = <A extends { readonly kind: string }>(
+              queue: Queue.Queue<A>,
+              isSnapshotReset: (item: A) => boolean = (item) => item.kind === "snapshot",
+            ) =>
               Effect.gen(function* () {
                 let mode: "replay" | "snapshot" = "replay";
                 while (true) {
                   const item = yield* Queue.take(queue);
-                  if (item.kind === "snapshot") mode = "snapshot";
+                  if (isSnapshotReset(item)) mode = "snapshot";
                   if (item.kind === "synchronized") return mode;
                 }
               }).pipe(Effect.timeout("10 seconds"));
+            // A shell cursor resume leads with a metadata-only refresh for repository
+            // identities that already resolved. Only an authoritative shell body, which
+            // omits resolved roots, resets the cursor.
+            const isShellSnapshotReset = (item: OrchestrationV2ShellStreamItem) =>
+              item.kind === "snapshot" &&
+              (item.resolvedRepositoryIdentityRoots === undefined ||
+                item.snapshot.threads.length > 0 ||
+                item.snapshot.archivedThreads.length > 0);
             const reach = <A>(queue: Queue.Queue<A>, predicate: (item: A) => boolean) =>
               Effect.gen(function* () {
                 while (!predicate(yield* Queue.take(queue))) {}
@@ -12989,7 +13075,7 @@ it.live(
             for (const queue of [threadItems, secondThreadItems])
               assert.equal(yield* synchronized(queue), "replay");
             for (const queue of [shellItems, secondShellItems])
-              assert.equal(yield* synchronized(queue), "replay");
+              assert.equal(yield* synchronized(queue, isShellSnapshotReset), "replay");
             const threadStart = threadClient.recorder.totals();
             const shellStart = shellClient.recorder.totals();
             const secondStart = secondClient.recorder.totals();
@@ -13041,6 +13127,7 @@ it.live(
             const reconnectThreadEnd = reconnected.recorder.totals();
             const reconnectShellMode = yield* synchronized(
               yield* subscribeShell(reconnected, decodedShell.snapshotSequence),
+              isShellSnapshotReset,
             );
             const reconnectShellEnd = reconnected.recorder.totals();
             const finalProjection = yield* threads.getThreadProjection(defaultThreadId);
@@ -13686,16 +13773,27 @@ it.effect(
       }>`SELECT session_id AS "sessionId" FROM auth_sessions`;
       assert.equal(sessions.length, 1);
       yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessions[0]!.sessionId}, '2026-10-02T12:00:00Z')`;
+      const legacy = routerThreadCreate(ThreadId.make(nativeWsFixture.command.threadId));
+      yield* Schema.decodeUnknownEffect(OrchestrationV2Command)(legacy);
       yield* withWsRpcClient(url, (client) =>
         Effect.gen(function* () {
-          const legacy = routerThreadCreate(ThreadId.make(nativeWsFixture.command.threadId));
-          yield* Schema.decodeUnknownEffect(OrchestrationV2Command)(legacy);
           const result = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](legacy).pipe(
             Effect.result,
           );
           assert.equal(result._tag, "Failure");
           assert.equal(dispatches, 0);
-          yield* sql`DELETE FROM native_creation_automation_enrollments WHERE session_id = ${sessions[0]!.sessionId}`;
+        }),
+      );
+      // The marker is permanent, so a second, unenrolled session shows the same
+      // command is otherwise accepted.
+      const markers = yield* sql<{
+        count: number;
+      }>`SELECT count(*) AS count FROM native_creation_automation_enrollments WHERE session_id = ${sessions[0]!.sessionId}`;
+      assert.equal(markers[0]?.count, 1);
+      const unenrolledUrl = yield* getWsServerUrl("/ws");
+      assert.lengthOf(yield* sql`SELECT session_id FROM auth_sessions`, 2);
+      yield* withWsRpcClient(unenrolledUrl, (client) =>
+        Effect.gen(function* () {
           const allowed = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](legacy);
           assert.isAbove(allowed.sequence, 0);
           assert.equal(dispatches, 1);
@@ -14141,7 +14239,7 @@ it.effect(
       );
       assert.deepEqual(yield* threads.listWorktreeOwnershipLeases, before.leases);
       assert.deepEqual(effects, []);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
 );
 
 it.effect("denies deletion cleanup observation before its SQL read without Read scope", () =>
@@ -14198,7 +14296,7 @@ it.effect("denies deletion cleanup observation before its SQL read without Read 
     assert.equal(failure.requiredScope, "orchestration:read");
     assert.deepEqual(reads, []);
     assert.deepEqual(yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`, before);
-  }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
 );
 
 it.effect(
@@ -14265,5 +14363,5 @@ it.effect(
         outbox,
       );
       assert.deepEqual(yield* sql`SELECT * FROM orchestration_command_receipts`, []);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))),
 );

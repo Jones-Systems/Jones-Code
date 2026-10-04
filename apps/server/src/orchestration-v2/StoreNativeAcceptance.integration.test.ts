@@ -28,6 +28,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -43,7 +44,9 @@ import {
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import { NativeCreationRepository } from "../persistence/Services/NativeCreationRepository.ts";
 import { layer as NativeCreationRepositoryLayer } from "../persistence/Layers/NativeCreationRepository.ts";
+import * as NormalizationWitness from "./NormalizationWitness.ts";
 import * as EventSink from "./EventSink.ts";
+import * as EventSinkJsonCodec from "./EventSinkJsonCodec.ts";
 import * as EventStore from "./EventStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -74,6 +77,27 @@ import {
   makeNativeCreationAuthority,
   type NativeCreationGrant,
 } from "./NativeCreationAuthority.ts";
+
+// Raw JSON fixtures keep the original JSON.parse/stringify crash semantics: parse
+// failures die with the native exception, and encoding failures remain defects.
+const parseJsonText = (text: string) =>
+  EventSinkJsonCodec.decodeJson(text).pipe(
+    Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+  );
+const encodeJsonText = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(Effect.orDie);
+// A captured canonical command is the JSON round trip of the encoded command:
+// sorted keys and DateTime values as ISO strings. Encoding failures stay defects.
+const canonicalCommandJson = (command: OrchestrationV2Command) =>
+  Schema.encodeEffect(OrchestrationV2Command)(command).pipe(
+    Effect.orDie,
+    Effect.flatMap((encoded) => parseJsonText(nativeCreationCanonicalJson(encoded))),
+    Effect.flatMap((json) =>
+      Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Unknown))(json).pipe(
+        Effect.orDie,
+      ),
+    ),
+  );
 
 const database = SqlitePersistenceMemory;
 const stores = Layer.mergeAll(
@@ -296,9 +320,9 @@ it.effect(
         { request: effect.request, attachmentNamespaceCleanup: { ...reference, ownerBirth: null } },
       ])
         assert.strictEqual(
-          (yield* EffectOutbox.decodeOrchestrationEffectPayloadV2(JSON.stringify(payload)).pipe(
-            Effect.result,
-          ))._tag,
+          (yield* EffectOutbox.decodeOrchestrationEffectPayloadV2(
+            yield* encodeJsonText(payload),
+          ).pipe(Effect.result))._tag,
           "Failure",
         );
       const { attachmentNamespaceCleanup: _reference, ...stripped } = effect;
@@ -318,7 +342,7 @@ it.effect(
       const value = yield* seed();
       const birth = (yield* value.sink.readApplicationBirthRecord(threadId))!;
       const deleteCommandId = CommandId.make("command:attachment:delete");
-      const event: Extract<OrchestrationV2DomainEvent, { readonly type: "thread.deleted" }> = {
+      const event: OrchestrationV2DomainEvent = {
         id: EventId.make("event:attachment:delete"),
         type: "thread.deleted",
         threadId,
@@ -603,7 +627,7 @@ it.effect(
       }>`SELECT ordinal, observation_json
       FROM orchestration_v2_attachment_cleanup_observations WHERE effect_id = ${value.effectId}`;
       assert.strictEqual(stored.length, 1);
-      assert.deepEqual(JSON.parse(stored[0]!.observation_json), observation);
+      assert.deepEqual(yield* parseJsonText(stored[0]!.observation_json), observation);
       assert.deepEqual(
         yield* value.sink.readAttachmentNamespaceCleanupTask(value.effectId),
         value.basis.task,
@@ -1332,7 +1356,7 @@ const leaseCleanupFixture = Effect.fnUntraced(function* () {
     resourcePath: ownedThread.worktreePath,
     leaseId: "lease:cleanup:original",
     ownerThreadId: threadId,
-    ownerIncarnation: JSON.stringify([
+    ownerIncarnation: yield* encodeJsonText([
       "t3.orchestration-v2.thread-birth/v1",
       ownerBirth.eventId,
       ownerBirth.sequence,
@@ -1457,7 +1481,7 @@ const deletionObservedFixture = Effect.fnUntraced(function* (leased = true) {
     resourcePath: appThread.worktreePath,
     leaseId: "lease:observed-cleanup",
     ownerThreadId: threadId,
-    ownerIncarnation: JSON.stringify([
+    ownerIncarnation: yield* encodeJsonText([
       "t3.orchestration-v2.thread-birth/v1",
       ownerBirth.eventId,
       ownerBirth.sequence,
@@ -1757,7 +1781,12 @@ it.effect(
         {
           ...input,
           coveredHolds: [
-            { ...holds[0]!, heldAt: new Date(Date.parse(holds[0]!.heldAt) + 1).toISOString() },
+            {
+              ...holds[0]!,
+              heldAt: DateTime.formatIso(
+                DateTime.add(DateTime.makeUnsafe(holds[0]!.heldAt), { milliseconds: 1 }),
+              ),
+            },
           ],
         },
       ])
@@ -2090,7 +2119,9 @@ it.effect(
       });
       const held = yield* value.outbox.listHeldByThreadId(threadId);
       assert.strictEqual(held.length, 1);
-      const changedHeldAt = new Date(Date.parse(held[0]!.heldAt) + 1).toISOString();
+      const changedHeldAt = DateTime.formatIso(
+        DateTime.add(DateTime.makeUnsafe(held[0]!.heldAt), { milliseconds: 1 }),
+      );
       assert.notStrictEqual(changedHeldAt, held[0]!.heldAt);
       const input = {
         effectId: value.terminalEffectId,
@@ -4307,51 +4338,46 @@ const ordinaryCreationFixture = Effect.fnUntraced(function* () {
     branch: app.branch,
     worktreePath: app.worktreePath,
   };
-  const context: EventSink.OrdinaryCheckoutCommitContextV1 = {
-    command,
-    captureAfterProjection: () =>
-      Effect.gen(function* () {
-        yield* Ref.update(calls, (count) => count + 1);
-        const birth = (yield* sink.readApplicationBirthRecord(threadId))!;
-        assert.isNotNull(birth);
-        const lease = Option.getOrThrow(
-          yield* ownership.ensureOrdinaryOwnership({
-            resourcePath: app.worktreePath,
-            leaseId: "lease:ordinary:create",
-            ownerThreadId: threadId,
-            ownerIncarnation: OrdinaryCheckout.ordinaryApplicationIncarnationV1(birth),
+  const captureAfterProjection = () =>
+    Effect.gen(function* () {
+      yield* Ref.update(calls, (count) => count + 1);
+      const birth = (yield* sink.readApplicationBirthRecord(threadId))!;
+      assert.isNotNull(birth);
+      const lease = Option.getOrThrow(
+        yield* ownership.ensureOrdinaryOwnership({
+          resourcePath: app.worktreePath,
+          leaseId: "lease:ordinary:create",
+          ownerThreadId: threadId,
+          ownerIncarnation: OrdinaryCheckout.ordinaryApplicationIncarnationV1(birth),
+          branch: app.branch,
+          nowMs: DateTime.toEpochMillis(now),
+          expiresAtMs: DateTime.toEpochMillis(now) + 300_000,
+        }),
+      );
+      const canonicalCommand = yield* canonicalCommandJson(command);
+      return [
+        {
+          capture: {
+            version: 1,
+            commandId: command.commandId,
+            commandType: command.type,
+            canonicalCommand,
+            commandDigest: nativeCreationSha256(nativeCreationCanonicalJson(canonicalCommand)),
+            origin: { kind: "command" },
+            threadId,
+            applicationBirth: birth,
+            projectId,
+            canonicalProjectRoot: "/fixture/repo",
+            canonicalCheckoutPath: app.worktreePath,
             branch: app.branch,
-            nowMs: DateTime.toEpochMillis(now),
-            expiresAtMs: DateTime.toEpochMillis(now) + 300_000,
-          }),
-        );
-        return [
-          {
-            capture: {
-              version: 1,
-              commandId: command.commandId,
-              commandType: command.type,
-              canonicalCommand: JSON.parse(
-                nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)),
-              ),
-              commandDigest: nativeCreationSha256(
-                nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)),
-              ),
-              origin: { kind: "command" },
-              threadId,
-              applicationBirth: birth,
-              projectId,
-              canonicalProjectRoot: "/fixture/repo",
-              canonicalCheckoutPath: app.worktreePath,
-              branch: app.branch,
-              lease,
-            },
-            originalAdmission: null,
-            source: { projectWorkspaceRoot: "/fixture/repo", worktreePath: app.worktreePath },
+            lease,
           },
-        ] satisfies ReadonlyArray<EventSink.OrdinaryCheckoutSqlCaptureV1>;
-      }),
-  };
+          originalAdmission: null,
+          source: { projectWorkspaceRoot: "/fixture/repo", worktreePath: app.worktreePath },
+        },
+      ] satisfies ReadonlyArray<EventSink.OrdinaryCheckoutSqlCaptureV1>;
+    });
+  const context: EventSink.OrdinaryCheckoutCommitContextV1 = { command, captureAfterProjection };
   const input = {
     commandId: command.commandId,
     threadId,
@@ -4369,7 +4395,18 @@ const ordinaryCreationFixture = Effect.fnUntraced(function* () {
     ],
     effects: [],
   };
-  return { sink, sql, now, ownership, calls, app, command, context, input };
+  return {
+    sink,
+    sql,
+    now,
+    ownership,
+    calls,
+    app,
+    command,
+    context,
+    captureAfterProjection,
+    input,
+  };
 });
 
 it.effect(
@@ -4634,8 +4671,19 @@ it.effect(
     }).pipe(Effect.provide(Layer.fresh(testLayer))),
 );
 
-const ordinaryAcceptedRunFixture = Effect.fnUntraced(function* () {
+const ordinaryAcceptedRunFixture = Effect.fnUntraced(function* (
+  preparationState?: "started" | "unknown",
+) {
   const value = yield* ordinaryPreparedUseFixture();
+  if (preparationState !== undefined) {
+    const reserved = yield* value.sink.beginOrdinaryCheckoutUse(value.useInput);
+    yield* value.sink.revalidateOrdinaryCheckoutUse(reserved.record.subject.use);
+    if (preparationState === "unknown")
+      yield* value.sink.holdOrdinaryCheckoutUseUnknown({
+        use: reserved.record.subject.use,
+        reason: "Original preparation outcome is unknown",
+      });
+  }
   const runId = RunId.make("run:ordinary:deferred");
   const attemptId = RunAttemptId.make("attempt:ordinary:deferred");
   const nodeId = NodeId.make("node:ordinary:deferred");
@@ -4682,9 +4730,7 @@ const ordinaryAcceptedRunFixture = Effect.fnUntraced(function* () {
     attachments: [],
     dispatchMode: { type: "defer_start" },
   };
-  const canonicalCommand = JSON.parse(
-    nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)),
-  );
+  const canonicalCommand = yield* canonicalCommandJson(command);
   const capture: OrdinaryCheckout.OrdinaryCheckoutCaptureV1 = {
     ...value.admission.capture,
     commandId: command.commandId,
@@ -4848,6 +4894,441 @@ const ordinaryAcceptedRunFixture = Effect.fnUntraced(function* () {
 });
 
 it.effect(
+  "ordinary later acceptance reuses its exact active owner without permitting another physical operation",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* ordinaryAcceptedRunFixture("started");
+      assert.isNotNull(
+        (yield* value.sink.readCommandReceiptIdentity(value.command.commandId)).receipt,
+      );
+      assert.deepEqual(
+        Option.getOrThrow(yield* value.ownership.getByResourcePath(value.app.worktreePath)),
+        value.admission.capture.lease,
+      );
+      assert.strictEqual(
+        (yield* value.sink.readOrdinaryCheckoutUse(value.useInput.operationId))?.state,
+        "started",
+      );
+      const result = yield* value.sink
+        .beginOrdinaryCheckoutUse({
+          operationId: "operation:ordinary:later-run",
+          admission: value.reference,
+          source: {
+            kind: "prepared_run",
+            admission: value.reference,
+            preparation: value.admission.run!,
+          },
+          targetSource: value.useInput.targetSource,
+        })
+        .pipe(Effect.result);
+      assert.strictEqual(result._tag, "Failure");
+      assert.isNull(yield* value.sink.readOrdinaryCheckoutUse("operation:ordinary:later-run"));
+      assert.strictEqual(
+        (yield* value.sink.readOrdinaryCheckoutUse(value.useInput.operationId))?.state,
+        "started",
+      );
+    }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect(
+  "ordinary later acceptance remains blocked by its original unknown physical outcome",
+  () =>
+    Effect.gen(function* () {
+      assert.strictEqual(
+        (yield* ordinaryAcceptedRunFixture("unknown").pipe(Effect.result))._tag,
+        "Failure",
+      );
+      const sink = yield* EventSink.EventSinkV2;
+      assert.isNull(
+        (yield* sink.readCommandReceiptIdentity(CommandId.make("command:ordinary:deferred")))
+          .receipt,
+      );
+      assert.strictEqual(
+        (yield* sink.readOrdinaryCheckoutUse("operation:ordinary:prepared-launch"))?.state,
+        "unknown",
+      );
+    }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+const normalizationAcceptance = Effect.fnUntraced(function* () {
+  const value = yield* seed();
+  const command = {
+    type: "message.dispatch",
+    commandId: CommandId.make("command:normalization:initial-message"),
+    threadId,
+    messageId: MessageId.make("message:normalization"),
+    text: "Use the attached notes.",
+    attachments: [
+      {
+        type: "file",
+        id: "normalization-final-winner",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        sizeBytes: 5,
+      },
+    ],
+    dispatchMode: { type: "defer_start" },
+    createdBy: "user",
+    creationSource: "web",
+  } satisfies OrchestrationV2Command;
+  const carrier = {
+    commandId: command.commandId,
+    acceptedCommand: command,
+    requestDigest: "a".repeat(64),
+    mode: "fresh" as const,
+    attachments: [
+      {
+        pendingId: "normalization-pending",
+        contentSha256: "b".repeat(64),
+        sizeBytes: 5,
+        finalId: command.attachments[0]!.id,
+      },
+    ],
+    contextRemaps: [],
+  };
+  const input = {
+    commandId: command.commandId,
+    threadId,
+    commandType: command.type,
+    acceptedAt: value.now,
+    events: [
+      {
+        id: EventId.make("event:normalization:message"),
+        threadId,
+        type: "message.updated" as const,
+        occurredAt: value.now,
+        payload: {
+          id: command.messageId,
+          threadId,
+          runId: null,
+          nodeId: null,
+          role: "user" as const,
+          text: command.text,
+          attachments: command.attachments,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          streaming: false,
+          createdAt: value.now,
+          updatedAt: value.now,
+        },
+      },
+    ],
+    effects: [],
+  };
+  return { ...value, command, carrier, input };
+});
+
+it.effect(
+  "normalization witness commits with the actual receipt, project and application birth",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* normalizationAcceptance();
+      const birth = yield* value.sink.readApplicationBirthRecord(threadId);
+      const accepted = yield* value.sink
+        .commitCommand(value.input)
+        .pipe(
+          Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, value.carrier),
+        );
+      const read = yield* value.sink.readNormalizationWitness(value.command.commandId);
+      assert.deepEqual(read.receipt, {
+        status: "accepted",
+        threadId,
+        commandType: value.command.type,
+      });
+      assert.isNotNull(read.witness);
+      assert.deepEqual(read.witness!.applicationBirth, birth);
+      assert.equal(read.witness!.projectId, projectId);
+      assert.equal(read.witness!.receiptSequence, accepted.receipt.resultSequence);
+      assert.deepEqual(read.witness!.acceptedCommand, value.command);
+      assert.equal(
+        read.witness!.acceptedCommandDigest,
+        NormalizationWitness.acceptedCommandDigest(value.command),
+      );
+    }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect("normalization witness replay is read-only and a fresh equal loser is superseded", () =>
+  Effect.gen(function* () {
+    const value = yield* normalizationAcceptance();
+    yield* value.sink
+      .commitCommand(value.input)
+      .pipe(Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, value.carrier));
+    const before = yield* value.sink.readNormalizationWitness(value.command.commandId);
+    const loser = {
+      ...value.carrier,
+      acceptedCommand: {
+        ...value.command,
+        attachments: [{ ...value.command.attachments[0]!, id: "normalization-final-loser" }],
+      },
+      attachments: [{ ...value.carrier.attachments[0]!, finalId: "normalization-final-loser" }],
+    };
+    const superseded = yield* value.sink
+      .commitCommand(value.input)
+      .pipe(
+        Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, loser),
+        Effect.flip,
+      );
+    assert.equal(superseded._tag, "NormalizationWitnessSuperseded");
+    const replay = { ...value.carrier, mode: "replay" as const };
+    yield* value.sink
+      .validateNormalizationWitnessReplay(value.command)
+      .pipe(Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, replay));
+    const accepted = yield* value.sink
+      .commitCommand(value.input)
+      .pipe(Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, replay));
+    assert.isFalse(accepted.committed);
+    assert.deepEqual(yield* value.sink.readNormalizationWitness(value.command.commandId), before);
+    assert.lengthOf(accepted.storedEvents, 1);
+  }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect(
+  "normalization witness rejects different requests and altered accepted replay commands",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* normalizationAcceptance();
+      yield* value.sink
+        .commitCommand(value.input)
+        .pipe(
+          Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, value.carrier),
+        );
+      for (const carrier of [
+        { ...value.carrier, requestDigest: "c".repeat(64) },
+        {
+          ...value.carrier,
+          mode: "replay" as const,
+          acceptedCommand: { ...value.command, text: "Changed" },
+        },
+      ]) {
+        const result = yield* value.sink
+          .validateNormalizationWitnessReplay(carrier.acceptedCommand)
+          .pipe(
+            Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, carrier),
+            Effect.flip,
+          );
+        assert.equal(result._tag, "NormalizationWitnessConflict");
+      }
+      assert.deepEqual(
+        (yield* value.sink.readNormalizationWitness(value.command.commandId)).witness!
+          .acceptedCommand,
+        value.command,
+      );
+    }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect("normalization witness ignores an enclosing carrier with another exact command ID", () =>
+  Effect.gen(function* () {
+    const value = yield* normalizationAcceptance();
+    yield* value.sink.commitCommand(value.input).pipe(
+      Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, {
+        ...value.carrier,
+        commandId: CommandId.make("command:normalization:enclosing-launch"),
+      }),
+    );
+    const read = yield* value.sink.readNormalizationWitness(value.command.commandId);
+    assert.isNotNull(read.receipt);
+    assert.isNull(read.witness);
+  }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect("normalization witness never backfills an old attachment receipt", () =>
+  Effect.gen(function* () {
+    const value = yield* normalizationAcceptance();
+    yield* value.sink.commitCommand(value.input);
+    const result = yield* value.sink
+      .commitCommand(value.input)
+      .pipe(
+        Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, value.carrier),
+        Effect.flip,
+      );
+    assert.equal(result._tag, "NormalizationWitnessConflict");
+    assert.isNull((yield* value.sink.readNormalizationWitness(value.command.commandId)).witness);
+  }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect(
+  "normalization witness insertion failure rolls back receipt, event, projection and callbacks",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* normalizationAcceptance();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TRIGGER fixture_normalization_reject BEFORE INSERT ON command_normalization_witnesses
+      BEGIN SELECT RAISE(ABORT, 'fixture witness insert failure'); END`;
+      const callbacks = yield* Ref.make(0);
+      const result = yield* value.sink
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* value.sink.onCommit(Ref.update(callbacks, (count) => count + 1));
+            yield* value.sink.commitCommand(value.input);
+          }),
+        )
+        .pipe(
+          Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, value.carrier),
+          Effect.result,
+        );
+      assert.equal(result._tag, "Failure");
+      assert.deepEqual(yield* value.sink.readNormalizationWitness(value.command.commandId), {
+        receipt: null,
+        witness: null,
+      });
+      assert.deepEqual(
+        yield* value.sink
+          .readByCommandId({ commandId: value.command.commandId })
+          .pipe(Stream.runCollect),
+        [],
+      );
+      const facts = yield* value.sink.readNativeCommandFacts({
+        threadId,
+        commandId: value.command.commandId,
+      });
+      assert.deepEqual(facts.projection!.messages, []);
+      assert.equal(yield* Ref.get(callbacks), 0);
+    }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect("normalization witness rows remain immutable after accepted replay", () =>
+  Effect.gen(function* () {
+    const value = yield* normalizationAcceptance();
+    yield* value.sink
+      .commitCommand(value.input)
+      .pipe(Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, value.carrier));
+    const sql = yield* SqlClient.SqlClient;
+    assert.equal(
+      (yield* sql`UPDATE command_normalization_witnesses SET request_digest = ${"c".repeat(64)}
+      WHERE command_id = ${value.command.commandId}`.pipe(Effect.result))._tag,
+      "Failure",
+    );
+    assert.equal(
+      (yield* sql`DELETE FROM command_normalization_witnesses WHERE command_id = ${value.command.commandId}`.pipe(
+        Effect.result,
+      ))._tag,
+      "Failure",
+    );
+    assert.equal(
+      (yield* value.sink.readNormalizationWitness(value.command.commandId)).witness!.requestDigest,
+      value.carrier.requestDigest,
+    );
+  }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect("normalization witness replay rejects a changed receipt sequence", () =>
+  Effect.gen(function* () {
+    const value = yield* normalizationAcceptance();
+    yield* value.sink
+      .commitCommand(value.input)
+      .pipe(Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, value.carrier));
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE orchestration_command_receipts SET result_sequence = result_sequence + 1 WHERE command_id = ${value.command.commandId}`;
+    const result = yield* value.sink.validateNormalizationWitnessReplay(value.command).pipe(
+      Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, {
+        ...value.carrier,
+        mode: "replay",
+      }),
+      Effect.flip,
+    );
+    assert.equal(result._tag, "NormalizationWitnessConflict");
+    const readerError = yield* value.sink
+      .readNormalizationWitness(value.command.commandId)
+      .pipe(Effect.flip);
+    assert.equal(readerError._tag, "EventSinkWriteError");
+  }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect("normalization witness replay rejects an actual replacement application birth", () =>
+  Effect.gen(function* () {
+    const value = yield* normalizationAcceptance();
+    yield* value.sink
+      .commitCommand(value.input)
+      .pipe(Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, value.carrier));
+    yield* TestClock.adjust("1 second");
+    const now = yield* DateTime.now;
+    yield* value.sink.write({
+      events: [
+        {
+          id: EventId.make("event:normalization:replacement"),
+          threadId,
+          type: "thread.created",
+          providerInstanceId: instanceId,
+          occurredAt: now,
+          payload: thread(now),
+        },
+      ],
+    });
+    const result = yield* value.sink.validateNormalizationWitnessReplay(value.command).pipe(
+      Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, {
+        ...value.carrier,
+        mode: "replay",
+      }),
+      Effect.flip,
+    );
+    assert.equal(result._tag, "NormalizationWitnessConflict");
+    const readerError = yield* value.sink
+      .readNormalizationWitness(value.command.commandId)
+      .pipe(Effect.flip);
+    assert.equal(readerError._tag, "EventSinkWriteError");
+  }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect("normalization witness replay without an accepted receipt cannot create acceptance", () =>
+  Effect.gen(function* () {
+    const value = yield* normalizationAcceptance();
+    const result = yield* value.sink.commitCommand(value.input).pipe(
+      Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, {
+        ...value.carrier,
+        mode: "replay",
+      }),
+      Effect.flip,
+    );
+    assert.equal(result._tag, "NormalizationWitnessConflict");
+    assert.deepEqual(yield* value.sink.readNormalizationWitness(value.command.commandId), {
+      receipt: null,
+      witness: null,
+    });
+    assert.deepEqual(
+      yield* value.sink
+        .readByCommandId({ commandId: value.command.commandId })
+        .pipe(Stream.runCollect),
+      [],
+    );
+  }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect("normalization witness replay rejects changed actual projected project ownership", () =>
+  Effect.gen(function* () {
+    const value = yield* normalizationAcceptance();
+    yield* value.sink
+      .commitCommand(value.input)
+      .pipe(Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, value.carrier));
+    yield* value.sink.write({
+      events: [
+        {
+          id: EventId.make("event:normalization:project-change"),
+          threadId,
+          type: "thread.metadata-updated",
+          occurredAt: value.now,
+          payload: {
+            ...value.thread,
+            projectId: ProjectId.make("project:normalization:different"),
+          },
+        },
+      ],
+    });
+    const result = yield* value.sink.validateNormalizationWitnessReplay(value.command).pipe(
+      Effect.provideService(NormalizationWitness.NormalizationWitnessCarrier, {
+        ...value.carrier,
+        mode: "replay",
+      }),
+      Effect.flip,
+    );
+    assert.equal(result._tag, "NormalizationWitnessConflict");
+    const readerError = yield* value.sink
+      .readNormalizationWitness(value.command.commandId)
+      .pipe(Effect.flip);
+    assert.equal(readerError._tag, "EventSinkWriteError");
+  }).pipe(Effect.provide(Layer.fresh(testLayer))),
+);
+
+it.effect(
   "ordinary system checkpoint links the original deferred admission and ends only after actual outbox success",
   () =>
     Effect.gen(function* () {
@@ -4868,6 +5349,7 @@ it.effect(
         [link],
       );
       const outbox = yield* EffectOutbox.EffectOutboxV2;
+
       const claim = Option.getOrThrow(
         yield* outbox.claimNext({
           workerId: "worker:ordinary:checkpoint",
@@ -5394,9 +5876,7 @@ it.effect(
             const birth = (yield* value.sink.readApplicationBirthRecord(childId))!;
             assert.isNotNull(birth);
             yield* Ref.set(seenBirth, birth);
-            const canonicalCommand = JSON.parse(
-              nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)),
-            );
+            const canonicalCommand = yield* canonicalCommandJson(command);
             return [
               {
                 capture: {
@@ -5497,7 +5977,6 @@ it.effect(
       assert.isFalse((yield* value.sink.writeIfCurrentProviderRuntimeOwner(value.input)).committed);
       const result = yield* value.sink.writeIfCurrentProviderRuntimeOutputOwner(value.input);
       assert.isTrue(result.committed);
-      if (!result.committed) return yield* Effect.die(result.rejection);
       assert.strictEqual(result.evidenceRevision, value.revision);
       assert.deepEqual(
         result.storedEvents.map((stored) => stored.event.type),
@@ -5691,7 +6170,6 @@ it.effect(
         events,
       });
       assert.isTrue(result.committed);
-      if (!result.committed) return yield* Effect.die(result.rejection);
       assert.deepEqual(
         result.storedEvents.map((stored) => stored.event.type),
         ["node.updated", "node.updated"],
@@ -6869,9 +7347,9 @@ it.effect(
           );
           const presence = yield* readPresence;
           assert.strictEqual(presence.length, 1);
-          assert.deepEqual(JSON.parse(String(presence[0]!.basis_json)), value.basis);
+          assert.deepEqual(yield* parseJsonText(String(presence[0]!.basis_json)), value.basis);
           assert.deepEqual(
-            JSON.parse(String(presence[0]!.execution_intent_json)),
+            yield* parseJsonText(String(presence[0]!.execution_intent_json)),
             value.executionIntent,
           );
           assert.isNull(
@@ -7036,7 +7514,7 @@ it.effect(
       assert.isNull(yield* value.sink.readClaimedQueuedRunStart(input));
       const retainedPresence = yield* readPresence;
       assert.strictEqual(retainedPresence.length, 1);
-      assert.deepEqual(JSON.parse(String(retainedPresence[0]!.basis_json)), value.basis);
+      assert.deepEqual(yield* parseJsonText(String(retainedPresence[0]!.basis_json)), value.basis);
       assert.strictEqual(Option.getOrThrow(yield* value.outbox.get(claimed.id)).status, "running");
     }).pipe(Effect.provide(Layer.fresh(testLayer))),
 );
@@ -7362,6 +7840,399 @@ it.effect(
     }).pipe(Effect.provide(Layer.fresh(testLayer))),
 );
 
+const reconciledNeverClaimedQueueFixture = Effect.fnUntraced(function* (
+  claimed = false,
+  receipt = true,
+) {
+  const value = yield* ordinaryCreationFixture();
+  yield* value.sink.commitCommand(value.input);
+  const initialCapture = (yield* value.captureAfterProjection())[0]!;
+  const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const scopeId = CheckpointScopeId.make("scope:reconciled:root");
+  const providerThreadId = ProviderThreadId.make("provider:reconciled");
+  const provider = {
+    id: providerThreadId,
+    driver,
+    providerInstanceId: instanceId,
+    providerSessionId: null,
+    appThreadId: threadId,
+    ownerNodeId: null,
+    nativeThreadRef: null,
+    nativeConversationHeadRef: null,
+    status: "not_loaded" as const,
+    firstRunOrdinal: 1,
+    lastRunOrdinal: 1,
+    handoffIds: [],
+    forkedFrom: null,
+    createdAt: value.now,
+    updatedAt: value.now,
+  };
+  const accept = Effect.fnUntraced(function* (ordinal: number) {
+    const runId = RunId.make(`run:reconciled:${ordinal}`);
+    const runAttemptId = RunAttemptId.make(`attempt:reconciled:${ordinal}`);
+    const nodeId = NodeId.make(`node:reconciled:${ordinal}`);
+    const messageId = MessageId.make(`message:reconciled:${ordinal}`);
+    const command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> = {
+      type: "message.dispatch",
+      commandId: CommandId.make(`command:reconciled:${ordinal}`),
+      threadId,
+      messageId,
+      createdBy: "user",
+      creationSource: "web",
+      text: "Recovery queue",
+      attachments: [],
+      dispatchMode: { type: ordinal === 1 ? "start_immediately" : "queue_after_active" },
+    };
+    const canonicalCommand = yield* Schema.encodeEffect(OrchestrationV2Command)(command);
+    const capture = {
+      ...initialCapture.capture,
+      commandId: command.commandId,
+      commandType: command.type,
+      canonicalCommand,
+      commandDigest: nativeCreationSha256(nativeCreationCanonicalJson(canonicalCommand)),
+    };
+    const run = {
+      id: runId,
+      threadId,
+      ordinal,
+      providerInstanceId: instanceId,
+      modelSelection: value.app.modelSelection,
+      providerThreadId,
+      userMessageId: messageId,
+      rootNodeId: nodeId,
+      activeAttemptId: runAttemptId,
+      status: ordinal === 1 ? ("starting" as const) : ("queued" as const),
+      queuePosition: ordinal === 1 ? null : ordinal - 1,
+      requestedAt: value.now,
+      startedAt: null,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+    const attempt = {
+      id: runAttemptId,
+      runId,
+      attemptOrdinal: 1,
+      rootNodeId: nodeId,
+      providerInstanceId: instanceId,
+      providerThreadId,
+      providerTurnId: null,
+      reason: "initial" as const,
+      status: "pending" as const,
+      startedAt: null,
+      completedAt: null,
+    };
+    const node = {
+      id: nodeId,
+      threadId,
+      runId,
+      parentNodeId: null,
+      rootNodeId: nodeId,
+      kind: "root_turn" as const,
+      status: "pending" as const,
+      countsForRun: true,
+      providerThreadId,
+      providerTurnId: null,
+      nativeItemRef: null,
+      runtimeRequestId: null,
+      checkpointScopeId: scopeId,
+      startedAt: null,
+      completedAt: null,
+    };
+    const metadata = { threadId, runId, nodeId, occurredAt: value.now };
+    const events: OrchestrationV2DomainEvent[] = [
+      ...(ordinal === 1
+        ? [
+            {
+              ...metadata,
+              id: EventId.make("event:reconciled:provider"),
+              type: "provider-thread.updated" as const,
+              payload: provider,
+            },
+          ]
+        : []),
+      {
+        ...metadata,
+        id: EventId.make(`event:reconciled:${ordinal}:run`),
+        type: "run.created",
+        payload: run,
+      },
+      {
+        ...metadata,
+        id: EventId.make(`event:reconciled:${ordinal}:attempt`),
+        type: "run-attempt.created",
+        payload: attempt,
+      },
+      {
+        ...metadata,
+        id: EventId.make(`event:reconciled:${ordinal}:node`),
+        type: "node.updated",
+        payload: node,
+      },
+      {
+        ...metadata,
+        id: EventId.make(`event:reconciled:${ordinal}:scope`),
+        type: "checkpoint-scope.created",
+        payload: {
+          id: scopeId,
+          threadId,
+          runId,
+          nodeId,
+          parentScopeId: null,
+          providerThreadId,
+          kind: "root_run",
+          ordinalWithinParent: 0,
+          advancesAppRunCount: true,
+          cwd: value.app.worktreePath,
+          createdAt: value.now,
+        },
+      },
+      {
+        ...metadata,
+        id: EventId.make(`event:reconciled:${ordinal}:message`),
+        type: "message.updated",
+        payload: {
+          id: messageId,
+          threadId,
+          runId,
+          nodeId,
+          createdBy: "user",
+          creationSource: "web",
+          role: "user",
+          text: command.text,
+          attachments: [],
+          streaming: false,
+          createdAt: value.now,
+          updatedAt: value.now,
+        },
+      },
+    ];
+    const effectId = `effect:${command.commandId}:provider-turn.start:${runId}`;
+    yield* value.sink.commitCommand({
+      commandId: command.commandId,
+      commandType: command.type,
+      threadId,
+      acceptedAt: value.now,
+      events,
+      effects:
+        ordinal === 1
+          ? [
+              {
+                id: effectId,
+                commandId: command.commandId,
+                threadId,
+                request: { type: "provider-turn.start", runId },
+              },
+            ]
+          : [],
+      ordinaryCheckoutContext: {
+        command,
+        captureAfterProjection: () => Effect.succeed([{ ...initialCapture, capture }]),
+      },
+    });
+    return { run, attempt, node, runId, runAttemptId, nodeId, messageId, command, effectId };
+  });
+  const predecessor = yield* accept(1);
+  const queued = yield* accept(2);
+  if (claimed)
+    yield* outbox.claimNext({ workerId: "worker:reconciled:claimed", leaseDurationMs: 60_000 });
+  yield* outbox.cancelUnsettled({
+    threadId,
+    effectTypes: ["provider-turn.start"],
+    reason: "Restart recovery",
+  });
+  const metadata = {
+    threadId,
+    runId: predecessor.runId,
+    nodeId: predecessor.nodeId,
+    occurredAt: value.now,
+  };
+  const terminal: OrchestrationV2DomainEvent[] = [
+    {
+      ...metadata,
+      id: EventId.make("event:reconciled:cancelled-run"),
+      type: "run.updated",
+      payload: { ...predecessor.run, status: "cancelled", completedAt: value.now },
+    },
+    {
+      ...metadata,
+      id: EventId.make("event:reconciled:cancelled-attempt"),
+      type: "run-attempt.updated",
+      payload: { ...predecessor.attempt, status: "cancelled", completedAt: value.now },
+    },
+    {
+      ...metadata,
+      id: EventId.make("event:reconciled:cancelled-node"),
+      type: "node.updated",
+      payload: { ...predecessor.node, status: "cancelled", completedAt: value.now },
+    },
+  ];
+  if (receipt)
+    yield* value.sink.commitCommand({
+      commandId: CommandId.make("command:reconciled:recovery"),
+      commandType: "provider-runtime.reconcile",
+      threadId,
+      acceptedAt: value.now,
+      events: terminal,
+      effects: [],
+    });
+  else yield* value.sink.write({ events: terminal });
+  const incarnation = initialCapture.capture.applicationBirth;
+  const commandId = CommandId.make(`command:system:start-queued:${queued.runId}`);
+  const executionIntent = {
+    kind: "queued" as const,
+    commandId,
+    runId: queued.runId,
+    runAttemptId: queued.runAttemptId,
+    effectId: `effect:${commandId}:provider-turn.start:${queued.runId}`,
+    reviewedBasis: null,
+  };
+  const fields = {
+    runId: queued.runId,
+    messageId: queued.messageId,
+    queuedProviderThreadId: providerThreadId,
+    runAttemptId: queued.runAttemptId,
+    executionIntent,
+    switchPlan: null,
+    sourceMode: "new_context" as const,
+    sourceBinding: null,
+    sourceEvidenceRevision: null,
+  };
+  const basis = { ...fields, basisDigest: EventSink.queuedRunContinuationBasisDigestV2(fields) };
+  const makeInput = Effect.gen(function* () {
+    const facts = yield* value.sink.readNativeCommandFacts({ threadId, commandId });
+    return {
+      snapshot: facts.commitSnapshot,
+      incarnation,
+      basis,
+      executionIntent,
+      pendingEffect: {
+        id: executionIntent.effectId,
+        commandId,
+        threadId,
+        request: { type: "provider-turn.start" as const, runId: queued.runId },
+      },
+      revalidateCurrentSource: Effect.void,
+    };
+  });
+  return { ...value, outbox, predecessor, queued, scopeId, provider, makeInput };
+});
+
+for (const variant of [
+  "never_claimed",
+  "claimed",
+  "missing_receipt",
+  "missing_completion",
+  "wrong_attempt",
+  "started",
+  "provider_turn",
+  "imported",
+  "checkpoint",
+  "changed_path",
+  "accepted_edit",
+  "projection_edit",
+  "wrong_edit_receipt",
+  "wrong_edit_target",
+] as const) {
+  it.effect(`reconciled ordinary queue requires exact never-claimed proof: ${variant}`, () =>
+    Effect.gen(function* () {
+      const value = yield* reconciledNeverClaimedQueueFixture(
+        variant === "claimed",
+        variant !== "missing_receipt",
+      );
+      const { sql, predecessor } = value;
+      if (variant === "missing_completion")
+        yield* sql`UPDATE orchestration_v2_effect_outbox SET completed_at = NULL WHERE effect_id = ${predecessor.effectId}`;
+      if (variant === "wrong_attempt")
+        yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = json_set(payload_json, '$.activeAttemptId', 'attempt:foreign') WHERE run_id = ${predecessor.runId}`;
+      if (variant === "started")
+        yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = json_set(payload_json, '$.startedAt', ${DateTime.formatIso(value.now)}) WHERE run_id = ${predecessor.runId}`;
+      if (variant === "provider_turn")
+        yield* sql`UPDATE orchestration_v2_projection_run_attempts SET provider_turn_id = 'turn:foreign', payload_json = json_set(payload_json, '$.providerTurnId', 'turn:foreign') WHERE attempt_id = ${predecessor.runAttemptId}`;
+      if (variant === "imported")
+        yield* value.sink.recordLegacyContinuationDisposition({
+          threadId,
+          provenance: "legacy_row",
+          qualification: { type: "unknown", reason: "Imported waiting-head lineage" },
+          evidence: null,
+          importedAt: DateTime.formatIso(value.now),
+        });
+      if (variant === "changed_path")
+        yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = json_set(payload_json, '$.worktreePath', '/fixture/foreign') WHERE thread_id = ${threadId}`;
+      if (variant === "checkpoint")
+        yield* value.sink.write({
+          events: [
+            {
+              id: EventId.make("event:reconciled:physical"),
+              threadId,
+              type: "checkpoint.captured",
+              occurredAt: value.now,
+              payload: {
+                id: CheckpointId.make("checkpoint:reconciled:physical"),
+                threadId,
+                scopeId: value.scopeId,
+                runId: predecessor.runId,
+                nodeId: predecessor.nodeId,
+                parentCheckpointId: null,
+                ordinalWithinScope: 0,
+                appRunOrdinal: 1,
+                ref: CheckpointRef.make("refs/reconciled/physical"),
+                status: "ready",
+                files: [],
+                capturedAt: value.now,
+              },
+            },
+          ],
+        });
+      if (variant === "projection_edit")
+        yield* sql`UPDATE orchestration_v2_projection_messages
+      SET payload_json = json_set(payload_json, '$.text', 'Unattributed edit') WHERE message_id = ${value.queued.messageId}`;
+      if (
+        variant === "accepted_edit" ||
+        variant === "wrong_edit_receipt" ||
+        variant === "wrong_edit_target"
+      ) {
+        const projection = yield* ProjectionStore.ProjectionStoreV2;
+        const current = (yield* projection.getThreadRecords(threadId, ["messages"])).messages.find(
+          (message) => message.id === value.queued.messageId,
+        )!;
+        yield* value.sink.commitCommand({
+          commandId: CommandId.make("command:reconciled:edit"),
+          threadId,
+          commandType: variant === "wrong_edit_receipt" ? "queued-run.reorder" : "queued-run.edit",
+          acceptedAt: value.now,
+          effects: [],
+          events: [
+            {
+              id: EventId.make("event:reconciled:edit"),
+              type: "message.updated",
+              threadId,
+              runId: value.queued.runId,
+              nodeId: variant === "wrong_edit_target" ? predecessor.nodeId : value.queued.nodeId,
+              occurredAt: value.now,
+              payload: { ...current, text: "Accepted edited queue", updatedAt: value.now },
+            },
+          ],
+        });
+      }
+      const input = yield* value.makeInput;
+      assert.strictEqual(
+        (yield* value.sink.withTransaction(value.sink.reserveQueuedRunStart(input))).status,
+        variant === "never_claimed" || variant === "accepted_edit" ? "reserved" : "rejected",
+      );
+      const original = Option.getOrThrow(yield* value.outbox.get(predecessor.effectId));
+      assert.strictEqual(original.status, "cancelled");
+      assert.strictEqual(original.attemptCount, variant === "claimed" ? 1 : 0);
+      assert.strictEqual((yield* sql`SELECT * FROM worktree_ownership_leases`).length, 1);
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_v2_ordinary_checkout_execution_associations`,
+        [],
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_worktree_path_admissions`, []);
+    }).pipe(Effect.provide(Layer.fresh(testLayer))),
+  );
+}
+
 it.effect(
   "a first ordinary queue reserves its real stable effect with positive application proof before source preparation",
   () =>
@@ -7378,7 +8249,7 @@ it.effect(
             readonly basis_json: string;
           }>`SELECT basis_json FROM orchestration_v2_queued_start_reservations`;
           assert.strictEqual(rows.length, 1);
-          assert.deepEqual(JSON.parse(rows[0]!.basis_json), value.basis);
+          assert.deepEqual(yield* parseJsonText(rows[0]!.basis_json), value.basis);
           assert.strictEqual(
             Option.getOrThrow(yield* value.outbox.get(value.executionIntent.effectId)).status,
             "pending",
@@ -8309,10 +9180,11 @@ const sealTestLayer = Layer.mergeAll(
   NativeCreationRepositoryLayer.pipe(Layer.provide(database)),
 );
 const nativeRecoveryRaceFixture = Effect.fnUntraced(function* (
+  // A fixture hook failure is a test defect, not a store outcome.
   beforeCreate?: (
     sink: EventSink.EventSinkV2Shape,
     input: Parameters<EventSink.EventSinkV2Shape["commitCommand"]>[0],
-  ) => Effect.Effect<void, unknown>,
+  ) => Effect.Effect<void>,
 ) {
   const repository = yield* NativeCreationRepository;
   const sink = yield* EventSink.EventSinkV2;
@@ -8320,7 +9192,7 @@ const nativeRecoveryRaceFixture = Effect.fnUntraced(function* (
   const sessions = yield* makeAuthSessions;
   const now = yield* DateTime.now;
   const timestamp = DateTime.formatIso(now);
-  const binding = Schema.decodeUnknownSync(NativePreparationBinding)({
+  const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
     backend_instance: "fixture-backend",
     environment_id: "fixture-environment",
     project_id: projectId,
@@ -8354,7 +9226,7 @@ const nativeRecoveryRaceFixture = Effect.fnUntraced(function* (
       }),
     ),
   );
-  const historical = Schema.decodeUnknownSync(NativeCreationHistoricalBinding)({
+  const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -8443,7 +9315,7 @@ const nativeRecoveryRaceFixture = Effect.fnUntraced(function* (
     },
     authority.authorize({ ...authorization, stage: "claim" }),
   );
-  const create = Schema.decodeUnknownSync(OrchestrationV2Command)({
+  const create = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
     type: "thread.create",
     commandId: `${original.commandId}:native:v2:create`,
     threadId: original.threadId,
@@ -8792,11 +9664,13 @@ it.effect(
           const context = input.nativeContext;
           if (context === undefined)
             return yield* Effect.die("Expected actual qualified native creation context");
+          const claimId = context.snapshot.authority.claimId;
+          assert.isDefined(claimId);
           const initial = yield* sink.readCommandReceiptIdentity(input.commandId);
           assert.deepEqual(initial.nativeCreationReservation, {
             commandId: input.commandId,
             threadId: input.threadId,
-            claimId: context.snapshot.authority.claimId,
+            claimId,
           });
           assert.isNull(initial.receipt);
           assert.isNull(initial.identity);
@@ -8912,7 +9786,7 @@ it.effect(
           assert.strictEqual(rollback._tag, "Failure");
           assert.isTrue(yield* Ref.get(rejectionVerified));
           assert.deepEqual(yield* sink.readCommandReceiptIdentity(input.commandId), initial);
-        }),
+        }).pipe(Effect.orDie),
       );
       assert.strictEqual(
         (yield* value.sink.readCommandReceiptIdentity(value.create.commandId)).receipt?.status,
@@ -9375,7 +10249,7 @@ it.effect(
       assert.strictEqual(observation.intentStatus, "accepted");
       assert.strictEqual(observation.execution.status, "pending");
       assert.strictEqual(observation.execution.effectOutcome, null);
-      assert.isFalse(JSON.stringify(observation).includes("canonical_command_json"));
+      assert.isFalse((yield* encodeJsonText(observation)).includes("canonical_command_json"));
       assert.strictEqual(
         (yield* value.sink
           .commitCommand({
@@ -9951,7 +10825,15 @@ it.effect(
       const reservation = yield* value.sql<{
         readonly basis_json: string;
       }>`SELECT basis_json FROM orchestration_v2_queued_start_reservations WHERE effect_id = ${value.effectId}`;
-      const basis = JSON.parse(reservation[0]!.basis_json);
+      const basis = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(
+          Schema.Struct({
+            queuedProviderThreadId: ProviderThreadId,
+            sourceMode: Schema.String,
+            executionIntent: Schema.Struct({ kind: Schema.String }),
+          }),
+        ),
+      )(reservation[0]!.basis_json);
       assert.strictEqual(basis.queuedProviderThreadId, value.originalProviderThreadId);
       assert.strictEqual(basis.sourceMode, "new_context");
       assert.strictEqual(basis.executionIntent.kind, "imported_history_choice");
@@ -11279,7 +12161,7 @@ const importedApplicationInventoryFixture = Effect.fnUntraced(function* () {
   };
   yield* sql`INSERT INTO orchestration_events
     (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
-    VALUES (${legacyBirthId}, 'thread', ${threadId}, 1, 'thread.created', ${createdAt}, 'user', ${JSON.stringify(legacyPayload)}, '{}', 1)`;
+    VALUES (${legacyBirthId}, 'thread', ${threadId}, 1, 'thread.created', ${createdAt}, 'user', ${yield* encodeJsonText(legacyPayload)}, '{}', 1)`;
   yield* sql`INSERT INTO projection_threads (thread_id, project_id, title, created_at, updated_at, deleted_at)
     VALUES (${threadId}, ${projectId}, 'Imported application', ${createdAt}, ${createdAt}, NULL)`;
   const app = { ...thread(now), historyOrigin: "v1_import" as const };
@@ -11318,7 +12200,7 @@ const importedApplicationInventoryFixture = Effect.fnUntraced(function* () {
     yield* sql`INSERT INTO projection_thread_messages
     (message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at, attachments_json)
     VALUES (${`message:application:${role}`}, ${threadId}, NULL, ${role}, 'Original text stays in the source row', 0,
-      ${createdAt}, ${createdAt}, ${role === "system" ? JSON.stringify([file]) : null})`;
+      ${createdAt}, ${createdAt}, ${role === "system" ? yield* encodeJsonText([file]) : null})`;
   const answer = {
     requestId: "request:application:duplicate",
     questionTextById: { first: "Preserved question" },
@@ -11330,7 +12212,7 @@ const importedApplicationInventoryFixture = Effect.fnUntraced(function* () {
     ["answer:application:two", { ...answer, attachmentsByQuestionId: {} }],
   ] as const)
     yield* sql`INSERT INTO projection_thread_activities (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at, sequence)
-      VALUES (${id}, ${threadId}, NULL, 'info', 'user-input.answer-submitted', 'Answered', ${JSON.stringify(payload)}, ${createdAt}, NULL)`;
+      VALUES (${id}, ${threadId}, NULL, 'info', 'user-input.answer-submitted', 'Answered', ${yield* encodeJsonText(payload)}, ${createdAt}, NULL)`;
   return {
     sink,
     sql,
@@ -11605,7 +12487,7 @@ const importedBaselineCopyFixture = Effect.fnUntraced(function* () {
     mimeType: "text/plain",
     sizeBytes: 8,
   } as const;
-  yield* value.sql`UPDATE projection_thread_messages SET attachments_json = ${JSON.stringify([file])} WHERE message_id = ${id}`;
+  yield* value.sql`UPDATE projection_thread_messages SET attachments_json = ${yield* encodeJsonText([file])} WHERE message_id = ${id}`;
   const message = {
     id,
     threadId,
@@ -12170,6 +13052,9 @@ it.effect("an ordinary admitted provider run starts without a native actor produ
           },
           modelSelection: value.app.modelSelection,
           runtimePolicy: {
+            runtimeMode: context.thread.runtimeMode,
+            interactionMode: context.thread.interactionMode,
+            cwd: context.thread.worktreePath,
             approvalPolicy: "never",
             sandboxPolicy: {
               type: "readOnly",
@@ -12270,6 +13155,9 @@ const ordinaryDefaultRunFixture = Effect.fnUntraced(function* () {
     },
     modelSelection: value.app.modelSelection,
     runtimePolicy: {
+      runtimeMode: context.thread.runtimeMode,
+      interactionMode: context.thread.interactionMode,
+      cwd: context.thread.worktreePath,
       approvalPolicy: "never",
       sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false },
     },
@@ -12348,7 +13236,7 @@ it.effect("a supplied ordinary native actor factory failure remains held before 
   }).pipe(Effect.provide(Layer.fresh(testLayer))),
 );
 
-for (const terminalStatus of ["completed", "interrupted"] as const) {
+for (const terminalStatus of ["completed", "interrupted", "failed"] as const) {
   it.effect(
     `an ordinary ${terminalStatus} primary settles only after its issued checkpoint and retains its ownership lease`,
     () =>
@@ -12528,6 +13416,103 @@ for (const terminalStatus of ["completed", "interrupted"] as const) {
               .pipe(Effect.result))._tag,
             "Failure",
           );
+          if (terminalStatus === "failed") {
+            const beforeQualification = yield* value.sink.readOrdinaryCheckoutExecutionAssociations(
+              value.originalUse,
+            );
+            const wrongIdentity = yield* value.sink
+              .withTransaction(
+                Effect.gen(function* () {
+                  yield* value.sink.recordOrdinaryCheckoutExecutorOutcome({
+                    ref: checkpointExecution,
+                    actualProducerOutcome,
+                    revalidateProducer,
+                  });
+                  yield* value.sink.write({
+                    events: [
+                      {
+                        id: EventId.make("event:failed-primary:changed-session"),
+                        threadId,
+                        type: "provider-thread.updated",
+                        occurredAt: completedAt,
+                        payload: {
+                          ...value.startInput.providerThread,
+                          providerSessionId: ProviderSessionId.make(
+                            "session:failed-primary:replacement",
+                          ),
+                        },
+                      },
+                    ],
+                  });
+                  yield* value.sink.recordOrdinaryCheckoutExecutorOutcome({
+                    ref: managed,
+                    actualProducerOutcome,
+                    revalidateProducer,
+                  });
+                }),
+              )
+              .pipe(Effect.exit);
+            assert.equal(wrongIdentity._tag, "Failure");
+            if (wrongIdentity._tag === "Failure")
+              assert.include(
+                Cause.pretty(wrongIdentity.cause),
+                "Managed executor lost its captured run, scope or provider attachment",
+              );
+            assert.deepEqual(
+              yield* value.sink.readOrdinaryCheckoutExecutionAssociations(value.originalUse),
+              beforeQualification,
+            );
+            assert.equal(
+              (yield* value.sink.readOrdinaryCheckoutUse(value.originalUse.operationId))?.state,
+              "started",
+            );
+            const unknown = yield* value.sink
+              .withTransaction(
+                Effect.gen(function* () {
+                  yield* value.sink.recordOrdinaryCheckoutExecutorOutcome({
+                    ref: checkpointExecution,
+                    actualProducerOutcome,
+                    revalidateProducer,
+                  });
+                  assert.isTrue(
+                    yield* value.outbox.holdUnknown({
+                      effectId: claim.id,
+                      workerId: source.workerId,
+                      operationId: "operation:failed-primary:unresolved",
+                      expectedAttempt: claim.attemptCount,
+                      evidence: {
+                        operationId: "operation:failed-primary:unresolved",
+                        operation: "close_session",
+                        outcome: "unknown",
+                        threadId,
+                      },
+                    }),
+                  );
+                  yield* value.sink.recordOrdinaryCheckoutExecutorOutcome({
+                    ref: managed,
+                    actualProducerOutcome,
+                    revalidateProducer,
+                  });
+                }),
+              )
+              .pipe(Effect.exit);
+            assert.equal(unknown._tag, "Failure");
+            if (unknown._tag === "Failure")
+              assert.include(
+                Cause.pretty(unknown.cause),
+                "Checkpoint actor changed before its actual result was qualified",
+              );
+            assert.deepEqual(
+              yield* value.sink.readOrdinaryCheckoutExecutionAssociations(value.originalUse),
+              beforeQualification,
+            );
+            assert.equal(
+              (yield* value.sink.readOrdinaryCheckoutUse(value.originalUse.operationId))?.state,
+              "started",
+            );
+            assert.isEmpty(yield* value.outbox.listHeldByThreadId(threadId));
+            assert.equal(Option.getOrThrow(yield* value.outbox.get(claim.id)).status, "running");
+          }
           yield* value.sink.withTransaction(
             Effect.gen(function* () {
               yield* value.sink.recordOrdinaryCheckoutExecutorOutcome({
@@ -12554,6 +13539,22 @@ for (const terminalStatus of ["completed", "interrupted"] as const) {
               });
             }),
           );
+          if (terminalStatus === "failed") {
+            const finalProjection =
+              yield* (yield* ProjectionStore.ProjectionStoreV2).getThreadProjection(threadId);
+            assert.equal(
+              finalProjection.runs.find((item) => item.id === value.runId)?.status,
+              "failed",
+            );
+            assert.equal(
+              finalProjection.nodes.find((item) => item.id === value.nodeId)?.status,
+              "failed",
+            );
+            assert.deepEqual(
+              finalProjection.runs.find((item) => item.id === value.runId)?.completedAt,
+              completedAt,
+            );
+          }
           assert.strictEqual(
             (yield* value.sink.readOrdinaryCheckoutUse(value.originalUse.operationId))?.state,
             "released",

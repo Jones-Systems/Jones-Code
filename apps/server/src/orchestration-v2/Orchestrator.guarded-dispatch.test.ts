@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { inspect } from "node:util";
+import * as NodeUtil from "node:util";
 import {
   AuthSessionId,
   CommandId,
@@ -107,7 +107,9 @@ const makeResidentStopAdapter = (
       yield* Effect.addFinalizer(() => Effect.sync(closed));
       const now = yield* DateTime.now;
       return {
-        runtimeGeneration: input.nativeOperation?.runtimeGeneration,
+        ...(input.nativeOperation?.runtimeGeneration === undefined
+          ? {}
+          : { runtimeGeneration: input.nativeOperation.runtimeGeneration }),
         instanceId,
         driver: ProviderDriverKind.make("codex"),
         providerSessionId: input.providerSessionId,
@@ -300,7 +302,7 @@ const nativeCreationStageFixture = Effect.fn("Orchestrator.nativeCreationStage.f
     },
   });
   yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessionId}, ${timestamp})`;
-  const binding = Schema.decodeUnknownSync(NativePreparationBinding)({
+  const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
     backend_instance: "synthetic-backend",
     environment_id: "synthetic-environment",
     project_id: `project:native-recovery:${name}`,
@@ -312,7 +314,7 @@ const nativeCreationStageFixture = Effect.fn("Orchestrator.nativeCreationStage.f
     start_from_origin: false,
     run_setup_script: false,
     provider_model_selection: modelSelection,
-  });
+  }).pipe(Effect.orDie);
   const original = nativePreparationCommand(
     `native-recovery-${name}`,
     binding,
@@ -334,7 +336,7 @@ const nativeCreationStageFixture = Effect.fn("Orchestrator.nativeCreationStage.f
       }),
     ),
   );
-  const historical = Schema.decodeUnknownSync(NativeCreationHistoricalBinding)({
+  const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -349,7 +351,7 @@ const nativeCreationStageFixture = Effect.fn("Orchestrator.nativeCreationStage.f
     startFromOrigin: false,
     runSetupScript: false,
     requestedBranch: original.bootstrap.prepareWorktree.branch,
-  });
+  }).pipe(Effect.orDie);
   const resources = {
     projectCwd: binding.project_cwd,
     branch: historical.requestedBranch,
@@ -1040,7 +1042,10 @@ it.effect(
       const immutable = yield* Effect.flip(
         sql`DELETE FROM orchestration_v2_thread_deletion_commands WHERE command_id = ${ordinary.commandId}`,
       );
-      assert.include(inspect(immutable, { depth: 10 }), "thread deletion commands are permanent");
+      assert.include(
+        NodeUtil.inspect(immutable, { depth: 10 }),
+        "thread deletion commands are permanent",
+      );
       assert.deepEqual(yield* sink.readThreadDeletionCommand(ordinary.commandId), ordinaryOriginal);
       const historicalCommand = {
         ...ordinary,
@@ -1539,6 +1544,7 @@ it.effect(
               ensureTranscript: () =>
                 Effect.sync(() => {
                   hydrations += 1;
+                  return { importedThreadCount: 0, importedMessageCount: 0 };
                 }),
             }),
           ),
@@ -2302,6 +2308,9 @@ for (const terminalStatus of ["completed", "interrupted"] as const) {
             },
             modelSelection,
             runtimePolicy: {
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: project.workspaceRoot,
               approvalPolicy: "never",
               sandboxPolicy: {
                 type: "readOnly",
@@ -2547,7 +2556,7 @@ for (const terminalStatus of ["completed", "interrupted"] as const) {
             const captureAfterTicks = yield* Effect.exit(handle.revalidateCaptured);
             return yield* Effect.die(
               new Error(
-                JSON.stringify({
+                yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
                   boundary: "retired_checkout_owner_automatic_renewal",
                   currentTime,
                   registrationRevalidations,
@@ -2566,7 +2575,7 @@ for (const terminalStatus of ["completed", "interrupted"] as const) {
                   currentOwner: yield* sink.readCurrentProviderRuntimeOwner(command.threadId),
                   capturedExecutor: managed.executor,
                   lease: renewed,
-                }),
+                }).pipe(Effect.orDie),
               ),
             );
           }
@@ -2731,7 +2740,7 @@ it.effect(
       assert.isTrue(Exit.isFailure(failed));
       if (Exit.isFailure(failed))
         assert.include(
-          inspect(Cause.squash(failed.cause), { depth: 8 }),
+          NodeUtil.inspect(Cause.squash(failed.cause), { depth: 8 }),
           "injected stop intent failure",
         );
       assert.deepEqual(
@@ -3143,6 +3152,7 @@ it.effect(
               ensureTranscript: () =>
                 Effect.sync(() => {
                   hydrations += 1;
+                  return { importedThreadCount: 0, importedMessageCount: 0 };
                 }),
               readTranscriptSnapshotEvidence: () =>
                 Effect.sync(() => {
@@ -3614,7 +3624,7 @@ it.effect(
       });
       yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at)
       VALUES (${sessionId}, ${DateTime.formatIso(now)})`;
-      const binding = Schema.decodeUnknownSync(NativePreparationBinding)({
+      const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
         backend_instance: "synthetic-backend",
         environment_id: "synthetic-environment",
         project_id: "project:native-stage-rollback",
@@ -3626,7 +3636,7 @@ it.effect(
         start_from_origin: false,
         run_setup_script: false,
         provider_model_selection: modelSelection,
-      });
+      }).pipe(Effect.orDie);
       const original = nativePreparationCommand(
         "native-stage-rollback",
         binding,
@@ -3648,7 +3658,7 @@ it.effect(
           }),
         ),
       );
-      const historical = Schema.decodeUnknownSync(NativeCreationHistoricalBinding)({
+      const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
         backendInstance: binding.backend_instance,
         environmentId: binding.environment_id,
         projectId: binding.project_id,
@@ -3663,7 +3673,7 @@ it.effect(
         startFromOrigin: false,
         runSetupScript: false,
         requestedBranch: original.bootstrap.prepareWorktree.branch,
-      });
+      }).pipe(Effect.orDie);
       const resources = {
         projectCwd: binding.project_cwd,
         branch: historical.requestedBranch,
@@ -3780,7 +3790,7 @@ it.effect(
       assert.isTrue(Exit.isFailure(outcome));
       if (Exit.isFailure(outcome)) {
         assert.include(
-          inspect(Cause.squash(outcome.cause), { depth: 8 }),
+          NodeUtil.inspect(Cause.squash(outcome.cause), { depth: 8 }),
           "injected native stage association failure",
         );
       }

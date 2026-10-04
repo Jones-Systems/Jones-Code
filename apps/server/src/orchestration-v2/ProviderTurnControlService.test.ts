@@ -219,6 +219,9 @@ it.effect(
         ProjectionStore.ProjectionStoreV2.of({
           apply: () => Effect.void,
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
+          getOperatingCountsCandidates: () => Effect.die("unused getOperatingCountsCandidates"),
+          getThreadRetainedAttachmentPaths: () =>
+            Effect.die("unused getThreadRetainedAttachmentPaths"),
           getShellSnapshot: () => Effect.die("unused getShellSnapshot"),
           getThreadShell: () => Effect.die("unused getThreadShell"),
           getThread: () => Ref.get(projection).pipe(Effect.map((state) => state.thread)),
@@ -499,10 +502,16 @@ function ordinaryControlFixture() {
       id: messageId,
       runId,
       text: "Keep the accepted plan.",
+      threadId,
+      nodeId: null,
+      role: "user",
+      streaming: false,
+      createdAt: now,
+      updatedAt: now,
       attachments: [],
       createdBy: "user",
       creationSource: "web",
-    } as ProjectionStore.ProjectionProviderControlContext["message"],
+    },
   };
   return { input, fixture, context, runId, attemptId };
 }

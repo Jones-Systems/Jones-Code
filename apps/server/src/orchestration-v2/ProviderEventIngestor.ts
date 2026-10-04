@@ -346,6 +346,17 @@ export const layer: Layer.Layer<
       left.instanceId === right.instanceId &&
       left.runtimeGeneration === right.runtimeGeneration &&
       left.nativeThreadId === right.nativeThreadId;
+    const sameRuntimeOwnerBinding = (
+      left: EventSink.ProviderBindingExpectationV2,
+      right: EventSink.ProviderBindingExpectationV2,
+    ) =>
+      left.threadId === right.threadId &&
+      left.providerThreadId === right.providerThreadId &&
+      left.providerSessionId === right.providerSessionId &&
+      left.instanceId === right.instanceId &&
+      left.driver === right.driver &&
+      left.nativeThreadId === right.nativeThreadId &&
+      left.runtimeGeneration === right.runtimeGeneration;
     const sameOutputOwner = (
       left: ProviderAssistantOutputOwner,
       right: ProviderAssistantOutputOwner,
@@ -520,6 +531,131 @@ export const layer: Layer.Layer<
         return events;
       },
     );
+
+    const publishPrimaryProviderTurn = (
+      input: Parameters<ProviderEventIngestorV2Shape["ingestNormalized"]>[0],
+      events: ReadonlyArray<OrchestrationV2DomainEvent>,
+      origin: ProviderEventOrigin | undefined,
+    ) =>
+      eventSink.withTransaction(
+        Effect.gen(function* () {
+          const guard = input.writeIfRunCurrent;
+          if (
+            input.event.type !== "provider_turn.updated" ||
+            guard === undefined ||
+            origin === undefined ||
+            input.revalidateCurrentOwner === undefined ||
+            input.runId !== guard.runId ||
+            input.nodeId === undefined
+          )
+            return [];
+          const turn = input.event.providerTurn;
+          if (
+            (input.event.threadId !== undefined && input.event.threadId !== input.threadId) ||
+            turn.runAttemptId !== guard.activeAttemptId ||
+            turn.nodeId !== input.nodeId
+          )
+            return [];
+          yield* validateEventOrigin(input, origin);
+          yield* input.revalidateCurrentOwner;
+          const evidence = yield* eventSink.readCurrentProviderRuntimeOwner(input.threadId);
+          if (
+            evidence === null ||
+            evidence.binding.providerThreadId !== turn.providerThreadId ||
+            evidence.binding.providerSessionId !== input.providerSessionId ||
+            evidence.binding.instanceId !== input.providerInstanceId ||
+            evidence.binding.driver !== input.event.driver ||
+            evidence.binding.runtimeGeneration !== origin.producer.runtimeGeneration ||
+            (origin.turn !== undefined &&
+              (origin.turn.runId !== guard.runId ||
+                origin.turn.attemptId !== guard.activeAttemptId ||
+                origin.turn.providerTurnId !== turn.id ||
+                !matchesOutputBinding(evidence.binding, origin.turn.binding, input.event.driver)))
+          )
+            return [];
+          const records = yield* projections.getThreadRecords(input.threadId, [
+            "runs",
+            "attempts",
+            "nodes",
+            "providerThreads",
+            "providerTurns",
+          ]);
+          const run = records.runs.find((item) => item.id === guard.runId);
+          const attempt = records.attempts.find((item) => item.id === guard.activeAttemptId);
+          const root = records.nodes.find((item) => item.id === input.nodeId);
+          const provider = records.providerThreads.find(
+            (item) => item.id === turn.providerThreadId,
+          );
+          const previous = records.providerTurns.find((item) => item.id === turn.id);
+          if (
+            records.thread.deletedAt !== null ||
+            records.thread.activeProviderThreadId !== turn.providerThreadId ||
+            run === undefined ||
+            run.status !== guard.expectedStatus ||
+            run.activeAttemptId !== guard.activeAttemptId ||
+            run.rootNodeId !== input.nodeId ||
+            run.providerThreadId !== turn.providerThreadId ||
+            run.providerInstanceId !== input.providerInstanceId ||
+            attempt === undefined ||
+            attempt.runId !== run.id ||
+            attempt.rootNodeId !== input.nodeId ||
+            attempt.providerThreadId !== turn.providerThreadId ||
+            attempt.providerInstanceId !== input.providerInstanceId ||
+            attempt.status !== "running" ||
+            (attempt.nativeThreadId !== undefined &&
+              attempt.nativeThreadId !== evidence.binding.nativeThreadId) ||
+            (attempt.providerTurnId !== null && attempt.providerTurnId !== turn.id) ||
+            root === undefined ||
+            root.threadId !== input.threadId ||
+            root.runId !== run.id ||
+            root.kind !== "root_turn" ||
+            root.rootNodeId !== root.id ||
+            root.parentNodeId !== null ||
+            root.providerThreadId !== turn.providerThreadId ||
+            (root.providerTurnId !== null && root.providerTurnId !== turn.id) ||
+            provider === undefined ||
+            provider.appThreadId !== input.threadId ||
+            provider.providerSessionId !== input.providerSessionId ||
+            provider.providerInstanceId !== input.providerInstanceId ||
+            provider.driver !== input.event.driver ||
+            provider.lastRunOrdinal !== run.ordinal ||
+            (previous !== undefined &&
+              (previous.runAttemptId !== turn.runAttemptId ||
+                previous.nodeId !== turn.nodeId ||
+                previous.providerThreadId !== turn.providerThreadId))
+          )
+            return [];
+          // Bind only the current primary event, without changing execution status or times.
+          const boundEvents = [
+            ...events,
+            yield* makeDomainEvent(input, {
+              type: "run-attempt.updated",
+              payload: { ...attempt, providerTurnId: turn.id },
+            }),
+            yield* makeDomainEvent(input, {
+              type: "node.updated",
+              payload: { ...root, providerTurnId: turn.id },
+            }),
+          ];
+          yield* validateEventOrigin(input, origin);
+          yield* input.revalidateCurrentOwner;
+          const current = yield* eventSink.readCurrentProviderRuntimeOwner(input.threadId);
+          if (
+            current === null ||
+            current.evidenceRevision !== evidence.evidenceRevision ||
+            !sameRuntimeOwnerBinding(current.binding, evidence.binding)
+          )
+            return [];
+          const result = yield* eventSink.writeIfRunCurrent({
+            guardPendingUserInputCancellations: true,
+            ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+            threadId: input.threadId,
+            ...guard,
+            events: boundEvents,
+          });
+          return result.storedEvents;
+        }),
+      );
 
     const normalize: ProviderEventIngestorV2Shape["normalize"] = (input) =>
       Effect.gen(function* () {
@@ -1205,7 +1341,10 @@ export const layer: Layer.Layer<
                         ? event.turnItem.runId
                         : null;
               // Historical null attribution must not inherit the current executor's run.
-              events.push(...(yield* normalize({ ...original, runId: runId ?? undefined })));
+              const { runId: _inheritedRunId, ...unattributed } = original;
+              events.push(
+                ...(yield* normalize(runId === null ? unattributed : { ...unattributed, runId })),
+              );
             }
             const result = yield* eventSink.writeIfCurrentProviderRuntimeSubagentDerivation({
               expectedBinding: evidence.binding,
@@ -1293,6 +1432,17 @@ export const layer: Layer.Layer<
               eventCount: events.length,
               cause,
             });
+          if (
+            input.event.type === "provider_turn.updated" &&
+            input.writeIfRunCurrent !== undefined &&
+            origin !== undefined &&
+            input.revalidateCurrentOwner !== undefined &&
+            input.event.providerTurn.runAttemptId === input.writeIfRunCurrent.activeAttemptId
+          ) {
+            return yield* publishPrimaryProviderTurn(input, events, origin).pipe(
+              Effect.mapError(mapWriteError),
+            );
+          }
           const assistantSnapshot =
             (input.event.type === "message.updated" && input.event.message.role === "assistant") ||
             (input.event.type === "turn_item.updated" &&

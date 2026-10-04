@@ -14,7 +14,12 @@ import {
   machineKindFromDmi,
 } from "./ServerEnvironmentMachine.ts";
 
-const runMock = vi.fn<ProcessRunner.ProcessRunner["Service"]["run"]>();
+// Environment probes never pass a mutation guard, so the recorder accepts any guard type.
+type RecordedRun = (
+  input: ProcessRunner.ProcessRunInput<unknown, unknown>,
+) => Effect.Effect<ProcessRunner.ProcessRunOutput, ProcessRunner.ProcessRunError>;
+
+const runMock = vi.fn<RecordedRun>();
 
 const ProcessRunnerTest = Layer.succeed(
   ProcessRunner.ProcessRunner,

@@ -229,7 +229,7 @@ describe("GitWorkflowService", () => {
 class WorkflowMutationGuard extends Context.Service<
   WorkflowMutationGuard,
   { readonly current: boolean }
->()("test/GitWorkflowService/MutationGuard") {}
+>()("t3/git/GitWorkflowService.test/WorkflowMutationGuard") {}
 
 it.effect("forwards typed mutation guards only after resolving the Git workflow", () =>
   Effect.gen(function* () {
@@ -299,5 +299,18 @@ it.effect("forwards typed mutation guards only after resolving the Git workflow"
       stale,
     );
     assert.equal(checks, 2);
-  }).pipe(Effect.provide(Layer.mock(VcsDriver.VcsDriver)({}))),
+  }).pipe(
+    Effect.provide(
+      Layer.mock(VcsDriver.VcsDriver)({
+        capabilities: {
+          kind: "git",
+          supportsWorktrees: true,
+          supportsBookmarks: false,
+          supportsAtomicSnapshot: false,
+          supportsPushDefaultRemote: true,
+          ignoreClassifier: "native",
+        },
+      }),
+    ),
+  ),
 );

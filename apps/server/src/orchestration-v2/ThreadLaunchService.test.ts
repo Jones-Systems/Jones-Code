@@ -1,11 +1,13 @@
 import * as Scheduler from "../scheduling/Scheduler.ts";
-import { Buffer } from "node:buffer";
+import * as NodeBuffer from "node:buffer";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
 import * as ServerConfig from "../config.ts";
+import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
+import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
 import { assert, it, vi } from "@effect/vitest";
@@ -39,6 +41,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
@@ -89,6 +92,7 @@ import { nativeWorktreePath } from "../vcs/worktreePath.ts";
 const projectId = ProjectId.make("project:launch-test");
 const otherProjectId = ProjectId.make("project:launch-other");
 const encodeThreadProjection = Schema.encodeEffect(OrchestrationV2ThreadProjectionJson);
+const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
   model: "gpt-5.1-codex",
@@ -127,13 +131,55 @@ interface HarnessOptions {
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
   readonly fetchRemote?: GitWorkflow.GitWorkflowService["Service"]["fetchRemote"];
+  readonly hasCommit?: GitWorkflow.GitWorkflowService["Service"]["hasCommit"];
   readonly renameBranch?: GitWorkflow.GitWorkflowService["Service"]["renameBranch"];
   readonly runSetup?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"];
+  readonly captureOwnedTargets?: TerminalManager.TerminalManager["Service"]["captureOwnedTargets"];
   readonly generateTitle?: TextGeneration.TextGeneration["Service"]["generateThreadTitle"];
   readonly generateBranchName?: TextGeneration.TextGeneration["Service"]["generateBranchName"];
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly providers?: ReadonlyArray<ServerProvider>;
 }
+
+const syntheticServerConfig = (worktreesDir: string) =>
+  Layer.effect(
+    ServerConfig.ServerConfig,
+    Effect.gen(function* () {
+      const baseDir = "/synthetic/thread-launch";
+      return ServerConfig.make({
+        ...(yield* ServerConfig.deriveServerPaths(baseDir, undefined)),
+        worktreesDir,
+        logLevel: "Error",
+        traceMinLevel: "Info",
+        traceTimingEnabled: true,
+        traceBatchWindowMs: 200,
+        traceMaxBytes: 10 * 1024 * 1024,
+        traceMaxFiles: 10,
+        otlpTracesUrl: undefined,
+        otlpMetricsUrl: undefined,
+        otlpLogsUrl: undefined,
+        otlpTracesExport: DEFAULT_SIGNAL_EXPORT,
+        otlpMetricsExport: DEFAULT_SIGNAL_EXPORT,
+        otlpLogsExport: DEFAULT_SIGNAL_EXPORT,
+        otelEnvironment: OtelEnvironment.none,
+        cwd: project.workspaceRoot,
+        baseDir,
+        mode: "web",
+        autoBootstrapProjectFromCwd: false,
+        logWebSocketEvents: false,
+        tailscaleServeEnabled: false,
+        tailscaleServePort: 443,
+        port: 0,
+        host: undefined,
+        desktopBootstrapToken: undefined,
+        staticDir: undefined,
+        devUrl: undefined,
+        devAllowedOrigins: [],
+        noBrowser: false,
+        startupPresentation: "browser",
+      });
+    }),
+  ).pipe(Layer.provide(Path.layer));
 
 function makeHarness(options: HarnessOptions = {}) {
   const database = SqlitePersistenceMemory;
@@ -189,25 +235,32 @@ function makeHarness(options: HarnessOptions = {}) {
   const receipts = CommandReceiptStore.layer.pipe(Layer.provide(database));
   const fixtureBranches = new Map<string, string>();
   const createWorktree = vi.fn(
-    (...args: Parameters<GitWorkflow.GitWorkflowService["Service"]["createWorktree"]>) =>
-      (
-        options.createWorktree ??
-        ((input) =>
-          Effect.succeed({
-            worktree: {
-              path: input.path ?? "/repo-worktrees/feature",
-              refName: input.newRefName,
-              headSha: "abc",
-            },
-          } as never))
-      )(...args).pipe(
-        Effect.tap((result) =>
-          Effect.sync(() => {
-            fixtureBranches.set(result.worktree.path, result.worktree.refName);
-          }),
-        ),
-      ),
+    (..._args: Parameters<GitWorkflow.GitWorkflowService["Service"]["createWorktree"]>): void => {},
   );
+  const performCreateWorktree: GitWorkflow.GitWorkflowService["Service"]["createWorktree"] =
+    options.createWorktree ??
+    ((input) =>
+      Effect.succeed({
+        worktree: {
+          path: input.path ?? "/repo-worktrees/feature",
+          refName: input.newRefName ?? input.refName,
+          headSha: "abc",
+        },
+      }));
+  const executeCreateWorktree: GitWorkflow.GitWorkflowService["Service"]["createWorktree"] = (
+    input,
+    executionOptions,
+  ) => {
+    createWorktree(input, executionOptions);
+    return (executionOptions?.revalidateMutation ?? Effect.void).pipe(
+      Effect.andThen(performCreateWorktree(input, executionOptions)),
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          fixtureBranches.set(result.worktree.path, result.worktree.refName);
+        }),
+      ),
+    );
+  };
   const renameBranch = vi.fn(
     (input: Parameters<GitWorkflow.GitWorkflowService["Service"]["renameBranch"]>[0]) =>
       (options.renameBranch ?? ((request) => Effect.succeed({ branch: request.newBranch })))(
@@ -230,10 +283,24 @@ function makeHarness(options: HarnessOptions = {}) {
     options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" })),
   );
   const externalServices = Layer.mergeAll(
-    Layer.mock(ServerConfig.ServerConfig)({ worktreesDir: "/repo-worktrees" }),
+    syntheticServerConfig("/repo-worktrees"),
     options.setupTracker ?? WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
-    Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
+    Layer.mock(TerminalManager.TerminalManager)({
+      close: () => Effect.void,
+      // Fixture setup runners never open a managed terminal, so the readback is empty.
+      captureOwnedTargets:
+        options.captureOwnedTargets ??
+        ((input) =>
+          Effect.succeed({
+            managerId: "thread-launch-test-terminals",
+            threadId: input.threadId,
+            ownerBirth: input.ownerBirth,
+            status: "captured" as const,
+            managedTargetsOnly: true as const,
+            targets: [],
+          })),
+    }),
     Layer.succeed(ProjectService.ProjectService, {
       create: () => Effect.die("unused"),
       bootstrap: () => Effect.die("unused"),
@@ -253,8 +320,10 @@ function makeHarness(options: HarnessOptions = {}) {
       listShells: () => Effect.die("unused"),
     }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
-      createWorktree,
+      createWorktree: executeCreateWorktree,
       renameBranch,
+      isRepository: () => Effect.succeed(true),
+      hasCommit: options.hasCommit ?? (() => Effect.succeed(true)),
       invalidateLocalStatus: () => Effect.void,
       localStatus: ({ cwd }) =>
         Effect.succeed({
@@ -378,7 +447,6 @@ function makeNativeLaunchHarness(
             command: "git",
             cwd: input.cwd,
             detail: "Synthetic response lost after checkout allocation",
-            exitCode: null,
           });
         return { worktree: { path: input.path, refName: input.newRefName } };
       }),
@@ -404,7 +472,7 @@ function makeNativeLaunchHarness(
     },
     layer: Layer.mergeAll(
       harness.layer,
-      Layer.mock(ServerConfig.ServerConfig)({ worktreesDir }),
+      syntheticServerConfig(worktreesDir),
       FileSystem.layerNoop({
         exists: (path) => Effect.succeed(createdPaths.has(path)),
         realPath: (path) => Effect.succeed(path),
@@ -474,7 +542,7 @@ const nativeLaunchFixture = Effect.fn("ThreadLaunch.nativeFixture")(function* (
     },
   });
   yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${sessionId}, ${DateTime.formatIso(now)})`;
-  const binding = Schema.decodeUnknownSync(NativePreparationBinding)({
+  const binding = yield* Schema.decodeEffect(NativePreparationBinding)({
     backend_instance: "synthetic-backend",
     environment_id: "synthetic-environment",
     project_id: projectId,
@@ -487,13 +555,18 @@ const nativeLaunchFixture = Effect.fn("ThreadLaunch.nativeFixture")(function* (
     run_setup_script: true,
     provider_model_selection: modelSelection,
   });
-  const command = nativePreparationCommand(
+  const preparedCommand = nativePreparationCommand(
     `native-launch:${name}`,
     binding,
     "Exact native prompt",
     "Canonical native title",
     DateTime.formatIso(now),
   );
+  const command = {
+    ...preparedCommand,
+    commandId: CommandId.make(preparedCommand.commandId),
+    threadId: ThreadId.make(preparedCommand.threadId),
+  };
   const canonicalText = nativeCreationCanonicalJson({
     schema: "voice.t3-bootstrap-preparation/v1",
     operation_id: `native-launch:${name}`,
@@ -507,7 +580,7 @@ const nativeLaunchFixture = Effect.fn("ThreadLaunch.nativeFixture")(function* (
   const preparation = yield* validateNativeCreationPreparation(
     new TextEncoder().encode(canonicalText),
   );
-  const historical = Schema.decodeUnknownSync(NativeCreationHistoricalBinding)({
+  const historical = yield* Schema.decodeEffect(NativeCreationHistoricalBinding)({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -569,7 +642,7 @@ const nativeLaunchFixture = Effect.fn("ThreadLaunch.nativeFixture")(function* (
   const authority = yield* NativeCreationAuthority;
   const submission = {
     schema: "t3.native-bootstrap-submission/v1" as const,
-    preparationBase64: Buffer.from(canonicalText).toString("base64"),
+    preparationBase64: NodeBuffer.Buffer.from(canonicalText).toString("base64"),
     creationGuard: guard,
   };
   const dispatch = (currentAuthority = authority) =>
@@ -676,7 +749,9 @@ it.effect(
       assert.equal(outbox.length, 1);
       assert.equal(outbox[0]!.command_id, fixture.command.commandId);
       assert.equal(outbox[0]!.effect_type, "provider-turn.start");
-      const payload = JSON.parse(outbox[0]!.payload_json);
+      const payload = yield* Schema.decodeEffect(
+        Schema.fromJsonString(EffectOutbox.NativeOrchestrationEffectPayloadV2),
+      )(outbox[0]!.payload_json);
       assert.equal(
         payload.nativeCreationExecutionReference.stageCommandId,
         fixture.command.commandId,
@@ -987,6 +1062,7 @@ it.effect(
           authorize: (input: Parameters<typeof fixture.authority.authorize>[0]) =>
             input.stage === "bootstrap_detachment"
               ? fixture.enableRecovery.pipe(
+                  Effect.orDie,
                   Effect.andThen(Deferred.succeed(entered, undefined)),
                   Effect.andThen(Deferred.await(blocked)),
                   Effect.andThen(fixture.authority.authorize(input)),
@@ -2804,6 +2880,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     };
     const failed = yield* ThreadMessageIntake.launchThread(input).pipe(
       Effect.provideService(ThreadLaunch.ThreadLaunchService, {
+        ...launches,
         launch: (request) =>
           launches.launch(request).pipe(
             Effect.andThen(
@@ -3079,7 +3156,7 @@ for (const exitCode of [0, 1]) {
     Effect.gen(function* () {
       const completion = yield* Deferred.make<{ exitCode: number | null; durationMs: number }>();
       const harness = makeHarness({
-        runSetup: () =>
+        runSetup: (setupInput) =>
           Effect.succeed({
             status: "started" as const,
             async: true,
@@ -3087,7 +3164,7 @@ for (const exitCode of [0, 1]) {
             scriptName: "Setup",
             scriptCommand: "vp install",
             terminalId: "setup",
-            cwd: "/repo-worktrees/feature",
+            cwd: setupInput.worktreePath,
             completion: Deferred.await(completion),
           }),
       });
@@ -3132,3 +3209,504 @@ for (const exitCode of [0, 1]) {
     }),
   );
 }
+
+it.effect(
+  "qualified rename preserves original claims and release replay while new admissions capture the renamed target",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const sink = yield* EventSink.EventSinkV2;
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const sql = yield* SqlClient.SqlClient;
+      const input = launchInput({
+        command: "launch:qualified-rename",
+        thread: "thread:qualified-rename",
+        message: "Prepare the feature",
+        workspace: { type: "worktree", baseRef: "main", branch: "t3code/abcd1234" },
+      });
+      const launched = yield* launches.launch(input);
+      const terminal = yield* tracker.stream(launched.threadId).pipe(
+        Stream.filter((snapshot) => snapshot !== null && snapshot.phase !== "running"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      assert.equal(terminal?.phase, "done");
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      const run = projection.runs[0]!;
+      const admission = yield* threads.readOrdinaryCheckoutAdmissionForRun({
+        threadId: launched.threadId,
+        runId: run.id,
+      });
+      assert.isNotNull(admission);
+      assert.equal(admission!.capture.branch, "t3code/abcd1234");
+      const originalAdmission = yield* encodeUnknownJson(admission);
+      const record = yield* sink.readOrdinaryCheckoutUse(`${input.commandId}:ordinary-preparation`);
+      assert.isNotNull(record);
+      const use = record!.subject.use;
+      const history = yield* sink.readOrdinaryCheckoutExecutionAssociations(use);
+      const producer = history.participants[0]!;
+      assert.equal(producer.state, "retired");
+      assert.equal(producer.ref.originalUse.lease.branch, "t3code/abcd1234");
+      assert.equal(history.facts.at(-1)?.eventKind, "retire");
+      const current = yield* sink.resolveOrdinaryCheckoutLease(use.lease);
+      assert.equal(current.branch, "generated-branch");
+      assert.equal(current.leaseId, use.lease.leaseId);
+      assert.equal(current.ownerIncarnation, use.lease.ownerIncarnation);
+      assert.equal(current.resourcePath, use.lease.resourcePath);
+      assert.equal(current.acquiredAtMs, use.lease.acquiredAtMs);
+      assert.equal(projection.thread.branch, current.branch);
+      const transitions = yield* sql<{
+        readonly transition_json: string;
+      }>`SELECT transition_json FROM orchestration_v2_ordinary_checkout_target_transitions WHERE operation_id = ${use.operationId}`;
+      assert.lengthOf(transitions, 1);
+      const release = {
+        type: "prepared-run.release" as const,
+        commandId: CommandId.make(`${input.commandId}:release`),
+        threadId: launched.threadId,
+        runId: run.id,
+      };
+      const receipt = Option.getOrThrow(
+        yield* (yield* CommandReceiptStore.CommandReceiptStoreV2).getByCommandId(release.commandId),
+      );
+      assert.equal(
+        (yield* threads.dispatchOrdinaryPreparedRunRelease(release, use, producer.ref)).sequence,
+        receipt.resultSequence,
+      );
+      assert.equal(harness.renameBranch.mock.calls.length, 1);
+      const effect = Option.getOrThrow(
+        yield* outbox.claimNext({ workerId: "rename-regression", leaseDurationMs: 60_000 }),
+      );
+      assert.equal(effect.request.type, "provider-turn.start");
+      assert.equal(effect.commandId, release.commandId);
+      const link = yield* sink.readOrdinaryCheckoutEffectLink(effect.id);
+      assert.isNotNull(link);
+      const execution = yield* sink.joinOrdinaryCheckoutClaim({
+        originalUse: use,
+        predecessorExecution: producer.ref,
+        claim: {
+          kind: "outbox",
+          link: link!,
+          workerId: "rename-regression",
+          expectedAttempt: effect.attemptCount,
+          leaseExpiresAt: DateTime.makeUnsafe(effect.leaseExpiresAt!),
+        },
+      });
+      assert.deepEqual(
+        (yield* sink.revalidateOrdinaryCheckoutExecution(execution)).originalUse,
+        use,
+      );
+      const now = yield* DateTime.now;
+      yield* sink.renewOrdinaryCheckoutExecution({
+        ref: execution,
+        now,
+        newExpiry: DateTime.add(now, { minutes: 5 }),
+        expectedClaimExpiry: DateTime.makeUnsafe(effect.leaseExpiresAt!),
+      });
+      const followupCommand = CommandId.make("command:qualified-rename:followup");
+      yield* threads.sendToThread({
+        projectId,
+        commandId: followupCommand,
+        threadId: launched.threadId,
+        messageId: MessageId.make("message:qualified-rename:followup"),
+        text: "Continue",
+        attachments: [],
+        mode: "queue",
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const followup = yield* sink.readOrdinaryCheckoutAdmission({
+        commandId: followupCommand,
+        threadId: launched.threadId,
+      });
+      assert.equal(followup?.capture.branch, "generated-branch");
+      assert.equal(followup?.capture.lease.leaseId, use.lease.leaseId);
+      assert.equal(
+        yield* encodeUnknownJson(
+          yield* threads.readOrdinaryCheckoutAdmissionForRun({
+            threadId: launched.threadId,
+            runId: run.id,
+          }),
+        ),
+        originalAdmission,
+      );
+      assert.equal(
+        (yield* sink
+          .readOrdinaryCheckoutExecutionAssociations({
+            ...use,
+            lease: { ...use.lease, branch: "generated-branch" },
+          })
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+      const commitAttempted = yield* Ref.make(false);
+      const forged: Extract<
+        ThreadLaunch.OrdinaryPreparedPhysicalResultV1,
+        { kind: "prepared_branch_renamed" }
+      > = {
+        version: 1,
+        kind: "prepared_branch_renamed",
+        producerId:
+          producer.ref.executor.kind === "actual_prepared_producer"
+            ? producer.ref.executor.producerId
+            : "foreign",
+        execution: producer.ref,
+        targetSource: record!.subject.source,
+        checkoutPath: use.lease.resourcePath,
+        observedAt: DateTime.formatIso(now),
+        oldBranch: "t3code/abcd1234",
+        requestedBranch: "generated-branch",
+        renamedBranch: "generated-branch",
+        readback: { cwd: use.lease.resourcePath, refName: "generated-branch" },
+      };
+      assert.equal(
+        (yield* sink
+          .transitionOrdinaryPreparedBranch({
+            observation: forged,
+            commandId: CommandId.make(`${input.commandId}:branch-rename`),
+            commitMetadata: Ref.set(commitAttempted, true).pipe(
+              Effect.as({ sequence: 0, storedEvents: [] }),
+            ),
+          })
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.isFalse(yield* Ref.get(commitAttempted));
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("command:rename:unproved-edit"),
+        threadId: launched.threadId,
+        branch: "unproved",
+      });
+      assert.equal(
+        (yield* sink.revalidateOrdinaryCheckoutExecution(execution).pipe(Effect.result))._tag,
+        "Failure",
+      );
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+for (const workspace of [
+  { type: "root" as const },
+  { type: "worktree" as const, baseRef: "main", branch: "feature" },
+])
+  it.effect(
+    `runless ${workspace.type} preparation consumes its original completion and releases its reservation`,
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        const sink = yield* EventSink.EventSinkV2;
+        const input = launchInput({
+          command: "launch:runless-completion",
+          thread: "thread:runless-completion",
+          workspace,
+        });
+        const launched = yield* launches.launch(input);
+        if (workspace.type === "worktree") {
+          const terminal = yield* tracker.stream(launched.threadId).pipe(
+            Stream.filter((snapshot) => snapshot !== null && snapshot.phase !== "running"),
+            Stream.runHead,
+            Effect.map(Option.getOrThrow),
+          );
+          assert.equal(terminal?.phase, "done");
+        }
+        // Root preparation has no setup tracker; its durable use records the end.
+        yield* waitUntil(() =>
+          sink
+            .readOrdinaryCheckoutUse(`${input.commandId}:ordinary-preparation`)
+            .pipe(
+              Effect.map(
+                (current) =>
+                  current !== null && current.state !== "reserved" && current.state !== "started",
+              ),
+            ),
+        );
+        const record = yield* sink.readOrdinaryCheckoutUse(
+          `${input.commandId}:ordinary-preparation`,
+        );
+        assert.equal(record?.state, "released");
+        assert.equal(
+          (yield* sink.readOrdinaryCheckoutExecutionAssociations(record!.subject.use))
+            .participants[0]?.state,
+          "retired",
+        );
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+it.effect(
+  "cancellation after rename entry retains uncertainty without publishing an unproved target",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        renameBranch: () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+        runSetup: () => Effect.never,
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        const sink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const input = launchInput({
+          command: "launch:rename-cancelled",
+          thread: "thread:rename-cancelled",
+          message: "Prepare",
+          workspace: { type: "worktree", baseRef: "main", branch: "t3code/abcd1234" },
+        });
+        const launched = yield* launches.launch(input);
+        yield* Deferred.await(entered);
+        assert.isTrue(yield* tracker.cancel(launched.threadId));
+        const projection = yield* threads.getThreadProjection(launched.threadId);
+        assert.equal(projection.thread.branch, "t3code/abcd1234");
+        assert.isNotNull(projection.thread.worktreePath);
+        const record = yield* sink.readOrdinaryCheckoutUse(
+          `${input.commandId}:ordinary-preparation`,
+        );
+        assert.equal(record?.state, "unknown");
+        const transitions =
+          yield* sql`SELECT operation_id FROM orchestration_v2_ordinary_checkout_target_transitions WHERE operation_id = ${record!.subject.use.operationId}`;
+        assert.isEmpty(transitions);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.effect(
+  "failure before checkout entry clears only the uncreated projection and preserves the accepted target",
+  () => {
+    const harness = makeHarness({ hasCommit: () => Effect.succeed(false) });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const sink = yield* EventSink.EventSinkV2;
+      const input = launchInput({
+        command: "launch:uncreated-target",
+        thread: "thread:uncreated-target",
+        message: "Prepare",
+        workspace: { type: "worktree", branch: "feature", baseRef: "main" },
+      });
+      const launched = yield* launches.launch(input);
+      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+        ),
+        Stream.runHead,
+      );
+      const failed = yield* threads.getThreadProjection(launched.threadId);
+      assert.isNull(failed.thread.worktreePath);
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+      const admission = yield* sink.readOrdinaryCheckoutAdmissionForRun({
+        threadId: launched.threadId,
+        runId: failed.runs[0]!.id,
+      });
+      assert.isNotNull(admission);
+      assert.equal(
+        admission!.capture.canonicalCheckoutPath,
+        launched.projection.thread.worktreePath,
+      );
+      const replay = yield* launches.launch(input);
+      assert.isTrue(replay.resumed);
+      assert.equal(replay.projection.runs[0]?.id, failed.runs[0]?.id);
+      assert.isNull(replay.projection.thread.worktreePath);
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect(
+  "retires a setup start failure as qualified only from its own checkout and terminal readback",
+  () => {
+    const harness = makeHarness({
+      runSetup: (setupInput) =>
+        Effect.fail(
+          new ProjectSetupScriptRunner.ProjectSetupScriptOperationError({
+            threadId: setupInput.threadId,
+            worktreePath: setupInput.worktreePath,
+            operation: "writeCommand",
+            cause: new Error("setup could not start"),
+          }),
+        ),
+    });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const sink = yield* EventSink.EventSinkV2;
+      const input = launchInput({
+        command: "launch:qualified-setup-failure",
+        thread: "thread:qualified-setup-failure",
+        message: "Prepare",
+        workspace: { type: "worktree", branch: "feature", baseRef: "main" },
+      });
+      const launched = yield* launches.launch(input);
+      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+        ),
+        Stream.runHead,
+      );
+      const record = yield* sink.readOrdinaryCheckoutUse(`${input.commandId}:ordinary-preparation`);
+      assert.equal(record?.state, "released");
+      const history = yield* sink.readOrdinaryCheckoutExecutionAssociations(record!.subject.use);
+      assert.lengthOf(history.participants, 1);
+      assert.equal(history.participants[0]?.state, "retired");
+      const retired = history.facts.at(-1);
+      const outcome =
+        retired?.evidence.schema === "t3.ordinary-checkout-execution-outcome/v1"
+          ? retired.evidence.actualProducerOutcome
+          : undefined;
+      assert.equal(outcome?.kind, "prepared_failed");
+      if (outcome?.kind === "prepared_failed") {
+        assert.equal(outcome.observation.worktree?.path, launched.projection.thread.worktreePath);
+        assert.equal(outcome.observation.readback.refName, "feature");
+        assert.equal(outcome.observation.setup.targetCount, 0);
+        assert.include(outcome.observation.failure, "setup could not start");
+      }
+      const failed = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(failed.runs[0]?.status, "failed");
+      assert.equal(failed.thread.worktreePath, launched.projection.thread.worktreePath);
+      const replay = yield* launches.launch(input);
+      assert.isTrue(replay.resumed);
+      assert.equal(replay.projection.runs[0]?.id, failed.runs[0]?.id);
+      assert.equal(harness.createWorktree.mock.calls.length, 1);
+      assert.equal(harness.runSetup.mock.calls.length, 1);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect(
+  "keeps a failed preparation unknown when a managed terminal remains and rejects a forged failure",
+  () =>
+    Effect.gen(function* () {
+      const setupEntered = yield* Deferred.make<void>();
+      const failSetup = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        runSetup: (setupInput) =>
+          Deferred.succeed(setupEntered, undefined).pipe(
+            Effect.andThen(Deferred.await(failSetup)),
+            Effect.andThen(
+              Effect.fail(
+                new ProjectSetupScriptRunner.ProjectSetupScriptOperationError({
+                  threadId: setupInput.threadId,
+                  worktreePath: setupInput.worktreePath,
+                  operation: "writeCommand",
+                  cause: new Error("setup failed"),
+                }),
+              ),
+            ),
+          ),
+        captureOwnedTargets: (target) =>
+          Effect.succeed({
+            managerId: "thread-launch-test-terminals",
+            threadId: target.threadId,
+            ownerBirth: target.ownerBirth,
+            status: "captured" as const,
+            managedTargetsOnly: true as const,
+            targets: [
+              {
+                threadId: target.threadId,
+                terminalId: "setup-left-open",
+                handleId: "handle:setup-left-open",
+                ownerBirth: target.ownerBirth,
+              },
+            ],
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sink = yield* EventSink.EventSinkV2;
+        const input = launchInput({
+          command: "launch:held-setup-failure",
+          thread: "thread:held-setup-failure",
+          message: "Prepare",
+          workspace: { type: "worktree", branch: "feature", baseRef: "main" },
+        });
+        const launched = yield* launches.launch(input);
+        yield* Deferred.await(setupEntered);
+        const record = yield* sink.readOrdinaryCheckoutUse(
+          `${input.commandId}:ordinary-preparation`,
+        );
+        assert.equal(record?.state, "started");
+        const history = yield* sink.readOrdinaryCheckoutExecutionAssociations(record!.subject.use);
+        const producer = history.participants[0]!;
+        const admission = yield* threads.readOrdinaryCheckoutAdmissionForRun({
+          threadId: launched.threadId,
+          runId: launched.projection.runs[0]!.id,
+        });
+        assert.isNotNull(admission);
+        const checkoutPath = admission!.capture.canonicalCheckoutPath;
+        const forged: Extract<
+          EventSink.OrdinaryCheckoutExecutorOutcomeV1,
+          { kind: "prepared_failed" }
+        > = {
+          kind: "prepared_failed",
+          observation: {
+            version: 1,
+            kind: "prepared_failure_observed",
+            producerId:
+              producer.ref.executor.kind === "actual_prepared_producer"
+                ? producer.ref.executor.producerId
+                : "foreign",
+            execution: producer.ref,
+            targetSource: record!.subject.source,
+            checkoutPath,
+            observedAt: DateTime.formatIso(yield* DateTime.now),
+            branch: "feature",
+            readback: { cwd: checkoutPath, refName: "feature", isRepo: true },
+            worktree: null,
+            failure: "forged failure",
+            setup: {
+              status: "no_managed_process",
+              managerId: "forged",
+              ownerBirth: admission!.capture.applicationBirth,
+              targetCount: 0,
+            },
+          },
+        };
+        const rejected = yield* sink
+          .recordOrdinaryCheckoutExecutorOutcome({
+            ref: producer.ref,
+            actualProducerOutcome: forged,
+            revalidateProducer: Effect.void,
+          })
+          .pipe(Effect.flip);
+        assert.include(rejected.message, "retained producer issuer");
+        assert.equal(
+          (yield* sink
+            .completeOrdinaryCheckoutUse({
+              originalUse: record!.subject.use,
+              expectedAssociationOrdinal: history.latestOrdinal,
+              completionEvidence: { ref: producer.ref, actualProducerOutcome: forged },
+            })
+            .pipe(Effect.result))._tag,
+          "Failure",
+        );
+        assert.equal(
+          (yield* sink.readOrdinaryCheckoutUse(`${input.commandId}:ordinary-preparation`))?.state,
+          "started",
+        );
+        yield* Deferred.succeed(failSetup, undefined);
+        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+          ),
+          Stream.runHead,
+        );
+        const held = yield* sink.readOrdinaryCheckoutUse(`${input.commandId}:ordinary-preparation`);
+        assert.equal(held?.state, "unknown");
+        assert.equal(
+          (yield* sink.readOrdinaryCheckoutExecutionAssociations(held!.subject.use)).participants[0]
+            ?.state,
+          "unknown",
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);

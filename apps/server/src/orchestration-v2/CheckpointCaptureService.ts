@@ -162,16 +162,12 @@ export const layer: Layer.Layer<
           input.ordinaryCheckoutExecution === undefined ||
           basis.runId !== input.runId ||
           basis.scopeId !== input.scopeId ||
-          JSON.stringify(
-            Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
-              basis.checkpointExecution,
-            ),
-          ) !==
-            JSON.stringify(
-              Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
-                input.ordinaryCheckoutExecution,
-              ),
-            )
+          (yield* Schema.encodeEffect(
+            Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1),
+          )(basis.checkpointExecution).pipe(Effect.orDie)) !==
+            (yield* Schema.encodeEffect(
+              Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1),
+            )(input.ordinaryCheckoutExecution).pipe(Effect.orDie))
         )
           return yield* new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
             reason: "claim_mismatch",
@@ -183,9 +179,12 @@ export const layer: Layer.Layer<
       }
       const { run, rootNode, scope, providerThread, readyCheckpointOrdinals } =
         yield* projections.getCheckpointCaptureContext(input.threadId, input);
-      // A stopped run is already terminal. Its checkpoint is the rollback point
-      // for the message after it, so capture leaves its status alone.
-      const stopped = run?.status === "interrupted" || run?.status === "cancelled";
+      // A stopped or failed admitted run is already terminal. Its checkpoint
+      // is the rollback point for the next message, so its status stays intact.
+      const stopped =
+        run?.status === "interrupted" ||
+        run?.status === "cancelled" ||
+        (run?.status === "failed" && input.ordinaryCheckoutExecution !== undefined);
 
       // The effect is at-least-once. A settled run with a checkpoint proves
       // that an earlier execution committed its result.

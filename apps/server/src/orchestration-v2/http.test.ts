@@ -23,7 +23,7 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { failEnvironmentAuthInvalid } from "../auth/http.ts";
 import * as OrchestrationEventStore from "../persistence/Services/OrchestrationEventStore.ts";
@@ -108,7 +108,7 @@ function fixture(
   let group = orchestrationHttpApiLayer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(SqlClient.SqlClient)({ withTransaction: (effect) => effect }),
+        NodeSqliteClient.layer({ filename: ":memory:" }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           dispatch: (input) =>
             Effect.sync(() => {
@@ -128,21 +128,26 @@ function fixture(
                 : Effect.succeed(nativeObservation);
             }),
           observeLegacyCommand: (input) =>
-            Effect.suspend(() => {
-              legacyInputs.push(input);
-              if (options.observationFailure) {
-                return Effect.fail(new OrchestratorProjectionError({ threadId }));
-              }
-              return options.legacySupported
-                ? Effect.succeed(legacyObservation)
-                : Effect.fail(
-                    new CommandObservationUnsupportedError({ reason: "observation_unsupported" }),
-                  );
-            }),
+            Effect.suspend(
+              (): Effect.Effect<
+                OrchestrationCommandObservation,
+                OrchestratorProjectionError | CommandObservationUnsupportedError
+              > => {
+                legacyInputs.push(input);
+                if (options.observationFailure) {
+                  return Effect.fail(new OrchestratorProjectionError({ threadId }));
+                }
+                return options.legacySupported
+                  ? Effect.succeed(legacyObservation)
+                  : Effect.fail(
+                      new CommandObservationUnsupportedError({ reason: "observation_unsupported" }),
+                    );
+              },
+            ),
           getShellSnapshot: () =>
             Effect.sync(() => {
               shellCalls++;
-              return { schemaVersion: 2, snapshotSequence: 7, threads: [] };
+              return { schemaVersion: 2, snapshotSequence: 7, threads: [], archivedThreads: [] };
             }),
           getThreadSnapshotWindow: () =>
             Effect.sync(() => {

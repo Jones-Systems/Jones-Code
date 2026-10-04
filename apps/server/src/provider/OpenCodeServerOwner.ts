@@ -27,12 +27,12 @@ interface OpenCodeServerOwnerState {
 export class OpenCodeServerOwner extends Context.Service<
   OpenCodeServerOwner,
   {
-    readonly subscribeBeforeRuntimeReplacement?: (
-      listener: (generation: string) => Effect.Effect<void, unknown>,
+    readonly subscribeBeforeRuntimeReplacement?: <E>(
+      listener: (generation: string) => Effect.Effect<void, E>,
     ) => Effect.Effect<void, never, Scope.Scope>;
-    readonly withServer: <A, E, R>(
+    readonly withServer: <A, E, R, CreationError = never>(
       use: (server: OpenCodeOwnedServerProcess) => Effect.Effect<A, E, R>,
-      beforeNativeCreation?: (actualDirectory: string) => Effect.Effect<void, unknown>,
+      beforeNativeCreation?: (actualDirectory: string) => Effect.Effect<void, CreationError>,
     ) => Effect.Effect<A, E | OpenCodeRuntime.OpenCodeRuntimeError, R>;
   }
 >()("t3/provider/OpenCodeServerOwner") {}
@@ -51,7 +51,9 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   );
   const mutex = yield* Semaphore.make(1);
   const replacementListeners = new Set<{
-    readonly listener: (generation: string) => Effect.Effect<void, unknown>;
+    readonly listener: (
+      generation: string,
+    ) => Effect.Effect<void, OpenCodeRuntime.OpenCodeRuntimeError>;
   }>();
   const state: OpenCodeServerOwnerState = {
     server: null,
@@ -97,8 +99,8 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     );
   });
 
-  const acquireServer = (
-    beforeNativeCreation?: (actualDirectory: string) => Effect.Effect<void, unknown>,
+  const acquireServer = <CreationError>(
+    beforeNativeCreation?: (actualDirectory: string) => Effect.Effect<void, CreationError>,
   ) =>
     mutex.withPermit(
       Effect.gen(function* () {
@@ -112,27 +114,20 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
 
         const runtimeGeneration = yield* Effect.sync(() => NodeCrypto.randomUUID());
         for (const { listener } of replacementListeners) {
-          yield* listener(runtimeGeneration).pipe(
+          yield* listener(runtimeGeneration);
+        }
+        if (beforeNativeCreation !== undefined) {
+          yield* beforeNativeCreation(input.directory).pipe(
             Effect.mapError(
               (cause) =>
                 new OpenCodeRuntime.OpenCodeRuntimeError({
-                  operation: "beforeRuntimeReplacement",
-                  detail: "Could not register the replacement OpenCode runtime.",
+                  operation: "beforeNativeCreation",
+                  detail: "Could not authorize creation of the owned OpenCode runtime.",
                   cause,
                 }),
             ),
           );
         }
-        yield* (beforeNativeCreation?.(input.directory) ?? Effect.void).pipe(
-          Effect.mapError(
-            (cause) =>
-              new OpenCodeRuntime.OpenCodeRuntimeError({
-                operation: "beforeNativeCreation",
-                detail: "Could not authorize creation of the owned OpenCode runtime.",
-                cause,
-              }),
-          ),
-        );
         if (state.server !== null) {
           yield* closeServer(state.server);
         }
@@ -219,7 +214,19 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
 
   return OpenCodeServerOwner.of({
     subscribeBeforeRuntimeReplacement: (listener) => {
-      const entry = { listener };
+      const entry = {
+        listener: (generation: string) =>
+          listener(generation).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OpenCodeRuntime.OpenCodeRuntimeError({
+                  operation: "beforeRuntimeReplacement",
+                  detail: "Could not register the replacement OpenCode runtime.",
+                  cause,
+                }),
+            ),
+          ),
+      };
       return Effect.acquireRelease(
         mutex.withPermit(
           Effect.sync(() => {

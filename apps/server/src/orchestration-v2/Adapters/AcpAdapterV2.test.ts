@@ -13377,9 +13377,7 @@ describe("AcpAdapterV2", () => {
       Effect.provide(testLayer),
       Effect.scoped,
       Effect.onInterrupt(() =>
-        Effect.sync(() => {
-          console.error(`ACP callback quarantine interrupted during: ${phase}`);
-        }),
+        Effect.logError(`ACP callback quarantine interrupted during: ${phase}`),
       ),
     );
   });

@@ -3,17 +3,22 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { VcsProcessExitError } from "@t3tools/contracts";
+import { type VcsError, VcsProcessExitError } from "@t3tools/contracts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitLabCli from "./GitLabCli.ts";
 
-const mockedRun = vi.fn<VcsProcess.VcsProcess["Service"]["run"]>();
+// Source-control CLIs never pass a mutation guard, so the recorder accepts any guard type.
+type RecordedRun = (
+  input: VcsProcess.VcsProcessInput<unknown, unknown>,
+) => Effect.Effect<VcsProcess.VcsProcessOutput, VcsError>;
+
+const mockedRun = vi.fn<RecordedRun>();
 const layer = it.layer(
   GitLabCli.layer.pipe(
     Layer.provide(
       Layer.mock(VcsProcess.VcsProcess)({
-        run: mockedRun,
+        run: (input) => mockedRun(input),
       }),
     ),
   ),

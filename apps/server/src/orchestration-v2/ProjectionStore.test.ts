@@ -64,6 +64,7 @@ const modelSelection = {
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = modelSelection.instanceId;
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeUnknownJsonStringEffect = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const metadataAndRuntimeIdentityRoundtrip = Effect.gen(function* () {
   const store = yield* ProjectionStore.ProjectionStoreV2;
@@ -975,7 +976,7 @@ const retainedImportedApplicationInventory = (native: boolean, suffix = "") =>
             role: "system",
             createdAt: DateTime.formatIso(now),
             updatedAt: DateTime.formatIso(now),
-            attachmentsJson: JSON.stringify([file]),
+            attachmentsJson: yield* encodeUnknownJsonStringEffect([file]).pipe(Effect.orDie),
             attachments: [file],
             sourceRowSha256: importedApplicationAttachmentSha256V1("historical system row"),
           },
@@ -986,7 +987,7 @@ const retainedImportedApplicationInventory = (native: boolean, suffix = "") =>
             turnId: null,
             sequence: null,
             createdAt: DateTime.formatIso(now),
-            payloadJson: JSON.stringify(answer),
+            payloadJson: yield* encodeUnknownJsonStringEffect(answer).pipe(Effect.orDie),
             answer,
             sourceRowSha256: importedApplicationAttachmentSha256V1("historical answer row"),
           },
@@ -1268,10 +1269,12 @@ const retainedImportedBaselineCopies = Effect.gen(function* () {
     messageEvent,
     itemEvent,
     messagePayloadSha256: importedApplicationAttachmentSha256V1(
-      Schema.encodeSync(OrchestrationV2ConversationMessageJson)(message),
+      yield* Schema.encodeEffect(OrchestrationV2ConversationMessageJson)(message).pipe(
+        Effect.orDie,
+      ),
     ),
     itemPayloadSha256: importedApplicationAttachmentSha256V1(
-      Schema.encodeSync(OrchestrationV2TurnItemJson)(item),
+      yield* Schema.encodeEffect(OrchestrationV2TurnItemJson)(item).pipe(Effect.orDie),
     ),
   };
   const input = { ...fixture.input, baselineCopies: [copy] };
@@ -1368,29 +1371,27 @@ const retainedImportedBaselineCopies = Effect.gen(function* () {
       forkedFrom: { type: "run", threadId: fixture.threadId, runId: sourceRun.id },
     },
   });
-  const inherited = yield* store
-    .getThreadRetainedAttachmentPaths(childId)
-    .pipe(
-      Effect.provideService(ProjectionStore.ImportedApplicationAttachmentRetentionInputV1, {
-        ...input,
-        targetBirth: childBirth,
-        inventories: [
-          {
-            inventory: fixture.inventory,
-            forkBasis: [
-              {
-                targetBirth: childBirth,
-                sourceBirth: fixture.birth,
-                sourceRunId: sourceRun.id,
-                sourceRunOrdinal: sourceRun.ordinal,
-                sourceRunEvent,
-                forkEvent: { eventId: childBirth.eventId, sequence: childBirth.sequence },
-              },
-            ],
-          },
-        ],
-      }),
-    );
+  const inherited = yield* store.getThreadRetainedAttachmentPaths(childId).pipe(
+    Effect.provideService(ProjectionStore.ImportedApplicationAttachmentRetentionInputV1, {
+      ...input,
+      targetBirth: childBirth,
+      inventories: [
+        {
+          inventory: fixture.inventory,
+          forkBasis: [
+            {
+              targetBirth: childBirth,
+              sourceBirth: fixture.birth,
+              sourceRunId: sourceRun.id,
+              sourceRunOrdinal: sourceRun.ordinal,
+              sourceRunEvent,
+              forkEvent: { eventId: childBirth.eventId, sequence: childBirth.sequence },
+            },
+          ],
+        },
+      ],
+    }),
+  );
   assert.equal(inherited.status, "complete");
   if (inherited.status === "complete")
     assert.deepEqual(inherited.relativePaths, updated.relativePaths);
@@ -1535,6 +1536,8 @@ const retainedImportedApplicationForks = Effect.gen(function* () {
     status: "unavailable",
     reason: "imported_source_binding_unavailable",
   });
+  const sourceRootNodeId = sourceRun.rootNodeId;
+  assert.isNotNull(sourceRootNodeId, "the imported source run has a root node to fork from");
   const nodeChildId = ThreadId.make("thread:qualified-node-child");
   yield* store.apply({
     id: EventId.make("event:qualified-node-child"),
@@ -1545,7 +1548,7 @@ const retainedImportedApplicationForks = Effect.gen(function* () {
       ...source.thread,
       id: nodeChildId,
       historyOrigin: "native",
-      forkedFrom: { type: "node", nodeId: sourceRun.rootNodeId },
+      forkedFrom: { type: "node", nodeId: sourceRootNodeId },
       lineage: {
         parentThreadId: fixture.threadId,
         relationshipToParent: "subagent",

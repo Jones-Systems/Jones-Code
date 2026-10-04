@@ -4,7 +4,7 @@ import {
   type ModelSelection,
   type ServerProviderModel,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   codexTurnNeedsModelCatalog,
@@ -93,7 +93,10 @@ describe("Codex effective turn settings", () => {
         get models(): ReadonlyArray<ServerProviderModel> {
           throw new Error("catalog must not be read");
         },
-        get configuredDefaultModelSelection() {
+        get configuredDefaultModelSelection(): {
+          readonly modelSelection: ModelSelection;
+          readonly driver: ProviderDriverKind;
+        } {
           throw new Error("configured default must not be read");
         },
         managed: false,

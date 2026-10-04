@@ -726,9 +726,9 @@ effectIt.effect(
         const f = yield* qualifiedFixture;
         const before = yield* f.projection.getThreadProjection(f.threadId);
         const input = { ...nativeRequest, native_action: "unsettle" as const };
-        const bytes = Schema.encodeSync(Schema.fromJsonString(WorkstreamsNativeSettlementRequest))(
-          input,
-        );
+        const bytes = yield* Schema.encodeEffect(
+          Schema.fromJsonString(WorkstreamsNativeSettlementRequest),
+        )(input).pipe(Effect.orDie);
         const result = terminalCommitted(
           yield* f.runtime.provider.settle(binding, input, sha256Bytes(bytes)),
         );

@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  NodeId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -9,6 +10,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  type OrchestrationV2RunAttempt,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -36,6 +38,24 @@ const driver = ProviderDriverKind.make("codex");
 const providerThreadId = ProviderThreadId.make("provider-thread:restart");
 const sessionId = ProviderSessionId.make("session:restart");
 const attemptId = RunAttemptId.make("attempt:restart");
+const sourceAttempt: OrchestrationV2RunAttempt = {
+  id: attemptId,
+  runId,
+  attemptOrdinal: 1,
+  rootNodeId: NodeId.make("node:restart"),
+  providerInstanceId: instanceId,
+  providerThreadId,
+  providerTurnId: ProviderTurnId.make("turn:restart"),
+  reason: "initial",
+  status: "running",
+  startedAt: null,
+  completedAt: null,
+};
+// An uncaptured continuation never reads markers or held effects; any access dies.
+const uncapturedContinuationServices = Layer.merge(
+  Layer.mock(EventSink.EventSinkV2)({}),
+  Layer.mock(EffectOutbox.EffectOutboxV2)({}),
+);
 
 it("keeps captured restart message identity stable for one source across markers and effects", () => {
   const marker: EventSink.RestartContinuationMarkerV2 = {
@@ -240,7 +260,7 @@ it.effect("prompts a settled thread's continuation with the note of its lost wor
     >[0][] = [];
     yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
       Effect.provide(
-        Layer.merge(
+        Layer.mergeAll(
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(projection),
             dispatch: (command) => {
@@ -249,6 +269,7 @@ it.effect("prompts a settled thread's continuation with the note of its lost wor
             },
           }),
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+          uncapturedContinuationServices,
         ),
       ),
     );
@@ -285,7 +306,7 @@ it.effect("does not continue a failed run that lost background work", () =>
     >[0][] = [];
     yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
       Effect.provide(
-        Layer.merge(
+        Layer.mergeAll(
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(projection),
             dispatch: (command) => {
@@ -294,6 +315,7 @@ it.effect("does not continue a failed run that lost background work", () =>
             },
           }),
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+          uncapturedContinuationServices,
         ),
       ),
     );
@@ -399,7 +421,7 @@ it.effect("delivers a released captured continuation when latest project prefere
         modelSelection: projection.runs[0]!.modelSelection,
       },
       runs: [{ ...projection.runs[0]!, status: "cancelled" }],
-      attempts: [{ id: attemptId, runId, providerThreadId }],
+      attempts: [sourceAttempt],
     } as OrchestrationV2ThreadProjection;
     yield* continueRestartedRun({
       threadId,
@@ -495,7 +517,7 @@ it.effect("delivers a released native-only settled continuation without saved ta
         },
         runs: [{ ...projection.runs[0]!, status }],
         providerTurns: [{ ...projection.providerTurns[0]!, status: "completed" }],
-        attempts: [{ id: attemptId, runId, providerThreadId }],
+        attempts: [sourceAttempt],
       } as OrchestrationV2ThreadProjection;
       yield* continueRestartedRun({
         threadId,
@@ -599,7 +621,7 @@ function capturedDispatchFixture(status: "completed" | "cancelled" = "completed"
     },
     runs: [{ ...base.runs[0]!, status }],
     providerTurns: [{ ...base.providerTurns[0]!, status: "completed" }],
-    attempts: [{ id: attemptId, runId, providerThreadId }],
+    attempts: [sourceAttempt],
   } as OrchestrationV2ThreadProjection;
   let held = false;
   const ordinary: Parameters<
@@ -779,9 +801,10 @@ it.effect("does not duplicate delivery and yields to newer user work or opt-out"
         return Effect.succeed({} as never);
       },
     });
-    const enabled = Layer.merge(
+    const enabled = Layer.mergeAll(
       threads,
       ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+      uncapturedContinuationServices,
     );
     yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(Effect.provide(enabled));
     yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(Effect.provide(enabled));
@@ -807,7 +830,11 @@ it.effect("does not duplicate delivery and yields to newer user work or opt-out"
     projection = { ...projection, runs: [projection.runs[0]!] };
     yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
       Effect.provide(
-        Layer.merge(threads, ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false })),
+        Layer.mergeAll(
+          threads,
+          ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false }),
+          uncapturedContinuationServices,
+        ),
       ),
     );
     assert.lengthOf(commands, 1);
@@ -1032,6 +1059,7 @@ it.effect("does not cancel or resume a run that completes while shutdown intent 
                 return {} as never;
               }),
           }),
+          uncapturedContinuationServices,
         ),
       ),
     );

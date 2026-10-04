@@ -47,7 +47,7 @@ it.layer(testLayer)("claimed creation startup", (it) => {
           const repository = yield* NativeCreationRepository;
           const timestamp = "2026-10-02T12:34:56Z";
           const text = "Synthetic claimed setup";
-          const binding = Schema.decodeUnknownSync(NativePreparationBinding)({
+          const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
             backend_instance: "fixture-backend",
             environment_id: "fixture-environment",
             project_id: "fixture-project",
@@ -59,7 +59,7 @@ it.layer(testLayer)("claimed creation startup", (it) => {
             start_from_origin: false,
             run_setup_script: true,
             provider_model_selection: { instanceId: "codex", model: "fixture-model" },
-          });
+          }).pipe(Effect.orDie);
           const command = nativePreparationCommand(
             "fixture-startup-operation",
             binding,
@@ -81,7 +81,7 @@ it.layer(testLayer)("claimed creation startup", (it) => {
               }),
             ),
           );
-          const historical = Schema.decodeUnknownSync(NativeCreationHistoricalBinding)({
+          const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
             backendInstance: binding.backend_instance,
             environmentId: binding.environment_id,
             projectId: binding.project_id,
@@ -96,7 +96,7 @@ it.layer(testLayer)("claimed creation startup", (it) => {
             startFromOrigin: false,
             runSetupScript: true,
             requestedBranch: command.bootstrap.prepareWorktree.branch,
-          });
+          }).pipe(Effect.orDie);
           const claim = yield* repository.claim(
             {
               preparation,

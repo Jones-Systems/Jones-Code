@@ -354,22 +354,20 @@ it.layer(testLayer)("Deletion worktree removal producer", (it) => {
         const observedGit = {
           ...fixture.git,
           execute: (input: GitVcsDriver.ExecuteGitInput) =>
-            fixture.git
-              .execute(input)
-              .pipe(
-                Effect.map((result) =>
-                  input.args[0] === "worktree" && input.args[1] === "list"
-                    ? {
-                        ...result,
-                        ...(defect === "truncated"
-                          ? { stdoutTruncated: true }
-                          : defect === "malformed"
-                            ? { stdout: result.stdout.slice(0, -1) }
-                            : { stderr: "fixture-read-warning" }),
-                      }
-                    : result,
-                ),
+            fixture.git.execute(input).pipe(
+              Effect.map((result) =>
+                input.args[0] === "worktree" && input.args[1] === "list"
+                  ? {
+                      ...result,
+                      ...(defect === "truncated"
+                        ? { stdoutTruncated: true }
+                        : defect === "malformed"
+                          ? { stdout: result.stdout.slice(0, -1) }
+                          : { stderr: "fixture-read-warning" }),
+                    }
+                  : result,
               ),
+            ),
         };
         const producer = yield* makeDeletionWorktreeRemoval.pipe(
           Effect.provideService(GitVcsDriver.GitVcsDriver, observedGit),
@@ -423,7 +421,7 @@ it.layer(testLayer)("Deletion worktree removal producer", (it) => {
       const fiber = yield* Effect.gen(function* () {
         const fixture = yield* makeFixture;
         yield* Deferred.succeed(ready, fixture.root);
-        yield* Effect.never;
+        return yield* Effect.never;
       }).pipe(Effect.scoped, Effect.forkChild);
       const cancelledRoot = yield* Deferred.await(ready);
       yield* Fiber.interrupt(fiber);

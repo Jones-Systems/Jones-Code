@@ -19,6 +19,7 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -75,11 +76,12 @@ it.effect(
             }
             openedSessions += 1;
             const now = yield* DateTime.now;
+            const runtimeGeneration = input.nativeOperation?.runtimeGeneration;
             return {
               instanceId: modelSelection.instanceId,
               driver,
               providerSessionId: input.providerSessionId,
-              runtimeGeneration: input.nativeOperation!.runtimeGeneration,
+              ...(runtimeGeneration === undefined ? {} : { runtimeGeneration }),
               providerSession: {
                 id: input.providerSessionId,
                 driver,
@@ -230,31 +232,29 @@ it.effect(
             threadId,
           })
           .pipe(Effect.exit);
-        const diagnostic = JSON.stringify(
-          {
-            firstWorkerExit:
-              firstWorkerExit === undefined
-                ? null
-                : Exit.isFailure(firstWorkerExit)
-                  ? Cause.pretty(firstWorkerExit.cause)
-                  : firstWorkerExit.value,
-            runs: afterFailure.runs,
-            attempts: afterFailure.attempts,
-            nodes: afterFailure.nodes,
-            claim,
-            use,
-            history,
-            leases,
-            runtimeOwner: facts.commitSnapshot.records.runtime_evidence,
-            holds,
-            beforeResume,
-            resumeExit: Exit.isFailure(resumeExit)
-              ? Cause.pretty(resumeExit.cause)
-              : resumeExit.value,
-          },
-          null,
-          2,
-        );
+        const diagnostic = yield* Schema.encodeEffect(
+          Schema.fromJsonString(Schema.Unknown, { space: 2 }),
+        )({
+          firstWorkerExit:
+            firstWorkerExit === undefined
+              ? null
+              : Exit.isFailure(firstWorkerExit)
+                ? Cause.pretty(firstWorkerExit.cause)
+                : firstWorkerExit.value,
+          runs: afterFailure.runs,
+          attempts: afterFailure.attempts,
+          nodes: afterFailure.nodes,
+          claim,
+          use,
+          history,
+          leases,
+          runtimeOwner: facts.commitSnapshot.records.runtime_evidence,
+          holds,
+          beforeResume,
+          resumeExit: Exit.isFailure(resumeExit)
+            ? Cause.pretty(resumeExit.cause)
+            : resumeExit.value,
+        }).pipe(Effect.orDie);
         assert.isDefined(firstWorkerExit, diagnostic);
         assert.isTrue(Exit.isSuccess(firstWorkerExit!), diagnostic);
         assert.equal(
@@ -329,7 +329,7 @@ for (const variant of [
         let openAttempts = 0;
         let openedSessions = 0;
         const startedRunIds: RunId[] = [];
-        let beforeFailure: Effect.Effect<void, unknown> = Effect.void;
+        let beforeFailure: Effect.Effect<void> = Effect.void;
         let attemptedSessionId: import("@t3tools/contracts").ProviderSessionId | undefined;
         const adapter: ProviderAdapterV2Shape = {
           instanceId: modelSelection.instanceId,
@@ -340,7 +340,7 @@ for (const variant of [
             Effect.gen(function* () {
               openAttempts += 1;
               attemptedSessionId = input.providerSessionId;
-              yield* beforeFailure.pipe(Effect.orDie);
+              yield* beforeFailure;
               return yield* new ProviderAdapterOpenSessionError({
                 driver,
                 providerSessionId: input.providerSessionId,
@@ -436,6 +436,7 @@ for (const variant of [
             Effect.sync(() => vi.spyOn(sink, "settleOrdinaryCheckoutStartFailedBeforeOpen")),
             (spy) => Effect.sync(() => spy.mockRestore()),
           );
+          // Tampering failures stay defects at the provider-open boundary.
           beforeFailure = Effect.gen(function* () {
             const current = Option.getOrThrow(yield* outbox.get(startA.id));
             if (variant === "claim")
@@ -546,7 +547,7 @@ for (const variant of [
                 ],
               });
             }
-          });
+          }).pipe(Effect.orDie);
           let firstWorkerExit:
             | Exit.Exit<boolean, EffectWorker.OrchestrationEffectWorkerError>
             | undefined;

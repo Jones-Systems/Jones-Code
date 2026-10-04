@@ -193,6 +193,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
         catchUp.shellSnapshotReads += 1;
         return { schemaVersion: 2, snapshotSequence: 1, threads: [], archivedThreads: [] };
       }),
+    ensureApplicationAttachmentInventory: unused,
     ensureLegacyTranscript: unused,
     dispatch: unused,
     dispatchNativeWorkstreamSettlement: unused,
@@ -214,6 +215,14 @@ const makeTestRelay = Effect.fnUntraced(function* (
     getOperatingCounts: unused,
     acquireWorktreeOwnership: unused,
     acquireOrdinaryWorktreeOwnership: unused,
+    captureOrdinaryPreparedLaunch: unused,
+    readOrdinaryCheckoutAdmissionForRun: unused,
+    beginOrdinaryPreparedCheckoutUse: unused,
+    revalidateOrdinaryCheckoutUse: unused,
+    dispatchOrdinaryPreparedBranchRename: unused,
+    dispatchOrdinaryPreparedRunRelease: unused,
+    registerOrdinaryCheckoutExecution: unused,
+    revalidateOrdinaryCheckoutExecution: unused,
     releaseWorktreeOwnership: unused,
     getThreadOwnershipIncarnation: unused,
     getOrdinaryThreadOwnershipIncarnation: unused,

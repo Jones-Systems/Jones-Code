@@ -86,6 +86,9 @@ const timestamp = "2026-10-02T12:34:56Z";
 const decodeFixtureBinding = Schema.decodeUnknownSync(NativePreparationBinding);
 const decodeFixtureHistory = Schema.decodeUnknownSync(NativeCreationHistoricalBinding);
 const decodeFixtureCommand = Schema.decodeUnknownSync(OrchestrationV2Command);
+// Same bytes as JSON.stringify; a failure stays a defect as the native throw was.
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(Effect.orDie);
 const releaseCommand = (preparation: {
   readonly command: { readonly commandId: string; readonly threadId: string };
 }) =>
@@ -1201,17 +1204,19 @@ it.effect(
           nativeCreationExecutionReference: reference,
         },
       ]) {
-        yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json = ${JSON.stringify(payload)} WHERE effect_id = ${reference.effectId}`;
+        const payloadJson = yield* encodeJson(payload);
+        yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json = ${payloadJson} WHERE effect_id = ${reference.effectId}`;
         assert.strictEqual(
           (yield* repository.startEffectV2(reference, timestamp, value.authorize).pipe(Effect.flip))
             .code,
           "unresolved_claim",
         );
       }
-      yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json = ${JSON.stringify({
+      const boundPayloadJson = yield* encodeJson({
         request: value.pending.request,
         nativeCreationExecutionReference: reference,
-      })}, lease_expires_at = '2000-01-01T00:00:00Z' WHERE effect_id = ${reference.effectId}`;
+      });
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json = ${boundPayloadJson}, lease_expires_at = '2000-01-01T00:00:00Z' WHERE effect_id = ${reference.effectId}`;
       assert.strictEqual(
         (yield* repository.startEffectV2(reference, timestamp, value.authorize).pipe(Effect.flip))
           .code,
@@ -1939,10 +1944,15 @@ it.effect("different claims cannot bind or reserve another owner's commands", ()
     );
     assert.strictEqual(
       (yield* repository
-        .reserveCommand(second.input.claimId, {
-          ...releaseCommand(first.preparation),
-          threadId: ThreadId.make(second.preparation.command.threadId),
-        })
+        .reserveCommand(
+          second.input.claimId,
+          releaseCommand({
+            command: {
+              commandId: first.preparation.command.commandId,
+              threadId: second.preparation.command.threadId,
+            },
+          }),
+        )
         .pipe(Effect.flip)).code,
       "conflict",
     );
@@ -2029,7 +2039,7 @@ it.effect(
       );
       const command = {
         type: "thread.activity.append" as const,
-        commandId: `${value.preparation.command.commandId}:worktree-setup-done`,
+        commandId: CommandId.make(`${value.preparation.command.commandId}:worktree-setup-done`),
         threadId: ThreadId.make(value.preparation.command.threadId),
         activity: {
           id: "fixture-native-activity",

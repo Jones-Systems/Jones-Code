@@ -1,3 +1,4 @@
+import * as EventSinkJsonCodec from "./EventSinkJsonCodec.ts";
 import {
   AgentSessionImportSource,
   CommandId,
@@ -51,12 +52,13 @@ import {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
-import * as NodePath from "node:path";
+import * as NodePathLayer from "@effect/platform-node/NodePath";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -267,6 +269,29 @@ export type OrdinaryFinalCheckpointClaimResultV1 =
       readonly execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
       readonly completionBasis: OrdinaryFinalCheckpointCompletionBasisV1;
     };
+const OrdinaryPreparedPhysicalFieldsV1 = {
+  version: Schema.Literal(1),
+  producerId: Schema.NonEmptyString,
+  execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+  targetSource: OrdinaryCheckoutUseSubjectV1.fields.source,
+  checkoutPath: Schema.NonEmptyString,
+  observedAt: Schema.NonEmptyString,
+};
+const OrdinaryPreparedBranchObservationV1 = Schema.Struct({
+  ...OrdinaryPreparedPhysicalFieldsV1,
+  kind: Schema.Literal("prepared_branch_renamed"),
+  oldBranch: Schema.NonEmptyString,
+  requestedBranch: Schema.NonEmptyString,
+  renamedBranch: Schema.NonEmptyString,
+  readback: Schema.Struct({ cwd: Schema.NonEmptyString, refName: Schema.NonEmptyString }),
+});
+const OrdinaryPreparedBranchTransitionV1 = Schema.Struct({
+  observation: OrdinaryPreparedBranchObservationV1,
+  commandId: CommandId,
+  eventId: EventId,
+  sequence: Schema.Int.check(Schema.isGreaterThan(0)),
+  associationOrdinal: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
 const OrdinaryCheckoutExecutionLivenessV1 = Schema.Struct({
   version: Schema.Literal(1),
   schema: Schema.Literal("t3.ordinary-checkout-execution-liveness/v1"),
@@ -315,14 +340,6 @@ const OrdinaryCheckpointExecutorOutcomeV1 = Schema.Struct({
   kind: Schema.Literal("checkpoint_captured"),
   observation: OrdinaryCheckpointProducerObservationV1,
 });
-const OrdinaryPreparedPhysicalFieldsV1 = {
-  version: Schema.Literal(1),
-  producerId: Schema.NonEmptyString,
-  execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
-  targetSource: OrdinaryCheckoutUseSubjectV1.fields.source,
-  checkoutPath: Schema.NonEmptyString,
-  observedAt: Schema.NonEmptyString,
-};
 export const OrdinaryPreparedSetupObservationV1 = Schema.Struct({
   ...OrdinaryPreparedPhysicalFieldsV1,
   kind: Schema.Literal("prepared_setup_completed"),
@@ -363,6 +380,30 @@ const OrdinaryPreparedExecutorOutcomeV1 = Schema.Struct({
   kind: Schema.Literal("prepared_completed"),
   observation: OrdinaryPreparedSetupObservationV1,
 });
+// A failed preparation ends only through its retained producer's own readback: the
+// verified checkout and ref, and no T3-managed terminal left for the original birth.
+const OrdinaryPreparedFailureObservationV1 = Schema.Struct({
+  ...OrdinaryPreparedPhysicalFieldsV1,
+  kind: Schema.Literal("prepared_failure_observed"),
+  branch: Schema.NullOr(Schema.String),
+  readback: Schema.Struct({
+    cwd: Schema.NonEmptyString,
+    refName: Schema.NullOr(Schema.String),
+    isRepo: Schema.Boolean,
+  }),
+  worktree: OrdinaryPreparedSetupObservationV1.fields.worktree,
+  failure: Schema.NonEmptyString,
+  setup: Schema.Struct({
+    status: Schema.Literal("no_managed_process"),
+    managerId: Schema.NonEmptyString,
+    ownerBirth: OrdinaryCheckout.OrdinaryApplicationBirthV1,
+    targetCount: Schema.Literal(0),
+  }),
+});
+const OrdinaryPreparedFailedExecutorOutcomeV1 = Schema.Struct({
+  kind: Schema.Literal("prepared_failed"),
+  observation: OrdinaryPreparedFailureObservationV1,
+});
 export const OrdinaryRollbackProducerObservationV1 = Schema.Struct({
   version: Schema.Literal(1),
   kind: Schema.Literal("rolled_back"),
@@ -399,6 +440,26 @@ export const StartFailedBeforeOpenObservationV1 = Schema.Struct({
   terminalPayloadSha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
 });
 export type StartFailedBeforeOpenObservationV1 = typeof StartFailedBeforeOpenObservationV1.Type;
+export const StartRetryBeforeOpenObservationV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  schema: Schema.Literal("t3.start-retry-before-open/v1"),
+  execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+  run: OrdinaryCheckout.OrdinaryAcceptedRunV1,
+  providerInstanceId: ProviderInstanceId,
+  providerThreadId: ProviderThreadId,
+  providerSessionId: ProviderSessionId,
+  checkpointScopeId: Schema.NullOr(CheckpointScopeId),
+  attemptedOperation: ProviderNativeOperationContext,
+  nativeEffect: ProviderNativeEffectEvidence,
+  completedAt: Schema.NonEmptyString,
+});
+export type StartRetryBeforeOpenObservationV1 = typeof StartRetryBeforeOpenObservationV1.Type;
+const OrdinaryRetryStartExecutorOutcomeV1 = Schema.Struct({
+  kind: Schema.Literal("start_retry_before_open"),
+  observation: StartRetryBeforeOpenObservationV1,
+  availableAt: Schema.NonEmptyString,
+  error: Schema.String,
+});
 const OrdinaryFailedStartExecutorOutcomeV1 = Schema.Struct({
   kind: Schema.Literal("start_failed_before_open"),
   observation: StartFailedBeforeOpenObservationV1,
@@ -413,7 +474,9 @@ export const OrdinaryCheckoutExecutorOutcomeV1 = Schema.Union([
   }),
   OrdinaryCheckpointExecutorOutcomeV1,
   OrdinaryFailedStartExecutorOutcomeV1,
+  OrdinaryRetryStartExecutorOutcomeV1,
   OrdinaryPreparedExecutorOutcomeV1,
+  OrdinaryPreparedFailedExecutorOutcomeV1,
   OrdinaryRollbackExecutorOutcomeV1,
   Schema.Struct({
     kind: Schema.Literal("managed_mutations_finished"),
@@ -436,6 +499,7 @@ export const OrdinaryCheckoutCompletionEvidenceV1 = Schema.Struct({
   actualProducerOutcome: Schema.Union([
     OrdinaryCheckpointExecutorOutcomeV1,
     OrdinaryPreparedExecutorOutcomeV1,
+    OrdinaryPreparedFailedExecutorOutcomeV1,
     OrdinaryFailedStartExecutorOutcomeV1,
   ]),
 });
@@ -1384,6 +1448,23 @@ const ImportedHistoryReservation = Context.Reference<string | undefined>(
  * SERVICE DEFINITION
  */
 export interface EventSinkV2Shape {
+  readonly resolveOrdinaryCheckoutLease: (
+    original: WorktreeOwnershipLease,
+  ) => Effect.Effect<WorktreeOwnershipLease, OrdinaryCheckoutCommitErrorV1>;
+  readonly transitionOrdinaryPreparedBranch: (input: {
+    readonly observation: Extract<
+      OrdinaryPreparedPhysicalResultV1,
+      { readonly kind: "prepared_branch_renamed" }
+    >;
+    readonly commandId: CommandId;
+    readonly commitMetadata: Effect.Effect<
+      {
+        readonly sequence: number;
+        readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
+      },
+      unknown
+    >;
+  }) => Effect.Effect<WorktreeOwnershipLease, OrdinaryCheckoutCommitErrorV1>;
   readonly readOrdinaryFinalCheckpointCandidates: (input?: {
     readonly limit?: number;
   }) => Effect.Effect<
@@ -1454,6 +1535,17 @@ export interface EventSinkV2Shape {
     readonly actualProducerOutcome: OrdinaryCheckoutExecutorOutcomeV1;
     readonly revalidateProducer?: Effect.Effect<void, unknown>;
   }) => Effect.Effect<OrdinaryCheckoutExecutionAssociationFactV1, OrdinaryCheckoutCommitErrorV1>;
+  readonly settleOrdinaryCheckoutStartRetry: (input: {
+    readonly observation: StartRetryBeforeOpenObservationV1;
+    readonly error: string;
+    readonly delayMs: number;
+  }) => Effect.Effect<void, OrdinaryCheckoutCommitErrorV1>;
+  readonly joinOrdinaryCheckoutRetryClaim: (
+    claim: typeof OrdinaryCheckout.OrdinaryCheckoutOutboxExecutionSourceV1.Type,
+  ) => Effect.Effect<
+    OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1 | null,
+    OrdinaryCheckoutCommitErrorV1
+  >;
   readonly settleOrdinaryCheckoutStartFailedBeforeOpen: (input: {
     readonly ref: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
     readonly observation: StartFailedBeforeOpenObservationV1;
@@ -1501,18 +1593,18 @@ export interface EventSinkV2Shape {
   readonly readDeletionWorktreeExecutionBasis: (
     effectId: string,
   ) => Effect.Effect<DeletionWorktreeExecutionBasisV1 | null, EventSinkV2Error>;
-  readonly startDeletionWorktreeRemoval: (input: {
+  readonly startDeletionWorktreeRemoval: <PolicyError>(input: {
     readonly effectId: string;
     readonly bindingSha256: string;
     readonly workerId: string;
     readonly expectedAttempt: number;
     readonly target: DeletionWorktreeRemovalTargetV1;
-    readonly revalidatePolicy?: Effect.Effect<WorktreeCleanupRules, unknown>;
+    readonly revalidatePolicy?: Effect.Effect<WorktreeCleanupRules, PolicyError>;
   }) => Effect.Effect<DeletionWorktreeRemovalStartResultV1, EventSinkV2Error>;
-  readonly revalidateDeletionWorktreeRemovalStart: (
+  readonly revalidateDeletionWorktreeRemovalStart: <PolicyError>(
     start: DeletionWorktreeRemovalStartV1,
     startOrdinal: number,
-    revalidatePolicy?: Effect.Effect<WorktreeCleanupRules, unknown>,
+    revalidatePolicy?: Effect.Effect<WorktreeCleanupRules, PolicyError>,
   ) => Effect.Effect<void, EventSinkV2Error>;
   readonly readDeletionCleanupTask: (
     effectId: string,
@@ -1544,7 +1636,7 @@ export interface EventSinkV2Shape {
     readonly bindingSha256: string;
     readonly expectedLatestOrdinal: number;
   }) => Effect.Effect<boolean, EventSinkV2Error>;
-  readonly finalizeDeletionWorktreeCleanup: <E, R>(input: {
+  readonly finalizeDeletionWorktreeCleanup: <E = never, R = never>(input: {
     readonly effectId: string;
     readonly bindingSha256: string;
     readonly expectedLatestOrdinal: number;
@@ -1829,10 +1921,10 @@ export interface EventSinkV2Shape {
   readonly clearRestartContinuation: (
     marker: RestartContinuationMarkerV2,
   ) => Effect.Effect<boolean, EventSinkV2Error>;
-  readonly releaseRestartContinuation: (input: {
+  readonly releaseRestartContinuation: <E = never>(input: {
     readonly marker: RestartContinuationMarkerV2;
     readonly currentSnapshot: NativeCommandTargetSnapshotV2;
-    readonly revalidateAfterTrial: Effect.Effect<void, unknown>;
+    readonly revalidateAfterTrial: Effect.Effect<void, E>;
   }) => Effect.Effect<boolean, EventSinkV2Error | RestartContinuationMarkerError>;
   readonly onCommit: (effect: Effect.Effect<void>) => Effect.Effect<void, EventSinkWriteError>;
   readonly withTransaction: <A, E, R>(
@@ -2095,6 +2187,7 @@ const baseLayer: Layer.Layer<
 > = Layer.effect(
   EventSinkV2,
   Effect.gen(function* () {
+    const NodePath = yield* Path.Path;
     const sql = yield* SqlClient.SqlClient;
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
@@ -2316,10 +2409,16 @@ const baseLayer: Layer.Layer<
       const row = rows[0]!;
       const record = yield* Schema.decodeUnknownEffect(ThreadDeletionCommandRecordSchemaV1)(
         {
-          command: JSON.parse(row.canonical_command_json),
+          command: yield* EventSinkJsonCodec.decodeJson(row.canonical_command_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
           commandDigest: row.command_digest,
-          ownerBirth: JSON.parse(row.owner_birth_json).birth,
-          inventory: JSON.parse(row.worktree_inventory_json),
+          ownerBirth: yield* EventSinkJsonCodec.decodeOwnerBirth(row.owner_birth_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          inventory: yield* EventSinkJsonCodec.decodeJson(row.worktree_inventory_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
           deletion: {
             commandId,
             eventId: row.deletion_event_id,
@@ -2342,7 +2441,9 @@ const baseLayer: Layer.Layer<
         command.threadId !== row.thread_id ||
         record.commandDigest !==
           nativeCreationSha256(
-            nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)),
+            nativeCreationCanonicalJson(
+              yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
+            ),
           ) ||
         receipt?.status !== "accepted" ||
         receipt.commandType !== command.type ||
@@ -2355,15 +2456,18 @@ const baseLayer: Layer.Layer<
           commandId,
           cause: "Original deletion command lost its accepted event association",
         });
-      const deleted = JSON.parse(events[0]!.payload_json);
       if (
-        deleted.id !== command.threadId ||
-        deleted.projectId !== record.inventory.worktree.projectId ||
-        deleted.branch !== record.inventory.worktree.branch ||
-        (deleted.worktreePath === null || record.inventory.projectRoot === null
-          ? null
-          : NodePath.resolve(record.inventory.projectRoot, deleted.worktreePath)) !==
-          record.inventory.worktree.path
+        yield* EventSinkJsonCodec.decodeDeletionInventoryMismatch(
+          events[0]!.payload_json,
+          {
+            threadId: command.threadId,
+            projectId: record.inventory.worktree.projectId,
+            branch: record.inventory.worktree.branch,
+            projectRoot: record.inventory.projectRoot,
+            path: record.inventory.worktree.path,
+          },
+          NodePath.resolve,
+        ).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))))
       )
         return yield* new EventSinkWriteError({
           eventCount: 0,
@@ -2410,11 +2514,11 @@ const baseLayer: Layer.Layer<
       const incarnation =
         ownerBirth === null
           ? null
-          : JSON.stringify([
+          : yield* EventSinkJsonCodec.encodeBirthTupleJson([
               "t3.orchestration-v2.thread-birth/v1",
               ownerBirth.eventId,
               ownerBirth.sequence,
-            ]);
+            ]).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))));
       const matchingLease =
         leases?.length === 1 &&
         leases[0]!.ownerThreadId === command.threadId &&
@@ -2487,11 +2591,11 @@ const baseLayer: Layer.Layer<
         const threads = yield* sql<{ readonly thread_id: string; readonly payload_json: string }>`
           SELECT thread_id, payload_json FROM orchestration_v2_projection_threads WHERE thread_id <> ${command.threadId}`;
         for (const row of threads) {
-          const other = JSON.parse(row.payload_json);
-          if (other.deletedAt === null && typeof other.worktreePath === "string") {
-            const otherProject = Option.getOrNull(
-              yield* projectStore.get(ProjectId.make(other.projectId)),
-            );
+          const other = yield* EventSinkJsonCodec.decodeSharedWorktreeCandidate(
+            row.payload_json,
+          ).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))));
+          if (other !== null) {
+            const otherProject = Option.getOrNull(yield* projectStore.get(other.projectId));
             if (
               otherProject !== null &&
               NodePath.resolve(otherProject.workspaceRoot, other.worktreePath) === path
@@ -2536,16 +2640,25 @@ const baseLayer: Layer.Layer<
         SELECT * FROM orchestration_v2_lease_cleanup_task_bindings WHERE effect_id = ${effectId}`;
       if (rows.length === 0) return null;
       const row = rows[0]!;
-      const task = JSON.parse(row.task_json);
-      if (task.kind !== "worktree") return null;
+      const parsedTask = yield* EventSinkJsonCodec.decodeTaskWithKind(row.task_json).pipe(
+        Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+      );
+      if (parsedTask.kind !== "worktree") return null;
+      const task = parsedTask.value;
       const binding = yield* Schema.decodeUnknownEffect(DeletionWorktreeTaskBindingV1)(
         {
           version: 1,
           effectId,
           threadId: row.thread_id,
-          leaseInventory: JSON.parse(row.lease_json),
-          ownerBirth: JSON.parse(row.owner_birth_json).birth,
-          deletion: JSON.parse(row.deletion_json),
+          leaseInventory: yield* EventSinkJsonCodec.decodeJson(row.lease_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          ownerBirth: yield* EventSinkJsonCodec.decodeOwnerBirth(row.owner_birth_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          deletion: yield* EventSinkJsonCodec.decodeJson(row.deletion_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
           task,
           bindingSha256: row.binding_sha256,
           recordedAt: row.recorded_at,
@@ -2595,7 +2708,9 @@ const baseLayer: Layer.Layer<
                 nativeCreationCanonicalJson(request.consent))
           : command.worktreeRemoval !== undefined || binding.task.consent !== undefined) ||
         nativeCreationSha256(
-          nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)),
+          nativeCreationCanonicalJson(
+            yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
+          ),
         ) !== binding.task.commandDigest ||
         effect === null ||
         effect.id !== deletionWorktreeEffectIdV1(command.commandId, binding.threadId) ||
@@ -2612,16 +2727,18 @@ const baseLayer: Layer.Layer<
           eventCount: 0,
           cause: "Worktree cleanup lost its original command/deletion/task association",
         });
-      const deleted = JSON.parse(events[0]!.payload_json);
-      const expectedPath =
-        deleted.worktreePath === null || binding.task.projectRoot === null
-          ? null
-          : NodePath.resolve(binding.task.projectRoot, deleted.worktreePath);
       if (
-        deleted.id !== binding.threadId ||
-        deleted.projectId !== binding.task.worktree.projectId ||
-        expectedPath !== binding.task.worktree.path ||
-        deleted.branch !== binding.task.worktree.branch
+        yield* EventSinkJsonCodec.decodeCleanupDeletionMismatch(
+          events[0]!.payload_json,
+          {
+            threadId: binding.threadId,
+            projectId: binding.task.worktree.projectId,
+            branch: binding.task.worktree.branch,
+            projectRoot: binding.task.projectRoot,
+            path: binding.task.worktree.path,
+          },
+          NodePath.resolve,
+        ).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))))
       )
         return yield* new EventSinkWriteError({
           eventCount: 0,
@@ -2653,11 +2770,11 @@ const baseLayer: Layer.Layer<
           binding.leaseInventory.lease.ownerThreadId !== binding.threadId ||
           binding.leaseInventory.lease.resourcePath !== binding.task.worktree.path ||
           binding.leaseInventory.lease.ownerIncarnation !==
-            JSON.stringify([
+            (yield* EventSinkJsonCodec.encodeBirthTupleJson([
               "t3.orchestration-v2.thread-birth/v1",
               binding.ownerBirth.eventId,
               binding.ownerBirth.sequence,
-            ]))
+            ]).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))))))
       )
         return yield* new EventSinkWriteError({
           eventCount: 0,
@@ -2703,9 +2820,14 @@ const baseLayer: Layer.Layer<
           admission.length !== 1 ||
           !["started", "unknown", "completed", "released"].includes(admission[0]!.state) ||
           admission[0]!.started_at !== start.startedAt ||
-          nativeCreationCanonicalJson(JSON.parse(rows[0]!.correlation_json).evidence) !==
-            nativeCreationCanonicalJson(start) ||
-          JSON.parse(admission[0]!.subject_json).bindingSha256 !== binding.bindingSha256 ||
+          nativeCreationCanonicalJson(
+            yield* EventSinkJsonCodec.decodeCorrelationEvidence(rows[0]!.correlation_json).pipe(
+              Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+            ),
+          ) !== nativeCreationCanonicalJson(start) ||
+          (yield* EventSinkJsonCodec.decodeBindingSha256(admission[0]!.subject_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          )) !== binding.bindingSha256 ||
           start.effectId !== binding.effectId ||
           start.bindingSha256 !== binding.bindingSha256 ||
           nativeCreationCanonicalJson(start.target) !==
@@ -2887,8 +3009,11 @@ const baseLayer: Layer.Layer<
         WHERE effect_id = ${effectId} ORDER BY ordinal DESC LIMIT 1`;
       if (rows.length === 0) return null;
       const row = rows[0]!;
-      const raw = JSON.parse(row.correlation_json);
-      if (raw.evidence?.schema !== "t3.deletion-cleanup-observation/v1") return null;
+      const parsedCorrelation = yield* EventSinkJsonCodec.decodeCleanupCorrelation(
+        row.correlation_json,
+      ).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))));
+      if (parsedCorrelation.evidenceSchema !== "t3.deletion-cleanup-observation/v1") return null;
+      const raw = parsedCorrelation.value;
       const correlation = yield* Schema.decodeUnknownEffect(
         Schema.Struct({
           workerId: Schema.NonEmptyString,
@@ -3079,10 +3204,17 @@ const baseLayer: Layer.Layer<
             operationId: row.operation_id,
             path: row.canonical_path,
             kind: row.kind,
-            subject: JSON.parse(row.subject_json),
+            subject: yield* EventSinkJsonCodec.decodeJson(row.subject_json).pipe(
+              Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+            ),
             state: row.state,
             startedAt: row.started_at,
-            outcome: row.outcome_json === null ? null : JSON.parse(row.outcome_json),
+            outcome:
+              row.outcome_json === null
+                ? null
+                : yield* EventSinkJsonCodec.decodeJson(row.outcome_json).pipe(
+                    Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+                  ),
             recordedAt: row.recorded_at,
             updatedAt: row.updated_at,
           },
@@ -3185,7 +3317,9 @@ const baseLayer: Layer.Layer<
       return (
         retirement.effectId === binding.effectId &&
         retirement.bindingSha256 === binding.bindingSha256 &&
-        JSON.parse(rows[0]!.subject_json).bindingSha256 === binding.bindingSha256 &&
+        (yield* EventSinkJsonCodec.decodeBindingSha256(rows[0]!.subject_json).pipe(
+          Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+        )) === binding.bindingSha256 &&
         nativeCreationCanonicalJson(retirement.originalLeaseInventory) ===
           nativeCreationCanonicalJson(binding.leaseInventory) &&
         latest?.ordinal === retirement.qualifiedOrdinal &&
@@ -3367,17 +3501,35 @@ const baseLayer: Layer.Layer<
           cause: "Cleanup task binding is ambiguous",
         });
       const row = rows[0]!;
-      if (JSON.parse(row.task_json).kind === "worktree") return null;
-      if (JSON.parse(row.lease_json).status === "absent") return null;
+      if (
+        (yield* EventSinkJsonCodec.decodeTaskKind(row.task_json).pipe(
+          Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+        )) === "worktree"
+      )
+        return null;
+      if (
+        (yield* EventSinkJsonCodec.decodeLeaseStatus(row.lease_json).pipe(
+          Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+        )) === "absent"
+      )
+        return null;
       const binding = yield* Schema.decodeUnknownEffect(LeaseCleanupTaskBindingV2)(
         {
           version: 2,
           effectId,
           threadId: row.thread_id,
-          lease: JSON.parse(row.lease_json),
-          ownerBirth: JSON.parse(row.owner_birth_json),
-          deletion: JSON.parse(row.deletion_json),
-          task: JSON.parse(row.task_json),
+          lease: yield* EventSinkJsonCodec.decodeJson(row.lease_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          ownerBirth: yield* EventSinkJsonCodec.decodeJson(row.owner_birth_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          deletion: yield* EventSinkJsonCodec.decodeJson(row.deletion_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          task: yield* EventSinkJsonCodec.decodeJson(row.task_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
           bindingSha256: row.binding_sha256,
           recordedAt: row.recorded_at,
         },
@@ -3402,11 +3554,11 @@ const baseLayer: Layer.Layer<
         binding.lease.ownerThreadId !== binding.threadId ||
         binding.ownerBirth.threadId !== binding.threadId ||
         binding.lease.ownerIncarnation !==
-          JSON.stringify([
+          (yield* EventSinkJsonCodec.encodeBirthTupleJson([
             "t3.orchestration-v2.thread-birth/v1",
             binding.ownerBirth.eventId,
             binding.ownerBirth.sequence,
-          ]) ||
+          ]).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))))) ||
         birth.length !== 1 ||
         deletion.length !== 1 ||
         receipt?.status !== "accepted" ||
@@ -3464,18 +3616,31 @@ const baseLayer: Layer.Layer<
           cause: "Deletion cleanup task is ambiguous",
         });
       const row = rows[0]!;
-      if (JSON.parse(row.task_json).kind === "worktree") return null;
-      const inventory = JSON.parse(row.lease_json);
+      if (
+        (yield* EventSinkJsonCodec.decodeTaskKind(row.task_json).pipe(
+          Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+        )) === "worktree"
+      )
+        return null;
+      const inventory = yield* EventSinkJsonCodec.decodeLeaseWithStatus(row.lease_json).pipe(
+        Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+      );
       if (inventory.status !== "absent") return yield* readLeaseCleanupTaskEffect(effectId);
       const binding = yield* Schema.decodeUnknownEffect(UnleasedDeletionCleanupTaskBindingV1)(
         {
           version: 1,
           effectId,
           threadId: row.thread_id,
-          leaseInventory: inventory,
-          ownerBirth: JSON.parse(row.owner_birth_json),
-          deletion: JSON.parse(row.deletion_json),
-          task: JSON.parse(row.task_json),
+          leaseInventory: inventory.value,
+          ownerBirth: yield* EventSinkJsonCodec.decodeJson(row.owner_birth_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          deletion: yield* EventSinkJsonCodec.decodeJson(row.deletion_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          task: yield* EventSinkJsonCodec.decodeJson(row.task_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
           bindingSha256: row.binding_sha256,
           recordedAt: row.recorded_at,
         },
@@ -3489,7 +3654,7 @@ const baseLayer: Layer.Layer<
         original === null ||
         original.inventory.captureStatus !== "captured" ||
         original.inventory.leaseInventory.status !== "absent" ||
-        original.inventory.worktree.path !== inventory.resourcePath ||
+        original.inventory.worktree.path !== binding.leaseInventory.resourcePath ||
         original.command.threadId !== binding.threadId ||
         nativeCreationCanonicalJson(original.ownerBirth) !==
           nativeCreationCanonicalJson(binding.ownerBirth) ||
@@ -3964,7 +4129,9 @@ const baseLayer: Layer.Layer<
       )(lease.ownerIncarnation).pipe(Effect.option);
       if (
         Option.isSome(incarnation) &&
-        JSON.stringify(incarnation.value) === lease.ownerIncarnation
+        (yield* EventSinkJsonCodec.encodeBirthTupleJson(incarnation.value).pipe(
+          Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+        )) === lease.ownerIncarnation
       ) {
         const [_, eventId, sequence] = incarnation.value;
         const births = yield* sql<{
@@ -4145,10 +4312,17 @@ const baseLayer: Layer.Layer<
             operationId: row.operation_id,
             path: row.canonical_path,
             kind: row.kind,
-            subject: JSON.parse(String(row.subject_json)),
+            subject: yield* EventSinkJsonCodec.decodeJson(String(row.subject_json)).pipe(
+              Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+            ),
             state: row.state,
             startedAt: row.started_at,
-            outcome: row.outcome_json === null ? null : JSON.parse(String(row.outcome_json)),
+            outcome:
+              row.outcome_json === null
+                ? null
+                : yield* EventSinkJsonCodec.decodeJson(String(row.outcome_json)).pipe(
+                    Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+                  ),
             recordedAt: row.recorded_at,
             updatedAt: row.updated_at,
           },
@@ -4330,11 +4504,11 @@ const baseLayer: Layer.Layer<
         const threads = yield* sql<{ readonly thread_id: string; readonly payload_json: string }>`
           SELECT thread_id, payload_json FROM orchestration_v2_projection_threads WHERE thread_id <> ${binding.threadId}`;
         for (const row of threads) {
-          const candidate = JSON.parse(row.payload_json);
-          if (candidate.deletedAt !== null || typeof candidate.worktreePath !== "string") continue;
-          const candidateProject = Option.getOrNull(
-            yield* projectStore.get(ProjectId.make(candidate.projectId)),
-          );
+          const candidate = yield* EventSinkJsonCodec.decodeSharedWorktreeCandidate(
+            row.payload_json,
+          ).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))));
+          if (candidate === null) continue;
+          const candidateProject = Option.getOrNull(yield* projectStore.get(candidate.projectId));
           if (candidateProject === null) {
             reason = "shared_worktree_inventory_unavailable";
             continue;
@@ -4357,7 +4531,9 @@ const baseLayer: Layer.Layer<
         WHERE event_id = ${binding.deletion.eventId} AND sequence = ${binding.deletion.sequence}`;
       const originalProviderThreadId =
         deletionRows.length === 1
-          ? JSON.parse(deletionRows[0]!.payload_json).activeProviderThreadId
+          ? yield* EventSinkJsonCodec.decodeActiveProviderThreadId(
+              deletionRows[0]!.payload_json,
+            ).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))))
           : undefined;
       const inventoryComplete =
         reason === null &&
@@ -5444,9 +5620,9 @@ const baseLayer: Layer.Layer<
             const encoded =
               evidence === null
                 ? null
-                : Schema.encodeSync(Schema.fromJsonString(LegacyProviderContinuationEvidenceV1))(
-                    evidence,
-                  );
+                : yield* Schema.encodeEffect(
+                    Schema.fromJsonString(LegacyProviderContinuationEvidenceV1),
+                  )(evidence).pipe(Effect.orDie);
             const existing = yield* sql<{
               readonly qualification_json: string;
               readonly evidence_json: string | null;
@@ -6332,10 +6508,12 @@ const baseLayer: Layer.Layer<
           messageEvent: { eventId: EventId.make(row.event_id), sequence: row.sequence },
           itemEvent: { eventId: EventId.make(itemRow.event_id), sequence: itemRow.sequence },
           messagePayloadSha256: ImportedAttachments.importedApplicationAttachmentSha256V1(
-            Schema.encodeSync(OrchestrationV2ConversationMessageJson)(message),
+            yield* Schema.encodeEffect(OrchestrationV2ConversationMessageJson)(message).pipe(
+              Effect.orDie,
+            ),
           ),
           itemPayloadSha256: ImportedAttachments.importedApplicationAttachmentSha256V1(
-            Schema.encodeSync(OrchestrationV2TurnItemJson)(item),
+            yield* Schema.encodeEffect(OrchestrationV2TurnItemJson)(item).pipe(Effect.orDie),
           ),
         });
       }
@@ -7147,10 +7325,10 @@ const baseLayer: Layer.Layer<
         schema: "t3.ordinary-checkout-completed/v1",
         operationId: ref.originalUse.operationId,
         associationOrdinal: history.latestOrdinal,
-        completionEvidence: Schema.encodeSync(OrdinaryCheckoutCompletionEvidenceV1)({
+        completionEvidence: yield* Schema.encodeEffect(OrdinaryCheckoutCompletionEvidenceV1)({
           ref,
           actualProducerOutcome: outcome,
-        }),
+        }).pipe(Effect.orDie),
       });
       const completion = yield* sql<{
         readonly outcome_json: string | null;
@@ -7188,9 +7366,319 @@ const baseLayer: Layer.Layer<
         WHERE link.admission_id = ${ref.originalUse.admission.admissionId} AND effect.status IN ('pending', 'running') LIMIT 1`;
       if (unfinished.length !== 0) return null;
       return {
-        observation: outcome.observation,
+        kind: "start_failed_before_open" as const,
+        run: outcome.observation.run,
+        providerThreadId: outcome.observation.providerThreadId,
         effectId: actual.effect.id,
         commandId: actual.admission.receipt.commandId,
+      };
+    });
+    const qualifiesReconciledNeverClaimedPredecessor = Effect.fnUntraced(function* (
+      snapshot: NativeCommandTargetSnapshotV2,
+      predecessor: OrchestrationV2Run,
+    ) {
+      if (
+        predecessor.status !== "cancelled" ||
+        predecessor.startedAt !== null ||
+        predecessor.completedAt === null ||
+        predecessor.checkpointId !== null
+      )
+        return null;
+      const admission = yield* readOrdinaryCheckoutAdmissionForRunEffect({
+        threadId: snapshot.threadId,
+        runId: predecessor.id,
+      });
+      if (
+        admission?.run === null ||
+        admission === null ||
+        admission.receipt.commandType !== "message.dispatch" ||
+        admission.capture.origin.kind !== "command" ||
+        (yield* readIdentity(admission.receipt.commandId)) !== null ||
+        snapshot.incarnation === null ||
+        admission.capture.threadId !== snapshot.threadId ||
+        admission.capture.applicationBirth.eventId !== snapshot.incarnation.eventId ||
+        admission.capture.applicationBirth.sequence !== snapshot.incarnation.sequence ||
+        admission.run.runAttemptId !== predecessor.activeAttemptId ||
+        admission.run.nodeId !== predecessor.rootNodeId ||
+        admission.run.messageId !== predecessor.userMessageId
+      )
+        return null;
+      const effectId = `effect:${admission.receipt.commandId}:provider-turn.start:${predecessor.id}`;
+      const effect = Option.getOrNull(yield* effectOutbox.get(effectId));
+      const link = yield* readOrdinaryCheckoutEffectLinkEffect(effectId);
+      if (
+        effect === null ||
+        effect.status !== "cancelled" ||
+        effect.attemptCount !== 0 ||
+        effect.leaseOwner !== null ||
+        effect.leaseExpiresAt !== null ||
+        effect.completedAt === null ||
+        effect.nativeCreationExecutionReference !== undefined ||
+        effect.commandId !== admission.receipt.commandId ||
+        effect.threadId !== snapshot.threadId ||
+        effect.request.type !== "provider-turn.start" ||
+        effect.request.runId !== predecessor.id ||
+        link === null ||
+        link.commandId !== admission.receipt.commandId ||
+        nativeCreationCanonicalJson(link.admission) !==
+          nativeCreationCanonicalJson(OrdinaryCheckout.ordinaryCheckoutAdmissionRefV1(admission))
+      )
+        return null;
+      for (const key of [
+        "provider_sessions",
+        "session_bindings",
+        "runtime_evidence",
+        "continuation_sources",
+        "source_runtime",
+        "legacy_continuation",
+        "native_import_seals",
+        "legacy_import_markers",
+        "legacy_source_threads",
+        "imported_source_events",
+        "imported_choices",
+        "imported_outcomes",
+        "stop_intents",
+        "stop_fences",
+        "unknown_effect_holds",
+        "native_confirmations",
+        "provider_turns",
+        "runtime_requests",
+        "subagents",
+        "checkpoints",
+        "restart_continuations",
+      ])
+        if ((snapshot.records[key]?.length ?? 0) !== 0) return null;
+      for (const key of ["claims", "attempts", "effect_facts"])
+        if ((snapshot.authorityRecords[key]?.length ?? 0) !== 0) return null;
+      if (
+        (snapshot.records.start_reservations ?? []).some(
+          (row) =>
+            row.effect_id === effectId ||
+            row.run_id === predecessor.id ||
+            row.run_attempt_id === predecessor.activeAttemptId,
+        )
+      )
+        return null;
+      const uses = yield* sql`SELECT operation_id FROM orchestration_v2_worktree_path_admissions
+        WHERE json_extract(subject_json, '$.use.admission.admissionId') = ${admission.admissionId}
+          OR json_extract(subject_json, '$.use.source.preparation.runId') = ${predecessor.id}
+          OR json_extract(subject_json, '$.use.source.preparation.runAttemptId') = ${predecessor.activeAttemptId}
+          OR json_extract(subject_json, '$.use.source.link.effectId') = ${effectId}
+        UNION ALL SELECT operation_id FROM orchestration_v2_ordinary_checkout_execution_associations
+        WHERE admission_id = ${admission.admissionId} OR effect_id = ${effectId}
+        UNION ALL SELECT native_command_id FROM workstreams_native_attempts
+        WHERE native_command_id = ${admission.receipt.commandId}
+          OR json_extract(request_json, '$.identity.native_id') = ${snapshot.threadId}
+        LIMIT 1`;
+      if (uses.length !== 0) return null;
+      const local = yield* projectionStore.getThreadRecords(snapshot.threadId, [
+        "attempts",
+        "nodes",
+        "messages",
+        "checkpointScopes",
+        "checkpoints",
+      ]);
+      const attempt = local.attempts.find((row) => row.id === predecessor.activeAttemptId);
+      const node = local.nodes.find((row) => row.id === predecessor.rootNodeId);
+      const message = local.messages.find((row) => row.id === predecessor.userMessageId);
+      if (
+        attempt === undefined ||
+        node === undefined ||
+        message === undefined ||
+        attempt.status !== "cancelled" ||
+        attempt.runId !== predecessor.id ||
+        attempt.rootNodeId !== node.id ||
+        attempt.providerThreadId !== predecessor.providerThreadId ||
+        attempt.providerTurnId !== null ||
+        attempt.startedAt !== null ||
+        attempt.completedAt === null ||
+        node.status !== "cancelled" ||
+        node.runId !== predecessor.id ||
+        node.rootNodeId !== node.id ||
+        node.parentNodeId !== null ||
+        node.kind !== "root_turn" ||
+        node.startedAt !== null ||
+        node.completedAt === null ||
+        node.providerThreadId !== predecessor.providerThreadId ||
+        node.providerTurnId !== null ||
+        node.nativeItemRef !== null ||
+        node.runtimeRequestId !== null ||
+        local.nodes.some((row) => row.runId === predecessor.id && row.id !== node.id) ||
+        local.attempts.some((row) => row.runId === predecessor.id && row.id !== attempt.id) ||
+        message.role !== "user" ||
+        message.runId !== predecessor.id ||
+        message.nodeId !== node.id ||
+        local.checkpoints.length !== 0
+      )
+        return null;
+      const project = Option.getOrNull(yield* projectStore.get(admission.capture.projectId));
+      if (
+        project === null ||
+        NodePath.resolve(project.workspaceRoot) !== admission.capture.canonicalProjectRoot ||
+        NodePath.resolve(local.thread.worktreePath ?? project.workspaceRoot) !==
+          admission.capture.canonicalCheckoutPath
+      )
+        return null;
+      yield* readCurrentOrdinaryCheckoutCapture(admission.capture, {
+        projectWorkspaceRoot: project.workspaceRoot,
+        worktreePath: local.thread.worktreePath,
+      });
+      const original = yield* eventStore
+        .read({ threadId: snapshot.threadId, commandId: admission.receipt.commandId, limit: 257 })
+        .pipe(Stream.runCollect);
+      if (
+        original.length === 0 ||
+        original.length > 256 ||
+        original.some(
+          (stored) =>
+            stored.commandId !== admission.receipt.commandId ||
+            stored.event.threadId !== snapshot.threadId ||
+            stored.sequence > admission.receipt.resultSequence,
+        )
+      )
+        return null;
+      const createdRuns = original.filter(
+        (stored) =>
+          stored.event.type === "run.created" && stored.event.payload.id === predecessor.id,
+      );
+      const createdAttempts = original.filter(
+        (stored) =>
+          stored.event.type === "run-attempt.created" && stored.event.payload.id === attempt.id,
+      );
+      const createdNodes = original.filter(
+        (stored) => stored.event.type === "node.updated" && stored.event.payload.id === node.id,
+      );
+      const createdRun = createdRuns[0]?.event;
+      const createdAttempt = createdAttempts[0]?.event;
+      const createdNode = createdNodes[0]?.event;
+      if (
+        createdRuns.length !== 1 ||
+        createdRun?.type !== "run.created" ||
+        createdRun.payload.status !== "starting" ||
+        createdRun.payload.startedAt !== null ||
+        createdRun.payload.activeAttemptId !== attempt.id ||
+        createdRun.payload.rootNodeId !== node.id ||
+        createdRun.payload.userMessageId !== message.id ||
+        createdRun.payload.providerThreadId !== predecessor.providerThreadId ||
+        createdAttempts.length !== 1 ||
+        createdAttempt?.type !== "run-attempt.created" ||
+        createdAttempt.payload.status !== "pending" ||
+        createdAttempt.payload.runId !== predecessor.id ||
+        createdAttempt.payload.rootNodeId !== node.id ||
+        createdAttempt.payload.startedAt !== null ||
+        createdAttempt.payload.providerTurnId !== null ||
+        createdAttempt.payload.providerThreadId !== predecessor.providerThreadId ||
+        createdNodes.length !== 1 ||
+        createdNode?.type !== "node.updated" ||
+        createdNode.payload.runId !== predecessor.id ||
+        createdNode.payload.rootNodeId !== node.id ||
+        createdNode.payload.startedAt !== null ||
+        createdNode.payload.providerTurnId !== null ||
+        createdNode.payload.checkpointScopeId !== node.checkpointScopeId
+      )
+        return null;
+      const allocated = original.filter(
+        (stored) =>
+          stored.event.type === "checkpoint-scope.created" &&
+          stored.event.payload.id === node.checkpointScopeId,
+      );
+      if (node.checkpointScopeId === null) {
+        if (local.checkpointScopes.length !== 0) return null;
+      } else {
+        const allocation = allocated[0]?.event;
+        const scope = local.checkpointScopes[0];
+        // Later queued runs reuse this allocated root scope; no physical capture is exempted.
+        if (
+          allocated.length !== 1 ||
+          allocation?.type !== "checkpoint-scope.created" ||
+          allocation.payload.runId !== predecessor.id ||
+          allocation.payload.nodeId !== node.id ||
+          local.checkpointScopes.length !== 1 ||
+          scope?.id !== node.checkpointScopeId ||
+          scope.threadId !== snapshot.threadId ||
+          scope.cwd !== admission.capture.canonicalCheckoutPath ||
+          scope.parentScopeId !== null
+        )
+          return null;
+      }
+      const cancellations = yield* sql<{ readonly command_id: string }>`
+        SELECT event.command_id FROM orchestration_events event
+        JOIN orchestration_command_receipts receipt ON receipt.command_id = event.command_id
+          AND receipt.status = 'accepted' AND receipt.command_type = 'provider-runtime.reconcile'
+          AND receipt.aggregate_kind = 'thread' AND receipt.aggregate_id = event.stream_id
+        WHERE event.application_event_version = 2 AND event.aggregate_kind = 'thread' AND event.stream_id = ${snapshot.threadId}
+          AND event.event_type = 'run.updated' AND json_extract(event.payload_json, '$.id') = ${predecessor.id}
+          AND json_extract(event.payload_json, '$.status') = 'cancelled'
+          AND event.sequence > ${admission.receipt.resultSequence} AND event.sequence <= receipt.result_sequence`;
+      if (cancellations.length !== 1) return null;
+      const reconcileCommandId = CommandId.make(cancellations[0]!.command_id);
+      const receipt = Option.getOrNull(yield* commandReceipts.getByCommandId(reconcileCommandId));
+      const reconciled = yield* eventStore
+        .read({ threadId: snapshot.threadId, commandId: reconcileCommandId, limit: 257 })
+        .pipe(Stream.runCollect);
+      if (
+        receipt?.status !== "accepted" ||
+        receipt.commandType !== "provider-runtime.reconcile" ||
+        receipt.threadId !== snapshot.threadId ||
+        reconciled.length > 256 ||
+        reconciled.some(
+          (stored) =>
+            stored.commandId !== reconcileCommandId ||
+            stored.event.threadId !== snapshot.threadId ||
+            stored.sequence <= admission.receipt.resultSequence ||
+            stored.sequence > receipt.resultSequence ||
+            DateTime.formatIso(stored.event.occurredAt) < effect.createdAt,
+        )
+      )
+        return null;
+      const endedRuns = reconciled.filter(
+        (stored) =>
+          stored.event.type === "run.updated" && stored.event.payload.id === predecessor.id,
+      );
+      const endedAttempts = reconciled.filter(
+        (stored) =>
+          stored.event.type === "run-attempt.updated" && stored.event.payload.id === attempt.id,
+      );
+      const endedNodes = reconciled.filter(
+        (stored) => stored.event.type === "node.updated" && stored.event.payload.id === node.id,
+      );
+      const endedRun = endedRuns[0]?.event;
+      const endedAttempt = endedAttempts[0]?.event;
+      const endedNode = endedNodes[0]?.event;
+      if (
+        endedRuns.length !== 1 ||
+        endedRun?.type !== "run.updated" ||
+        endedRun.runId !== predecessor.id ||
+        endedAttempts.length !== 1 ||
+        endedAttempt?.type !== "run-attempt.updated" ||
+        endedAttempt.runId !== predecessor.id ||
+        endedAttempt.nodeId !== node.id ||
+        endedNodes.length !== 1 ||
+        endedNode?.type !== "node.updated" ||
+        endedNode.runId !== predecessor.id ||
+        endedNode.nodeId !== node.id ||
+        nativeCreationCanonicalJson(endedRun.payload) !==
+          nativeCreationCanonicalJson(predecessor) ||
+        nativeCreationCanonicalJson(endedAttempt.payload) !==
+          nativeCreationCanonicalJson(attempt) ||
+        nativeCreationCanonicalJson(endedNode.payload) !== nativeCreationCanonicalJson(node) ||
+        effect.completedAt !== DateTime.formatIso(endedRun.payload.completedAt!)
+      )
+        return null;
+      const activity =
+        yield* sql`SELECT event_id FROM orchestration_events WHERE application_event_version = 2
+        AND aggregate_kind = 'thread' AND stream_id = ${snapshot.threadId}
+        AND (event_type IN ('provider-session.attached', 'provider-session.updated', 'provider-session.detached',
+          'provider-session.detach-requested', 'provider-turn.updated', 'checkpoint.captured') OR
+          (event_type = 'provider-thread.updated' AND (json_extract(payload_json, '$.nativeThreadRef') IS NOT NULL
+            OR json_extract(payload_json, '$.nativeConversationHeadRef') IS NOT NULL))) LIMIT 1`;
+      if (activity.length !== 0) return null;
+      return {
+        kind: "reconciled_never_claimed" as const,
+        run: admission.run,
+        providerThreadId: predecessor.providerThreadId,
+        effectId,
+        commandId: admission.receipt.commandId,
       };
     });
     const isFirstOrdinaryQueuedContext = Effect.fnUntraced(function* (
@@ -7242,24 +7730,30 @@ const baseLayer: Layer.Layer<
         "providerThreads",
         "messages",
       ]);
-      const failedPredecessors = new Map<
+      const unstartedPredecessors = new Map<
         RunId,
-        NonNullable<Effect.Success<ReturnType<typeof qualifiesFailedBeforeOpenPredecessor>>>
+        NonNullable<
+          | Effect.Success<ReturnType<typeof qualifiesFailedBeforeOpenPredecessor>>
+          | Effect.Success<ReturnType<typeof qualifiesReconciledNeverClaimedPredecessor>>
+        >
       >();
       for (const candidate of local.runs.filter(
-        (run) => run.id !== intent.runId && run.status === "failed",
+        (run) => run.id !== intent.runId && (run.status === "failed" || run.status === "cancelled"),
       )) {
-        const proof = yield* qualifiesFailedBeforeOpenPredecessor(
-          snapshot.threadId,
-          candidate,
-        ).pipe(Effect.orElseSucceed(() => null));
-        if (proof !== null) failedPredecessors.set(candidate.id, proof);
+        const proof = yield* candidate.status === "failed"
+          ? qualifiesFailedBeforeOpenPredecessor(snapshot.threadId, candidate).pipe(
+              Effect.orElseSucceed(() => null),
+            )
+          : qualifiesReconciledNeverClaimedPredecessor(snapshot, candidate).pipe(
+              Effect.orElseSucceed(() => null),
+            );
+        if (proof !== null) unstartedPredecessors.set(candidate.id, proof);
       }
       if (
         (snapshot.records.effects ?? []).some(
           (effect) =>
             effect.effect_id !== intent.effectId &&
-            ![...failedPredecessors.values()].some(
+            ![...unstartedPredecessors.values()].some(
               (proof) => proof.effectId === effect.effect_id,
             ) &&
             [
@@ -7518,20 +8012,22 @@ const baseLayer: Layer.Layer<
           (event_type = 'run.updated' AND json_extract(payload_json, '$.status') IN ('starting', 'running')
             AND (command_id IS NOT ${intent.commandId} OR json_extract(payload_json, '$.id') IS NOT ${run.id})))`;
       for (const event of oldStarts) {
-        const payload: unknown = JSON.parse(event.payload_json);
+        const payload: unknown = yield* EventSinkJsonCodec.decodeJson(event.payload_json).pipe(
+          Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+        );
         const decoded = yield* Schema.decodeUnknownEffect(OrchestrationV2RunJson)(payload).pipe(
           Effect.option,
         );
         if (event.event_type !== "run.updated" || Option.isNone(decoded)) return false;
-        const proof = failedPredecessors.get(decoded.value.id);
+        const proof = unstartedPredecessors.get(decoded.value.id);
         if (
           proof === undefined ||
           decoded.value.status !== "starting" ||
           event.command_id !== proof.commandId ||
-          decoded.value.activeAttemptId !== proof.observation.run.runAttemptId ||
-          decoded.value.rootNodeId !== proof.observation.run.nodeId ||
-          decoded.value.userMessageId !== proof.observation.run.messageId ||
-          decoded.value.providerThreadId !== proof.observation.providerThreadId
+          decoded.value.activeAttemptId !== proof.run.runAttemptId ||
+          decoded.value.rootNodeId !== proof.run.nodeId ||
+          decoded.value.userMessageId !== proof.run.messageId ||
+          decoded.value.providerThreadId !== proof.providerThreadId
         )
           return false;
       }
@@ -7548,9 +8044,9 @@ const baseLayer: Layer.Layer<
           predecessor.providerThreadId !== provider.id
         )
           return false;
-        const failedBeforeOpen = failedPredecessors.get(predecessor.id);
-        if (failedBeforeOpen !== undefined) {
-          predecessorCommands.add(failedBeforeOpen.commandId);
+        const unstarted = unstartedPredecessors.get(predecessor.id);
+        if (unstarted !== undefined) {
+          predecessorCommands.add(unstarted.commandId);
           continue;
         }
         const source = yield* sql<{
@@ -7727,6 +8223,70 @@ const baseLayer: Layer.Layer<
       const createdProvider = createdProviders[0];
       const createdNode = createdNodes[0];
       const createdMessage = createdMessages[0];
+      if (createdMessages.length !== 1 || createdMessage?.type !== "message.updated") return false;
+      let acceptedMessage = createdMessage.payload;
+      const messageUpdates = yield* sql<{ readonly sequence: number }>`
+        SELECT sequence FROM orchestration_events WHERE application_event_version = 2
+          AND aggregate_kind = 'thread' AND stream_id = ${snapshot.threadId}
+          AND event_type = 'message.updated' AND json_extract(payload_json, '$.id') = ${message.id}
+          AND sequence > ${receipt.resultSequence} AND sequence <= ${snapshot.targetEventSequence}
+        ORDER BY sequence`;
+      for (const update of messageUpdates) {
+        const exact = yield* eventStore
+          .read({
+            threadId: snapshot.threadId,
+            afterSequence: update.sequence - 1,
+            throughSequence: update.sequence,
+            limit: 2,
+          })
+          .pipe(Stream.runCollect);
+        const storedUpdate = exact[0];
+        if (
+          exact.length !== 1 ||
+          storedUpdate === undefined ||
+          storedUpdate.commandId === null ||
+          storedUpdate.sequence !== update.sequence ||
+          storedUpdate.event.type !== "message.updated"
+        )
+          return false;
+        const event = storedUpdate.event;
+        const editReceipt = Option.getOrNull(
+          yield* commandReceipts.getByCommandId(storedUpdate.commandId),
+        );
+        if (
+          editReceipt?.status !== "accepted" ||
+          editReceipt.error !== null ||
+          editReceipt.commandType !== "queued-run.edit" ||
+          editReceipt.threadId !== snapshot.threadId ||
+          storedUpdate.sequence > editReceipt.resultSequence ||
+          editReceipt.resultSequence > snapshot.targetEventSequence ||
+          event.threadId !== snapshot.threadId ||
+          event.runId !== run.id ||
+          event.nodeId !== node.id ||
+          event.payload.id !== message.id ||
+          event.payload.threadId !== snapshot.threadId ||
+          event.payload.runId !== run.id ||
+          event.payload.nodeId !== node.id ||
+          event.payload.role !== "user" ||
+          event.payload.text.trim().length === 0 ||
+          acceptedMessage.delegatedCompletion !== undefined ||
+          acceptedMessage.notification !== undefined ||
+          (yield* readIdentity(storedUpdate.commandId)) !== null
+        )
+          return false;
+        const expectedEdit = {
+          ...acceptedMessage,
+          text: event.payload.text,
+          attachments: event.payload.attachments,
+          ...(event.payload.context === undefined ? {} : { context: event.payload.context }),
+          updatedAt: event.payload.updatedAt,
+        };
+        if (
+          nativeCreationCanonicalJson(expectedEdit) !== nativeCreationCanonicalJson(event.payload)
+        )
+          return false;
+        acceptedMessage = event.payload;
+      }
       return (
         createdRuns.length === 1 &&
         createdRun?.type === "run.created" &&
@@ -7756,7 +8316,7 @@ const baseLayer: Layer.Layer<
         createdNode.payload.providerThreadId === provider.id &&
         createdMessages.length === 1 &&
         createdMessage?.type === "message.updated" &&
-        nativeCreationCanonicalJson(createdMessage.payload) === nativeCreationCanonicalJson(message)
+        nativeCreationCanonicalJson(acceptedMessage) === nativeCreationCanonicalJson(message)
       );
     });
     const readClaimedQueuedRunStart: EventSinkV2Shape["readClaimedQueuedRunStart"] = (input) =>
@@ -8075,11 +8635,15 @@ const baseLayer: Layer.Layer<
               if (
                 targetHistory.length !== 0 ||
                 targetEffects.length !== 0 ||
-                current.records.native_confirmations!.some(
-                  (row) =>
-                    typeof row.binding_json === "string" &&
-                    (JSON.parse(row.binding_json) as { providerThreadId?: unknown })
-                      .providerThreadId === provider.id,
+                Option.isSome(
+                  yield* Effect.findFirst(current.records.native_confirmations!, (row) =>
+                    typeof row.binding_json === "string"
+                      ? EventSinkJsonCodec.decodeProviderThreadId(row.binding_json).pipe(
+                          Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+                          Effect.map((providerThreadId) => providerThreadId === provider.id),
+                        )
+                      : Effect.succeed(false),
+                  ),
                 )
               )
                 return null;
@@ -8332,7 +8896,7 @@ const baseLayer: Layer.Layer<
         );
       }).pipe(
         Effect.mapError((cause) =>
-          cause instanceof NativeCommandPreconditionError
+          Schema.is(NativeCommandPreconditionError)(cause)
             ? cause
             : new EventSinkWriteError({ eventCount: 0, cause }),
         ),
@@ -8637,12 +9201,16 @@ const baseLayer: Layer.Layer<
                 runtimeIdentity: _oldIdentity,
                 updatedAt: _oldUpdated,
                 ...oldFields
-              } = Schema.encodeSync(OrchestrationV2ProviderSessionJson)(session);
+              } = yield* Schema.encodeEffect(OrchestrationV2ProviderSessionJson)(session).pipe(
+                Effect.orDie,
+              );
               const {
                 runtimeIdentity: _newIdentity,
                 updatedAt: _newUpdated,
                 ...newFields
-              } = Schema.encodeSync(OrchestrationV2ProviderSessionJson)(event.payload);
+              } = yield* Schema.encodeEffect(OrchestrationV2ProviderSessionJson)(
+                event.payload,
+              ).pipe(Effect.orDie);
               if (nativeCreationCanonicalJson(oldFields) !== nativeCreationCanonicalJson(newFields))
                 return rejectProviderBinding("binding_mismatch");
             }
@@ -8669,7 +9237,7 @@ const baseLayer: Layer.Layer<
             return rejectProviderBinding("binding_mismatch");
           const revision = input.expectedEvidenceRevision + 1;
           const rows = yield* sql`UPDATE orchestration_v2_provider_runtime_evidence SET
-          evidence_revision = ${revision}, observation_json = ${observation === null ? null : Schema.encodeSync(Schema.fromJsonString(ProviderRuntimeObservation))(observation)}
+          evidence_revision = ${revision}, observation_json = ${observation === null ? null : yield* Schema.encodeEffect(Schema.fromJsonString(ProviderRuntimeObservation))(observation).pipe(Effect.orDie)}
           WHERE thread_id = ${input.expectedBinding.threadId} AND evidence_revision = ${input.expectedEvidenceRevision}
             AND runtime_generation = ${input.expectedBinding.runtimeGeneration} RETURNING thread_id`;
           if (rows.length !== 1) return rejectProviderBinding("evidence_revision_mismatch");
@@ -8829,15 +9397,18 @@ const baseLayer: Layer.Layer<
               if (
                 previous !== null &&
                 nativeCreationCanonicalJson(
-                  withoutFields(Schema.encodeSync(OrchestrationV2ExecutionNodeJson)(previous), [
-                    "status",
-                    "startedAt",
-                    "completedAt",
-                  ]),
+                  withoutFields(
+                    yield* Schema.encodeEffect(OrchestrationV2ExecutionNodeJson)(previous).pipe(
+                      Effect.orDie,
+                    ),
+                    ["status", "startedAt", "completedAt"],
+                  ),
                 ) !==
                   nativeCreationCanonicalJson(
                     withoutFields(
-                      Schema.encodeSync(OrchestrationV2ExecutionNodeJson)(companion.payload),
+                      yield* Schema.encodeEffect(OrchestrationV2ExecutionNodeJson)(
+                        companion.payload,
+                      ).pipe(Effect.orDie),
                       ["status", "startedAt", "completedAt"],
                     ),
                   )
@@ -8958,13 +9529,17 @@ const baseLayer: Layer.Layer<
                   if (
                     nativeCreationCanonicalJson(
                       withoutFields(
-                        Schema.encodeSync(OrchestrationV2ConversationMessageJson)(previous),
+                        yield* Schema.encodeEffect(OrchestrationV2ConversationMessageJson)(
+                          previous,
+                        ).pipe(Effect.orDie),
                         ["text", "attachments", "streaming", "updatedAt"],
                       ),
                     ) !==
                     nativeCreationCanonicalJson(
                       withoutFields(
-                        Schema.encodeSync(OrchestrationV2ConversationMessageJson)(event.payload),
+                        yield* Schema.encodeEffect(OrchestrationV2ConversationMessageJson)(
+                          event.payload,
+                        ).pipe(Effect.orDie),
                         ["text", "attachments", "streaming", "updatedAt"],
                       ),
                     )
@@ -8988,26 +9563,36 @@ const baseLayer: Layer.Layer<
                   )(rows[0]!.payload_json);
                   if (
                     nativeCreationCanonicalJson(
-                      withoutFields(Schema.encodeSync(OrchestrationV2TurnItemJson)(previous), [
-                        "text",
-                        "attachments",
-                        "streaming",
-                        "status",
-                        "title",
-                        "completedAt",
-                        "updatedAt",
-                      ]),
+                      withoutFields(
+                        yield* Schema.encodeEffect(OrchestrationV2TurnItemJson)(previous).pipe(
+                          Effect.orDie,
+                        ),
+                        [
+                          "text",
+                          "attachments",
+                          "streaming",
+                          "status",
+                          "title",
+                          "completedAt",
+                          "updatedAt",
+                        ],
+                      ),
                     ) !==
                     nativeCreationCanonicalJson(
-                      withoutFields(Schema.encodeSync(OrchestrationV2TurnItemJson)(event.payload), [
-                        "text",
-                        "attachments",
-                        "streaming",
-                        "status",
-                        "title",
-                        "completedAt",
-                        "updatedAt",
-                      ]),
+                      withoutFields(
+                        yield* Schema.encodeEffect(OrchestrationV2TurnItemJson)(event.payload).pipe(
+                          Effect.orDie,
+                        ),
+                        [
+                          "text",
+                          "attachments",
+                          "streaming",
+                          "status",
+                          "title",
+                          "completedAt",
+                          "updatedAt",
+                        ],
+                      ),
                     )
                   )
                     return "binding_mismatch" as const;
@@ -9302,18 +9887,18 @@ const baseLayer: Layer.Layer<
                   DateTime.toEpochMillis(event.payload.updatedAt) <
                     DateTime.toEpochMillis(subject.expectedUpdatedAt) ||
                   !same(
-                    withoutFields(Schema.encodeSync(OrchestrationV2SubagentJson)(task), [
-                      "status",
-                      "result",
-                      "completedAt",
-                      "updatedAt",
-                    ]),
-                    withoutFields(Schema.encodeSync(OrchestrationV2SubagentJson)(event.payload), [
-                      "status",
-                      "result",
-                      "completedAt",
-                      "updatedAt",
-                    ]),
+                    withoutFields(
+                      yield* Schema.encodeEffect(OrchestrationV2SubagentJson)(task).pipe(
+                        Effect.orDie,
+                      ),
+                      ["status", "result", "completedAt", "updatedAt"],
+                    ),
+                    withoutFields(
+                      yield* Schema.encodeEffect(OrchestrationV2SubagentJson)(event.payload).pipe(
+                        Effect.orDie,
+                      ),
+                      ["status", "result", "completedAt", "updatedAt"],
+                    ),
                   )
                 )
                   return "binding_mismatch" as const;
@@ -9325,12 +9910,16 @@ const baseLayer: Layer.Layer<
                   event.payload.status !== input.expectedStatus ||
                   event.payload.completedAt === null ||
                   !same(
-                    withoutFields(Schema.encodeSync(OrchestrationV2ExecutionNodeJson)(previous), [
-                      "status",
-                      "completedAt",
-                    ]),
                     withoutFields(
-                      Schema.encodeSync(OrchestrationV2ExecutionNodeJson)(event.payload),
+                      yield* Schema.encodeEffect(OrchestrationV2ExecutionNodeJson)(previous).pipe(
+                        Effect.orDie,
+                      ),
+                      ["status", "completedAt"],
+                    ),
+                    withoutFields(
+                      yield* Schema.encodeEffect(OrchestrationV2ExecutionNodeJson)(
+                        event.payload,
+                      ).pipe(Effect.orDie),
                       ["status", "completedAt"],
                     ),
                   )
@@ -9345,18 +9934,18 @@ const baseLayer: Layer.Layer<
                   event.payload.result !== input.expectedSummary ||
                   event.payload.completedAt === null ||
                   !same(
-                    withoutFields(Schema.encodeSync(OrchestrationV2TurnItemJson)(card), [
-                      "status",
-                      "result",
-                      "completedAt",
-                      "updatedAt",
-                    ]),
-                    withoutFields(Schema.encodeSync(OrchestrationV2TurnItemJson)(event.payload), [
-                      "status",
-                      "result",
-                      "completedAt",
-                      "updatedAt",
-                    ]),
+                    withoutFields(
+                      yield* Schema.encodeEffect(OrchestrationV2TurnItemJson)(card).pipe(
+                        Effect.orDie,
+                      ),
+                      ["status", "result", "completedAt", "updatedAt"],
+                    ),
+                    withoutFields(
+                      yield* Schema.encodeEffect(OrchestrationV2TurnItemJson)(event.payload).pipe(
+                        Effect.orDie,
+                      ),
+                      ["status", "result", "completedAt", "updatedAt"],
+                    ),
                   )
                 )
                   return "binding_mismatch" as const;
@@ -9394,11 +9983,15 @@ const baseLayer: Layer.Layer<
                   if (
                     !same(
                       withoutFields(
-                        Schema.encodeSync(OrchestrationV2ConversationMessageJson)(stored),
+                        yield* Schema.encodeEffect(OrchestrationV2ConversationMessageJson)(
+                          stored,
+                        ).pipe(Effect.orDie),
                         ["text", "updatedAt"],
                       ),
                       withoutFields(
-                        Schema.encodeSync(OrchestrationV2ConversationMessageJson)(message),
+                        yield* Schema.encodeEffect(OrchestrationV2ConversationMessageJson)(
+                          message,
+                        ).pipe(Effect.orDie),
                         ["text", "updatedAt"],
                       ),
                     )
@@ -9441,14 +10034,18 @@ const baseLayer: Layer.Layer<
                   )(previous[0]!.payload_json);
                   if (
                     !same(
-                      withoutFields(Schema.encodeSync(OrchestrationV2TurnItemJson)(stored), [
-                        "text",
-                        "updatedAt",
-                      ]),
-                      withoutFields(Schema.encodeSync(OrchestrationV2TurnItemJson)(item), [
-                        "text",
-                        "updatedAt",
-                      ]),
+                      withoutFields(
+                        yield* Schema.encodeEffect(OrchestrationV2TurnItemJson)(stored).pipe(
+                          Effect.orDie,
+                        ),
+                        ["text", "updatedAt"],
+                      ),
+                      withoutFields(
+                        yield* Schema.encodeEffect(OrchestrationV2TurnItemJson)(item).pipe(
+                          Effect.orDie,
+                        ),
+                        ["text", "updatedAt"],
+                      ),
                     )
                   )
                     return "binding_mismatch" as const;
@@ -9726,7 +10323,9 @@ const baseLayer: Layer.Layer<
         command.dispatchMode.type !== "start_immediately" ||
         row.command_digest !==
           nativeCreationSha256(
-            nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)),
+            nativeCreationCanonicalJson(
+              yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
+            ),
           ) ||
         receipt === null ||
         receipt.threadId !== marker.threadId ||
@@ -9862,7 +10461,9 @@ const baseLayer: Layer.Layer<
         }
       }
       const commandDigest = nativeCreationSha256(
-        nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)),
+        nativeCreationCanonicalJson(
+          yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
+        ),
       );
       const previous = yield* readCapturedRestartOriginEffect(command.commandId);
       if (
@@ -10061,13 +10662,18 @@ const baseLayer: Layer.Layer<
                   readonly payload_json: string;
                 }>`SELECT payload_json FROM orchestration_v2_projection_threads
               WHERE thread_id = ${event.threadId}`;
-                const previous = current.length === 1 ? JSON.parse(current[0]!.payload_json) : null;
-                if (
-                  event.type === "thread.created" ||
-                  previous === null ||
-                  previous.projectId !== event.payload.projectId ||
-                  previous.worktreePath !== event.payload.worktreePath
-                ) {
+                const pathChanged =
+                  current.length === 1
+                    ? yield* EventSinkJsonCodec.decodeThreadPathChanged(
+                        current[0]!.payload_json,
+                        event.type === "thread.created",
+                        event.payload.projectId,
+                        event.payload.worktreePath,
+                      ).pipe(
+                        Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+                      )
+                    : true;
+                if (pathChanged) {
                   const project = Option.getOrNull(
                     yield* projectStore.get(event.payload.projectId),
                   );
@@ -11229,11 +11835,14 @@ const baseLayer: Layer.Layer<
           row.recorded_at !== DateTime.formatIso(admission.recordedAt) ||
           !OrdinaryCheckout.ordinaryCheckoutAdmissionMatchesV1(admission) ||
           birth.length !== 1 ||
-          nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)) !==
-            nativeCreationCanonicalJson(capture.canonicalCommand) ||
+          nativeCreationCanonicalJson(
+            yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
+          ) !== nativeCreationCanonicalJson(capture.canonicalCommand) ||
           receipt?.status !== "accepted" ||
           nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryCheckout.OrdinaryAcceptedReceiptV1)(admission.receipt),
+            yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryAcceptedReceiptV1)(
+              admission.receipt,
+            ).pipe(Effect.orDie),
           ) !==
             nativeCreationCanonicalJson({
               ...receipt,
@@ -11327,7 +11936,9 @@ const baseLayer: Layer.Layer<
         link.requestSha256 !==
           nativeCreationSha256(
             nativeCreationCanonicalJson(
-              Schema.encodeSync(EffectOutbox.OrchestrationEffectRequestV2)(effect.request),
+              yield* Schema.encodeEffect(EffectOutbox.OrchestrationEffectRequestV2)(
+                effect.request,
+              ).pipe(Effect.orDie),
             ),
           )
       )
@@ -11393,8 +12004,9 @@ const baseLayer: Layer.Layer<
         { onExcessProperty: "error" },
       );
       if (
-        nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)) !==
-        nativeCreationCanonicalJson(canonical)
+        nativeCreationCanonicalJson(
+          yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
+        ) !== nativeCreationCanonicalJson(canonical)
       )
         return yield* new EventSinkWriteError({
           eventCount: 0,
@@ -11650,6 +12262,155 @@ const baseLayer: Layer.Layer<
         });
       return admission;
     });
+    const resolveOrdinaryCheckoutLease = Effect.fnUntraced(function* (
+      original: WorktreeOwnershipLease,
+    ) {
+      const rows =
+        yield* sql`SELECT resource_path AS "resourcePath", lease_id AS "leaseId", owner_thread_id AS "ownerThreadId",
+        owner_incarnation AS "ownerIncarnation", branch, acquired_at_ms AS "acquiredAtMs", renewed_at_ms AS "renewedAtMs", expires_at_ms AS "expiresAtMs"
+        FROM worktree_ownership_leases WHERE resource_path = ${original.resourcePath}`;
+      const current =
+        rows.length === 1
+          ? yield* Schema.decodeUnknownEffect(OrdinaryCheckout.OrdinaryCheckoutLeaseV1)(rows[0])
+          : null;
+      const unavailable = () =>
+        new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Original checkout lease has no qualified current branch transition",
+        });
+      if (current === null) return yield* unavailable();
+      if (current.ownerThreadId !== original.ownerThreadId)
+        return yield* new WorktreeOwnershipConflictError({
+          resourcePath: current.resourcePath,
+          ownerThreadId: current.ownerThreadId,
+          requestingThreadId: original.ownerThreadId,
+          ownerBranch: current.branch,
+          expiresAtMs: current.expiresAtMs,
+        });
+      if (
+        nativeCreationCanonicalJson(OrdinaryCheckout.ordinaryCheckoutLeaseIdentityV1(current)) !==
+        nativeCreationCanonicalJson(
+          OrdinaryCheckout.ordinaryCheckoutLeaseIdentityV1({ ...original, branch: current.branch }),
+        )
+      )
+        return yield* unavailable();
+      if (current.branch === original.branch) return current;
+      const candidates = yield* sql<{
+        readonly operation_id: string;
+        readonly admission_id: string;
+        readonly transition_json: string;
+        readonly recorded_at: string;
+      }>`SELECT * FROM orchestration_v2_ordinary_checkout_target_transitions
+        WHERE json_extract(transition_json, '$.leaseId') = ${original.leaseId}
+          AND json_extract(transition_json, '$.canonicalCheckoutPath') = ${original.resourcePath}`;
+      const transitions: Array<typeof OrdinaryPreparedBranchTransitionV1.Type> = [];
+      for (const candidate of candidates) {
+        const transition = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutTargetTransitionV1),
+        )(candidate.transition_json, { onExcessProperty: "error" });
+        const evidence = yield* Schema.decodeUnknownEffect(OrdinaryPreparedBranchTransitionV1)(
+          transition.evidence,
+          { onExcessProperty: "error" },
+        );
+        const observation = evidence.observation;
+        const ref = observation.execution;
+        const record = yield* exactOrdinaryCheckoutUse(ref.originalUse);
+        const admission = yield* resolveOrdinaryCheckoutAdmission(ref.originalUse.admission);
+        const history = yield* readOrdinaryCheckoutExecutionAssociationsEffect(ref.originalUse);
+        const predecessor = history.facts[evidence.associationOrdinal];
+        const receipt = Option.getOrNull(yield* commandReceipts.getByCommandId(evidence.commandId));
+        const events = yield* eventStore
+          .readByCommandId({ commandId: evidence.commandId })
+          .pipe(Stream.runCollect);
+        const event = events.find(
+          (item) => item.event.id === evidence.eventId && item.sequence === evidence.sequence,
+        );
+        const observedAt = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+          observation.observedAt,
+        );
+        if (
+          candidate.operation_id !== ref.originalUse.operationId ||
+          transition.operationId !== candidate.operation_id ||
+          candidate.admission_id !== ref.originalUse.admission.admissionId ||
+          nativeCreationCanonicalJson(transition.admission) !==
+            nativeCreationCanonicalJson(ref.originalUse.admission) ||
+          nativeCreationCanonicalJson(
+            yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseSourceV1)(
+              transition.source,
+            ),
+          ) !==
+            nativeCreationCanonicalJson(
+              yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseSourceV1)(
+                ref.originalUse.source,
+              ),
+            ) ||
+          nativeCreationCanonicalJson(transition.applicationBirth) !==
+            nativeCreationCanonicalJson(admission.capture.applicationBirth) ||
+          nativeCreationCanonicalJson(
+            OrdinaryCheckout.ordinaryCheckoutLeaseIdentityV1(transition.beforeLease),
+          ) !==
+            nativeCreationCanonicalJson(
+              OrdinaryCheckout.ordinaryCheckoutLeaseIdentityV1(ref.originalUse.lease),
+            ) ||
+          nativeCreationCanonicalJson(transition.afterLease) !==
+            nativeCreationCanonicalJson({
+              ...transition.beforeLease,
+              branch: observation.renamedBranch,
+            }) ||
+          transition.leaseId !== original.leaseId ||
+          transition.canonicalCheckoutPath !== original.resourcePath ||
+          transition.fromBranch !== observation.oldBranch ||
+          transition.toBranch !== observation.renamedBranch ||
+          DateTime.formatIso(transition.recordedAt) !== candidate.recorded_at ||
+          nativeCreationCanonicalJson(
+            OrdinaryCheckout.ordinaryCheckoutLeaseIdentityV1({
+              ...transition.beforeLease,
+              branch: original.branch,
+            }),
+          ) !==
+            nativeCreationCanonicalJson(
+              OrdinaryCheckout.ordinaryCheckoutLeaseIdentityV1(original),
+            ) ||
+          ref.executor.kind !== "actual_prepared_producer" ||
+          observation.producerId !== ref.executor.producerId ||
+          predecessor === undefined ||
+          ordinaryExecutionBytes(predecessor.ref) !== ordinaryExecutionBytes(ref) ||
+          predecessor.eventKind === "retire" ||
+          predecessor.eventKind === "unknown" ||
+          predecessor.recordedAt > candidate.recorded_at ||
+          predecessor.evidence.expiresAt <= candidate.recorded_at ||
+          observation.checkoutPath !== original.resourcePath ||
+          observation.oldBranch !== ref.originalUse.lease.branch ||
+          nativeCreationCanonicalJson(observation.targetSource) !==
+            nativeCreationCanonicalJson(record.subject.source) ||
+          observation.readback.cwd !== observation.checkoutPath ||
+          observation.readback.refName !== observation.renamedBranch ||
+          observation.oldBranch === observation.renamedBranch ||
+          record.startedAt === null ||
+          observation.observedAt < record.startedAt ||
+          DateTime.formatIso(observedAt) !== observation.observedAt ||
+          observation.observedAt > candidate.recorded_at ||
+          receipt?.status !== "accepted" ||
+          receipt.threadId !== ref.originalUse.lease.ownerThreadId ||
+          receipt.commandType !== "thread.metadata.update" ||
+          receipt.resultSequence !== evidence.sequence ||
+          event?.event.type !== "thread.metadata-updated" ||
+          event.event.threadId !== receipt.threadId ||
+          event.event.payload.branch !== observation.renamedBranch ||
+          event.event.payload.worktreePath !== record.subject.source.worktreePath
+        )
+          return yield* unavailable();
+        transitions.push(evidence);
+      }
+      // A captured target may advance only along the committed physical observations.
+      let branch = original.branch;
+      for (const transition of transitions.toSorted((a, b) => a.sequence - b.sequence)) {
+        if (transition.observation.oldBranch === branch)
+          branch = transition.observation.renamedBranch;
+      }
+      if (branch !== current.branch) return yield* unavailable();
+      return current;
+    });
     const readCurrentOrdinaryCheckoutCapture = Effect.fnUntraced(function* (
       capture: OrdinaryCheckout.OrdinaryCheckoutCaptureV1,
       source: OrdinaryCheckoutSqlCaptureV1["source"],
@@ -11673,6 +12434,8 @@ const baseLayer: Layer.Layer<
           ownerBranch: lease.branch,
           expiresAtMs: lease.expiresAtMs,
         });
+      const resolvedLease =
+        lease === null ? null : yield* resolveOrdinaryCheckoutLease(capture.lease);
       if (
         !OrdinaryCheckout.ordinaryCheckoutCaptureMatchesV1(capture) ||
         birth === null ||
@@ -11680,7 +12443,7 @@ const baseLayer: Layer.Layer<
           nativeCreationCanonicalJson(capture.applicationBirth) ||
         local.thread.deletedAt !== null ||
         local.thread.projectId !== capture.projectId ||
-        local.thread.branch !== capture.branch ||
+        local.thread.branch !== resolvedLease?.branch ||
         project === null ||
         project.workspaceRoot !== source.projectWorkspaceRoot ||
         local.thread.worktreePath !== source.worktreePath ||
@@ -11689,7 +12452,10 @@ const baseLayer: Layer.Layer<
         lease === null ||
         nativeCreationCanonicalJson(OrdinaryCheckout.ordinaryCheckoutLeaseIdentityV1(lease)) !==
           nativeCreationCanonicalJson(
-            OrdinaryCheckout.ordinaryCheckoutLeaseIdentityV1(capture.lease),
+            OrdinaryCheckout.ordinaryCheckoutLeaseIdentityV1({
+              ...capture.lease,
+              branch: resolvedLease?.branch ?? null,
+            }),
           )
       )
         return yield* ordinaryFailure(
@@ -11781,7 +12547,9 @@ const baseLayer: Layer.Layer<
           eventCount: events.length,
           cause: "Ordinary acceptance has no unique captured subject",
         });
-      const canonicalCommand = Schema.encodeSync(OrchestrationV2Command)(context.command);
+      const canonicalCommand = yield* Schema.encodeEffect(OrchestrationV2Command)(
+        context.command,
+      ).pipe(Effect.orDie);
       for (const contract of contracts) {
         const capture = yield* Schema.decodeUnknownEffect(
           OrdinaryCheckout.OrdinaryCheckoutCaptureV1,
@@ -11960,7 +12728,7 @@ const baseLayer: Layer.Layer<
           yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_admissions
             (admission_id, command_id, thread_id, admission_sha256, admission_json, recorded_at)
             VALUES (${admission.admissionId}, ${capture.commandId}, ${capture.threadId}, ${ref.admissionSha256},
-              ${nativeCreationCanonicalJson(Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutAdmissionV1)(admission))}, ${DateTime.formatIso(input.acceptedAt)})`;
+              ${nativeCreationCanonicalJson(yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutAdmissionV1)(admission).pipe(Effect.orDie))}, ${DateTime.formatIso(input.acceptedAt)})`;
         }
         let linked = false;
         for (const effect of effects) {
@@ -11990,7 +12758,9 @@ const baseLayer: Layer.Layer<
             threadId: effect.threadId,
             requestSha256: nativeCreationSha256(
               nativeCreationCanonicalJson(
-                Schema.encodeSync(EffectOutbox.OrchestrationEffectRequestV2)(effect.request),
+                yield* Schema.encodeEffect(EffectOutbox.OrchestrationEffectRequestV2)(
+                  effect.request,
+                ).pipe(Effect.orDie),
               ),
             ),
             admission: OrdinaryCheckout.ordinaryCheckoutAdmissionRefV1(admission),
@@ -12000,7 +12770,9 @@ const baseLayer: Layer.Layer<
             schema: "t3.ordinary-checkout-command-link/v1" as const,
             version: 1 as const,
             link,
-            command: JSON.parse(nativeCreationCanonicalJson(canonicalCommand)),
+            command: yield* EventSinkJsonCodec.decodeJson(
+              nativeCreationCanonicalJson(canonicalCommand),
+            ).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error)))),
             commandDigest: nativeCreationSha256(nativeCreationCanonicalJson(canonicalCommand)),
             ...(context.joinedUse === undefined ? {} : { joinedUse: context.joinedUse }),
             ...(context.ordinaryCheckoutExecution === undefined
@@ -12008,7 +12780,7 @@ const baseLayer: Layer.Layer<
               : { ordinaryCheckoutExecution: context.ordinaryCheckoutExecution }),
           };
           yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_effect_links (effect_id, admission_id, link_json, recorded_at)
-            VALUES (${link.effectId}, ${admission.admissionId}, ${nativeCreationCanonicalJson(Schema.encodeSync(OrdinaryCheckoutCommandLinkPayloadV1)(payload))},
+            VALUES (${link.effectId}, ${admission.admissionId}, ${nativeCreationCanonicalJson(yield* Schema.encodeUnknownEffect(OrdinaryCheckoutCommandLinkPayloadV1)(payload).pipe(Effect.orDie))},
               ${DateTime.formatIso(input.acceptedAt)})`;
           linked = true;
         }
@@ -12016,15 +12788,17 @@ const baseLayer: Layer.Layer<
           const payload =
             context.joinedUse === undefined && context.ordinaryCheckoutExecution === undefined
               ? canonicalCommand
-              : Schema.encodeSync(OrdinaryCheckoutCommandPayloadV1)({
+              : yield* Schema.encodeUnknownEffect(OrdinaryCheckoutCommandPayloadV1)({
                   schema: "t3.ordinary-checkout-command/v1",
                   version: 1,
-                  command: JSON.parse(nativeCreationCanonicalJson(canonicalCommand)),
+                  command: yield* EventSinkJsonCodec.decodeJson(
+                    nativeCreationCanonicalJson(canonicalCommand),
+                  ).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error)))),
                   ...(context.joinedUse === undefined ? {} : { joinedUse: context.joinedUse }),
                   ...(context.ordinaryCheckoutExecution === undefined
                     ? {}
                     : { ordinaryCheckoutExecution: context.ordinaryCheckoutExecution }),
-                });
+                }).pipe(Effect.orDie);
           yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_commands
             (command_id, thread_id, admission_id, canonical_command_json, command_digest, recorded_at)
             VALUES (${input.commandId}, ${capture.threadId}, ${admission.admissionId}, ${nativeCreationCanonicalJson(payload)},
@@ -12069,7 +12843,9 @@ const baseLayer: Layer.Layer<
               eventCount: 0,
               cause: "Runless preparation has no accepted creation or empty-thread update",
             });
-          const encoded = Schema.encodeSync(OrchestrationV2Command)(command);
+          const encoded = yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(
+            Effect.orDie,
+          );
           const preparation = yield* Schema.decodeUnknownEffect(
             OrdinaryCheckout.OrdinaryAcceptedEventV1,
           )(input.preparationEvent, { onExcessProperty: "error" });
@@ -12265,10 +13041,14 @@ const baseLayer: Layer.Layer<
               source.expectedAttempt,
             ) !== use.operationId) ||
           nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link),
+            yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link).pipe(
+              Effect.orDie,
+            ),
           ) !==
             nativeCreationCanonicalJson(
-              Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(source.link),
+              yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+                source.link,
+              ).pipe(Effect.orDie),
             ) ||
           nativeCreationCanonicalJson(link.admission) !==
             nativeCreationCanonicalJson(use.admission) ||
@@ -12377,10 +13157,14 @@ const baseLayer: Layer.Layer<
       if (
         record === null ||
         nativeCreationCanonicalJson(
-          Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(record.subject.use),
+          yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
+            record.subject.use,
+          ).pipe(Effect.orDie),
         ) !==
           nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(use),
+            yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)(use).pipe(
+              Effect.orDie,
+            ),
           )
       )
         return yield* new EventSinkWriteError({
@@ -12576,10 +13360,14 @@ const baseLayer: Layer.Layer<
           effect.commandId !== pending.commandId ||
           effect.threadId !== pending.threadId ||
           nativeCreationCanonicalJson(
-            Schema.encodeSync(EffectOutbox.OrchestrationEffectRequestV2)(effect.request),
+            yield* Schema.encodeEffect(EffectOutbox.OrchestrationEffectRequestV2)(
+              effect.request,
+            ).pipe(Effect.orDie),
           ) !==
             nativeCreationCanonicalJson(
-              Schema.encodeSync(EffectOutbox.OrchestrationEffectRequestV2)(pending.request),
+              yield* Schema.encodeEffect(EffectOutbox.OrchestrationEffectRequestV2)(
+                pending.request,
+              ).pipe(Effect.orDie),
             )
         )
           return yield* ordinaryFailure(
@@ -12634,7 +13422,9 @@ const baseLayer: Layer.Layer<
             threadId: pending.threadId,
             requestSha256: nativeCreationSha256(
               nativeCreationCanonicalJson(
-                Schema.encodeSync(EffectOutbox.OrchestrationEffectRequestV2)(pending.request),
+                yield* Schema.encodeEffect(EffectOutbox.OrchestrationEffectRequestV2)(
+                  pending.request,
+                ).pipe(Effect.orDie),
               ),
             ),
             admission: subject.context.admission,
@@ -12642,13 +13432,15 @@ const baseLayer: Layer.Layer<
           };
           const payload =
             subject.context.ordinaryCheckoutExecution === undefined
-              ? Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link)
-              : Schema.encodeSync(OrdinaryCheckoutSystemLinkPayloadV1)({
+              ? yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+                  link,
+                ).pipe(Effect.orDie)
+              : yield* Schema.encodeEffect(OrdinaryCheckoutSystemLinkPayloadV1)({
                   schema: "t3.ordinary-checkout-system-link/v1",
                   version: 1,
                   link,
                   ordinaryCheckoutExecution: subject.context.ordinaryCheckoutExecution,
-                });
+                }).pipe(Effect.orDie);
           yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_effect_links (effect_id, admission_id, link_json, recorded_at)
             VALUES (${link.effectId}, ${admission.admissionId}, ${nativeCreationCanonicalJson(payload)}, ${DateTime.formatIso(now)})`;
         }
@@ -12851,27 +13643,33 @@ const baseLayer: Layer.Layer<
             event.payload.id !== run.id ||
             event.payload.checkpointId !== checkpoint.id ||
             nativeCreationCanonicalJson(
-              withoutFields(Schema.encodeSync(OrchestrationV2RunJson)(event.payload), [
-                "status",
-                "completedAt",
-                "checkpointId",
-                "delegatedCompletion",
-              ]),
+              withoutFields(
+                yield* Schema.encodeEffect(OrchestrationV2RunJson)(event.payload).pipe(
+                  Effect.orDie,
+                ),
+                ["status", "completedAt", "checkpointId", "delegatedCompletion"],
+              ),
             ) !==
               nativeCreationCanonicalJson(
-                withoutFields(Schema.encodeSync(OrchestrationV2RunJson)(run), [
-                  "status",
-                  "completedAt",
-                  "checkpointId",
-                  "delegatedCompletion",
-                ]),
+                withoutFields(
+                  yield* Schema.encodeEffect(OrchestrationV2RunJson)(run).pipe(Effect.orDie),
+                  ["status", "completedAt", "checkpointId", "delegatedCompletion"],
+                ),
               ) ||
             (event.payload.delegatedCompletion !== undefined &&
               nativeCreationCanonicalJson(event.payload.delegatedCompletion) !==
                 nativeCreationCanonicalJson(run.delegatedCompletion)) ||
-            (run.status === "interrupted" || run.status === "cancelled"
+            (run.status === "interrupted" ||
+            run.status === "cancelled" ||
+            (run.status === "failed" && executionRef !== undefined)
               ? event.payload.status !== run.status
-              : event.payload.status !== "completed")
+              : event.payload.status !== "completed") ||
+            (run.status === "failed" &&
+              executionRef !== undefined &&
+              (yield* Schema.encodeEffect(OrchestrationV2RunJson)(event.payload).pipe(Effect.orDie))
+                .completedAt !==
+                (yield* Schema.encodeEffect(OrchestrationV2RunJson)(run).pipe(Effect.orDie))
+                  .completedAt)
           )
             return yield* ordinaryFailure(
               admission.capture,
@@ -12885,16 +13683,20 @@ const baseLayer: Layer.Layer<
             event.payload.id !== node.id ||
             event.payload.status !== "completed" ||
             nativeCreationCanonicalJson(
-              withoutFields(Schema.encodeSync(OrchestrationV2ExecutionNodeJson)(event.payload), [
-                "status",
-                "completedAt",
-              ]),
+              withoutFields(
+                yield* Schema.encodeEffect(OrchestrationV2ExecutionNodeJson)(event.payload).pipe(
+                  Effect.orDie,
+                ),
+                ["status", "completedAt"],
+              ),
             ) !==
               nativeCreationCanonicalJson(
-                withoutFields(Schema.encodeSync(OrchestrationV2ExecutionNodeJson)(node), [
-                  "status",
-                  "completedAt",
-                ]),
+                withoutFields(
+                  yield* Schema.encodeEffect(OrchestrationV2ExecutionNodeJson)(node).pipe(
+                    Effect.orDie,
+                  ),
+                  ["status", "completedAt"],
+                ),
               )
           )
             return yield* ordinaryFailure(
@@ -12957,9 +13759,15 @@ const baseLayer: Layer.Layer<
           if (existing !== null) {
             if (
               nativeCreationCanonicalJson(
-                Schema.encodeSync(OrdinaryCheckoutUseSubjectV1)(existing.subject),
+                yield* Schema.encodeEffect(OrdinaryCheckoutUseSubjectV1)(existing.subject).pipe(
+                  Effect.orDie,
+                ),
               ) !==
-              nativeCreationCanonicalJson(Schema.encodeSync(OrdinaryCheckoutUseSubjectV1)(subject))
+              nativeCreationCanonicalJson(
+                yield* Schema.encodeEffect(OrdinaryCheckoutUseSubjectV1)(subject).pipe(
+                  Effect.orDie,
+                ),
+              )
             )
               return yield* ordinaryFailure(
                 admission.capture,
@@ -12977,7 +13785,7 @@ const baseLayer: Layer.Layer<
           yield* sql`INSERT INTO orchestration_v2_worktree_path_admissions
           (operation_id, canonical_path, kind, subject_json, state, started_at, outcome_json, recorded_at, updated_at)
           VALUES (${input.operationId}, ${admission.capture.canonicalCheckoutPath}, 'native_operation',
-            ${nativeCreationCanonicalJson(Schema.encodeSync(OrdinaryCheckoutUseSubjectV1)(subject))}, 'reserved', NULL, NULL, ${now}, ${now})`;
+            ${nativeCreationCanonicalJson(yield* Schema.encodeEffect(OrdinaryCheckoutUseSubjectV1)(subject).pipe(Effect.orDie))}, 'reserved', NULL, NULL, ${now}, ${now})`;
           return {
             status: "reserved" as const,
             record: { subject, state: "reserved" as const, startedAt: null },
@@ -13093,6 +13901,7 @@ const baseLayer: Layer.Layer<
     });
 
     const ordinaryExecutionCallbacks = new Map<string, Effect.Effect<void, unknown>>();
+    const ordinaryRetryObservations = new Map<string, StartRetryBeforeOpenObservationV1>();
     const ordinaryUseBytes = (use: OrdinaryCheckout.OrdinaryCheckoutUseV1) =>
       nativeCreationCanonicalJson(Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(use));
     const ordinaryExecutionBytes = (ref: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1) =>
@@ -13189,7 +13998,8 @@ const baseLayer: Layer.Layer<
             }
             if (
               evidence.schema === "t3.ordinary-checkout-execution-outcome/v1" &&
-              evidence.actualProducerOutcome.kind === "start_failed_before_open"
+              (evidence.actualProducerOutcome.kind === "start_failed_before_open" ||
+                evidence.actualProducerOutcome.kind === "start_retry_before_open")
             ) {
               const observation = evidence.actualProducerOutcome.observation;
               if (
@@ -13227,7 +14037,8 @@ const baseLayer: Layer.Layer<
             }
             if (
               evidence.schema === "t3.ordinary-checkout-execution-outcome/v1" &&
-              evidence.actualProducerOutcome.kind === "prepared_completed"
+              (evidence.actualProducerOutcome.kind === "prepared_completed" ||
+                evidence.actualProducerOutcome.kind === "prepared_failed")
             ) {
               const observation = evidence.actualProducerOutcome.observation;
               const observedAt = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
@@ -13300,14 +14111,14 @@ const baseLayer: Layer.Layer<
                 ordinaryUseBytes(observation.startExecution.originalUse) !==
                   ordinaryUseBytes(originalUse) ||
                 nativeCreationCanonicalJson(
-                  Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)(
+                  yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)(
                     observation.managedExecutor,
-                  ),
+                  ).pipe(Effect.orDie),
                 ) !==
                   nativeCreationCanonicalJson(
-                    Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)(
-                      ref.executor,
-                    ),
+                    yield* Schema.encodeEffect(
+                      OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1,
+                    )(ref.executor).pipe(Effect.orDie),
                   ) ||
                 DateTime.formatIso(observedAt) !== observation.observedAt ||
                 observation.observedAt > row.recorded_at
@@ -13408,14 +14219,14 @@ const baseLayer: Layer.Layer<
           ordinaryExecutionBytes(settlement.evidence.actualProducerOutcome.managedExecution) !==
             ordinaryExecutionBytes(fact.ref) ||
           nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryManagedStartObservationV1)(
+            yield* Schema.encodeEffect(OrdinaryManagedStartObservationV1)(
               settlement.evidence.actualProducerOutcome.actualStartObservation,
-            ),
+            ).pipe(Effect.orDie),
           ) !==
             nativeCreationCanonicalJson(
-              Schema.encodeSync(OrdinaryManagedStartObservationV1)(
+              yield* Schema.encodeEffect(OrdinaryManagedStartObservationV1)(
                 fact.evidence.actualStartObservation,
-              ),
+              ).pipe(Effect.orDie),
             )
         )
           return yield* new EventSinkWriteError({
@@ -13456,9 +14267,9 @@ const baseLayer: Layer.Layer<
             retirement.closureSha256 !==
               nativeCreationSha256(
                 nativeCreationCanonicalJson(
-                  Schema.encodeSync(ProviderManagedActorClosureV1)(
+                  yield* Schema.encodeEffect(ProviderManagedActorClosureV1)(
                     retired.evidence.actualProducerOutcome.observation,
-                  ),
+                  ).pipe(Effect.orDie),
                 ),
               )
           )
@@ -13612,7 +14423,7 @@ const baseLayer: Layer.Layer<
         (operation_id, ordinal, predecessor_ordinal, association_id, admission_id, executor_kind, effect_id, event_kind, association_json, evidence_json, recorded_at)
         VALUES (${ref.originalUse.operationId}, ${ordinal}, ${history.latestOrdinal < 0 ? null : history.latestOrdinal}, ${ref.associationId},
           ${ref.originalUse.admission.admissionId}, ${ref.executor.kind}, ${ref.executor.kind === "actual_outbox_claim" ? ref.executor.source.link.effectId : null},
-          ${kind}, ${ordinaryExecutionBytes(ref)}, ${nativeCreationCanonicalJson(Schema.encodeSync(OrdinaryCheckoutExecutionEvidenceV1)(evidence))}, ${now})`;
+          ${kind}, ${ordinaryExecutionBytes(ref)}, ${nativeCreationCanonicalJson(yield* Schema.encodeEffect(OrdinaryCheckoutExecutionEvidenceV1)(evidence).pipe(Effect.orDie))}, ${now})`;
       return ordinal;
     });
     const validateOrdinaryManagedExecutor = Effect.fnUntraced(function* (
@@ -13732,10 +14543,14 @@ const baseLayer: Layer.Layer<
           effect.leaseExpiresAt !== expiresAt ||
           effect.leaseExpiresAt <= now ||
           nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link),
+            yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link).pipe(
+              Effect.orDie,
+            ),
           ) !==
             nativeCreationCanonicalJson(
-              Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(source.link),
+              yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+                source.link,
+              ).pipe(Effect.orDie),
             ) ||
           nativeCreationCanonicalJson(link.admission) !==
             nativeCreationCanonicalJson(ref.originalUse.admission) ||
@@ -13894,24 +14709,24 @@ const baseLayer: Layer.Layer<
             ref.executor.kind === "captured_managed_run" ||
             (ref.executor.kind === "actual_outbox_claim"
               ? nativeCreationCanonicalJson(
-                  Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutOutboxExecutionSourceV1)(
-                    ref.executor.source,
-                  ),
+                  yield* Schema.encodeEffect(
+                    OrdinaryCheckout.OrdinaryCheckoutOutboxExecutionSourceV1,
+                  )(ref.executor.source).pipe(Effect.orDie),
                 ) !==
                 nativeCreationCanonicalJson(
-                  Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseSourceV1)(
+                  yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseSourceV1)(
                     ref.originalUse.source,
-                  ),
+                  ).pipe(Effect.orDie),
                 )
               : nativeCreationCanonicalJson(
-                  Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutPreparedExecutionSourceV1)(
-                    ref.executor.source,
-                  ),
+                  yield* Schema.encodeEffect(
+                    OrdinaryCheckout.OrdinaryCheckoutPreparedExecutionSourceV1,
+                  )(ref.executor.source).pipe(Effect.orDie),
                 ) !==
                 nativeCreationCanonicalJson(
-                  Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseSourceV1)(
+                  yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseSourceV1)(
                     ref.originalUse.source,
-                  ),
+                  ).pipe(Effect.orDie),
                 ))
           )
             return yield* ordinaryFailure(
@@ -14004,12 +14819,14 @@ const baseLayer: Layer.Layer<
             observation.managedExecutor.kind !== "captured_managed_run" ||
             ordinaryExecutionBytes(observation.startExecution) !== ordinaryExecutionBytes(start) ||
             nativeCreationCanonicalJson(
-              Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)(
+              yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)(
                 observation.managedExecutor,
-              ),
+              ).pipe(Effect.orDie),
             ) !==
               nativeCreationCanonicalJson(
-                Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)(managed),
+                yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)(
+                  managed,
+                ).pipe(Effect.orDie),
               )
           )
             return yield* ordinaryFailure(
@@ -14154,7 +14971,7 @@ const baseLayer: Layer.Layer<
           (operation_id, ordinal, predecessor_ordinal, association_id, admission_id, executor_kind, effect_id, event_kind, association_json, evidence_json, recorded_at)
           VALUES (${start.originalUse.operationId}, ${ordinal + 1}, ${ordinal}, ${start.associationId}, ${start.originalUse.admission.admissionId},
             'actual_outbox_claim', ${effect.id}, 'retire', ${ordinaryExecutionBytes(start)},
-            ${nativeCreationCanonicalJson(Schema.encodeSync(OrdinaryCheckoutExecutionOutcomeFactV1)(retirement))}, ${DateTime.formatIso(now)})`;
+            ${nativeCreationCanonicalJson(yield* Schema.encodeEffect(OrdinaryCheckoutExecutionOutcomeFactV1)(retirement).pipe(Effect.orDie))}, ${DateTime.formatIso(now)})`;
           if (
             !(yield* effectOutbox.settleOrdinaryCheckoutStartClaim({
               effectId: effect.id,
@@ -14172,6 +14989,9 @@ const baseLayer: Layer.Layer<
           yield* afterCommit(
             Effect.sync(() => {
               ordinaryExecutionCallbacks.set(ref.associationId, input.revalidateCaptured);
+              for (const [key, observation] of ordinaryRetryObservations)
+                if (observation.execution.originalUse.operationId === ref.originalUse.operationId)
+                  ordinaryRetryObservations.delete(key);
             }),
           );
           return ref;
@@ -14190,10 +15010,60 @@ const baseLayer: Layer.Layer<
           const active = history.participants.filter(
             (participant) => participant.state === "active",
           );
+          const preparedPredecessor = input.predecessorExecution;
+          const retiredPreparation =
+            preparedPredecessor?.executor.kind === "actual_prepared_producer"
+              ? history.facts.findLast(
+                  (fact) =>
+                    ordinaryExecutionBytes(fact.ref) ===
+                      ordinaryExecutionBytes(preparedPredecessor) &&
+                    fact.evidence.schema === "t3.ordinary-checkout-execution-outcome/v1" &&
+                    fact.evidence.actualProducerOutcome.kind === "prepared_completed",
+                )
+              : undefined;
+          let completedPreparation = false;
+          if (
+            retiredPreparation?.evidence.schema === "t3.ordinary-checkout-execution-outcome/v1" &&
+            retiredPreparation.evidence.actualProducerOutcome.kind === "prepared_completed" &&
+            preparedPredecessor !== undefined
+          ) {
+            const effect = Option.getOrNull(yield* effectOutbox.get(input.claim.link.effectId));
+            const binding = (yield* readOrdinaryCheckoutCurrentCommandsEffect(
+              input.claim.link.commandId,
+            )).find((item) => item.threadId === admission.capture.threadId);
+            if (
+              effect?.request.type === "provider-turn.start" &&
+              admission.run !== null &&
+              effect.request.runId === admission.run.runId &&
+              binding?.canonicalCommand.type === "prepared-run.release" &&
+              binding.canonicalCommand.runId === admission.run.runId &&
+              binding.joinedUse !== null &&
+              ordinaryUseBytes(binding.joinedUse) === ordinaryUseBytes(input.originalUse) &&
+              binding.ordinaryCheckoutExecution !== null &&
+              ordinaryExecutionBytes(binding.ordinaryCheckoutExecution) ===
+                ordinaryExecutionBytes(preparedPredecessor)
+            ) {
+              yield* validateOrdinaryCheckoutExecutionAttribution(
+                preparedPredecessor,
+                admission,
+                input.originalUse,
+              );
+              yield* validateOrdinaryPreparedOutcome(
+                preparedPredecessor,
+                retiredPreparation.evidence.actualProducerOutcome,
+                retiredPreparation.evidence.expiresAt,
+              );
+              yield* validateOrdinaryCheckoutCapture(admission.capture, record.subject.source, {
+                operationId: input.originalUse.operationId,
+                requireLiveLease: true,
+              });
+              completedPreparation = true;
+            }
+          }
           if (
             history.facts.length === 0 ||
             record.state !== "started" ||
-            active.length === 0 ||
+            (active.length === 0 && !completedPreparation) ||
             history.participants.some((participant) => participant.state === "unknown") ||
             active.some((participant) => participant.expiresAt <= now)
           )
@@ -14218,7 +15088,8 @@ const baseLayer: Layer.Layer<
                 "stale_admission",
                 "Joined claim belongs to another original operation",
               );
-            yield* validateOrdinaryCheckoutExecutionEffect(input.predecessorExecution);
+            if (!completedPreparation)
+              yield* validateOrdinaryCheckoutExecutionEffect(input.predecessorExecution);
           }
           const ref = OrdinaryCheckout.makeOrdinaryCheckoutExecutionRefV1({
             originalUse: input.originalUse,
@@ -14570,7 +15441,7 @@ const baseLayer: Layer.Layer<
             (operation_id, ordinal, predecessor_ordinal, association_id, admission_id, executor_kind, effect_id, event_kind, association_json, evidence_json, recorded_at)
             VALUES (${candidate.originalUse.operationId}, ${ordinal}, ${ordinal - 1}, ${ref.associationId}, ${admission.admissionId}, ${ref.executor.kind},
               ${ref.executor.kind === "actual_outbox_claim" ? ref.executor.source.link.effectId : null}, ${evidence.kind}, ${ordinaryExecutionBytes(ref)},
-              ${nativeCreationCanonicalJson(Schema.encodeSync(OrdinaryCheckoutExecutionEvidenceV1)(evidence))}, ${now})`;
+              ${nativeCreationCanonicalJson(yield* Schema.encodeEffect(OrdinaryCheckoutExecutionEvidenceV1)(evidence).pipe(Effect.orDie))}, ${now})`;
           });
           yield* insert(execution, joinOrdinal, {
             version: 1,
@@ -14611,12 +15482,14 @@ const baseLayer: Layer.Layer<
         join.eventKind !== "join" ||
         join.evidence.completionBasis === undefined ||
         nativeCreationCanonicalJson(
-          Schema.encodeSync(OrdinaryFinalCheckpointCompletionBasisV1)(
+          yield* Schema.encodeEffect(OrdinaryFinalCheckpointCompletionBasisV1)(
             join.evidence.completionBasis,
-          ),
+          ).pipe(Effect.orDie),
         ) !==
           nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryFinalCheckpointCompletionBasisV1)(basis),
+            yield* Schema.encodeEffect(OrdinaryFinalCheckpointCompletionBasisV1)(basis).pipe(
+              Effect.orDie,
+            ),
           ) ||
         current.ref.executor.kind !== "actual_outbox_claim" ||
         current.ref.executor.source.link.effectId !== basis.effectId ||
@@ -14661,6 +15534,154 @@ const baseLayer: Layer.Layer<
           "Another accepted mutation follows the native cohort",
         );
       return basis;
+    });
+    const transitionOrdinaryPreparedBranch = Effect.fnUntraced(function* (
+      input: Parameters<EventSinkV2Shape["transitionOrdinaryPreparedBranch"]>[0],
+    ) {
+      const { readIssuedOrdinaryPreparedPhysicalResult } = yield* Effect.promise(
+        () => import("./ThreadLaunchService.ts"),
+      );
+      const issued = readIssuedOrdinaryPreparedPhysicalResult(input.observation);
+      if (issued === null || issued.kind !== "prepared_branch_renamed")
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Branch transition has no unchanged actual producer observation",
+        });
+      const observation = yield* Schema.decodeUnknownEffect(
+        Schema.toType(OrdinaryPreparedBranchObservationV1),
+      )(issued, { onExcessProperty: "error" });
+      const ref = observation.execution;
+      const previous = yield* sql<{ readonly transition_json: string }>`
+        SELECT transition_json FROM orchestration_v2_ordinary_checkout_target_transitions WHERE operation_id = ${ref.originalUse.operationId}`;
+      if (previous.length !== 0) {
+        const retained = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutTargetTransitionV1),
+        )(previous[0]!.transition_json, { onExcessProperty: "error" });
+        const evidence = yield* Schema.decodeUnknownEffect(OrdinaryPreparedBranchTransitionV1)(
+          retained.evidence,
+          { onExcessProperty: "error" },
+        );
+        if (
+          evidence.commandId !== input.commandId ||
+          nativeCreationCanonicalJson(
+            yield* Schema.encodeEffect(OrdinaryPreparedBranchObservationV1)(observation),
+          ) !==
+            nativeCreationCanonicalJson(
+              yield* Schema.encodeEffect(OrdinaryPreparedBranchObservationV1)(evidence.observation),
+            )
+        )
+          return yield* new EventSinkWriteError({
+            eventCount: 0,
+            cause: "Branch transition replay differs from its immutable original result",
+          });
+        return yield* resolveOrdinaryCheckoutLease(ref.originalUse.lease);
+      }
+      const current = yield* validateOrdinaryCheckoutExecutionEffect(ref, true);
+      const record = yield* exactOrdinaryCheckoutUse(ref.originalUse);
+      const admission = current.admission;
+      if (admission.run !== null) {
+        const local = yield* projectionStore.getThreadRecords(admission.capture.threadId, ["runs"]);
+        const run = local.runs.find((item) => item.id === admission.run!.runId);
+        if (
+          run === undefined ||
+          ["completed", "failed", "cancelled", "interrupted"].includes(run.status)
+        )
+          return yield* ordinaryFailure(
+            admission.capture,
+            "stale_admission",
+            "Stopped preparation cannot publish a late physical rename",
+          );
+      }
+      const lease = yield* readCurrentOrdinaryCheckoutCapture(
+        admission.capture,
+        record.subject.source,
+      );
+      const observedAt = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+        observation.observedAt,
+      );
+      const now = yield* DateTime.now;
+      if (
+        ref.executor.kind !== "actual_prepared_producer" ||
+        observation.producerId !== ref.executor.producerId ||
+        nativeCreationCanonicalJson(observation.targetSource) !==
+          nativeCreationCanonicalJson(record.subject.source) ||
+        observation.checkoutPath !== admission.capture.canonicalCheckoutPath ||
+        observation.oldBranch !== admission.capture.branch ||
+        observation.oldBranch !== lease.branch ||
+        observation.oldBranch === observation.renamedBranch ||
+        observation.readback.cwd !== observation.checkoutPath ||
+        observation.readback.refName !== observation.renamedBranch ||
+        DateTime.formatIso(observedAt) !== observation.observedAt ||
+        observation.observedAt > DateTime.formatIso(now) ||
+        observation.observedAt >= current.participant.expiresAt ||
+        record.startedAt === null ||
+        observation.observedAt < record.startedAt ||
+        lease.expiresAtMs <= DateTime.toEpochMillis(now)
+      )
+        return yield* ordinaryFailure(
+          admission.capture,
+          "target_changed",
+          "Branch rename differs from its original live producer and checkout",
+        );
+      const committed = yield* input.commitMetadata;
+      const event = committed.storedEvents.find(
+        (item) =>
+          item.commandId === input.commandId &&
+          item.event.type === "thread.metadata-updated" &&
+          item.event.threadId === admission.capture.threadId &&
+          item.event.payload.branch === observation.renamedBranch &&
+          item.event.payload.worktreePath === record.subject.source.worktreePath,
+      );
+      if (
+        event === undefined ||
+        event.sequence !== committed.sequence ||
+        readIssuedOrdinaryPreparedPhysicalResult(input.observation) !== issued
+      )
+        return yield* ordinaryFailure(
+          admission.capture,
+          "target_changed",
+          "Branch transition lost its issued result or metadata receipt",
+        );
+      const changed =
+        yield* sql`UPDATE worktree_ownership_leases SET branch = ${observation.renamedBranch}
+        WHERE resource_path = ${lease.resourcePath} AND lease_id = ${lease.leaseId}
+          AND owner_thread_id = ${lease.ownerThreadId} AND owner_incarnation = ${lease.ownerIncarnation}
+          AND branch IS ${lease.branch} AND acquired_at_ms = ${lease.acquiredAtMs}
+          AND renewed_at_ms = ${lease.renewedAtMs} AND expires_at_ms = ${lease.expiresAtMs}
+        RETURNING lease_id`;
+      if (changed.length !== 1)
+        return yield* ordinaryFailure(
+          admission.capture,
+          "target_changed",
+          "Original lease changed before branch transition",
+        );
+      const transition: OrdinaryCheckout.OrdinaryCheckoutTargetTransitionV1 = {
+        version: 1,
+        operationId: ref.originalUse.operationId,
+        admission: ref.originalUse.admission,
+        source: ref.originalUse.source,
+        canonicalCheckoutPath: admission.capture.canonicalCheckoutPath,
+        leaseId: lease.leaseId,
+        applicationBirth: admission.capture.applicationBirth,
+        beforeLease: lease,
+        afterLease: { ...lease, branch: observation.renamedBranch },
+        fromBranch: observation.oldBranch,
+        toBranch: observation.renamedBranch,
+        evidence: yield* Schema.encodeEffect(OrdinaryPreparedBranchTransitionV1)({
+          observation,
+          commandId: input.commandId,
+          eventId: event.event.id,
+          sequence: event.sequence,
+          associationOrdinal: current.participant.latestOrdinal,
+        }),
+        recordedAt: now,
+      };
+      yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_target_transitions
+        (operation_id, admission_id, transition_json, recorded_at)
+        VALUES (${ref.originalUse.operationId}, ${ref.originalUse.admission.admissionId},
+          ${nativeCreationCanonicalJson(yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutTargetTransitionV1)(transition))}, ${DateTime.formatIso(now)})`;
+      yield* resolveOrdinaryCheckoutLease(admission.capture.lease);
+      return { ...lease, branch: observation.renamedBranch };
     });
     const renewOrdinaryCheckoutExecution = Effect.fnUntraced(function* (
       input: Parameters<EventSinkV2Shape["renewOrdinaryCheckoutExecution"]>[0],
@@ -14761,10 +15782,14 @@ const baseLayer: Layer.Layer<
         effect.attemptCount !== executor.source.expectedAttempt ||
         link === null ||
         nativeCreationCanonicalJson(
-          Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link),
+          yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link).pipe(
+            Effect.orDie,
+          ),
         ) !==
           nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(executor.source.link),
+            yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+              executor.source.link,
+            ).pipe(Effect.orDie),
           )
       )
         return yield* ordinaryFailure(
@@ -14778,7 +15803,9 @@ const baseLayer: Layer.Layer<
       const events = yield* eventStore
         .readByCommandId({ commandId: observation.commit.receipt.commandId })
         .pipe(Stream.runCollect);
-      const encoded = Schema.encodeSync(OrdinaryCheckpointProducerObservationV1)(observation);
+      const encoded = yield* Schema.encodeEffect(OrdinaryCheckpointProducerObservationV1)(
+        observation,
+      ).pipe(Effect.orDie);
       const history = yield* readOrdinaryCheckoutExecutionAssociationsEffect(ref.originalUse);
       const handoff = history.facts.find(
         (fact) =>
@@ -14796,12 +15823,14 @@ const baseLayer: Layer.Layer<
           observation.ordinaryFinalCheckpointBasis === undefined ||
           lastRetirement === undefined ||
           nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryFinalCheckpointCompletionBasisV1)(
+            yield* Schema.encodeEffect(OrdinaryFinalCheckpointCompletionBasisV1)(
               observation.ordinaryFinalCheckpointBasis,
-            ),
+            ).pipe(Effect.orDie),
           ) !==
             nativeCreationCanonicalJson(
-              Schema.encodeSync(OrdinaryFinalCheckpointCompletionBasisV1)(basis),
+              yield* Schema.encodeEffect(OrdinaryFinalCheckpointCompletionBasisV1)(basis).pipe(
+                Effect.orDie,
+              ),
             ) ||
           DateTime.formatIso(checkpoint.capturedAt) < lastRetirement.recordedAt ||
           history.facts
@@ -14872,8 +15901,9 @@ const baseLayer: Layer.Layer<
         scope === undefined ||
         scope.threadId !== checkpoint.threadId ||
         projected === undefined ||
-        nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2CheckpointJson)(projected)) !==
-          nativeCreationCanonicalJson(encoded.checkpoint)
+        nativeCreationCanonicalJson(
+          yield* Schema.encodeEffect(OrchestrationV2CheckpointJson)(projected).pipe(Effect.orDie),
+        ) !== nativeCreationCanonicalJson(encoded.checkpoint)
       )
         return yield* ordinaryFailure(
           admission.capture,
@@ -14884,12 +15914,16 @@ const baseLayer: Layer.Layer<
     });
     const validateOrdinaryPreparedOutcome = Effect.fnUntraced(function* (
       ref: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
-      outcome: Extract<OrdinaryCheckoutExecutorOutcomeV1, { readonly kind: "prepared_completed" }>,
+      outcome: Extract<
+        OrdinaryCheckoutExecutorOutcomeV1,
+        { readonly kind: "prepared_completed" | "prepared_failed" }
+      >,
       expiresAt: string,
     ) {
       const admission = yield* resolveOrdinaryCheckoutAdmission(ref.originalUse.admission);
       const record = yield* exactOrdinaryCheckoutUse(ref.originalUse);
       const observation = outcome.observation;
+      const currentLease = yield* resolveOrdinaryCheckoutLease(admission.capture.lease);
       const observedAt = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
         observation.observedAt,
       );
@@ -14901,7 +15935,7 @@ const baseLayer: Layer.Layer<
         nativeCreationCanonicalJson(observation.targetSource) !==
           nativeCreationCanonicalJson(record.subject.source) ||
         observation.checkoutPath !== admission.capture.canonicalCheckoutPath ||
-        observation.branch !== admission.capture.branch ||
+        observation.branch !== currentLease.branch ||
         DateTime.formatIso(observedAt) !== observation.observedAt ||
         observation.observedAt > now ||
         observation.observedAt > expiresAt ||
@@ -14910,8 +15944,12 @@ const baseLayer: Layer.Layer<
         (observation.worktree !== null &&
           (observation.worktree.path !== observation.checkoutPath ||
             observation.worktree.refName !== admission.capture.branch)) ||
-        (observation.setup.status === "completed" &&
-          observation.setup.cwd !== observation.checkoutPath)
+        (outcome.kind === "prepared_completed"
+          ? outcome.observation.setup.status === "completed" &&
+            outcome.observation.setup.cwd !== observation.checkoutPath
+          : outcome.observation.readback.cwd !== observation.checkoutPath ||
+            nativeCreationCanonicalJson(outcome.observation.setup.ownerBirth) !==
+              nativeCreationCanonicalJson(admission.capture.applicationBirth))
       )
         return yield* ordinaryFailure(
           admission.capture,
@@ -14968,10 +16006,14 @@ const baseLayer: Layer.Layer<
         effect.attemptCount !== executor.source.expectedAttempt ||
         link === null ||
         nativeCreationCanonicalJson(
-          Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link),
+          yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link).pipe(
+            Effect.orDie,
+          ),
         ) !==
           nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(executor.source.link),
+            yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+              executor.source.link,
+            ).pipe(Effect.orDie),
           ) ||
         receipt?.status !== "accepted" ||
         receipt.commandType !== "checkpoint.rollback" ||
@@ -14994,7 +16036,9 @@ const baseLayer: Layer.Layer<
         .readByCommandId({ commandId: observation.sourceEffect.commandId })
         .pipe(Stream.runCollect);
       const byId = new Map(events.map((stored) => [stored.event.id, stored]));
-      const encoded = Schema.encodeSync(OrdinaryRollbackProducerObservationV1)(observation);
+      const encoded = yield* Schema.encodeEffect(OrdinaryRollbackProducerObservationV1)(
+        observation,
+      ).pipe(Effect.orDie);
       if (
         new Set(observation.storedEvents.map((stored) => stored.event.id)).size !==
           observation.storedEvents.length ||
@@ -15091,10 +16135,14 @@ const baseLayer: Layer.Layer<
         effect.nativeCreationExecutionReference !== undefined ||
         link === null ||
         nativeCreationCanonicalJson(
-          Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link),
+          yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link).pipe(
+            Effect.orDie,
+          ),
         ) !==
           nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(executor.source.link),
+            yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+              executor.source.link,
+            ).pipe(Effect.orDie),
           )
       )
         return yield* fail("Failed start differs from its actual accepted effect and claim");
@@ -15186,8 +16234,13 @@ const baseLayer: Layer.Layer<
         terminalAttempt.type !== "run-attempt.updated" ||
         terminalNode.type !== "node.updated" ||
         nativeCreationCanonicalJson(
-          Schema.encodeSync(OrchestrationV2RunJson)(terminalRun.payload),
-        ) !== nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2RunJson)(run)) ||
+          yield* Schema.encodeEffect(OrchestrationV2RunJson)(terminalRun.payload).pipe(
+            Effect.orDie,
+          ),
+        ) !==
+          nativeCreationCanonicalJson(
+            yield* Schema.encodeEffect(OrchestrationV2RunJson)(run).pipe(Effect.orDie),
+          ) ||
         nativeCreationCanonicalJson(terminalAttempt.payload) !==
           nativeCreationCanonicalJson(attempt) ||
         nativeCreationCanonicalJson(terminalNode.payload) !== nativeCreationCanonicalJson(node) ||
@@ -15235,15 +16288,55 @@ const baseLayer: Layer.Layer<
       const original = yield* eventStore
         .readByCommandId({ commandId: admission.receipt.commandId })
         .pipe(Stream.runCollect);
+      let allocationEvents = original;
+      let allocationSequence = admission.receipt.resultSequence;
+      if (effect.commandId !== admission.receipt.commandId) {
+        const release = Option.getOrNull(yield* commandReceipts.getByCommandId(effect.commandId));
+        const binding = (yield* readOrdinaryCheckoutCurrentCommandsEffect(effect.commandId)).find(
+          (item) => item.threadId === admission.capture.threadId,
+        );
+        if (
+          release?.status !== "accepted" ||
+          release.commandType !== "prepared-run.release" ||
+          release.threadId !== admission.capture.threadId ||
+          binding?.canonicalCommand.type !== "prepared-run.release" ||
+          binding.canonicalCommand.runId !== run.id ||
+          binding.joinedUse === null ||
+          ordinaryUseBytes(binding.joinedUse) !== ordinaryUseBytes(ref.originalUse) ||
+          binding.ordinaryCheckoutExecution?.executor.kind !== "actual_prepared_producer"
+        )
+          return yield* fail("Start outcome has no original accepted preparation release");
+        yield* validateOrdinaryCheckoutExecutionAttribution(
+          binding.ordinaryCheckoutExecution,
+          admission,
+          ref.originalUse,
+        );
+        allocationEvents = yield* eventStore
+          .readByCommandId({ commandId: effect.commandId })
+          .pipe(Stream.runCollect);
+        allocationSequence = release.resultSequence;
+        if (
+          allocationEvents.filter(
+            (stored) =>
+              stored.event.type === "node.updated" &&
+              stored.event.payload.id === node.id &&
+              stored.event.payload.checkpointScopeId === observation.checkpointScopeId &&
+              stored.event.threadId === admission.capture.threadId &&
+              stored.sequence <= allocationSequence,
+          ).length !== 1
+        )
+          return yield* fail("Start outcome lost its exact released checkpoint allocation");
+      }
       if (observation.checkpointScopeId === null) {
         if (local.checkpointScopes.length !== 0)
           return yield* fail("Failed start has an unrelated allocated checkpoint scope");
       } else {
-        const allocated = original.filter(
+        const allocated = allocationEvents.filter(
           (stored) =>
             stored.event.type === "checkpoint-scope.created" &&
             stored.event.payload.id === observation.checkpointScopeId &&
-            stored.sequence <= admission.receipt.resultSequence,
+            stored.event.threadId === admission.capture.threadId &&
+            stored.sequence <= allocationSequence,
         );
         if (
           allocated.length !== 1 ||
@@ -15273,10 +16366,494 @@ const baseLayer: Layer.Layer<
       }
       return { admission, effect, run };
     });
+    const validateRetryBeforeOpenOutcome = Effect.fnUntraced(function* (
+      ref: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+      observation: StartRetryBeforeOpenObservationV1,
+      successorAttempt = false,
+    ) {
+      const admission = yield* resolveOrdinaryCheckoutAdmission(ref.originalUse.admission);
+      const fail = (message: string) => ordinaryFailure(admission.capture, "unknown_use", message);
+      const executor = ref.executor;
+      if (
+        executor.kind !== "actual_outbox_claim" ||
+        admission.run === null ||
+        ordinaryExecutionBytes(observation.execution) !== ordinaryExecutionBytes(ref) ||
+        nativeCreationCanonicalJson(observation.run) !==
+          nativeCreationCanonicalJson(admission.run) ||
+        observation.attemptedOperation.operation !== "open_session" ||
+        observation.nativeEffect.outcome !== "known_no_effect" ||
+        observation.attemptedOperation.threadId !== admission.capture.threadId ||
+        observation.attemptedOperation.attemptId !== observation.run.runAttemptId ||
+        observation.attemptedOperation.instanceId !== observation.providerInstanceId ||
+        observation.attemptedOperation.providerThreadId !== observation.providerThreadId ||
+        observation.attemptedOperation.providerSessionId !== observation.providerSessionId ||
+        Object.entries(observation.attemptedOperation).some(
+          ([key, value]) => Reflect.get(observation.nativeEffect, key) !== value,
+        )
+      )
+        return yield* fail(
+          "Retrying start lost its exact original execution, lineage or matched no-effect operation",
+        );
+      const completedAt = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+        observation.completedAt,
+      );
+      if (
+        DateTime.formatIso(completedAt) !== observation.completedAt ||
+        DateTime.toEpochMillis(completedAt) > DateTime.toEpochMillis(yield* DateTime.now)
+      )
+        return yield* fail("Retrying start has an invalid completion timestamp");
+      const effect = Option.getOrNull(yield* effectOutbox.get(executor.source.link.effectId));
+      const link = yield* readOrdinaryCheckoutEffectLinkEffect(executor.source.link.effectId);
+      if (
+        effect?.request.type !== "provider-turn.start" ||
+        effect.request.runId !== admission.run.runId ||
+        effect.commandId !== executor.source.link.commandId ||
+        effect.threadId !== admission.capture.threadId ||
+        effect.attemptCount !== executor.source.expectedAttempt + (successorAttempt ? 1 : 0) ||
+        effect.nativeCreationExecutionReference !== undefined ||
+        link === null ||
+        nativeCreationCanonicalJson(
+          yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link).pipe(
+            Effect.orDie,
+          ),
+        ) !==
+          nativeCreationCanonicalJson(
+            yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+              executor.source.link,
+            ).pipe(Effect.orDie),
+          )
+      )
+        return yield* fail("Retrying start differs from its actual accepted effect and claim");
+      const local = yield* projectionStore.getThreadRecords(admission.capture.threadId, [
+        "runs",
+        "attempts",
+        "nodes",
+        "messages",
+        "providerThreads",
+        "providerSessions",
+        "providerTurns",
+        "checkpoints",
+        "checkpointScopes",
+      ]);
+      const run = local.runs.find((item) => item.id === observation.run.runId);
+      const attempt = local.attempts.find((item) => item.id === observation.run.runAttemptId);
+      const node = local.nodes.find((item) => item.id === observation.run.nodeId);
+      const message = local.messages.find((item) => item.id === observation.run.messageId);
+      const provider = local.providerThreads.find(
+        (item) => item.id === observation.providerThreadId,
+      );
+      if (
+        run === undefined ||
+        attempt === undefined ||
+        node === undefined ||
+        message === undefined ||
+        provider === undefined ||
+        run.status !== "starting" ||
+        run.startedAt !== null ||
+        run.completedAt !== null ||
+        run.activeAttemptId !== attempt.id ||
+        run.rootNodeId !== node.id ||
+        run.userMessageId !== message.id ||
+        run.providerThreadId !== provider.id ||
+        run.providerInstanceId !== observation.providerInstanceId ||
+        run.checkpointId !== null ||
+        attempt.status !== "pending" ||
+        attempt.startedAt !== null ||
+        attempt.completedAt !== null ||
+        attempt.runId !== run.id ||
+        attempt.rootNodeId !== node.id ||
+        attempt.providerThreadId !== provider.id ||
+        attempt.providerTurnId !== null ||
+        node.status !== "pending" ||
+        node.startedAt !== null ||
+        node.completedAt !== null ||
+        node.runId !== run.id ||
+        node.providerThreadId !== provider.id ||
+        node.providerTurnId !== null ||
+        node.checkpointScopeId !== observation.checkpointScopeId ||
+        message.runId !== run.id ||
+        message.nodeId !== node.id ||
+        message.role !== "user" ||
+        provider.providerSessionId !== observation.providerSessionId ||
+        provider.nativeThreadRef !== null ||
+        provider.nativeConversationHeadRef !== null ||
+        local.providerSessions.length !== 0 ||
+        local.providerTurns.length !== 0 ||
+        local.checkpoints.length !== 0
+      )
+        return yield* fail(
+          "Retrying start pre-open lineage changed or has actual native/checkpoint activity",
+        );
+      const snapshot = yield* readCommitSnapshot(admission.capture.threadId, effect.commandId, {});
+      for (const key of [
+        "provider_sessions",
+        "session_bindings",
+        "runtime_evidence",
+        "continuation_sources",
+        "source_runtime",
+        "legacy_continuation",
+        "native_import_seals",
+        "legacy_import_markers",
+        "legacy_source_threads",
+        "imported_source_events",
+        "imported_choices",
+        "imported_outcomes",
+        "stop_intents",
+        "stop_fences",
+        "unknown_effect_holds",
+        "native_confirmations",
+      ])
+        if ((snapshot.records[key]?.length ?? 0) !== 0)
+          return yield* fail("Retrying start has native, imported, stopped or uncertain history");
+      const nativeHistory =
+        yield* sql`SELECT event_id FROM orchestration_events WHERE application_event_version = 2
+        AND aggregate_kind = 'thread' AND stream_id = ${admission.capture.threadId}
+        AND (event_type IN ('provider-session.attached', 'provider-session.updated', 'provider-session.detached', 'provider-session.detach-requested',
+          'provider-turn.updated', 'checkpoint.captured') OR (event_type = 'provider-thread.updated' AND
+          (json_extract(payload_json, '$.nativeThreadRef') IS NOT NULL OR json_extract(payload_json, '$.nativeConversationHeadRef') IS NOT NULL))) LIMIT 1`;
+      if (nativeHistory.length !== 0)
+        return yield* fail("Retrying start has historical native or checkpoint activity");
+      const original = yield* eventStore
+        .readByCommandId({ commandId: admission.receipt.commandId })
+        .pipe(Stream.runCollect);
+      let allocationEvents = original;
+      let allocationSequence = admission.receipt.resultSequence;
+      if (effect.commandId !== admission.receipt.commandId) {
+        const release = Option.getOrNull(yield* commandReceipts.getByCommandId(effect.commandId));
+        const binding = (yield* readOrdinaryCheckoutCurrentCommandsEffect(effect.commandId)).find(
+          (item) => item.threadId === admission.capture.threadId,
+        );
+        if (
+          release?.status !== "accepted" ||
+          release.commandType !== "prepared-run.release" ||
+          release.threadId !== admission.capture.threadId ||
+          binding?.canonicalCommand.type !== "prepared-run.release" ||
+          binding.canonicalCommand.runId !== run.id ||
+          binding.joinedUse === null ||
+          ordinaryUseBytes(binding.joinedUse) !== ordinaryUseBytes(ref.originalUse) ||
+          binding.ordinaryCheckoutExecution?.executor.kind !== "actual_prepared_producer"
+        )
+          return yield* fail("Start outcome has no original accepted preparation release");
+        yield* validateOrdinaryCheckoutExecutionAttribution(
+          binding.ordinaryCheckoutExecution,
+          admission,
+          ref.originalUse,
+        );
+        allocationEvents = yield* eventStore
+          .readByCommandId({ commandId: effect.commandId })
+          .pipe(Stream.runCollect);
+        allocationSequence = release.resultSequence;
+        if (
+          allocationEvents.filter(
+            (stored) =>
+              stored.event.type === "node.updated" &&
+              stored.event.payload.id === node.id &&
+              stored.event.payload.checkpointScopeId === observation.checkpointScopeId &&
+              stored.event.threadId === admission.capture.threadId &&
+              stored.sequence <= allocationSequence,
+          ).length !== 1
+        )
+          return yield* fail("Start outcome lost its exact released checkpoint allocation");
+      }
+      if (observation.checkpointScopeId === null) {
+        if (local.checkpointScopes.length !== 0)
+          return yield* fail("Retrying start has an unrelated allocated checkpoint scope");
+      } else {
+        const allocated = allocationEvents.filter(
+          (stored) =>
+            stored.event.type === "checkpoint-scope.created" &&
+            stored.event.payload.id === observation.checkpointScopeId &&
+            stored.event.threadId === admission.capture.threadId &&
+            stored.sequence <= allocationSequence,
+        );
+        if (
+          allocated.length !== 1 ||
+          local.checkpointScopes.length !== 1 ||
+          local.checkpointScopes[0]!.id !== observation.checkpointScopeId ||
+          local.checkpointScopes[0]!.threadId !== admission.capture.threadId ||
+          local.checkpointScopes[0]!.cwd !== admission.capture.canonicalCheckoutPath ||
+          local.checkpointScopes[0]!.parentScopeId !== null
+        )
+          return yield* fail(
+            "Retrying start has no exact accepted uncaptured checkpoint allocation",
+          );
+      }
+      for (const [type, id] of [
+        ["run.created", run.id],
+        ["run-attempt.created", attempt.id],
+        ["node.updated", node.id],
+        ["message.updated", message.id],
+      ] as const) {
+        const matched = original.filter(
+          (stored) =>
+            stored.event.type === type &&
+            stored.event.payload.id === id &&
+            stored.event.threadId === admission.capture.threadId &&
+            stored.sequence <= admission.receipt.resultSequence,
+        );
+        if (matched.length !== 1)
+          return yield* fail("Retrying start has no unique accepted original lineage");
+      }
+      return { admission, effect, run };
+    });
+    const settleOrdinaryCheckoutStartRetry = Effect.fnUntraced(function* (
+      input: Parameters<EventSinkV2Shape["settleOrdinaryCheckoutStartRetry"]>[0],
+    ) {
+      return yield* withTransaction(
+        Effect.gen(function* () {
+          const { readIssuedStartRetryBeforeOpenObservation } = yield* Effect.promise(
+            () => import("./ProviderTurnStartService.ts"),
+          );
+          const observation = readIssuedStartRetryBeforeOpenObservation(input.observation);
+          if (observation === null || !Number.isSafeInteger(input.delayMs) || input.delayMs < 0)
+            return yield* new EventSinkWriteError({
+              eventCount: 0,
+              cause: "Retry requires its unchanged actual pre-open producer result",
+            });
+          const ref = observation.execution;
+          const history = yield* readOrdinaryCheckoutExecutionAssociationsEffect(ref.originalUse);
+          const previous = history.facts.find(
+            (fact) =>
+              ordinaryExecutionBytes(fact.ref) === ordinaryExecutionBytes(ref) &&
+              fact.evidence.schema === "t3.ordinary-checkout-execution-outcome/v1" &&
+              fact.evidence.actualProducerOutcome.kind === "start_retry_before_open",
+          );
+          if (
+            previous?.evidence.schema === "t3.ordinary-checkout-execution-outcome/v1" &&
+            previous.evidence.actualProducerOutcome.kind === "start_retry_before_open"
+          ) {
+            const outcome = previous.evidence.actualProducerOutcome;
+            const effect =
+              ref.executor.kind === "actual_outbox_claim"
+                ? Option.getOrNull(yield* effectOutbox.get(ref.executor.source.link.effectId))
+                : null;
+            if (
+              nativeCreationCanonicalJson(
+                yield* Schema.encodeEffect(StartRetryBeforeOpenObservationV1)(observation),
+              ) !==
+                nativeCreationCanonicalJson(
+                  yield* Schema.encodeEffect(StartRetryBeforeOpenObservationV1)(
+                    outcome.observation,
+                  ),
+                ) ||
+              outcome.error !== input.error ||
+              effect?.status !== "pending" ||
+              ref.executor.kind !== "actual_outbox_claim" ||
+              effect.attemptCount !== ref.executor.source.expectedAttempt ||
+              effect.availableAt !== outcome.availableAt ||
+              effect.lastError !== input.error
+            )
+              return yield* new EventSinkWriteError({
+                eventCount: 0,
+                cause: "Retry replay no longer matches its committed scheduling result",
+              });
+            return;
+          }
+          const current = yield* validateOrdinaryCheckoutExecutionEffect(ref);
+          const actual = yield* validateRetryBeforeOpenOutcome(ref, observation);
+          if (
+            ref.executor.kind !== "actual_outbox_claim" ||
+            current.record.state !== "started" ||
+            observation.completedAt > current.participant.expiresAt ||
+            current.history.participants.some(
+              (participant) =>
+                participant.ref.associationId !== ref.associationId &&
+                participant.state !== "retired" &&
+                (participant.state !== "active" ||
+                  participant.ref.executor.kind !== "actual_prepared_producer"),
+            ) ||
+            !(yield* effectOutbox.retry({
+              effectId: actual.effect.id,
+              workerId: ref.executor.source.workerId,
+              error: input.error,
+              delayMs: input.delayMs,
+            }))
+          )
+            return yield* ordinaryFailure(
+              current.admission.capture,
+              "claim_mismatch",
+              "Retry lost its sole original pre-open claim",
+            );
+          for (const participant of current.history.participants) {
+            if (
+              participant.ref.associationId !== ref.associationId &&
+              participant.state === "active"
+            )
+              yield* validateOrdinaryExecutionActor(
+                participant.ref,
+                participant.expiresAt,
+                current.admission,
+              );
+          }
+          const scheduled = Option.getOrNull(yield* effectOutbox.get(actual.effect.id));
+          if (
+            scheduled?.status !== "pending" ||
+            scheduled.attemptCount !== ref.executor.source.expectedAttempt ||
+            scheduled.leaseOwner !== null ||
+            scheduled.leaseExpiresAt !== null ||
+            scheduled.lastError !== input.error
+          )
+            return yield* ordinaryFailure(
+              current.admission.capture,
+              "unknown_use",
+              "Retry scheduling has no exact durable readback",
+            );
+          yield* appendOrdinaryCheckoutExecutionFact(
+            ref,
+            "retire",
+            current.participant.expiresAt,
+            undefined,
+            {
+              kind: "start_retry_before_open",
+              observation,
+              availableAt: scheduled.availableAt,
+              error: input.error,
+            },
+          );
+          yield* afterCommit(
+            Effect.sync(() => {
+              for (const [key, previous] of ordinaryRetryObservations)
+                if (previous.execution.originalUse.operationId === ref.originalUse.operationId)
+                  ordinaryRetryObservations.delete(key);
+              ordinaryRetryObservations.set(ref.associationId, observation);
+            }),
+          );
+        }),
+      );
+    });
+    const joinOrdinaryCheckoutRetryClaim = Effect.fnUntraced(function* (
+      claim: typeof OrdinaryCheckout.OrdinaryCheckoutOutboxExecutionSourceV1.Type,
+    ) {
+      return yield* withTransaction(
+        Effect.gen(function* () {
+          const rows = yield* sql<{ readonly association_json: string }>`SELECT association_json
+          FROM orchestration_v2_ordinary_checkout_execution_associations
+          WHERE effect_id = ${claim.link.effectId} AND event_kind = 'retire'
+            AND json_extract(evidence_json, '$.actualProducerOutcome.kind') = 'start_retry_before_open'
+            AND json_extract(association_json, '$.executor.source.expectedAttempt') = ${claim.expectedAttempt - 1}`;
+          if (rows.length === 0) return null;
+          if (rows.length !== 1)
+            return yield* new EventSinkWriteError({
+              eventCount: 0,
+              cause: "Retry predecessor is ambiguous",
+            });
+          const predecessor = yield* Schema.decodeUnknownEffect(
+            Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1),
+          )(rows[0]!.association_json, { onExcessProperty: "error" });
+          const observation = ordinaryRetryObservations.get(predecessor.associationId);
+          const { readIssuedStartRetryBeforeOpenObservation } = yield* Effect.promise(
+            () => import("./ProviderTurnStartService.ts"),
+          );
+          if (
+            observation === undefined ||
+            readIssuedStartRetryBeforeOpenObservation(observation) !== observation
+          )
+            return yield* new EventSinkWriteError({
+              eventCount: 0,
+              cause: "Retry lost its retained actual producer",
+            });
+          const ref = OrdinaryCheckout.makeOrdinaryCheckoutExecutionRefV1({
+            originalUse: predecessor.originalUse,
+            executor: { kind: "actual_outbox_claim", source: claim },
+          });
+          const admission = yield* resolveOrdinaryCheckoutAdmission(ref.originalUse.admission);
+          const record = yield* exactOrdinaryCheckoutUse(ref.originalUse);
+          const history = yield* readOrdinaryCheckoutExecutionAssociationsEffect(ref.originalUse);
+          const previous = history.facts.findLast(
+            (fact) => ordinaryExecutionBytes(fact.ref) === ordinaryExecutionBytes(predecessor),
+          );
+          const existing = history.participants.find(
+            (participant) => participant.ref.associationId === ref.associationId,
+          );
+          if (
+            record.state !== "started" ||
+            predecessor.executor.kind !== "actual_outbox_claim" ||
+            claim.expectedAttempt !== predecessor.executor.source.expectedAttempt + 1 ||
+            nativeCreationCanonicalJson(
+              yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(claim.link),
+            ) !==
+              nativeCreationCanonicalJson(
+                yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+                  predecessor.executor.source.link,
+                ),
+              ) ||
+            previous?.eventKind !== "retire" ||
+            previous.evidence.schema !== "t3.ordinary-checkout-execution-outcome/v1" ||
+            previous.evidence.actualProducerOutcome.kind !== "start_retry_before_open" ||
+            nativeCreationCanonicalJson(
+              yield* Schema.encodeEffect(StartRetryBeforeOpenObservationV1)(
+                previous.evidence.actualProducerOutcome.observation,
+              ),
+            ) !==
+              nativeCreationCanonicalJson(
+                yield* Schema.encodeEffect(StartRetryBeforeOpenObservationV1)(observation),
+              ) ||
+            history.participants.some(
+              (participant) =>
+                participant.ref.associationId !== ref.associationId &&
+                participant.state !== "retired" &&
+                (participant.state !== "active" ||
+                  participant.ref.executor.kind !== "actual_prepared_producer"),
+            ) ||
+            (existing === undefined
+              ? history.facts.some(
+                  (fact) =>
+                    fact.ordinal > previous.ordinal &&
+                    fact.ref.executor.kind !== "actual_prepared_producer",
+                )
+              : existing.state !== "active" ||
+                ordinaryExecutionBytes(existing.ref) !== ordinaryExecutionBytes(ref))
+          )
+            return yield* ordinaryFailure(
+              admission.capture,
+              "unknown_use",
+              "Retry cannot replace, skip or revive an original participant",
+            );
+          for (const participant of history.participants) {
+            if (
+              participant.ref.associationId !== ref.associationId &&
+              participant.state === "active"
+            )
+              yield* validateOrdinaryExecutionActor(
+                participant.ref,
+                participant.expiresAt,
+                admission,
+              );
+          }
+          const actual = yield* validateRetryBeforeOpenOutcome(predecessor, observation, true);
+          if (
+            actual.effect.availableAt !== previous.evidence.actualProducerOutcome.availableAt ||
+            actual.effect.lastError !== null
+          )
+            return yield* ordinaryFailure(
+              admission.capture,
+              "claim_mismatch",
+              "Retry claim differs from its committed schedule",
+            );
+          yield* validateOrdinaryCheckoutCapture(admission.capture, record.subject.source, {
+            operationId: ref.originalUse.operationId,
+            requireLiveLease: true,
+          });
+          yield* validateOrdinaryExecutionActor(
+            ref,
+            DateTime.formatIso(claim.leaseExpiresAt),
+            admission,
+          );
+          if (existing === undefined)
+            yield* appendOrdinaryCheckoutExecutionFact(
+              ref,
+              "join",
+              DateTime.formatIso(claim.leaseExpiresAt),
+            );
+          return ref;
+        }),
+      );
+    });
     const settleOrdinaryCheckoutStartFailedBeforeOpen = Effect.fnUntraced(function* (
       input: Parameters<EventSinkV2Shape["settleOrdinaryCheckoutStartFailedBeforeOpen"]>[0],
     ) {
-      return yield* sql.withTransaction(
+      // The final retirement completes its use in this same publication-scoped transaction.
+      return yield* withTransaction(
         Effect.gen(function* () {
           const { readIssuedStartFailedBeforeOpenObservation } = yield* Effect.promise(
             () => import("./ProviderTurnStartService.ts"),
@@ -15299,7 +16876,9 @@ const baseLayer: Layer.Layer<
             input.ref.originalUse,
           );
           const bytes = nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryCheckoutExecutorOutcomeV1)(outcome),
+            yield* Schema.encodeEffect(OrdinaryCheckoutExecutorOutcomeV1)(outcome).pipe(
+              Effect.orDie,
+            ),
           );
           const previous = history.facts.find(
             (fact) =>
@@ -15374,7 +16953,9 @@ const baseLayer: Layer.Layer<
           )(input.actualProducerOutcome, { onExcessProperty: "error" });
           const history = yield* readOrdinaryCheckoutExecutionAssociationsEffect(ref.originalUse);
           const outcomeBytes = nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryCheckoutExecutorOutcomeV1)(outcome),
+            yield* Schema.encodeEffect(OrdinaryCheckoutExecutorOutcomeV1)(outcome).pipe(
+              Effect.orDie,
+            ),
           );
           const previous = history.facts.find(
             (fact) =>
@@ -15430,12 +17011,14 @@ const baseLayer: Layer.Layer<
               effect.completedAt !== DateTime.formatIso(outcome.completedAt) ||
               link === null ||
               nativeCreationCanonicalJson(
-                Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link),
+                yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+                  link,
+                ).pipe(Effect.orDie),
               ) !==
                 nativeCreationCanonicalJson(
-                  Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+                  yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
                     executor.source.link,
-                  ),
+                  ).pipe(Effect.orDie),
                 ) ||
               ![
                 "provider-turn.steer",
@@ -15584,7 +17167,7 @@ const baseLayer: Layer.Layer<
               if (
                 turn === undefined ||
                 node === undefined ||
-                !["completed", "interrupted", "cancelled"].includes(turn.status) ||
+                !["completed", "interrupted", "cancelled", "failed"].includes(turn.status) ||
                 turn.completedAt === null ||
                 DateTime.toEpochMillis(turn.completedAt) >
                   DateTime.toEpochMillis(outcome.observation.checkpoint.capturedAt)
@@ -15592,7 +17175,7 @@ const baseLayer: Layer.Layer<
                 return yield* ordinaryFailure(
                   admission.capture,
                   "unknown_use",
-                  "Default checkpoint has no attributed completed or aborted primary turn",
+                  "Default checkpoint has no attributed terminal primary turn",
                 );
             }
             yield* appendOrdinaryCheckoutExecutionFact(
@@ -15602,13 +17185,29 @@ const baseLayer: Layer.Layer<
               undefined,
               outcome,
             );
-          } else if (outcome.kind === "prepared_completed") {
-            if (input.revalidateProducer === undefined)
+          } else if (outcome.kind === "prepared_completed" || outcome.kind === "prepared_failed") {
+            const { readIssuedOrdinaryPreparedPhysicalResult } = yield* Effect.promise(
+              () => import("./ThreadLaunchService.ts"),
+            );
+            const issued = readIssuedOrdinaryPreparedPhysicalResult(
+              input.actualProducerOutcome.kind === "prepared_completed" ||
+                input.actualProducerOutcome.kind === "prepared_failed"
+                ? input.actualProducerOutcome.observation
+                : null,
+            );
+            if (
+              issued?.kind !==
+                (outcome.kind === "prepared_completed"
+                  ? "prepared_setup_completed"
+                  : "prepared_failure_observed") ||
+              input.revalidateProducer === undefined
+            )
               return yield* ordinaryFailure(
                 admission.capture,
                 "unknown_use",
                 "Prepared completion requires its actual retained producer issuer",
               );
+            yield* validateOrdinaryExecutionActor(ref, participant.expiresAt, admission);
             yield* input.revalidateProducer;
             yield* validateOrdinaryCheckoutCapture(admission.capture, record.subject.source, {
               operationId: ref.originalUse.operationId,
@@ -15725,7 +17324,7 @@ const baseLayer: Layer.Layer<
     const completeOrdinaryCheckoutUse = Effect.fnUntraced(function* (
       input: Parameters<EventSinkV2Shape["completeOrdinaryCheckoutUse"]>[0],
     ) {
-      return yield* sql.withTransaction(
+      return yield* withTransaction(
         Effect.gen(function* () {
           const evidence = yield* Schema.decodeUnknownEffect(
             Schema.toType(OrdinaryCheckoutCompletionEvidenceV1),
@@ -15744,7 +17343,9 @@ const baseLayer: Layer.Layer<
               "unknown_use",
               "Completion differs from the exact final original association",
             );
-          const encodedEvidence = Schema.encodeSync(OrdinaryCheckoutCompletionEvidenceV1)(evidence);
+          const encodedEvidence = yield* Schema.encodeEffect(OrdinaryCheckoutCompletionEvidenceV1)(
+            evidence,
+          ).pipe(Effect.orDie);
           const completion = nativeCreationCanonicalJson({
             version: 1,
             schema: "t3.ordinary-checkout-completed/v1",
@@ -15809,26 +17410,42 @@ const baseLayer: Layer.Layer<
               evidence.actualProducerOutcome.observation,
             );
           else {
-            const finalState = evidence.actualProducerOutcome.observation.readback;
+            const outcome = evidence.actualProducerOutcome;
+            const executor = evidence.ref.executor;
+            const finalState = outcome.observation.readback;
+            const currentBranch = (yield* resolveOrdinaryCheckoutLease(admission.capture.lease))
+              .branch;
+            const unspecifiedRoot =
+              record.subject.source.worktreePath === null && currentBranch === null;
+            // A failed preparation ends a run's use only while that run still awaits
+            // preparation and nothing but the original producer ever joined the use.
+            const preparedRun = admission.run;
+            const failedRunStillPreparing =
+              outcome.kind !== "prepared_failed" || preparedRun === null
+                ? true
+                : (yield* projectionStore.getThreadRecords(admission.capture.threadId, [
+                    "runs",
+                  ])).runs.some(
+                    (run) => run.id === preparedRun.runId && run.status === "preparing",
+                  );
             if (
-              admission.run !== null ||
-              evidence.ref.executor.kind !== "actual_prepared_producer" ||
-              evidence.ref.executor.source.kind !== "prepared_launch" ||
+              executor.kind !== "actual_prepared_producer" ||
+              (outcome.kind === "prepared_failed"
+                ? (executor.source.kind === "prepared_run") !== (preparedRun !== null) ||
+                  history.participants.length !== 1 ||
+                  !failedRunStillPreparing
+                : preparedRun !== null || executor.source.kind !== "prepared_launch") ||
               finalState === undefined ||
-              !finalState.isRepo ||
               finalState.cwd !== admission.capture.canonicalCheckoutPath ||
-              finalState.refName !== admission.capture.branch
+              (!unspecifiedRoot && (!finalState.isRepo || finalState.refName !== currentBranch)) ||
+              (!finalState.isRepo && finalState.refName !== null)
             )
               return yield* ordinaryFailure(
                 admission.capture,
                 "unknown_use",
-                "Runless completion requires the original producer's post-native checkout and ref readback",
+                "Prepared completion requires the original producer's post-native checkout and ref readback",
               );
-            yield* validateOrdinaryPreparedOutcome(
-              evidence.ref,
-              evidence.actualProducerOutcome,
-              participant.expiresAt,
-            );
+            yield* validateOrdinaryPreparedOutcome(evidence.ref, outcome, participant.expiresAt);
           }
           const unfinished =
             yield* sql`SELECT effect.effect_id FROM orchestration_v2_ordinary_checkout_effect_links link
@@ -15857,6 +17474,13 @@ const baseLayer: Layer.Layer<
               "unknown_use",
               "Original path changed before exact completion and retirement",
             );
+          yield* afterCommit(
+            Effect.sync(() => {
+              for (const [key, observation] of ordinaryRetryObservations)
+                if (observation.execution.originalUse.operationId === input.originalUse.operationId)
+                  ordinaryRetryObservations.delete(key);
+            }),
+          );
           return {
             status: "completed" as const,
             originalUse: input.originalUse,
@@ -15975,8 +17599,13 @@ const baseLayer: Layer.Layer<
         supplied.acceptedCommand.commandId !== command.commandId ||
         supplied.acceptedCommand.type !== command.type ||
         nativeCreationCanonicalJson(
-          Schema.encodeSync(OrchestrationV2Command)(supplied.acceptedCommand),
-        ) !== nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command))
+          yield* Schema.encodeEffect(OrchestrationV2Command)(supplied.acceptedCommand).pipe(
+            Effect.orDie,
+          ),
+        ) !==
+          nativeCreationCanonicalJson(
+            yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
+          )
       )
         return yield* conflict("carrier_command_changed");
       const witness = yield* readNormalizationWitnessRow(command.commandId);
@@ -16038,12 +17667,14 @@ const baseLayer: Layer.Layer<
               normalization.acceptedCommand.threadId !== input.threadId ||
               (input.ordinaryCheckoutContext !== undefined &&
                 nativeCreationCanonicalJson(
-                  Schema.encodeSync(OrchestrationV2Command)(normalization.acceptedCommand),
+                  yield* Schema.encodeEffect(OrchestrationV2Command)(
+                    normalization.acceptedCommand,
+                  ).pipe(Effect.orDie),
                 ) !==
                   nativeCreationCanonicalJson(
-                    Schema.encodeSync(OrchestrationV2Command)(
+                    yield* Schema.encodeEffect(OrchestrationV2Command)(
                       input.ordinaryCheckoutContext.command,
-                    ),
+                    ).pipe(Effect.orDie),
                   )))
           )
             return yield* new NormalizationWitness.NormalizationWitnessConflict({
@@ -16120,7 +17751,9 @@ const baseLayer: Layer.Layer<
             const command = yield* Schema.decodeUnknownEffect(
               Schema.toType(OrchestrationV2Command),
             )(ordinaryContext.command, { onExcessProperty: "error" });
-            const encoded = Schema.encodeSync(OrchestrationV2Command)(command);
+            const encoded = yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(
+              Effect.orDie,
+            );
             if (
               command.commandId !== input.commandId ||
               command.type !== input.commandType ||
@@ -16646,11 +18279,13 @@ const baseLayer: Layer.Layer<
                 const lease = yield* Schema.decodeUnknownEffect(CleanupLeaseSchemaV2)(row);
                 if (
                   lease.ownerIncarnation !==
-                    JSON.stringify([
+                    (yield* EventSinkJsonCodec.encodeBirthTupleJson([
                       "t3.orchestration-v2.thread-birth/v1",
                       ownerBirth.eventId,
                       ownerBirth.sequence,
-                    ]) ||
+                    ]).pipe(
+                      Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+                    )) ||
                   lease.resourcePath !== deletionEvent.payload.worktreePath ||
                   (lease.branch !== null && lease.branch !== deletionEvent.payload.branch)
                 )
@@ -16777,7 +18412,9 @@ const baseLayer: Layer.Layer<
             };
             const recordedAt = DateTime.formatIso(input.acceptedAt);
             const encodedCommand = nativeCreationCanonicalJson(
-              Schema.encodeSync(OrchestrationV2Command)(deletionCommand),
+              yield* Schema.encodeEffect(OrchestrationV2Command)(deletionCommand).pipe(
+                Effect.orDie,
+              ),
             );
             const commandDigest = nativeCreationSha256(encodedCommand);
             yield* sql`INSERT INTO orchestration_v2_thread_deletion_commands
@@ -17702,7 +19339,9 @@ const baseLayer: Layer.Layer<
             (input.ordinaryCheckoutContext !== undefined &&
               canonical !==
                 nativeCreationCanonicalJson(
-                  Schema.encodeSync(OrchestrationV2Command)(input.ordinaryCheckoutContext.command),
+                  yield* Schema.encodeEffect(OrchestrationV2Command)(
+                    input.ordinaryCheckoutContext.command,
+                  ).pipe(Effect.orDie),
                 )) ||
             priorOrdinaryCommands.some(
               (binding) =>
@@ -18441,7 +20080,7 @@ const baseLayer: Layer.Layer<
           }),
         ).pipe(
           Effect.mapError((cause) =>
-            cause instanceof NativeCommandPreconditionError
+            Schema.is(NativeCommandPreconditionError)(cause)
               ? cause
               : new EventSinkWriteError({ eventCount: 0, cause }),
           ),
@@ -18579,6 +20218,14 @@ const baseLayer: Layer.Layer<
         .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })));
 
     return EventSinkV2.of({
+      resolveOrdinaryCheckoutLease: (lease) =>
+        sql
+          .withTransaction(resolveOrdinaryCheckoutLease(lease))
+          .pipe(Effect.mapError(ordinaryError)),
+      transitionOrdinaryPreparedBranch: (input) =>
+        withTransaction(transitionOrdinaryPreparedBranch(input)).pipe(
+          Effect.mapError(ordinaryError),
+        ),
       readOrdinaryFinalCheckpointCandidates: (input) =>
         sql
           .withTransaction(readOrdinaryFinalCheckpointCandidates(input))
@@ -18606,6 +20253,10 @@ const baseLayer: Layer.Layer<
         sql
           .withTransaction(readOrdinaryCheckoutExecutionAssociationsEffect(originalUse))
           .pipe(Effect.mapError(ordinaryError)),
+      settleOrdinaryCheckoutStartRetry: (input) =>
+        settleOrdinaryCheckoutStartRetry(input).pipe(Effect.mapError(ordinaryError)),
+      joinOrdinaryCheckoutRetryClaim: (claim) =>
+        joinOrdinaryCheckoutRetryClaim(claim).pipe(Effect.mapError(ordinaryError)),
       settleOrdinaryCheckoutStartFailedBeforeOpen: (input) =>
         settleOrdinaryCheckoutStartFailedBeforeOpen(input).pipe(Effect.mapError(ordinaryError)),
       recordOrdinaryCheckoutExecutorOutcome: (input) =>
@@ -18802,12 +20453,14 @@ const baseLayer: Layer.Layer<
                     if (
                       link === null ||
                       nativeCreationCanonicalJson(
-                        Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(link),
+                        yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+                          link,
+                        ).pipe(Effect.orDie),
                       ) !==
                         nativeCreationCanonicalJson(
-                          Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+                          yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
                             payload.link,
-                          ),
+                          ).pipe(Effect.orDie),
                         ) ||
                       nativeCreationCanonicalJson(
                         payload.ordinaryCheckoutExecution.originalUse.admission,
@@ -18882,19 +20535,17 @@ const baseLayer: Layer.Layer<
             ),
           ),
       readNativeThreadRecovery: (input) =>
-        sql
-          .withTransaction(validateNativeThreadRecovery(input.command, input.context))
-          .pipe(
-            Effect.mapError((cause) =>
-              Schema.is(NativeCommandPreconditionError)(cause)
-                ? cause
-                : new EventSinkWriteError({
-                    eventCount: 0,
-                    commandId: input.command.commandId,
-                    cause,
-                  }),
-            ),
+        sql.withTransaction(validateNativeThreadRecovery(input.command, input.context)).pipe(
+          Effect.mapError((cause) =>
+            Schema.is(NativeCommandPreconditionError)(cause)
+              ? cause
+              : new EventSinkWriteError({
+                  eventCount: 0,
+                  commandId: input.command.commandId,
+                  cause,
+                }),
           ),
+        ),
       prepareRestartContinuation,
       findDormantRestartContinuation,
       readDormantRestartContinuations,
@@ -19296,7 +20947,7 @@ const baseLayer: Layer.Layer<
         ),
     } satisfies EventSinkV2Shape);
   }),
-);
+).pipe(Layer.provide(NodePathLayer.layer));
 
 /**
  * Event sink layer for application compositions that already own the

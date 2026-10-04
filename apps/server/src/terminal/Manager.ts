@@ -7,7 +7,7 @@
  * @module TerminalManager
  */
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import {
   DEFAULT_TERMINAL_ID,
   TerminalCwdError,
@@ -84,6 +84,7 @@ import {
   LegacyLeaseInventoryError,
   type LegacyOwnerAbsencePort,
 } from "../orchestration-v2/LegacyLeaseCleanup.ts";
+import type { EventSinkV2Error } from "../orchestration-v2/EventSink.ts";
 
 export {
   TerminalCwdError,
@@ -126,7 +127,7 @@ export interface TerminalOwnerBirth {
 export class TerminalOwnerObservation extends Context.Reference<{
   readonly observeCurrentBirth: (
     threadId: string,
-  ) => Effect.Effect<TerminalOwnerBirth | null, unknown>;
+  ) => Effect.Effect<TerminalOwnerBirth | null, EventSinkV2Error>;
 }>("t3/terminal/Manager/TerminalOwnerObservation", {
   defaultValue: () => ({ observeCurrentBirth: () => Effect.succeed(null) }),
 }) {}
@@ -1543,7 +1544,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
   const ownerObservation = options.ownerObservation ?? (yield* TerminalOwnerObservation);
-  const managerId = randomUUID();
+  const managerId = NodeCrypto.randomUUID();
 
   const logsDir = options.logsDir;
   const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
@@ -2309,7 +2310,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         ),
       );
     const ownership = {
-      handleId: randomUUID(),
+      handleId: NodeCrypto.randomUUID(),
       ownerBirth:
         observedBirth !== null && validTerminalOwnerBirth(observedBirth, session.threadId)
           ? { ...observedBirth }
@@ -2696,7 +2697,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       const cols = input.cols ?? DEFAULT_OPEN_COLS;
       const rows = input.rows ?? DEFAULT_OPEN_ROWS;
       const session: TerminalSessionState = {
-        ownership: { handleId: randomUUID(), ownerBirth: null, processExitObserved: false },
+        ownership: {
+          handleId: NodeCrypto.randomUUID(),
+          ownerBirth: null,
+          processExitObserved: false,
+        },
         threadId: input.threadId,
         terminalId,
         cwd: input.cwd,
@@ -3120,7 +3125,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         const cols = input.cols ?? DEFAULT_OPEN_COLS;
         const rows = input.rows ?? DEFAULT_OPEN_ROWS;
         session = {
-          ownership: { handleId: randomUUID(), ownerBirth: null, processExitObserved: false },
+          ownership: {
+            handleId: NodeCrypto.randomUUID(),
+            ownerBirth: null,
+            processExitObserved: false,
+          },
           threadId: input.threadId,
           terminalId,
           cwd: input.cwd,

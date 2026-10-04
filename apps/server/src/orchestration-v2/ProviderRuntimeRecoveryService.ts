@@ -14,7 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlError from "effect/unstable/sql/SqlError";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -230,18 +230,16 @@ export const make = Effect.gen(function* () {
       trigger: "startup" | "shutdown",
       continueAfterRestart: boolean,
     ) {
-      const held = yield* outbox
-        .listHeldByThreadId(projection.thread.id)
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProviderRuntimeRecoveryError({
-                operation: "reconcile",
-                threadId: projection.thread.id,
-                cause,
-              }),
-          ),
-        );
+      const held = yield* outbox.listHeldByThreadId(projection.thread.id).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderRuntimeRecoveryError({
+              operation: "reconcile",
+              threadId: projection.thread.id,
+              cause,
+            }),
+        ),
+      );
       if (held.length > 0) {
         yield* Effect.logWarning("orchestration-v2.runtime-recovery.unknown-operation-held", {
           threadId: projection.thread.id,
@@ -865,12 +863,18 @@ export const make = Effect.gen(function* () {
               latest === undefined || candidate.ordinal > latest.ordinal ? candidate : latest,
             undefined,
           );
-          if (registered !== null && currentSource !== undefined) {
+          const currentSourceAttemptId = currentSource?.activeAttemptId ?? null;
+          // A dormant marker binds its source attempt, so an attempt-less source cannot own one.
+          if (
+            registered !== null &&
+            currentSource !== undefined &&
+            currentSourceAttemptId !== null
+          ) {
             const existing = yield* eventSink.findDormantRestartContinuation({
               threadId,
               projectId: projection.thread.projectId,
               sourceRunId: currentSource.id,
-              sourceRunAttemptId: currentSource.activeAttemptId,
+              sourceRunAttemptId: currentSourceAttemptId,
               expectedBinding: registered.binding,
               expectedEvidenceRevision: registered.evidenceRevision,
             });
@@ -921,16 +925,22 @@ export const make = Effect.gen(function* () {
               threadId,
               cause: "The current runtime evidence changed during update preparation.",
             });
+          const runAttemptId = run.activeAttemptId;
+          // The store rejects a continuation source without an attempt as a changed binding.
+          if (runAttemptId === null)
+            return yield* new EventSink.RestartContinuationMarkerError({
+              reason: "binding_changed",
+            });
           let allocatedHere = false;
           const marker = yield* eventSink.prepareRestartContinuation({
             markerId: Effect.sync(() => {
               allocatedHere = true;
-              return `restart-preparation:${randomUUID()}`;
+              return `restart-preparation:${NodeCrypto.randomUUID()}`;
             }),
             threadId,
             projectId: projection.thread.projectId,
             sourceRunId: run.id,
-            sourceRunAttemptId: run.activeAttemptId,
+            sourceRunAttemptId: runAttemptId,
             expectedBinding: evidence.binding,
             expectedEvidenceRevision: evidence.evidenceRevision,
           });

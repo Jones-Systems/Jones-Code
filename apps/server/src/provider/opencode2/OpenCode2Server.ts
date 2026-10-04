@@ -194,7 +194,9 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
     verify: (url) => connectTo(url, password, false).pipe(Effect.flatMap(remember)),
   });
   return OpenCode2Server.of({
-    subscribeBeforeRuntimeReplacement: owner.subscribeBeforeRuntimeReplacement,
+    ...(owner.subscribeBeforeRuntimeReplacement === undefined
+      ? {}
+      : { subscribeBeforeRuntimeReplacement: owner.subscribeBeforeRuntimeReplacement }),
     withConnection: (use, beforeNativeCreation) =>
       owner.withServer((server) => {
         // The owner verifies every server it starts before lending it out.

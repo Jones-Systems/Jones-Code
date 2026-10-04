@@ -118,12 +118,10 @@ it.effect(
         readonly payload_json: string;
       }>`SELECT payload_json FROM orchestration_v2_effect_outbox
       WHERE effect_id = ${ordinary.id}`;
-      assert.strictEqual(
-        bytes[0]?.payload_json,
-        Schema.encodeSync(Schema.fromJsonString(EffectOutbox.OrchestrationEffectRequestV2))(
-          ordinary.request,
-        ),
-      );
+      const ordinaryRequestJson = yield* Schema.encodeEffect(
+        Schema.fromJsonString(EffectOutbox.OrchestrationEffectRequestV2),
+      )(ordinary.request).pipe(Effect.orDie);
+      assert.strictEqual(bytes[0]?.payload_json, ordinaryRequestJson);
       const claimed = Option.getOrThrow(
         yield* outbox.claimNext({ workerId: "native-worker", leaseDurationMs: 60_000 }),
       );
@@ -190,7 +188,10 @@ it.effect("malformed native outbox envelopes fail without ordinary payload fallb
         nativeCreationExecutionReference: { ...reference, stageCommandId: "changed-command" },
       },
     ]) {
-      yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json = ${JSON.stringify(payload)} WHERE effect_id = ${id}`;
+      const payloadJson = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+        payload,
+      ).pipe(Effect.orDie);
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json = ${payloadJson} WHERE effect_id = ${id}`;
       assert.strictEqual((yield* outbox.get(id).pipe(Effect.result))._tag, "Failure");
     }
     assert.strictEqual(
@@ -3077,7 +3078,6 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
           },
         });
         assert.isTrue(registered.committed);
-        if (!registered.committed) return yield* Effect.die(registered.rejection);
         const binding = { ...reservedBinding, runtimeGeneration: runtimeBinding.runtimeGeneration };
         const observation = {
           status: "working" as const,

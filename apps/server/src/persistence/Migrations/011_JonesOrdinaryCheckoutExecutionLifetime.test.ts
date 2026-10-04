@@ -14,6 +14,11 @@ import {
 } from "../../orchestration-v2/OrdinaryCheckoutOwnership.ts";
 import { migrationManifest, runMigrations } from "../Migrations.ts";
 
+class SyntheticAssociationFailure extends Schema.TaggedError<SyntheticAssociationFailure>()(
+  "SyntheticAssociationFailure",
+  { cause: Schema.Defect() },
+) {}
+
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const timestamp = "2026-10-03T00:00:00.000Z";
 const effectId = "effect:lifetime-fixture";
@@ -121,7 +126,7 @@ it.effect(
       yield* runMigrations({ toMigrationInclusive: 56 });
       const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       assert.deepEqual(
-        upstream.map((entry) => [entry.migration_id, entry.name]),
+        upstream.map((entry): readonly [unknown, unknown] => [entry.migration_id, entry.name]),
         migrationManifest,
       );
       assert.deepEqual(
@@ -286,7 +291,7 @@ it.effect(
         nodeId: "node:lifetime-fixture",
         messageId: "message:lifetime-fixture",
       };
-      const managed = Schema.decodeUnknownSync(OrdinaryCheckoutExecutionExecutorV1, {
+      const managed = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutExecutionExecutorV1, {
         onExcessProperty: "error",
       })({
         kind: "captured_managed_run",
@@ -300,14 +305,14 @@ it.effect(
           providerSessionId: "provider-session:lifetime-fixture",
           instanceId: "fixture-codex",
         },
-      });
-      const prepared = Schema.decodeUnknownSync(OrdinaryCheckoutExecutionExecutorV1, {
+      }).pipe(Effect.orDie);
+      const prepared = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutExecutionExecutorV1, {
         onExcessProperty: "error",
       })({
         kind: "actual_prepared_producer",
         producerId: "producer:lifetime-fixture",
         source: { kind: "prepared_run", admission: reference, preparation: acceptedRun },
-      });
+      }).pipe(Effect.orDie);
       const references = [
         ref,
         makeOrdinaryCheckoutExecutionRefV1({ originalUse, executor: managed }),
@@ -316,15 +321,16 @@ it.effect(
       const expected = [];
       for (const [ordinal, eventKind] of events.entries()) {
         const actualRef = references[ordinal % references.length]!;
+        const encodedRef = yield* Schema.encodeEffect(OrdinaryCheckoutExecutionRefV1)(
+          actualRef,
+        ).pipe(Effect.orDie);
         const next = {
           ...row,
           ordinal,
           predecessor_ordinal: ordinal === 0 ? null : ordinal - 1,
           association_id: actualRef.associationId,
           executor_kind: actualRef.executor.kind,
-          association_json: nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryCheckoutExecutionRefV1)(actualRef),
-          ),
+          association_json: nativeCreationCanonicalJson(encodedRef),
           effect_id: ordinal === 2 ? null : effectId,
           event_kind: eventKind,
         };
@@ -391,18 +397,23 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations();
       yield* sql`PRAGMA foreign_keys = ON`;
+      const injectedCause = new Error("synthetic execution association transaction failure");
       const result = yield* Effect.result(
         sql.withTransaction(
           Effect.gen(function* () {
             yield* insertParents();
             yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_execution_associations ${sql.insert(row)}`;
-            return yield* Effect.fail(
-              new Error("synthetic execution association transaction failure"),
-            );
+            return yield* Effect.fail(new SyntheticAssociationFailure({ cause: injectedCause }));
           }),
         ),
       );
       assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "SyntheticAssociationFailure");
+        if (result.failure._tag === "SyntheticAssociationFailure") {
+          assert.strictEqual(result.failure.cause, injectedCause);
+        }
+      }
       assert.deepEqual(yield* sql`SELECT * FROM orchestration_command_receipts`, []);
       assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_ordinary_checkout_admissions`, []);
       assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_worktree_path_admissions`, []);

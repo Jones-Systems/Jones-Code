@@ -255,7 +255,6 @@ export const NativeCreationEffect = Schema.Union([
   }),
 ]);
 export type NativeCreationEffect = typeof NativeCreationEffect.Type;
-
 /** Historical creation attestation does not attest a terminal turn or release capacity. */
 export const NativeCreationObservation = nativeCreationStruct({
   schema: Schema.Literal("t3.native-creation-observation/v1"),

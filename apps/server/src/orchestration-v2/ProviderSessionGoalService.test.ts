@@ -1,16 +1,23 @@
 import { it } from "@effect/vitest";
 import { expect, vi } from "vite-plus/test";
 import {
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ThreadId,
+  type OrchestrationV2AppThread,
+  type OrchestrationV2ProviderSession,
+  type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import type { ProviderAdapterV2SessionRuntime } from "./ProviderAdapter.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -41,16 +48,82 @@ function harness(
       };
     }),
   );
-  const runtime = {
+  const now = DateTime.makeUnsafe("2026-10-04T00:00:00.000Z");
+  const driver = ProviderDriverKind.make(input.driver ?? "codex");
+  const modelSelection = { instanceId, model: "gpt-5.4" };
+  const providerSession: OrchestrationV2ProviderSession = {
+    id: sessionId,
+    driver,
+    providerInstanceId: instanceId,
+    status: "ready",
+    cwd: "/fixture/goal-workspace",
+    model: modelSelection.model,
+    capabilities: CodexProviderCapabilitiesV2,
+    createdAt: now,
+    updatedAt: now,
+    lastError: null,
+  };
+  const unused = () => Effect.die("Goal observation must not use this runtime capability.");
+  const runtime: ProviderAdapterV2SessionRuntime = {
     instanceId,
-    driver: ProviderDriverKind.make(input.driver ?? "codex"),
+    driver,
     providerSessionId: sessionId,
-    providerSession: { status: "ready" },
+    providerSession,
+    events: Stream.empty,
     get runtimeGeneration() {
       return generation;
     },
     getGoal,
-  } as ProviderAdapterV2SessionRuntime;
+    ensureThread: unused,
+    resumeThread: unused,
+    startTurn: unused,
+    steerTurn: unused,
+    interruptTurn: unused,
+    respondToRuntimeRequest: unused,
+    readThreadSnapshot: unused,
+    rollbackThread: unused,
+    forkThread: unused,
+  };
+  const thread: OrchestrationV2AppThread = {
+    createdBy: "user",
+    creationSource: "web",
+    id: threadId,
+    projectId: ProjectId.make("goal-project"),
+    title: "Goal observation",
+    providerInstanceId: instanceId,
+    modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    activeProviderThreadId: providerThreadId,
+    lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
+    forkedFrom: null,
+    createdAt: now,
+    updatedAt: now,
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    lastVisitedAt: null,
+    deletedAt: null,
+  };
+  const providerThread = (nativeId: string): OrchestrationV2ProviderThread => ({
+    id: providerThreadId,
+    driver,
+    providerInstanceId: instanceId,
+    providerSessionId: sessionId,
+    appThreadId: threadId,
+    ownerNodeId: null,
+    nativeThreadRef: { driver, nativeId, strength: "strong" },
+    nativeConversationHeadRef: null,
+    status: "idle",
+    firstRunOrdinal: null,
+    lastRunOrdinal: null,
+    handoffIds: [],
+    forkedFrom: null,
+    createdAt: now,
+    updatedAt: now,
+  });
   const open = vi.fn(() => Effect.die("Goal observation must not open a runtime."));
   const layer = ProviderSessionGoalService.layer.pipe(
     Layer.provide(
@@ -58,26 +131,10 @@ function harness(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadProviderContext: () =>
             Effect.succeed({
-              thread: { modelSelection: { instanceId }, activeProviderThreadId: providerThreadId },
-              providerThreads: [
-                {
-                  id: providerThreadId,
-                  appThreadId: threadId,
-                  driver: runtime.driver,
-                  providerInstanceId: instanceId,
-                  providerSessionId: sessionId,
-                  nativeThreadRef: { nativeId: cursor },
-                },
-              ],
-              providerSessions: [
-                {
-                  id: sessionId,
-                  providerInstanceId: instanceId,
-                  driver: runtime.driver,
-                  status: "ready",
-                },
-              ],
-            } as ProjectionStore.ProjectionThreadProviderContext),
+              thread,
+              providerThreads: [providerThread(cursor)],
+              providerSessions: [providerSession],
+            }),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           get: () =>

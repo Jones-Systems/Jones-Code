@@ -20,6 +20,11 @@ import {
 } from "../../orchestration-v2/ImportedApplicationAttachmentInventory.ts";
 import { migrationManifest, runMigrations } from "../Migrations.ts";
 
+class SyntheticAdoptionFailure extends Schema.TaggedError<SyntheticAdoptionFailure>()(
+  "SyntheticAdoptionFailure",
+  { cause: Schema.Defect() },
+) {}
+
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const timestamp = "2026-10-03T00:00:00.000Z";
 const canonical = importedApplicationAttachmentCanonicalJsonV1;
@@ -178,7 +183,7 @@ it.effect(
       yield* runMigrations({ toMigrationInclusive: 56 });
       const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       assert.deepEqual(
-        upstream.map((row) => [row.migration_id, row.name]),
+        upstream.map((row): readonly [unknown, unknown] => [row.migration_id, row.name]),
         migrationManifest,
       );
       assert.deepEqual(
@@ -427,28 +432,30 @@ it.effect(
       yield* sql`PRAGMA foreign_keys = ON`;
       yield* insertBirth();
       const empty = legacySnapshot([]);
-      const nativeSource = Schema.decodeUnknownSync(ImportedApplicationAttachmentSourceV1)({
-        kind: "native_import_batch",
-        parserPolicy: "agent_session_visible_messages_v1",
-        birth,
-        source: {
-          provider: "codex",
-          providerInstanceId: "fixture-codex",
-          providerSessionId: "session:inventory-fixture",
-          filePath: "/synthetic/imported-history.jsonl",
-          size: 100,
-          mtimeMs: null,
-          device: 1,
-          inode: null,
-          birthtimeMs: null,
+      const nativeSource = yield* Schema.decodeUnknownEffect(ImportedApplicationAttachmentSourceV1)(
+        {
+          kind: "native_import_batch",
+          parserPolicy: "agent_session_visible_messages_v1",
+          birth,
+          source: {
+            provider: "codex",
+            providerInstanceId: "fixture-codex",
+            providerSessionId: "session:inventory-fixture",
+            filePath: "/synthetic/imported-history.jsonl",
+            size: 100,
+            mtimeMs: null,
+            device: 1,
+            inode: null,
+            birthtimeMs: null,
+          },
+          eventsSha256: importedApplicationAttachmentSha256V1("sealed fixture events"),
+          messageCount: 2,
+          eventBasis: Array.from({ length: 4 }, (_, index) => ({
+            eventId: `event:native-fixture:${index}`,
+            sequence: 6 + index,
+          })),
         },
-        eventsSha256: importedApplicationAttachmentSha256V1("sealed fixture events"),
-        messageCount: 2,
-        eventBasis: Array.from({ length: 4 }, (_, index) => ({
-          eventId: `event:native-fixture:${index}`,
-          sequence: 6 + index,
-        })),
-      });
+      ).pipe(Effect.orDie);
       const { inventoryId: _id, recordedAt, ...prior } = empty.header;
       const identity = {
         ...prior,
@@ -498,16 +505,23 @@ it.effect(
         qualifyImportedApplicationAttachmentSnapshotV1({ ...snapshot, carriers: [message] }).status,
         "unavailable",
       );
+      const injectedCause = new Error("synthetic complete adoption failure");
       const result = yield* Effect.result(
         sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`INSERT INTO orchestration_v2_imported_application_attachment_inventories ${sql.insert(headerRow())}`;
             yield* sql`INSERT INTO orchestration_v2_imported_application_attachment_carriers ${sql.insert(carrierRows()[0]!)}`;
-            return yield* Effect.fail(new Error("synthetic complete adoption failure"));
+            return yield* Effect.fail(new SyntheticAdoptionFailure({ cause: injectedCause }));
           }),
         ),
       );
       assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "SyntheticAdoptionFailure");
+        if (result.failure._tag === "SyntheticAdoptionFailure") {
+          assert.strictEqual(result.failure.cause, injectedCause);
+        }
+      }
       assert.deepEqual(
         yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`,
         [],

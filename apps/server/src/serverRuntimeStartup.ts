@@ -523,6 +523,8 @@ const make = (options?: StartupOptions) =>
     const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
     const crypto = yield* Crypto.Crypto;
     const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+    // The Jones trial reports the listener this runtime was built against.
+    const httpServer = yield* HttpServer.HttpServer;
 
     const commandGate = yield* makeCommandGate;
     const httpListening = yield* Deferred.make<void>();
@@ -703,7 +705,7 @@ const make = (options?: StartupOptions) =>
         ),
         prepareTrial: prepareServiceLauncherTrial,
         commitJonesTrial: Effect.gen(function* () {
-          const address = (yield* HttpServer.HttpServer).address;
+          const address = httpServer.address;
           if (typeof address === "string" || !("port" in address))
             return yield* new ServerRuntimeStartupError({
               mode: serverConfig.mode,

@@ -21,6 +21,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
@@ -613,7 +614,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           if (ordinary === "basis-wrong-run" || ordinary === "basis-settled") {
             const actual = yield* operation.pipe(Effect.flip);
             assert.instanceOf(actual, OrdinaryCheckout.OrdinaryCheckoutOwnershipError);
-            if (actual instanceof OrdinaryCheckout.OrdinaryCheckoutOwnershipError)
+            if (Schema.is(OrdinaryCheckout.OrdinaryCheckoutOwnershipError)(actual))
               assert.equal(
                 actual.reason,
                 ordinary === "basis-wrong-run" ? "claim_mismatch" : "unknown_use",
@@ -673,7 +674,10 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
             );
             assert.isNull(
               CheckpointCaptureService.readIssuedCheckpointCaptureObservation(
-                JSON.parse(JSON.stringify(observation)),
+                yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(observation).pipe(
+                  Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))),
+                  Effect.orDie,
+                ),
               ),
             );
           }
@@ -775,7 +779,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
                 .pipe(Effect.flip);
             }).pipe(Effect.provide(finalizationLayer));
             assert.isTrue(
-              failed instanceof RunFinalization.RunFinalizationError &&
+              Schema.is(RunFinalization.RunFinalizationError)(failed) &&
                 failed.cause === refreshError,
             );
             assert.equal(refresh.mock.calls.length, 1);

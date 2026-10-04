@@ -9,6 +9,8 @@ import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
+import * as SchemaIssue from "effect/SchemaIssue";
 
 import {
   increment,
@@ -24,6 +26,7 @@ import * as CheckpointCaptureService from "./CheckpointCaptureService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
+import { jsonCause } from "./EventSinkJsonCodec.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
@@ -31,6 +34,10 @@ import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import {
+  ThreadCommandExecutor,
+  layer as threadCommandExecutorLayer,
+} from "./ThreadCommandExecutor.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as NativeCreationAuthority from "./NativeCreationAuthority.ts";
 import {
@@ -48,6 +55,27 @@ import type {
   ApplicationThreadBirthV2,
   ImportedHistoryStartExecutionPreparationV2,
 } from "./Orchestrator.ts";
+
+// Byte-exact JSON.stringify for confirmation comparisons. Key order stays
+// significant, and a native stringify exception remains the defect.
+const decodeComparisonJson = Schema.decodeEffect(
+  Schema.Unknown.pipe(
+    Schema.decodeTo(Schema.String, {
+      decode: SchemaGetter.onSome<string, unknown>((input, options) => {
+        try {
+          return Effect.succeed(Option.some(JSON.stringify(input)));
+        } catch (cause) {
+          return Effect.fail(
+            new SchemaIssue.InvalidValue({ nativeJsonCause: cause }, input, options),
+          );
+        }
+      }),
+      encode: SchemaGetter.forbiddenEncoding,
+    }),
+  ),
+);
+const comparisonJson = (value: unknown) =>
+  decodeComparisonJson(value).pipe(Effect.catch((error) => Effect.die(jsonCause(error))));
 
 export const ImportedHistoryStartExecutionPreparation = Context.Reference<
   ImportedHistoryStartExecutionPreparationV2 | undefined
@@ -77,6 +105,11 @@ interface ResourceCleanupHeldV1 {
   readonly evidence: EffectOutbox.ResourceCleanupUnknownEvidenceV1;
 }
 
+// Completion proofs repeat only these store reads before the worker settles a claim.
+type ClaimRevalidationError =
+  | EventSink.OrdinaryCheckoutCommitErrorV1
+  | EffectOutbox.EffectOutboxError;
+
 interface DeletionCleanupCompletedV1 {
   readonly status: "cleanup_completed";
   readonly effectId: string;
@@ -84,7 +117,7 @@ interface DeletionCleanupCompletedV1 {
   readonly threadId: ThreadId;
   readonly workerId: string;
   readonly expectedAttempt: number;
-  readonly revalidate: Effect.Effect<boolean, unknown>;
+  readonly revalidate: Effect.Effect<boolean, ClaimRevalidationError>;
 }
 
 interface AttachmentNamespaceRetainedV1 {
@@ -94,7 +127,7 @@ interface AttachmentNamespaceRetainedV1 {
   readonly threadId: ThreadId;
   readonly workerId: string | null;
   readonly expectedAttempt: number;
-  readonly revalidate: Effect.Effect<boolean, unknown>;
+  readonly revalidate: Effect.Effect<boolean, ClaimRevalidationError>;
 }
 
 interface SettledOrdinaryClaimV1 {
@@ -104,7 +137,19 @@ interface SettledOrdinaryClaimV1 {
   readonly threadId: ThreadId;
   readonly workerId: string;
   readonly expectedAttempt: number;
-  readonly revalidate: Effect.Effect<boolean, unknown>;
+  readonly revalidate: Effect.Effect<boolean, ClaimRevalidationError>;
+}
+
+interface OrdinaryStartRetryV1 {
+  readonly status: "ordinary_start_retry";
+  readonly effectId: string;
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly workerId: string;
+  readonly expectedAttempt: number;
+  readonly settle: (
+    delayMs: number,
+  ) => Effect.Effect<void, EventSink.OrdinaryCheckoutCommitErrorV1>;
 }
 
 type EffectExecutionResult =
@@ -114,7 +159,11 @@ type EffectExecutionResult =
   | ResourceCleanupHeldV1
   | DeletionCleanupCompletedV1
   | AttachmentNamespaceRetainedV1
-  | SettledOrdinaryClaimV1;
+  | SettledOrdinaryClaimV1
+  | OrdinaryStartRetryV1;
+
+const isOrdinaryStartRetry = (result: EffectExecutionResult): result is OrdinaryStartRetryV1 =>
+  result !== undefined && "status" in result && result.status === "ordinary_start_retry";
 
 const isSettledOrdinaryClaim = (result: EffectExecutionResult): result is SettledOrdinaryClaimV1 =>
   result !== undefined && "status" in result && result.status === "ordinary_claim_settled";
@@ -489,7 +538,6 @@ export const executorLayer: Layer.Layer<
   OrchestrationEffectExecutorV2,
   never,
   | ProviderSessionManager.ProviderSessionManagerV2
-  | ResourceCleanupService.ResourceCleanupService
   | NativeCreationAuthority.NativeCreationAuthority
   | NativeCreationRepository
   | EventSink.EventSinkV2
@@ -506,6 +554,7 @@ export const executorLayer: Layer.Layer<
   OrchestrationEffectExecutorV2,
   Effect.gen(function* () {
     const runFinalization = yield* RunFinalizationService.RunFinalizationService;
+    const threadDispatch = yield* ThreadCommandExecutor;
     const resourceCleanup = yield* ResourceCleanupService.ResourceCleanupService;
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -570,8 +619,10 @@ export const executorLayer: Layer.Layer<
           expectedAttempt: effect.attemptCount,
           leaseExpiresAt: DateTime.makeUnsafe(effect.leaseExpiresAt),
         };
+        const retry = yield* eventSink.joinOrdinaryCheckoutRetryClaim(source);
         const ref =
-          originalUse === undefined
+          retry ??
+          (originalUse === undefined
             ? yield* Effect.gen(function* () {
                 const reserved = yield* threads.beginOrdinaryPreparedCheckoutUse(admission, {
                   operationId: OrdinaryCheckout.ordinaryCheckoutOutboxOperationIdV1(
@@ -592,7 +643,7 @@ export const executorLayer: Layer.Layer<
                 ...((system ?? accepted?.ordinaryCheckoutExecution) == null
                   ? {}
                   : { predecessorExecution: system ?? accepted!.ordinaryCheckoutExecution! }),
-              });
+              }));
         const onLoss = Effect.gen(function* () {
           const handle = [...ordinaryHandles.values()].find(
             (item) => item.startExecution.originalUse.operationId === ref.originalUse.operationId,
@@ -645,12 +696,14 @@ export const executorLayer: Layer.Layer<
                 if (
                   issued === null ||
                   nativeCreationCanonicalJson(
-                    Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
+                    yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
                       handle.startExecution,
-                    ),
+                    ).pipe(Effect.orDie),
                   ) !==
                     nativeCreationCanonicalJson(
-                      Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(ref),
+                      yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
+                        ref,
+                      ).pipe(Effect.orDie),
                     )
                 )
                   return yield* new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
@@ -693,18 +746,49 @@ export const executorLayer: Layer.Layer<
     ) =>
       Effect.gen(function* () {
         let failed: EventSink.StartFailedBeforeOpenObservationV1 | undefined;
-        yield* providerTurnStart.start(input).pipe(
+        let retry: EventSink.StartRetryBeforeOpenObservationV1 | undefined;
+        const result = yield* providerTurnStart.start(input).pipe(
           Effect.provideService(ProviderTurnStartService.StartOutcomeSink, (observation) =>
             Effect.sync(() => {
               failed = observation;
             }),
           ),
+          Effect.provideService(ProviderTurnStartService.StartRetryOutcomeSink, (observation) =>
+            Effect.sync(() => {
+              retry = observation;
+            }),
+          ),
+          Effect.exit,
         );
+        if (Exit.isFailure(result)) {
+          if (
+            retry !== undefined &&
+            !Cause.hasInterrupts(result.cause) &&
+            ordinary?.executor.kind === "actual_outbox_claim" &&
+            input.willRetry === true
+          ) {
+            const observation = retry;
+            const source = ordinary.executor.source;
+            const error = Cause.pretty(result.cause);
+            return {
+              status: "ordinary_start_retry",
+              effectId: source.link.effectId,
+              commandId: source.link.commandId,
+              threadId: source.link.threadId,
+              workerId: source.workerId,
+              expectedAttempt: source.expectedAttempt,
+              settle: (delayMs: number) =>
+                eventSink.settleOrdinaryCheckoutStartRetry({ observation, error, delayMs }),
+            } satisfies OrdinaryStartRetryV1;
+          }
+          return yield* Effect.failCause(result.cause);
+        }
         if (failed !== undefined && ordinary !== undefined)
           yield* eventSink.settleOrdinaryCheckoutStartFailedBeforeOpen({
             ref: ordinary,
             observation: failed,
           });
+        return undefined;
       });
     const settledOrdinaryClaim = (
       effect: EffectOutbox.OrchestrationEffectV2,
@@ -780,7 +864,7 @@ export const executorLayer: Layer.Layer<
           same(row.request, effect.request) &&
           same(row.attachmentNamespaceCleanup, effect.attachmentNamespaceCleanup);
         const retained = (
-          revalidate: Effect.Effect<boolean, unknown> = Effect.succeed(false),
+          revalidate: Effect.Effect<boolean, ClaimRevalidationError> = Effect.succeed(false),
         ): AttachmentNamespaceRetainedV1 => ({
           status: "attachment_namespace_retained",
           effectId: effect.id,
@@ -999,9 +1083,15 @@ export const executorLayer: Layer.Layer<
                   nativeCreationCanonicalJson(original.ownerBirth)
               )
                 return null;
+              // The store decodes this same task; an unknown capture still prepares nothing.
+              const terminalTask = yield* Schema.decodeUnknownEffect(EventSink.LeaseCleanupTaskV2)(
+                { kind: "terminal", capture },
+                { onExcessProperty: "error" },
+              );
+              if (terminalTask.kind !== "terminal") return null;
               yield* eventSink.prepareDeletionCleanupTaskBindings({
                 commandId: effect.commandId,
-                terminalCapture: capture,
+                terminalCapture: terminalTask.capture,
               });
               return yield* eventSink.readDeletionCleanupTask(effect.id);
             }),
@@ -1395,18 +1485,16 @@ export const executorLayer: Layer.Layer<
       );
     return OrchestrationEffectExecutorV2.of({
       claimAttachmentNamespaceCleanupRetry: (input) =>
-        eventSink
-          .claimAttachmentNamespaceCleanup(input)
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new OrchestrationEffectExecutionError({
-                  effectId: input.effectId,
-                  effectType: "attachment.cleanup",
-                  cause,
-                }),
-            ),
+        eventSink.claimAttachmentNamespaceCleanup(input).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestrationEffectExecutionError({
+                effectId: input.effectId,
+                effectType: "attachment.cleanup",
+                cause,
+              }),
           ),
+        ),
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
@@ -1991,7 +2079,7 @@ export const executorLayer: Layer.Layer<
                     };
                     yield* readClaimedQueuedRunStartExecution(queuedRunStartExecution, eventSink);
                     const ordinary = yield* prepareOrdinaryClaim(effect);
-                    yield* startOrdinaryClaim(
+                    const retry = yield* startOrdinaryClaim(
                       {
                         threadId: effect.threadId,
                         runId: requestedRunId,
@@ -2001,9 +2089,10 @@ export const executorLayer: Layer.Layer<
                       },
                       ordinary,
                     );
-                    return ordinary === undefined
-                      ? undefined
-                      : settledOrdinaryClaim(effect, ordinary);
+                    return (
+                      retry ??
+                      (ordinary === undefined ? undefined : settledOrdinaryClaim(effect, ordinary))
+                    );
                   }
                   const records = facts.commitSnapshot.records;
                   if (
@@ -2054,7 +2143,7 @@ export const executorLayer: Layer.Layer<
                     claim.payload_json,
                   ).pipe(Effect.mapError(unknown));
                   if (
-                    payload.nativeCreationExecutionReference !== undefined ||
+                    "nativeCreationExecutionReference" in payload ||
                     payload.request.type !== "provider-turn.start" ||
                     payload.request.runId !== requestedRunId
                   )
@@ -2096,7 +2185,7 @@ export const executorLayer: Layer.Layer<
                       );
                   }
                   const ordinary = yield* prepareOrdinaryClaim(effect);
-                  yield* startOrdinaryClaim(
+                  const retry = yield* startOrdinaryClaim(
                     {
                       threadId: effect.threadId,
                       runId: requestedRunId,
@@ -2105,9 +2194,10 @@ export const executorLayer: Layer.Layer<
                     },
                     ordinary,
                   );
-                  return ordinary === undefined
-                    ? undefined
-                    : settledOrdinaryClaim(effect, ordinary);
+                  return (
+                    retry ??
+                    (ordinary === undefined ? undefined : settledOrdinaryClaim(effect, ordinary))
+                  );
                 }
                 if (
                   choice.receipt.status !== "accepted" ||
@@ -2497,93 +2587,106 @@ export const executorLayer: Layer.Layer<
             const request = effect.request;
             return Effect.gen(function* () {
               const ref = yield* prepareOrdinaryClaim(effect);
-              const result = yield* Effect.exit(
-                runFinalization.finalize({
-                  threadId: effect.threadId,
-                  runId: request.runId,
-                  scopeId: request.scopeId,
-                  ...(ref === undefined
-                    ? {}
-                    : { ordinaryCheckoutUse: ref.originalUse, ordinaryCheckoutExecution: ref }),
-                }),
-              );
-              if (ref === undefined) {
-                if (Exit.isFailure(result)) return yield* Effect.failCause(result.cause);
-                return;
-              }
-              const observation = Exit.isSuccess(result)
-                ? CheckpointCaptureService.readIssuedCheckpointCaptureObservation(result.value)
-                : CheckpointCaptureService.readIssuedCheckpointCaptureObservationForExecution(ref);
-              if (observation === null) {
-                if (Exit.isFailure(result)) return yield* Effect.failCause(result.cause);
-                return yield* new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
-                  reason: "unknown_use",
-                  threadId: effect.threadId,
-                  path: ref.originalUse.lease.resourcePath,
-                  message: "The claimed checkpoint has no original issued physical result.",
-                });
-              }
-              const revalidateProducer = Effect.suspend(() =>
-                CheckpointCaptureService.readIssuedCheckpointCaptureObservation(observation) ===
-                observation
-                  ? Effect.void
-                  : Effect.fail(
-                      new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
-                        reason: "unknown_use",
-                        threadId: effect.threadId,
-                        path: ref.originalUse.lease.resourcePath,
-                        message:
-                          "The original physical checkpoint result changed before publication.",
-                      }),
-                    ),
-              );
-              yield* eventSink.withTransaction(
-                Effect.gen(function* () {
-                  const actualProducerOutcome = {
-                    kind: "checkpoint_captured" as const,
-                    observation,
-                  };
-                  yield* eventSink.recordOrdinaryCheckoutExecutorOutcome({
-                    ref,
-                    actualProducerOutcome,
-                    revalidateProducer,
+              const finalizeAndSettle = Effect.gen(function* () {
+                const result = yield* Effect.exit(
+                  runFinalization.finalize({
+                    threadId: effect.threadId,
+                    runId: request.runId,
+                    scopeId: request.scopeId,
+                    ...(ref === undefined
+                      ? {}
+                      : { ordinaryCheckoutUse: ref.originalUse, ordinaryCheckoutExecution: ref }),
+                  }),
+                );
+                if (ref === undefined) {
+                  if (Exit.isFailure(result)) return yield* Effect.failCause(result.cause);
+                  return;
+                }
+                const observation = Exit.isSuccess(result)
+                  ? CheckpointCaptureService.readIssuedCheckpointCaptureObservation(result.value)
+                  : CheckpointCaptureService.readIssuedCheckpointCaptureObservationForExecution(
+                      ref,
+                    );
+                if (observation === null) {
+                  if (Exit.isFailure(result)) return yield* Effect.failCause(result.cause);
+                  return yield* new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
+                    reason: "unknown_use",
+                    threadId: effect.threadId,
+                    path: ref.originalUse.lease.resourcePath,
+                    message: "The claimed checkpoint has no original issued physical result.",
                   });
-                  const history = yield* eventSink.readOrdinaryCheckoutExecutionAssociations(
-                    ref.originalUse,
-                  );
-                  for (const participant of history.participants) {
-                    if (
-                      participant.state !== "active" ||
-                      participant.ref.executor.kind !== "captured_managed_run"
-                    )
-                      continue;
+                }
+                const revalidateProducer = Effect.suspend(() =>
+                  CheckpointCaptureService.readIssuedCheckpointCaptureObservation(observation) ===
+                  observation
+                    ? Effect.void
+                    : Effect.fail(
+                        new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
+                          reason: "unknown_use",
+                          threadId: effect.threadId,
+                          path: ref.originalUse.lease.resourcePath,
+                          message:
+                            "The original physical checkpoint result changed before publication.",
+                        }),
+                      ),
+                );
+                yield* eventSink.withTransaction(
+                  Effect.gen(function* () {
+                    const actualProducerOutcome = {
+                      kind: "checkpoint_captured" as const,
+                      observation,
+                    };
                     yield* eventSink.recordOrdinaryCheckoutExecutorOutcome({
-                      ref: participant.ref,
+                      ref,
                       actualProducerOutcome,
                       revalidateProducer,
                     });
-                  }
-                  if (
-                    !(yield* outbox.succeed({ effectId: effect.id, workerId: effect.leaseOwner! }))
-                  )
-                    return yield* new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
-                      reason: "claim_mismatch",
-                      threadId: effect.threadId,
-                      path: ref.originalUse.lease.resourcePath,
-                      message: "The checkpoint claim changed before its actual result was settled.",
-                    });
-                  const completed = yield* eventSink.readOrdinaryCheckoutExecutionAssociations(
-                    ref.originalUse,
-                  );
-                  if (completed.participants.every((item) => item.state === "retired"))
-                    yield* eventSink.completeOrdinaryCheckoutUse({
-                      originalUse: ref.originalUse,
-                      expectedAssociationOrdinal: completed.latestOrdinal,
-                      completionEvidence: { ref, actualProducerOutcome },
-                    });
-                }),
-              );
-              return settledOrdinaryClaim(effect, ref);
+                    const history = yield* eventSink.readOrdinaryCheckoutExecutionAssociations(
+                      ref.originalUse,
+                    );
+                    for (const participant of history.participants) {
+                      if (
+                        participant.state !== "active" ||
+                        participant.ref.executor.kind !== "captured_managed_run"
+                      )
+                        continue;
+                      yield* eventSink.recordOrdinaryCheckoutExecutorOutcome({
+                        ref: participant.ref,
+                        actualProducerOutcome,
+                        revalidateProducer,
+                      });
+                    }
+                    if (
+                      !(yield* outbox.succeed({
+                        effectId: effect.id,
+                        workerId: effect.leaseOwner!,
+                      }))
+                    )
+                      return yield* new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
+                        reason: "claim_mismatch",
+                        threadId: effect.threadId,
+                        path: ref.originalUse.lease.resourcePath,
+                        message:
+                          "The checkpoint claim changed before its actual result was settled.",
+                      });
+                    const completed = yield* eventSink.readOrdinaryCheckoutExecutionAssociations(
+                      ref.originalUse,
+                    );
+                    if (completed.participants.every((item) => item.state === "retired"))
+                      yield* eventSink.completeOrdinaryCheckoutUse({
+                        originalUse: ref.originalUse,
+                        expectedAssociationOrdinal: completed.latestOrdinal,
+                        completionEvidence: { ref, actualProducerOutcome },
+                      });
+                  }),
+                );
+                return settledOrdinaryClaim(effect, ref);
+              });
+              // Terminal publication can wake queued admission before checkout retirement.
+              // Hold the same thread barrier through the committed retirement result.
+              return yield* ref === undefined
+                ? finalizeAndSettle
+                : threadDispatch.withLock(effect.threadId, finalizeAndSettle);
             }).pipe(
               Effect.mapError(
                 (cause) =>
@@ -2624,7 +2727,7 @@ export const executorLayer: Layer.Layer<
       },
     });
   }),
-);
+).pipe(Layer.provide(threadCommandExecutorLayer));
 
 export class OrchestrationEffectWorkerError extends Schema.TaggedError<OrchestrationEffectWorkerError>()(
   "OrchestrationEffectWorkerError",
@@ -2685,7 +2788,8 @@ export const layerWithOptions = (
           const proof = yield* nativeRepository.value.readNativeEffectConfirmation(effect.id);
           if (
             proof === null ||
-            (returned !== undefined && JSON.stringify(returned) !== JSON.stringify(proof))
+            (returned !== undefined &&
+              (yield* comparisonJson(returned)) !== (yield* comparisonJson(proof)))
           )
             return false;
           const evidence = proof.evidence;
@@ -2933,6 +3037,26 @@ export const layerWithOptions = (
             Exit.isSuccess(exit) && exit.value !== "cancelled"
               ? (exit.value.confirmation ?? undefined)
               : undefined;
+          if (isOrdinaryStartRetry(returned)) {
+            if (
+              effect.request.type !== "provider-turn.start" ||
+              effect.attemptCount >= maxAttempts ||
+              returned.effectId !== effect.id ||
+              returned.commandId !== effect.commandId ||
+              returned.threadId !== effect.threadId ||
+              returned.workerId !== workerId ||
+              returned.expectedAttempt !== effect.attemptCount
+            )
+              return yield* new OrchestrationEffectWorkerError({
+                operation: "verify-ordinary-retry",
+                effectId: effect.id,
+                cause: "Retry does not belong to this original claim and remaining retry budget.",
+              });
+            yield* returned.settle(
+              Math.min(30_000, 100 * 2 ** Math.max(0, effect.attemptCount - 1)),
+            );
+            return true;
+          }
           if (isSettledOrdinaryClaim(returned)) {
             if (
               returned.effectId === effect.id &&

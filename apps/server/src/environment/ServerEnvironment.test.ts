@@ -205,10 +205,12 @@ it.layer(testServices)("ServerEnvironmentLive", (it) => {
         observationSchema: "t3.native-creation-observation/v2",
         guardRequired: true,
       });
-      expect(
-        Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor)(second).capabilities
-          .nativeBootstrapCreation,
-      ).toEqual(second.capabilities.nativeBootstrapCreation);
+      const decoded = yield* Schema.decodeUnknownEffect(ExecutionEnvironmentDescriptor)(
+        second,
+      ).pipe(Effect.orDie);
+      expect(decoded.capabilities.nativeBootstrapCreation).toEqual(
+        second.capabilities.nativeBootstrapCreation,
+      );
       expect(second.capabilities.repositoryIdentity).toBe(true);
       expect(second.capabilities.connectionProbe).toBe(true);
       expect(second.capabilities.attachmentUploads).toBe(true);

@@ -38,6 +38,7 @@ import {
   type ProviderAdapterV2TurnInput,
 } from "../ProviderAdapter.ts";
 import {
+  CURSOR_DRIVER_KIND,
   cursorMcpServers,
   cursorRuntimeAgentPolicy,
   cursorSdkModelSelection,
@@ -45,7 +46,11 @@ import {
   makeCursorAdapterV2,
   nestedToolCallFromEnvelope,
 } from "./CursorAdapterV2.ts";
-import { isCursorCancellationError, loggedCursorAgentOptions } from "./CursorAgentSdk.ts";
+import {
+  CursorAgentSdkRunnerError,
+  isCursorCancellationError,
+  loggedCursorAgentOptions,
+} from "./CursorAgentSdk.ts";
 
 function prepareManagedFixture(
   runtime: ProviderAdapterV2SessionRuntime,
@@ -54,16 +59,16 @@ function prepareManagedFixture(
   return Effect.gen(function* () {
     const threadId = turn.threadId;
     const commandId = `managed-command:${turn.attemptId}`;
-    const birth = Schema.decodeUnknownSync(
+    const birth = yield* Schema.decodeUnknownEffect(
       OrdinaryOwnership.OrdinaryCheckoutCaptureV1.fields.applicationBirth,
     )({
       kind: "application_v2_thread_birth",
       threadId,
       eventId: `birth:${turn.attemptId}`,
       sequence: 1,
-    });
+    }).pipe(Effect.orDie);
     const command = { type: "message.send", commandId, threadId };
-    const capture = Schema.decodeUnknownSync(OrdinaryOwnership.OrdinaryCheckoutCaptureV1)({
+    const capture = yield* Schema.decodeUnknownEffect(OrdinaryOwnership.OrdinaryCheckoutCaptureV1)({
       version: 1,
       commandId,
       commandType: command.type,
@@ -86,9 +91,11 @@ function prepareManagedFixture(
         renewedAtMs: 1,
         expiresAtMs: 300001,
       },
-    });
+    }).pipe(Effect.orDie);
     const at = "2026-10-03T00:00:00.000Z";
-    const admission = Schema.decodeUnknownSync(OrdinaryOwnership.OrdinaryCheckoutAdmissionV1)({
+    const admission = yield* Schema.decodeUnknownEffect(
+      OrdinaryOwnership.OrdinaryCheckoutAdmissionV1,
+    )({
       version: 1,
       admissionId: OrdinaryOwnership.ordinaryCheckoutAdmissionIdV1(capture),
       capture,
@@ -111,7 +118,7 @@ function prepareManagedFixture(
         messageId: turn.message.messageId,
       },
       recordedAt: at,
-    });
+    }).pipe(Effect.orDie);
     const source = {
       kind: "outbox",
       link: {
@@ -127,20 +134,22 @@ function prepareManagedFixture(
       expectedAttempt: 1,
       leaseExpiresAt: "2026-10-03T00:05:00.000Z",
     };
-    const originalUse = Schema.decodeUnknownSync(OrdinaryOwnership.OrdinaryCheckoutUseV1)({
+    const originalUse = yield* Schema.decodeUnknownEffect(OrdinaryOwnership.OrdinaryCheckoutUseV1)({
       version: 1,
       kind: "ordinary_checkout_use",
       operationId: `operation:${turn.attemptId}`,
       admission: OrdinaryOwnership.ordinaryCheckoutAdmissionRefV1(admission),
       source,
       lease: capture.lease,
-    });
+    }).pipe(Effect.orDie);
     const startExecution = OrdinaryOwnership.makeOrdinaryCheckoutExecutionRefV1({
       originalUse,
-      executor: Schema.decodeUnknownSync(OrdinaryOwnership.OrdinaryCheckoutExecutionExecutorV1)({
+      executor: yield* Schema.decodeUnknownEffect(
+        OrdinaryOwnership.OrdinaryCheckoutExecutionExecutorV1,
+      )({
         kind: "actual_outbox_claim",
         source,
-      }),
+      }).pipe(Effect.orDie),
     });
     const checkpointScopeId = CheckpointScopeId.make(`scope:${turn.attemptId}`);
     const reader = yield* ManagedCompletion.prepareProviderManagedActorRun(runtime, {
@@ -152,7 +161,9 @@ function prepareManagedFixture(
     yield* Effect.addFinalizer(() => reader.release);
     const managedRef = OrdinaryOwnership.makeOrdinaryCheckoutExecutionRefV1({
       originalUse,
-      executor: Schema.decodeUnknownSync(OrdinaryOwnership.OrdinaryCheckoutExecutionExecutorV1)({
+      executor: yield* Schema.decodeUnknownEffect(
+        OrdinaryOwnership.OrdinaryCheckoutExecutionExecutorV1,
+      )({
         kind: "captured_managed_run",
         captureId: `capture:${turn.attemptId}`,
         run: admission.run,
@@ -165,7 +176,7 @@ function prepareManagedFixture(
           instanceId: runtime.instanceId,
         },
         nativeThreadId: turn.providerThread.nativeThreadRef!.nativeId,
-      }),
+      }).pipe(Effect.orDie),
     });
     yield* reader.bindManagedExecution(managedRef);
     return { reader, startExecution, managedRef };
@@ -452,13 +463,16 @@ describe("CursorAdapterV2", () => {
       yield* runtime.resumeThread({ providerThread });
       assert.equal(runtime.runtimeGeneration, first);
       assert.equal(opens, 1);
+      const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+      if (nativeThreadId == null)
+        return yield* Effect.die("Cursor fixture has no native thread ID.");
       const binding = {
         threadId,
         providerThreadId: providerThread.id,
         providerSessionId: runtime.providerSessionId,
         instanceId,
         runtimeGeneration: first!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
+        nativeThreadId,
       };
       const observed = yield* runtime.observeThreadRuntime!(binding);
       assert.equal(observed.status, "unknown");
@@ -518,18 +532,29 @@ describe("CursorAdapterV2", () => {
                 send: (sent) =>
                   Effect.gen(function* () {
                     const ordinal = ++sends;
-                    yield* sent.onDelta({
+                    const onDelta = sent.onDelta;
+                    if (onDelta === undefined)
+                      return yield* Effect.die("Cursor fixture requires its output callback.");
+                    yield* onDelta({
                       type: "text-delta",
                       text: ordinal === 1 ? "Old owner output" : "Fresh owner output",
-                    });
+                    }).pipe(
+                      Effect.mapError(
+                        (cause) => new CursorAgentSdkRunnerError({ method: "run.onDelta", cause }),
+                      ),
+                    );
                     if (ordinal === 1) {
                       yield* Deferred.succeed(received, undefined);
                       yield* Deferred.await(acknowledged);
                     }
                     return {
                       runId: `cursor-origin-run-${ordinal}`,
+                      agentId: opened.agentId ?? "native-cursor-origin-first",
                       cancel: Effect.void,
-                      wait: Effect.succeed({ status: "finished" as const }),
+                      wait: Effect.succeed({
+                        id: `cursor-origin-run-${ordinal}`,
+                        status: "finished" as const,
+                      }),
                     };
                   }),
               }),
@@ -688,7 +713,7 @@ describe("CursorAdapterV2", () => {
               assert.equal(runtime?.runtimeGeneration, nextGeneration);
               if (rejectRegistration) {
                 return yield* new ProviderAdapterProtocolError({
-                  driver: "cursor",
+                  driver: CURSOR_DRIVER_KIND,
                   detail: "replacement registration failed",
                 });
               }
@@ -742,13 +767,16 @@ describe("CursorAdapterV2", () => {
           "native_open",
           "registration_started",
         ]);
+        const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+        if (nativeThreadId == null)
+          return yield* Effect.die("Cursor fixture has no native thread ID.");
         const observation = yield* runtime.observeThreadRuntime!({
           instanceId,
           threadId,
           providerSessionId: runtime.providerSessionId,
           providerThreadId: providerThread.id,
           runtimeGeneration: runtime.runtimeGeneration!,
-          nativeThreadId: providerThread.nativeThreadRef!.nativeId,
+          nativeThreadId,
         });
         assert.equal(observation.status, "unknown");
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
@@ -835,10 +863,15 @@ describe("CursorAdapterV2", () => {
                             ...taskToolCall,
                             result: {
                               status: "success",
-                              value: { conversationSteps: [], resultSuffix: "Review complete." },
+                              value: {
+                                conversationSteps: [],
+                                resultSuffix: "Review complete.",
+                                isBackground: false,
+                                backgroundReason: "unspecified",
+                              },
                             },
                           },
-                        } as InteractionUpdate).pipe(Effect.orDie);
+                        }).pipe(Effect.orDie);
                       }
                       return {
                         agentId: "native-cursor-lifecycle",
@@ -943,13 +976,14 @@ describe("CursorAdapterV2", () => {
                   (actor) => actor.source.runtimeGeneration === undefined,
                 ),
               );
-              assert.isUndefined(
-                closure.observation.descriptor.managedExecution.executor.kind ===
-                  "captured_managed_run"
-                  ? closure.observation.descriptor.managedExecution.executor.binding
-                      .runtimeGeneration
-                  : "wrong executor",
-              );
+              const executor = closure.observation.descriptor.managedExecution.executor;
+              assert.equal(executor.kind, "captured_managed_run");
+              if (executor.kind === "captured_managed_run")
+                assert.isUndefined(
+                  "runtimeGeneration" in executor.binding
+                    ? executor.binding.runtimeGeneration
+                    : undefined,
+                );
               assert.equal(
                 closure.observation.descriptor.actors[0]?.endEvidence.kind,
                 "endpoint_and_task_joins",

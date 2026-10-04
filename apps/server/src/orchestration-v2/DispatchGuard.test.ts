@@ -95,6 +95,7 @@ const facts = (): NativeCommandFactsV2 => ({
   projection: null,
   creationHistory: [],
   nativeCreationHistory: null,
+  workstreamWitness: null,
   commitSnapshot: {
     commandId,
     threadId,
@@ -150,7 +151,7 @@ it.effect("rejects missing targets and unsupported bootstrap or deferred operati
         target: null,
       }).pipe(Effect.flip)).reason,
     ).toBe("missing_target");
-    const create = Schema.decodeUnknownSync(OrchestrationV2Command)({
+    const create = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
       type: "thread.create",
       commandId,
       threadId,
@@ -164,7 +165,7 @@ it.effect("rejects missing targets and unsupported bootstrap or deferred operati
       createdAt: now,
       createdBy: "user",
       creationSource: "web",
-    });
+    }).pipe(Effect.orDie);
     expect(
       (yield* validateDispatchGuardTargetV2(create, guard, { facts: facts(), target }).pipe(
         Effect.flip,

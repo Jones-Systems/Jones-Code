@@ -209,10 +209,16 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
               messageId: args.payload.messageId,
             })
             .pipe(
-              Effect.catch((cause) =>
-                cause._tag === "CommandObservationUnsupportedError"
-                  ? failEnvironmentInvalidRequest("observation_unsupported")
-                  : failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
+              Effect.catch(
+                Effect.fnUntraced(function* (cause) {
+                  if (cause._tag === "CommandObservationUnsupportedError") {
+                    return yield* failEnvironmentInvalidRequest("observation_unsupported");
+                  }
+                  return yield* failEnvironmentInternal(
+                    "orchestration_thread_snapshot_failed",
+                    cause,
+                  );
+                }),
               ),
             );
         }),

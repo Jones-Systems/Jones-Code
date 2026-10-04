@@ -327,16 +327,20 @@ export const layer: Layer.Layer<
             ordinaryLink.requestSha256 !==
               nativeCreationSha256(
                 nativeCreationCanonicalJson(
-                  Schema.encodeSync(OrchestrationEffectRequestV2)(ordinaryRequest),
+                  yield* Schema.encodeEffect(OrchestrationEffectRequestV2)(ordinaryRequest).pipe(
+                    Effect.orDie,
+                  ),
                 ),
               ) ||
             nativeCreationCanonicalJson(
-              Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+              yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
                 execution.executor.source.link,
-              ),
+              ).pipe(Effect.orDie),
             ) !==
               nativeCreationCanonicalJson(
-                Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(ordinaryLink),
+                yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutEffectLinkV1)(
+                  ordinaryLink,
+                ).pipe(Effect.orDie),
               ) ||
             execution.originalUse.lease.ownerThreadId !== input.threadId ||
             execution.originalUse.lease.resourcePath !== scope.cwd))

@@ -1,7 +1,10 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
+import * as SchemaIssue from "effect/SchemaIssue";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Migrator from "effect/unstable/sql/Migrator";
 
@@ -19,6 +22,36 @@ import JonesMigration0009 from "./009_JonesOrdinaryCheckoutOwnership.ts";
 import JonesMigration0010 from "./010_JonesAttachmentCleanup.ts";
 import JonesMigration0011 from "./011_JonesOrdinaryCheckoutExecutionLifetime.ts";
 import JonesMigration0012 from "./012_JonesImportedApplicationAttachments.ts";
+
+// Keep native JSON exceptions as defects and retain undefined serialization results.
+const FixtureJsonText = Schema.Unknown.pipe(
+  Schema.decodeTo(Schema.UndefinedOr(Schema.String), {
+    decode: SchemaGetter.onSome<string | undefined, unknown>((input, options) => {
+      try {
+        return Effect.succeed(Option.some(JSON.stringify(input)));
+      } catch (cause) {
+        return Effect.fail(
+          new SchemaIssue.InvalidValue({ nativeJsonCause: cause }, input, options),
+        );
+      }
+    }),
+    encode: SchemaGetter.forbiddenEncoding,
+  }),
+);
+const encodeFixtureJson = Schema.decodeEffect(FixtureJsonText);
+
+function dieNativeJsonCause(error: Schema.SchemaError) {
+  let issue = error.issue;
+  while (issue._tag === "Encoding") issue = issue.issue;
+  if (
+    issue._tag === "InvalidValue" &&
+    issue.annotations !== undefined &&
+    Object.hasOwn(issue.annotations, "nativeJsonCause")
+  ) {
+    return Effect.die(issue.annotations["nativeJsonCause"]);
+  }
+  return Effect.die(error);
+}
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const runForkMigrations = Migrator.make({});
@@ -202,9 +235,24 @@ it.effect(
         { accepted_command_json: "invalid" },
         { accepted_command_json: "[]" },
         { accepted_command_json: "{}" },
-        { accepted_command_json: JSON.stringify({ ...acceptedCommand, commandId: "other" }) },
-        { accepted_command_json: JSON.stringify({ ...acceptedCommand, type: "message.dispatch" }) },
-        { accepted_command_json: JSON.stringify({ ...acceptedCommand, threadId: "other" }) },
+        {
+          accepted_command_json: yield* encodeFixtureJson({
+            ...acceptedCommand,
+            commandId: "other",
+          }).pipe(Effect.catch(dieNativeJsonCause)),
+        },
+        {
+          accepted_command_json: yield* encodeFixtureJson({
+            ...acceptedCommand,
+            type: "message.dispatch",
+          }).pipe(Effect.catch(dieNativeJsonCause)),
+        },
+        {
+          accepted_command_json: yield* encodeFixtureJson({
+            ...acceptedCommand,
+            threadId: "other",
+          }).pipe(Effect.catch(dieNativeJsonCause)),
+        },
         { accepted_command_digest: "A".repeat(64) },
         { accepted_command_digest: "a".repeat(63) },
         { receipt_sequence: -1 },
@@ -215,20 +263,35 @@ it.effect(
         { application_birth_json: "[]" },
         { application_birth_json: "{}" },
         {
-          application_birth_json: JSON.stringify({
+          application_birth_json: yield* encodeFixtureJson({
             ...witness.applicationBirth,
             kind: "legacy_birth",
-          }),
+          }).pipe(Effect.catch(dieNativeJsonCause)),
         },
         {
-          application_birth_json: JSON.stringify({
+          application_birth_json: yield* encodeFixtureJson({
             ...witness.applicationBirth,
             threadId: "other",
-          }),
+          }).pipe(Effect.catch(dieNativeJsonCause)),
         },
-        { application_birth_json: JSON.stringify({ ...witness.applicationBirth, eventId: "" }) },
-        { application_birth_json: JSON.stringify({ ...witness.applicationBirth, sequence: 0 }) },
-        { application_birth_json: JSON.stringify({ ...witness.applicationBirth, sequence: "7" }) },
+        {
+          application_birth_json: yield* encodeFixtureJson({
+            ...witness.applicationBirth,
+            eventId: "",
+          }).pipe(Effect.catch(dieNativeJsonCause)),
+        },
+        {
+          application_birth_json: yield* encodeFixtureJson({
+            ...witness.applicationBirth,
+            sequence: 0,
+          }).pipe(Effect.catch(dieNativeJsonCause)),
+        },
+        {
+          application_birth_json: yield* encodeFixtureJson({
+            ...witness.applicationBirth,
+            sequence: "7",
+          }).pipe(Effect.catch(dieNativeJsonCause)),
+        },
         { created_at: "" },
       ])
         assert.equal(

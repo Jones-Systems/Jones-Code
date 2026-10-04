@@ -3,6 +3,7 @@ import { EventId, ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3to
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -35,6 +36,24 @@ const TestLayer = Layer.mergeAll(
   eventSinkProvided,
   importerProvided,
   projectionMaintenanceProvided,
+);
+
+// Same bytes as JSON.stringify; a failure stays a defect as the native throw was.
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(Effect.orDie);
+// Only the asserted fields are read; the assertions below stay authoritative.
+const decodeQualification = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ type: Schema.Unknown })),
+);
+const decodeContinuationEvidence = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      providerInstanceId: Schema.Unknown,
+      stoppedProof: Schema.Struct({ providerInstanceId: Schema.Unknown }),
+      historicalSourceIdentity: Schema.Struct({ sourceHomeIdentity: Schema.Unknown }),
+      continuationKey: Schema.optional(Schema.Unknown),
+    }),
+  ),
 );
 
 const seedHistoricalShell = Effect.fnUntraced(function* (threadId: ThreadId) {
@@ -87,9 +106,10 @@ const seedApplicationAttachmentSource = Effect.fnUntraced(function* (
     createdAt,
     updatedAt: "2026-01-02T00:00:00.000Z",
   };
+  const payloadJson = yield* encodeJson(payload);
   const births = yield* sql<{ readonly sequence: number }>`INSERT INTO orchestration_events
     (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
-    VALUES (${`${threadId}:original-birth`}, 'thread', ${threadId}, 1, 'thread.created', ${createdAt}, 'user', ${JSON.stringify(payload)}, '{}', 1)
+    VALUES (${`${threadId}:original-birth`}, 'thread', ${threadId}, 1, 'thread.created', ${createdAt}, 'user', ${payloadJson}, '{}', 1)
     RETURNING sequence`;
   for (const projector of [
     "projection.threads",
@@ -110,10 +130,11 @@ const seedApplicationAttachmentSource = Effect.fnUntraced(function* (
   };
   if (mode === "all") {
     for (const role of ["user", "assistant", "system"]) {
+      const attachmentsJson = role === "system" ? yield* encodeJson([file]) : null;
       yield* sql`INSERT INTO projection_thread_messages
         (message_id, thread_id, turn_id, role, text, attachments_json, is_streaming, created_at, updated_at)
         VALUES (${`${threadId}:message:${role}`}, ${threadId}, NULL, ${role}, ${`Historical ${role}`},
-          ${role === "system" ? JSON.stringify([file]) : null}, 0, ${createdAt}, ${createdAt})`;
+          ${attachmentsJson}, 0, ${createdAt}, ${createdAt})`;
     }
   }
   if (mode !== "empty") {
@@ -124,10 +145,11 @@ const seedApplicationAttachmentSource = Effect.fnUntraced(function* (
         answers: { first: "yes" },
         attachmentsByQuestionId: { first: id === "zero" ? [] : [file] },
       };
+      const answerJson = yield* encodeJson(answer);
       yield* sql`INSERT INTO projection_thread_activities
         (activity_id, thread_id, turn_id, sequence, tone, kind, summary, payload_json, created_at)
         VALUES (${`${threadId}:answer:${id}`}, ${threadId}, NULL, NULL, 'info', 'user-input.answer-submitted',
-          'Historical answer', ${JSON.stringify(answer)}, ${createdAt})`;
+          'Historical answer', ${answerJson}, ${createdAt})`;
     }
   }
 });
@@ -312,9 +334,10 @@ describe("LegacyV1ThreadImporter", () => {
           answers: {},
           attachmentsByQuestionId: { first: [file] },
         };
+        const answerJson = yield* encodeJson(answer);
         yield* sql`INSERT INTO projection_thread_activities (activity_id, thread_id, turn_id, sequence, tone, kind, summary, payload_json, created_at)
         VALUES (${`${threadId}:answer:new`}, ${threadId}, NULL, NULL, 'info', 'user-input.answer-submitted', 'New answer',
-          ${JSON.stringify(answer)}, '2026-01-03T00:00:00.000Z')`;
+          ${answerJson}, '2026-01-03T00:00:00.000Z')`;
         assert.deepEqual(yield* importer.ensureTranscript(threadId), {
           importedThreadCount: 0,
           importedMessageCount: 0,
@@ -694,7 +717,7 @@ describe("LegacyV1ThreadImporter", () => {
           SELECT qualification_json, evidence_json FROM orchestration_v2_legacy_continuation_dispositions WHERE thread_id = ${threadId}
         `;
         assert.lengthOf(rows, 1);
-        const qualification = JSON.parse(rows[0]!.qualification_json);
+        const qualification = yield* decodeQualification(rows[0]!.qualification_json);
         const qualified =
           fixture === "historical_store" ||
           fixture === "native_read" ||
@@ -716,7 +739,7 @@ describe("LegacyV1ThreadImporter", () => {
         if (qualified) {
           assert.equal(projection.providerThreads[0]?.status, "not_loaded");
           assert.isNull(projection.providerThreads[0]?.providerSessionId);
-          const evidence = JSON.parse(rows[0]!.evidence_json!);
+          const evidence = yield* decodeContinuationEvidence(rows[0]!.evidence_json!);
           assert.isNull(evidence.providerInstanceId);
           assert.isNull(evidence.stoppedProof.providerInstanceId);
           assert.equal(

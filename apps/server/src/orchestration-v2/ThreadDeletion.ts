@@ -8,11 +8,14 @@ import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
+import * as SchemaIssue from "effect/SchemaIssue";
 
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
-import type { WorktreeCleanupRules } from "@t3tools/contracts";
+import type { WorktreeCleanupRules, ServerSettingsError } from "@t3tools/contracts";
 import {
   makeDeletionWorktreeRemoval,
   type DeletionWorktreeRemovalProducer,
@@ -21,6 +24,7 @@ import * as ServerSettings from "../serverSettings.ts";
 
 import type { PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
+import { jsonCause } from "./EventSinkJsonCodec.ts";
 import * as ResourceCleanup from "./ResourceCleanupService.ts";
 import * as ProviderSessions from "./ProviderSessionManager.ts";
 import * as Terminals from "../terminal/Manager.ts";
@@ -32,6 +36,27 @@ import {
   type WorktreeOwnershipLease,
   type WorktreeOwnershipLeaseStore,
 } from "./WorktreeOwnershipLease.ts";
+
+// Byte-exact JSON.stringify for currentness comparisons. Key order stays
+// significant, and a native stringify exception remains the defect.
+const decodeComparisonJson = Schema.decodeEffect(
+  Schema.Unknown.pipe(
+    Schema.decodeTo(Schema.String, {
+      decode: SchemaGetter.onSome<string, unknown>((input, options) => {
+        try {
+          return Effect.succeed(Option.some(JSON.stringify(input)));
+        } catch (cause) {
+          return Effect.fail(
+            new SchemaIssue.InvalidValue({ nativeJsonCause: cause }, input, options),
+          );
+        }
+      }),
+      encode: SchemaGetter.forbiddenEncoding,
+    }),
+  ),
+);
+const comparisonJson = (value: unknown) =>
+  decodeComparisonJson(value).pipe(Effect.catch((error) => Effect.die(jsonCause(error))));
 
 export interface ThreadDeletionPlan {
   readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -290,7 +315,7 @@ export const makeDeletionWorktreeCleanup =
     readonly leases: Pick<WorktreeOwnershipLeaseStore, "finalizeDeletionWorktreeCleanup">;
     readonly revalidatePolicy: (
       binding: EventSink.DeletionWorktreeTaskBindingV1,
-    ) => Effect.Effect<WorktreeCleanupRules, unknown>;
+    ) => Effect.Effect<WorktreeCleanupRules, ServerSettingsError>;
   }) =>
   (request: DeletionWorktreeCleanupInputV1) => {
     const retained = (
@@ -338,9 +363,11 @@ export const makeDeletionWorktreeCleanup =
         EventSink.deletionWorktreeCleanupRequestV1(basis.binding)?.origin === "policy"
           ? input.revalidatePolicy(basis.binding)
           : undefined;
+      const target = EventSink.deletionWorktreeRemovalTargetV1(basis.binding);
+      if (target === null) return retained("worktree_cleanup_unavailable");
       const started = yield* input.sink.startDeletionWorktreeRemoval({
         ...request,
-        target: EventSink.deletionWorktreeRemovalTargetV1(basis.binding),
+        target,
         ...(policy === undefined ? {} : { revalidatePolicy: policy }),
       });
       if (started.status === "retained") return retained(started.reason);
@@ -368,7 +395,8 @@ export const makeDeletionWorktreeCleanup =
         current === null ||
         current.binding.bindingSha256 !== request.bindingSha256 ||
         current.start?.ordinal !== recorded.ordinal ||
-        JSON.stringify(current.start.evidence) !== JSON.stringify(recorded.evidence)
+        (yield* comparisonJson(current.start.evidence)) !==
+          (yield* comparisonJson(recorded.evidence))
       )
         return retained("worktree_start_changed_after_observation");
       if (current.latestOutcome === null) return retained("worktree_latest_outcome_unavailable");
@@ -582,7 +610,7 @@ export const makeLeaseCleanupLifecycle = (input: {
             !sameLease(current.lease, lease) ||
             !currentLeases.some((candidate) => sameLease(candidate, lease)) ||
             retentionReason(current) !== undefined ||
-            JSON.stringify(current) !== JSON.stringify(basis)
+            (yield* comparisonJson(current)) !== (yield* comparisonJson(basis))
           )
             return {
               lease,
@@ -705,7 +733,7 @@ export const makeLeaseCleanupLifecycle = (input: {
 export class ThreadDeletionLeaseCleanup extends Context.Service<
   ThreadDeletionLeaseCleanup,
   ReturnType<typeof makeLeaseCleanupLifecycle>
->()("t3/orchestration-v2/ThreadDeletion/LeaseCleanup") {}
+>()("t3/orchestration-v2/ThreadDeletion/ThreadDeletionLeaseCleanup") {}
 
 export const leaseCleanupLayer = Layer.effect(
   ThreadDeletionLeaseCleanup,

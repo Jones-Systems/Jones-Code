@@ -17,6 +17,7 @@ import {
   type OrchestrationV2StoredEvent,
   type UserInputAttachments,
 } from "@t3tools/contracts";
+import * as Arr from "effect/Array";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -864,10 +865,11 @@ for (const kind of ["queued-run.edit", "runtime-request.respond"] as const) {
         NodeFS.writeFileSync(finalPath, new Uint8Array([9, 8, 7, 6]));
         if (kind === "runtime-request.respond") {
           NodeFS.unlinkSync(pendingPath);
-          expect(
-            row.acceptedCommand.type === "runtime-request.respond" &&
-              row.acceptedCommand.answers?.q?.[1],
-          ).toContain(finalPath);
+          const respondedAnswer =
+            row.acceptedCommand.type === "runtime-request.respond"
+              ? row.acceptedCommand.answers?.q
+              : undefined;
+          expect(Arr.isArray(respondedAnswer) && respondedAnswer[1]).toContain(finalPath);
         }
         const before = NodeFS.readdirSync(config.attachmentsDir).sort();
         const observed: OrchestrationV2ServerCommand[] = [];

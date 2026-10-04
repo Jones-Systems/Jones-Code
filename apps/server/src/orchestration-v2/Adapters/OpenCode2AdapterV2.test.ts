@@ -83,10 +83,31 @@ import { OPENCODE_2_STILL_STOPPING } from "./OpenCode2AdapterV2.ts";
 import * as OpenCode2AdapterV2 from "./OpenCode2AdapterV2.ts";
 import { openCode2ReplayRuntime } from "./OpenCode2AdapterV2.testkit.ts";
 
+const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
 const SESSION = "ses_f148ca2deffeJcwCnRQtb0YFNX";
 const WORK = "/work/opencode2";
 const instanceId = ProviderInstanceId.make("opencode");
 const threadId = ThreadId.make("thread:opencode2-adapter");
+
+// Match the owned server's failure boundaries before replacement and native creation.
+const runLifecycleGuard = <E>(
+  guard: ((value: string) => Effect.Effect<void, E>) | undefined,
+  value: string,
+  operation: "beforeRuntimeReplacement" | "beforeNativeCreation",
+) =>
+  (guard?.(value) ?? Effect.void).pipe(
+    Effect.mapError(
+      (cause) =>
+        new OpenCodeRuntimeError({
+          operation,
+          detail:
+            operation === "beforeRuntimeReplacement"
+              ? "Could not register the replacement OpenCode runtime."
+              : "Could not authorize creation of the owned OpenCode runtime.",
+          cause,
+        }),
+    ),
+  );
 
 const out = (type: string, input?: unknown): ProviderReplayEntry => ({
   type: "expect_outbound",
@@ -441,7 +462,7 @@ const nativeConfirmationFixture = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const timestamp = DateTime.formatIso(yield* DateTime.now);
   const actorSessionId = AuthSessionId.make("opencode2-confirmation-actor");
-  const binding = Schema.decodeUnknownSync(NativePreparationBinding)({
+  const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
     backend_instance: "synthetic-backend",
     environment_id: "synthetic-environment",
     project_id: "synthetic-project",
@@ -453,7 +474,7 @@ const nativeConfirmationFixture = Effect.gen(function* () {
     start_from_origin: false,
     run_setup_script: false,
     provider_model_selection: bigPickle,
-  });
+  }).pipe(Effect.orDie);
   const bootstrap = nativePreparationCommand(
     "opencode2-confirmation",
     binding,
@@ -475,7 +496,7 @@ const nativeConfirmationFixture = Effect.gen(function* () {
       }),
     ),
   );
-  const historical = Schema.decodeUnknownSync(NativeCreationHistoricalBinding)({
+  const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -490,7 +511,7 @@ const nativeConfirmationFixture = Effect.gen(function* () {
     startFromOrigin: false,
     runSetupScript: false,
     requestedBranch: bootstrap.bootstrap.prepareWorktree.branch,
-  });
+  }).pipe(Effect.orDie);
   const resources = {
     projectCwd: binding.project_cwd,
     branch: historical.requestedBranch,
@@ -511,12 +532,12 @@ const nativeConfirmationFixture = Effect.gen(function* () {
     },
     Effect.succeed(historical),
   );
-  const command = Schema.decodeUnknownSync(OrchestrationV2Command)({
+  const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
     type: "prepared-run.release",
     commandId: CommandId.make(bootstrap.commandId),
     threadId: ThreadId.make(bootstrap.threadId),
     runId: RunId.make("run:opencode2-confirmation"),
-  });
+  }).pipe(Effect.orDie);
   if (command.type !== "prepared-run.release")
     return yield* Effect.die("Synthetic command is not a release");
   yield* repository.reserveCommandIdentities(claimId, [command.commandId]);
@@ -576,7 +597,7 @@ const nativeConfirmationFixture = Effect.gen(function* () {
     allowedStages: ["native_command"],
     recoveryScopes: [],
   };
-  const actor = Schema.decodeUnknownSync(AuthSessionRecord)({
+  const actor = yield* Schema.decodeUnknownEffect(AuthSessionRecord)({
     sessionId: actorSessionId,
     subject: "Synthetic actor",
     scopes: ["orchestration:operate"],
@@ -593,7 +614,7 @@ const nativeConfirmationFixture = Effect.gen(function* () {
     expiresAt: "2099-01-01T00:00:00Z",
     revokedAt: null,
     lastConnectedAt: null,
-  });
+  }).pipe(Effect.orDie);
   const authority = yield* makeNativeCreationAuthority.pipe(
     Effect.provideService(
       AuthSessionRepository,
@@ -634,14 +655,14 @@ const nativeConfirmationFixture = Effect.gen(function* () {
       yield* sql`INSERT INTO orchestration_v2_projection_threads
         (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json)
         VALUES (${runtimeThreadId}, 'synthetic-project', 'Synthetic', ${instanceId}, 'full-access', 'default', ${timestamp}, ${timestamp},
-          ${JSON.stringify({ activeProviderThreadId: providerThreadId, modelSelection: bigPickle })})`;
+          ${yield* Schema.encodeEffect(UnknownFromJsonString)({ activeProviderThreadId: providerThreadId, modelSelection: bigPickle }).pipe(Effect.orDie)})`;
       yield* sql`INSERT INTO orchestration_v2_projection_provider_sessions
         (provider_session_id, thread_id, provider, driver, provider_instance_id, status, updated_at, payload_json)
         VALUES (${providerSessionId}, ${runtimeThreadId}, ${instanceId}, ${OPENCODE_PROVIDER}, ${instanceId}, 'ready', ${timestamp}, '{}')`;
       yield* sql`INSERT INTO orchestration_v2_projection_provider_threads
         (provider_thread_id, thread_id, provider, driver, provider_instance_id, provider_session_id, status, updated_at, payload_json)
         VALUES (${providerThreadId}, ${runtimeThreadId}, ${instanceId}, ${OPENCODE_PROVIDER}, ${instanceId}, ${providerSessionId}, 'running', ${timestamp},
-          ${JSON.stringify({ nativeThreadRef: { nativeId: runtimeBinding.nativeThreadId } })})`;
+          ${yield* Schema.encodeEffect(UnknownFromJsonString)({ nativeThreadRef: { nativeId: runtimeBinding.nativeThreadId } }).pipe(Effect.orDie)})`;
       yield* sql`INSERT INTO orchestration_v2_projection_provider_session_bindings (provider_session_id, thread_id)
         VALUES (${providerSessionId}, ${runtimeThreadId})`;
       yield* sql`INSERT INTO orchestration_v2_provider_runtime_evidence
@@ -651,20 +672,20 @@ const nativeConfirmationFixture = Effect.gen(function* () {
       yield* sql`INSERT INTO orchestration_v2_projection_runs
         (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, payload_json)
         VALUES (${command.runId}, ${runtimeThreadId}, 1, ${instanceId}, ${providerThreadId}, 'running', ${timestamp},
-          ${JSON.stringify({
+          ${yield* Schema.encodeEffect(UnknownFromJsonString)({
             activeAttemptId: attemptId,
             providerThreadId,
             userMessageId,
             modelSelection: preparation.binding.provider_model_selection,
-          })})`;
+          }).pipe(Effect.orDie)})`;
       yield* sql`INSERT INTO orchestration_v2_projection_run_attempts
         (attempt_id, thread_id, run_id, attempt_ordinal, root_node_id, provider, provider_thread_id, status, payload_json)
         VALUES (${attemptId}, ${runtimeThreadId}, ${command.runId}, 1, 'synthetic-node', ${instanceId}, ${providerThreadId}, 'running',
-          ${JSON.stringify({ providerThreadId })})`;
+          ${yield* Schema.encodeEffect(UnknownFromJsonString)({ providerThreadId }).pipe(Effect.orDie)})`;
       yield* sql`INSERT INTO orchestration_v2_projection_messages
         (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
         VALUES (${userMessageId}, ${runtimeThreadId}, 'user', 0, ${timestamp}, ${timestamp},
-          ${JSON.stringify({ text: "/compact", attachments: [] })})`;
+          ${yield* Schema.encodeEffect(UnknownFromJsonString)({ text: "/compact", attachments: [] }).pipe(Effect.orDie)})`;
       const proof = yield* repository.recordNativeEffectConfirmation({
         effectId,
         workerId: "synthetic-worker",
@@ -766,17 +787,12 @@ describe("OpenCode2 adapter", () => {
             Effect.gen(function* () {
               borrows++;
               if (borrows === 1) return yield* use(connection);
-              yield* listener?.("reserved-replacement") ?? Effect.void;
-              yield* (beforeNativeCreation?.(WORK) ?? Effect.void).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OpenCodeRuntimeError({
-                      operation: "beforeNativeCreation",
-                      detail: "Current creation authority is unavailable.",
-                      cause,
-                    }),
-                ),
+              yield* runLifecycleGuard(
+                listener,
+                "reserved-replacement",
+                "beforeRuntimeReplacement",
               );
+              yield* runLifecycleGuard(beforeNativeCreation, WORK, "beforeNativeCreation");
               factoryEffects++;
               return yield* use(replacement);
             }),
@@ -836,16 +852,17 @@ describe("OpenCode2 adapter", () => {
           nativeOperation,
           nativeCreationExecution: execution,
         };
-        yield* runtime.compactThread(turn);
+        const compactThread = runtime.compactThread;
+        if (compactThread === undefined)
+          return yield* Effect.die("OpenCode fixture must support compaction.");
+        yield* compactThread(turn);
         if (scenario === "unrelated attempt") {
           const otherAttempt = RunAttemptId.make("attempt:opencode2-unrelated");
-          const other = yield* runtime
-            .compactThread({
-              ...turn,
-              attemptId: otherAttempt,
-              nativeOperation: { ...nativeOperation, attemptId: otherAttempt },
-            })
-            .pipe(Effect.exit);
+          const other = yield* compactThread({
+            ...turn,
+            attemptId: otherAttempt,
+            nativeOperation: { ...nativeOperation, attemptId: otherAttempt },
+          }).pipe(Effect.exit);
           assert.isTrue(Exit.isFailure(other));
         }
         const proof = yield* fixture.confirm(
@@ -932,17 +949,8 @@ describe("OpenCode2 adapter", () => {
             borrows++;
             // The first loan is an already-running process, so no factory guard runs.
             if (borrows === 1) return yield* use(connection);
-            yield* listener?.("reserved-replacement") ?? Effect.void;
-            yield* (beforeNativeCreation?.(WORK) ?? Effect.void).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OpenCodeRuntimeError({
-                    operation: "beforeNativeCreation",
-                    detail: "Creation authority is unavailable.",
-                    cause,
-                  }),
-              ),
-            );
+            yield* runLifecycleGuard(listener, "reserved-replacement", "beforeRuntimeReplacement");
+            yield* runLifecycleGuard(beforeNativeCreation, WORK, "beforeNativeCreation");
             factoryEffects++;
             return yield* use(connection);
           }),
@@ -1178,20 +1186,15 @@ describe("OpenCode2 adapter", () => {
                 }),
             ),
           withConnection: (use) =>
-            Effect.suspend(() => {
+            Effect.gen(function* () {
               borrows++;
-              if (borrows === 1) return use(connection);
-              return (listener?.("reserved-replacement") ?? Effect.void).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OpenCodeRuntimeError({
-                      operation: "beforeRuntimeReplacement",
-                      detail: "Registration failed.",
-                      cause,
-                    }),
-                ),
-                Effect.andThen(Effect.fail(error)),
+              if (borrows === 1) return yield* use(connection);
+              yield* runLifecycleGuard(
+                listener,
+                "reserved-replacement",
+                "beforeRuntimeReplacement",
               );
+              return yield* Effect.fail(error);
             }),
         });
         const adapter = yield* OpenCode2AdapterV2.make(instanceId).pipe(

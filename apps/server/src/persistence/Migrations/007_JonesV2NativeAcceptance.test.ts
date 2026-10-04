@@ -2,7 +2,10 @@ import { assert, it } from "@effect/vitest";
 import { OrchestrationV2Command } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
+import * as SchemaIssue from "effect/SchemaIssue";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { migrationManifest, runMigrations } from "../Migrations.ts";
@@ -10,6 +13,53 @@ import {
   nativeCreationCanonicalJson,
   nativeCreationSha256,
 } from "../../orchestration-v2/NativeCreationPreparation.ts";
+
+// Keep native JSON exceptions as defects and retain undefined serialization results.
+const FixtureJsonText = Schema.Unknown.pipe(
+  Schema.decodeTo(Schema.UndefinedOr(Schema.String), {
+    decode: SchemaGetter.onSome<string | undefined, unknown>((input, options) => {
+      try {
+        return Effect.succeed(Option.some(JSON.stringify(input)));
+      } catch (cause) {
+        return Effect.fail(
+          new SchemaIssue.InvalidValue({ nativeJsonCause: cause }, input, options),
+        );
+      }
+    }),
+    encode: SchemaGetter.forbiddenEncoding,
+  }),
+);
+const encodeFixtureJson = Schema.decodeEffect(FixtureJsonText);
+
+function dieNativeJsonCause(error: Schema.SchemaError) {
+  let issue = error.issue;
+  while (issue._tag === "Encoding") issue = issue.issue;
+  if (
+    issue._tag === "InvalidValue" &&
+    issue.annotations !== undefined &&
+    Object.hasOwn(issue.annotations, "nativeJsonCause")
+  ) {
+    return Effect.die(issue.annotations["nativeJsonCause"]);
+  }
+  return Effect.die(error);
+}
+
+const CleanupStartOrdinalJson = Schema.String.pipe(
+  Schema.decodeTo(Schema.Unknown, {
+    decode: SchemaGetter.onSome<unknown, string>((input, options) => {
+      try {
+        const ordinal: unknown = JSON.parse(input).cleanupStartOrdinal;
+        return Effect.succeed(Option.some(ordinal));
+      } catch (cause) {
+        return Effect.fail(
+          new SchemaIssue.InvalidValue({ nativeJsonCause: cause }, input, options),
+        );
+      }
+    }),
+    encode: SchemaGetter.forbiddenEncoding,
+  }),
+);
+const decodeCleanupStartOrdinal = Schema.decodeEffect(CleanupStartOrdinalJson);
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const digest = "a".repeat(64);
@@ -36,7 +86,7 @@ it.effect("records Jones007 after upstream56 without changing released migration
       history,
     );
     assert.deepEqual(
-      history.map((row) => [row.migration_id, row.name]),
+      history.map((row): readonly [unknown, unknown] => [row.migration_id, row.name]),
       migrationManifest,
     );
     assert.deepEqual(
@@ -749,12 +799,12 @@ it.effect(
           message_count: messageCount,
           birth_event_id: `imported-birth-${messageCount}`,
           birth_sequence: messageCount,
-          event_basis_json: JSON.stringify(
+          event_basis_json: yield* encodeFixtureJson(
             Array.from({ length: messageCount * 2 }, (_, index) => ({
               eventId: `import-${messageCount}-event-${index}`,
               sequence: messageCount + index + 1,
             })),
-          ),
+          ).pipe(Effect.catch(dieNativeJsonCause)),
         };
         yield* insertNativeImportSealParents({
           threadId: seal.thread_id,
@@ -1845,7 +1895,7 @@ it.effect(
       const absence = {
         ...workstreamSettlementWitness,
         command_id: "absence-witness",
-        witness_json: JSON.stringify({
+        witness_json: yield* encodeFixtureJson({
           ...workstreamSettlementWitnessValue,
           command: {
             type: "thread.unsettle",
@@ -1858,7 +1908,7 @@ it.effect(
             command_id: "absence-witness",
           },
           provider: null,
-        }),
+        }).pipe(Effect.catch(dieNativeJsonCause)),
       };
       yield* sql`INSERT INTO orchestration_v2_workstream_settlement_witnesses ${sql.insert(absence)}`;
       assert.deepEqual(
@@ -1887,7 +1937,12 @@ it.effect(
       for (const mutation of [
         { command_id: "other-command" },
         { thread_id: "other-thread" },
-        { witness_json: JSON.stringify({ ...workstreamSettlementWitnessValue, provider: null }) },
+        {
+          witness_json: yield* encodeFixtureJson({
+            ...workstreamSettlementWitnessValue,
+            provider: null,
+          }).pipe(Effect.catch(dieNativeJsonCause)),
+        },
         { recorded_at: "2026-10-03" },
       ])
         assert.equal(
@@ -2101,10 +2156,10 @@ it.effect(
         { thread_id: "other-thread" },
         { effect_id: "other-effect" },
         {
-          marker_json: JSON.stringify({
+          marker_json: yield* encodeFixtureJson({
             ...capturedRestartMarker,
             sourceRunAttemptId: "other-attempt",
-          }),
+          }).pipe(Effect.catch(dieNativeJsonCause)),
         },
         { canonical_command_json: '{"changed":true}' },
         { command_digest: "a".repeat(64) },
@@ -2156,7 +2211,10 @@ it.effect(
         capturedRestartCommandOrigin,
         {
           ...capturedRestartCommandOrigin,
-          marker_json: JSON.stringify({ ...capturedRestartMarker, evidenceRevision: 2 }),
+          marker_json: yield* encodeFixtureJson({
+            ...capturedRestartMarker,
+            evidenceRevision: 2,
+          }).pipe(Effect.catch(dieNativeJsonCause)),
         },
         {
           ...capturedRestartCommandOrigin,
@@ -2346,7 +2404,9 @@ it.effect(
         nativeThreadRecoveryReservation,
       ]);
       assert.equal(
-        JSON.parse(nativeThreadRecoveryReservation.recovery_json).cleanupStartOrdinal,
+        yield* decodeCleanupStartOrdinal(nativeThreadRecoveryReservation.recovery_json).pipe(
+          Effect.catch(dieNativeJsonCause),
+        ),
         0,
       );
       assert.deepEqual(yield* sql`SELECT * FROM orchestration_command_receipts`, []);
@@ -2404,7 +2464,7 @@ it.effect(
       ])
         assert.equal(
           (yield* Effect.result(
-            sql`UPDATE native_creation_thread_recovery_commands SET recovery_json = ${JSON.stringify(changedCarrier)}`,
+            sql`UPDATE native_creation_thread_recovery_commands SET recovery_json = ${yield* encodeFixtureJson(changedCarrier).pipe(Effect.catch(dieNativeJsonCause))}`,
           ))._tag,
           "Failure",
         );
@@ -2452,22 +2512,26 @@ it.effect(
           "Failure",
         );
       }
-      const otherCommand = Schema.decodeUnknownSync(OrchestrationV2Command, {
+      const otherCommand = yield* Schema.decodeUnknownEffect(OrchestrationV2Command, {
         onExcessProperty: "error",
       })({
         type: "thread.delete",
         commandId: "recovery-create-other:bootstrap-thread-delete",
         threadId: "recovery-thread-other",
-      });
+      }).pipe(Effect.orDie);
       const otherDigest = nativeCreationSha256(
-        nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(otherCommand)),
+        nativeCreationCanonicalJson(
+          yield* Schema.encodeEffect(OrchestrationV2Command)(otherCommand).pipe(Effect.orDie),
+        ),
       );
       const otherCarrier = {
         ...nativeThreadRecoveryCarrier,
         claimId: "other-recovery-claim",
         commandId: otherCommand.commandId,
         threadId: "recovery-thread-other",
-        canonicalCommand: Schema.encodeSync(OrchestrationV2Command)(otherCommand),
+        canonicalCommand: yield* Schema.encodeEffect(OrchestrationV2Command)(otherCommand).pipe(
+          Effect.orDie,
+        ),
         commandDigest: otherDigest,
         commandStartEffectId: "other-command-start",
         cleanupStartEffectId: "other-cleanup-start",
@@ -2484,7 +2548,9 @@ it.effect(
         claim_id: otherCarrier.claimId,
         thread_id: otherCarrier.threadId,
         command_digest: otherDigest,
-        recovery_json: JSON.stringify(otherCarrier),
+        recovery_json: yield* encodeFixtureJson(otherCarrier).pipe(
+          Effect.catch(dieNativeJsonCause),
+        ),
       };
       yield* sql`INSERT INTO native_creation_thread_recovery_commands ${sql.insert(other)}`;
       assert.deepEqual(
@@ -2710,7 +2776,7 @@ it.effect(
         const binding = {
           ...leaseCleanupTaskBinding,
           effect_id: effectId,
-          task_json: JSON.stringify(task),
+          task_json: yield* encodeFixtureJson(task).pipe(Effect.catch(dieNativeJsonCause)),
           binding_sha256: nativeCreationSha256(
             nativeCreationCanonicalJson({ ...leaseCleanupBindingInput, effectId, task }),
           ),
@@ -2816,12 +2882,12 @@ it.effect(
         ...leaseCleanupTaskOutcome,
         ordinal: 1,
         outcome_json: '{"taskId":"cleanup-effect","result":null,"effect":"unknown"}',
-        correlation_json: JSON.stringify({
+        correlation_json: yield* encodeFixtureJson({
           workerId: "cleanup-worker",
           expectedAttempt: 1,
           bindingSha256: leaseCleanupBindingDigest,
           evidence: { operationId: "cleanup-operation", outcome: "unknown" },
-        }),
+        }).pipe(Effect.catch(dieNativeJsonCause)),
       };
       yield* sql`INSERT INTO orchestration_v2_lease_cleanup_task_outcomes ${sql.insert(unknown)}`;
       assert.deepEqual(
@@ -2885,12 +2951,12 @@ it.effect(
       const unknown = {
         ...leaseCleanupTaskOutcome,
         outcome_json: '{"taskId":"cleanup-effect","result":null,"effect":"unknown"}',
-        correlation_json: JSON.stringify({
+        correlation_json: yield* encodeFixtureJson({
           workerId: "cleanup-worker",
           expectedAttempt: 1,
           bindingSha256: leaseCleanupBindingDigest,
           evidence: { operationId: "cleanup-operation", outcome: "unknown" },
-        }),
+        }).pipe(Effect.catch(dieNativeJsonCause)),
       };
       const record = Effect.gen(function* () {
         yield* sql`INSERT INTO orchestration_v2_lease_cleanup_task_bindings ${sql.insert(leaseCleanupTaskBinding)}`;

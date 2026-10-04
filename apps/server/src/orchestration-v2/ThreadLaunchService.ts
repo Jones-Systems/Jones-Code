@@ -204,6 +204,11 @@ export type OrdinaryPreparedPhysicalResultV1 = {
   | {
       readonly kind: "prepared_setup_completed";
       readonly branch: string | null;
+      readonly readback?: {
+        readonly cwd: string;
+        readonly refName: string | null;
+        readonly isRepo: boolean;
+      };
       readonly worktree: {
         readonly path: string;
         readonly refName: string;
@@ -226,6 +231,27 @@ export type OrdinaryPreparedPhysicalResultV1 = {
       readonly requestedBranch: string;
       readonly renamedBranch: string;
       readonly readback: { readonly cwd: string; readonly refName: string };
+    }
+  | {
+      readonly kind: "prepared_failure_observed";
+      readonly branch: string | null;
+      readonly readback: {
+        readonly cwd: string;
+        readonly refName: string | null;
+        readonly isRepo: boolean;
+      };
+      readonly worktree: {
+        readonly path: string;
+        readonly refName: string;
+        readonly headSha?: string;
+      } | null;
+      readonly failure: string;
+      readonly setup: {
+        readonly status: "no_managed_process";
+        readonly managerId: string;
+        readonly ownerBirth: OrdinaryCheckout.OrdinaryApplicationBirthV1;
+        readonly targetCount: 0;
+      };
     }
 );
 
@@ -250,7 +276,9 @@ export function readIssuedOrdinaryPreparedPhysicalResult(
   }
 }
 
-function issueOrdinaryPreparedPhysicalResult(result: OrdinaryPreparedPhysicalResultV1) {
+function issueOrdinaryPreparedPhysicalResult<T extends OrdinaryPreparedPhysicalResultV1>(
+  result: T,
+): T {
   issuedOrdinaryPreparedPhysicalResults.set(result, { result, snapshot: JSON.stringify(result) });
   return result;
 }
@@ -271,12 +299,19 @@ interface AcceptedLaunchPreparation {
 const isThreadLaunchError = Schema.is(ThreadLaunchError);
 
 function failureDetail(error: unknown): string {
-  if (isThreadLaunchError(error)) {
-    const cause = error.cause;
+  const details: string[] = [];
+  const seen = new Set<unknown>();
+  let cause = isThreadLaunchError(error) ? error.cause : error;
+  while (cause !== undefined && cause !== null && !seen.has(cause) && seen.size < 8) {
+    seen.add(cause);
     const detail = cause instanceof Error ? cause.message : String(cause);
-    return `Workspace preparation failed during ${error.operation.replaceAll("-", " ")}: ${detail}`;
+    if (detail.length > 0 && !details.includes(detail)) details.push(detail);
+    cause = typeof cause === "object" && "cause" in cause ? cause.cause : undefined;
   }
-  return `Workspace preparation failed: ${error instanceof Error ? error.message : String(error)}`;
+  const operation = isThreadLaunchError(error)
+    ? ` during ${error.operation.replaceAll("-", " ")}`
+    : "";
+  return `Workspace preparation failed${operation}: ${details.join(": ")}`;
 }
 
 const make = Effect.gen(function* () {
@@ -418,9 +453,13 @@ const make = Effect.gen(function* () {
     const producerFiber = yield* Effect.fiber;
     const tracked = input.workspaceStrategy.type === "worktree";
     let createdWorktreePath: string | null = null;
+    let worktreeCreationEntered = false;
+    let worktreeBaseRejected = false;
     let setupTerminalId: string | null = null;
+    let releaseEntered = false;
     let ownershipLost = false;
     let renameFiber: Fiber.Fiber<void, never> | null = null;
+    let renameEntered = false;
     let effectiveBranch = target.branch;
     let renameUnknown = false;
     let worktreeResult: Extract<
@@ -572,6 +611,30 @@ const make = Effect.gen(function* () {
               );
           }
         }
+        if (
+          !(yield* git
+            .isRepository(project.workspaceRoot)
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId))))
+        ) {
+          worktreeBaseRejected = true;
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )(`Project root ${project.workspaceRoot} is not a Git repository.`);
+        }
+        if (
+          !(yield* git
+            .hasCommit({ cwd: project.workspaceRoot, refName: startRef })
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId))))
+        ) {
+          worktreeBaseRejected = true;
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )(`Worktree base ${startRef} has no commit.`);
+        }
         if (startFromOrigin) yield* setupTracker.stageStatus(threadId, "fetch", "done");
         yield* setupTracker.stageStatus(threadId, "checkout", "running");
         yield* revalidateExecution;
@@ -585,6 +648,13 @@ const make = Effect.gen(function* () {
               path: target.worktreePath,
             },
             {
+              revalidateMutation: revalidateExecution.pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    worktreeCreationEntered = true;
+                  }),
+                ),
+              ),
               progress: {
                 onWorktreeClaimed: (path) =>
                   Effect.sync(() => {
@@ -634,7 +704,6 @@ const make = Effect.gen(function* () {
       ) {
         const oldBranch = branch;
         const worktreeCwd = worktreePath;
-        let renameEntered = false;
         renameFiber = yield* Effect.gen(function* () {
           const generated = yield* generateBranchNameFor(worktreeCwd, initialMessage);
           yield* revalidateExecution;
@@ -671,35 +740,27 @@ const make = Effect.gen(function* () {
             renamedBranch: renamed.branch,
             readback: { cwd: worktreeCwd, refName: readback.refName },
           });
-          // The exact issued result is retained for the owning atomic target transition.
-          if (readIssuedOrdinaryPreparedPhysicalResult(physical) === null) {
-            return yield* mapError(
-              input,
-              "provision-worktree",
-              threadId,
-            )("The captured rename result changed.");
-          }
-          yield* threads.dispatch({
-            type: "thread.metadata.update",
-            commandId: CommandId.make(`${input.commandId}:branch-rename`),
-            threadId,
-            branch: renamed.branch,
-            worktreePath: worktreeCwd,
-          });
+          yield* threads.dispatchOrdinaryPreparedBranchRename(
+            CommandId.make(`${input.commandId}:branch-rename`),
+            physical,
+          );
           effectiveBranch = renamed.branch;
         }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.gen(function* () {
+          // Interruption skips catchCause; an entered rename keeps its uncertainty here.
+          Effect.onError(() =>
+            Effect.sync(() => {
               if (renameEntered) {
                 renameUnknown = true;
                 ownershipHeldPreparations.add(input.commandId);
               }
-              yield* Effect.logWarning("Thread worktree branch rename failed", {
-                commandId: input.commandId,
-                threadId,
-                oldBranch,
-                cause,
-              });
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Thread worktree branch rename failed", {
+              commandId: input.commandId,
+              threadId,
+              oldBranch,
+              cause,
             }),
           ),
           Effect.forkIn(preparationScope),
@@ -807,6 +868,7 @@ const make = Effect.gen(function* () {
       yield* setupTracker.stageStatus(threadId, "agent", "running");
       if (runId !== null) {
         yield* revalidateExecution;
+        releaseEntered = true;
         yield* threads
           .dispatchOrdinaryPreparedRunRelease(
             {
@@ -842,7 +904,22 @@ const make = Effect.gen(function* () {
         );
       }
       {
-        issueOrdinaryPreparedPhysicalResult({
+        yield* revalidateExecution;
+        yield* git.invalidateLocalStatus(cwd);
+        const readback = yield* git
+          .localStatus({ cwd })
+          .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+        const unspecifiedRoot = targetSource.worktreePath === null && effectiveBranch === null;
+        if (
+          (!unspecifiedRoot && (!readback.isRepo || readback.refName !== effectiveBranch)) ||
+          (!readback.isRepo && readback.refName !== null)
+        )
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )("The completed preparation no longer matches its qualified checkout.");
+        const physical = issueOrdinaryPreparedPhysicalResult({
           version: 1,
           kind: "prepared_setup_completed",
           producerId,
@@ -851,9 +928,46 @@ const make = Effect.gen(function* () {
           checkoutPath: cwd,
           observedAt: DateTime.formatIso(yield* DateTime.now),
           branch: effectiveBranch,
+          readback: { cwd, refName: readback.refName, isRepo: readback.isRepo },
           worktree: worktreeResult,
           setup: setupResult,
         });
+        const actualProducerOutcome = {
+          kind: "prepared_completed" as const,
+          observation: physical,
+        };
+        yield* sink
+          .withTransaction(
+            Effect.gen(function* () {
+              const retirement = yield* sink.recordOrdinaryCheckoutExecutorOutcome({
+                ref: execution,
+                actualProducerOutcome,
+                revalidateProducer: revalidateCaptured.pipe(
+                  Effect.andThen(
+                    Effect.suspend(() =>
+                      readIssuedOrdinaryPreparedPhysicalResult(physical) === physical
+                        ? Effect.void
+                        : Effect.fail(
+                            new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
+                              reason: "unknown_use",
+                              threadId,
+                              path: cwd,
+                              message: "The captured completion result changed.",
+                            }),
+                          ),
+                    ),
+                  ),
+                ),
+              });
+              if (runId === null)
+                yield* sink.completeOrdinaryCheckoutUse({
+                  originalUse,
+                  expectedAssociationOrdinal: retirement.ordinal,
+                  completionEvidence: { ref: execution, actualProducerOutcome },
+                });
+            }),
+          )
+          .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
       }
       yield* setupTracker.finish(threadId, "done");
     }).pipe(
@@ -862,13 +976,18 @@ const make = Effect.gen(function* () {
         (cause: Cause.Cause<ThreadLaunchError>) =>
           Effect.gen(function* () {
             const cancelled = Cause.hasInterruptsOnly(cause);
-            if (renameFiber !== null) yield* Fiber.interrupt(renameFiber);
+            // A failure retains an entered rename until its actual Git result and
+            // readback settle; interrupting it would turn a known end into unknown.
+            if (renameFiber !== null)
+              yield* !cancelled && renameEntered
+                ? Fiber.await(renameFiber)
+                : Fiber.interrupt(renameFiber);
             yield* setupTracker.finish(
               threadId,
               cancelled ? "cancelled" : "failed",
               cancelled ? null : failureDetail(Cause.squash(cause)),
             );
-            if (cancelled && !ownershipLost && tracked && createdWorktreePath) {
+            if (cancelled && !ownershipLost && !renameUnknown && tracked && createdWorktreePath) {
               yield* revalidateExecution;
               if (setupTerminalId)
                 yield* terminals
@@ -891,23 +1010,145 @@ const make = Effect.gen(function* () {
                 })
                 .pipe(Effect.ignore);
             }
-            yield* sink
-              .recordOrdinaryCheckoutExecutorOutcome({
-                ref: execution,
-                actualProducerOutcome: {
-                  kind: "unknown",
-                  reason: failureDetail(Cause.squash(cause)),
-                  observedAt: yield* DateTime.now,
+            // Only a rejected base proves the planned target cannot be created; a
+            // transient failure such as fetch keeps it visible for diagnosis and retry.
+            if (
+              tracked &&
+              worktreeBaseRejected &&
+              !worktreeCreationEntered &&
+              createdWorktreePath === null &&
+              !ownershipLost &&
+              !renameUnknown
+            ) {
+              yield* threads
+                .dispatch(
+                  {
+                    type: "thread.metadata.update",
+                    commandId: CommandId.make(`${input.commandId}:uncreated-workspace`),
+                    threadId,
+                    worktreePath: null,
+                    branch: null,
+                  },
+                  threads.revalidateOrdinaryCheckoutExecution(execution).pipe(Effect.asVoid),
+                )
+                .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+            }
+            // A failure ends the use only when this producer reads back its whole
+            // physical end: the verified checkout and ref, and no T3-managed terminal
+            // for the original birth. Any gap, error or later release stays unknown.
+            const settleQualifiedFailure = Effect.gen(function* () {
+              const cwd = target.worktreePath ?? project.workspaceRoot;
+              yield* revalidateExecution;
+              const managed = yield* terminals.captureOwnedTargets({
+                threadId,
+                ownerBirth: admission.capture.applicationBirth,
+              });
+              if (
+                managed.status !== "captured" ||
+                managed.threadId !== threadId ||
+                managed.targets.length > 0
+              )
+                return false;
+              yield* git.invalidateLocalStatus(cwd);
+              const readback = yield* git.localStatus({ cwd });
+              const unspecifiedRoot =
+                targetSource.worktreePath === null && effectiveBranch === null;
+              if (
+                (!unspecifiedRoot && (!readback.isRepo || readback.refName !== effectiveBranch)) ||
+                (!readback.isRepo && readback.refName !== null)
+              )
+                return false;
+              const physical = issueOrdinaryPreparedPhysicalResult({
+                version: 1,
+                kind: "prepared_failure_observed",
+                producerId,
+                execution,
+                targetSource,
+                checkoutPath: cwd,
+                observedAt: DateTime.formatIso(yield* DateTime.now),
+                branch: effectiveBranch,
+                readback: { cwd, refName: readback.refName, isRepo: readback.isRepo },
+                worktree: worktreeResult,
+                failure: failureDetail(Cause.squash(cause)),
+                setup: {
+                  status: "no_managed_process",
+                  managerId: managed.managerId,
+                  ownerBirth: admission.capture.applicationBirth,
+                  targetCount: 0,
                 },
-              })
-              .pipe(
-                Effect.catchCause(() =>
-                  Effect.logWarning(
-                    "The original preparation outcome could not be recorded",
-                    originalUse.operationId,
-                  ),
-                ),
+              });
+              const actualProducerOutcome = {
+                kind: "prepared_failed" as const,
+                observation: physical,
+              };
+              yield* sink.withTransaction(
+                Effect.gen(function* () {
+                  const retirement = yield* sink.recordOrdinaryCheckoutExecutorOutcome({
+                    ref: execution,
+                    actualProducerOutcome,
+                    revalidateProducer: revalidateCaptured.pipe(
+                      Effect.andThen(
+                        Effect.suspend(() =>
+                          readIssuedOrdinaryPreparedPhysicalResult(physical) === physical
+                            ? Effect.void
+                            : Effect.fail(
+                                new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
+                                  reason: "unknown_use",
+                                  threadId,
+                                  path: cwd,
+                                  message: "The captured failure result changed.",
+                                }),
+                              ),
+                        ),
+                      ),
+                    ),
+                  });
+                  yield* sink.completeOrdinaryCheckoutUse({
+                    originalUse,
+                    expectedAssociationOrdinal: retirement.ordinal,
+                    completionEvidence: { ref: execution, actualProducerOutcome },
+                  });
+                }),
               );
+              return true;
+            });
+            const failureSettled =
+              cancelled ||
+              ownershipLost ||
+              renameUnknown ||
+              releaseEntered ||
+              setupTerminalId !== null ||
+              (tracked ? worktreeResult === null : createdWorktreePath !== null)
+                ? false
+                : yield* settleQualifiedFailure.pipe(
+                    Effect.catchCause((settleCause) =>
+                      Effect.logWarning(
+                        "The failed preparation keeps its unqualified physical end",
+                        {
+                          operationId: originalUse.operationId,
+                          cause: settleCause,
+                        },
+                      ).pipe(Effect.as(false)),
+                    ),
+                  );
+            if (!failureSettled)
+              yield* sink
+                .recordOrdinaryCheckoutExecutorOutcome({
+                  ref: execution,
+                  actualProducerOutcome: {
+                    kind: "unknown",
+                    reason: failureDetail(Cause.squash(cause)),
+                    observedAt: yield* DateTime.now,
+                  },
+                })
+                .pipe(
+                  Effect.catchCause(() =>
+                    Effect.logWarning(
+                      "The original preparation outcome could not be recorded",
+                      originalUse.operationId,
+                    ),
+                  ),
+                );
           }),
       ),
     );

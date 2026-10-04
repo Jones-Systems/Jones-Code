@@ -31,6 +31,7 @@ import {
   ThreadId,
   EnvironmentId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -59,6 +60,7 @@ import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import {
   ProviderAdapterProtocolError,
+  type ProviderRuntimeBinding,
   type ProviderAdapterV2Event,
   type ProviderAdapterV2SessionRuntime,
   type ProviderAdapterV2Shape,
@@ -112,7 +114,7 @@ const CODEX_DRIVER = ProviderDriverKind.make("codex");
 function threadCreatedEvent(
   now: DateTime.Utc,
 ): Effect.Effect<
-  OrchestrationV2DomainEvent,
+  Extract<OrchestrationV2DomainEvent, { readonly type: "thread.created" }>,
   IdAllocator.IdAllocatorV2Error,
   IdAllocator.IdAllocatorV2
 > {
@@ -171,6 +173,14 @@ function threadCreatedEvent(
 
 const layer = it.layer(TestLayer);
 
+const sameRuntimeBinding = (left: ProviderRuntimeBinding, right: ProviderRuntimeBinding) =>
+  left.threadId === right.threadId &&
+  left.providerThreadId === right.providerThreadId &&
+  left.providerSessionId === right.providerSessionId &&
+  left.instanceId === right.instanceId &&
+  left.runtimeGeneration === right.runtimeGeneration &&
+  left.nativeThreadId === right.nativeThreadId;
+
 const makeBufferedOutputFixture = Effect.fn("makeBufferedOutputFixture")(function* (
   provider = "codex",
 ) {
@@ -207,7 +217,7 @@ const makeBufferedOutputFixture = Effect.fn("makeBufferedOutputFixture")(functio
   const attemptId = RunAttemptId.make(`${threadId}:attempt`);
   const nodeId = NodeId.make(`${threadId}:root`);
   const appThread = {
-    ...(created.payload as OrchestrationV2AppThread),
+    ...created.payload,
     providerInstanceId: instanceId,
     modelSelection: selection,
     activeProviderThreadId: providerThreadId,
@@ -336,7 +346,7 @@ const makeBufferedOutputFixture = Effect.fn("makeBufferedOutputFixture")(functio
   const resident = yield* Ref.make({ handle, binding });
   const revalidateCurrentOwner = Effect.gen(function* () {
     const current = yield* Ref.get(resident);
-    if (current.handle !== handle || JSON.stringify(current.binding) !== JSON.stringify(binding))
+    if (current.handle !== handle || !sameRuntimeBinding(current.binding, binding))
       return yield* Effect.fail("The synthetic resident runtime was replaced.");
   });
   const input = { providerSessionId, providerInstanceId: instanceId, threadId, runId, nodeId };
@@ -453,11 +463,14 @@ const makeBufferedOutputFixture = Effect.fn("makeBufferedOutputFixture")(functio
 });
 
 const runBufferedOutputFixture = Effect.fn("runBufferedOutputFixture")(function* (
-  fixture: Effect.Success<ReturnType<typeof makeBufferedOutputFixture>>,
+  fixture: Omit<Effect.Success<ReturnType<typeof makeBufferedOutputFixture>>, "origin">,
   text: string,
   terminal: Extract<ProviderAdapterV2Event, { readonly type: "turn.terminal" }>,
   options: {
-    readonly beforeTerminal?: Effect.Effect<void, unknown>;
+    readonly beforeTerminal?: Effect.Effect<
+      void,
+      EventSink.EventSinkV2Error | IdAllocator.IdAllocatorV2Error
+    >;
     readonly events?: Stream.Stream<ProviderAdapterV2Event, unknown>;
     readonly runtimeGeneration?: string;
     readonly session?: ProviderAdapterV2SessionRuntime;
@@ -612,7 +625,7 @@ const replaceBufferedOutputProducer = Effect.fn("replaceBufferedOutputProducer")
   assert.isTrue(registered.committed);
   const revalidateCurrent = Effect.gen(function* () {
     const current = yield* Ref.get(fixture.resident);
-    if (current.handle !== handle || JSON.stringify(current.binding) !== JSON.stringify(binding))
+    if (current.handle !== handle || !sameRuntimeBinding(current.binding, binding))
       return yield* Effect.fail("The replacement source was superseded.");
   });
   const origin = {
@@ -1728,6 +1741,8 @@ it.effect("flushes reasoning with only the companion node referenced by its outp
       streaming: true,
     };
     const positionedItem = yield* fixture.positions.normalize(item);
+    if (positionedItem.type !== "reasoning")
+      return yield* Effect.die("Position normalization must preserve the reasoning item.");
     const capture = (
       event: Parameters<typeof fixture.ingestor.captureAssistantOutput>[0]["event"],
     ) =>
@@ -1978,12 +1993,16 @@ it.effect("preserves captured origin across filtered prefixes before terminal ta
       const history = yield* fixture.store
         .read({ threadId: fixture.threadId })
         .pipe(Stream.runCollect);
-      const messages = history.filter((entry) => entry.event.type === "message.updated");
+      const messages = history.flatMap((entry) =>
+        entry.event.type === "message.updated"
+          ? [{ sequence: entry.sequence, payload: entry.event.payload }]
+          : [],
+      );
       assert.lengthOf(messages, 2);
-      assert.equal(messages[0]!.event.payload.text, "A complete paragraph.\n\n");
-      assert.isTrue(messages[0]!.event.payload.streaming);
-      assert.equal(messages[1]!.event.payload.text, text);
-      assert.isFalse(messages[1]!.event.payload.streaming);
+      assert.equal(messages[0]!.payload.text, "A complete paragraph.\n\n");
+      assert.isTrue(messages[0]!.payload.streaming);
+      assert.equal(messages[1]!.payload.text, text);
+      assert.isFalse(messages[1]!.payload.streaming);
       const terminal = history.find(
         (entry) =>
           entry.event.type === "provider-turn.updated" &&
@@ -2006,7 +2025,7 @@ it.effect("rejects old producer output queued before capture after runtime repla
   Effect.scoped(
     Effect.gen(function* () {
       const fixture = yield* makeBufferedOutputFixture();
-      const queue = yield* Queue.make<ProviderAdapterV2Event>();
+      const queue = yield* Queue.make<ProviderAdapterV2Event, Cause.Done>();
       const terminal = fixture.stamp({
         type: "turn.terminal" as const,
         driver: fixture.driver,
@@ -3604,3 +3623,168 @@ layer("ProviderEventIngestorV2", (it) => {
     }),
   );
 });
+
+for (const scenario of [
+  "current",
+  "stale_attempt",
+  "conflicting_turn",
+  "foreign_root",
+  "replaced_runtime",
+  "non_primary",
+  "guarded_non_primary",
+] as const) {
+  it.effect(`primary turn association preserves accepted ownership (${scenario})`, () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeBufferedOutputFixture();
+      const projection = yield* fixture.projections.getThreadProjection(fixture.threadId);
+      const turn = projection.providerTurns.find((item) => item.id === fixture.providerTurnId)!;
+      const unboundAttempt = { ...fixture.attempt, providerTurnId: null };
+      const unboundRoot = { ...fixture.node, providerTurnId: null };
+      const seed = [
+        { type: "run-attempt.updated" as const, payload: unboundAttempt },
+        { type: "node.updated" as const, payload: unboundRoot },
+      ];
+      yield* fixture.sink.write({
+        events: yield* Effect.forEach(seed, (event) =>
+          Effect.gen(function* () {
+            return {
+              ...event,
+              id: yield* fixture.ids.allocate.event({ threadId: fixture.threadId }),
+              threadId: fixture.threadId,
+              runId: fixture.run.id,
+              occurredAt: fixture.now,
+            };
+          }),
+        ),
+      });
+      if (scenario === "stale_attempt") {
+        yield* fixture.sink.write({
+          events: [
+            {
+              id: yield* fixture.ids.allocate.event({ threadId: fixture.threadId }),
+              threadId: fixture.threadId,
+              runId: fixture.run.id,
+              occurredAt: fixture.now,
+              type: "run.updated",
+              payload: {
+                ...fixture.run,
+                activeAttemptId: RunAttemptId.make(`${fixture.run.id}:replacement`),
+              },
+            },
+          ],
+        });
+      }
+      if (scenario === "conflicting_turn") {
+        yield* fixture.sink.write({
+          events: [
+            {
+              id: yield* fixture.ids.allocate.event({ threadId: fixture.threadId }),
+              threadId: fixture.threadId,
+              runId: fixture.run.id,
+              occurredAt: fixture.now,
+              type: "run-attempt.updated",
+              payload: {
+                ...unboundAttempt,
+                providerTurnId: fixture.ids.derive.providerTurn({
+                  driver: fixture.driver,
+                  nativeTurnId: "different-accepted-turn",
+                }),
+              },
+            },
+          ],
+        });
+      }
+      if (scenario === "replaced_runtime") {
+        yield* Ref.set(fixture.resident, { handle: {}, binding: fixture.binding });
+      }
+      const before = yield* fixture.projections.getThreadProjection(fixture.threadId);
+      const nonPrimary = scenario === "non_primary" || scenario === "guarded_non_primary";
+      const backgroundNativeTurnId = `${fixture.threadId}:background-only-turn`;
+      const event = stampProviderEvent(
+        {
+          type: "provider_turn.updated" as const,
+          driver: fixture.driver,
+          threadId: fixture.threadId,
+          providerTurn: {
+            ...turn,
+            ...(scenario === "foreign_root"
+              ? { nodeId: NodeId.make(`${fixture.node.id}:foreign`) }
+              : {}),
+            ...(nonPrimary
+              ? {
+                  id: fixture.ids.derive.providerTurn({
+                    driver: fixture.driver,
+                    nativeTurnId: backgroundNativeTurnId,
+                  }),
+                  nativeTurnRef: {
+                    driver: fixture.driver,
+                    nativeId: backgroundNativeTurnId,
+                    strength: "strong" as const,
+                  },
+                  ordinal:
+                    Math.max(
+                      ...projection.providerTurns
+                        .filter((item) => item.providerThreadId === turn.providerThreadId)
+                        .map((item) => item.ordinal),
+                    ) + 1,
+                  runAttemptId: null,
+                }
+              : {}),
+          },
+        },
+        nonPrimary ? { producer: fixture.origin.producer } : fixture.origin,
+      );
+      if (nonPrimary) assert.isUndefined(readProviderEventOrigin(event)?.turn);
+      const outcome = yield* fixture.ingestor
+        .ingestNormalized({
+          ...fixture.input,
+          event,
+          revalidateCurrentOwner: fixture.revalidateCurrentOwner,
+          ...(scenario === "non_primary"
+            ? {}
+            : {
+                writeIfRunCurrent: {
+                  runId: fixture.run.id,
+                  activeAttemptId: fixture.attempt.id,
+                  expectedStatus: "running" as const,
+                },
+              }),
+        })
+        .pipe(Effect.result);
+      const after = yield* fixture.projections.getThreadProjection(fixture.threadId);
+      if (scenario === "current") {
+        assert.equal(outcome._tag, "Success");
+        if (outcome._tag === "Success")
+          assert.deepEqual(
+            outcome.success.map((stored) => stored.event.type),
+            ["provider-turn.updated", "run-attempt.updated", "node.updated"],
+          );
+        assert.deepEqual(
+          after.attempts.find((item) => item.id === fixture.attempt.id),
+          fixture.attempt,
+        );
+        assert.deepEqual(
+          after.nodes.find((item) => item.id === fixture.node.id),
+          fixture.node,
+        );
+        assert.equal(after.runs.find((item) => item.id === fixture.run.id)?.status, "running");
+      } else if (scenario === "non_primary" || scenario === "guarded_non_primary") {
+        assert.equal(outcome._tag, "Success");
+        if (outcome._tag === "Success")
+          assert.deepEqual(
+            outcome.success.map((stored) => stored.event.type),
+            ["provider-turn.updated"],
+          );
+        assert.deepEqual(after.attempts, before.attempts);
+        assert.deepEqual(after.nodes, before.nodes);
+      } else {
+        if (scenario === "replaced_runtime") assert.equal(outcome._tag, "Failure");
+        else {
+          assert.equal(outcome._tag, "Success");
+          if (outcome._tag === "Success") assert.isEmpty(outcome.success);
+        }
+        assert.deepEqual(after, before);
+      }
+    }).pipe(Effect.provide(TestLayer)),
+  );
+}

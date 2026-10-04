@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
@@ -8,6 +9,11 @@ import {
   nativeCreationSha256,
 } from "../../orchestration-v2/NativeCreationPreparation.ts";
 import { migrationManifest, runMigrations } from "../Migrations.ts";
+
+class SyntheticObservationFailure extends Schema.TaggedError<SyntheticObservationFailure>()(
+  "SyntheticObservationFailure",
+  { cause: Schema.Defect() },
+) {}
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const timestamp = "2026-10-03T00:00:00.000Z";
@@ -43,7 +49,7 @@ it.effect(
       yield* runMigrations({ toMigrationInclusive: 56 });
       const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       assert.deepEqual(
-        upstream.map((row) => [row.migration_id, row.name]),
+        upstream.map((row): readonly [unknown, unknown] => [row.migration_id, row.name]),
         migrationManifest,
       );
       assert.deepEqual(
@@ -216,18 +222,23 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations();
       yield* sql`PRAGMA foreign_keys = ON`;
+      const injectedCause = new Error("synthetic attachment observation transaction failure");
       const result = yield* Effect.result(
         sql.withTransaction(
           Effect.gen(function* () {
             yield* insertParent();
             yield* sql`INSERT INTO orchestration_v2_attachment_cleanup_observations ${sql.insert(observationRow)}`;
-            return yield* Effect.fail(
-              new Error("synthetic attachment observation transaction failure"),
-            );
+            return yield* Effect.fail(new SyntheticObservationFailure({ cause: injectedCause }));
           }),
         ),
       );
       assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "SyntheticObservationFailure");
+        if (result.failure._tag === "SyntheticObservationFailure") {
+          assert.strictEqual(result.failure.cause, injectedCause);
+        }
+      }
       assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, []);
       assert.deepEqual(
         yield* sql`SELECT * FROM orchestration_v2_attachment_cleanup_observations`,

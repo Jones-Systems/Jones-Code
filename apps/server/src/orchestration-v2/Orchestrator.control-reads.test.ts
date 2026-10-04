@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import conformance from "../../../../packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/conformance.json" with { type: "json" };
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
@@ -54,6 +54,13 @@ import {
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
+
+class CheckoutFixtureFailure extends Schema.TaggedError<CheckoutFixtureFailure>()(
+  "CheckoutFixtureFailure",
+  { message: Schema.String, cause: Schema.Defect() },
+) {}
+const fixtureFailure = (message: string) =>
+  new CheckoutFixtureFailure({ message, cause: new Error(message) });
 
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "gpt-5.1-codex" };
@@ -123,7 +130,7 @@ const nativeSettlementInput = (): Orchestrator.NativeWorkstreamSettlementInputV2
     registry_origin: "https://registry.invalid",
     scopes: Object.values(NATIVE_PROVIDER_SCOPES),
   };
-  const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+  const digest = (value: string) => NodeCrypto.createHash("sha256").update(value).digest("hex");
   const contextJson = Schema.encodeSync(Schema.fromJsonString(WorkstreamsNativeContext))(context);
   const requestJson = Schema.encodeSync(Schema.fromJsonString(WorkstreamsNativeSettlementRequest))(
     request,
@@ -246,10 +253,11 @@ it.effect("settling clears snooze and pin placement while unsettle preserves par
       assert.isNotNull(before.snoozedAt);
       assert.isNotNull(before.snoozedUntil);
       yield* orchestrator.dispatch({
-        type: action === "settle" ? "thread.settle" : "thread.unsettle",
+        ...(action === "settle"
+          ? { type: "thread.settle" as const }
+          : { type: "thread.unsettle" as const, reason: "user" as const }),
         commandId: CommandId.make(`${action}:${threadId}`),
         threadId,
-        reason: "user",
       });
       const after = yield* projections.getThread(threadId);
       for (const field of ["snoozedAt", "snoozedUntil", "pinnedAt", "pinOrderKey"] as const) {
@@ -424,11 +432,11 @@ it.effect(
       }>`SELECT event_id AS eventId, sequence FROM orchestration_events WHERE stream_id = ${firstThread} AND event_type = 'thread.created' AND application_event_version = 2`;
       assert.equal(
         lease.ownerIncarnation,
-        JSON.stringify([
+        yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))([
           "t3.orchestration-v2.thread-birth/v1",
           birth[0]?.eventId,
           birth[0]?.sequence,
-        ]),
+        ]).pipe(Effect.orDie),
       );
       assert.deepEqual(
         yield* orchestrator.acquireOrdinaryWorktreeOwnership(firstThread, checkout),
@@ -509,6 +517,8 @@ it.effect(
       const projection = yield* orchestrator.getThreadProjection(threadId);
       const run = projection.runs[0];
       if (run === undefined) return yield* Effect.die("Deferred message has no accepted run");
+      if (run.activeAttemptId === null || run.rootNodeId === null)
+        return yield* Effect.die("Deferred message has no accepted attempt and root node");
       assert.deepEqual(admission.run, {
         runId: run.id,
         runAttemptId: run.activeAttemptId,
@@ -897,7 +907,7 @@ it.effect(
             threadId,
             runId: run.id,
             parentNodeId: run.rootNodeId,
-            rootNodeId: original.run.nodeId,
+            rootNodeId: NodeId.make(original.run.nodeId),
             kind: "user_input_request",
             status: "waiting",
             countsForRun: false,
@@ -1215,34 +1225,40 @@ it.effect("renews a locally owned checkout beyond five minutes without an active
     const withDeletionWorktreeSqlMutation = sink.withDeletionWorktreeSqlMutation;
     yield* Effect.acquireRelease(
       Effect.sync(() =>
-        vi.spyOn(sink, "withDeletionWorktreeSqlMutation").mockImplementation((input, mutation) =>
-          withDeletionWorktreeSqlMutation(input, mutation).pipe(
-            Effect.tap((result) => {
-              if (
-                input.path !== original.resourcePath ||
-                !Option.isOption(result) ||
-                Option.isNone(result) ||
-                !Schema.is(WorktreeOwnershipLease)(result.value) ||
-                result.value.leaseId !== original.leaseId ||
-                result.value.renewedAtMs <= original.renewedAtMs
-              )
-                return Effect.void;
-              const lease = result.value;
-              // Observe the SQL row only after its enclosing renewal transaction commits.
-              return sink
-                .onCommit(
-                  Effect.gen(function* () {
-                    yield* Queue.offer(renewals, {
-                      renewedAtMs: lease.renewedAtMs,
-                      committedAtMs: yield* Clock.currentTimeMillis,
-                      expiresAtMs: lease.expiresAtMs,
-                    });
-                  }),
-                )
-                .pipe(Effect.orDie);
-            }),
+        vi
+          .spyOn(sink, "withDeletionWorktreeSqlMutation")
+          .mockImplementation(
+            <A, E, R>(
+              input: Parameters<typeof withDeletionWorktreeSqlMutation>[0],
+              mutation: Effect.Effect<A, E, R>,
+            ) =>
+              withDeletionWorktreeSqlMutation(input, mutation).pipe(
+                Effect.tap((result) => {
+                  if (
+                    input.path !== original.resourcePath ||
+                    !Option.isOption(result) ||
+                    Option.isNone(result) ||
+                    !Schema.is(WorktreeOwnershipLease)(result.value) ||
+                    result.value.leaseId !== original.leaseId ||
+                    result.value.renewedAtMs <= original.renewedAtMs
+                  )
+                    return Effect.void;
+                  const lease = result.value;
+                  // Observe the SQL row only after its enclosing renewal transaction commits.
+                  return sink
+                    .onCommit(
+                      Effect.gen(function* () {
+                        yield* Queue.offer(renewals, {
+                          renewedAtMs: lease.renewedAtMs,
+                          committedAtMs: yield* Clock.currentTimeMillis,
+                          expiresAtMs: lease.expiresAtMs,
+                        });
+                      }),
+                    )
+                    .pipe(Effect.orDie);
+                }),
+              ),
           ),
-        ),
       ),
       (observer) => Effect.sync(() => observer.mockRestore()),
     );
@@ -1250,9 +1266,12 @@ it.effect("renews a locally owned checkout beyond five minutes without an active
       yield* TestClock.adjust("60 seconds");
       const receipt = yield* Queue.take(renewals);
       const clockNow = yield* Clock.currentTimeMillis;
-      assert.equal(receipt.renewedAtMs, clockNow, JSON.stringify(receipt));
-      assert.equal(receipt.committedAtMs, clockNow, JSON.stringify(receipt));
-      assert.isAbove(receipt.expiresAtMs, clockNow, JSON.stringify(receipt));
+      const receiptJson = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+        receipt,
+      ).pipe(Effect.orDie);
+      assert.equal(receipt.renewedAtMs, clockNow, receiptJson);
+      assert.equal(receipt.committedAtMs, clockNow, receiptJson);
+      assert.isAbove(receipt.expiresAtMs, clockNow, receiptJson);
     }
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     const leases = yield* orchestrator.listWorktreeOwnershipLeases;
@@ -1429,7 +1448,7 @@ it.effect(
       const revalidateCaptured = Effect.suspend(() =>
         capturedProducer.current
           ? Effect.void
-          : Effect.fail(new Error("Captured preparation ended")),
+          : Effect.fail(fixtureFailure("Captured preparation ended")),
       );
       const ref = yield* sink.bindOrdinaryCheckoutExecution({
         originalUse: reserved.record.subject.use,
@@ -1462,7 +1481,7 @@ it.effect(
                 .registerOrdinaryCheckoutExecution(ref, callbacks)
                 .pipe(
                   Effect.andThen(
-                    Effect.fail(new Error("Rollback registration before publication")),
+                    Effect.fail(fixtureFailure("Rollback registration before publication")),
                   ),
                 ),
             ),
@@ -1488,24 +1507,22 @@ it.effect(
       const renewOrdinaryCheckoutExecution = sink.renewOrdinaryCheckoutExecution;
       yield* Effect.acquireRelease(
         Effect.sync(() =>
-          vi
-            .spyOn(sink, "renewOrdinaryCheckoutExecution")
-            .mockImplementation((input) =>
-              renewOrdinaryCheckoutExecution(input).pipe(
-                Effect.tap((renewedRef) =>
-                  input.ref.associationId !== ref.associationId
-                    ? Effect.void
-                    : sink
-                        .onCommit(
-                          Queue.offer(renewals, {
-                            ref: renewedRef,
-                            renewedAtMs: DateTime.toEpochMillis(input.now),
-                          }).pipe(Effect.asVoid),
-                        )
-                        .pipe(Effect.orDie),
-                ),
+          vi.spyOn(sink, "renewOrdinaryCheckoutExecution").mockImplementation((input) =>
+            renewOrdinaryCheckoutExecution(input).pipe(
+              Effect.tap((renewedRef) =>
+                input.ref.associationId !== ref.associationId
+                  ? Effect.void
+                  : sink
+                      .onCommit(
+                        Queue.offer(renewals, {
+                          ref: renewedRef,
+                          renewedAtMs: DateTime.toEpochMillis(input.now),
+                        }).pipe(Effect.asVoid),
+                      )
+                      .pipe(Effect.orDie),
               ),
             ),
+          ),
         ),
         (observer) => Effect.sync(() => observer.mockRestore()),
       );
@@ -1525,7 +1542,9 @@ it.effect(
       assert.isAbove(alive.latestOrdinal, beforeRegistration.latestOrdinal);
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       const expiry = DateTime.toEpochMillis(
-        Schema.decodeUnknownSync(Schema.DateTimeUtcFromString)(participant?.expiresAt),
+        yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+          participant?.expiresAt,
+        ).pipe(Effect.orDie),
       );
       assert.isAbove(expiry, now);
       assert.isAtMost(expiry, now + 5 * 60_000);

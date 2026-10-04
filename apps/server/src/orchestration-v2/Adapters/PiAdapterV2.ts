@@ -2390,7 +2390,9 @@ export function makePiAdapterV2(
                 modelSelection: threadInput.modelSelection ?? input.modelSelection,
                 runtimePolicy: threadInput.runtimePolicy ?? input.runtimePolicy,
                 existingProviderThread: threadInput.providerThread,
-                nativeCreationExecution: threadInput.nativeCreationExecution,
+                ...(threadInput.nativeCreationExecution === undefined
+                  ? {}
+                  : { nativeCreationExecution: threadInput.nativeCreationExecution }),
               });
             }).pipe(
               Effect.mapError(

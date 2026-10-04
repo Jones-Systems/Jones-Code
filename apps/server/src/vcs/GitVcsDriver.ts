@@ -418,7 +418,10 @@ export class GitVcsDriver extends Context.Service<
 
 class MutationRevalidationError<E> {
   readonly _tag = "MutationRevalidationError";
-  constructor(readonly error: E) {}
+  readonly error: E;
+  constructor(error: E) {
+    this.error = error;
+  }
 }
 
 const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -907,7 +910,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
                 operation,
                 cwd: input.cwd,
                 args: [...indexConfig, "read-tree", "--reset", "HEAD"],
-                revalidateMutation,
+                ...(revalidateMutation !== undefined ? { revalidateMutation } : {}),
                 env: commitEnv,
               });
               // read-tree can rewrite the index, so restore its racy timestamp afterward.
@@ -1001,7 +1004,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
                   ? [...indexConfig, "-c", "index.sparse=true", "read-tree", "--reset", "HEAD"]
                   : ["read-tree", "HEAD"],
                 env: commitEnv,
-                revalidateMutation,
+                ...(revalidateMutation !== undefined ? { revalidateMutation } : {}),
               });
             }
           }
@@ -1022,7 +1025,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
                 ...exclusions,
               ],
               env: commitEnv,
-              revalidateMutation,
+              ...(revalidateMutation !== undefined ? { revalidateMutation } : {}),
             });
           yield* stageFiles([]).pipe(
             Effect.catchTags({
@@ -1081,7 +1084,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
             operation,
             cwd: input.cwd,
             args: [...indexConfig, ...durableWrite, "write-tree"],
-            revalidateMutation,
+            ...(revalidateMutation !== undefined ? { revalidateMutation } : {}),
             env: commitEnv,
           });
           const treeOid = writeTreeResult.stdout.trim();
@@ -1100,7 +1103,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
             operation,
             cwd: input.cwd,
             args: [...durableWrite, "commit-tree", treeOid, "-m", message],
-            revalidateMutation,
+            ...(revalidateMutation !== undefined ? { revalidateMutation } : {}),
             env: commitEnv,
           });
           const commitOid = commitTreeResult.stdout.trim();
@@ -1118,7 +1121,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
             operation,
             cwd: input.cwd,
             args: [...durableWrite, "update-ref", input.checkpointRef, commitOid],
-            revalidateMutation,
+            ...(revalidateMutation !== undefined ? { revalidateMutation } : {}),
           });
         }).pipe(Effect.ensuring(cleanupTempIndex));
       })().pipe(
@@ -1161,7 +1164,9 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           operation,
           cwd: input.cwd,
           args: ["restore", "--source", commitOid, "--worktree", "--staged", "--", "."],
-          revalidateMutation: input.revalidateMutation,
+          ...(input.revalidateMutation !== undefined
+            ? { revalidateMutation: input.revalidateMutation }
+            : {}),
         });
       }
       // Restoring away the last tracked file can remove a nested workspace directory.
@@ -1182,7 +1187,9 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         operation,
         cwd: input.cwd,
         args: ["clean", "-fd", "--", "."],
-        revalidateMutation: input.revalidateMutation,
+        ...(input.revalidateMutation !== undefined
+          ? { revalidateMutation: input.revalidateMutation }
+          : {}),
         allowNonZeroExit: true,
       });
       if (cleaned.exitCode !== 0) {
@@ -1210,7 +1217,9 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           operation,
           cwd: input.cwd,
           args: ["reset", "--quiet", "--", "."],
-          revalidateMutation: input.revalidateMutation,
+          ...(input.revalidateMutation !== undefined
+            ? { revalidateMutation: input.revalidateMutation }
+            : {}),
         });
       }
 
@@ -1296,7 +1305,9 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
             operation: "GitVcsDriver.checkpoints.deleteCheckpointRefs",
             cwd: input.cwd,
             args: ["update-ref", "-d", checkpointRef],
-            revalidateMutation: input.revalidateMutation,
+            ...(input.revalidateMutation !== undefined
+              ? { revalidateMutation: input.revalidateMutation }
+              : {}),
             allowNonZeroExit: true,
           }),
         { discard: true },

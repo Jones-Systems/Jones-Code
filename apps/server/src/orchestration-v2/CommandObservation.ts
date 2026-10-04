@@ -836,7 +836,7 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
         providerSessionId: session.id,
         instanceId: providerThread.providerInstanceId,
         runtimeGeneration: row.runtime_generation,
-        ...(providerThread.nativeThreadRef === null
+        ...(providerThread.nativeThreadRef?.nativeId == null
           ? {}
           : { nativeThreadId: providerThread.nativeThreadRef.nativeId }),
       });

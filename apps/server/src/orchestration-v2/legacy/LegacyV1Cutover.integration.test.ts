@@ -21,6 +21,7 @@ import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as References from "effect/References";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
@@ -67,6 +68,19 @@ const ALL_THREADS = [
 const EARLIEST_MARKER = "EARLIEST_IMPORT_MARKER";
 const LATEST_MARKER = "LATEST_IMPORT_MARKER";
 const CONTINUATION_PROMPT = "Continue the migrated thread.";
+// Only the asserted provider-thread fields are read; the assertions stay authoritative.
+const decodePreparedProviderThreadPayload = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      id: Schema.Unknown,
+      appThreadId: Schema.Unknown,
+      status: Schema.Unknown,
+      nativeThreadRef: Schema.Unknown,
+      nativeConversationHeadRef: Schema.Unknown,
+      providerSessionId: Schema.Unknown,
+    }),
+  ),
+);
 
 const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
@@ -83,8 +97,12 @@ const codexModelSelection = {
  * builds recorded extra names under the shared id sequence. The current V2
  * migrations run on the copied database, preserving the source ledger and
  * applying Jones extensions through their separate ledger.
+ *
+ * The long thread's recorded worktree is the project root, so the other local
+ * threads share its checkout. The active thread records its own worktree, so its
+ * imported Start never needs the checkout the long thread's accepted Start owns.
  */
-const seedV1Database = (fixturePath: string, workspace: string) =>
+const seedV1Database = (fixturePath: string, workspace: string, activeWorktree: string) =>
   Effect.scoped(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -212,6 +230,7 @@ const seedV1Database = (fixturePath: string, workspace: string) =>
         title: "Active conversation",
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-05T00:00:00.000Z",
+        worktreePath: activeWorktree,
         linkedPullRequestJson:
           '{"projectId":"project:cutover","repository":"pingdotgg/t3code","number":9100,"url":"https://github.com/pingdotgg/t3code/pull/9100"}',
       });
@@ -487,14 +506,16 @@ const makeBootLayer = (input: {
     Layer.provide(Layer.mergeAll(importerProvided, orchestratorProvided)),
   );
   const outboxProvided = EffectOutbox.layer.pipe(Layer.provide(databaseLayer));
+  // The replay runtime also exposes a narrow ThreadManagementService mock; the
+  // later merged layer wins, so the real legacy-importing service comes last.
   return Layer.mergeAll(
-    threadManagementProvided,
     outboxProvided,
     storesProvided,
     eventSinkProvided,
     importerProvided,
     maintenanceProvided,
     orchestratorProvided,
+    threadManagementProvided,
   );
 };
 
@@ -533,9 +554,11 @@ describe("orchestration v2 legacy v1 cutover", () => {
           const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-v1-cutover-state-" });
           const fixturePath = path.join(stateDir, "v1-source.sqlite");
           const copyPath = path.join(stateDir, "userdata", "state.sqlite");
+          const activeWorktree = path.join(stateDir, "active-worktree");
           yield* fs.makeDirectory(path.join(stateDir, "userdata"), { recursive: true });
+          yield* fs.makeDirectory(activeWorktree);
 
-          yield* seedV1Database(fixturePath, workspace);
+          yield* seedV1Database(fixturePath, workspace, activeWorktree);
           yield* fs.copyFile(fixturePath, copyPath);
 
           const longThreadId = ThreadId.make(LONG_THREAD);
@@ -799,7 +822,9 @@ describe("orchestration v2 legacy v1 cutover", () => {
                   AND application_event_version = 2 AND event_type = 'provider-thread.updated'
               `;
               assert.lengthOf(preparedEvents, 1);
-              const preparedPayload = JSON.parse(preparedEvents[0]!.payload_json);
+              const preparedPayload = yield* decodePreparedProviderThreadPayload(
+                preparedEvents[0]!.payload_json,
+              );
               assert.equal(preparedPayload.id, preparedProviderThreadId);
               assert.equal(preparedPayload.appThreadId, longThreadId);
               assert.equal(preparedPayload.status, "not_loaded");
@@ -885,6 +910,38 @@ describe("orchestration v2 legacy v1 cutover", () => {
               );
               assert.equal((yield* outbox.listByCommandId(rejected.commandId)).length, 0);
               yield* sql`UPDATE projection_threads SET updated_at = ${source[0]!.updated_at} WHERE thread_id = ${activeId}`;
+
+              // A thread sharing the long thread's checkout stays refused while
+              // that thread's accepted Start owns it.
+              const pinnedId = ThreadId.make(PINNED_THREAD);
+              const sharedDelivery = importedDelivery("message:cutover:shared-checkout");
+              const sharedReview = yield* threads.reviewImportedHistoryStart({
+                threadId: pinnedId,
+                delivery: sharedDelivery,
+              });
+              if (sharedReview.reviewedBasis === null)
+                return yield* Effect.die(new Error("Expected pinned imported review basis"));
+              const pinnedBefore = yield* projections.getThreadProjection(pinnedId);
+              const sharedCommandId = CommandId.make("command:cutover:shared-checkout");
+              const refused = yield* threads
+                .startWithImportedHistory({
+                  type: "thread.imported-history.start",
+                  commandId: sharedCommandId,
+                  threadId: pinnedId,
+                  reviewedBasis: sharedReview.reviewedBasis,
+                  delivery: sharedDelivery,
+                })
+                .pipe(Effect.flip);
+              assert.equal(refused._tag, "WorktreeOwnershipConflictError");
+              if (refused._tag === "WorktreeOwnershipConflictError") {
+                assert.equal(refused.ownerThreadId, longThreadId);
+                assert.equal(refused.requestingThreadId, pinnedId);
+              }
+              assert.deepStrictEqual(
+                yield* projections.getThreadProjection(pinnedId),
+                pinnedBefore,
+              );
+              assert.equal((yield* outbox.listByCommandId(sharedCommandId)).length, 0);
 
               // A claim with unknown outcome remains held; review cannot silently
               // authorize a second fresh attempt and restart cannot clear it.

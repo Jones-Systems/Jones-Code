@@ -497,7 +497,7 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
 class CheckpointMutationGuard extends Context.Service<
   CheckpointMutationGuard,
   { readonly current: boolean }
->()("test/CheckpointStore/MutationGuard") {}
+>()("t3/checkpointing/CheckpointStore.test/CheckpointMutationGuard") {}
 
 it.effect(
   "preserves mutation guard errors and requirements across checkpoint driver resolution",
@@ -565,6 +565,14 @@ it.effect(
     }).pipe(
       Effect.provide(
         Layer.mock(VcsDriver.VcsDriver)({
+          capabilities: {
+            kind: "git",
+            supportsWorktrees: true,
+            supportsBookmarks: false,
+            supportsAtomicSnapshot: false,
+            supportsPushDefaultRemote: true,
+            ignoreClassifier: "native",
+          },
           checkpoints: {
             captureCheckpoint: () => Effect.void,
             hasCheckpointRef: () => Effect.succeed(true),

@@ -1,7 +1,6 @@
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
-  CODEX_DRIVER,
   CommandId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ExecutionNode,
@@ -21,7 +20,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import { OrchestrationV2StoredEventJson } from "@t3tools/contracts";
 import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
 
@@ -105,6 +104,32 @@ export function readIssuedStartFailedBeforeOpenObservation(
   try {
     return nativeCreationCanonicalJson(
       Schema.encodeSync(EventSink.StartFailedBeforeOpenObservationV1)(issued.observation),
+    ) === issued.snapshot
+      ? issued.observation
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export const StartRetryOutcomeSink = Context.Reference<
+  ((observation: EventSink.StartRetryBeforeOpenObservationV1) => Effect.Effect<void>) | undefined
+>("t3/orchestration-v2/ProviderTurnStartService/StartRetryOutcomeSink", {
+  defaultValue: () => undefined,
+});
+const issuedRetryStarts = new WeakMap<
+  object,
+  { readonly observation: EventSink.StartRetryBeforeOpenObservationV1; readonly snapshot: string }
+>();
+export function readIssuedStartRetryBeforeOpenObservation(
+  value: unknown,
+): EventSink.StartRetryBeforeOpenObservationV1 | null {
+  if (typeof value !== "object" || value === null) return null;
+  const issued = issuedRetryStarts.get(value);
+  if (issued === undefined) return null;
+  try {
+    return nativeCreationCanonicalJson(
+      Schema.encodeSync(EventSink.StartRetryBeforeOpenObservationV1)(issued.observation),
     ) === issued.snapshot
       ? issued.observation
       : null;
@@ -249,7 +274,7 @@ export const layer: Layer.Layer<
             ? idAllocator.derive.providerThread({
                 driver: providerThread.driver,
                 providerInstanceId: run.providerInstanceId,
-                nativeThreadId: `pending:${reference.effectId}:${randomUUID()}`,
+                nativeThreadId: `pending:${reference.effectId}:${NodeCrypto.randomUUID()}`,
               })
             : providerThread.id;
           const handoff = queuedDelivery
@@ -462,11 +487,8 @@ export const layer: Layer.Layer<
             }),
           ),
         );
-      return {
+      const deliverySession: ProviderAdapterV2SessionRuntime = {
         ...session,
-        get runtimeGeneration() {
-          return session.runtimeGeneration;
-        },
         get providerSession() {
           return session.providerSession;
         },
@@ -480,6 +502,14 @@ export const layer: Layer.Layer<
               compactThread: (input: Parameters<typeof session.startTurn>[0]) => start(input, true),
             }),
       };
+      if ("runtimeGeneration" in session) {
+        Object.defineProperty(deliverySession, "runtimeGeneration", {
+          configurable: true,
+          enumerable: true,
+          get: () => session.runtimeGeneration,
+        });
+      }
+      return deliverySession;
     };
 
     const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (input: {
@@ -508,14 +538,12 @@ export const layer: Layer.Layer<
           ordinaryExecution.executor.kind !== "actual_outbox_claim" ||
           ordinaryExecution.originalUse.lease.ownerThreadId !== input.threadId ||
           (input.ordinaryCheckoutUse !== undefined &&
-            JSON.stringify(
-              Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(input.ordinaryCheckoutUse),
-            ) !==
-              JSON.stringify(
-                Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
-                  ordinaryExecution.originalUse,
-                ),
-              ))
+            (yield* Schema.encodeEffect(
+              Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutUseV1),
+            )(input.ordinaryCheckoutUse).pipe(Effect.orDie)) !==
+              (yield* Schema.encodeEffect(
+                Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutUseV1),
+              )(ordinaryExecution.originalUse).pipe(Effect.orDie)))
         )
           return yield* new ProviderTurnStartError({
             runId,
@@ -842,14 +870,12 @@ export const layer: Layer.Layer<
                 original === null ||
                 original.subject.source.projectWorkspaceRoot !== projectCwd ||
                 original.subject.source.worktreePath !== worktreePath ||
-                JSON.stringify(
-                  Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(original.subject.use),
-                ) !==
-                  JSON.stringify(
-                    Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
-                      ordinaryExecution.originalUse,
-                    ),
-                  ) ||
+                (yield* Schema.encodeEffect(
+                  Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutUseV1),
+                )(original.subject.use).pipe(Effect.orDie)) !==
+                  (yield* Schema.encodeEffect(
+                    Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutUseV1),
+                  )(ordinaryExecution.originalUse).pipe(Effect.orDie)) ||
                 current.thread.worktreePath !== worktreePath ||
                 current.thread.branch !== branch ||
                 currentRun?.status !== "starting" ||
@@ -886,7 +912,7 @@ export const layer: Layer.Layer<
             if (input.nativeCreationExecutionContext !== undefined) {
               return yield* new ProviderNativeOperationUnknownError({
                 nativeEffect: {
-                  operationId: `native-worktree:${attempt.id}:${randomUUID()}`,
+                  operationId: `native-worktree:${attempt.id}:${NodeCrypto.randomUUID()}`,
                   operation: "open_session",
                   threadId: projection.thread.id,
                   instanceId: run.providerInstanceId,
@@ -966,7 +992,7 @@ export const layer: Layer.Layer<
         operation: ProviderNativeOperationContext["operation"],
         runtime?: ProviderAdapterV2SessionRuntime,
       ): ProviderNativeOperationContext => ({
-        operationId: `provider-turn:${attempt.id}:${operation}:${randomUUID()}`,
+        operationId: `provider-turn:${attempt.id}:${operation}:${NodeCrypto.randomUUID()}`,
         operation,
         instanceId: run.providerInstanceId,
         threadId: projection.thread.id,
@@ -1197,7 +1223,41 @@ export const layer: Layer.Layer<
             nativeEffect: { ...evidence, outcome: "unknown" },
             cause: sessionResult.failure,
           });
-        if (input.willRetry === true) return yield* sessionResult.failure;
+        if (input.willRetry === true) {
+          const retrySink = yield* StartRetryOutcomeSink;
+          if (
+            retrySink !== undefined &&
+            ordinaryExecution !== undefined &&
+            openOperation.operation === "open_session" &&
+            (yield* isCurrentAttemptInStatus("starting"))
+          ) {
+            yield* revalidateOrdinaryExecution;
+            const observation: EventSink.StartRetryBeforeOpenObservationV1 = Object.freeze({
+              version: 1,
+              schema: "t3.start-retry-before-open/v1",
+              execution: ordinaryExecution,
+              run: {
+                runId: run.id,
+                runAttemptId: attempt.id,
+                nodeId: rootNode.id,
+                messageId: message.id,
+              },
+              providerInstanceId: run.providerInstanceId,
+              providerThreadId: providerThread.id,
+              providerSessionId,
+              checkpointScopeId: rootNode.checkpointScopeId,
+              attemptedOperation: openOperation,
+              nativeEffect: evidence,
+              completedAt: DateTime.formatIso(yield* DateTime.now),
+            });
+            const snapshot = nativeCreationCanonicalJson(
+              yield* Schema.encodeEffect(EventSink.StartRetryBeforeOpenObservationV1)(observation),
+            );
+            issuedRetryStarts.set(observation, { observation, snapshot });
+            yield* retrySink(observation);
+          }
+          return yield* sessionResult.failure;
+        }
         const settled = yield* settleStartFailure({
           signal: "provider-session-open-failure",
           title: "Provider session failed to open",
@@ -1242,7 +1302,9 @@ export const layer: Layer.Layer<
             ),
           });
           const snapshot = nativeCreationCanonicalJson(
-            Schema.encodeSync(EventSink.StartFailedBeforeOpenObservationV1)(observation),
+            yield* Schema.encodeEffect(EventSink.StartFailedBeforeOpenObservationV1)(
+              observation,
+            ).pipe(Effect.orDie),
           );
           yield* eventSink.onCommit(
             Effect.sync(() => {
@@ -1449,6 +1511,7 @@ export const layer: Layer.Layer<
                         ) {
                           return yield* new ProviderAdapterResumeThreadError({
                             driver: session.driver,
+                            providerSessionId,
                             providerThreadId: providerThread.id,
                             nativeEffect: {
                               ...resumeOperation,
@@ -1461,7 +1524,19 @@ export const layer: Layer.Layer<
                               "The initialized target source identity or current continuation binding is unproved or changed.",
                           });
                         }
-                      }),
+                      }).pipe(
+                        Effect.mapError((cause) =>
+                          Schema.is(ProviderAdapterResumeThreadError)(cause)
+                            ? cause
+                            : new ProviderAdapterResumeThreadError({
+                                driver: session.driver,
+                                providerSessionId,
+                                providerThreadId: providerThread.id,
+                                nativeEffect: nativeEffectEvidenceFor(cause, resumeOperation),
+                                cause,
+                              }),
+                        ),
+                      ),
                   }),
             }),
             resumeOperation,
@@ -2088,7 +2163,7 @@ export const layer: Layer.Layer<
       let confirmedNativeEffect: ProviderNativeStartConfirmation["nativeEffect"] | undefined;
       const confirmNativeStart = (operation: ProviderNativeOperationContext) =>
         Effect.sync(() => {
-          if (session.driver !== CODEX_DRIVER) return;
+          if (session.driver !== "codex") return;
           confirmedNativeEffect = {
             ...operation,
             ...(session.runtimeGeneration === undefined
@@ -2119,13 +2194,10 @@ export const layer: Layer.Layer<
       };
       const requiresStartConfirmation =
         nativeCreationExecution !== undefined || input.importedHistoryStartExecution !== undefined;
-      const executionSession = !requiresStartConfirmation
+      const executionSession: ProviderAdapterV2SessionRuntime = !requiresStartConfirmation
         ? deliverySession
         : {
             ...deliverySession,
-            get runtimeGeneration() {
-              return session.runtimeGeneration;
-            },
             get providerSession() {
               return session.providerSession;
             },
@@ -2141,6 +2213,13 @@ export const layer: Layer.Layer<
                     nativeStart(turnInput, true),
                 }),
           };
+      if (requiresStartConfirmation && "runtimeGeneration" in session) {
+        Object.defineProperty(executionSession, "runtimeGeneration", {
+          configurable: true,
+          enumerable: true,
+          get: () => session.runtimeGeneration,
+        });
+      }
       const managedHandle = yield* runExecution
         .startRootRun({
           ...(ordinaryExecution === undefined

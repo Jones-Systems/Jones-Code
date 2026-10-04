@@ -20,7 +20,7 @@ import * as EventSink from "./EventSink.ts";
 import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
 import { OrchestrationEffectRequestV2 } from "./EffectOutbox.ts";
 import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import type {
   ProviderNativeOperationContext,
   ProviderAdapterV2SessionRuntime,
@@ -135,19 +135,21 @@ export const layer: Layer.Layer<
               execution.executor.source.link.requestSha256 !==
                 nativeCreationSha256(
                   nativeCreationCanonicalJson(
-                    Schema.encodeSync(OrchestrationEffectRequestV2)(request),
+                    yield* Schema.encodeEffect(OrchestrationEffectRequestV2)(request).pipe(
+                      Effect.orDie,
+                    ),
                   ),
                 ) ||
               (input.ordinaryCheckoutUse !== undefined &&
                 nativeCreationCanonicalJson(
-                  Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
+                  yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
                     input.ordinaryCheckoutUse,
-                  ),
+                  ).pipe(Effect.orDie),
                 ) !==
                   nativeCreationCanonicalJson(
-                    Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
+                    yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
                       execution.originalUse,
-                    ),
+                    ).pipe(Effect.orDie),
                   ))))
         )
           return yield* new ProviderTurnControlError({
@@ -172,7 +174,7 @@ export const layer: Layer.Layer<
       },
       session: ProviderAdapterV2SessionRuntime,
     ): ProviderNativeOperationContext => ({
-      operationId: `${kind}:${randomUUID()}`,
+      operationId: `${kind}:${NodeCrypto.randomUUID()}`,
       operation: kind,
       instanceId: session.instanceId,
       threadId: input.threadId,

@@ -170,7 +170,7 @@ it("observes the selected V2 database and sidecars while preserving legacy state
     await NodeFSP.writeFile(databasePath, "selected synthetic database");
     await NodeFSP.writeFile(`${databasePath}-wal`, "selected synthetic WAL");
     await NodeFSP.writeFile(`${databasePath}-shm`, "selected synthetic shared memory");
-    let observed: readonly string[] = [];
+    let observed: string[] = [];
     await proveQualifiedStateQuiescence({
       baseDir,
       databasePath,

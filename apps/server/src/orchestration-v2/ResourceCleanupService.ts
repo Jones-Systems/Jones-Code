@@ -1,11 +1,10 @@
-import * as NodePath from "node:path";
-
 import { ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import {
@@ -72,7 +71,7 @@ export const makeAttachmentNamespaceScan =
     readonly configuredRoot: string;
     readonly namespaceSegment: string;
     readonly retainedRelativePaths: ReadonlyArray<string>;
-    readonly beforeRemove?: Effect.Effect<void, unknown>;
+    readonly beforeRemove?: Effect.Effect<void, EventSink.EventSinkV2Error | string>;
   }) =>
     Effect.gen(function* () {
       const removedPaths: string[] = [];
@@ -177,8 +176,9 @@ export const makeAttachmentNamespaceCleanup = (input: {
   readonly executor: ThreadCommandExecutor.ThreadCommandExecutor["Service"];
   readonly fileSystem: Pick<FileSystem.FileSystem, "readDirectory" | "remove">;
   readonly configuredRoot: string;
+  readonly path: Pick<Path.Path, "resolve">;
 }) => {
-  const configuredRoot = NodePath.resolve(input.configuredRoot);
+  const configuredRoot = input.path.resolve(input.configuredRoot);
   const scan = makeAttachmentNamespaceScan(input.fileSystem);
   const observe = (
     basis: EventSink.QualifiedAttachmentNamespaceCleanupBasisV1,
@@ -261,8 +261,8 @@ export const makeAttachmentNamespaceCleanup = (input: {
             offered.retentionSourceEvidence === undefined ||
             nativeCreationCanonicalJson(basis.retentionSourceEvidence) !==
               nativeCreationCanonicalJson(offered.retentionSourceEvidence) ||
-            JSON.stringify([...basis.retainedRelativePaths].sort()) !==
-              JSON.stringify([...offered.retainedRelativePaths].sort()))
+            nativeCreationCanonicalJson([...basis.retainedRelativePaths].sort()) !==
+              nativeCreationCanonicalJson([...offered.retainedRelativePaths].sort()))
         )
           return unavailable();
         const pending = yield* observe(basis, {
@@ -320,8 +320,8 @@ export const makeAttachmentNamespaceCleanup = (input: {
             nativeCreationCanonicalJson(current.task) !== nativeCreationCanonicalJson(basis.task) ||
             current.claim.workerId !== basis.claim.workerId ||
             current.claim.expectedAttempt !== basis.claim.expectedAttempt ||
-            JSON.stringify([...current.retainedRelativePaths].sort()) !==
-              JSON.stringify([...basis.retainedRelativePaths].sort()) ||
+            nativeCreationCanonicalJson([...current.retainedRelativePaths].sort()) !==
+              nativeCreationCanonicalJson([...basis.retainedRelativePaths].sort()) ||
             (basis.task.reference.mode === "prune_thread" &&
               (current.retentionSourceEvidence === undefined ||
                 nativeCreationCanonicalJson(current.retentionSourceEvidence) !==
@@ -528,6 +528,7 @@ export const live = Layer.effect(
   Effect.gen(function* () {
     const terminals = yield* TerminalManager.TerminalManager;
     const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const config = yield* ServerConfig.ServerConfig;
     const sink = yield* EventSink.EventSinkV2;
     const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -538,6 +539,7 @@ export const live = Layer.effect(
         executor,
         fileSystem,
         configuredRoot: config.attachmentsDir,
+        path,
       }),
       cleanupTerminals: (threadId: string) =>
         terminals

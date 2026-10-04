@@ -1,4 +1,4 @@
-import { Buffer } from "node:buffer";
+import * as NodeBuffer from "node:buffer";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
@@ -18,6 +18,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ThreadId,
   ThreadTurnStartCommand,
   WsOrchestrationV2DispatchNativeBootstrapRpc,
   WsRpcGroup,
@@ -144,6 +145,16 @@ const defectSchema = Schema.Struct({
   _tag: Schema.Literal("Defect"),
   defect: nativeBootstrapRpcSerialization.codecFor(Schema.Defect()),
 });
+const decodeOutboxReference = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      nativeCreationExecutionReference: Schema.Struct({
+        stageCommandId: Schema.Unknown,
+        claimId: Schema.Unknown,
+      }),
+    }),
+  ),
+);
 const ordinaryRpc = WsRpcGroup.requests.get(ORCHESTRATION_V2_WS_METHODS.dispatchCommand);
 if (ordinaryRpc === undefined || ordinaryRpc._tag !== ORCHESTRATION_V2_WS_METHODS.dispatchCommand) {
   throw new Error("The production V2 ordinary dispatch RPC is unavailable");
@@ -336,14 +347,13 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
           if (options.unknownWorktreeOutcome && options.qualifyRecovery) {
             yield* Effect.suspend(() => enableRecovery);
           }
-          yield* fs.makeDirectory(input.path, { recursive: true });
+          yield* fs.makeDirectory(input.path, { recursive: true }).pipe(Effect.orDie);
           if (options.unknownWorktreeOutcome)
             return yield* new GitCommandError({
               operation: "GitVcsDriver.createWorktree",
               command: "git",
               cwd: input.cwd,
               detail: "Synthetic response lost after checkout allocation",
-              exitCode: null,
             });
           return { worktree: { path: input.path, refName: input.newRefName } };
         }),
@@ -421,7 +431,7 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
     const now = yield* DateTime.now;
     const timestamp = DateTime.formatIso(now);
     const operationId = `voice-native:${options.name}`;
-    const binding = Schema.decodeUnknownSync(NativePreparationBinding)({
+    const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
       backend_instance: "synthetic-backend",
       environment_id: "synthetic-environment",
       project_id: projectId,
@@ -433,16 +443,18 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
       start_from_origin: false,
       run_setup_script: options.runSetupScript ?? true,
       provider_model_selection: modelSelection,
-    });
+    }).pipe(Effect.orDie);
     const command = nativePreparationCommand(operationId, binding, prompt, title, timestamp);
+    const threadId = ThreadId.make(command.threadId);
+    const commandId = CommandId.make(command.commandId);
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         if (options.cancelBlocked) yield* Deferred.succeed(options.cancelBlocked, undefined);
         if (options.setupCompletion) yield* Deferred.succeed(options.setupCompletion, undefined);
-        yield* tracker.cancel(command.threadId);
+        yield* tracker.cancel(threadId);
         // Finish retains a snapshot for 30 seconds; advance the fixture clock to release its own fiber.
         yield* TestClock.adjust("30 seconds");
-        assert.isNull(yield* tracker.get(command.threadId));
+        assert.isNull(yield* tracker.get(threadId));
       }),
     );
     yield* projects.apply({
@@ -499,7 +511,7 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
     const preparation = yield* validateNativeCreationPreparation(
       new TextEncoder().encode(canonicalText),
     );
-    const historical = Schema.decodeUnknownSync(NativeCreationHistoricalBinding)({
+    const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
       backendInstance: binding.backend_instance,
       environmentId: binding.environment_id,
       projectId,
@@ -514,7 +526,7 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
       startFromOrigin: false,
       runSetupScript: binding.run_setup_script,
       requestedBranch: command.bootstrap.prepareWorktree.branch,
-    });
+    }).pipe(Effect.orDie);
     const resources = {
       projectCwd,
       branch: historical.requestedBranch,
@@ -560,7 +572,7 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
     qualify(grant, historical);
     enableRecovery = Effect.gen(function* () {
       const facts = yield* sink.readNativeCommandFacts({
-        threadId: command.threadId,
+        threadId,
         commandId: CommandId.make(`${command.commandId}:native:v2:create`),
       });
       assert.equal(facts.creationProvenance, "native_created");
@@ -574,7 +586,7 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
               scopeId: `${preparation.operationId}:cleanup:thread`,
               resource: {
                 kind: "thread",
-                threadId: command.threadId,
+                threadId,
                 incarnation: facts.incarnation!,
               },
             },
@@ -583,17 +595,17 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
         historical,
       );
     }).pipe(Effect.orDie);
-    const request = Schema.decodeUnknownSync(nativeRequestSchema)({
+    const request = yield* Schema.decodeUnknownEffect(nativeRequestSchema)({
       _tag: "Request",
       id: `voice-native-request:${options.name}`,
       tag: ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
       payload: {
         schema: "t3.native-bootstrap-submission/v1",
-        preparationBase64: Buffer.from(canonicalText).toString("base64"),
+        preparationBase64: NodeBuffer.Buffer.from(canonicalText).toString("base64"),
         creationGuard: guard,
       },
       headers: [],
-    });
+    }).pipe(Effect.orDie);
     const nativeContext = yield* Effect.context<
       | NativeCreationAuthority
       | NativeCreationRepository
@@ -671,6 +683,8 @@ const buildNativeWsHarness = Effect.fnUntraced(function* (options: HarnessOption
     return {
       url: `ws://127.0.0.1:${server.address.port}/ws?${ORCHESTRATION_PROTOCOL_QUERY_PARAM}=${ORCHESTRATION_PROTOCOL_VERSION}`,
       command,
+      threadId,
+      commandId,
       preparation,
       resources,
       repository,
@@ -791,7 +805,9 @@ it.layer(
         const harness = yield* buildNativeWsHarness({ name: "legacy" });
         const connection = yield* openSocket(harness.url);
         const { response } = yield* sendRequest(connection, legacy.request);
-        const failure = Schema.decodeUnknownSync(failureSchema)(response);
+        const failure = yield* Schema.decodeUnknownEffect(failureSchema)(response).pipe(
+          Effect.orDie,
+        );
         assert.equal(failure.requestId, legacy.request.id);
         assert.isTrue(failure.exit.cause.some((reason) => reason._tag === "Die"));
         assert.equal(harness.ordinaryHandlerCalls(), 0);
@@ -905,7 +921,7 @@ it.layer(
         assert.lengthOf(outbox, 1);
         assert.equal(outbox[0]!.command_id, accepted.commandId);
         assert.equal(outbox[0]!.effect_type, "provider-turn.start");
-        const payload = JSON.parse(outbox[0]!.payload_json);
+        const payload = yield* decodeOutboxReference(outbox[0]!.payload_json).pipe(Effect.orDie);
         assert.equal(payload.nativeCreationExecutionReference.stageCommandId, accepted.commandId);
         assert.equal(payload.nativeCreationExecutionReference.claimId, creation.claimId);
         assert.isFalse(wire.responseBytes.includes("canonicalPreparation"));
@@ -971,8 +987,8 @@ it.layer(
         );
         assert.isFalse(history.effects.some((fact) => fact.kind === "cleanup"));
         const facts = yield* harness.sink.readNativeCommandFacts({
-          threadId: harness.command.threadId,
-          commandId: harness.command.commandId,
+          threadId: harness.threadId,
+          commandId: harness.commandId,
         });
         assert.isNull(facts.receipt);
         assert.isNull(facts.projection?.thread.deletedAt);
@@ -1004,12 +1020,12 @@ it.layer(
           "unresolved_claim",
         );
         const original = harness.originalFailures[0];
-        assert.isTrue(original instanceof NativeCreationAuthorityError);
-        if (original instanceof NativeCreationAuthorityError)
+        assert.isTrue(Schema.is(NativeCreationAuthorityError)(original));
+        if (Schema.is(NativeCreationAuthorityError)(original))
           assert.equal(original.message, "Native setup did not complete successfully.");
         const deleteId = CommandId.make(`${harness.command.commandId}:bootstrap-thread-delete`);
         const facts = yield* harness.sink.readNativeCommandFacts({
-          threadId: harness.command.threadId,
+          threadId: harness.threadId,
           commandId: deleteId,
         });
         const companion = yield* harness.repository.readThreadRecoveryCommand(deleteId);
@@ -1043,7 +1059,7 @@ it.layer(
           "unresolved_claim",
         );
         const after = yield* harness.sink.readNativeCommandFacts({
-          threadId: harness.command.threadId,
+          threadId: harness.threadId,
           commandId: deleteId,
         });
         assert.deepEqual(after.receipt, facts.receipt);
@@ -1063,13 +1079,15 @@ it.layer(
       });
       const connection = yield* openSocket(harness.url);
       const failed = yield* sendRequest(connection, harness.request);
-      const defect = Schema.decodeUnknownSync(defectSchema)(failed.response).defect;
+      const defect = (yield* Schema.decodeUnknownEffect(defectSchema)(failed.response).pipe(
+        Effect.orDie,
+      )).defect;
       assert.instanceOf(defect, Error);
       if (defect instanceof Error) assert.equal(defect.message, failure.message);
       assert.equal(harness.originalFailures[0], failure);
       const facts = yield* harness.sink.readNativeCommandFacts({
-        threadId: harness.command.threadId,
-        commandId: harness.command.commandId,
+        threadId: harness.threadId,
+        commandId: harness.commandId,
       });
       assert.equal(facts.receipt?.status, "accepted");
       assert.isNull(facts.projection?.thread.deletedAt);
@@ -1102,7 +1120,7 @@ it.layer(
         connection.socket.once("close", () => resume(Effect.void));
         connection.socket.terminate();
       });
-      assert.equal((yield* harness.tracker.get(harness.command.threadId))?.phase, "running");
+      assert.equal((yield* harness.tracker.get(harness.threadId))?.phase, "running");
       const retryConnection = yield* openSocket(harness.url);
       assertRejected(
         (yield* sendRequest(retryConnection, harness.request)).response,
@@ -1110,7 +1128,7 @@ it.layer(
         "unresolved_claim",
       );
       yield* Deferred.succeed(complete, undefined);
-      yield* harness.tracker.stream(harness.command.threadId).pipe(
+      yield* harness.tracker.stream(harness.threadId).pipe(
         Stream.filter((snapshot) => snapshot?.phase === "done"),
         Stream.runHead,
       );
@@ -1141,13 +1159,13 @@ it.layer(
       const connection = yield* openSocket(harness.url);
       yield* writeRequest(connection, harness.request);
       yield* Deferred.await(entered);
-      assert.isTrue(yield* harness.tracker.cancel(harness.command.threadId));
-      assert.equal((yield* harness.tracker.get(harness.command.threadId))?.phase, "cancelled");
+      assert.isTrue(yield* harness.tracker.cancel(harness.threadId));
+      assert.equal((yield* harness.tracker.get(harness.threadId))?.phase, "cancelled");
       assert.lengthOf(harness.worktreeInputs, 0);
       assert.lengthOf(harness.setupInputs, 0);
       const deleteId = CommandId.make(`${harness.command.commandId}:bootstrap-thread-delete`);
       const facts = yield* harness.sink.readNativeCommandFacts({
-        threadId: harness.command.threadId,
+        threadId: harness.threadId,
         commandId: deleteId,
       });
       assert.equal(facts.receipt?.status, "accepted");

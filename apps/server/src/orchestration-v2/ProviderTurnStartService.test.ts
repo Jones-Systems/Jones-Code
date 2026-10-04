@@ -482,24 +482,30 @@ function makeLocalCommandHarness(input: {
     Effect.die("The exact ordinary checkout grant cannot prune repository metadata."),
   );
   const createWorktree = vi.fn(
-    <E = never, R = never>(
-      target: VcsCreateWorktreeInput,
-      options?: GitVcsDriver.CreateWorktreeOptions<E, R>,
-    ) =>
-      Effect.gen(function* () {
-        if (input.ordinaryMissingCheckout?.staleBeforeCreate === true) interruptRun();
-        if (options?.revalidateMutation !== undefined) yield* options.revalidateMutation;
-        creationEffects.push("native_create");
-        if (input.ordinaryMissingCheckout?.nativeCreateFailure === true)
-          return yield* new GitCommandError({
-            operation: "createWorktree",
-            command: "worktree add",
-            cwd: target.cwd,
-            detail: "Synthetic native worktree creation failed.",
-          });
-        return { worktree: { path: target.path!, refName: target.refName } };
-      }),
+    (
+      _target: VcsCreateWorktreeInput,
+      _options?: GitVcsDriver.CreateWorktreeOptions<unknown, unknown>,
+    ) => {},
   );
+  const createWorktreeImplementation = <E = never, R = never>(
+    target: VcsCreateWorktreeInput,
+    options?: GitVcsDriver.CreateWorktreeOptions<E, R>,
+  ) => {
+    createWorktree(target, options);
+    return Effect.gen(function* () {
+      if (input.ordinaryMissingCheckout?.staleBeforeCreate === true) interruptRun();
+      if (options?.revalidateMutation !== undefined) yield* options.revalidateMutation;
+      creationEffects.push("native_create");
+      if (input.ordinaryMissingCheckout?.nativeCreateFailure === true)
+        return yield* new GitCommandError({
+          operation: "createWorktree",
+          command: "worktree add",
+          cwd: target.cwd,
+          detail: "Synthetic native worktree creation failed.",
+        });
+      return { worktree: { path: target.path!, refName: target.refName } };
+    });
+  };
   const tryHandlePromptCommand = vi.fn(() =>
     input.logoutFailure === undefined
       ? Effect.succeed(true)
@@ -597,7 +603,10 @@ function makeLocalCommandHarness(input: {
             ? {}
             : { exists: () => Effect.succeed(false) },
         ),
-        Layer.mock(GitWorkflow.GitWorkflowService)({ createWorktree, pruneWorktrees }),
+        Layer.mock(GitWorkflow.GitWorkflowService)({
+          createWorktree: createWorktreeImplementation,
+          pruneWorktrees,
+        }),
         Layer.mock(ProjectService.ProjectService)({
           getById: () =>
             Effect.succeed(
@@ -1258,6 +1267,7 @@ for (const variant of [
       Effect.gen(function* () {
         const original = admittedOrdinaryLocalHarnessSource();
         const observed: EventSink.StartFailedBeforeOpenObservationV1[] = [];
+        const retryObserved: EventSink.StartRetryBeforeOpenObservationV1[] = [];
         const harness = makeLocalCommandHarness({
           text: "Continue",
           ordinaryAdmission: original.admission,
@@ -1281,9 +1291,25 @@ for (const variant of [
               observed.push(value);
             }),
           ),
+          Effect.provideService(ProviderTurnStart.StartRetryOutcomeSink, (value) =>
+            Effect.sync(() => {
+              retryObserved.push(value);
+            }),
+          ),
           Effect.exit,
         );
         expect(observed).toHaveLength(variant === "final" ? 1 : 0);
+        expect(retryObserved).toHaveLength(variant === "retry" ? 1 : 0);
+        if (variant === "retry") {
+          const retry = retryObserved[0]!;
+          expect(ProviderTurnStart.readIssuedStartRetryBeforeOpenObservation(retry)).toBe(retry);
+          expect(
+            ProviderTurnStart.readIssuedStartRetryBeforeOpenObservation({ ...retry }),
+          ).toBeNull();
+          expect("terminalEvents" in retry).toBe(false);
+          Reflect.set(retry.nativeEffect, "operationId", "mutated-operation");
+          expect(ProviderTurnStart.readIssuedStartRetryBeforeOpenObservation(retry)).toBeNull();
+        }
         if (variant === "final") {
           const observation = observed[0]!;
           expect(ProviderTurnStart.readIssuedStartFailedBeforeOpenObservation(observation)).toBe(
@@ -1294,19 +1320,55 @@ for (const variant of [
           ).toBeNull();
           expect(
             ProviderTurnStart.readIssuedStartFailedBeforeOpenObservation(
-              JSON.parse(JSON.stringify(observation)),
+              yield* Schema.encodeEffect(
+                Schema.fromJsonString(EventSink.StartFailedBeforeOpenObservationV1),
+              )(observation).pipe(
+                Effect.flatMap(
+                  Schema.decodeUnknownEffect(
+                    Schema.fromJsonString(EventSink.StartFailedBeforeOpenObservationV1),
+                  ),
+                ),
+              ),
             ),
           ).toBeNull();
           expect(observation.terminalEvents).toHaveLength(4);
-          const mutable = observation.terminalEvents as Array<{
-            eventId: string;
-            sequence: number;
-          }>;
-          mutable[0]!.sequence += 1;
+          const firstEvent = observation.terminalEvents[0]!;
+          Reflect.set(firstEvent, "sequence", firstEvent.sequence + 1);
           expect(
             ProviderTurnStart.readIssuedStartFailedBeforeOpenObservation(observation),
           ).toBeNull();
         }
       }),
+  );
+}
+
+for (const variant of ["stale", "unknown", "mismatched", "interrupted"] as const) {
+  effectIt.effect(`retry-before-open issuer rejects ${variant} producer results`, () =>
+    Effect.gen(function* () {
+      const original = admittedOrdinaryLocalHarnessSource();
+      const observed: EventSink.StartRetryBeforeOpenObservationV1[] = [];
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        ordinaryAdmission: original.admission,
+        ordinaryCheckoutUse: original.originalUse,
+        ordinaryCheckoutExecution: original.execution,
+        onOrdinaryManagedRunStarted: () => Effect.die("A failed open cannot activate"),
+        returnStoredEvents: true,
+        willRetry: true,
+        openFailure: "synthetic provider rejection",
+        ...(variant === "stale" ? { interruptRunBeforeOpenFailure: true } : {}),
+        ...(variant === "unknown" || variant === "mismatched" ? { openEvidence: variant } : {}),
+        ...(variant === "interrupted" ? { interruptOpen: true } : {}),
+      });
+      yield* harness.start.pipe(
+        Effect.provideService(ProviderTurnStart.StartRetryOutcomeSink, (value) =>
+          Effect.sync(() => {
+            observed.push(value);
+          }),
+        ),
+        Effect.exit,
+      );
+      expect(observed).toHaveLength(0);
+    }),
   );
 }

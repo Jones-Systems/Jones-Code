@@ -22,17 +22,22 @@ import * as Stream from "effect/Stream";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as NativeCreationRepositoryLayer from "../persistence/Layers/NativeCreationRepository.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
+import { LegacyLeaseInventoryError } from "./LegacyLeaseCleanup.ts";
+import { NativeCreationAuthorityUnavailable } from "./NativeCreationAuthority.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import {
@@ -103,6 +108,21 @@ const TestProviderInstanceRegistry = Layer.succeed(
   },
 );
 
+// The server's own native-creation persistence; this fixture has no terminal inventory.
+const NativeCreationTestLayer = NativeCreationAuthorityUnavailable.pipe(
+  Layer.provide(AuthSessions.layer),
+  Layer.provideMerge(NativeCreationRepositoryLayer.layer),
+);
+const TerminalManagerTestLayer = Layer.mock(TerminalManager.TerminalManager)({
+  withLegacyOwnerAbsent: (owner) =>
+    Effect.fail(
+      new LegacyLeaseInventoryError({
+        threadId: owner.originalBirth.threadId,
+        reason: "Delegated completion fixture has no terminal inventory",
+      }),
+    ),
+});
+
 const TestLayer = Layer.mergeAll(OrchestrationV2LayerLive, OrchestrationV2EventSinkLayerLive).pipe(
   Layer.provideMerge(ProjectServiceLayerLive),
   Layer.provide(
@@ -131,6 +151,7 @@ const TestLayer = Layer.mergeAll(OrchestrationV2LayerLive, OrchestrationV2EventS
     }),
   ),
   Layer.provide(McpSessionRegistryTestkit.layer),
+  Layer.provide(Layer.merge(NativeCreationTestLayer, TerminalManagerTestLayer)),
   Layer.provide(SqlitePersistenceMemory),
   Layer.provide(CheckpointStoreTestLayer),
   Layer.provide(ServerConfigLayer),

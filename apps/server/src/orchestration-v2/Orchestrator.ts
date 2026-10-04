@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
+import type { OrdinaryPreparedPhysicalResultV1 } from "./ThreadLaunchService.ts";
 import {
   latestExecutedRun,
   latestRootProviderFailure,
@@ -136,7 +137,11 @@ import {
   type AttachmentNamespaceCleanupPlanV1,
 } from "./EventSink.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
-import { LegacyV1ThreadImporter } from "./legacy/LegacyV1ThreadImporter.ts";
+import { decodeJson, encodeBirthTupleJson, jsonCause } from "./EventSinkJsonCodec.ts";
+import {
+  LegacyV1ThreadImporter,
+  type LegacyV1ThreadImportError,
+} from "./legacy/LegacyV1ThreadImporter.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
 import {
   ThreadCommandExecutor,
@@ -699,10 +704,19 @@ export const makeImportedHistoryStartExecutionPreparationV2 = Effect.gen(functio
   } satisfies ImportedHistoryStartExecutionPreparationV2;
 });
 
-export interface OrdinaryCheckoutExecutionRegistrationV1 {
-  readonly revalidateCaptured: Effect.Effect<void, unknown>;
-  readonly onLoss: Effect.Effect<void, unknown>;
+// Each producer keeps its own failure types; the keeper only distinguishes a current owner from a lost one.
+export interface OrdinaryCheckoutExecutionRegistrationV1<ER = never, EL = never> {
+  readonly revalidateCaptured: Effect.Effect<void, ER>;
+  readonly onLoss: Effect.Effect<void, EL>;
 }
+
+// Settlement dispatch receives its context from the actual native workstream authority revalidation.
+type NativeWorkstreamDispatchContextV2 = Omit<
+  NativeCommandCommitContextV2,
+  "revalidateAuthority"
+> & {
+  readonly revalidateAuthority: Effect.Effect<void, NativeWorkstreamSettlementAuthorityError>;
+};
 
 export interface OrchestratorV2Shape {
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
@@ -756,7 +770,10 @@ export interface OrchestratorV2Shape {
       readonly threadId: ThreadId;
       readonly delivery: OrchestrationV2ImportedHistoryDelivery;
     },
-    readLegacyTranscript?: Effect.Effect<LegacyImportTranscriptSnapshotV1 | null, unknown>,
+    readLegacyTranscript?: Effect.Effect<
+      LegacyImportTranscriptSnapshotV1 | null,
+      LegacyV1ThreadImportError
+    >,
   ) => Effect.Effect<
     OrchestrationV2ImportedHistoryReviewResult,
     OrchestratorV2Error,
@@ -783,7 +800,10 @@ export interface OrchestratorV2Shape {
   >;
   readonly startWithImportedHistory: (
     command: OrchestrationV2StartWithImportedHistoryCommand,
-    readLegacyTranscript?: Effect.Effect<LegacyImportTranscriptSnapshotV1 | null, unknown>,
+    readLegacyTranscript?: Effect.Effect<
+      LegacyImportTranscriptSnapshotV1 | null,
+      LegacyV1ThreadImportError
+    >,
   ) => Effect.Effect<
     OrchestrationV2ImportedHistoryStartReceipt,
     OrchestratorV2Error,
@@ -841,14 +861,21 @@ export interface OrchestratorV2Shape {
     admission: OrdinaryCheckoutAdmissionV1,
     use: OrdinaryCheckoutUseV1,
   ) => Effect.Effect<OrdinaryCheckoutUseRecordV1, OrchestratorV2Error>;
+  readonly dispatchOrdinaryPreparedBranchRename: (
+    commandId: CommandId,
+    observation: Extract<
+      OrdinaryPreparedPhysicalResultV1,
+      { readonly kind: "prepared_branch_renamed" }
+    >,
+  ) => Effect.Effect<void, OrchestratorV2Error>;
   readonly dispatchOrdinaryPreparedRunRelease: (
     command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.release" }>,
     use: OrdinaryCheckoutUseV1,
     execution?: OrdinaryCheckoutExecutionRefV1,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
-  readonly registerOrdinaryCheckoutExecution: (
+  readonly registerOrdinaryCheckoutExecution: <ER, EL>(
     ref: OrdinaryCheckoutExecutionRefV1,
-    callbacks: OrdinaryCheckoutExecutionRegistrationV1,
+    callbacks: OrdinaryCheckoutExecutionRegistrationV1<ER, EL>,
   ) => Effect.Effect<void, OrchestratorV2Error>;
   readonly revalidateOrdinaryCheckoutExecution: (
     ref: OrdinaryCheckoutExecutionRefV1,
@@ -974,7 +1001,7 @@ const validateNativeWorkstreamSettlementInputV2 = Effect.fn(
     protocol: input.enrollment.protocol,
     build: input.enrollment.build,
   }).pipe(Effect.mapError(() => reject("invalid_request")));
-  const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+  const digest = (value: string) => NodeCrypto.createHash("sha256").update(value).digest("hex");
   const enrollmentSha256 = digest(
     `${input.enrollment.registry_origin}\n${input.enrollment.session_id}\n${contextJson}`,
   );
@@ -1506,14 +1533,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           Option.isNone(currentEnrollment) ||
           Option.isNone(currentAttempt) ||
           nativeCreationCanonicalJson(
-            Schema.encodeSync(NativeProviderEnrollmentBinding)(currentEnrollment.value),
+            yield* Schema.encodeEffect(NativeProviderEnrollmentBinding)(
+              currentEnrollment.value,
+            ).pipe(Effect.orDie),
           ) !==
             nativeCreationCanonicalJson(
-              Schema.encodeSync(NativeProviderEnrollmentBinding)(input.enrollment),
+              yield* Schema.encodeEffect(NativeProviderEnrollmentBinding)(input.enrollment).pipe(
+                Effect.orDie,
+              ),
             ) ||
           nativeCreationCanonicalJson(
-            Schema.encodeSync(NativeProviderAttempt)(currentAttempt.value),
-          ) !== nativeCreationCanonicalJson(Schema.encodeSync(NativeProviderAttempt)(input.attempt))
+            yield* Schema.encodeEffect(NativeProviderAttempt)(currentAttempt.value).pipe(
+              Effect.orDie,
+            ),
+          ) !==
+            nativeCreationCanonicalJson(
+              yield* Schema.encodeEffect(NativeProviderAttempt)(input.attempt).pipe(Effect.orDie),
+            )
         ) {
           return yield* reject("idempotency_conflict");
         }
@@ -1781,30 +1817,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const ownershipError = (detail: string) =>
             new OrchestratorWorktreeOwnershipError({ threadId, detail });
           if (ordinaryTarget !== undefined) {
-            const currentThread = yield* projectionStore
-              .getThreadShell(threadId)
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestratorWorktreeOwnershipError({
-                      threadId,
-                      detail: "failed to recheck projected checkout",
-                      cause,
-                    }),
-                ),
-              );
-            const currentProject = yield* projects
-              .get(thread.projectId)
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestratorWorktreeOwnershipError({
-                      threadId,
-                      detail: "failed to recheck projected project",
-                      cause,
-                    }),
-                ),
-              );
+            const currentThread = yield* projectionStore.getThreadShell(threadId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorWorktreeOwnershipError({
+                    threadId,
+                    detail: "failed to recheck projected checkout",
+                    cause,
+                  }),
+              ),
+            );
+            const currentProject = yield* projects.get(thread.projectId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorWorktreeOwnershipError({
+                    threadId,
+                    detail: "failed to recheck projected project",
+                    cause,
+                  }),
+              ),
+            );
             if (
               currentThread === null ||
               currentThread.deletedAt !== null ||
@@ -1972,11 +2004,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         resourcePath: target.canonicalCheckoutPath,
         leaseId: yield* randomUuidV4,
         ownerThreadId: target.threadId,
-        ownerIncarnation: JSON.stringify([
+        ownerIncarnation: yield* encodeBirthTupleJson([
           "t3.orchestration-v2.thread-birth/v1",
           birth.eventId,
           birth.sequence,
-        ]),
+        ]).pipe(Effect.catch((error) => Effect.die(jsonCause(error)))),
         branch: target.branch,
         nowMs,
         expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS,
@@ -2010,9 +2042,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             unavailable("unavailable", "Checkout ownership publication could not be registered"),
           ),
         );
-      const canonicalCommand = JSON.parse(
-        nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)),
-      ) as Record<string, unknown>;
+      const canonicalCommand = (yield* decodeJson(
+        nativeCreationCanonicalJson(
+          yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
+        ),
+      ).pipe(Effect.catch((error) => Effect.die(jsonCause(error))))) as Record<string, unknown>;
       return {
         capture: {
           version: 1,
@@ -2070,10 +2104,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         canonicalCheckoutPath: resourcePath,
         source: { projectWorkspaceRoot: project.workspaceRoot, worktreePath: thread.worktreePath },
       };
+      const currentLease = yield* eventSink
+        .resolveOrdinaryCheckoutLease(admission.capture.lease)
+        .pipe(Effect.mapError(mapOrdinaryCheckoutReadError(admission.capture.threadId)));
       if (
         target.threadId !== admission.capture.threadId ||
         target.projectId !== admission.capture.projectId ||
-        target.branch !== admission.capture.branch ||
+        target.branch !== currentLease.branch ||
         target.canonicalProjectRoot !== admission.capture.canonicalProjectRoot ||
         target.canonicalCheckoutPath !== admission.capture.canonicalCheckoutPath
       ) {
@@ -2150,7 +2187,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             if (
               Option.isNone(current) ||
               nativeCreationCanonicalJson(ordinaryCheckoutLeaseIdentityV1(current.value)) !==
-                nativeCreationCanonicalJson(ordinaryCheckoutLeaseIdentityV1(use.lease))
+                nativeCreationCanonicalJson(
+                  ordinaryCheckoutLeaseIdentityV1({ ...use.lease, branch: target.branch }),
+                )
             ) {
               if (
                 Option.isSome(current) &&
@@ -2215,21 +2254,46 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
     });
 
+  // Registered producer callbacks after the keeper has closed over their failure handling.
+  type OrdinaryExecutionCallbacks = {
+    readonly revalidateCaptured: Effect.Effect<void, OrdinaryCheckoutOwnershipError>;
+    readonly signalLoss: (warning: string) => Effect.Effect<void>;
+  };
   type OrdinaryExecutionEntry = {
     readonly ref: OrdinaryCheckoutExecutionRefV1;
-    readonly callbacks: OrdinaryCheckoutExecutionRegistrationV1;
+    readonly callbacks: OrdinaryExecutionCallbacks;
     lossSignaled: boolean;
   };
+  const ordinaryExecutionCallbacks = <ER, EL>(
+    ref: OrdinaryCheckoutExecutionRefV1,
+    callbacks: OrdinaryCheckoutExecutionRegistrationV1<ER, EL>,
+  ): OrdinaryExecutionCallbacks => ({
+    revalidateCaptured: callbacks.revalidateCaptured.pipe(
+      Effect.mapError(
+        () =>
+          new OrdinaryCheckoutOwnershipError({
+            reason: "unknown_use",
+            threadId: ref.originalUse.lease.ownerThreadId,
+            path: ref.originalUse.lease.resourcePath,
+            message: "Captured checkout executor is no longer current",
+          }),
+      ),
+    ),
+    signalLoss: (warning) =>
+      callbacks.onLoss.pipe(Effect.catchCause(() => Effect.logWarning(warning, ref.associationId))),
+  });
   const ordinaryExecutions = new Map<string, OrdinaryExecutionEntry>();
   const ordinaryLeaseOwners = new Map<string, OrdinaryExecutionEntry>();
   const sameOwnedLease = (left: WorktreeOwnershipLease, right: WorktreeOwnershipLease) =>
     nativeCreationCanonicalJson(ordinaryCheckoutLeaseIdentityV1(left)) ===
     nativeCreationCanonicalJson(ordinaryCheckoutLeaseIdentityV1(right));
+  const sameOwnedLeaseLifetime = (left: WorktreeOwnershipLease, right: WorktreeOwnershipLease) =>
+    sameOwnedLease({ ...left, branch: right.branch }, right);
   const ordinaryExecutionBytes = (ref: OrdinaryCheckoutExecutionRefV1) =>
     nativeCreationCanonicalJson(Schema.encodeSync(OrdinaryCheckoutExecutionRefV1)(ref));
   const renewOrdinaryExecution = (
     ref: OrdinaryCheckoutExecutionRefV1,
-    callbacks: OrdinaryCheckoutExecutionRegistrationV1,
+    callbacks: OrdinaryExecutionCallbacks,
   ) =>
     Effect.gen(function* () {
       const threadId = ref.originalUse.lease.ownerThreadId;
@@ -2261,9 +2325,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           .pipe(Effect.mapError(mapOrdinaryCheckoutReadError(threadId)));
         return false;
       }
-      yield* callbacks.revalidateCaptured.pipe(
-        Effect.mapError(() => unavailable("Captured checkout executor is no longer current")),
-      );
+      yield* callbacks.revalidateCaptured;
       return yield* eventSink
         .withTransaction(
           Effect.gen(function* () {
@@ -2316,7 +2378,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             if (
               Option.isNone(current) ||
               nativeCreationCanonicalJson(ordinaryCheckoutLeaseIdentityV1(current.value)) !==
-                nativeCreationCanonicalJson(ordinaryCheckoutLeaseIdentityV1(ref.originalUse.lease))
+                nativeCreationCanonicalJson(
+                  ordinaryCheckoutLeaseIdentityV1({
+                    ...ref.originalUse.lease,
+                    branch: target.thread.branch,
+                  }),
+                )
             )
               return yield* unavailable(
                 "Checkout execution lost its exact captured ownership lease",
@@ -2385,18 +2452,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ),
           );
         if (shouldSignal)
-          yield* entry.callbacks.onLoss.pipe(
-            Effect.catchCause(() =>
-              Effect.logWarning(
-                "Captured checkout loss handler could not confirm its result",
-                entry.ref.associationId,
-              ),
-            ),
+          yield* entry.callbacks.signalLoss(
+            "Captured checkout loss handler could not confirm its result",
           );
       }),
     );
   const registerOrdinaryCheckoutExecution: OrchestratorV2Shape["registerOrdinaryCheckoutExecution"] =
-    (input, callbacks) =>
+    (input, registration) =>
       Effect.gen(function* () {
         const ref = yield* Schema.decodeUnknownEffect(
           Schema.fromJsonString(OrdinaryCheckoutExecutionRefV1),
@@ -2411,6 +2473,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
           ),
         );
+        const callbacks = ordinaryExecutionCallbacks(ref, registration);
         yield* eventSink
           .withTransaction(
             Effect.gen(function* () {
@@ -2465,7 +2528,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       locallyOwnedWorktreeSources.delete(lease.resourcePath);
     }
     for (const [associationId, entry] of ordinaryLeaseOwners) {
-      if (sameOwnedLease(entry.ref.originalUse.lease, lease))
+      if (sameOwnedLeaseLifetime(entry.ref.originalUse.lease, lease))
         ordinaryLeaseOwners.delete(associationId);
     }
   };
@@ -2473,7 +2536,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.uninterruptible(
       Effect.gen(function* () {
         const captures = Array.from(ordinaryLeaseOwners.values()).filter((entry) =>
-          sameOwnedLease(entry.ref.originalUse.lease, lease),
+          sameOwnedLeaseLifetime(entry.ref.originalUse.lease, lease),
         );
         yield* eventSink
           .withTransaction(eventSink.onCommit(Effect.sync(() => forgetOwnedWorktree(lease))))
@@ -2488,19 +2551,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         for (const entry of captures) {
           if (entry.lossSignaled) continue;
           entry.lossSignaled = true;
-          yield* entry.callbacks.onLoss.pipe(
-            Effect.catchCause(() =>
-              Effect.logWarning(
-                "Captured checkout owner stop could not confirm its result",
-                entry.ref.associationId,
-              ),
-            ),
+          yield* entry.callbacks.signalLoss(
+            "Captured checkout owner stop could not confirm its result",
           );
         }
       }),
     );
-  const renewOwnedWorktree = (lease: WorktreeOwnershipLease) =>
+  const renewOwnedWorktree = (capturedLease: WorktreeOwnershipLease) =>
     Effect.gen(function* () {
+      const lease =
+        locallyOwnedWorktreeBirthKinds.get(capturedLease.resourcePath) === "ordinary"
+          ? yield* eventSink.resolveOrdinaryCheckoutLease(capturedLease)
+          : capturedLease;
       const target = yield* resolveWorktreeOwnershipTarget(lease.ownerThreadId, lease.resourcePath);
       if (target.resourcePath !== lease.resourcePath || target.thread.branch !== lease.branch)
         return false;
@@ -2544,7 +2606,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             path: lease.resourcePath,
           });
           const owners = Array.from(ordinaryLeaseOwners.values()).filter((entry) =>
-            sameOwnedLease(entry.ref.originalUse.lease, lease),
+            sameOwnedLeaseLifetime(entry.ref.originalUse.lease, lease),
           );
           for (const entry of owners) {
             if (entry.lossSignaled) return false;
@@ -2598,7 +2660,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (lease) => {
         if (
           Array.from(ordinaryExecutions.values()).some(
-            (entry) => !entry.lossSignaled && sameOwnedLease(entry.ref.originalUse.lease, lease),
+            (entry) =>
+              !entry.lossSignaled && sameOwnedLeaseLifetime(entry.ref.originalUse.lease, lease),
           )
         )
           return Effect.void;
@@ -6311,18 +6374,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const source = projection.runs.find((run) => run.id === command.restartContinuationOfRunId);
         if (capturedRestart !== undefined) {
           const marker = capturedRestart.marker;
-          const owner = yield* eventSink
-            .readCurrentProviderRuntimeOwner(command.threadId)
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestratorDispatchError({
-                    commandId: command.commandId,
-                    commandType: command.type,
-                    cause,
-                  }),
-              ),
-            );
+          const owner = yield* eventSink.readCurrentProviderRuntimeOwner(command.threadId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause,
+                }),
+            ),
+          );
           const provider = projection.providerThreads.find(
             (candidate) => candidate.id === marker.binding.providerThreadId,
           );
@@ -11489,7 +11550,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       readonly initialMessageId: MessageId;
     },
     prepare?: Effect.Effect<void, OrchestratorV2Error>,
-    nativeWorkstream?: NativeCommandCommitContextV2,
+    nativeWorkstream?: NativeWorkstreamDispatchContextV2,
     capturedRestart?: RestartContinuationDispatchContextV2,
     nativeRecovery?: NativeCreationThreadRecoveryContextV2,
     ordinaryPreparedUse?: OrdinaryCheckoutUseV1,
@@ -11691,7 +11752,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
       const canonicalCommand = nativeCreationCanonicalJson(
-        Schema.encodeSync(OrchestrationV2Command)(command),
+        yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
       );
       if (
         replay.ordinaryCheckoutAdmissions.some(
@@ -11718,13 +11779,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
       const canonicalCommand = nativeCreationCanonicalJson(
-        Schema.encodeSync(OrchestrationV2Command)(command),
+        yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
       );
       const joinedUse =
         ordinaryPreparedUse === undefined
           ? null
           : nativeCreationCanonicalJson(
-              Schema.encodeSync(OrdinaryCheckoutUseV1)(ordinaryPreparedUse),
+              yield* Schema.encodeEffect(OrdinaryCheckoutUseV1)(ordinaryPreparedUse).pipe(
+                Effect.orDie,
+              ),
             );
       const execution =
         ordinaryCheckoutExecution === undefined
@@ -12385,6 +12448,40 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       dispatchWithReceiptEffect(command, undefined, undefined, prepare),
     );
 
+  const dispatchOrdinaryPreparedBranchRename: OrchestratorV2Shape["dispatchOrdinaryPreparedBranchRename"] =
+    (commandId, observation) => {
+      const threadId = observation.execution.originalUse.lease.ownerThreadId;
+      return threadDispatch
+        .withLock(
+          threadId,
+          eventSink.withTransaction(
+            Effect.gen(function* () {
+              const lease = yield* eventSink.transitionOrdinaryPreparedBranch({
+                observation,
+                commandId,
+                commitMetadata: dispatchWithReceiptEffect({
+                  type: "thread.metadata.update",
+                  commandId,
+                  threadId,
+                  branch: observation.renamedBranch,
+                  worktreePath: observation.targetSource.worktreePath,
+                }),
+              });
+              const target = yield* resolveWorktreeOwnershipTarget(threadId, lease.resourcePath);
+              yield* eventSink.onCommit(
+                Effect.sync(() =>
+                  rememberOwnedWorktree(lease, "ordinary", {
+                    projectId: target.thread.projectId,
+                    ...observation.targetSource,
+                  }),
+                ),
+              );
+            }),
+          ),
+        )
+        .pipe(Effect.mapError(mapOrdinaryCheckoutReadError(threadId)));
+    };
+
   const dispatchOrdinaryPreparedRunRelease: OrchestratorV2Shape["dispatchOrdinaryPreparedRunRelease"] =
     (candidate, inputUse, inputExecution) =>
       Effect.gen(function* () {
@@ -12433,8 +12530,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (
           execution !== undefined &&
           nativeCreationCanonicalJson(
-            Schema.encodeSync(OrdinaryCheckoutUseV1)(execution.originalUse),
-          ) !== nativeCreationCanonicalJson(Schema.encodeSync(OrdinaryCheckoutUseV1)(use))
+            yield* Schema.encodeEffect(OrdinaryCheckoutUseV1)(execution.originalUse).pipe(
+              Effect.orDie,
+            ),
+          ) !==
+            nativeCreationCanonicalJson(
+              yield* Schema.encodeEffect(OrdinaryCheckoutUseV1)(use).pipe(Effect.orDie),
+            )
         )
           return yield* unavailable("Prepared execution belongs to another original checkout use");
         return yield* threadDispatch.withLock(
@@ -13057,15 +13159,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const payload = effect?.payload_json;
           const requestMatches =
             typeof payload === "string" &&
-            (yield* Effect.try({
-              try: () =>
-                nativeCreationCanonicalJson(JSON.parse(payload)) ===
-                nativeCreationCanonicalJson({
-                  type: "provider-session.detach",
-                  providerSessionId: intent.targetBinding.providerSessionId,
+            (yield* decodeJson(payload).pipe(
+              Effect.flatMap((request) =>
+                Effect.try({
+                  try: () =>
+                    nativeCreationCanonicalJson(request) ===
+                    nativeCreationCanonicalJson({
+                      type: "provider-session.detach",
+                      providerSessionId: intent.targetBinding.providerSessionId,
+                    }),
+                  catch: () => false,
                 }),
-              catch: () => false,
-            }).pipe(Effect.orElseSucceed(() => false)));
+              ),
+              Effect.orElseSucceed(() => false),
+            ));
           const effectMatches =
             effect?.thread_id === input.threadId &&
             effect?.effect_type === "provider-session.detach" &&
@@ -13172,7 +13279,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const requestDigest = nativeCreationSha256(
         nativeCreationCanonicalJson({
           schema: "t3.current-runtime-stop-request/v2",
-          request: yield* Schema.encodeEffect(OrchestrationV2StopCurrentThreadRuntimeInput)(input),
+          request: yield* Schema.encodeEffect(OrchestrationV2StopCurrentThreadRuntimeInput)(
+            input,
+          ).pipe(Effect.orDie),
         }),
       );
       const actorDigest = nativeCreationSha256(
@@ -13240,12 +13349,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                       binding: current.binding,
                       driver: current.driver,
                       evidenceRevision: current.evidenceRevision,
-                    }),
+                    }).pipe(Effect.orDie),
                   ) !==
                     nativeCreationCanonicalJson(
                       yield* Schema.encodeEffect(OrchestrationV2CurrentThreadRuntimeTarget)(
                         input.target,
-                      ),
+                      ).pipe(Effect.orDie),
                     )
                 ) {
                   return yield* new OrchestratorDispatchError({
@@ -13433,18 +13542,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return yield* threadDispatch.withLock(
         command.threadId,
         Effect.gen(function* () {
-          const replay = yield* eventSink
-            .readCommandReceiptIdentity(command.commandId)
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestratorDispatchError({
-                    commandId: command.commandId,
-                    commandType: command.type,
-                    cause,
-                  }),
-              ),
-            );
+          const replay = yield* eventSink.readCommandReceiptIdentity(command.commandId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause,
+                }),
+            ),
+          );
           let originalQueuedAdmission: OrdinaryCheckoutAdmissionV1 | undefined;
           let ordinaryTarget:
             | Effect.Success<ReturnType<typeof bindOrdinaryCheckoutTarget>>
@@ -14028,6 +14135,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readOrdinaryCheckoutAdmissionForRun,
     beginOrdinaryPreparedCheckoutUse,
     revalidateOrdinaryCheckoutUse,
+    dispatchOrdinaryPreparedBranchRename,
     dispatchOrdinaryPreparedRunRelease,
     registerOrdinaryCheckoutExecution,
     revalidateOrdinaryCheckoutExecution,
@@ -14306,6 +14414,15 @@ const layerUnavailable: Layer.Layer<OrchestratorV2> = Layer.succeed(
           reason: "unavailable",
           threadId: admission.capture.threadId,
           path: admission.capture.canonicalCheckoutPath,
+          message: "Orchestration V2 live runtime is not configured",
+        }),
+      ),
+    dispatchOrdinaryPreparedBranchRename: (_commandId, observation) =>
+      Effect.fail(
+        new OrdinaryCheckoutOwnershipError({
+          reason: "unavailable",
+          threadId: observation.execution.originalUse.lease.ownerThreadId,
+          path: observation.checkoutPath,
           message: "Orchestration V2 live runtime is not configured",
         }),
       ),

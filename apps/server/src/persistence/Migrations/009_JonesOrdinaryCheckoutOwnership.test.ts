@@ -21,6 +21,11 @@ import {
 } from "../../orchestration-v2/OrdinaryCheckoutOwnership.ts";
 import { migrationManifest, runMigrations } from "../Migrations.ts";
 
+class SyntheticAcceptanceFailure extends Schema.TaggedError<SyntheticAcceptanceFailure>()(
+  "SyntheticAcceptanceFailure",
+  { cause: Schema.Defect() },
+) {}
+
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const timestamp = "2026-10-03T00:00:00.000Z";
 const birth = {
@@ -279,22 +284,25 @@ it.effect(
 it.effect(
   "delegated child admission binds its own birth and checkout to the actual outer parent command and receipt",
   () =>
-    Effect.sync(() => {
-      const outer = Schema.encodeSync(OrchestrationV2Command)(
-        Schema.decodeUnknownSync(OrchestrationV2Command, { onExcessProperty: "error" })({
-          type: "delegated_task.request",
-          commandId: "command:delegated-fixture",
-          parentThreadId: "thread:parent-fixture",
-          parentRunId: "run:parent-fixture",
-          parentNodeId: "node:parent-fixture",
-          task: "Inspect the fixture.",
-          title: "Fixture child",
-          modelSelection: { instanceId: "fixture-codex", model: "fixture-model" },
-          runtimeMode: "approval-required",
-          interactionMode: "plan",
-          createdBy: "user",
-          creationSource: "web",
-        }),
+    Effect.gen(function* () {
+      const outer = yield* Schema.decodeUnknownEffect(OrchestrationV2Command, {
+        onExcessProperty: "error",
+      })({
+        type: "delegated_task.request",
+        commandId: "command:delegated-fixture",
+        parentThreadId: "thread:parent-fixture",
+        parentRunId: "run:parent-fixture",
+        parentNodeId: "node:parent-fixture",
+        task: "Inspect the fixture.",
+        title: "Fixture child",
+        modelSelection: { instanceId: "fixture-codex", model: "fixture-model" },
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        createdBy: "user",
+        creationSource: "web",
+      }).pipe(Effect.orDie);
+      const encodedOuter = yield* Schema.encodeEffect(OrchestrationV2Command)(outer).pipe(
+        Effect.orDie,
       );
       if (outer.type !== "delegated_task.request")
         throw new Error("Expected delegated command fixture");
@@ -302,8 +310,8 @@ it.effect(
         ...capture,
         commandId: outer.commandId,
         commandType: outer.type,
-        canonicalCommand: outer,
-        commandDigest: ordinaryCheckoutCommandDigestV1(outer),
+        canonicalCommand: encodedOuter,
+        commandDigest: ordinaryCheckoutCommandDigestV1(encodedOuter),
         origin: { kind: "delegated_child" as const, parentThreadId: outer.parentThreadId },
       };
       const childAdmission = {
@@ -346,22 +354,25 @@ it.effect(
 it.effect(
   "runless prepared launch carries actual accepted creation and target evidence without inventing run or outbox claim",
   () =>
-    Effect.sync(() => {
-      const creation = Schema.encodeSync(OrchestrationV2Command)(
-        Schema.decodeUnknownSync(OrchestrationV2Command, { onExcessProperty: "error" })({
-          type: "thread.create",
-          commandId: "command:runless-fixture",
-          threadId: capture.threadId,
-          projectId: capture.projectId,
-          title: "Runless fixture",
-          modelSelection: { instanceId: "fixture-codex", model: "fixture-model" },
-          runtimeMode: "approval-required",
-          interactionMode: "plan",
-          branch: capture.branch,
-          worktreePath: capture.canonicalCheckoutPath,
-          createdBy: "user",
-          creationSource: "web",
-        }),
+    Effect.gen(function* () {
+      const creation = yield* Schema.decodeUnknownEffect(OrchestrationV2Command, {
+        onExcessProperty: "error",
+      })({
+        type: "thread.create",
+        commandId: "command:runless-fixture",
+        threadId: capture.threadId,
+        projectId: capture.projectId,
+        title: "Runless fixture",
+        modelSelection: { instanceId: "fixture-codex", model: "fixture-model" },
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        branch: capture.branch,
+        worktreePath: capture.canonicalCheckoutPath,
+        createdBy: "user",
+        creationSource: "web",
+      }).pipe(Effect.orDie);
+      const encodedCreation = yield* Schema.encodeEffect(OrchestrationV2Command)(creation).pipe(
+        Effect.orDie,
       );
       if (creation.type !== "thread.create")
         throw new Error("Expected actual thread creation fixture");
@@ -373,8 +384,8 @@ it.effect(
         ...capture,
         commandId: creation.commandId,
         commandType: creation.type,
-        canonicalCommand: creation,
-        commandDigest: ordinaryCheckoutCommandDigestV1(creation),
+        canonicalCommand: encodedCreation,
+        commandDigest: ordinaryCheckoutCommandDigestV1(encodedCreation),
         applicationBirth: runlessBirth,
         lease: {
           ...capture.lease,
@@ -421,9 +432,9 @@ it.effect(
         },
         lease: runlessCapture.lease,
       };
-      const decoded = Schema.decodeUnknownSync(OrdinaryCheckoutUseV1, {
+      const decoded = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutUseV1, {
         onExcessProperty: "error",
-      })(rawUse);
+      })(rawUse).pipe(Effect.orDie);
       assert.equal(decoded.source.kind, "prepared_launch");
       assert.equal(runlessAdmission.run, null);
       assert.throws(() =>
@@ -443,7 +454,7 @@ it.effect(
       yield* runMigrations({ toMigrationInclusive: 56 });
       const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       assert.deepEqual(
-        upstream.map((row) => [row.migration_id, row.name]),
+        upstream.map((row): readonly [unknown, unknown] => [row.migration_id, row.name]),
         migrationManifest,
       );
       assert.deepEqual(
@@ -674,6 +685,7 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations();
       yield* sql`PRAGMA foreign_keys = ON`;
+      const injectedCause = new Error("synthetic outer transaction failure");
       const result = yield* Effect.result(
         sql.withTransaction(
           Effect.gen(function* () {
@@ -683,11 +695,17 @@ it.effect(
             yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_effect_links ${sql.insert(linkRow)}`;
             yield* sql`INSERT INTO orchestration_v2_worktree_path_admissions ${sql.insert(operationRow)}`;
             yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_target_transitions ${sql.insert(transitionRow)}`;
-            return yield* Effect.fail(new Error("synthetic outer transaction failure"));
+            return yield* Effect.fail(new SyntheticAcceptanceFailure({ cause: injectedCause }));
           }),
         ),
       );
       assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "SyntheticAcceptanceFailure");
+        if (result.failure._tag === "SyntheticAcceptanceFailure") {
+          assert.strictEqual(result.failure.cause, injectedCause);
+        }
+      }
       assert.deepEqual(yield* sql`SELECT * FROM orchestration_command_receipts`, []);
       assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, []);
       assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_worktree_path_admissions`, []);
@@ -844,16 +862,23 @@ it.effect(
       yield* sql`PRAGMA foreign_keys = ON`;
       yield* insertReceipt();
       yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_admissions ${sql.insert(admissionRow)}`;
+      const injectedCause = new Error("synthetic later acceptance failure");
       const result = yield* Effect.result(
         sql.withTransaction(
           Effect.gen(function* () {
             yield* insertLaterReceipt();
             yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_commands ${sql.insert(laterCommandRow)}`;
-            return yield* Effect.fail(new Error("synthetic later acceptance failure"));
+            return yield* Effect.fail(new SyntheticAcceptanceFailure({ cause: injectedCause }));
           }),
         ),
       );
       assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "SyntheticAcceptanceFailure");
+        if (result.failure._tag === "SyntheticAcceptanceFailure") {
+          assert.strictEqual(result.failure.cause, injectedCause);
+        }
+      }
       assert.deepEqual(yield* sql`SELECT command_id FROM orchestration_command_receipts`, [
         { command_id: capture.commandId },
       ]);

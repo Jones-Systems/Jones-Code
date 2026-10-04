@@ -76,7 +76,7 @@ import {
   type ProviderEventOrigin,
 } from "./ProviderEventOrigin.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-import type { LegacyLeaseOwnerV1 } from "./LegacyLeaseCleanup.ts";
+import type { LegacyLeaseInventoryError, LegacyLeaseOwnerV1 } from "./LegacyLeaseCleanup.ts";
 import {
   registerProviderManagedActorProducer,
   type ProviderManagedActorAdmissionV1,
@@ -166,6 +166,13 @@ function capturedTestOrigin(
   };
 }
 
+function requireNativeThreadId(providerThread: OrchestrationV2ProviderThread): string {
+  const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+  if (nativeThreadId == null)
+    throw new Error(`Provider thread ${providerThread.id} has no native thread id.`);
+  return nativeThreadId;
+}
+
 function capturedTestTurnOrigin(
   runtime: ProviderAdapterV2SessionRuntime,
   producer: ProviderEventOrigin["producer"],
@@ -180,7 +187,7 @@ function capturedTestTurnOrigin(
         providerThreadId: turn.providerThread.id,
         providerSessionId: runtime.providerSessionId,
         instanceId: runtime.instanceId,
-        nativeThreadId: turn.providerThread.nativeThreadRef!.nativeId,
+        nativeThreadId: requireNativeThreadId(turn.providerThread),
         runtimeGeneration: runtime.runtimeGeneration!,
       },
       runId: turn.runId,
@@ -204,7 +211,7 @@ function runtimeIdentityEvent(input: {
       providerThreadId: input.providerThread.id,
       providerSessionId: input.runtime.providerSessionId,
       instanceId: input.runtime.instanceId,
-      nativeThreadId: input.providerThread.nativeThreadRef!.nativeId,
+      nativeThreadId: requireNativeThreadId(input.providerThread),
       runtimeGeneration: input.generation,
     },
     attestation: {
@@ -711,7 +718,7 @@ it.effect(
         const fresh: ProviderAdapterV2Event = {
           type: "provider_thread.updated",
           driver: CODEX_DRIVER,
-          providerThread: { ...fixture.providerThread, status: "running" },
+          providerThread: { ...fixture.providerThread, status: "active" },
         };
         yield* Queue.offer(
           queue,
@@ -1118,7 +1125,7 @@ function managedActorAdmission(
     const commandId = CommandId.make(`command:managed-actor:${fixture.threadId}`);
     const command = { type: "message.dispatch", commandId, threadId: fixture.threadId };
     const nowMs = DateTime.toEpochMillis(fixture.now);
-    const capture = Schema.decodeUnknownSync(OrdinaryCheckoutCaptureV1)({
+    const capture = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutCaptureV1)({
       version: 1,
       commandId,
       commandType: command.type,
@@ -1141,12 +1148,12 @@ function managedActorAdmission(
         renewedAtMs: nowMs,
         expiresAtMs: nowMs + 300000,
       },
-    });
+    }).pipe(Effect.orDie);
     const at = DateTime.formatIso(fixture.now);
-    const admission = Schema.decodeUnknownSync(OrdinaryCheckoutAdmissionV1)({
+    const admission = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutAdmissionV1)({
       version: 1,
       admissionId: ordinaryCheckoutAdmissionIdV1(capture),
-      capture: Schema.encodeSync(OrdinaryCheckoutCaptureV1)(capture),
+      capture: yield* Schema.encodeEffect(OrdinaryCheckoutCaptureV1)(capture).pipe(Effect.orDie),
       receipt: {
         commandId,
         threadId: fixture.threadId,
@@ -1172,7 +1179,7 @@ function managedActorAdmission(
         messageId: fixture.turn.message.messageId,
       },
       recordedAt: at,
-    });
+    }).pipe(Effect.orDie);
     const admissionRef = ordinaryCheckoutAdmissionRefV1(admission);
     const source = {
       kind: "outbox",
@@ -1189,21 +1196,21 @@ function managedActorAdmission(
       expectedAttempt: 1,
       leaseExpiresAt: DateTime.formatIso(DateTime.add(fixture.now, { minutes: 5 })),
     };
-    const originalUse = Schema.decodeUnknownSync(OrdinaryCheckoutUseV1)({
+    const originalUse = yield* Schema.decodeUnknownEffect(OrdinaryCheckoutUseV1)({
       version: 1,
       kind: "ordinary_checkout_use",
       operationId: source.link.effectId,
       admission: admissionRef,
       source,
       lease: capture.lease,
-    });
+    }).pipe(Effect.orDie);
     return {
       startExecution: makeOrdinaryCheckoutExecutionRefV1({
         originalUse,
-        executor: Schema.decodeUnknownSync(OrdinaryCheckoutExecutionExecutorV1)({
+        executor: yield* Schema.decodeUnknownEffect(OrdinaryCheckoutExecutionExecutorV1)({
           kind: "actual_outbox_claim",
           source,
-        }),
+        }).pipe(Effect.orDie),
       }),
       admission,
       checkpointScopeId: CheckpointScopeId.make(`scope:${fixture.threadId}`),
@@ -1349,13 +1356,16 @@ it.effect("captures an actual ordinary execution result and rejects a copied run
       });
       yield* capture.revalidateCaptured;
       const owner = (yield* fixture.sink.readCurrentProviderRuntimeOwner(fixture.threadId))!;
+      const runtimeGeneration = fixture.runtime.runtimeGeneration;
+      if (runtimeGeneration === undefined)
+        return yield* Effect.die("The captured fixture runtime must have a generation.");
       assert.deepEqual(capture.binding, {
         threadId: fixture.threadId,
         providerThreadId: fixture.providerThread.id,
         providerSessionId: fixture.sessionId,
         instanceId: fixture.runtime.instanceId,
-        runtimeGeneration: fixture.runtime.runtimeGeneration,
-        nativeThreadId: fixture.providerThread.nativeThreadRef!.nativeId,
+        runtimeGeneration,
+        nativeThreadId: requireNativeThreadId(fixture.providerThread),
         evidenceRevision: owner.evidenceRevision,
       });
       assert.equal(capture.runId, fixture.turn.runId);
@@ -1652,18 +1662,19 @@ it.effect(
       yield* Effect.gen(function* () {
         const fixture = yield* preparePendingStartStopFixture("pinned-stop-resident");
         const owner = (yield* fixture.sink.readCurrentProviderRuntimeOwner(fixture.threadId))!;
+        const runtimeGeneration = owner.binding.runtimeGeneration;
+        if (runtimeGeneration === null)
+          return yield* Effect.die("The pinned fixture owner must have a generation.");
+        const binding = { ...owner.binding, runtimeGeneration };
         const result = yield* fixture.manager.stopPinnedRuntime({
           operationId: "effect:pinned-stop-resident",
-          binding: {
-            ...owner.binding,
-            runtimeGeneration: owner.binding.runtimeGeneration!,
-          },
+          binding,
           expectedEvidenceRevision: owner.evidenceRevision,
         });
         assert.deepEqual(result, {
           status: "stopped",
           operationId: "effect:pinned-stop-resident",
-          binding: owner.binding,
+          binding,
           cancelledPendingStart: false,
           interruptedProviderTurnIds: [],
           readback: { threadAttached: false },
@@ -2467,9 +2478,13 @@ it.effect(
             generation = "managed-single-next";
             source = undefined;
             yield* opened!.beforeRuntimeReplacement!(generation);
-            const reserved = yield* sink.readProviderRuntimeEvidence(owner);
+            const reserved = yield* sink.readProviderRuntimeEvidence(owner).pipe(Effect.orDie);
             assert.equal(reserved?.binding.runtimeGeneration, generation);
-            assert.isNull(yield* sink.readProviderContinuationSourceIdentity(reserved!.binding));
+            assert.isNull(
+              yield* sink
+                .readProviderContinuationSourceIdentity(reserved!.binding)
+                .pipe(Effect.orDie),
+            );
             yield* Deferred.succeed(entered, undefined);
             yield* Deferred.await(gate);
             source = {
@@ -2742,18 +2757,31 @@ it.effect("fences retained old evidence before a nonresident replacement factory
             };
             return;
           }
-          assert.isTrue(Option.isNone(yield* manager.get(input.providerSessionId)));
+          assert.isTrue(
+            Option.isNone(yield* manager.get(input.providerSessionId).pipe(Effect.orDie)),
+          );
           yield* input.beforeRuntimeReplacement!(generation);
-          const reserved = yield* eventSink.readProviderRuntimeEvidence(threadId);
+          const reserved = yield* eventSink
+            .readProviderRuntimeEvidence(threadId)
+            .pipe(Effect.orDie);
           assert.equal(reserved?.binding.runtimeGeneration, generation);
           assert.equal(reserved?.binding.providerSessionId, input.providerSessionId);
           assert.isAbove(reserved!.evidenceRevision, previous!.evidenceRevision);
-          assert.isNull(yield* eventSink.readProviderContinuationSourceIdentity(reserved!.binding));
+          assert.isNull(
+            yield* eventSink
+              .readProviderContinuationSourceIdentity(reserved!.binding)
+              .pipe(Effect.orDie),
+          );
           assert.deepEqual(
-            yield* eventSink.readProviderContinuationSourceIdentity(previous!.binding),
+            yield* eventSink
+              .readProviderContinuationSourceIdentity(previous!.binding)
+              .pipe(Effect.orDie),
             capturedSource,
           );
-          assert.equal((yield* manager.observeCurrentThreadRuntime(threadId)).status, "unknown");
+          assert.equal(
+            (yield* manager.observeCurrentThreadRuntime(threadId).pipe(Effect.orDie)).status,
+            "unknown",
+          );
           factoryFenceChecked = true;
         });
       yield* manager.open({
@@ -3623,11 +3651,6 @@ function makeProviderAdapter(
         }
 
         const runtime = {
-          get runtimeGeneration() {
-            return options.runtimeGeneration === undefined
-              ? input.nativeOperation?.runtimeGeneration
-              : options.runtimeGeneration();
-          },
           get continuationSourceIdentity() {
             return options.continuationSourceIdentity?.();
           },
@@ -3685,6 +3708,16 @@ function makeProviderAdapter(
           rollbackThread: () => unimplemented("rollbackThread unused in test"),
           forkThread: () => unimplemented("forkThread unused in test"),
         } satisfies ProviderAdapterV2SessionRuntime;
+        // A fixture generation may be absent at read time, so expose it the way the
+        // manager exposes a dynamic runtime generation.
+        Object.defineProperty(runtime, "runtimeGeneration", {
+          configurable: true,
+          enumerable: true,
+          get: () =>
+            options.runtimeGeneration === undefined
+              ? input.nativeOperation?.runtimeGeneration
+              : options.runtimeGeneration(),
+        });
         options.onRuntimeCreated?.(runtime);
         return runtime;
       }),
@@ -6936,7 +6969,8 @@ it.effect("legacy inventory reservation blocks new admission and expires its rev
         providerInstanceId: modelSelection.instanceId,
         threadId,
       });
-      let captured: Effect.Effect<void, unknown> = Effect.die("missing reservation");
+      let captured: Effect.Effect<void, LegacyLeaseInventoryError> =
+        Effect.die("missing reservation");
       const fiber = yield* manager.withLegacyOwnerAbsent(
         legacyInventoryOwner(threadId),
         (revalidate) =>

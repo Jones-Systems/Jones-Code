@@ -1,4 +1,8 @@
-import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  ThreadId,
+  type OrchestrationV2ProviderSession,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -8,6 +12,11 @@ import { unknownProviderGoal, type ProviderGoalReadResult } from "../provider/pr
 import type { ProviderRuntimeBinding } from "./ProviderAdapter.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+
+// Runtime sessions expose `providerSession` as a live getter, so a status read after the
+// goal RPC must not inherit narrowing from the read before it.
+const isSessionStopped = (status: OrchestrationV2ProviderSession["status"]): boolean =>
+  status === "stopped" || status === "error";
 
 export class ProviderSessionGoalService extends Context.Service<
   ProviderSessionGoalService,
@@ -39,8 +48,7 @@ const make = Effect.gen(function* () {
       if (sessionId == null) return unknownProviderGoal("no_session");
       const persistedSession = context.providerSessions.find((session) => session.id === sessionId);
       if (persistedSession === undefined) return unknownProviderGoal("no_session");
-      if (persistedSession.status === "stopped" || persistedSession.status === "error")
-        return unknownProviderGoal("session_stopped");
+      if (isSessionStopped(persistedSession.status)) return unknownProviderGoal("session_stopped");
       const resident = yield* sessions
         .get(sessionId)
         .pipe(Effect.orElseSucceed(() => Option.none()));
@@ -57,10 +65,7 @@ const make = Effect.gen(function* () {
         runtime.driver !== persistedSession.driver
       )
         return unknownProviderGoal("instance_mismatch");
-      if (
-        runtime.providerSession.status === "stopped" ||
-        runtime.providerSession.status === "error"
-      )
+      if (isSessionStopped(runtime.providerSession.status))
         return unknownProviderGoal("session_stopped");
       if (nativeThreadId == null || nativeThreadId.length === 0)
         return unknownProviderGoal("native_cursor_missing");
@@ -98,8 +103,7 @@ const make = Effect.gen(function* () {
         current.value !== runtime ||
         runtime.runtimeGeneration !== generation ||
         runtime.instanceId !== input.expectedInstanceId ||
-        runtime.providerSession.status === "stopped" ||
-        runtime.providerSession.status === "error" ||
+        isSessionStopped(runtime.providerSession.status) ||
         Option.isNone(after) ||
         after.value.thread.modelSelection.instanceId !== input.expectedInstanceId ||
         afterThread?.id !== providerThread.id ||
@@ -109,8 +113,7 @@ const make = Effect.gen(function* () {
         afterSession === undefined ||
         afterSession.providerInstanceId !== input.expectedInstanceId ||
         afterSession.driver !== runtime.driver ||
-        afterSession.status === "stopped" ||
-        afterSession.status === "error" ||
+        isSessionStopped(afterSession.status) ||
         result.nativeThreadId !== nativeThreadId
       )
         return unknownProviderGoal("context_changed", nativeThreadId);

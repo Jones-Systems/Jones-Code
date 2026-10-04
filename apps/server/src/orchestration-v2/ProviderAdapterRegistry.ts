@@ -236,7 +236,7 @@ export function makeLayer(
 
 export function makeLayerEffect<R, E>(
   adapters: Effect.Effect<ReadonlyArray<ProviderAdapter.ProviderAdapterV2Shape>, E, R>,
-): Layer.Layer<ProviderAdapterRegistryV2, E, R> {
+): Layer.Layer<ProviderAdapterRegistryV2, E, Exclude<R, Scope.Scope>> {
   return Layer.effect(
     ProviderAdapterRegistryV2,
     adapters.pipe(Effect.map((entries) => ProviderAdapterRegistryV2.of(makeRegistry(entries)))),

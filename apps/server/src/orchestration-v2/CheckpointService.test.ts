@@ -915,6 +915,8 @@ it.effect.each([
             )
           : undefined;
       if (blocker !== undefined) yield* Deferred.await(entered);
+      if (fixture.use.source.kind !== "outbox")
+        return yield* Effect.die("Final checkpoint fixture requires its original outbox source");
       const operation = service.capture({
         scope: fixture.scope,
         ordinaryCheckoutExecution:

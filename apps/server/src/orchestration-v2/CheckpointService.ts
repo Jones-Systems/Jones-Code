@@ -327,14 +327,12 @@ export const layer: Layer.Layer<
           (execution === undefined ||
             basis.scopeId !== input.scope.id ||
             basis.runId !== input.runId ||
-            JSON.stringify(
-              Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(
-                basis.checkpointExecution,
-              ),
-            ) !==
-              JSON.stringify(
-                Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1)(execution),
-              ))
+            (yield* Schema.encodeEffect(
+              Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1),
+            )(basis.checkpointExecution).pipe(Effect.orDie)) !==
+              (yield* Schema.encodeEffect(
+                Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1),
+              )(execution).pipe(Effect.orDie)))
         )
           return yield* failure(
             "claim_mismatch",
@@ -348,12 +346,12 @@ export const layer: Layer.Layer<
         if (
           execution !== undefined &&
           input.ordinaryCheckoutUse !== undefined &&
-          JSON.stringify(
-            Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(input.ordinaryCheckoutUse),
-          ) !==
-            JSON.stringify(
-              Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(execution.originalUse),
-            )
+          (yield* Schema.encodeEffect(
+            Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutUseV1),
+          )(input.ordinaryCheckoutUse).pipe(Effect.orDie)) !==
+            (yield* Schema.encodeEffect(
+              Schema.fromJsonString(OrdinaryCheckout.OrdinaryCheckoutUseV1),
+            )(execution.originalUse).pipe(Effect.orDie))
         )
           return yield* failure(
             "claim_mismatch",

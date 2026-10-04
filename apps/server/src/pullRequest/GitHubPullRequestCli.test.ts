@@ -232,7 +232,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       let activeToken = "broad-credential";
-      const commands: VcsProcess.VcsProcessInput[] = [];
+      const commands: VcsProcess.VcsProcessInput<unknown, unknown>[] = [];
       const github = yield* GitHubCli.make.pipe(
         Effect.provide(Layer.merge(GitHubGraphQlBudget.layer, SourceControlRateLimit.layer)),
         Effect.provideService(VcsProcess.VcsProcess, {

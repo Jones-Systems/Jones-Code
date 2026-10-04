@@ -1,4 +1,6 @@
 import { assert, it } from "@effect/vitest";
+import * as NodePath from "@effect/platform-node/NodePath";
+import * as Path from "effect/Path";
 import { CommandId, EventId, RunId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -557,6 +559,7 @@ const namespaceFixture = (
     let persisted: EventSink.AttachmentNamespaceCleanupRecordedObservationV1 | null = null;
     const serial = yield* makeKeyedSerialExecutor<ThreadId>();
     const fixture = makeAttachmentNamespaceCleanup({
+      path: yield* Path.Path,
       configuredRoot: `${namespaceRoot}/../attachments`,
       executor: {
         withLock: <A, E, R>(key: ThreadId, effect: Effect.Effect<A, E, R>) =>
@@ -663,7 +666,7 @@ const namespaceFixture = (
       }),
     });
     return { invoke: fixture, basis, calls, removed, records };
-  });
+  }).pipe(Effect.provide(NodePath.layer));
 
 it.effect(
   "qualified namespace cleanup anchors original claim before I/O under one shared thread lock",

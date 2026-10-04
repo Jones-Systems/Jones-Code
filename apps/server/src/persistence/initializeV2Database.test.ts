@@ -320,7 +320,7 @@ it.effect("cancellation before publication closes the snapshot scope without pub
         ...fs,
         link: Effect.fn(function* (requestedSnapshotPath) {
           yield* Deferred.succeed(publicationReached, requestedSnapshotPath);
-          yield* Effect.never;
+          return yield* Effect.never;
         }),
       });
       const fiber = yield* initializeV2Database(destinationPath).pipe(

@@ -13,13 +13,17 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
+import * as SchemaIssue from "effect/SchemaIssue";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as EventSink from "./EventSink.ts";
+import * as EventSinkJsonCodec from "./EventSinkJsonCodec.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -33,6 +37,23 @@ const TestLayer = Layer.mergeAll(EventSink.layer, EffectOutbox.layer).pipe(
   Layer.provideMerge(stores),
 );
 
+const encodeFixtureJson = Schema.decodeEffect(
+  Schema.Unknown.pipe(
+    Schema.decodeTo(Schema.String, {
+      decode: SchemaGetter.onSome<string, unknown>((input, options) => {
+        try {
+          return Effect.succeed(Option.some(JSON.stringify(input)));
+        } catch (cause) {
+          return Effect.fail(
+            new SchemaIssue.InvalidValue({ nativeJsonCause: cause }, input, options),
+          );
+        }
+      }),
+      encode: SchemaGetter.forbiddenEncoding,
+    }),
+  ),
+);
+
 const insertBirth = Effect.fn("WorktreeOwnershipLease.test.insertBirth")(function* (input: {
   readonly threadId: ThreadId;
   readonly eventId: string;
@@ -44,7 +65,7 @@ const insertBirth = Effect.fn("WorktreeOwnershipLease.test.insertBirth")(functio
   readonly fullApplicationIdentity?: boolean;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const payload = JSON.stringify({
+  const payload = yield* encodeFixtureJson({
     id: input.projectionId ?? input.threadId,
     ...(input.historyOrigin === undefined ? {} : { historyOrigin: input.historyOrigin }),
     ...(input.fullApplicationIdentity === true
@@ -53,7 +74,7 @@ const insertBirth = Effect.fn("WorktreeOwnershipLease.test.insertBirth")(functio
           createdAt: "2026-10-03T00:00:00Z",
         }
       : {}),
-  });
+  }).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))));
   const rows = yield* sql<{ readonly sequence: number }>`
     INSERT INTO orchestration_events (
       event_id, aggregate_kind, stream_id, stream_version, event_type,
@@ -148,9 +169,18 @@ const ordinaryOwnUseFixture = Effect.fn("WorktreeOwnershipLease.test.ordinaryOwn
       branch: app.branch,
       worktreePath: app.worktreePath,
     };
-    const canonicalCommand = JSON.parse(
-      JSON.stringify(Schema.encodeSync(OrchestrationV2Command)(command)),
+    const encodedCommand = yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(
+      Effect.orDie,
     );
+    const commandJson = yield* encodeFixtureJson(encodedCommand).pipe(
+      Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+    );
+    const decodedCommand = yield* EventSinkJsonCodec.decodeJson(commandJson).pipe(
+      Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+    );
+    const canonicalCommand = yield* Schema.decodeUnknownEffect(
+      OrdinaryCheckout.OrdinaryCheckoutCaptureV1.fields.canonicalCommand,
+    )(decodedCommand).pipe(Effect.orDie);
     const context: EventSink.OrdinaryCheckoutCommitContextV1 = {
       command,
       captureAfterProjection: () =>
@@ -426,6 +456,8 @@ it.layer(TestLayer)("WorktreeOwnershipLeaseStore", (it) => {
           "producer-replacement",
           "unknown",
           "lease-replacement",
+          "unproved-branch",
+          "foreign-owner",
         ] as const) {
           const value = yield* ordinaryPreparedExecutionFixture(`execution-loss-${variant}`);
           yield* value.sink.revalidateOrdinaryCheckoutExecution(value.execution);
@@ -436,6 +468,12 @@ it.layer(TestLayer)("WorktreeOwnershipLeaseStore", (it) => {
               use: value.use,
               reason: "captured preparation effect unknown",
             });
+          else if (variant === "unproved-branch")
+            yield* value.sql`UPDATE worktree_ownership_leases SET branch = 'unproved-branch'
+              WHERE resource_path = ${value.resourcePath}`;
+          else if (variant === "foreign-owner")
+            yield* value.sql`UPDATE worktree_ownership_leases SET owner_thread_id = 'thread:foreign-owner'
+              WHERE resource_path = ${value.resourcePath}`;
           else
             yield* value.sql`UPDATE worktree_ownership_leases SET lease_id = 'replacement-execution-lease'
           WHERE resource_path = ${value.resourcePath}`;
@@ -692,7 +730,9 @@ it.layer(TestLayer)("WorktreeOwnershipLeaseStore", (it) => {
         });
         assert.equal(
           Option.getOrThrow(yield* store.getOrdinaryThreadIncarnation(threadId)),
-          JSON.stringify(["t3.orchestration-v2.thread-birth/v1", eventId, sequence]),
+          yield* encodeFixtureJson(["t3.orchestration-v2.thread-birth/v1", eventId, sequence]).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
         );
         assert.isTrue(Option.isNone(yield* store.getThreadIncarnation(threadId)));
         assert.isTrue(
@@ -1041,7 +1081,11 @@ it.layer(TestLayer)("WorktreeOwnershipLeaseStore", (it) => {
           .pipe(Effect.flip);
         assert.equal(acquireError._tag, "PersistenceSqlError");
         assert.equal(acquireError.operation, "WorktreeOwnershipLeaseStore.acquire:query");
-        assert.equal(acquireError.cause instanceof EventSink.EventSinkWriteError, true);
+        assert.isTrue(Schema.is(EventSink.EventSinkWriteError)(acquireError.cause));
+        assert.isTrue(
+          Predicate.isObjectKeyword(acquireError.cause) &&
+            EventSink.EventSinkWriteError.prototype.isPrototypeOf(acquireError.cause),
+        );
         assert.deepEqual(
           (yield* store.listAll()).find((lease) => lease.resourcePath === resourcePath),
           retained,
@@ -1052,7 +1096,11 @@ it.layer(TestLayer)("WorktreeOwnershipLeaseStore", (it) => {
           .pipe(Effect.flip);
         assert.equal(renewError._tag, "PersistenceSqlError");
         assert.equal(renewError.operation, "WorktreeOwnershipLeaseStore.renew:query");
-        assert.equal(renewError.cause instanceof EventSink.EventSinkWriteError, true);
+        assert.isTrue(Schema.is(EventSink.EventSinkWriteError)(renewError.cause));
+        assert.isTrue(
+          Predicate.isObjectKeyword(renewError.cause) &&
+            EventSink.EventSinkWriteError.prototype.isPrototypeOf(renewError.cause),
+        );
         assert.deepEqual(
           (yield* store.listAll()).find((lease) => lease.resourcePath === resourcePath),
           retained,
@@ -1061,7 +1109,11 @@ it.layer(TestLayer)("WorktreeOwnershipLeaseStore", (it) => {
         const releaseError = yield* store.release(retained).pipe(Effect.flip);
         assert.equal(releaseError._tag, "PersistenceSqlError");
         assert.equal(releaseError.operation, "WorktreeOwnershipLeaseStore.release:query");
-        assert.equal(releaseError.cause instanceof EventSink.EventSinkWriteError, true);
+        assert.isTrue(Schema.is(EventSink.EventSinkWriteError)(releaseError.cause));
+        assert.isTrue(
+          Predicate.isObjectKeyword(releaseError.cause) &&
+            EventSink.EventSinkWriteError.prototype.isPrototypeOf(releaseError.cause),
+        );
         assert.deepEqual(
           (yield* store.listAll()).find((lease) => lease.resourcePath === resourcePath),
           retained,
@@ -1132,7 +1184,11 @@ it.layer(TestLayer)("WorktreeOwnershipLeaseStore", (it) => {
       const threadId = ThreadId.make("thread-v2-birth");
       const eventId = 'birth/"native"';
       const sequence = yield* insertBirth({ threadId, eventId, historyOrigin: "native" });
-      const expected = JSON.stringify(["t3.orchestration-v2.thread-birth/v1", eventId, sequence]);
+      const expected = yield* encodeFixtureJson([
+        "t3.orchestration-v2.thread-birth/v1",
+        eventId,
+        sequence,
+      ]).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))));
       assert.equal(Option.getOrThrow(yield* store.getThreadIncarnation(threadId)), expected);
 
       yield* sql`

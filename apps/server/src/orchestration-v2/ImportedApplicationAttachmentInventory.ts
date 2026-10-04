@@ -276,26 +276,25 @@ export function qualifyImportedApplicationAttachmentSnapshotV1(
   if (paths.status === "unavailable") return paths;
   const { inventoryId, recordedAt: _recordedAt, ...identity } = header;
   const native = header.source.kind === "native_import_batch";
+  // A const binding keeps the variant narrowing inside the callbacks below.
+  const source = header.source;
   if (
-    header.source.kind === "legacy_projection" &&
-    (header.source.sourceCut.legacyEventSequence < header.source.legacyBirth.sequence ||
-      Object.values(header.source.sourceCut.projectorPositions).some(
-        (position) => position < header.source.sourceCut.legacyEventSequence,
+    source.kind === "legacy_projection" &&
+    (source.sourceCut.legacyEventSequence < source.legacyBirth.sequence ||
+      Object.values(source.sourceCut.projectorPositions).some(
+        (position) => position < source.sourceCut.legacyEventSequence,
       ))
   ) {
     return { status: "unavailable", reason: "source_cut_incomplete" };
   }
   if (
-    header.source.kind === "native_import_batch" &&
-    (header.source.eventBasis.length !== header.source.messageCount * 2 ||
-      new Set(header.source.eventBasis.map((entry) => entry.eventId)).size !==
-        header.source.eventBasis.length ||
-      header.source.eventBasis.some(
+    source.kind === "native_import_batch" &&
+    (source.eventBasis.length !== source.messageCount * 2 ||
+      new Set(source.eventBasis.map((entry) => entry.eventId)).size !== source.eventBasis.length ||
+      source.eventBasis.some(
         (entry, index) =>
           entry.sequence <=
-          (index === 0
-            ? header.applicationBirth.sequence
-            : header.source.eventBasis[index - 1]!.sequence),
+          (index === 0 ? header.applicationBirth.sequence : source.eventBasis[index - 1]!.sequence),
       ))
   ) {
     return { status: "unavailable", reason: "native_event_basis_unavailable" };

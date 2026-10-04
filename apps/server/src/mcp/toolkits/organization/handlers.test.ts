@@ -33,6 +33,8 @@ const thread: OrchestrationV2ThreadShell = {
   id: threadId,
   projectId: ProjectId.make("project-1"),
   title: "Thread",
+  createdBy: "user",
+  creationSource: "web",
   modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
   runtimeMode: "full-access",
   interactionMode: "default",

@@ -37,6 +37,7 @@ import {
   type ProviderManagedActorRunReaderV1,
 } from "./ProviderManagedActorCompletion.ts";
 
+const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
 const at = "2026-10-03T00:00:00.000Z";
 let fixtureOrdinal = 0;
 function fixture() {
@@ -313,12 +314,9 @@ describe("private managed actor completion", () => {
         assert.isNotNull(proof);
         yield* proof!.revalidateIssued;
         assert.isNull(validateIssuedProviderManagedActorClosure({ ...observation }, f.managedRef));
-        const observationJson = yield* Schema.encodeEffect(Schema.UnknownFromJsonString)(
-          observation,
-        );
-        const copiedObservation = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(
-          observationJson,
-        );
+        const observationJson = yield* Schema.encodeEffect(UnknownFromJsonString)(observation);
+        const copiedObservation =
+          yield* Schema.decodeUnknownEffect(UnknownFromJsonString)(observationJson);
         assert.isNull(validateIssuedProviderManagedActorClosure(copiedObservation, f.managedRef));
         assert.isNull(validateIssuedProviderManagedActorClosure(observation, fixture().managedRef));
         assert.strictEqual(closed(yield* reader.readClosure), observation);

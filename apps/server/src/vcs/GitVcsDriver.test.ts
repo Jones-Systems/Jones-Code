@@ -12,6 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { assert, it } from "@effect/vitest";
 
@@ -25,6 +26,7 @@ import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 import { runVcsDriverContractSuite } from "./testing/VcsDriverContractHarness.ts";
 
+const isVcsProcessExitError = Schema.is(VcsProcessExitError);
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-git-vcs-contract-",
 });
@@ -275,7 +277,7 @@ it.effect("checkpoint recovery refuses excessive candidates before probing", () 
           if (input.args.includes("add") && input.args.includes("-A")) stageAttempts++;
           return liveProcess.run(input).pipe(
             Effect.tapError((error) => {
-              if (error._tag === "VcsProcessExitError") stageError = error;
+              if (isVcsProcessExitError(error)) stageError = error;
               return Effect.void;
             }),
           );
@@ -353,8 +355,7 @@ it.effect.each([
           run: (input) =>
             captureProcess.run(input).pipe(
               Effect.tapError((error) => {
-                if (input.args.includes("add") && error._tag === "VcsProcessExitError")
-                  stageError = error;
+                if (input.args.includes("add") && isVcsProcessExitError(error)) stageError = error;
                 return Effect.void;
               }),
             ),
@@ -460,7 +461,7 @@ for (const blockedPhase of ["discovery", "probe", "retry"] as const) {
                   : Effect.void,
               ),
               Effect.tapError((error) => {
-                if (staging && error._tag === "VcsProcessExitError") stageError = error;
+                if (staging && isVcsProcessExitError(error)) stageError = error;
                 return Effect.void;
               }),
             );

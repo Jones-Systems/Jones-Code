@@ -78,16 +78,16 @@ function prepareManagedFixture(
   return Effect.gen(function* () {
     const threadId = turn.threadId;
     const commandId = `managed-command:${turn.attemptId}`;
-    const birth = Schema.decodeUnknownSync(
+    const birth = yield* Schema.decodeUnknownEffect(
       OrdinaryOwnership.OrdinaryCheckoutCaptureV1.fields.applicationBirth,
     )({
       kind: "application_v2_thread_birth",
       threadId,
       eventId: `birth:${turn.attemptId}`,
       sequence: 1,
-    });
+    }).pipe(Effect.orDie);
     const command = { type: "message.send", commandId, threadId };
-    const capture = Schema.decodeUnknownSync(OrdinaryOwnership.OrdinaryCheckoutCaptureV1)({
+    const capture = yield* Schema.decodeUnknownEffect(OrdinaryOwnership.OrdinaryCheckoutCaptureV1)({
       version: 1,
       commandId,
       commandType: command.type,
@@ -110,9 +110,11 @@ function prepareManagedFixture(
         renewedAtMs: 1,
         expiresAtMs: 300001,
       },
-    });
+    }).pipe(Effect.orDie);
     const at = "2026-10-03T00:00:00.000Z";
-    const admission = Schema.decodeUnknownSync(OrdinaryOwnership.OrdinaryCheckoutAdmissionV1)({
+    const admission = yield* Schema.decodeUnknownEffect(
+      OrdinaryOwnership.OrdinaryCheckoutAdmissionV1,
+    )({
       version: 1,
       admissionId: OrdinaryOwnership.ordinaryCheckoutAdmissionIdV1(capture),
       capture,
@@ -135,7 +137,7 @@ function prepareManagedFixture(
         messageId: turn.message.messageId,
       },
       recordedAt: at,
-    });
+    }).pipe(Effect.orDie);
     const source = {
       kind: "outbox",
       link: {
@@ -151,20 +153,22 @@ function prepareManagedFixture(
       expectedAttempt: 1,
       leaseExpiresAt: "2026-10-03T00:05:00.000Z",
     };
-    const originalUse = Schema.decodeUnknownSync(OrdinaryOwnership.OrdinaryCheckoutUseV1)({
+    const originalUse = yield* Schema.decodeUnknownEffect(OrdinaryOwnership.OrdinaryCheckoutUseV1)({
       version: 1,
       kind: "ordinary_checkout_use",
       operationId: `operation:${turn.attemptId}`,
       admission: OrdinaryOwnership.ordinaryCheckoutAdmissionRefV1(admission),
       source,
       lease: capture.lease,
-    });
+    }).pipe(Effect.orDie);
     const startExecution = OrdinaryOwnership.makeOrdinaryCheckoutExecutionRefV1({
       originalUse,
-      executor: Schema.decodeUnknownSync(OrdinaryOwnership.OrdinaryCheckoutExecutionExecutorV1)({
+      executor: yield* Schema.decodeUnknownEffect(
+        OrdinaryOwnership.OrdinaryCheckoutExecutionExecutorV1,
+      )({
         kind: "actual_outbox_claim",
         source,
-      }),
+      }).pipe(Effect.orDie),
     });
     const checkpointScopeId = CheckpointScopeId.make(`scope:${turn.attemptId}`);
     const reader = yield* ManagedCompletion.prepareProviderManagedActorRun(runtime, {
@@ -176,7 +180,9 @@ function prepareManagedFixture(
     yield* Effect.addFinalizer(() => reader.release);
     const managedRef = OrdinaryOwnership.makeOrdinaryCheckoutExecutionRefV1({
       originalUse,
-      executor: Schema.decodeUnknownSync(OrdinaryOwnership.OrdinaryCheckoutExecutionExecutorV1)({
+      executor: yield* Schema.decodeUnknownEffect(
+        OrdinaryOwnership.OrdinaryCheckoutExecutionExecutorV1,
+      )({
         kind: "captured_managed_run",
         captureId: `capture:${turn.attemptId}`,
         run: admission.run,
@@ -189,7 +195,7 @@ function prepareManagedFixture(
           instanceId: runtime.instanceId,
         },
         nativeThreadId: turn.providerThread.nativeThreadRef!.nativeId,
-      }),
+      }).pipe(Effect.orDie),
     });
     yield* reader.bindManagedExecution(managedRef);
     return { reader, startExecution, managedRef };
@@ -2359,7 +2365,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const executor = closure.observation.descriptor.managedExecution.executor;
           assert.equal(executor.kind, "captured_managed_run");
           if (executor.kind === "captured_managed_run")
-            assert.isUndefined(executor.binding.runtimeGeneration);
+            assert.isUndefined(
+              "runtimeGeneration" in executor.binding
+                ? executor.binding.runtimeGeneration
+                : undefined,
+            );
         }
         yield* Queue.shutdown(harness.sdkMessages);
         yield* managed.reader.revalidateCompletionBinding;

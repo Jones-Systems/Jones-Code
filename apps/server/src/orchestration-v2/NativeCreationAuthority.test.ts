@@ -774,13 +774,13 @@ it.effect("unknown native enrollment lookup denies through the authority port", 
 it.effect("issues opaque execution only after a new start and rechecks each actual effect", () =>
   Effect.gen(function* () {
     const value = yield* fixture;
-    const reference = Schema.decodeUnknownSync(NativeCreationExecutionReferenceV2)({
+    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
       version: 2,
       claimId: "fixture-execution-claim",
       stageCommandId: `${value.preparation.command.commandId}:native:v2:create`,
       effectId: "fixture-execution-effect",
       stage: "native_command",
-    });
+    }).pipe(Effect.orDie);
     const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
       type: "thread.create",
       commandId: reference.stageCommandId,
@@ -793,7 +793,7 @@ it.effect("issues opaque execution only after a new start and rechecks each actu
       return yield* Effect.die("Synthetic create stage decoded as another command");
     }
     const commandDigest = nativeCreationV2CommandDigest(command);
-    const nativeIdentity = Schema.decodeUnknownSync(NativeCommandIdentityV2)({
+    const nativeIdentity = yield* Schema.decodeUnknownEffect(NativeCommandIdentityV2)({
       kind: "native_creation_stage",
       version: 2,
       commandId: reference.stageCommandId,
@@ -802,7 +802,7 @@ it.effect("issues opaque execution only after a new start and rechecks each actu
       aggregateId: command.threadId,
       normalizedCommandDigest: commandDigest,
       bindingDigest: value.preparation.bindingDigest,
-    });
+    }).pipe(Effect.orDie);
     const resolved: NativeCreationResolvedExecutionV2 = {
       reference,
       command,

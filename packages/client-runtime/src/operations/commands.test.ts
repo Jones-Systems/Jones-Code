@@ -3,6 +3,7 @@ import {
   CheckpointRef,
   CheckpointScopeId,
   CommandId,
+  ComposerContextId,
   EnvironmentId,
   MessageId,
   NodeId,
@@ -348,7 +349,7 @@ describe("unified imported continuation commands", () => {
       sourcePlanRef: { threadId: v2ThreadId, planId: PlanId.make("reviewed-plan") },
       titleSeed: "Reviewed title",
       dispatchMode: { type: "start_immediately" },
-      deliveryIntent: "start",
+      deliveryIntent: "auto",
     },
     { type: "queued_run", runId: RunId.make("held-run"), messageId: IMPORTED_MESSAGE },
   ];
@@ -443,7 +444,7 @@ describe("unified imported continuation commands", () => {
               {
                 version: 1 as const,
                 kind: "image" as const,
-                contextId: "upload-context",
+                contextId: ComposerContextId.make("upload-context"),
                 label: "Uploaded image",
                 attachmentId: "draft-upload",
                 name: "upload.png",
@@ -1547,7 +1548,7 @@ describe("correlated thread deletion cleanup", () => {
         { type: "thread.delete", commandId, threadId: v2ThreadId, worktreeRemoval },
         { type: "thread.delete", commandId: "delete-only", threadId: v2ThreadId },
       ]);
-    }),
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 
   it.effect(
@@ -1591,6 +1592,6 @@ describe("correlated thread deletion cleanup", () => {
         expect(deletionObservations).toEqual([{ threadId: v2ThreadId, commandId }]);
         expect(commands).toHaveLength(1);
         expect(projectionRequests).toEqual([]);
-      }),
+      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 });

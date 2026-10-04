@@ -7,6 +7,7 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import * as EventSink from "./EventSink.ts";
+import { encodeBirthTupleJson, jsonCause } from "./EventSinkJsonCodec.ts";
 import type {
   OrdinaryCheckoutExecutionRefV1,
   OrdinaryCheckoutUseV1,
@@ -83,10 +84,10 @@ export interface WorktreeOwnershipLeaseStore {
   readonly renew: (
     input: typeof RenewLeaseInput.Type,
   ) => Effect.Effect<boolean, PersistenceSqlError>;
-  readonly renewOrdinaryOwnUse: (input: {
+  readonly renewOrdinaryOwnUse: <E = never>(input: {
     readonly ordinaryUse: OrdinaryCheckoutUseV1;
     readonly ordinaryCheckoutExecution?: OrdinaryCheckoutExecutionRefV1;
-    readonly revalidateCapturedOwner?: Effect.Effect<void, unknown>;
+    readonly revalidateCapturedOwner?: Effect.Effect<void, E>;
     readonly nowMs: number;
     readonly expiresAtMs: number;
   }) => Effect.Effect<boolean, PersistenceSqlError>;
@@ -287,11 +288,11 @@ export const makeWorktreeOwnershipLeaseStore = Effect.fn("makeWorktreeOwnershipL
               if (
                 birth === null ||
                 input.ownerIncarnation !==
-                  JSON.stringify([
+                  (yield* encodeBirthTupleJson([
                     "t3.orchestration-v2.thread-birth/v1",
                     birth.eventId,
                     birth.sequence,
-                  ])
+                  ]).pipe(Effect.catch((error) => Effect.die(jsonCause(error)))))
               )
                 return Option.none();
               const current = yield* findLeaseByResourcePath(input.resourcePath);

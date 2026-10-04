@@ -4053,8 +4053,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               threadId: threadInput.threadId,
               modelSelection: threadInput.modelSelection,
               runtimePolicy: threadInput.runtimePolicy,
-              nativeOperation: threadInput.nativeOperation,
-              nativeCreationExecution: threadInput.nativeCreationExecution,
+              ...(threadInput.nativeOperation === undefined
+                ? {}
+                : { nativeOperation: threadInput.nativeOperation }),
+              ...(threadInput.nativeCreationExecution === undefined
+                ? {}
+                : { nativeCreationExecution: threadInput.nativeCreationExecution }),
             });
           }
           yield* readModelsOnce(threadInput.runtimePolicy.cwd);

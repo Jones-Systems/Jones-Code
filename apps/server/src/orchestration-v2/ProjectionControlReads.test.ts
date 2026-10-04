@@ -136,6 +136,29 @@ function fixtureEvents(now: DateTime.Utc): ReadonlyArray<OrchestrationV2DomainEv
         completedAt: null,
       },
     },
+    // A runtime reply resolves the request's recorded node and the run it belongs to.
+    {
+      ...common,
+      id: EventId.make("control:node"),
+      type: "node.updated",
+      payload: {
+        id: nodeId,
+        threadId,
+        runId,
+        parentNodeId: null,
+        rootNodeId: nodeId,
+        kind: "root_turn",
+        status: "running",
+        countsForRun: true,
+        providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: now,
+        completedAt: null,
+      },
+    },
     {
       ...common,
       id: EventId.make("control:turn"),
@@ -204,6 +227,11 @@ for (const storage of ["sqlite", "memory"] as const) {
     () =>
       Effect.gen(function* () {
         const store = yield* ProjectionStore.ProjectionStoreV2;
+        // Only the SQLite case has an event store and SQL client beside its projection store.
+        const sqliteEventStore = yield* Effect.serviceOption(EventStore.EventStoreV2);
+        const sqliteClient = yield* Effect.serviceOption(SqlClient.SqlClient);
+        assert.equal(Option.isSome(sqliteEventStore), storage === "sqlite");
+        assert.equal(Option.isSome(sqliteClient), storage === "sqlite");
         const now = yield* DateTime.now;
         const threadEvent = fixtureEvents(now).find((event) => event.type === "thread.created")!;
         const runEvent = fixtureEvents(now).find((event) => event.type === "run.created")!;
@@ -241,7 +269,7 @@ for (const storage of ["sqlite", "memory"] as const) {
           };
           yield* store.apply(createdEvent);
           if (storage === "sqlite") {
-            yield* (yield* EventStore.EventStoreV2).append({ events: [createdEvent] });
+            yield* Option.getOrThrow(sqliteEventStore).append({ events: [createdEvent] });
           }
           const scopedRunId = RunId.make(`run:operating-counts:${name}`);
           yield* store.apply({
@@ -290,7 +318,7 @@ for (const storage of ["sqlite", "memory"] as const) {
           }
         }
         if (storage === "sqlite") {
-          yield* (yield* EventStore.EventStoreV2).appendProjectEvent({
+          yield* Option.getOrThrow(sqliteEventStore).appendProjectEvent({
             eventId: EventId.make("event:operating-counts:project-update"),
             aggregateKind: "project",
             aggregateId: countsProjectId,
@@ -306,7 +334,7 @@ for (const storage of ["sqlite", "memory"] as const) {
         const before = yield* store.getOperatingCountsCandidates({ projectId: countsProjectId });
         assert.isAbove(before.snapshotSequence, 0);
         if (storage === "sqlite") {
-          const eventStore = yield* EventStore.EventStoreV2;
+          const eventStore = Option.getOrThrow(sqliteEventStore);
           assert.equal(before.snapshotSequence, yield* eventStore.latestApplicationSequence);
           assert.isAbove(before.snapshotSequence, yield* eventStore.latestSequence());
         }
@@ -378,7 +406,7 @@ for (const storage of ["sqlite", "memory"] as const) {
         );
         assert.lengthOf((yield* store.getOperatingCountsCandidates()).threads, 6);
         if (storage === "sqlite") {
-          const sql = yield* SqlClient.SqlClient;
+          const sql = Option.getOrThrow(sqliteClient);
           // Candidate columns remain readable when unrelated shell and history JSON cannot decode.
           yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = '{broken'`;
           yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = '{broken'`;

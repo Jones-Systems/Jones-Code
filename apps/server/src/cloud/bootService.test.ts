@@ -168,8 +168,8 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
     active: true,
   };
   const runner = ProcessRunner.ProcessRunner.of({
-    run: Effect.fn("test.run_boot_service_command")(function* (
-      input: ProcessRunner.ProcessRunInput,
+    run: Effect.fn("test.run_boot_service_command")(function* <E, R>(
+      input: ProcessRunner.ProcessRunInput<E, R>,
     ) {
       const command = `${input.command} ${input.args.join(" ")}`;
       commands.push(command);

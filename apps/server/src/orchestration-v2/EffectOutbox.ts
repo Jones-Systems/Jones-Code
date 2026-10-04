@@ -15,6 +15,7 @@ import {
   ThreadId,
   OrchestrationV2StartWithImportedHistoryCommand,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -23,7 +24,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
+import * as SchemaIssue from "effect/SchemaIssue";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { decodeJson, decodeTaskKind, jsonCause } from "./EventSinkJsonCodec.ts";
 import { ProviderNativeEffectEvidence } from "./ProviderAdapter.ts";
 import { NativeCreationExecutionReferenceV2 } from "./NativeCreationAuthority.ts";
 import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
@@ -554,10 +558,32 @@ const decodeRequest = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationEffectRequestV2),
 );
 
+const decodeTaskProviderSessionId = Schema.decodeEffect(
+  Schema.String.pipe(
+    Schema.decodeTo(Schema.Unknown, {
+      decode: SchemaGetter.onSome<unknown, string>((input, options) => {
+        try {
+          const providerSessionId: unknown = JSON.parse(input).expectedBinding.providerSessionId;
+          return Effect.succeed(Option.some(providerSessionId));
+        } catch (cause) {
+          return Effect.fail(
+            new SchemaIssue.InvalidValue({ nativeJsonCause: cause }, input, options),
+          );
+        }
+      }),
+      encode: SchemaGetter.forbiddenEncoding,
+    }),
+  ),
+);
+
 // Envelope payloads must retain their reference; malformed envelopes cannot downgrade to plain work.
 export const decodeOrchestrationEffectPayloadV2 = (payload: string) =>
   Effect.gen(function* () {
-    const raw: unknown = yield* Effect.try(() => JSON.parse(payload));
+    const raw = yield* decodeJson(payload).pipe(
+      Effect.mapError(
+        (error) => new Cause.UnknownError(jsonCause(error), "An error occurred in Effect.try"),
+      ),
+    );
     if (typeof raw === "object" && raw !== null && Object.hasOwn(raw, "attachmentNamespaceCleanup"))
       return yield* decodeAttachmentPayload(raw);
     if (
@@ -569,6 +595,14 @@ export const decodeOrchestrationEffectPayloadV2 = (payload: string) =>
     }
     return { request: yield* decodeRequest(payload) };
   });
+
+class EffectOutboxPayloadError extends Schema.TaggedError<EffectOutboxPayloadError>()(
+  "EffectOutboxPayloadError",
+  { message: Schema.String, cause: Schema.Defect() },
+) {}
+
+const invalidEffectPayload = (message: string) =>
+  new EffectOutboxPayloadError({ message, cause: new Error(message) });
 
 const validateAttachmentAssociation = (input: {
   readonly id: string;
@@ -590,7 +624,7 @@ const validateAttachmentAssociation = (input: {
         : input.id !== `${reference.rollbackEffectId}:attachment.cleanup:prune`)
     )
       return yield* Effect.fail(
-        new Error("Attachment namespace reference differs from its effect association"),
+        invalidEffectPayload("Attachment namespace reference differs from its effect association"),
       );
   });
 
@@ -613,7 +647,7 @@ const validateNativeAssociation = (input: {
         input.request.type !== "thread-title.generate")
     ) {
       return yield* Effect.fail(
-        new Error("Native outbox reference differs from its effect association"),
+        invalidEffectPayload("Native outbox reference differs from its effect association"),
       );
     }
   });
@@ -623,7 +657,9 @@ const rowToEffect = (row: EffectRow) =>
     Effect.tap((payload) =>
       payload.request.type === row.effect_type
         ? Effect.void
-        : Effect.fail(new Error("Outbox effect type differs from its persisted payload")),
+        : Effect.fail(
+            invalidEffectPayload("Outbox effect type differs from its persisted payload"),
+          ),
     ),
     Effect.tap((payload) =>
       validateNativeAssociation({ id: row.effect_id, commandId: row.command_id, ...payload }),
@@ -994,7 +1030,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               };
               const rows = yield* sql`INSERT INTO orchestration_v2_unknown_effect_holds
           (effect_id, worker_id, operation_id, evidence_json, expected_attempt, held_at)
-          SELECT effect_id, ${input.workerId}, ${input.effectId}, ${Schema.encodeSync(Schema.fromJsonString(ResourceCleanupUnknownEvidenceV1))(evidence)},
+          SELECT effect_id, ${input.workerId}, ${input.effectId}, ${yield* Schema.encodeEffect(Schema.fromJsonString(ResourceCleanupUnknownEvidenceV1))(evidence).pipe(Effect.orDie)},
             ${input.expectedAttempt}, ${now} FROM orchestration_v2_effect_outbox WHERE effect_id = ${input.effectId}
             AND status = 'running' AND lease_owner = ${input.workerId} AND attempt_count = ${input.expectedAttempt} AND lease_expires_at > ${now}
             AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = ${input.effectId}) RETURNING effect_id`;
@@ -1199,7 +1235,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                         existing[0]!.payload_json !== payload)
                     ) {
                       return yield* Effect.fail(
-                        new Error("Referenced outbox effect identity is already bound differently"),
+                        invalidEffectPayload(
+                          "Referenced outbox effect identity is already bound differently",
+                        ),
                       );
                     }
                   }),
@@ -1687,7 +1725,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             INSERT INTO orchestration_v2_unknown_effect_holds
               (effect_id, worker_id, operation_id, evidence_json, expected_attempt, held_at)
             SELECT effect_id, ${workerId}, ${operationId},
-              ${Schema.encodeSync(Schema.fromJsonString(ProviderNativeEffectEvidence))(decoded)},
+              ${yield* Schema.encodeEffect(Schema.fromJsonString(ProviderNativeEffectEvidence))(decoded).pipe(Effect.orDie)},
               ${expectedAttempt}, ${now}
             FROM orchestration_v2_effect_outbox
             WHERE effect_id = ${effectId} AND status = 'running'
@@ -1731,7 +1769,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             INSERT INTO orchestration_v2_unknown_effect_holds
               (effect_id, worker_id, operation_id, evidence_json, expected_attempt, held_at)
             SELECT effect.effect_id, ${workerId}, ${effectId},
-              ${Schema.encodeSync(Schema.fromJsonString(ResourceCleanupUnknownEvidenceV1))(decoded)}, ${expectedAttempt}, ${now}
+              ${yield* Schema.encodeEffect(Schema.fromJsonString(ResourceCleanupUnknownEvidenceV1))(decoded).pipe(Effect.orDie)}, ${expectedAttempt}, ${now}
             FROM orchestration_v2_effect_outbox effect
             LEFT JOIN orchestration_v2_lease_cleanup_task_bindings binding ON binding.effect_id = effect.effect_id
             WHERE effect.effect_id = ${effectId} AND effect.status = 'running' AND effect.lease_owner = ${workerId}
@@ -1800,7 +1838,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                   }),
                 ),
               )(row.correlation_json, { onExcessProperty: "error" });
-              const kind = JSON.parse(row.task_json).kind;
+              const kind = yield* decodeTaskKind(row.task_json).pipe(
+                Effect.catch((error) => Effect.die(jsonCause(error))),
+              );
               if (
                 outcome.taskId !== input.effectId ||
                 outcome.result !== "succeeded" ||
@@ -1845,7 +1885,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 (kind === "provider" &&
                   (effect.request.type !== "provider-session.detach" ||
                     effect.request.providerSessionId !==
-                      JSON.parse(row.task_json).expectedBinding.providerSessionId)) ||
+                      (yield* decodeTaskProviderSessionId(row.task_json).pipe(
+                        Effect.catch((error) => Effect.die(jsonCause(error))),
+                      )))) ||
                 effect.attemptCount !== input.expectedAttempt
               )
                 return false;

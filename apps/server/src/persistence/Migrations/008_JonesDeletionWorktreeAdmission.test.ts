@@ -15,6 +15,9 @@ const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const timestamp = "2026-10-03T00:00:00Z";
 const startedAt = "2026-10-03T00:00:01Z";
 const updatedAt = "2026-10-03T00:00:02Z";
+// Same bytes as JSON.stringify; a failure stays a defect as the native throw was.
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(Effect.orDie);
 const consent = {
   projectId: "project:deletion-fixture",
   path: "/fixture/worktrees/original",
@@ -94,7 +97,7 @@ it.effect(
       yield* runMigrations({ toMigrationInclusive: 56 });
       const history = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       assert.deepEqual(
-        history.map((row) => [row.migration_id, row.name]),
+        history.map((row): readonly [unknown, unknown] => [row.migration_id, row.name]),
         migrationManifest,
       );
       assert.deepEqual(
@@ -176,18 +179,19 @@ it.effect(
       yield* sql`INSERT INTO orchestration_v2_thread_deletion_commands ${sql.insert(deletionCommand)}`;
       yield* insertDeletionParents("command:no-consent", "event:no-consent", 4);
       const canonical = canonicalDeletion("command:no-consent", false);
+      const noConsentInventoryJson = yield* encodeJson({
+        ...inventory,
+        leaseInventory: { status: "unavailable" },
+        captureStatus: "retained",
+        reason: "not_requested",
+      });
       const noConsent = {
         ...deletionCommand,
         command_id: "command:no-consent",
         canonical_command_json: canonical,
         command_digest: nativeCreationSha256(canonical),
         owner_birth_json: '{"birth":null}',
-        worktree_inventory_json: JSON.stringify({
-          ...inventory,
-          leaseInventory: { status: "unavailable" },
-          captureStatus: "retained",
-          reason: "not_requested",
-        }),
+        worktree_inventory_json: noConsentInventoryJson,
         deletion_event_id: "event:no-consent",
         deletion_event_sequence: 4,
       };

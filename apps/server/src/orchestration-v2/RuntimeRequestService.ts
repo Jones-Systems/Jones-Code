@@ -17,7 +17,7 @@ import * as EventSink from "./EventSink.ts";
 import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
 import { OrchestrationEffectRequestV2 } from "./EffectOutbox.ts";
 import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 export class RuntimeRequestResponseExecutionError extends Schema.TaggedError<RuntimeRequestResponseExecutionError>()(
   "RuntimeRequestResponseExecutionError",
@@ -143,13 +143,13 @@ export const layer: Layer.Layer<
           const execution = input.ordinaryCheckoutExecution;
           const requestDigest = nativeCreationSha256(
             nativeCreationCanonicalJson(
-              Schema.encodeSync(OrchestrationEffectRequestV2)({
+              yield* Schema.encodeEffect(OrchestrationEffectRequestV2)({
                 type: "runtime-request.respond",
                 providerSessionId: input.providerSessionId,
                 requestId: input.requestId,
                 ...(input.decision === undefined ? {} : { decision: input.decision }),
                 ...(input.answers === undefined ? {} : { answers: input.answers }),
-              }),
+              }).pipe(Effect.orDie),
             ),
           );
           if (
@@ -167,14 +167,14 @@ export const layer: Layer.Layer<
                 execution.executor.source.link.requestSha256 !== requestDigest ||
                 (input.ordinaryCheckoutUse !== undefined &&
                   nativeCreationCanonicalJson(
-                    Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
+                    yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
                       input.ordinaryCheckoutUse,
-                    ),
+                    ).pipe(Effect.orDie),
                   ) !==
                     nativeCreationCanonicalJson(
-                      Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
+                      yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
                         execution.originalUse,
-                      ),
+                      ).pipe(Effect.orDie),
                     ))))
           ) {
             return yield* new RuntimeRequestResponseExecutionError({
@@ -202,7 +202,7 @@ export const layer: Layer.Layer<
           yield* revalidate;
           yield* session.value.respondToRuntimeRequest({
             nativeOperation: {
-              operationId: `runtime-response:${input.requestId}:${randomUUID()}`,
+              operationId: `runtime-response:${input.requestId}:${NodeCrypto.randomUUID()}`,
               operation: "respond_to_request",
               instanceId: session.value.instanceId,
               threadId: input.threadId,

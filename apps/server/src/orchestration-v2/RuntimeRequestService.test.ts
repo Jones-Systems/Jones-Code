@@ -180,11 +180,15 @@ it.effect("forwards orchestrator-resolved runtime requests to the live adapter",
 
     assert.equal(getSession.mock.calls.length, 1);
     assert.equal(respondToRuntimeRequest.mock.calls.length, 1);
-    assert.deepEqual(respondToRuntimeRequest.mock.calls[0]?.[0], {
+    const response = respondToRuntimeRequest.mock.calls[0]?.[0];
+    const operationId = response?.nativeOperation?.operationId;
+    assert.isDefined(operationId);
+    if (operationId === undefined) return;
+    assert.deepEqual(response, {
       requestId,
       decision: "accept",
       nativeOperation: {
-        operationId: respondToRuntimeRequest.mock.calls[0]?.[0].nativeOperation?.operationId,
+        operationId,
         operation: "respond_to_request",
         instanceId: ProviderInstanceId.make("codex-response"),
         threadId,

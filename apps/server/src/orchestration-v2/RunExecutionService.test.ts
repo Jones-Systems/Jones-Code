@@ -4013,7 +4013,7 @@ function ordinaryManagedExecutionFixture(
       eventId: EventId.make("event:ordinary-managed-execution:birth"),
       sequence: 1,
     };
-    const capture = Schema.decodeUnknownSync(OrdinaryCheckout.OrdinaryCheckoutCaptureV1)({
+    const capture = yield* Schema.decodeUnknownEffect(OrdinaryCheckout.OrdinaryCheckoutCaptureV1)({
       version: 1,
       commandId,
       threadId,
@@ -4036,12 +4036,16 @@ function ordinaryManagedExecutionFixture(
         renewedAtMs: 1,
         expiresAtMs: 300001,
       },
-    });
+    }).pipe(Effect.orDie);
     const acceptedRun = { runId, runAttemptId: attemptId, nodeId: rootNodeId, messageId };
-    const admission = Schema.decodeUnknownSync(OrdinaryCheckout.OrdinaryCheckoutAdmissionV1)({
+    const admission = yield* Schema.decodeUnknownEffect(
+      OrdinaryCheckout.OrdinaryCheckoutAdmissionV1,
+    )({
       version: 1,
       admissionId: OrdinaryCheckout.ordinaryCheckoutAdmissionIdV1(capture),
-      capture: Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutCaptureV1)(capture),
+      capture: yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutCaptureV1)(capture).pipe(
+        Effect.orDie,
+      ),
       receipt: {
         commandId,
         threadId,
@@ -4062,7 +4066,7 @@ function ordinaryManagedExecutionFixture(
       ],
       run: acceptedRun,
       recordedAt: DateTime.formatIso(now),
-    });
+    }).pipe(Effect.orDie);
     const source = {
       kind: "outbox",
       link: {
@@ -4078,20 +4082,22 @@ function ordinaryManagedExecutionFixture(
       expectedAttempt: 1,
       leaseExpiresAt: DateTime.formatIso(DateTime.add(now, { minutes: 5 })),
     };
-    const originalUse = Schema.decodeUnknownSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)({
+    const originalUse = yield* Schema.decodeUnknownEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)({
       version: 1,
       kind: "ordinary_checkout_use",
       operationId: "effect:ordinary-managed-execution:ordinary-checkout:attempt:1",
       admission: source.link.admission,
       source,
       lease: capture.lease,
-    });
+    }).pipe(Effect.orDie);
     const startExecution = OrdinaryCheckout.makeOrdinaryCheckoutExecutionRefV1({
       originalUse,
-      executor: Schema.decodeUnknownSync(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)({
+      executor: yield* Schema.decodeUnknownEffect(
+        OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1,
+      )({
         kind: "actual_outbox_claim",
         source,
-      }),
+      }).pipe(Effect.orDie),
     });
     const order: Array<string> = [];
     const writes: Array<Parameters<EventSink.EventSinkV2Shape["writeWithEffects"]>[0]> = [];
@@ -4266,8 +4272,12 @@ function ordinaryManagedExecutionFixture(
                   input.ordinaryCheckoutExecution?.associationId,
                   startExecution.associationId,
                 );
-                const suppliedSink = yield* EventSink.EventSinkV2;
-                assert.equal(typeof suppliedSink.revalidateOrdinaryCheckoutExecution, "function");
+                const suppliedSink = yield* Effect.serviceOption(EventSink.EventSinkV2);
+                assert.isTrue(Option.isSome(suppliedSink));
+                assert.equal(
+                  typeof Option.getOrThrow(suppliedSink).revalidateOrdinaryCheckoutExecution,
+                  "function",
+                );
                 if (options.baselineOwnershipFailure)
                   return yield* new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
                     reason: "unknown_use",
@@ -4457,7 +4467,12 @@ it.effect(
         );
         assert.isNull(
           RunExecutionService.readIssuedOrdinaryManagedRunStartObservation(
-            JSON.parse(JSON.stringify(handle.actualStartObservation)),
+            yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+              handle.actualStartObservation,
+            ).pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))),
+              Effect.orDie,
+            ),
           ),
         );
         assert.isTrue(Object.isFrozen(handle.actualStartObservation));
@@ -4603,11 +4618,14 @@ it.effect(
         fixture.register(managed);
         yield* handle.activate(managed);
         yield* handle.awaitIngestionExit;
-        assert.equal((yield* handle.nativeCompletion.readClosure).status, "pending");
+        const nativeCompletion = handle.nativeCompletion;
+        assert.isDefined(nativeCompletion);
+        if (nativeCompletion === undefined) return;
+        assert.equal((yield* nativeCompletion.readClosure).status, "pending");
         yield* fixture.recordEndpoint;
-        assert.equal((yield* handle.nativeCompletion.readClosure).status, "pending");
+        assert.equal((yield* nativeCompletion.readClosure).status, "pending");
         yield* fixture.completeTask;
-        const actual = yield* handle.nativeCompletion.awaitNativeClosure;
+        const actual = yield* nativeCompletion.awaitNativeClosure;
         assert.equal(actual.status, "closed");
         if (actual.status !== "closed") return;
         const issued = ProviderManagedActorCompletion.validateIssuedProviderManagedActorClosure(
@@ -4622,7 +4640,7 @@ it.effect(
         );
         yield* handle.close;
         assert.equal(
-          (yield* handle.nativeCompletion.readClosure).status,
+          (yield* nativeCompletion.readClosure).status,
           "closed",
           "Closing output scope cannot release a native completion ticket.",
         );
@@ -4644,13 +4662,16 @@ it.effect(
         );
         assert.isDefined(handle);
         if (handle === undefined) return;
+        const nativeCompletion = handle.nativeCompletion;
+        assert.isDefined(nativeCompletion);
+        if (nativeCompletion === undefined) return;
         assert.isTrue(Exit.isFailure(yield* Effect.exit(handle.revalidateMutation)));
         yield* handle.revalidateCompletionBinding;
         yield* RunExecutionService.readIssuedOrdinaryManagedRunStartObservation(
           handle.actualStartObservation,
         )!.revalidateIssued;
         assert.equal(
-          (yield* handle.nativeCompletion.readClosure).status,
+          (yield* nativeCompletion.readClosure).status,
           "pending",
           "An uncommitted managed ref cannot issue a closure.",
         );
@@ -4660,7 +4681,7 @@ it.effect(
         });
         fixture.register(managed);
         yield* handle.activate(managed);
-        assert.equal((yield* handle.nativeCompletion.readClosure).status, "closed");
+        assert.equal((yield* nativeCompletion.readClosure).status, "closed");
         fixture.replace();
         assert.isTrue(Exit.isFailure(yield* Effect.exit(handle.revalidateCompletionBinding)));
         assert.isTrue(Exit.isFailure(yield* Effect.exit(handle.revalidateCaptured)));

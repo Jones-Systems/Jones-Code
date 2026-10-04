@@ -140,6 +140,7 @@ const makeFacts = (): NativeCommandFactsV2 => {
     projection,
     creationHistory: [],
     nativeCreationHistory: null,
+    workstreamWitness: null,
     commitSnapshot: {
       commandId,
       threadId,

@@ -13,11 +13,14 @@ import {
   WsOrchestrationV2DispatchNativeBootstrapRpc,
 } from "@t3tools/contracts";
 import { it as effectIt } from "@effect/vitest";
+import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
+import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
@@ -293,6 +296,47 @@ const producerFixture = (text = "Synthetic immutable text") => {
 };
 const preparedFixture = producerFixture();
 
+// Launch reads only `worktreesDir`; the remaining fields are a complete synthetic config.
+const syntheticServerConfig = (worktreesDir: string) =>
+  Layer.effect(
+    ServerConfig.ServerConfig,
+    Effect.gen(function* () {
+      const baseDir = "/synthetic/native-creation";
+      return ServerConfig.make({
+        ...(yield* ServerConfig.deriveServerPaths(baseDir, undefined)),
+        worktreesDir,
+        logLevel: "Error",
+        traceMinLevel: "Info",
+        traceTimingEnabled: true,
+        traceBatchWindowMs: 200,
+        traceMaxBytes: 10 * 1024 * 1024,
+        traceMaxFiles: 10,
+        otlpTracesUrl: undefined,
+        otlpMetricsUrl: undefined,
+        otlpLogsUrl: undefined,
+        otlpTracesExport: DEFAULT_SIGNAL_EXPORT,
+        otlpMetricsExport: DEFAULT_SIGNAL_EXPORT,
+        otlpLogsExport: DEFAULT_SIGNAL_EXPORT,
+        otelEnvironment: OtelEnvironment.none,
+        cwd: preparedFixture.historical.projectCwd,
+        baseDir,
+        mode: "web",
+        autoBootstrapProjectFromCwd: false,
+        logWebSocketEvents: false,
+        tailscaleServeEnabled: false,
+        tailscaleServePort: 443,
+        port: 0,
+        host: undefined,
+        desktopBootstrapToken: undefined,
+        staticDir: undefined,
+        devUrl: undefined,
+        devAllowedOrigins: [],
+        noBrowser: false,
+        startupPresentation: "browser",
+      });
+    }),
+  ).pipe(Layer.provide(Path.layer));
+
 function makeNativeFixture(mode: "accepted" | "revoked" | "unavailable" | "lost-normalization") {
   const database = SqlitePersistenceMemory;
   const repositoryLayer = NativeCreationRepositoryLayer.layer.pipe(Layer.provide(database));
@@ -419,7 +463,7 @@ function makeNativeFixture(mode: "accepted" | "revoked" | "unavailable" | "lost-
     }),
   ).pipe(Layer.provide(Layer.mergeAll(originalThreads, repositoryLayer, database)));
   const external = Layer.mergeAll(
-    Layer.mock(ServerConfig.ServerConfig)({ worktreesDir }),
+    syntheticServerConfig(worktreesDir),
     FileSystem.layerNoop({
       realPath: (path) => Effect.succeed(path),
       exists: (path) => Effect.succeed(createdPaths.has(path)),
@@ -467,7 +511,9 @@ function makeNativeFixture(mode: "accepted" | "revoked" | "unavailable" | "lost-
     Layer.mock(TextGeneration.TextGeneration)({}),
     ServerSettings.layerTest(),
     makeProviderRegistryLayer(),
-    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({}),
+    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+      namedProjectsRoot: "/synthetic/native-creation/projects",
+    }),
   );
   const launch = ThreadLaunch.layer.pipe(
     Layer.provide(

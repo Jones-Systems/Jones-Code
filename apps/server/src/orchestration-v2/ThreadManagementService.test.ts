@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import {
   CommandId,
   ChatAttachmentId,
+  type AuthEnvironmentScope,
   AuthSessionId,
   EnvironmentAuthenticatedPrincipal,
   EventId,
@@ -70,6 +71,7 @@ it.effect("keeps guarded dispatch and native observation off transcript hydratio
           ensureTranscript: () =>
             Effect.sync(() => {
               hydrations += 1;
+              return { importedThreadCount: 0, importedMessageCount: 0 };
             }),
         }),
       ),
@@ -124,7 +126,7 @@ it.effect("keeps guarded dispatch and native observation off transcript hydratio
       sessionId: AuthSessionId.make("session:native-direct"),
       subject: "user:synthetic",
       method: "browser-session-cookie",
-      scopes: new Set(["orchestration:operate"]),
+      scopes: new Set<AuthEnvironmentScope>(["orchestration:operate"]),
     }),
   );
 });

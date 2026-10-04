@@ -793,7 +793,9 @@ const make = Effect.gen(function* () {
                   row.occurred_at !== event.occurredAt
                 )
                   return null;
-                const payload = yield* Effect.try(() => JSON.parse(row.payload_json) as unknown);
+                const payload = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
+                  row.payload_json,
+                );
                 if (
                   nativeCreationCanonicalJson(payload) !==
                   nativeCreationCanonicalJson(event.payload)

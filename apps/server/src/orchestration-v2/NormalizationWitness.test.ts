@@ -8,6 +8,7 @@ import {
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import * as Witness from "./NormalizationWitness.ts";
 
@@ -89,7 +90,12 @@ it.effect(
     Effect.gen(function* () {
       const encoded = Witness.encodeNormalizationWitnessRow(row);
       assert.deepEqual(yield* Witness.decodeNormalizationWitnessRow(encoded), row);
-      assert.deepEqual(JSON.parse(encoded.application_birth_json), birth);
+      assert.deepEqual(
+        yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
+          encoded.application_birth_json,
+        ),
+        birth,
+      );
     }),
 );
 

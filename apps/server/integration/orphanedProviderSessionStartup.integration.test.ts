@@ -326,10 +326,8 @@ const seed = Effect.fnUntraced(function* (
 // The parked root observes queue readiness only; no provider effect is executed.
 // Trial uses a deterministic commit barrier. Native Jones grant/listener
 // qualification remains covered by the native trial helper's separate checks.
-const coldStartup = Effect.fnUntraced(function* (
-  inspectBeforeTrial: (
-    stage: Recovery.ProviderStartupRecoveryStage,
-  ) => Effect.Effect<void, unknown>,
+const coldStartup = Effect.fnUntraced(function* <E>(
+  inspectBeforeTrial: (stage: Recovery.ProviderStartupRecoveryStage) => Effect.Effect<void, E>,
 ) {
   const recovery = yield* Recovery.ProviderRuntimeRecoveryService;
   const importer = yield* LegacyImporter.LegacyV1ThreadImporter;
@@ -599,6 +597,11 @@ for (const mode of [
             // persistence fence, not production caller authority or physical closure.
             if (mode === "current STOP") {
               const stopCommandId = CommandId.make("command:startup:current-stop");
+              const runtimeGeneration = marker.binding.runtimeGeneration;
+              if (runtimeGeneration === null)
+                return yield* Effect.die(
+                  "The current STOP fixture requires a registered runtime generation",
+                );
               const facts = yield* sink.readNativeCommandFacts({
                 threadId: marker.threadId,
                 commandId: stopCommandId,
@@ -627,7 +630,7 @@ for (const mode of [
                   incarnation: (yield* sink.readApplicationThreadBirth(marker.threadId))!,
                   canonicalRequestDigest: "c".repeat(64),
                   actorBindingDigest: "d".repeat(64),
-                  targetBinding: marker.binding,
+                  targetBinding: { ...marker.binding, runtimeGeneration },
                   targetEvidenceRevision: marker.evidenceRevision,
                   queuedBases: [],
                   affectedRunIds: [],

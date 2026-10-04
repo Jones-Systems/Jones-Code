@@ -250,6 +250,10 @@ export const makeCodexNativeCreationFixture = (
       recordNormalizedCommand: unexpected,
       reserveCommand: unexpected,
       getReservedCommand: unexpected,
+      reserveThreadRecoveryCommand: unexpected,
+      readThreadRecoveryCommand: unexpected,
+      recordNativeEffectConfirmation: unexpected,
+      readNativeEffectConfirmation: unexpected,
       startEffect: unexpected,
       completeEffect: unexpected,
     });
@@ -438,6 +442,7 @@ export function makeReplayServerConfig(
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
       stateDir,
+      authorityStateDir: path.join(baseDir, "native-store-authority"),
       dbPath: path.join(stateDir, "state.sqlite"),
       keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
       settingsPath: path.join(stateDir, "settings.json"),

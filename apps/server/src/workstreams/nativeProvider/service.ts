@@ -418,17 +418,18 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
     if (!sameAuthority(binding, before.tuple))
       return unknownSettlement(request, "authority_changed");
     const readBinding = ports.orchestrator.observeNativeWorkstreamSettlementBinding;
-    const observed = yield* (
-      readBinding === undefined
-        ? ports.eventSink
-            .readNativeCommandFacts({
-              threadId: ThreadId.make(request.identity.native_id),
-              commandId: CommandId.make(attempt.nativeCommandId),
-              authority: { actorSessionId: AuthSessionId.make(binding.session_id) },
-            })
-            .pipe(Effect.map((facts) => ({ facts, expectedIdentity: null })))
-        : readBinding({ enrollment: binding, request, attempt })
-    ).pipe(Effect.result);
+    const observed = yield* readBinding === undefined
+      ? ports.eventSink
+          .readNativeCommandFacts({
+            threadId: ThreadId.make(request.identity.native_id),
+            commandId: CommandId.make(attempt.nativeCommandId),
+            authority: { actorSessionId: AuthSessionId.make(binding.session_id) },
+          })
+          .pipe(
+            Effect.map((facts) => ({ facts, expectedIdentity: null })),
+            Effect.result,
+          )
+      : readBinding({ enrollment: binding, request, attempt }).pipe(Effect.result);
     const after = yield* checkAuthority;
     if (after.state === "failed") return unknownSettlement(request, "authority_unavailable");
     if (!sameAuthority(binding, after.tuple))

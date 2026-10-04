@@ -548,13 +548,15 @@ describe("PiAdapterV2", () => {
         modelSelection: modelSelection("default"),
         runtimePolicy,
       });
+      const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+      if (nativeThreadId == null) return assert.fail("Pi ensured a thread without a native id");
       const binding = {
         threadId: THREAD_ID,
         providerThreadId: providerThread.id,
         providerSessionId: runtime.providerSessionId,
         instanceId: PI_INSTANCE_ID,
         runtimeGeneration: runtime.runtimeGeneration!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
+        nativeThreadId,
       };
       assert.isString(runtime.runtimeGeneration);
       assert.isUndefined(runtime.getGoal);
@@ -587,13 +589,15 @@ describe("PiAdapterV2", () => {
         modelSelection: modelSelection("default"),
         runtimePolicy,
       });
+      const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+      if (nativeThreadId == null) return assert.fail("Pi ensured a thread without a native id");
       const binding = {
         threadId: THREAD_ID,
         providerThreadId: providerThread.id,
         providerSessionId: runtime.providerSessionId,
         instanceId: PI_INSTANCE_ID,
         runtimeGeneration: runtime.runtimeGeneration!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
+        nativeThreadId,
       };
       for (const partial of [
         { isStreaming: undefined },

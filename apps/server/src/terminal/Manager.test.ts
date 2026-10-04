@@ -48,6 +48,7 @@ import {
   LegacyLeaseInventoryError,
   type LegacyLeaseOwnerV1,
 } from "../orchestration-v2/LegacyLeaseCleanup.ts";
+import { EventSinkStreamError } from "../orchestration-v2/EventSink.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";
 
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
@@ -642,7 +643,7 @@ it.layer(
           }),
       });
       const opening = yield* manager
-        .open(openInput({ providerInstanceId: "codex" }))
+        .open(openInput({ providerInstanceId: ProviderInstanceId.make("codex") }))
         .pipe(Effect.forkScoped({ startImmediately: true }));
       yield* Deferred.await(admitted);
       expect(ptyAdapter.spawnInputs).toHaveLength(0);
@@ -849,7 +850,13 @@ it.layer(
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager(5, {
         ownerObservation: {
-          observeCurrentBirth: () => Effect.fail(new Error("birth unavailable")),
+          observeCurrentBirth: (threadId) =>
+            Effect.fail(
+              new EventSinkStreamError({
+                threadId: ThreadId.make(threadId),
+                cause: new Error("birth unavailable"),
+              }),
+            ),
         },
       });
       yield* manager.open(openInput());

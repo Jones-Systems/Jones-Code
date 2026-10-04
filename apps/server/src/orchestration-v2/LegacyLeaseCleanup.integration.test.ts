@@ -39,6 +39,7 @@ const testLayer = Layer.mergeAll(
   Runtime.layer.pipe(Layer.provide(database)),
 );
 const now = "2026-01-01T00:00:00.000Z";
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const absent: LegacyOwnerAbsencePort = (_owner, body) => body(Effect.void);
 const seed = Effect.fnUntraced(function* (suffix = "orphan") {
   const sql = yield* SqlClient.SqlClient;
@@ -46,7 +47,7 @@ const seed = Effect.fnUntraced(function* (suffix = "orphan") {
   const leases = yield* makeWorktreeOwnershipLeaseStore();
   const threadId = ThreadId.make(`thread:legacy-lease:${suffix}`);
   const birthId = EventId.make(`event:legacy-lease:${suffix}`);
-  const payload = Schema.decodeUnknownSync(HistoricalV1.threadCreated)({
+  const payload = yield* Schema.decodeUnknownEffect(HistoricalV1.threadCreated)({
     threadId,
     projectId: ProjectId.make("project:legacy-lease"),
     title: "Original",
@@ -57,10 +58,10 @@ const seed = Effect.fnUntraced(function* (suffix = "orphan") {
     worktreePath: `/workspace/${suffix}`,
     createdAt: now,
     updatedAt: now,
-  });
+  }).pipe(Effect.orDie);
   const birth = yield* sql<{ readonly sequence: number }>`INSERT INTO orchestration_events
     (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
-    VALUES (${birthId}, 'thread', ${threadId}, 1, 'thread.created', ${now}, 'user', ${JSON.stringify(payload)}, '{}', 1) RETURNING sequence`;
+    VALUES (${birthId}, 'thread', ${threadId}, 1, 'thread.created', ${now}, 'user', ${yield* encodeJson(payload).pipe(Effect.orDie)}, '{}', 1) RETURNING sequence`;
   yield* sql`INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
     VALUES ('projection.threads', ${birth[0]!.sequence}, ${now}) ON CONFLICT(projector) DO UPDATE
     SET last_applied_sequence = excluded.last_applied_sequence`;
@@ -174,7 +175,7 @@ it.effect(
       const rows = yield* sql<{ readonly sequence: number }>`INSERT INTO orchestration_events
       (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, command_id, actor_kind, payload_json, metadata_json, application_event_version)
       VALUES ('event:legacy:deleted', 'thread', ${threadId}, 2, 'thread.deleted', ${now}, 'command:legacy:delete', 'user',
-        ${JSON.stringify({ threadId, deletedAt: now })}, '{}', 1) RETURNING sequence`;
+        ${yield* encodeJson({ threadId, deletedAt: now }).pipe(Effect.orDie)}, '{}', 1) RETURNING sequence`;
       yield* sql`UPDATE projection_state SET last_applied_sequence = ${rows[0]!.sequence} WHERE projector = 'projection.threads'`;
       yield* sql`INSERT INTO orchestration_command_receipts
       (command_id, aggregate_kind, aggregate_id, status, result_sequence, error, accepted_at)
@@ -220,7 +221,7 @@ for (const scenario of [
       if (scenario === "ambiguous-birth")
         yield* f.sql`INSERT INTO orchestration_events
       (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
-      VALUES ('second-v1-birth', 'thread', ${f.threadId}, 2, 'thread.created', ${now}, 'user', ${JSON.stringify(f.payload)}, '{}', 1)`;
+      VALUES ('second-v1-birth', 'thread', ${f.threadId}, 2, 'thread.created', ${now}, 'user', ${yield* encodeJson(f.payload).pipe(Effect.orDie)}, '{}', 1)`;
       if (scenario === "running-source")
         yield* f.sql`UPDATE provider_session_runtime SET status = 'running'`;
       if (scenario === "missing-source") yield* f.sql`DELETE FROM provider_session_runtime`;
@@ -284,11 +285,11 @@ for (const changed of ["inventory", "source"] as const) {
       assert.equal(basis.status, "ready");
       if (basis.status !== "ready") return;
       let validations = 0;
-      const revalidate = Effect.suspend(() => {
-        if (++validations === 1) return Effect.void;
-        return changed === "inventory"
-          ? Effect.fail(new LegacyLeaseInventoryError({ threadId: f.threadId, reason: "changed" }))
-          : f.sql`UPDATE provider_session_runtime SET status = 'running'`.pipe(Effect.asVoid);
+      const revalidate = Effect.gen(function* () {
+        if (++validations === 1) return;
+        if (changed === "inventory")
+          return yield* new LegacyLeaseInventoryError({ threadId: f.threadId, reason: "changed" });
+        yield* f.sql`UPDATE provider_session_runtime SET status = 'running'`;
       });
       assert.equal(
         (yield* f.sink

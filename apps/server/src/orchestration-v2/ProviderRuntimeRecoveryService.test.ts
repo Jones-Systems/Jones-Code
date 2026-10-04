@@ -185,7 +185,15 @@ for (const respectProjectPreference of [true, false]) {
                 releaseRestartContinuation: (input) =>
                   Effect.gen(function* () {
                     assert.strictEqual(input.marker, marker);
-                    yield* input.revalidateAfterTrial;
+                    // The store reports any failed post-trial revalidation as unqualified.
+                    yield* input.revalidateAfterTrial.pipe(
+                      Effect.mapError(
+                        () =>
+                          new EventSink.RestartContinuationMarkerError({
+                            reason: "qualification_unavailable",
+                          }),
+                      ),
+                    );
                     releases++;
                     return true;
                   }),
@@ -333,7 +341,15 @@ for (const changed of [false, true]) {
                     releases++;
                     assert.strictEqual(input.marker, marker);
                     assert.strictEqual(input.currentSnapshot, snapshot);
-                    yield* input.revalidateAfterTrial;
+                    // The store reports any failed post-trial revalidation as unqualified.
+                    yield* input.revalidateAfterTrial.pipe(
+                      Effect.mapError(
+                        () =>
+                          new EventSink.RestartContinuationMarkerError({
+                            reason: "qualification_unavailable",
+                          }),
+                      ),
+                    );
                     return true;
                   }),
                 commitCommand: () =>

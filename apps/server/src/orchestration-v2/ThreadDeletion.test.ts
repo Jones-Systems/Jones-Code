@@ -19,6 +19,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import { DeletionWorktreeRemovalPreconditionError } from "../git/DeletionWorktreeRemoval.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -486,11 +487,11 @@ it.effect(
         ...cleanupLease,
         resourcePath: "/workspace/replacement",
         leaseId: "lease-replacement",
-        ownerIncarnation: JSON.stringify([
+        ownerIncarnation: yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))([
           "t3.orchestration-v2.thread-birth/v1",
           "birth-replacement",
           3,
-        ]),
+        ]).pipe(Effect.orDie),
       };
       const oldBasis = {
         ...completedCleanupBasis(),
@@ -947,10 +948,15 @@ const worktreeClaim = {
   workerId: "worktree-original-worker",
   expectedAttempt: 1,
 };
+const requiredRemovalTarget = (binding: EventSink.DeletionWorktreeTaskBindingV1) => {
+  const target = EventSink.deletionWorktreeRemovalTargetV1(binding);
+  if (target === null) throw new Error("Worktree removal fixture requires an exact target");
+  return target;
+};
 const worktreeStart: EventSink.DeletionWorktreeRemovalStartV1 = {
   schema: "t3.deletion-worktree-removal-start/v1",
   ...worktreeClaim,
-  target: EventSink.deletionWorktreeRemovalTargetV1(removalTask),
+  target: requiredRemovalTarget(removalTask),
   startedAt: removalTask.recordedAt,
 };
 function worktreeExecutionBasis(): EventSink.DeletionWorktreeExecutionBasisV1 {
@@ -995,7 +1001,7 @@ function worktreeRunnerFixture(
   const calls: string[] = [];
   const originalStart = {
     ...worktreeStart,
-    target: EventSink.deletionWorktreeRemovalTargetV1(basis.binding),
+    target: requiredRemovalTarget(basis.binding),
   };
   const recorded: unknown[] = [];
   const finalized: unknown[] = [];

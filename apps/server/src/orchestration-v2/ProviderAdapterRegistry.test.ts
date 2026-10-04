@@ -515,7 +515,7 @@ it.effect(
         })
         .pipe(Effect.flip);
       assert.instanceOf(failure, ProviderAdapterResumeThreadError);
-      if (!(failure instanceof ProviderAdapterResumeThreadError)) {
+      if (!Schema.is(ProviderAdapterResumeThreadError)(failure)) {
         return yield* Effect.die("The decorated operation must retain its typed failure.");
       }
       assert.strictEqual(failure.nativeEffect?.outcome, "unknown");

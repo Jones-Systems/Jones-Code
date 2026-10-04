@@ -213,7 +213,15 @@ describe("OpenCode2Server owned process proof", () => {
       assert.isUndefined(connection.ownedProcess);
       assert.isUndefined(server.subscribeBeforeRuntimeReplacement);
       assert.isTrue(connection.external);
-    }).pipe(Effect.scoped),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        OpenCodeRuntime.OpenCodeRuntimeLive.pipe(
+          Layer.provide(OpenCodeServerLedger.layerTest),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
   );
 });
 
