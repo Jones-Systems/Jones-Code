@@ -953,11 +953,77 @@ export const layer: Layer.Layer<
             ReadonlySet<OrchestrationV2TurnItem["id"]>
           >(new Set(inheritedBackgroundTurnItemsById.keys()));
           const openRunOwnedSubagents = yield* Ref.make(emptyOpenRunOwnedSubagentProjection());
+          const bufferedAssistantEvents = new Map<string, ProviderAdapterV2Event>();
+          const retainBufferedAssistantEvent = (event: ProviderAdapterV2Event) => {
+            const snapshot =
+              event.type === "message.updated" && event.message.role === "assistant"
+                ? event.message
+                : event.type === "turn_item.updated" &&
+                    (event.turnItem.type === "assistant_message" || event.turnItem.type === "reasoning")
+                  ? event.turnItem
+                  : null;
+            if (
+              snapshot === null ||
+              snapshot.threadId !== input.run.threadId ||
+              snapshot.runId !== input.run.id
+            ) {
+              return;
+            }
+            const key = `${event.type}:${snapshot.id}`;
+            if (snapshot.streaming) {
+              bufferedAssistantEvents.set(key, event);
+            } else {
+              bufferedAssistantEvents.delete(key);
+            }
+          };
+          // Adapters may exit without a final text snapshot. Persist the latest
+          // routed root text before settlement; child streams keep their own lifecycle.
+          const flushBufferedAssistantEvents = Effect.fnUntraced(function* (
+            status: ProviderTerminalEvent["status"],
+          ) {
+            const completedAt = yield* DateTime.now;
+            for (const [key, event] of bufferedAssistantEvents) {
+              const finalizedEvent: ProviderAdapterV2Event =
+                event.type === "message.updated"
+                  ? {
+                      ...event,
+                      message: { ...event.message, streaming: false, updatedAt: completedAt },
+                    }
+                  : event.type === "turn_item.updated" &&
+                      (event.turnItem.type === "assistant_message" || event.turnItem.type === "reasoning")
+                    ? {
+                        ...event,
+                        turnItem: {
+                          ...event.turnItem,
+                          streaming: false,
+                          status,
+                          completedAt,
+                          updatedAt: completedAt,
+                        },
+                      }
+                    : event;
+              yield* providerEventIngestor.ingestNormalized({
+                analyticsContext: {
+                  modelSelection: input.modelSelection,
+                  runtimeMode: input.runtimePolicy.runtimeMode,
+                  interactionMode: input.runtimePolicy.interactionMode,
+                },
+                providerSessionId: input.providerSessionId,
+                providerInstanceId: input.run.providerInstanceId,
+                threadId: input.run.threadId,
+                runId: input.run.id,
+                nodeId: input.rootNode.id,
+                event: finalizedEvent,
+              });
+              bufferedAssistantEvents.delete(key);
+            }
+          });
           const finalizeRootRun = (terminal: ProviderTerminalEvent) =>
             Effect.gen(function* () {
               if (yield* Ref.get(rootRunFinalized)) {
                 return;
               }
+              yield* flushBufferedAssistantEvents(terminal.status);
               const providerThread = yield* Ref.get(latestProviderThread);
               const openSubagents = yield* Ref.get(openRunOwnedSubagents);
               yield* writeFinalRunEvents({
@@ -1174,6 +1240,7 @@ export const layer: Layer.Layer<
             Stream.tap((event) =>
               Effect.gen(function* () {
                 let storedEventCount = 0;
+                retainBufferedAssistantEvent(event);
                 const deliveredEvent = filterAssistantEvent(
                   event,
                   DateTime.toEpochMillis(yield* DateTime.now),
@@ -1274,7 +1341,8 @@ export const layer: Layer.Layer<
                     Effect.andThen(
                       finalized
                         ? Effect.void
-                        : Ref.get(latestProviderThread).pipe(
+                        : flushBufferedAssistantEvents("failed").pipe(
+                            Effect.andThen(Ref.get(latestProviderThread)),
                             Effect.flatMap((providerThread) =>
                               Ref.get(latestTurnItemOrdinal).pipe(
                                 Effect.flatMap((latestItemOrdinal) =>

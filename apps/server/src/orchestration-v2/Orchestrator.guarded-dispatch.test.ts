@@ -371,6 +371,29 @@ it.effect("rejects freshly reserved native creation before ordinary preparation 
   }).pipe(Effect.provide(makeTestLayer())),
 );
 
+it.effect("ordinary dispatch atomically captures checkout ownership and its real start effect", () =>
+  Effect.gen(function* () {
+    const { orchestrator, command } = yield* fixture("ordinary-admission");
+    const sink = yield* EventSink.EventSinkV2;
+    const sql = yield* SqlClient.SqlClient;
+    const accepted = yield* orchestrator.dispatch(command);
+    const admission = yield* sink.readOrdinaryCheckoutAdmission({ commandId: command.commandId, threadId: command.threadId });
+    assert.isNotNull(admission);
+    if (admission === null) return yield* Effect.die("Missing ordinary checkout admission");
+    assert.equal(admission.capture.threadId, command.threadId);
+    assert.equal(admission.capture.canonicalCheckoutPath, "/synthetic/guard/ordinary-admission");
+    assert.equal(admission.receipt.status, "accepted");
+    const effects = yield* sql<{ readonly effect_id: string }>`SELECT effect_id FROM orchestration_v2_effect_outbox
+      WHERE command_id = ${command.commandId} AND effect_type = 'provider-turn.start'`;
+    assert.lengthOf(effects, 1);
+    const link = yield* sink.readOrdinaryCheckoutEffectLink(effects[0]!.effect_id);
+    assert.equal(link?.admission.admissionId, admission.admissionId);
+    assert.deepEqual(yield* orchestrator.dispatch(command), accepted);
+    assert.deepEqual(yield* sink.readOrdinaryCheckoutAdmission({ commandId: command.commandId, threadId: command.threadId }), admission);
+    assert.lengthOf(yield* orchestrator.listWorktreeOwnershipLeases, 1);
+  }).pipe(Effect.provide(makeTestLayer())),
+);
+
 it.effect("rejects an ordinary message on another thread's checkout before preparation or durable acceptance", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

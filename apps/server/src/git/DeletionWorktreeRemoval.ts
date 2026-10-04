@@ -149,7 +149,7 @@ export const makeDeletionWorktreeRemoval = Effect.gen(function* () {
       return entries === null
         ? { status: "unavailable", reason: "registration_malformed" } as const
         : { status: "complete", projectRoot: target.projectRoot, gitCommonDirectory, entries } as const;
-    }).pipe(Effect.catch(() => Effect.succeed({ status: "unavailable", reason: "registration_read_failed" } as const)), Effect.map(Object.freeze));
+    }).pipe(Effect.catch(() => Effect.succeed({ status: "unavailable", reason: "registration_read_failed" } as const)), Effect.map((registration) => Object.freeze(registration)));
 
   const inspectFilesystem = (path: string): Effect.Effect<DeletionWorktreeFilesystemV1> =>
     Effect.tryPromise({ try: () => NodeFS.lstat(path), catch: (cause) => cause }).pipe(
@@ -159,7 +159,7 @@ export const makeDeletionWorktreeRemoval = Effect.gen(function* () {
           ? { status: "absent", path } as const
           : { status: "unavailable", path, reason: "lstat_failed" } as const,
       }),
-      Effect.map(Object.freeze),
+      Effect.map((filesystem) => Object.freeze(filesystem)),
     );
 
   const inspectTarget: DeletionWorktreeRemovalProducer["inspectTarget"] = (target) => Effect.gen(function* () {

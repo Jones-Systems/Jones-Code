@@ -119,7 +119,7 @@ export function nativeCreationObservationFromHistoryV2(
   const createStage = stages.find((stage) => stage.commandType === "thread.create");
   const birth = createStage?.receipt?.status === "accepted" && createStage.event !== null ? createStage.event : null;
   if (birth !== null && (facts.creationProvenance !== "native_created" ||
-    facts.incarnation?.eventId !== birth.eventId || facts.incarnation.sequence !== birth.sequence)) inconsistent = true;
+    facts.incarnation?.eventId !== birth.eventId || facts.incarnation?.sequence !== birth.sequence)) inconsistent = true;
   // Historical V1 command facts cannot attest the separately attributed V2 command chain.
   if (history.effectsV1.some((effect) => effect.kind === "native_command")) inconsistent = true;
   const allEffects = [...history.effectsV1, ...history.effectsV2];
@@ -416,7 +416,7 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
       runtime = yield* manager.observeThreadRuntime({
         threadId, providerThreadId: providerThread.id, providerSessionId: session.id,
         instanceId: providerThread.providerInstanceId, runtimeGeneration: row.runtime_generation,
-        ...(providerThread.nativeThreadRef === null ? {} : { nativeThreadId: providerThread.nativeThreadRef.nativeId }),
+        ...(providerThread.nativeThreadRef?.nativeId == null ? {} : { nativeThreadId: providerThread.nativeThreadRef.nativeId }),
       });
     }
     return { facts, ...dispatchTargetFromNativeFactsV2(facts, runtime) };

@@ -13,7 +13,7 @@ import {
   type WorkstreamsNativeSettlementRequest,
 } from "@t3tools/contracts";
 import { NativeStoreAuthorityPersistenceError } from "../../environment/nativeStoreAuthorityPersistence.ts";
-import { OrchestrationThreadSettleBlockedError } from "../../orchestration/Errors.ts";
+import { NativeWorkstreamSettlementAuthorityError } from "../../orchestration-v2/Orchestrator.ts";
 import { makeWorkstreamsNativeProvider, nativeProviderResultEvidence } from "./service.ts";
 import { NATIVE_PROVIDER_SCOPES, type NativeProviderEnrollmentBinding } from "./enrollment.ts";
 import {
@@ -89,9 +89,10 @@ it.effect(
       const provider = makeWorkstreamsNativeProvider({
         ...fixture.ports,
         engine: {
+        ...fixture.ports.engine,
           dispatch: (command) =>
             Effect.sync(() => {
-              fixture.commit(command.commandId, "settle", true);
+              fixture.commit(CommandId.make(command.attempt.nativeCommandId), "settle", true);
               return { sequence: 2 };
             }),
         },
@@ -277,6 +278,7 @@ it.effect(
       const provider = makeWorkstreamsNativeProvider({
         ...fixture.ports,
         engine: {
+        ...fixture.ports.engine,
           dispatch: () =>
             Effect.gen(function* () {
               invocations += 1;
@@ -329,12 +331,13 @@ it.effect("concurrent duplicate attempts share one durable dispatch claim", () =
     const provider = makeWorkstreamsNativeProvider({
       ...fixture.ports,
       engine: {
+        ...fixture.ports.engine,
         dispatch: (command) =>
           Effect.gen(function* () {
             calls += 1;
             yield* Deferred.succeed(started, undefined);
             yield* Deferred.await(finish);
-            fixture.commit(command.commandId);
+            fixture.commit(CommandId.make(command.attempt.nativeCommandId));
             return { sequence: 1 };
           }),
       },
@@ -401,19 +404,21 @@ it.effect("native rejected receipt maps to denied without exposing native error 
     const provider = makeWorkstreamsNativeProvider({
       ...fixture.ports,
       engine: {
+        ...fixture.ports.engine,
         dispatch: (command) =>
           Effect.gen(function* () {
-            fixture.receipts.set(command.commandId, {
-              commandId: command.commandId,
+            fixture.receipts.set(CommandId.make(command.attempt.nativeCommandId), {
+              commandId: CommandId.make(command.attempt.nativeCommandId),
               aggregateKind: "thread",
+              commandType: "thread.settle",
               aggregateId: ThreadId.make(request.identity.native_id),
               acceptedAt: now,
               resultSequence: 0,
               status: "rejected",
               error: "private native error fixture",
             });
-            return yield* new OrchestrationThreadSettleBlockedError({
-              threadId: ThreadId.make(request.identity.native_id),
+            return yield* new NativeWorkstreamSettlementAuthorityError({
+              commandId: command.attempt.nativeCommandId, code: "binding_mismatch",
             });
           }),
       },
@@ -451,5 +456,21 @@ it.effect("authority changes after invocation prevent a terminal success claim",
     assert.strictEqual(result.state, "unknown");
     if (result.state === "unknown") assert.strictEqual(result.reason, "authority_changed");
     assert.strictEqual(fixture.calls.length, 1);
+  }),
+);
+
+it.effect("keeps unqualified V2 settlement evidence unknown without redispatch", () =>
+  Effect.gen(function* () {
+    const fixture = makeProviderFixture();
+    const provider = fixture.provider();
+    assert.equal((yield* provider.settle(binding, request, requestBytesSha256)).state, "terminal");
+    const unqualified = makeWorkstreamsNativeProvider({
+      ...fixture.ports,
+      engine: { ...fixture.ports.engine, observeBinding: () => Effect.succeed(false) },
+    });
+    const result = yield* unqualified.lookup(binding, request, requestBytesSha256);
+    assert.equal(result.state, "unknown");
+    if (result.state === "unknown") assert.equal(result.reason, "evidence_conflict");
+    assert.equal(fixture.calls.length, 1);
   }),
 );

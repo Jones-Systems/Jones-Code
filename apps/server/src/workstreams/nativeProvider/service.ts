@@ -20,10 +20,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { NativeStoreAuthority } from "../../environment/NativeStoreAuthority.ts";
 import { NativeStoreAuthorityPersistenceError } from "../../environment/nativeStoreAuthorityPersistence.ts";
-import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
+
 import type { OrchestrationCommandReceiptRepositoryShape } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import type { OrchestrationEventStoreShape } from "../../persistence/Services/OrchestrationEventStore.ts";
-import type { OrchestrationEngineShape } from "../../orchestration/Services/OrchestrationEngine.ts";
+import type { NativeWorkstreamSettlementInputV2, NativeWorkstreamSettlementAuthorityError, OrchestratorV2Error } from "../../orchestration-v2/Orchestrator.ts";
+import type { ProjectionStoreV2Error } from "../../orchestration-v2/ProjectionStore.ts";
 import { type NativeProviderAttempts, type NativeProviderAttempt } from "./attemptRepository.ts";
 import { NATIVE_PROVIDER_SCOPES, type NativeProviderEnrollmentBinding } from "./enrollment.ts";
 
@@ -34,10 +35,13 @@ export const readNativeProviderBuild = Schema.decodeUnknownEffect(WorkstreamsNat
   (packageJson as { readonly jonesSource?: unknown }).jonesSource,
 ).pipe(Effect.option);
 
-export interface NativeProviderPorts {
+export interface NativeProviderPorts<R = never> {
   readonly authority: Pick<NativeStoreAuthority["Service"], "readCurrent">;
-  readonly threadExists: (threadId: ThreadId) => Effect.Effect<boolean, ProjectionRepositoryError>;
-  readonly engine: Pick<OrchestrationEngineShape, "dispatch">;
+  readonly threadExists: (threadId: ThreadId) => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  readonly engine: {
+    readonly dispatch: (input: NativeWorkstreamSettlementInputV2) => Effect.Effect<unknown, OrchestratorV2Error | NativeWorkstreamSettlementAuthorityError, R>;
+    readonly observeBinding: (input: NativeWorkstreamSettlementInputV2) => Effect.Effect<boolean, OrchestratorV2Error | NativeWorkstreamSettlementAuthorityError, R>;
+  };
   readonly receipts: Pick<OrchestrationCommandReceiptRepositoryShape, "getByCommandId">;
   readonly events: Pick<OrchestrationEventStoreShape, "readMetadataByCommandId">;
   readonly attempts: NativeProviderAttempts["Service"];
@@ -111,7 +115,7 @@ export const nativeProviderResultEvidence = Effect.fn("NativeProvider.resultEvid
   return { ...value, result_sha256: sha256Bytes(encoded) };
 }, Effect.orDie);
 
-export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
+export const makeWorkstreamsNativeProvider = <R = never>(ports: NativeProviderPorts<R>) => {
   const build = ports.build ?? readNativeProviderBuild;
   const validateBinding = Effect.fn("NativeProvider.validateBinding")(function* (
     binding: NativeProviderEnrollmentBinding,
@@ -264,7 +268,7 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
   const observe = Effect.fn("NativeProvider.observe")(function* (
     binding: NativeProviderEnrollmentBinding,
     attempt: NativeProviderAttempt,
-  ): Effect.fn.Return<WorkstreamsNativeSettlementResponse> {
+  ): Effect.fn.Return<WorkstreamsNativeSettlementResponse, never, R> {
     const request = attempt.request;
     if (attempt.dispatchStartedAt === null)
       return unknownSettlement(request, "dispatch_in_progress");
@@ -272,6 +276,9 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
     if (before.state === "failed") return unknownSettlement(request, "authority_unavailable");
     if (!sameAuthority(binding, before.tuple))
       return unknownSettlement(request, "authority_changed");
+    const qualified = yield* ports.engine.observeBinding({ enrollment: binding, request, attempt }).pipe(Effect.option);
+    if (Option.isNone(qualified)) return unknownSettlement(request, "provider_unavailable");
+    if (!qualified.value) return unknownSettlement(request, "evidence_conflict");
     const receiptOption = yield* ports.receipts
       .getByCommandId({ commandId: CommandId.make(attempt.nativeCommandId) })
       .pipe(Effect.option);
@@ -294,6 +301,7 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       events.length > 256 ||
       events.some(
         (event) =>
+          event.applicationEventVersion !== 2 ||
           event.commandId !== attempt.nativeCommandId ||
           event.aggregateKind !== "thread" ||
           event.aggregateId !== request.identity.native_id,
@@ -370,7 +378,7 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       binding: NativeProviderEnrollmentBinding,
       request: WorkstreamsNativeSettlementRequest,
       requestBytesSha256: string,
-    ): Effect.fn.Return<WorkstreamsNativeSettlementResponse> {
+    ): Effect.fn.Return<WorkstreamsNativeSettlementResponse, never, R> {
       const invalid = yield* validateBinding(
         binding,
         lookupOnly ? NATIVE_PROVIDER_SCOPES.reconciliation : NATIVE_PROVIDER_SCOPES.settlement,
@@ -467,15 +475,9 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       if (current.state === "failed") return unknownSettlement(request, "authority_unavailable");
       if (!sameAuthority(binding, current.tuple))
         return unknownSettlement(request, "authority_changed");
-      const commandId = CommandId.make(attempt.nativeCommandId);
-      const threadId = ThreadId.make(request.identity.native_id);
       // Persisted dispatch-start survives timeout and lost replies; a started attempt is observation-only.
       yield* ports.engine
-        .dispatch(
-          request.native_action === "settle"
-            ? { type: "thread.settle", commandId, threadId }
-            : { type: "thread.unsettle", commandId, threadId, reason: "user" },
-        )
+        .dispatch({ enrollment: binding, request, attempt: { ...attempt, dispatchStartedAt: startedAt } })
         .pipe(Effect.ignore);
       return yield* observe(binding, { ...attempt, dispatchStartedAt: startedAt });
     });
@@ -483,4 +485,4 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
   return { context, attest, settle: settlement(false), lookup: settlement(true) };
 };
 
-export type WorkstreamsNativeProvider = ReturnType<typeof makeWorkstreamsNativeProvider>;
+export type WorkstreamsNativeProvider<R = never> = ReturnType<typeof makeWorkstreamsNativeProvider<R>>;

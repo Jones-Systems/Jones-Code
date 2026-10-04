@@ -22,6 +22,8 @@
         // Retained CLI archive verifier for the deferred release workflow.
         "smoke-cli-archive.ts",
         "runtime-adoption-qualification/run.mjs",
+        // Native staging declarations are entry points for typed consumers.
+        "performance-staging/*.d.mts",
       ],
     },
     "apps/server": {

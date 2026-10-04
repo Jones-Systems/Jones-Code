@@ -3186,6 +3186,62 @@ it.effect("does not refresh pull requests for auxiliary or stale provider termin
   }),
 );
 
+for (const mode of ["paragraph", "turn"] as const) {
+  for (const ending of ["interrupted", "stream-error"] as const) {
+    it.effect(`preserves buffered assistant text before ${ending} settlement (${mode})`, () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const text = "Answer preserved across provider exit.";
+        const { ingested, observed } = yield* captureRootRunTermination({
+          key: `buffered-exit:${mode}:${ending}`,
+          responseStreamingMode: mode,
+          shouldFinalizeRun: () => Effect.succeed(true),
+          events: (ids) => {
+            const messageId = MessageId.make(`message:${ids.runId}:assistant`);
+            const events: ProviderAdapterV2Event[] = [{
+              type: "message.updated",
+              driver,
+              message: {
+                id: messageId, threadId: ids.threadId, runId: ids.runId, nodeId: ids.rootNodeId,
+                createdBy: "agent", creationSource: "provider", role: "assistant",
+                text, attachments: [], streaming: true, createdAt: now, updatedAt: now,
+              },
+            }, {
+              type: "turn_item.updated",
+              driver,
+              turnItem: {
+                id: ids.itemId, threadId: ids.threadId, runId: ids.runId, nodeId: ids.rootNodeId,
+                providerThreadId: ids.providerThreadId, providerTurnId: ids.rootProviderTurnId,
+                nativeItemRef: null, parentItemId: null, ordinal: 1, status: "running",
+                title: null, startedAt: now, completedAt: null, updatedAt: now,
+                type: "assistant_message", messageId, text, streaming: true,
+              },
+            }];
+            return ending === "interrupted"
+              ? Stream.fromIterable([...events, rootTerminalEvent(ids, "interrupted")])
+              : Stream.fromIterable(events).pipe(Stream.concat(Stream.fail(
+                  new ProviderAdapterEventStreamError({ driver,
+                    providerSessionId: ProviderSessionId.make("session:buffered-exit"),
+                    cause: "provider process exited",
+                  }),
+                )));
+          },
+        });
+        const messages = ingested.filter((event) => event.type === "message.updated");
+        assert.lengthOf(messages, 1);
+        assert.equal(messages[0]?.message.text, text);
+        assert.equal(messages[0]?.message.streaming, false);
+        const items = ingested.filter((event) => event.type === "turn_item.updated");
+        assert.lengthOf(items, 1);
+        assert.include(items[0]?.turnItem, { text, streaming: false,
+          status: ending === "interrupted" ? "interrupted" : "failed" });
+        assert.equal(observed[0], "assistant-finalized");
+        assert.equal(observed[1], ending === "interrupted" ? "run:interrupted" : "run:failed");
+      }),
+    );
+  }
+}
+
 it.effect("refreshes pull requests after a provider stream exits with an error", () =>
   Effect.gen(function* () {
     const { written, observed } = yield* captureRootRunTermination({
@@ -3257,6 +3313,7 @@ function captureRootRunTermination(input: {
   readonly shouldFinalizeRun: () => Effect.Effect<boolean, never>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly seedOpenSubagent?: boolean;
+  readonly responseStreamingMode?: "paragraph" | "turn";
   readonly events?: (
     ids: BackgroundScenarioIds,
   ) => Stream.Stream<ProviderAdapterV2Event, ProviderAdapterV2Error>;
@@ -3275,6 +3332,7 @@ function captureRootRunTermination(input: {
     });
     const writtenItems = yield* Ref.make<ReadonlyArray<OrchestrationV2TurnItem>>([]);
     const observed = yield* Ref.make<ReadonlyArray<string>>([]);
+    const ingested = yield* Ref.make<ReadonlyArray<ProviderAdapterV2Event>>([]);
     const ingestionDone = yield* Deferred.make<void>();
     const captureTurnItem = (payload: OrchestrationV2TurnItem) =>
       Ref.update(writtenItems, (current) => [...current, payload]);
@@ -3311,9 +3369,15 @@ function captureRootRunTermination(input: {
           }),
           IdAllocator.layer,
           Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
-            ingestNormalized: () => Effect.succeed([]),
+            ingestNormalized: ({ event }) => Effect.gen(function* () {
+              yield* Ref.update(ingested, (current) => [...current, event]);
+              if (event.type === "message.updated" && !event.message.streaming) {
+                yield* Ref.update(observed, (current) => [...current, "assistant-finalized"]);
+              }
+              return [];
+            }),
           }),
-          ServerSettings.layerTest(),
+          ServerSettings.layerTest({ responseStreamingMode: input.responseStreamingMode ?? "paragraph" }),
           Layer.succeed(RunFinalizationService.RunFinalizationObserver, {
             refresh: () => Effect.void,
             refreshAfterTurn: () =>
@@ -3416,7 +3480,7 @@ function captureRootRunTermination(input: {
     }).pipe(Effect.provide(testLayer));
 
     yield* Deferred.await(ingestionDone);
-    return { written: yield* Ref.get(writtenItems), observed: yield* Ref.get(observed) };
+    return { written: yield* Ref.get(writtenItems), observed: yield* Ref.get(observed), ingested: yield* Ref.get(ingested) };
   });
 }
 

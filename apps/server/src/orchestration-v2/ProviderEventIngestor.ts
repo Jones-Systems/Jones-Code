@@ -29,7 +29,7 @@ import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as IdAllocator from "./IdAllocator.ts";
-import { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
+import { ProviderAdapterV2Event, type ProviderRuntimeBinding } from "./ProviderAdapter.ts";
 import { makeProviderFailureTurnItem } from "./ProviderFailure.ts";
 
 export class ProviderEventNormalizeError extends Schema.TaggedError<ProviderEventNormalizeError>()(
@@ -64,6 +64,13 @@ export const ProviderEventIngestorV2Error = Schema.Union([
   ProviderEventPublishError,
 ]);
 export type ProviderEventIngestorV2Error = typeof ProviderEventIngestorV2Error.Type;
+
+export interface ProviderAssistantOutputOwner {
+  readonly binding: ProviderRuntimeBinding;
+  readonly runId: RunId;
+  readonly attemptId: RunAttemptId;
+  readonly providerTurnId: ProviderTurnId;
+}
 
 export interface ProviderTurnAnalyticsContext {
   readonly modelSelection: ModelSelection;
@@ -207,6 +214,10 @@ export interface ProviderEventIngestInput {
 }
 
 export interface ProviderEventIngestorV2Shape {
+  readonly flushAssistantOutput: <E>(input: {
+    readonly binding: ProviderRuntimeBinding;
+    readonly revalidateCurrentOwner: Effect.Effect<void, E>;
+  }) => Effect.Effect<void, E>;
   readonly normalize: (
     input: ProviderEventIngestInput,
   ) => Effect.Effect<ReadonlyArray<OrchestrationV2DomainEvent>, ProviderEventIngestorV2Error>;
@@ -500,6 +511,8 @@ export const layer: Layer.Layer<
 
     return ProviderEventIngestorV2.of({
       normalize,
+      // Assistant writes are awaited by ingestNormalized; there is no staged batch to flush.
+      flushAssistantOutput: ({ revalidateCurrentOwner }) => revalidateCurrentOwner,
       ingestNormalized: (input) =>
         Effect.gen(function* () {
           const events = yield* normalize(input);

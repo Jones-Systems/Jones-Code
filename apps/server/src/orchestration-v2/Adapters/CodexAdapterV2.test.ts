@@ -1,3 +1,4 @@
+import { ProviderDriverKind } from "@t3tools/contracts";
 import * as NodeOS from "node:os";
 
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
@@ -1875,7 +1876,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       readonly beforeRuntimeReplacement?: import("../ProviderAdapter.ts").ProviderAdapterV2OpenSessionInput["beforeRuntimeReplacement"];
       readonly nativeCreationExecution?: import("../ProviderAdapter.ts").ProviderAdapterV2OpenSessionInput["nativeCreationExecution"];
       readonly ownedClientFactory?: CodexAdapterV2.CodexAppServerClientFactoryShape;
-      readonly onFactoryOpen?: (input: Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]) => Effect.Effect<void>;
+      readonly onFactoryOpen?: (input: Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]) => Effect.Effect<void, ProviderAdapterOpenSessionError>;
       readonly onRuntimeOpened?: (runtime: import("../ProviderAdapter.ts").ProviderAdapterV2SessionRuntime) => Effect.Effect<void>;
     } = {},
   ) =>
@@ -2049,7 +2050,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     providerSessionId: harness.runtime.providerSessionId,
     instanceId: harness.runtime.instanceId,
     runtimeGeneration: harness.runtime.runtimeGeneration!,
-    nativeThreadId: harness.providerThread.nativeThreadRef!.nativeId,
+    nativeThreadId: harness.providerThread.nativeThreadRef!.nativeId ?? undefined,
   });
 
   it.effect("binds fresh native state to the prepared Jones row and rejects foreign prepared targets", () =>
@@ -2058,10 +2059,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const now = yield* DateTime.now;
       const prepared: OrchestrationV2ProviderThread = {
         id: ProviderThreadId.make("prepared-jones-provider-thread"),
-        driver: "codex", providerInstanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+        driver: ProviderDriverKind.make("codex"), providerInstanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
         providerSessionId: null, appThreadId: ThreadId.make(`thread-${scenario}`), ownerNodeId: null,
         nativeThreadRef: null,
-        nativeConversationHeadRef: { driver: "codex", nativeId: "prior-native-head", strength: "strong" },
+        nativeConversationHeadRef: { driver: ProviderDriverKind.make("codex"), nativeId: "prior-native-head", strength: "strong" },
         status: "not_loaded", firstRunOrdinal: 7, lastRunOrdinal: 9,
         handoffIds: [], forkedFrom: null, createdAt: now, updatedAt: now,
       };
@@ -2072,7 +2073,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           existingProviderThread: prepared,
           onRuntimeOpened: (runtime) => Effect.gen(function* () {
             const foreignTargets: ReadonlyArray<OrchestrationV2ProviderThread> = [
-              { ...prepared, driver: "pi" },
+              { ...prepared, driver: ProviderDriverKind.make("pi") },
               { ...prepared, providerInstanceId: ProviderInstanceId.make("foreign-instance") },
               { ...prepared, providerSessionId: ProviderSessionId.make("foreign-session") },
               { ...prepared, appThreadId: ThreadId.make("foreign-app-thread") },
@@ -2480,6 +2481,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         } else {
           assert.equal(result._tag, "Failure");
           if (result._tag !== "Failure") return;
+          assert.isTrue("nativeEffect" in result.failure);
+          if (!("nativeEffect" in result.failure)) return;
           assert.equal(result.failure.nativeEffect?.outcome, "unknown");
           assert.equal(resumes, 0);
           if (outcome === "different-home" || outcome === "failed-open") {
@@ -7596,6 +7599,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       if (bounded.value._tag !== "Failure") return;
       const error = bounded.value.failure;
       assert.equal(error._tag, "ProviderAdapterInterruptError");
+      if (error._tag !== "ProviderAdapterInterruptError") return;
       assert.equal((error.cause as { _tag: string })._tag, "CodexNativeInterruptTimeoutError");
       assert.equal((error.cause as { nativeThreadId: string }).nativeThreadId, nativeThreadId);
       assert.equal((error.cause as { nativeTurnId: string }).nativeTurnId, nativeTurnId);
@@ -7693,6 +7697,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.equal(failure._tag, "Failure");
       if (failure._tag !== "Failure") return;
       assert.equal((failure.failure.cause as { _tag: string })._tag, "CodexNativeInterruptTimeoutError");
+      assert.equal(failure.failure._tag, "ProviderAdapterInterruptError");
+      if (failure.failure._tag !== "ProviderAdapterInterruptError") return;
       assert.equal(failure.failure.nativeEffect?.outcome, "unknown");
       assert.lengthOf(harness.terminalEvents(), 0);
       assert.isFalse(harness.events.some((event) => event.type === "provider_turn.updated" && event.providerTurn.status === "interrupted"));

@@ -2290,3 +2290,76 @@ it.each(["provider_error", "usage_limit"] as const)(
     });
   },
 );
+
+describe("V2 feed history cache boundaries", () => {
+  it("isolates returned arrays, replacement branches, and retained large histories", () => {
+    const rows = Array.from({ length: 3_000 }, (_, index) => projected({
+      ...assistantMessage(), id: TurnItemId.make(`history-item-${index}`),
+      messageId: MessageId.make(`history-message-${index}`), ordinal: index,
+      text: `original ${index}`,
+    }, index));
+    const initial = buildThreadFeed(rows);
+    const expectedIds = initial.map((entry) => entry.id);
+    initial.reverse();
+    initial.pop();
+    expect(buildThreadFeed(rows).map((entry) => entry.id)).toEqual(expectedIds);
+    expect(buildThreadFeed([...rows]).map((entry) => entry.id)).toEqual(expectedIds);
+    const changed = rows.map((row, index) => index === 1_500 && row.item.type === "assistant_message"
+      ? { ...row, item: { ...row.item, text: "replacement", streaming: true } } : row);
+    const changedEntry = buildThreadFeed(changed)[1_500];
+    expect(changedEntry).toMatchObject({ type: "message", message: { text: "replacement", streaming: true } });
+    expect(buildThreadFeed(rows)[1_500]).toMatchObject({ type: "message", message: { text: "original 1500", streaming: false } });
+    expect(buildThreadFeed(changed).map((entry) => entry.id)).toEqual(expectedIds);
+  });
+
+  it("recomputes attempt identity for reused rows and restores a retained context", () => {
+    const nodeId = NodeId.make("history-root");
+    const rows = [projected({ ...command(), nodeId }, 0)];
+    const attempt: OrchestrationV2RunAttempt = {
+      id: RunAttemptId.make("history-attempt"), runId, rootNodeId: nodeId,
+      attemptOrdinal: 1, providerInstanceId: ProviderInstanceId.make("codex"),
+      providerThreadId: ProviderThreadId.make("history-provider-thread"), providerTurnId: null,
+      reason: "initial", status: "completed",
+      startedAt: rows[0]!.item.startedAt!, completedAt: rows[0]!.item.completedAt,
+    };
+    const attemptIds = (options?: Parameters<typeof buildThreadFeed>[1]) => buildThreadFeed(rows, options)
+      .flatMap((entry) => entry.type === "activity-group" ? entry.activities.map((activity) => activity.attemptId) : []);
+    expect(attemptIds()).toEqual([null]);
+    expect(attemptIds({ attempts: [attempt] })).toEqual([attempt.id]);
+    expect(attemptIds({ attempts: [{ ...attempt, id: RunAttemptId.make("history-retry") }] })).toEqual(["history-retry"]);
+    expect(attemptIds({ attempts: [attempt] })).toEqual([attempt.id]);
+    expect(attemptIds()).toEqual([null]);
+    const childId = NodeId.make("history-child");
+    const childRows = [projected({ ...command(), nodeId: childId }, 0)];
+    const childNode = {
+      id: childId, threadId, runId, parentNodeId: nodeId, rootNodeId: nodeId,
+      kind: "tool_call" as const, status: "completed" as const, countsForRun: true,
+      providerThreadId: null, providerTurnId: null, nativeItemRef: null,
+      runtimeRequestId: null, checkpointScopeId: null,
+      startedAt: attempt.startedAt, completedAt: attempt.completedAt,
+    };
+    const childAttemptIds = (nodes: ReadonlyArray<typeof childNode>) =>
+      buildThreadFeed(childRows, { attempts: [attempt], nodes }).flatMap((entry) =>
+        entry.type === "activity-group" ? entry.activities.map((activity) => activity.attemptId) : []);
+    expect(childAttemptIds([])).toEqual([null]);
+    expect(childAttemptIds([childNode])).toEqual([attempt.id]);
+    expect(childAttemptIds([{ ...childNode, rootNodeId: childId, parentNodeId: childId }])).toEqual([null]);
+    expect(childAttemptIds([childNode])).toEqual([attempt.id]);
+  });
+
+  it("does not reuse anchored feedback across calls on the same canonical rows", () => {
+    const rows = [projected(assistantMessage(), 0)];
+    const anchor = {
+      id: MessageId.make("local-history"), role: "user" as const, text: "first",
+      turnId: null, streaming: false, createdAt: "2026-06-20T00:00:04.000Z",
+      updatedAt: "2026-06-20T00:00:04.000Z",
+    };
+    expect(buildThreadFeed(rows, { anchoredMessages: [anchor] }).at(-1))
+      .toMatchObject({ type: "message", message: { text: "first" } });
+    expect(buildThreadFeed(rows, { anchoredMessages: [{ ...anchor, text: "second" }] }).at(-1))
+      .toMatchObject({ type: "message", message: { text: "second" } });
+    expect(buildThreadFeed(rows)).toHaveLength(1);
+    expect(buildThreadFeed(rows, { anchoredMessages: [anchor] }).at(-1))
+      .toMatchObject({ type: "message", message: { text: "first" } });
+  });
+});

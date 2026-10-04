@@ -3652,7 +3652,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           evidence.runtimeGeneration !== binding.runtimeGeneration) return;
         const state = threads.get(binding.nativeThreadId);
         const ownedProcess = connection.external ? undefined : connection.ownedProcess;
-        if (state?.providerThread.id !== binding.providerThreadId || state.providerThread.appThreadId !== binding.threadId ||
+        if (state === undefined || state.providerThread.id !== binding.providerThreadId || state.providerThread.appThreadId !== binding.threadId ||
           state.providerThread.providerSessionId !== binding.providerSessionId || state.providerThread.providerInstanceId !== instanceId ||
           state.providerThread.driver !== driver || state.sessionId !== binding.nativeThreadId ||
           state.providerThread.nativeThreadRef?.nativeId !== binding.nativeThreadId ||
@@ -3665,7 +3665,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           record.execution.context === context && record.reference === reference &&
           record.runId === confirmation.runId && record.attemptId === confirmation.attemptId &&
           record.generation === binding.runtimeGeneration && matchesBinding(record) &&
-          record.operation?.operationId === confirmation.effectId && record.operation.operation === evidence.operation &&
+          record.operation !== undefined && record.operation.operationId === confirmation.effectId && record.operation.operation === evidence.operation &&
           record.operation.attemptId === confirmation.attemptId &&
           record.operation.instanceId === binding.instanceId && record.operation.threadId === binding.threadId &&
           record.operation.providerThreadId === binding.providerThreadId &&
@@ -3684,7 +3684,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         for (const record of unresolvedNativeCreations) {
           const operation = record.operation;
           if (record.execution.context !== context || record.reference !== reference ||
-            record.generation !== binding.runtimeGeneration || operation?.operationId !== confirmation.effectId ||
+            record.generation !== binding.runtimeGeneration || operation === undefined || operation.operationId !== confirmation.effectId ||
             (record.runId !== undefined && record.runId !== confirmation.runId) ||
             (record.attemptId !== undefined && record.attemptId !== confirmation.attemptId) ||
             (operation.attemptId !== undefined && operation.attemptId !== confirmation.attemptId) ||
@@ -3771,7 +3771,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               modelSelection: threadInput.modelSelection,
               runtimePolicy: threadInput.runtimePolicy,
               nativeOperation: threadInput.nativeOperation,
-              nativeCreationExecution: threadInput.nativeCreationExecution,
+              ...(threadInput.nativeCreationExecution === undefined ? {} : { nativeCreationExecution: threadInput.nativeCreationExecution }),
             });
           }
           yield* readModelsOnce(threadInput.runtimePolicy.cwd);

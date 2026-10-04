@@ -28,7 +28,8 @@ const makeFixture = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const git = yield* GitVcsDriver.GitVcsDriver;
-  const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-deletion-worktree-" });
+  const allocatedRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-deletion-worktree-" });
+  const root = yield* fs.realPath(allocatedRoot);
   const projectRoot = path.join(root, "repository");
   const targetPath = path.join(root, "target [worktree]");
   const run = (args: ReadonlyArray<string>) => git.execute({

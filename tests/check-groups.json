@@ -2,33 +2,30 @@
   "manifest_version": 1,
   "groups": [
     {
-      "group_id": "t3-thread-message-blocking",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts apps/server/src/orchestration-v2/ThreadForkService.test.ts apps/server/src/orchestration-v2/SubagentProjection.test.ts apps/server/src/mcp/ThreadMetadataMcpService.test.ts apps/server/src/mcp/toolkits/thread/handlers.test.ts packages/contracts/src/orchestrationV2.test.ts packages/contracts/src/threadMetadataMcp.test.ts",
+      "group_id": "jones-workspace-preparation-retry",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/ThreadLaunchService.test.ts packages/client-runtime/src/state/turnItemPresentation.test.ts packages/client-runtime/src/operations/commands.test.ts packages/contracts/src/orchestrationV2.test.ts",
       "modules": [
-        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
-        "apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts",
-        "apps/server/src/orchestration-v2/ThreadForkService.test.ts",
-        "apps/server/src/orchestration-v2/SubagentProjection.test.ts",
-        "apps/server/src/mcp/ThreadMetadataMcpService.test.ts",
-        "apps/server/src/mcp/toolkits/thread/handlers.test.ts",
-        "packages/contracts/src/orchestrationV2.test.ts",
-        "packages/contracts/src/threadMetadataMcp.test.ts"
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "packages/client-runtime/src/state/turnItemPresentation.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "packages/contracts/src/orchestrationV2.test.ts"
       ],
       "scope": [
-        "packages/contracts/src/orchestrationV2.ts",
-        "packages/contracts/src/orchestratorMcp.ts",
-        "packages/contracts/src/threadMetadataMcp.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
         "apps/server/src/orchestration-v2/Orchestrator.ts",
-        "apps/server/src/orchestration-v2/ProjectionStore.ts",
-        "apps/server/src/orchestration-v2/ThreadMessageIntake.ts",
-        "apps/server/src/orchestration-v2/ThreadForkService.ts",
-        "apps/server/src/orchestration-v2/SubagentProjection.ts",
-        "apps/server/src/mcp/OrchestratorMcpService.ts",
-        "apps/server/src/mcp/ThreadMetadataMcpService.ts",
-        "apps/server/src/mcp/threadAccess.ts",
-        "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
-        "apps/server/src/mcp/toolkits/thread/handlers.ts",
-        "apps/server/src/mcp/toolkits/thread/tools.ts"
+        "apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts",
+        "apps/server/src/ws.ts",
+        "apps/mobile/src/features/threads/thread-work-log.tsx",
+        "apps/web/src/components/ChatView.tsx",
+        "apps/web/src/components/chat/MessagesTimeline.tsx",
+        "packages/client-runtime/src/operations/commands.ts",
+        "packages/client-runtime/src/state/threadCommands.ts",
+        "packages/client-runtime/src/state/turnItemPresentation.ts",
+        "packages/contracts/src/orchestrationV2.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "packages/client-runtime/src/state/turnItemPresentation.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "packages/contracts/src/orchestrationV2.test.ts"
       ]
     },
     {
@@ -54,7 +51,8 @@
         "apps/server/src/orchestration-v2/EventSink.ts",
         "packages/contracts/src/orchestrationNative.ts",
         "packages/contracts/src/orchestrationV2.ts",
-        "packages/contracts/src/environmentHttp.ts"
+        "packages/contracts/src/environmentHttp.ts",
+        "apps/server/src/orchestration-v2/SelfSettlement.ts"
       ]
     },
     {
@@ -143,13 +141,19 @@
     {
       "group_id": "jones-cli-release-provenance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/cli/update.test.ts",
-      "modules": ["apps/server/src/cli/update.test.ts"],
-      "scope": ["apps/server/src/cli/update.ts"]
+      "modules": [
+        "apps/server/src/cli/update.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/cli/update.ts"
+      ]
     },
     {
       "group_id": "voice-native-bootstrap-conformance",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/voiceNativeBootstrap.test.ts",
-      "modules": ["apps/server/src/voiceNativeBootstrap.test.ts"],
+      "modules": [
+        "apps/server/src/voiceNativeBootstrap.test.ts"
+      ],
       "scope": [
         "apps/server/src/voiceNativeBootstrap.test.ts",
         "apps/server/src/voiceNativeBootstrap.fixtures/**",
@@ -168,7 +172,9 @@
         "scripts/runtime-adoption-qualification/browser-storage.test.mjs",
         "scripts/runtime-adoption-qualification/artifact-binding.test.mjs"
       ],
-      "scope": ["scripts/runtime-adoption-qualification/**"]
+      "scope": [
+        "scripts/runtime-adoption-qualification/**"
+      ]
     },
     {
       "group_id": "t3-native-creation-contracts",
@@ -488,10 +494,10 @@
     },
     {
       "group_id": "jones-thread-corpus-capability",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/contracts/src/threadCorpusProtocol.test.ts apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/contracts/src/threadCorpusProtocol.test.ts apps/server/src/orchestration-v2/threadHistoryPaging.test.ts",
       "modules": [
         "packages/contracts/src/threadCorpusProtocol.test.ts",
-        "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts"
+        "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts"
       ],
       "scope": [
         "packages/contracts/src/threadCorpusProtocol.ts",
@@ -499,8 +505,9 @@
         "packages/contracts/src/environment.ts",
         "packages/contracts/src/index.ts",
         "apps/server/src/environment/ServerEnvironment.ts",
-        "packages/contracts/src/orchestration.ts",
-        "packages/contracts/src/environmentHttp.ts"
+        "packages/contracts/src/orchestrationV2.ts",
+        "packages/contracts/src/environmentHttp.ts",
+        "packages/contracts/src/orchestration.ts"
       ]
     },
     {
@@ -813,6 +820,31 @@
       ]
     },
     {
+      "group_id": "jones-pr-ci-status",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/pullRequest/GitHubCiStatus.test.ts apps/server/src/pullRequest/PullRequestCiStatus.test.ts apps/web/src/components/pullRequest/PullRequestCiStatusPopover.test.tsx packages/contracts/src/rpc.test.ts && node_modules/.bin/vp test run --no-file-parallelism apps/server/src/auth/RpcAuthorization.test.ts -t 'declares exactly one scope for every RPC in the server group'",
+      "modules": [
+        "apps/server/src/pullRequest/GitHubCiStatus.test.ts",
+        "apps/server/src/pullRequest/PullRequestCiStatus.test.ts",
+        "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.test.tsx",
+        "apps/server/src/auth/RpcAuthorization.test.ts",
+        "packages/contracts/src/rpc.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/pullRequest/GitHubPullRequestCli.ts",
+        "apps/server/src/pullRequest/PullRequestService.ts",
+        "apps/server/src/pullRequest/GitHubCiStatus.test.ts",
+        "apps/server/src/pullRequest/PullRequestCiStatus.test.ts",
+        "apps/server/src/ws.ts",
+        "apps/server/src/auth/RpcAuthorization.ts",
+        "apps/web/src/routes/_chat.pull-requests.tsx",
+        "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.tsx",
+        "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.test.tsx",
+        "packages/client-runtime/src/state/pullRequests.ts",
+        "packages/contracts/src/pullRequest.ts",
+        "packages/contracts/src/rpc.ts"
+      ]
+    },
+    {
       "group_id": "jones-v2-mcp-capabilities",
       "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/mcp/McpInvocationContext.test.ts apps/server/src/mcp/McpProviderSession.test.ts apps/server/src/mcp/McpHttpServer.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts",
       "modules": [
@@ -906,7 +938,7 @@
     },
     {
       "group_id": "device-direct-media",
-      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/device/DeviceHubProxy.test.ts apps/server/src/device/directDeviceGateway.test.ts apps/server/src/device/SshDeviceHost.test.ts apps/server/src/device/sshDeviceScript.test.ts apps/server/src/device/DeviceService.test.ts apps/server/src/device/DeviceMultiHost.test.ts apps/server/src/device/localSshDeviceHost.test.ts packages/contracts/src/device.test.ts packages/client-runtime/src/device/mediaRoute.test.ts packages/client-runtime/src/device/stream.test.ts apps/web/src/components/device/DeviceStreamView.test.tsx apps/web/src/components/device/useDeviceControls.test.tsx apps/web/src/components/settings/deviceHostConnectionChecks.test.ts apps/desktop/src/ssh/DesktopDeviceMediaTunnel.test.ts apps/desktop/src/ssh/DesktopSshEnvironment.test.ts apps/desktop/src/ipc/methods/sshEnvironment.test.ts apps/web/src/state/device.test.tsx apps/server/src/server.test.ts apps/server/src/device/AgentDeviceTarget.test.ts apps/server/src/device/DeviceActions.test.ts apps/server/src/device/DeviceDirectGrants.test.ts apps/server/src/device/DeviceDirectAdmission.test.ts apps/server/src/device/DeviceServiceDirectLifecycle.test.ts",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/device/DeviceHubProxy.test.ts apps/server/src/device/directDeviceGateway.test.ts apps/server/src/device/SshDeviceHost.test.ts apps/server/src/device/sshDeviceScript.test.ts apps/server/src/device/DeviceService.test.ts apps/server/src/device/DeviceMultiHost.test.ts apps/server/src/device/localSshDeviceHost.test.ts packages/contracts/src/device.test.ts packages/client-runtime/src/device/mediaRoute.test.ts packages/client-runtime/src/device/stream.test.ts apps/web/src/components/device/DeviceStreamView.test.tsx apps/web/src/components/device/useDeviceControls.test.tsx apps/web/src/components/settings/deviceHostConnectionChecks.test.ts apps/desktop/src/ssh/DesktopDeviceMediaTunnel.test.ts apps/desktop/src/ssh/DesktopSshEnvironment.test.ts apps/desktop/src/ipc/methods/sshEnvironment.test.ts apps/web/src/state/device.test.tsx apps/server/src/device/AgentDeviceTarget.test.ts apps/server/src/device/DeviceActions.test.ts apps/server/src/device/DeviceDirectGrants.test.ts apps/server/src/device/DeviceDirectAdmission.test.ts apps/server/src/device/DeviceServiceDirectLifecycle.test.ts",
       "modules": [
         "apps/server/src/device/DeviceHubProxy.test.ts",
         "apps/server/src/device/directDeviceGateway.test.ts",
@@ -925,7 +957,6 @@
         "apps/desktop/src/ssh/DesktopSshEnvironment.test.ts",
         "apps/desktop/src/ipc/methods/sshEnvironment.test.ts",
         "apps/web/src/state/device.test.tsx",
-        "apps/server/src/server.test.ts",
         "apps/server/src/device/AgentDeviceTarget.test.ts",
         "apps/server/src/device/DeviceActions.test.ts",
         "apps/server/src/device/DeviceDirectGrants.test.ts",
@@ -973,6 +1004,197 @@
         "apps/server/src/device/DeviceService.ts",
         "apps/server/src/device/DeviceServiceDirectLifecycle.test.ts",
         "apps/server/src/server.test.ts"
+      ]
+    },
+    {
+      "group_id": "web-composer-send-recovery",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/web/src/components/composerSendRecovery.test.ts apps/web/src/components/ChatView.logic.test.ts apps/web/src/composerDraftStore.test.ts",
+      "modules": [
+        "apps/web/src/components/composerSendRecovery.test.ts",
+        "apps/web/src/components/ChatView.logic.test.ts",
+        "apps/web/src/composerDraftStore.test.ts"
+      ],
+      "scope": [
+        "apps/web/src/components/composerSendRecovery.ts",
+        "apps/web/src/components/ChatView.tsx"
+      ]
+    },
+    {
+      "group_id": "t3-v2-server-performance",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/ProjectionHistoryExperiment.test.ts apps/server/src/ws.shellFanout.test.ts",
+      "modules": [
+        "apps/server/src/orchestration-v2/ProjectionHistoryExperiment.test.ts",
+        "apps/server/src/ws.shellFanout.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/orchestration-v2/ProjectionHistoryExperiment.ts",
+        "apps/server/src/orchestration-v2/ProjectionHistoryExperiment.bench.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.ts",
+        "apps/server/src/ws.ts"
+      ]
+    },
+    {
+      "group_id": "t3-native-mcp-metadata-self-settlement",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/SelfSettlement.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/mcp/toolkits/orchestrator/tools.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/mcp/toolkits/organization/handlers.test.ts packages/contracts/src/environment.test.ts apps/server/src/orchestration-v2/ProjectionStore.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/mcp/toolkits/decisionSnapshot/handlers.test.ts apps/server/src/mcp/toolkits/decisionSnapshot/collector.test.ts",
+      "modules": [
+        "apps/server/src/orchestration-v2/SelfSettlement.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/mcp/toolkits/organization/handlers.test.ts",
+        "packages/contracts/src/environment.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/mcp/toolkits/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/mcp/toolkits/decisionSnapshot/collector.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/mcp/toolkits/organization/handlers.ts",
+        "apps/server/src/mcp/toolkits/organization/tools.ts",
+        "apps/server/src/orchestration-v2/SelfSettlement.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+        "packages/contracts/src/environment.ts",
+        "packages/contracts/src/orchestratorMcp.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+        "packages/contracts/src/orchestrationV2.ts",
+        "apps/server/src/mcp/OrganizationMetadataMcpService.ts",
+        "apps/server/src/mcp/toolkits/decisionSnapshot/handlers.ts",
+        "apps/server/src/mcp/toolkits/decisionSnapshot/tools.ts"
+      ]
+    },
+    {
+      "group_id": "jones-performance-staging",
+      "command": "node --test --test-concurrency=1 scripts/performance-staging/guard.test.mjs scripts/performance-staging/lifecycle.test.mjs scripts/performance-staging/fixtures.test.mjs .github/scripts/test-with-performance-sources.test.mjs",
+      "modules": [
+        "scripts/performance-staging/guard.test.mjs",
+        "scripts/performance-staging/lifecycle.test.mjs",
+        "scripts/performance-staging/fixtures.test.mjs",
+        ".github/scripts/test-with-performance-sources.test.mjs"
+      ],
+      "scope": [
+        "scripts/performance-staging/**",
+        "docs/operations/performance-staging.md",
+        ".github/scripts/test-with-performance-sources.mjs",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "group_id": "jones-performance-sqlite-tools",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism --maxWorkers=1 apps/server/scripts/jones-sqlite-health.test.ts",
+      "modules": [
+        "apps/server/scripts/jones-sqlite-health.test.ts"
+      ],
+      "scope": [
+        "apps/server/scripts/jones-sqlite-health.ts",
+        "apps/server/scripts/jones-sqlite-support.ts",
+        "apps/server/scripts/jones-sqlite-worker.ts",
+        "docs/operations/performance-sqlite.md"
+      ]
+    },
+    {
+      "group_id": "jones-runtime-qualification",
+      "command": "node --test --test-concurrency=1 scripts/performance-staging/runtime-binding.test.mjs scripts/performance-staging/current-qualification.test.mjs scripts/performance-staging/runtime-qualification.test.mjs scripts/performance-staging/migration-restore.test.mjs",
+      "modules": [
+        "scripts/performance-staging/runtime-binding.test.mjs",
+        "scripts/performance-staging/current-qualification.test.mjs",
+        "scripts/performance-staging/runtime-qualification.test.mjs",
+        "scripts/performance-staging/migration-restore.test.mjs"
+      ],
+      "scope": [
+        "scripts/performance-staging/**",
+        "docs/operations/performance-sqlite.md"
+      ]
+    },
+    {
+      "group_id": "jones-sqlite-benchmark",
+      "command": "vp test run apps/server/scripts/jones-sqlite-benchmark.test.ts",
+      "modules": [
+        "apps/server/scripts/jones-sqlite-benchmark.test.ts"
+      ],
+      "scope": [
+        "apps/server/scripts/jones-sqlite-benchmark.ts",
+        "apps/server/scripts/jones-sqlite-benchmark.test.ts",
+        "scripts/performance-staging/**",
+        "docs/operations/performance-sqlite.md"
+      ]
+    },
+    {
+      "group_id": "t3-client-history-characterization",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/client-runtime/src/state/orchestrationV2Projection.test.ts apps/mobile/src/lib/threadActivity.test.ts",
+      "modules": [
+        "packages/client-runtime/src/state/orchestrationV2Projection.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts"
+      ],
+      "scope": [
+        "packages/client-runtime/src/state/orchestrationV2Projection.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts",
+        "packages/client-runtime/src/remotePerformance.bench.ts",
+        "apps/mobile/src/lib/threadActivity.bench.ts"
+      ]
+    },
+    {
+      "group_id": "t3-v2-startup-recovery",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/serverRuntimeStartup.reconcile.test.ts apps/server/src/serverRuntimeStartup.storeIntegration.test.ts apps/server/integration/orphanedProviderSessionStartup.integration.test.ts",
+      "modules": [
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/serverRuntimeStartup.reconcile.test.ts",
+        "apps/server/src/serverRuntimeStartup.storeIntegration.test.ts",
+        "apps/server/integration/orphanedProviderSessionStartup.integration.test.ts"
+      ],
+      "scope": [
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts"
+      ]
+    },
+    {
+      "group_id": "jones-sqlite-v2-benchmark",
+      "command": "vp test run --no-file-parallelism apps/server/scripts/jones-sqlite-v2-workload.test.ts apps/server/scripts/jones-sqlite-v2-benchmark.test.mjs",
+      "modules": [
+        "apps/server/scripts/jones-sqlite-v2-workload.test.ts",
+        "apps/server/scripts/jones-sqlite-v2-benchmark.test.mjs"
+      ],
+      "scope": [
+        "apps/server/scripts/jones-sqlite-v2-*",
+        "scripts/performance-staging/runtime-binding.mjs",
+        "scripts/performance-staging/current-qualification.mjs",
+        "docs/operations/performance-sqlite.md"
+      ]
+    },
+    {
+      "group_id": "t3-thread-message-blocking",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts apps/server/src/orchestration-v2/ThreadForkService.test.ts apps/server/src/orchestration-v2/SubagentProjection.test.ts apps/server/src/mcp/ThreadMetadataMcpService.test.ts apps/server/src/mcp/toolkits/thread/handlers.test.ts packages/contracts/src/orchestrationV2.test.ts packages/contracts/src/threadMetadataMcp.test.ts",
+      "modules": [
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts",
+        "apps/server/src/orchestration-v2/ThreadForkService.test.ts",
+        "apps/server/src/orchestration-v2/SubagentProjection.test.ts",
+        "apps/server/src/mcp/ThreadMetadataMcpService.test.ts",
+        "apps/server/src/mcp/toolkits/thread/handlers.test.ts",
+        "packages/contracts/src/orchestrationV2.test.ts",
+        "packages/contracts/src/threadMetadataMcp.test.ts"
+      ],
+      "scope": [
+        "packages/contracts/src/orchestrationV2.ts",
+        "packages/contracts/src/orchestratorMcp.ts",
+        "packages/contracts/src/threadMetadataMcp.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.ts",
+        "apps/server/src/orchestration-v2/ThreadMessageIntake.ts",
+        "apps/server/src/orchestration-v2/ThreadForkService.ts",
+        "apps/server/src/orchestration-v2/SubagentProjection.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.ts",
+        "apps/server/src/mcp/ThreadMetadataMcpService.ts",
+        "apps/server/src/mcp/threadAccess.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+        "apps/server/src/mcp/toolkits/thread/handlers.ts",
+        "apps/server/src/mcp/toolkits/thread/tools.ts"
       ]
     }
   ]

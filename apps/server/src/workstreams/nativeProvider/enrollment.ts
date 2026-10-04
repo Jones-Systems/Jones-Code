@@ -47,3 +47,8 @@ export class NativeProviderEnrollment extends Context.Service<
     >;
   }
 >()("t3/workstreams/nativeProvider/enrollment/NativeProviderEnrollment") {}
+
+export class NativeProviderBuild extends Context.Service<
+  NativeProviderBuild,
+  { readonly readCurrent: Effect.Effect<Option.Option<WorkstreamsNativeBuild>> }
+>()("t3/workstreams/nativeProvider/enrollment/NativeProviderBuild") {}

@@ -83,6 +83,7 @@ it.effect("settlement timeout retains dispatch-start and lookup never resubmits"
     const provider = makeWorkstreamsNativeProvider({
       ...fixture.ports,
       engine: {
+        ...fixture.ports.engine,
         dispatch: () =>
           Effect.gen(function* () {
             calls += 1;

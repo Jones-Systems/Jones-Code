@@ -27,6 +27,9 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as NativeCreationAuthority from "./NativeCreationAuthority.ts";
+import * as NativeCreationRepository from "../persistence/Services/NativeCreationRepository.ts";
+import * as EventSink from "./EventSink.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
@@ -69,7 +72,7 @@ export interface OrchestrationEffectExecutorV2Shape {
    */
   readonly execute: (
     effect: EffectOutbox.OrchestrationEffectV2,
-    options?: { readonly willRetry: boolean },
+    options?: { readonly willRetry: boolean; readonly workerId?: string },
   ) => Effect.Effect<void, OrchestrationEffectExecutionError>;
 }
 
@@ -104,6 +107,9 @@ export const executorLayer: Layer.Layer<
       yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
+    const nativeAuthority = yield* Effect.serviceOption(NativeCreationAuthority.NativeCreationAuthority);
+    const nativeRepository = yield* Effect.serviceOption(NativeCreationRepository.NativeCreationRepository);
+    const eventSink = yield* Effect.serviceOption(EventSink.EventSinkV2);
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
@@ -145,18 +151,72 @@ export const executorLayer: Layer.Layer<
                 ),
               );
           case "provider-turn.start":
-            return providerTurnStart
-              .start({ threadId: effect.threadId, runId: effect.request.runId, willRetry })
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
+            return Effect.gen(function* () {
+              const request = effect.request;
+              if (request.type !== "provider-turn.start") return;
+              const reference = effect.nativeCreationExecutionReference;
+              if (reference === undefined) {
+                return yield* providerTurnStart.start({ threadId: effect.threadId, runId: request.runId, willRetry });
+              }
+              if (Option.isNone(nativeAuthority) || Option.isNone(nativeRepository) || Option.isNone(eventSink) || options?.workerId === undefined) {
+                return yield* Effect.fail("Native execution requires its authority, repository, event sink and owning worker.");
+              }
+              const repository = nativeRepository.value;
+              const sink = eventSink.value;
+              const workerId = options.workerId;
+              const resolved = yield* repository.readExecutionReference(reference);
+              const context = yield* nativeAuthority.value.issueExecution({
+                reference,
+                timestamp: DateTime.formatIso(yield* DateTime.now),
+              });
+              let confirmed = false;
+              yield* providerTurnStart.start({
+                threadId: effect.threadId,
+                runId: request.runId,
+                willRetry: false,
+                nativeStart: {
+                  execution: { context, resources: resolved.history.intent.resources },
+                  operationId: effect.id,
+                  onAcknowledged: ({ turn, session, operation, runtimeGeneration }) => Effect.gen(function* () {
+                    const owner = yield* sink.readCurrentProviderRuntimeOwner(effect.threadId);
+                    if (owner === null || runtimeGeneration === undefined || owner.binding.nativeThreadId === null || owner.binding.runtimeGeneration !== runtimeGeneration ||
+                        owner.binding.providerSessionId !== session.providerSessionId ||
+                        owner.binding.providerThreadId !== turn.providerThread.id ||
+                        owner.binding.instanceId !== session.instanceId || owner.binding.driver !== session.driver ||
+                        owner.binding.runtimeGeneration !== session.runtimeGeneration ||
+                        owner.binding.nativeThreadId !== turn.providerThread.nativeThreadRef?.nativeId ||
+                        turn.runId !== request.runId) {
+                      return yield* Effect.fail("Acknowledged native start no longer owns its registered runtime.");
+                    }
+                    const confirmation = yield* repository.recordNativeEffectConfirmation({
                       effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
-                    }),
-                ),
-              );
+                      workerId,
+                      expectedAttempt: effect.attemptCount,
+                      runId: request.runId,
+                      attemptId: turn.attemptId,
+                      binding: { ...owner.binding, runtimeGeneration, nativeThreadId: owner.binding.nativeThreadId },
+                      expectedEvidenceRevision: owner.evidenceRevision,
+                      evidence: {
+                        operationId: effect.id,
+                        operation,
+                        outcome: "confirmed_success",
+                        threadId: effect.threadId,
+                        providerThreadId: owner.binding.providerThreadId,
+                        providerSessionId: owner.binding.providerSessionId,
+                        instanceId: owner.binding.instanceId,
+                        runtimeGeneration,
+                        attemptId: turn.attemptId,
+                      },
+                    });
+                    confirmed = true;
+                    yield* providerSessions.onNativeEffectConfirmed({ context, confirmation });
+                  }),
+                },
+              });
+              if (!confirmed) return yield* Effect.fail("Native start returned without durable provider acknowledgement.");
+            }).pipe(Effect.mapError((cause) => new OrchestrationEffectExecutionError({
+              effectId: effect.id, effectType: effect.request.type, cause,
+            })));
           case "provider-turn.interrupt":
             return providerTurnControl
               .interrupt({
@@ -642,12 +702,29 @@ export const layerWithOptions = (
           if (cancelledBeforeExecution) return true;
 
           const execution = executor
-            .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+            .execute(effect, { willRetry: effect.nativeCreationExecutionReference === undefined && effect.attemptCount < maxAttempts, workerId })
             .pipe(Effect.as("executed" as const));
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );
           if (Exit.isSuccess(exit) && exit.value === "cancelled") {
+            return true;
+          }
+          if (effect.nativeCreationExecutionReference !== undefined) {
+            // Confirmation commits outbox success atomically. Never replay an issued
+            // native effect after an ACK, lost response or confirmation failure.
+            const current = yield* outbox.get(effect.id);
+            if (Option.isSome(current) && current.value.status === "succeeded") {
+              if (Exit.isFailure(exit)) yield* Effect.logWarning("Native confirmation committed before notification failed", {
+                effectId: effect.id, cause: Cause.pretty(exit.cause),
+              });
+              return true;
+            }
+            const error = Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "Native effect has no committed acknowledgement.";
+            const failed = yield* outbox.fail({ effectId: effect.id, workerId, error });
+            if (!failed && !(yield* wasCancelled(effect.id))) {
+              return yield* new OrchestrationEffectWorkerError({ operation: "native-confirmation", effectId: effect.id, cause: error });
+            }
             return true;
           }
           if (Exit.isSuccess(exit)) {

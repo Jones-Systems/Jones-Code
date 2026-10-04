@@ -1,5 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off - Checks immutable fixture bytes synchronously outside an Effect runtime.
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import manifest from "../contracts/workstreams-registration-context/v1/manifest.json" with { type: "json" };
 import conformanceCorpus from "../contracts/workstreams-registration-context/v1/fixtures/conformance.json" with { type: "json" };
 import negativeCorpus from "../contracts/workstreams-registration-context/v1/fixtures/negative-cases.json" with { type: "json" };
@@ -29,6 +32,13 @@ function decode(fixture: Fixture): unknown {
 }
 
 describe("workstreams-registration-context/1.0.0 native contract", () => {
+  it.each(manifest.files)("preserves manifest-pinned bytes for $path", ({ path, sha256 }) => {
+    const bytes = NodeFS.readFileSync(
+      new URL(`../contracts/workstreams-registration-context/v1/${path}`, import.meta.url),
+    );
+    expect(NodeCrypto.createHash("sha256").update(bytes).digest("hex")).toBe(sha256);
+  });
+
   it("selects the pinned family and complete versioned fixture corpus", () => {
     expect(manifest.contract_family).toBe(Context.WORKSTREAMS_REGISTRATION_CONTEXT_FAMILY);
     expect(manifest.contract_version).toBe(Context.WORKSTREAMS_REGISTRATION_CONTEXT_VERSION);

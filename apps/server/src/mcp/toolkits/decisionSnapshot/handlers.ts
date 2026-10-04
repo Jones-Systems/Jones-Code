@@ -3,13 +3,13 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import { requireMcpCapability } from "../../McpInvocationContext.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { WorkstreamGateway } from "../../../workstreams/WorkstreamGateway.ts";
 import { CollectorFailure, DecisionSnapshotCollector, monotonicSeconds } from "./collector.ts";
 import { DecisionSnapshot, DecisionSnapshotToolkit } from "./tools.ts";
 
 interface NativeCountEntry {
-  readonly status: "observed" | "unavailable" | "timeout";
+  readonly status: "observed" | "partial" | "unavailable" | "timeout";
   readonly observed_at: string | null;
   readonly timestamp_basis: "native_observation" | "unknown";
   readonly scope: Record<string, unknown>;
@@ -31,7 +31,7 @@ const absentEntry = (
 const isoNow = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 export const DecisionSnapshotToolkitHandlersLive = DecisionSnapshotToolkit.toLayer(
   Effect.gen(function* () {
-    const snapshots = yield* ProjectionSnapshotQuery;
+    const snapshots = yield* ThreadManagementService;
     const workstreams = yield* WorkstreamGateway;
     const collector = yield* DecisionSnapshotCollector;
     return {
@@ -50,7 +50,7 @@ export const DecisionSnapshotToolkitHandlersLive = DecisionSnapshotToolkit.toLay
           .getOperatingCounts(projectId === undefined ? undefined : { projectId })
           .pipe(
             Effect.map((counts) => ({
-              status: "observed" as const,
+              status: counts.backgroundUnknown === 0 ? "observed" as const : "partial" as const,
               observed_at: counts.backgroundSampledAt,
               timestamp_basis: "native_observation" as const,
               scope: threadScope,
@@ -62,7 +62,7 @@ export const DecisionSnapshotToolkitHandlersLive = DecisionSnapshotToolkit.toLay
                 foreground_waiting_plan: counts.foregroundWaitingPlan,
                 background_operating: counts.backgroundOperating,
               },
-              reason: null,
+              reason: counts.backgroundUnknown === 0 ? null : "native_background_coverage_incomplete",
             })),
             Effect.catch(() =>
               Effect.succeed(absentEntry("native_projection_unavailable", threadScope)),
@@ -206,7 +206,7 @@ export const DecisionSnapshotToolkitHandlersLive = DecisionSnapshotToolkit.toLay
           schema: "codex.decision-snapshot/v1" as const,
           authority_effect: "none" as const,
           coverage:
-            threadEntry.status === "observed" || workstreamEntry.status === "observed"
+            (threadEntry.status === "observed" || threadEntry.status === "partial") || workstreamEntry.status === "observed"
               ? ("partial" as const)
               : ("unavailable" as const),
           purpose,

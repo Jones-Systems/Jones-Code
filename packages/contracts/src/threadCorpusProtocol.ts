@@ -3,9 +3,9 @@ import * as Schema from "effect/Schema";
 import { QUEUE_DISPATCH_CAPABILITY } from "./queueProtocol.ts";
 
 const threadCorpusCapabilityFields = {
-  schemaVersion: Schema.Literal("t3.thread-corpus-capability/v1"),
-  shellSnapshot: Schema.Literal("t3.thread-corpus-shell/v1"),
-  threadDetailPagination: Schema.Literal("t3.thread-corpus-pagination/v1"),
+  schemaVersion: Schema.Literal("t3.thread-corpus-capability/v2"),
+  shellSnapshot: Schema.Literal("t3.thread-corpus-shell/v2"),
+  threadDetailPagination: Schema.Literal("t3.thread-corpus-pagination/v2"),
   placement: Schema.Literal("t3.thread-corpus-placement/v1"),
   authSession: Schema.Literal(QUEUE_DISPATCH_CAPABILITY.authSession),
 };
@@ -21,34 +21,34 @@ export const ThreadCorpusCapability = Schema.flip(
 export type ThreadCorpusCapability = typeof ThreadCorpusCapability.Type;
 
 /**
- * Read semantics of the existing orchestration shell and thread detail endpoints.
- * The shell carries global snapshotSequence and updatedAt; projects carry id,
- * workspaceRoot and optional nullable repositoryIdentity. Threads join by projectId
- * and carry nullable worktreePath/branch, archivedAt/settledAt, latestUserMessageAt,
- * updatedAt and nullable latestTurn/session. Optional lifecycle fields retain their
- * existing schema defaults; missing activity timestamps do not prove inactivity.
+ * V2 shell and progressive history reads; V1 consumers must reject this version.
+ * The shell carries schemaVersion and snapshotSequence, projects, active threads
+ * and archivedThreads. Threads join projects by projectId and expose nullable
+ * worktreePath/branch, settlement timestamps, latestUserMessageAt, run status,
+ * activeRunId and pendingRuntimeRequest. Missing activity does not prove idleness.
  *
  * Placement is observed worktreePath, or project workspaceRoot when it is null.
  * Neither the path nor repositoryIdentity verifies cwd, enrollment or access grants.
  * This advertisement grants no dispatch, creation or provider quota capability.
  *
- * Detail pagination is opt-in: turnLimit is a positive integer counting user-anchored
- * turns. Associated fan-out rides along, subject to the native 150 raw-turn page cap.
- * Without turnLimit the full snapshot has no page metadata. With it, page carries
- * hasMore, nullable opaque exclusive beforeCursor, snapshotSequence and optional
- * threadSequence. A null cursor marks the oldest page; an absent threadSequence is
- * unknown. Native malformed or foreign-thread cursors reload the first page, so a
- * consumer must check progression instead of assuming each response advances.
+ * Full detail contains projection and snapshotSequence. Bounded detail retains
+ * control-plane state and a recent timeline window with opaque historyCursor,
+ * hasMoreHistory and latestLocalTurnOrdinal. Resume live events after the snapshot
+ * sequence. Fetch older history with that cursor; pages carry chronological items,
+ * nextCursor, hasMoreHistory and snapshotSequence. Null marks the oldest cursor.
+ * Cursors must not be parsed or reused across unrelated snapshots/threads; failed
+ * or stale reads do not prove complete history. There is no V1 turnLimit/page or
+ * per-thread threadSequence contract.
  *
- * Detail messages carry string text without a native character limit or truncation
- * flag. turnLimit bounds turns, not bytes; consumer text/response limits must report
- * their own incomplete coverage. Page snapshotSequence mirrors the enclosing
- * snapshot; threadSequence is the per-thread watermark needed before merging pages.
+ * Message text has no native character truncation flag. Turn/item/byte budgets
+ * can be exceeded to retain complete turns or live control state; consumers must
+ * report their own text/response limits and incomplete coverage. A bounded snapshot
+ * can explicitly report payloadBudgetExceeded.
  */
 export const THREAD_CORPUS_CAPABILITY = {
-  schemaVersion: "t3.thread-corpus-capability/v1",
-  shellSnapshot: "t3.thread-corpus-shell/v1",
-  threadDetailPagination: "t3.thread-corpus-pagination/v1",
+  schemaVersion: "t3.thread-corpus-capability/v2",
+  shellSnapshot: "t3.thread-corpus-shell/v2",
+  threadDetailPagination: "t3.thread-corpus-pagination/v2",
   placement: "t3.thread-corpus-placement/v1",
   authSession: QUEUE_DISPATCH_CAPABILITY.authSession,
 } as const satisfies ThreadCorpusCapability;

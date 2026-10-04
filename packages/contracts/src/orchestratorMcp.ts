@@ -589,3 +589,16 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
     message: Schema.String,
   },
 ) {}
+
+export const OrchestratorMcpThreadSettleInput = Schema.Struct({
+  clientRequestId: OrchestratorMcpClientRequestId,
+});
+export type OrchestratorMcpThreadSettleInput = typeof OrchestratorMcpThreadSettleInput.Type;
+
+export const OrchestratorMcpThreadSettleResult = Schema.Struct({
+  status: Schema.Literal("accepted"),
+  threadId: ThreadId,
+  runId: RunId,
+  clientRequestId: OrchestratorMcpClientRequestId,
+});
+export type OrchestratorMcpThreadSettleResult = typeof OrchestratorMcpThreadSettleResult.Type;

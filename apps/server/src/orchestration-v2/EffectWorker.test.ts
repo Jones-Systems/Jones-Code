@@ -753,3 +753,75 @@ it.effect("safely retries after replacement cleanup succeeds and start fails", (
     ]);
   }),
 );
+
+
+for (const outcome of ["acknowledged", "notification-failed", "unconfirmed", "start-failed"] as const) {
+  it.effect(`native start ${outcome} preserves confirmation and never replays`, () =>
+    Effect.gen(function* () {
+      const now = DateTime.formatIso(yield* DateTime.now);
+      const workerId = "worker:native-start";
+      const effectId = "effect:native-start";
+      const claimed: EffectOutbox.OrchestrationEffectV2 = {
+        id: effectId,
+        commandId: CommandId.make("command:native-start"),
+        threadId,
+        request: { type: "provider-turn.start", runId },
+        nativeCreationExecutionReference: {
+          version: 2,
+          claimId: "claim:native-start",
+          stageCommandId: CommandId.make("command:native-start"),
+          effectId,
+          stage: "native_command",
+        },
+        status: "running",
+        attemptCount: 1,
+        availableAt: now,
+        leaseOwner: workerId,
+        leaseExpiresAt: now,
+        createdAt: now,
+        updatedAt: now,
+        completedAt: null,
+        lastError: null,
+      };
+      let current = claimed;
+      let retries = 0;
+      let genericSuccesses = 0;
+      let failures = 0;
+      const outbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
+        claimNext: () => Effect.succeed(Option.some(claimed)),
+        get: () => Effect.sync(() => Option.some(current)),
+        awaitCancellation: () => Effect.never,
+        clearCancellation: () => Effect.void,
+        retry: () => Effect.sync(() => { retries += 1; return true; }),
+        succeed: () => Effect.sync(() => { genericSuccesses += 1; return true; }),
+        fail: () => Effect.sync(() => { failures += 1; current = { ...current, status: "failed" }; return true; }),
+      });
+      const executor = Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2,
+        EffectWorker.OrchestrationEffectExecutorV2.of({
+          execute: (_effect, options) => Effect.gen(function* () {
+            assert.strictEqual(options?.workerId, workerId);
+            assert.strictEqual(options?.willRetry, false);
+            if (outcome === "acknowledged" || outcome === "notification-failed") {
+              current = { ...current, status: "succeeded" };
+            }
+            if (outcome === "start-failed" || outcome === "notification-failed") {
+              return yield* new EffectWorker.OrchestrationEffectExecutionError({
+                effectId, effectType: "provider-turn.start", cause: outcome,
+              });
+            }
+          }),
+        }));
+      const layer = EffectWorker.layerWithOptions({ workerId, maxAttempts: 5 }).pipe(
+        Layer.provide(Layer.merge(outbox, executor)),
+      );
+      const ran = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+        Effect.flatMap((worker) => worker.runOnce), Effect.provide(layer),
+      );
+      assert.isTrue(ran);
+      assert.strictEqual(retries, 0);
+      assert.strictEqual(genericSuccesses, 0);
+      assert.strictEqual(failures, outcome === "start-failed" || outcome === "unconfirmed" ? 1 : 0);
+      assert.strictEqual(current.status, failures === 0 ? "succeeded" : "failed");
+    }),
+  );
+}

@@ -1,6 +1,7 @@
 import { assert, it, vi } from "@effect/vitest";
 import {
   MessageId,
+  ProjectId,
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -54,6 +55,7 @@ it.effect("leaves durable effects for the worker after runtime reconciliation", 
       Effect.provide(layer),
     );
     assert.deepEqual(summary, {
+      failedThreadIds: [],
       terminalizedRuns: 0,
       stoppedSessions: 0,
       closedRequests: 0,
@@ -1272,3 +1274,72 @@ it.effect(
     }).pipe(Effect.provide(layer));
   },
 );
+
+const capturedMarker = (threadId: ThreadId): EventSink.RestartContinuationMarkerV2 => ({
+  markerId: `marker:${threadId}`, threadId, projectId: ProjectId.make("captured-project"),
+  sourceRunId: RunId.make("captured-run"), sourceRunAttemptId: RunAttemptId.make("captured-attempt"),
+  binding: { threadId, providerThreadId: ProviderThreadId.make("captured-provider-thread"),
+    providerSessionId: ProviderSessionId.make("captured-provider-session"), instanceId: ProviderInstanceId.make("codex"),
+    driver: ProviderDriverKind.make("codex"), nativeThreadId: "captured-native-thread", runtimeGeneration: "captured-generation" },
+  evidenceRevision: 1, createdAt: "2026-10-03T00:00:00.000Z",
+});
+
+it.effect("staging reads only dormant markers and clear uses the captured reference", () => {
+  const markers = [capturedMarker(ThreadId.make("captured-staging"))];
+  let inventories = 0;
+  let cleared = 0;
+  return Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    const stage = yield* recovery.stageStartupRecovery;
+    assert.strictEqual(stage.continuationMarkers, markers);
+    assert.equal(inventories, 1);
+    yield* recovery.clearServerUpdatePreparation(stage.continuationMarkers);
+    assert.equal(cleared, 1);
+  }).pipe(Effect.provide(ProviderRuntimeRecovery.layer.pipe(Layer.provide(Layer.mergeAll(
+    ServerSettings.layerTest(),
+    IdAllocator.layer,
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({
+      getRecoveryThreadIds: () => Effect.die("staging cannot normalize projections"),
+    }),
+    Layer.mock(EffectOutbox.EffectOutboxV2)({
+      reconcileAfterProcessLoss: Effect.die("staging cannot release effects"),
+    }),
+    Layer.mock(EventSink.EventSinkV2)({
+      readDormantRestartContinuations: Effect.sync(() => { inventories++; return markers; }),
+      clearRestartContinuation: (marker) => Effect.sync(() => {
+        assert.strictEqual(marker, markers[0]);
+        cleared++;
+        return true;
+      }),
+    }),
+  )))));
+});
+
+it.effect("post-trial recovery leaves a failed source marker dormant and isolates its outbox", () => {
+  const threadId = ThreadId.make("failed-captured-source");
+  const marker = capturedMarker(threadId);
+  return Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    const result = yield* recovery.reconcileAfterStartupTrial({ continuationMarkers: [marker] });
+    assert.deepEqual(result.failedThreadIds, [threadId]);
+    assert.deepEqual(result.heldContinuationMarkers, [{ marker, reason: "recovery_failed" }]);
+    assert.deepEqual(result.releasedContinuationMarkerIds, []);
+  }).pipe(Effect.provide(ProviderRuntimeRecovery.layer.pipe(Layer.provide(Layer.mergeAll(
+    ServerSettings.layerTest(),
+    IdAllocator.layer,
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({
+      getRecoveryThreadIds: () => Effect.succeed([threadId]),
+      getRuntimeRecoveryProjection: () => Effect.fail(new ProjectionStore.ProjectionStoreReadError({ threadId, cause: "unreadable" })),
+    }),
+    Layer.mock(EffectOutbox.EffectOutboxV2)({
+      reconcileAfterProcessLoss: Effect.die("failed source requires exclusion"),
+      reconcileAfterProcessLossExcluding: ({ excludeThreadIds }) => Effect.sync(() => {
+        assert.deepEqual(excludeThreadIds, [threadId]);
+        return { cancelled: 0, requeued: 0 };
+      }),
+    }),
+    Layer.mock(EventSink.EventSinkV2)({
+      releaseRestartContinuation: () => Effect.die("failed recovery cannot release its marker"),
+    }),
+  )))));
+});

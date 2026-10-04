@@ -134,8 +134,8 @@ const render = Effect.fn("NativeProviderHttp.render")(function* (
   });
 });
 
-export const createNativeProviderHandlers = (
-  provider: WorkstreamsNativeProvider,
+export const createNativeProviderHandlers = <R = never>(
+  provider: WorkstreamsNativeProvider<R>,
   enrollments: NativeProviderEnrollment["Service"],
 ) => {
   const handle = Effect.fn("NativeProviderHttp.handle")(function* <E>(

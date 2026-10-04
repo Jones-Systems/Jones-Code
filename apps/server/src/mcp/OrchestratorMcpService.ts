@@ -30,6 +30,8 @@ import {
   type OrchestratorMcpTaskCancelResult,
   type OrchestratorMcpUpdateScheduledTaskInput,
   type OrchestratorMcpThreadDetail,
+  type OrchestratorMcpThreadSettleInput,
+  type OrchestratorMcpThreadSettleResult,
   type OrchestratorMcpThreadInterruptInput,
   type OrchestratorMcpThreadInterruptResult,
   type OrchestratorMcpThreadListInput,
@@ -89,6 +91,10 @@ type TerminalTaskStatus = Extract<
 >;
 
 export interface OrchestratorMcpServiceShape {
+  readonly settleThread: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpThreadSettleInput,
+  ) => Effect.Effect<OrchestratorMcpThreadSettleResult, OrchestratorMcpFailure>;
   readonly capabilities: (
     scope: McpInvocationScope,
   ) => Effect.Effect<OrchestratorMcpCapabilitiesResult, OrchestratorMcpFailure>;
@@ -1187,6 +1193,28 @@ const make = Effect.gen(function* () {
     });
 
   return OrchestratorMcpService.of({
+    settleThread: (scope, input) =>
+      Effect.gen(function* () {
+        yield* requireCapability(scope);
+        const intent = yield* threadManagement
+          .requestSelfSettlement({
+            threadId: scope.threadId,
+            mcpCredentialId: scope.providerSessionId,
+            providerInstanceId: scope.providerInstanceId,
+            commandId: stableCommandId({
+              scope,
+              requestKey: input.clientRequestId,
+              operation: `self-settle:${scope.threadId}`,
+            }),
+          })
+          .pipe(Effect.mapError(threadManagementFailure));
+        return {
+          status: "accepted",
+          threadId: scope.threadId,
+          runId: intent.runId,
+          clientRequestId: input.clientRequestId,
+        };
+      }),
     scheduleTask: (scope, input) =>
       Effect.gen(function* () {
         yield* requireCapability(scope);

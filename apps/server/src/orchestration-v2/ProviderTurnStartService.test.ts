@@ -802,3 +802,23 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+
+it("confirms only an acknowledged provider start and propagates confirmation failure", async () => {
+  const events: string[] = [];
+  const failure = await Effect.runPromise(ProviderTurnStart.acknowledgeProviderTurnStart(
+    Effect.fail("provider rejected start"),
+    Effect.sync(() => { events.push("confirmed"); }),
+  ).pipe(Effect.result));
+  expect(failure._tag).toBe("Failure");
+  expect(events).toEqual([]);
+
+  const confirmationFailure = await Effect.runPromise(ProviderTurnStart.acknowledgeProviderTurnStart(
+    Effect.sync(() => { events.push("provider acknowledged"); }),
+    Effect.sync(() => { events.push("persist confirmation"); }).pipe(
+      Effect.andThen(Effect.fail("confirmation transaction failed")),
+    ),
+  ).pipe(Effect.result));
+  expect(confirmationFailure._tag).toBe("Failure");
+  expect(events).toEqual(["provider acknowledged", "persist confirmation"]);
+});

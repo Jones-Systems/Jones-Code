@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
-import type { ProviderSessionRuntime } from "../persistence/ProviderSessionRuntime.ts";
+import { makeLegacyStoppedRuntimeProofV1, makeLegacyProviderContinuationEvidenceV1, type ProviderSessionRuntime } from "../persistence/ProviderSessionRuntime.ts";
 import {
   qualifyProviderContinuation,
   type LegacyStoppedRuntimeProofV1,
@@ -224,5 +224,46 @@ describe("V2 continuation qualification", () => {
         target: { ...target, driver: ProviderDriverKind.make("claudeAgent") },
       }),
     ).toEqual({ type: "unsupported", reason: "driver_incompatible" });
+  });
+});
+
+
+describe("persisted legacy stop evidence", () => {
+  it("preserves historical null identity and rejects synthetic or mismatched rows", () => {
+    const input = { sourceRow: storedRow, driver, nativeThreadId: storedRow.resumeCursor.threadId };
+    expect(makeLegacyStoppedRuntimeProofV1({ ...input, source: "synthetic_import" })).toBeNull();
+    for (const sourceRow of [{ ...storedRow, status: "running" as const },
+      { ...storedRow, providerName: "pi" }, { ...storedRow, resumeCursor: { threadId: "other-native" } }]) {
+      expect(makeLegacyStoppedRuntimeProofV1({ ...input, sourceRow, source: "persisted_runtime_row" })).toBeNull();
+    }
+    const proof = makeLegacyStoppedRuntimeProofV1({ ...input, source: "persisted_runtime_row" });
+    expect(proof).toEqual(stoppedProof);
+    expect(makeLegacyStoppedRuntimeProofV1({ ...input, sourceRow: { ...storedRow, adapterKey: "custom-routing-key" },
+      source: "persisted_runtime_row" })).toEqual(stoppedProof);
+    const evidenceInput = { ...input, provenance: "legacy_row" as const,
+      continuationKey: null, historicalSourceIdentity: null, accessibility: null, stoppedProof: proof };
+    const evidence = makeLegacyProviderContinuationEvidenceV1(evidenceInput);
+    expect(evidence.providerInstanceId).toBeNull();
+    expect(evidence.continuationKey).toBeNull();
+    expect(evidence.historicalSourceIdentity).toBeNull();
+    for (const mismatch of [{ nativeThreadId: "wrong-native" },
+      { sourceRow: { ...storedRow, threadId: ThreadId.make("other-thread") } },
+      { sourceRow: { ...storedRow, providerInstanceId: targetId } }, { driver: ProviderDriverKind.make("pi") }]) {
+      expect(() => makeLegacyProviderContinuationEvidenceV1({ ...evidenceInput, ...mismatch })).toThrow();
+    }
+  });
+
+  it("uses Claude's native resume UUID and never its application thread id", () => {
+    const nativeThreadId = "aabbccdd-1234-5678-9abc-123456789abc";
+    const claude = ProviderDriverKind.make("claudeAgent");
+    const sourceRow = { ...storedRow, providerName: "claudeAgent",
+      resumeCursor: { threadId: "application-thread", resume: nativeThreadId } };
+    const input = { sourceRow, driver: claude, nativeThreadId, source: "persisted_runtime_row" as const };
+    expect(makeLegacyStoppedRuntimeProofV1(input)?.nativeThreadId).toBe(nativeThreadId);
+    expect(makeLegacyStoppedRuntimeProofV1({ ...input, sourceRow: { ...sourceRow,
+      resumeCursor: { threadId: "application-thread", sessionId: nativeThreadId } } })?.nativeThreadId).toBe(nativeThreadId);
+    expect(makeLegacyStoppedRuntimeProofV1({ ...input, nativeThreadId: "application-thread" })).toBeNull();
+    expect(makeLegacyStoppedRuntimeProofV1({ ...input, sourceRow: { ...sourceRow,
+      resumeCursor: { threadId: nativeThreadId } } })).toBeNull();
   });
 });

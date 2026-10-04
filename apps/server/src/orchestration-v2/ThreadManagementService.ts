@@ -274,18 +274,22 @@ export interface ThreadManagementServiceShape {
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
   ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
+  readonly requestSelfSettlement: Orchestrator.OrchestratorV2["Service"]["requestSelfSettlement"];
   readonly dispatchNativeWorkstreamSettlement: Orchestrator.OrchestratorV2["Service"]["dispatchNativeWorkstreamSettlement"];
   readonly observeNativeWorkstreamSettlementBinding: Orchestrator.OrchestratorV2["Service"]["observeNativeWorkstreamSettlementBinding"];
   readonly dispatchGuarded: Orchestrator.OrchestratorV2["Service"]["dispatchGuarded"];
   readonly dispatchRestartContinuation: Orchestrator.OrchestratorV2["Service"]["dispatchRestartContinuation"];
   readonly dispatchNativeCreationStage: Orchestrator.OrchestratorV2["Service"]["dispatchNativeCreationStage"];
   readonly dispatchNativeCreationRecovery: Orchestrator.OrchestratorV2["Service"]["dispatchNativeCreationRecovery"];
-  readonly reviewImportedHistoryStart: (input: Parameters<Orchestrator.OrchestratorV2["Service"]["reviewImportedHistoryStart"]>[0]) => ReturnType<Orchestrator.OrchestratorV2["Service"]["reviewImportedHistoryStart"]>;
+  readonly reviewImportedHistoryStart: (
+    input: Parameters<Orchestrator.OrchestratorV2["Service"]["reviewImportedHistoryStart"]>[0],
+  ) => ReturnType<Orchestrator.OrchestratorV2["Service"]["reviewImportedHistoryStart"]>;
   readonly observeImportedHistoryStart: Orchestrator.OrchestratorV2["Service"]["observeImportedHistoryStart"];
   readonly observeCurrentThreadRuntimeStop: Orchestrator.OrchestratorV2["Service"]["observeCurrentThreadRuntimeStop"];
   readonly observeThreadDeletionCleanup: Orchestrator.OrchestratorV2["Service"]["observeThreadDeletionCleanup"];
   readonly stopCurrentThreadRuntime: Orchestrator.OrchestratorV2["Service"]["stopCurrentThreadRuntime"];
   readonly startWithImportedHistory: (command: Parameters<Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"]>[0]) => ReturnType<Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"]>;
+  readonly requestSelfSettlement: Orchestrator.OrchestratorV2["Service"]["requestSelfSettlement"];
   readonly observeCommand: Orchestrator.OrchestratorV2["Service"]["observeCommand"];
   readonly observeLegacyCommand: Orchestrator.OrchestratorV2["Service"]["observeLegacyCommand"];
   readonly readCurrentThreadRuntimeAttachment: Orchestrator.OrchestratorV2["Service"]["readCurrentThreadRuntimeAttachment"];
@@ -734,18 +738,24 @@ const make = Effect.gen(function* () {
   return ThreadManagementService.of({
     ensureLegacyTranscript,
     dispatch,
+    requestSelfSettlement: orchestrator.requestSelfSettlement,
     dispatchNativeWorkstreamSettlement: orchestrator.dispatchNativeWorkstreamSettlement,
     observeNativeWorkstreamSettlementBinding: orchestrator.observeNativeWorkstreamSettlementBinding,
     dispatchGuarded: orchestrator.dispatchGuarded,
     dispatchRestartContinuation: orchestrator.dispatchRestartContinuation,
     dispatchNativeCreationStage: orchestrator.dispatchNativeCreationStage,
     dispatchNativeCreationRecovery: orchestrator.dispatchNativeCreationRecovery,
-    reviewImportedHistoryStart: (input) => orchestrator.reviewImportedHistoryStart(input, legacyImporter.readTranscriptSnapshotEvidence(input.threadId)),
+    reviewImportedHistoryStart: (input) =>
+      orchestrator.reviewImportedHistoryStart(
+        input,
+        legacyImporter.readTranscriptSnapshotEvidence(input.threadId),
+      ),
     observeImportedHistoryStart: orchestrator.observeImportedHistoryStart,
     observeCurrentThreadRuntimeStop: orchestrator.observeCurrentThreadRuntimeStop,
     observeThreadDeletionCleanup: orchestrator.observeThreadDeletionCleanup,
     stopCurrentThreadRuntime: orchestrator.stopCurrentThreadRuntime,
     startWithImportedHistory: (command) => orchestrator.startWithImportedHistory(command, legacyImporter.readTranscriptSnapshotEvidence(command.threadId)),
+    requestSelfSettlement: orchestrator.requestSelfSettlement,
     observeCommand: orchestrator.observeCommand,
     observeLegacyCommand: orchestrator.observeLegacyCommand,
     readCurrentThreadRuntimeAttachment: orchestrator.readCurrentThreadRuntimeAttachment,

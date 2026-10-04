@@ -1,27 +1,33 @@
-import type { CommandId, OrchestrationThreadShell, ThreadId } from "@t3tools/contracts";
+import type {
+  CommandId,
+  OrchestrationV2ThreadShell,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
+import * as Layer from "effect/Layer";
+import * as OrganizationMetadata from "../../OrganizationMetadataMcpService.ts";
 import { requireMcpCapability } from "../../McpInvocationContext.ts";
-import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import {
   WorkstreamGateway,
   WorkstreamGatewayError,
 } from "../../../workstreams/WorkstreamGateway.ts";
 import { OrganizationToolkit, OrganizationToolError, type OrganizationThread } from "./tools.ts";
 
-const organizationThread = (thread: OrchestrationThreadShell): typeof OrganizationThread.Type => ({
+const iso = (value: DateTime.Utc | null | undefined) => value == null ? null : DateTime.formatIso(value);
+const organizationThread = (thread: OrchestrationV2ThreadShell): typeof OrganizationThread.Type => ({
   threadId: thread.id,
   title: thread.title.slice(0, 512),
   projectId: thread.projectId,
-  pinnedAt: thread.pinnedAt ?? null,
+  pinnedAt: iso(thread.pinnedAt),
   pinOrderKey: thread.pinOrderKey ?? null,
   activeOrderKey: thread.activeOrderKey ?? null,
-  snoozedUntil: thread.snoozedUntil ?? null,
+  snoozedUntil: iso(thread.snoozedUntil),
   settledOverride: thread.settledOverride,
-  settledAt: thread.settledAt,
-  archivedAt: thread.archivedAt,
+  settledAt: iso(thread.settledAt),
+  archivedAt: iso(thread.archivedAt),
 });
 const localFailure = (cause: unknown) =>
   new OrganizationToolError({ reason: "local-operation-failed", cause });
@@ -34,8 +40,9 @@ const pageInput = (input: {
 });
 const make = Effect.gen(function* () {
   const gateway = yield* WorkstreamGateway;
-  const snapshots = yield* ProjectionSnapshotQuery;
-  const engine = yield* OrchestrationEngineService;
+  const metadata = yield* OrganizationMetadata.OrganizationMetadataMcpService;
+  const snapshots = yield* ThreadManagementService;
+  const engine = snapshots;
   const authorized = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
     requireMcpCapability("organization").pipe(Effect.andThen(operation));
   const requireThread = Effect.fn("OrganizationToolkit.requireThread")(function* (
@@ -44,18 +51,18 @@ const make = Effect.gen(function* () {
   ) {
     yield* requireMcpCapability("organization");
     const thread = yield* snapshots
-      .getThreadShellById(threadId)
+      .getThreadShell(threadId)
       .pipe(Effect.mapError(localFailure));
-    if (Option.isNone(thread))
+    if (thread === null)
       return yield* new OrganizationToolError({ reason: "thread-not-found", threadId });
-    const value = thread.value;
+    const value = thread;
     const now = yield* Clock.currentTimeMillis;
     if (
       value.archivedAt !== null ||
       (requireVisible &&
         (value.settledOverride === "settled" ||
           value.settledAt !== null ||
-          (value.snoozedUntil != null && Date.parse(value.snoozedUntil) > now)))
+          (value.snoozedUntil != null && DateTime.toEpochMillis(value.snoozedUntil) > now)))
     ) {
       return yield* new OrganizationToolError({ reason: "thread-parked", threadId });
     }
@@ -65,23 +72,31 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     commandId: CommandId,
     sequence: number,
-    matches: (thread: OrchestrationThreadShell) => boolean,
+    matches: (thread: OrchestrationV2ThreadShell) => boolean,
   ) {
-    return yield* snapshots.getThreadShellById(threadId).pipe(
+    return yield* snapshots.getThreadShell(threadId).pipe(
       Effect.map((thread) =>
-        Option.isNone(thread)
+        thread === null
           ? { commandId, sequence, readback: "unknown" as const }
           : {
               commandId,
               sequence,
-              readback: matches(thread.value) ? ("observed" as const) : ("pending" as const),
-              thread: organizationThread(thread.value),
+              readback: matches(thread) ? ("observed" as const) : ("pending" as const),
+              thread: organizationThread(thread),
             },
       ),
       Effect.catch(() => Effect.succeed({ commandId, sequence, readback: "unknown" as const })),
     );
   });
   return OrganizationToolkit.of({
+    get_invocation_context: () => metadata.getInvocationContext,
+    list_organization_thread_metadata: (input) => metadata.listThreadMetadata(input).pipe(
+      Effect.mapError((error) => error._tag === "OrganizationMetadataError"
+        ? new OrganizationToolError({ reason: error.reason,
+            ...(error.expectedSnapshotSequence === undefined ? {} : { expectedSnapshotSequence: error.expectedSnapshotSequence }),
+            ...(error.snapshotSequence === undefined ? {} : { snapshotSequence: error.snapshotSequence }) })
+        : error),
+    ),
     list_organization_threads: (input) =>
       authorized(
         Effect.gen(function* () {
@@ -203,4 +218,6 @@ const make = Effect.gen(function* () {
       }),
   });
 });
-export const OrganizationToolkitHandlersLive = OrganizationToolkit.toLayer(make);
+export const OrganizationToolkitHandlersLive = OrganizationToolkit.toLayer(make).pipe(
+  Layer.provide(OrganizationMetadata.layer),
+);

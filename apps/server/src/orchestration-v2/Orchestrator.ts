@@ -1,3 +1,9 @@
+import {
+  cancelsSelfSettlement,
+  selfSettlementRun,
+  selfSettlementTerminalDisposition,
+  type SelfSettlementIntent,
+} from "./SelfSettlement.ts";
 import { createHash } from "node:crypto";
 import {
   latestExecutedRun,
@@ -13,6 +19,7 @@ import {
 } from "@t3tools/shared/threadPullRequests";
 import {
   AuthSessionId,
+  ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type ChatAttachment,
   CommandId,
   EnvironmentAuthenticatedPrincipal,
@@ -125,6 +132,8 @@ import {
   type NativeCommandCommitContextV2,
   type DeletionWorktreePolicyCaptureV1,
   type NativeCommandTargetSnapshotV2,
+  type OrdinaryCheckoutCommitContextV1,
+  type OrdinaryCheckoutSqlCaptureV1,
   type LegacyImportTranscriptSnapshotV1,
   type ImportedHistoryStartOutcomeV2,
   type ImportedHistoryStartPreparationResultV2,
@@ -133,6 +142,7 @@ import {
   type ProviderRuntimeEvidenceV2,
   type RestartContinuationMarkerV2,
 } from "./EventSink.ts";
+import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import { LegacyV1ThreadImporter } from "./legacy/LegacyV1ThreadImporter.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
@@ -682,6 +692,12 @@ export const makeImportedHistoryStartExecutionPreparationV2 = Effect.gen(functio
 });
 
 export interface OrchestratorV2Shape {
+  readonly requestSelfSettlement: (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+    readonly mcpCredentialId: string;
+    readonly providerInstanceId: ProviderInstanceId;
+  }) => Effect.Effect<SelfSettlementIntent, OrchestratorV2Error>;
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
@@ -1013,6 +1029,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "prepared-run.release":
     case "prepared-run.progress":
     case "prepared-run.fail":
+    case "prepared-run.retry":
     case "run.interrupt":
     case "queued-message.promote-to-steer":
     case "queue.resume":
@@ -1054,6 +1071,14 @@ function pendingThreadTitleGenerationEffect(
 }
 
 const WORKSPACE_PREPARATION_INPUT = "Preparing workspace";
+
+/** A reopened preparation item drops the output and exit code of the attempt it replaces. */
+function withoutPreparationResult(
+  item: Extract<OrchestrationV2TurnItem, { readonly type: "command_execution" }>,
+) {
+  const { output: _output, exitCode: _exitCode, outputIndicatesFailure: _failure, ...rest } = item;
+  return rest;
+}
 
 function isBlockingRun(run: OrchestrationV2Run): boolean {
   return (
@@ -1686,74 +1711,52 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     threadId: ThreadId,
     requestedPath: string | undefined,
     kind: "native" | "ordinary",
-  ) =>
-    eventSink
-      .withTransaction(
-        Effect.gen(function* () {
-          const { thread, resourcePath } = yield* resolveWorktreeOwnershipTarget(
-            threadId,
-            requestedPath,
-          );
-          const ownershipError = (detail: string) =>
-            new OrchestratorWorktreeOwnershipError({ threadId, detail });
-          const birth = yield* kind === "ordinary"
-            ? worktreeOwnershipLeases.getOrdinaryThreadIncarnation(threadId)
-            : worktreeOwnershipLeases.getThreadIncarnation(threadId);
-          if (Option.isNone(birth)) {
-            return yield* ownershipError("thread has no authoritative creation event");
-          }
-          const nowMs = yield* Clock.currentTimeMillis;
-          const acquire =
-            kind === "ordinary"
-              ? worktreeOwnershipLeases.ensureOrdinaryOwnership
-              : worktreeOwnershipLeases.acquire;
-          const lease = yield* acquire({
-            resourcePath,
-            leaseId: yield* randomUuidV4,
-            ownerThreadId: threadId,
-            ownerIncarnation: birth.value,
-            branch: thread.branch,
-            nowMs,
-            expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS,
-          });
-          if (Option.isNone(lease)) {
-            const conflict = (yield* worktreeOwnershipLeases.listAll()).find(
-              (candidate) => candidate.resourcePath === resourcePath,
-            );
-            if (conflict === undefined) {
-              return yield* ownershipError(`failed to acquire ownership for '${resourcePath}'`);
-            }
-            return yield* new WorktreeOwnershipConflictError({
-              resourcePath: conflict.resourcePath,
-              ownerThreadId: conflict.ownerThreadId,
-              requestingThreadId: threadId,
-              ownerBranch: conflict.branch,
-              expiresAtMs: conflict.expiresAtMs,
-            });
-          }
-          const ownedLease = lease.value;
-          if (kind === "ordinary") {
-            yield* eventSink.onCommit(
-              Effect.sync(() => locallyOwnedWorktrees.set(ownedLease.resourcePath, ownedLease)),
-            );
-          }
-          return ownedLease;
-        }),
-      )
-      .pipe(
-        Effect.catchTag("EventSinkWriteError", (cause) =>
-          Effect.fail(
-            toPersistenceSqlError(
-              `OrchestratorV2.${kind === "ordinary" ? "acquireOrdinaryWorktreeOwnership" : "acquireWorktreeOwnership"}:transaction`,
-            )(cause),
-          ),
-        ),
-        Effect.tap((lease) =>
-          kind === "native"
-            ? Effect.sync(() => locallyOwnedWorktrees.set(lease.resourcePath, lease))
-            : Effect.void,
-        ),
+  ) => eventSink.withWorktreeOwnershipTransaction(Effect.gen(function* () {
+    const { thread, resourcePath } = yield* resolveWorktreeOwnershipTarget(threadId, requestedPath);
+    const ownershipError = (detail: string) => new OrchestratorWorktreeOwnershipError({ threadId, detail });
+    const birth = yield* (kind === "ordinary"
+      ? worktreeOwnershipLeases.getOrdinaryThreadIncarnation(threadId)
+      : worktreeOwnershipLeases.getThreadIncarnation(threadId));
+    if (Option.isNone(birth)) {
+      return yield* ownershipError("thread has no authoritative creation event");
+    }
+    const nowMs = yield* Clock.currentTimeMillis;
+    const acquire = kind === "ordinary" ? worktreeOwnershipLeases.ensureOrdinaryOwnership : worktreeOwnershipLeases.acquire;
+    const lease = yield* acquire({
+      resourcePath,
+      leaseId: yield* randomUuidV4,
+      ownerThreadId: threadId,
+      ownerIncarnation: birth.value,
+      branch: thread.branch,
+      nowMs,
+      expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS,
+    });
+    if (Option.isNone(lease)) {
+      const conflict = (yield* worktreeOwnershipLeases.listAll()).find(
+        (candidate) => candidate.resourcePath === resourcePath,
       );
+      if (conflict === undefined) {
+        return yield* ownershipError(`failed to acquire ownership for '${resourcePath}'`);
+      }
+      return yield* new WorktreeOwnershipConflictError({
+        resourcePath: conflict.resourcePath,
+        ownerThreadId: conflict.ownerThreadId,
+        requestingThreadId: threadId,
+        ownerBranch: conflict.branch,
+        expiresAtMs: conflict.expiresAtMs,
+      });
+    }
+    const ownedLease = lease.value;
+    if (kind === "ordinary") {
+      yield* eventSink.onCommit(Effect.sync(() => locallyOwnedWorktrees.set(ownedLease.resourcePath, ownedLease)));
+    }
+    return ownedLease;
+  })).pipe(
+    Effect.catchTag("EventSinkWriteError", (cause) =>
+      Effect.fail(toPersistenceSqlError(`OrchestratorV2.${kind === "ordinary" ? "acquireOrdinaryWorktreeOwnership" : "acquireWorktreeOwnership"}:transaction`)(cause)),
+    ),
+    Effect.tap((lease) => kind === "native" ? Effect.sync(() => locallyOwnedWorktrees.set(lease.resourcePath, lease)) : Effect.void),
+  );
 
   const acquireWorktreeOwnership: OrchestratorV2Shape["acquireWorktreeOwnership"] = (
     threadId,
@@ -6231,6 +6234,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(command.restartContinuationOfRunId === undefined
             ? {}
             : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
+          ...(dispatchMode.type === "defer_start" && dispatchMode.workspaceStrategy !== undefined
+            ? { workspacePreparation: dispatchMode.workspaceStrategy }
+            : {}),
         };
         const attempt: OrchestrationV2RunAttempt = {
           id: attemptId,
@@ -8568,7 +8574,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<
       OrchestrationV2Command,
       {
-        readonly type: "prepared-run.release" | "prepared-run.progress" | "prepared-run.fail";
+        readonly type: "prepared-run.release" | "prepared-run.progress" | "prepared-run.fail" | "prepared-run.retry";
       }
     >,
     projection: Pick<
@@ -8591,7 +8597,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         candidate.input === WORKSPACE_PREPARATION_INPUT,
     );
     if (
-      run?.status !== "preparing" ||
+      run?.status !== (command.type === "prepared-run.retry" ? "failed" : "preparing") ||
       attempt === undefined ||
       rootNode === undefined ||
       providerThread === undefined ||
@@ -8809,7 +8815,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           completedAt: now,
           updatedAt: now,
           type: "error",
-          failure: command.failure,
+          failure: {
+            ...command.failure,
+            code: ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+          },
         },
       });
       yield* emitEvent({
@@ -8820,6 +8829,90 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerInstanceId: state.run.providerInstanceId,
         occurredAt: now,
         payload: { ...state.run, status: "failed", completedAt: now },
+      });
+    });
+
+  /**
+   * Returns a run whose workspace preparation failed to preparing. The failure
+   * item turns cancelled so clients stop offering the retry; ThreadLaunchService
+   * runs the recorded preparation again once this commits.
+   */
+  const dispatchPreparedRunRetry = (
+    command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.retry" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) =>
+    Effect.gen(function* () {
+      const projection = yield* loadProjectionForCommand(
+        command,
+        ["runs", "attempts", "nodes", "providerThreads", "turnItems"],
+        { turnItemTypes: ["command_execution", "error"], turnItemRunId: command.runId },
+      );
+      const state = preparedRunState(command, projection);
+      const failureItem = projection.turnItems.find(
+        (candidate): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "error" }> =>
+          candidate.type === "error" &&
+          candidate.status === "failed" &&
+          candidate.failure.code === ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+      );
+      if (
+        state === null ||
+        state.run.workspacePreparation === undefined ||
+        failureItem === undefined ||
+        projection.thread.archivedAt !== null ||
+        projection.thread.deletedAt !== null
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Run ${command.runId} has no failed workspace preparation to retry.`,
+        });
+      }
+      if (projection.runs.some((run) => run.id !== state.run.id && isBlockingRun(run))) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Another run is active on this thread.",
+        });
+      }
+      const now = yield* DateTime.now;
+      const emitEvent = emit(events, command);
+      const scope = {
+        threadId: command.threadId,
+        runId: state.run.id,
+        nodeId: state.rootNode.id,
+        providerInstanceId: state.run.providerInstanceId,
+        occurredAt: now,
+      };
+      yield* emitEvent({
+        ...scope,
+        type: "turn-item.updated",
+        payload: { ...failureItem, status: "cancelled", updatedAt: now },
+      });
+      yield* emitEvent({
+        ...scope,
+        type: "turn-item.updated",
+        payload: {
+          ...withoutPreparationResult(state.preparationItem),
+          status: "running",
+          title: WORKSPACE_PREPARATION_INPUT,
+          completedAt: null,
+          updatedAt: now,
+        },
+      });
+      yield* emitEvent({
+        ...scope,
+        type: "run-attempt.updated",
+        payload: { ...state.attempt, status: "pending", completedAt: null },
+      });
+      yield* emitEvent({
+        ...scope,
+        type: "node.updated",
+        payload: { ...state.rootNode, status: "pending", completedAt: null },
+      });
+      yield* emitEvent({
+        ...scope,
+        type: "run.updated",
+        payload: { ...state.run, status: "preparing", completedAt: null },
       });
     });
 
@@ -10442,6 +10535,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "prepared-run.fail":
         yield* dispatchPreparedRunFail(command, events);
         break;
+      case "prepared-run.retry":
+        yield* dispatchPreparedRunRetry(command, events);
+        break;
       case "runtime-request.respond":
         yield* dispatchRuntimeRequestRespond(command, events, effects);
         break;
@@ -10983,6 +11079,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const plan = yield* dispatchOnce(command, capturedRestart).pipe(
       Effect.flatMap((planned) =>
+        Effect.gen(function* () {
+          if (!cancelsSelfSettlement(command)) return planned;
+          const threadId = commandThreadId(command);
+          const current = yield* projectionStore
+            .getThread(threadId)
+            .pipe(mapDispatchError(command));
+          if (current.selfSettlement == null) return planned;
+          const lastThreadEvent = planned.events.findLast(
+            (event) => event.threadId === threadId && "settledOverride" in event.payload,
+          );
+          const thread =
+            lastThreadEvent !== undefined && "settledOverride" in lastThreadEvent.payload
+              ? lastThreadEvent.payload
+              : current;
+          const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([...planned.events]);
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.metadata-updated",
+            threadId,
+            occurredAt: yield* DateTime.now,
+            payload: { ...thread, selfSettlement: null },
+          });
+          return { ...planned, events: yield* Ref.get(events) };
+        }),
+      ),
+      Effect.flatMap((planned) =>
         // A settle that finds the provider already ended everything has
         // nothing to record, which is its expected outcome, not a failure.
         planned.events.length > 0 || command.type === "thread.background-work.settle"
@@ -11135,6 +11259,70 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }).pipe(Effect.catch(() => Effect.succeed({ status: "unavailable" as const })));
       }
     }
+    let ordinaryCheckoutContext: OrdinaryCheckoutCommitContextV1 | undefined;
+    const ordinarySubjects = new Set(effects.filter((effect) => [
+      "provider-turn.start", "provider-turn.restart", "provider-turn.steer", "provider-thread.rollback",
+      "provider-runtime.continue", "runtime-request.respond", "checkpoint.capture", "prepared-run.release",
+    ].includes(effect.request.type)).map((effect) => effect.threadId));
+    if (ordinarySubjects.size > 0 && nativeCreation === undefined && nativeRecovery === undefined &&
+        (nativeContext === undefined || nativeContext.identity.kind === "guarded_message_dispatch") &&
+        Schema.is(Schema.toType(OrchestrationV2Command))(command)) {
+      const ordinaryCommand = command;
+      const canonicalCommand = Schema.encodeSync(OrchestrationV2Command)(ordinaryCommand);
+      // Resolve filesystem aliases before the SQL acceptance; revalidate raw target facts inside it.
+      const targets = yield* Effect.forEach([...ordinarySubjects], (threadId) => Effect.gen(function* () {
+        const projected = [...plan.events].reverse().find((event) => event.threadId === threadId &&
+          (event.type === "thread.created" || event.type === "thread.metadata-updated"));
+        const thread = projected?.type === "thread.created" || projected?.type === "thread.metadata-updated"
+          ? projected.payload : yield* projectionStore.getThreadShell(threadId);
+        if (thread === null) return yield* new OrchestratorWorktreeOwnershipError({ threadId, detail: "Checkout subject is unavailable" });
+        const project = Option.getOrNull(yield* projects.get(thread.projectId));
+        if (project === null) return yield* new OrchestratorWorktreeOwnershipError({ threadId, detail: "Checkout project is unavailable" });
+        const root = path.resolve(project.workspaceRoot);
+        const checkout = path.resolve(root, thread.worktreePath ?? root);
+        const canonicalProjectRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
+        const canonicalCheckoutPath = yield* fileSystem.realPath(checkout).pipe(Effect.orElseSucceed(() => checkout));
+        return { threadId, projectId: thread.projectId, branch: thread.branch, canonicalProjectRoot, canonicalCheckoutPath,
+          source: { projectWorkspaceRoot: project.workspaceRoot, worktreePath: thread.worktreePath } };
+      })).pipe(Effect.mapError((cause) => new OrchestratorDispatchError({ commandId: command.commandId, commandType: command.type, cause })));
+      ordinaryCheckoutContext = {
+        command: ordinaryCommand,
+        captureAfterProjection: () => Effect.gen(function* () {
+          const captures: OrdinaryCheckoutSqlCaptureV1[] = [];
+          for (const target of targets) {
+            const thread = yield* projectionStore.getThreadShell(target.threadId);
+            const project = Option.getOrNull(yield* projects.get(target.projectId));
+            const birth = yield* eventSink.readApplicationBirthRecord(target.threadId);
+            if (thread === null || thread.deletedAt !== null || birth === null || project === null ||
+                thread.projectId !== target.projectId || thread.branch !== target.branch ||
+                thread.worktreePath !== target.source.worktreePath || project.workspaceRoot !== target.source.projectWorkspaceRoot)
+              return yield* new OrchestratorWorktreeOwnershipError({ threadId: target.threadId, detail: "Checkout changed before acceptance" });
+            const nowMs = yield* Clock.currentTimeMillis;
+            const lease = yield* worktreeOwnershipLeases.ensureOrdinaryOwnership({ resourcePath: target.canonicalCheckoutPath,
+              leaseId: yield* randomUuidV4, ownerThreadId: target.threadId,
+              ownerIncarnation: OrdinaryCheckout.ordinaryApplicationIncarnationV1(birth), branch: target.branch,
+              nowMs, expiresAtMs: nowMs + WORKTREE_OWNERSHIP_LEASE_DURATION_MS });
+            if (Option.isNone(lease)) {
+              const conflict = Option.getOrNull(yield* worktreeOwnershipLeases.getByResourcePath(target.canonicalCheckoutPath));
+              if (conflict !== null) return yield* new WorktreeOwnershipConflictError({ resourcePath: conflict.resourcePath,
+                ownerThreadId: conflict.ownerThreadId, requestingThreadId: target.threadId, ownerBranch: conflict.branch, expiresAtMs: conflict.expiresAtMs });
+              return yield* new OrchestratorWorktreeOwnershipError({ threadId: target.threadId, detail: "Checkout ownership was not acquired" });
+            }
+            captures.push({ originalAdmission: null, source: target.source, capture: {
+              version: 1, commandId: ordinaryCommand.commandId, commandType: ordinaryCommand.type, canonicalCommand,
+              commandDigest: OrdinaryCheckout.ordinaryCheckoutCommandDigestV1(canonicalCommand),
+              origin: ordinaryCommand.type === "delegated_task.request" ? { kind: "delegated_child", parentThreadId: ordinaryCommand.parentThreadId }
+                : ordinaryCommand.type === "runtime-request.respond" ? { kind: "runtime_request_answer", requestId: ordinaryCommand.requestId }
+                : { kind: "command" },
+              threadId: target.threadId, applicationBirth: birth, projectId: target.projectId,
+              canonicalProjectRoot: target.canonicalProjectRoot, canonicalCheckoutPath: target.canonicalCheckoutPath,
+              branch: target.branch, lease: lease.value,
+            } });
+          }
+          return captures;
+        }),
+      };
+    }
     const committed = yield* eventSink
       .commitCommand({
         commandId: command.commandId,
@@ -11143,6 +11331,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         acceptedAt,
         events: plan.events,
         effects,
+        ...(ordinaryCheckoutContext === undefined ? {} : { ordinaryCheckoutContext }),
         ...(command.type === "thread.delete" ? { deletionCommand: command } : {}),
         ...(deletionWorktreePolicy === undefined ? {} : { deletionWorktreePolicy }),
         ...(nativeContext === undefined ? {} : { nativeContext }),
@@ -12494,6 +12683,163 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     });
 
+  const requestSelfSettlement: OrchestratorV2Shape["requestSelfSettlement"] = (input) =>
+    threadDispatch.withLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const command = {
+          type: "thread.metadata.update" as const,
+          threadId: input.threadId,
+          commandId: input.commandId,
+        };
+        const reject = (cause: string) =>
+          new OrchestratorDispatchError({ ...command, commandType: command.type, cause });
+        // Read the original durable acceptance before looking for a current run: credentials span turns.
+        const replay = yield* eventSink
+          .readCommandReceiptIdentity(input.commandId)
+          .pipe(mapDispatchError(command));
+        if (replay.receipt !== null) {
+          if (replay.receipt.threadId !== input.threadId || replay.receipt.status === "rejected")
+            return yield* reject("Self-settlement request identity conflicts.");
+          const stored = yield* eventSink
+            .readByCommandId({ commandId: input.commandId })
+            .pipe(Stream.runCollect, mapDispatchError(command));
+          for (const entry of stored) {
+            if (entry.event.type !== "thread.metadata-updated") continue;
+            const intent = entry.event.payload.selfSettlement;
+            if (
+              intent?.commandId === input.commandId &&
+              intent.mcpCredentialId === input.mcpCredentialId &&
+              intent.providerInstanceId === input.providerInstanceId
+            )
+              return intent;
+          }
+          return yield* reject("The original command is not this self-settlement request.");
+        }
+        const projection = yield* projectionStore
+          .getThreadRecords(input.threadId, ["runs", "messages", "runtimeRequests", "attempts"])
+          .pipe(mapDispatchError(command));
+        const owner = yield* eventSink
+          .readCurrentProviderRuntimeOwner(input.threadId)
+          .pipe(mapDispatchError(command));
+        if (owner === null)
+          return yield* reject("Self-settlement requires a current provider runtime owner.");
+        const attached = yield* providerSessions.isMcpCallerAttached({
+            threadId: input.threadId,
+            providerSessionId: owner.binding.providerSessionId,
+            providerInstanceId: input.providerInstanceId,
+            mcpCredentialId: input.mcpCredentialId,
+          });
+        const run = attached
+          ? selfSettlementRun(
+              projection,
+              {
+                providerSessionId: owner.binding.providerSessionId,
+                providerInstanceId: input.providerInstanceId,
+              },
+              owner.binding,
+            )
+          : undefined;
+        if (run === undefined)
+          return yield* reject(
+            "Self-settlement requires the calling provider's active run without queued or blocked user work.",
+          );
+        if (projection.thread.selfSettlement != null)
+          return yield* reject(
+            "This turn already has an accepted self-settlement request; retry its original clientRequestId.",
+          );
+        const intent: SelfSettlementIntent = {
+          commandId: input.commandId,
+          runId: run.id,
+          mcpCredentialId: input.mcpCredentialId,
+          providerSessionId: owner.binding.providerSessionId,
+          providerInstanceId: input.providerInstanceId,
+        };
+        const now = yield* DateTime.now;
+        const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: input.threadId,
+          occurredAt: now,
+          payload: { ...projection.thread, selfSettlement: intent },
+        });
+        yield* eventSink
+          .commitCommand({
+            ...command,
+            commandType: command.type,
+            acceptedAt: now,
+            events: yield* Ref.get(events),
+            effects: [],
+          })
+          .pipe(mapDispatchError(command));
+        return intent;
+      }),
+    );
+
+  const cancelSelfSettlement = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const thread = yield* projectionStore
+        .getThread(threadId)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      if (thread.selfSettlement == null) return;
+      const command = {
+        type: "thread.metadata.update" as const,
+        threadId,
+        commandId: CommandId.make(`${thread.selfSettlement.commandId}:cancel`),
+      };
+      const now = yield* DateTime.now;
+      const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...thread, selfSettlement: null },
+      });
+      yield* eventSink
+        .commitCommand({
+          ...command,
+          commandType: command.type,
+          acceptedAt: now,
+          events: yield* Ref.get(events),
+          effects: [],
+        })
+        .pipe(mapDispatchError(command));
+    });
+
+  const consumeSelfSettlement = (threadId: ThreadId, runId: RunId) =>
+    Effect.gen(function* () {
+      const projection = yield* projectionStore
+        .getThreadRecords(threadId, ["runs", "messages", "runtimeRequests", "attempts"])
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      const disposition = selfSettlementTerminalDisposition(projection, runId);
+      if (disposition === "ignore") return;
+      if (disposition === "cancel") return yield* cancelSelfSettlement(threadId);
+      const intent = projection.thread.selfSettlement;
+      if (intent == null) return;
+      yield* dispatchWithReceiptEffect({
+        type: "thread.settle",
+        threadId,
+        commandId: CommandId.make(`${intent.commandId}:settle`),
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.gen(function* () {
+            yield* cancelSelfSettlement(threadId);
+            yield* Effect.logWarning("Self-settlement was cancelled at completion", {
+              threadId,
+              runId,
+              cause,
+            });
+          }),
+        ),
+      );
+    });
+
   const handleTerminalRun = (stored: OrchestrationV2StoredEvent) =>
     Effect.gen(function* () {
       const threadId = stored.event.threadId;
@@ -12515,12 +12861,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       yield* threadDispatch.withLock(
         threadId,
-        startNextQueuedRun(
-          threadId,
-          stored.event.type === "run.updated" && stored.event.payload.status === "failed"
-            ? { failedRunId: stored.event.payload.id }
-            : undefined,
-        ),
+        Effect.gen(function* () {
+          if (stored.event.type === "run.updated")
+            yield* consumeSelfSettlement(threadId, stored.event.payload.id);
+          yield* startNextQueuedRun(
+            threadId,
+            stored.event.type === "run.updated" && stored.event.payload.status === "failed"
+              ? { failedRunId: stored.event.payload.id }
+              : undefined,
+          );
+        }),
       );
     }).pipe(
       Effect.catchCause((cause) =>
@@ -12531,6 +12881,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }),
       ),
     );
+
+  // A restart cannot establish that a retained request's original provider turn succeeded.
+  for (const threadId of yield* projectionStore
+    .getRecoveryThreadIds("self-settlement")
+    .pipe(Effect.orDie)) {
+    yield* threadDispatch.withLock(threadId, cancelSelfSettlement(threadId)).pipe(Effect.orDie);
+  }
 
   // Historical terminal events are already represented by the projections
   // below. Replaying the full event table on every server start delays live
@@ -12645,7 +13002,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   );
 
   return OrchestratorV2.of({
+    requestSelfSettlement,
     resumeQueuedRuns,
+    requestSelfSettlement,
     dispatch: dispatchWithReceipt,
     dispatchRestartContinuation,
     dispatchGuarded,
@@ -12828,6 +13187,14 @@ export const layer: Layer.Layer<
 const layerUnavailable: Layer.Layer<OrchestratorV2> = Layer.succeed(
   OrchestratorV2,
   OrchestratorV2.of({
+    requestSelfSettlement: (input) =>
+      Effect.fail(
+        new OrchestratorDispatchError({
+          commandId: input.commandId,
+          commandType: "thread.metadata.update",
+          cause: "Orchestration V2 live runtime is not configured.",
+        }),
+      ),
     resumeQueuedRuns: Effect.fail(
       new OrchestratorDispatchError({
         commandId: CommandId.make("command:system:resume-queued-runs"),

@@ -16,7 +16,7 @@ import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/uns
 
 import { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
 import * as ProjectService from "../project/ProjectService.ts";
-import { ProviderSessionManagerV2 } from "../orchestration-v2/ProviderSessionManager.ts";
+import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -897,7 +897,7 @@ it.effect("registers the focused decision snapshot tool and denies ungranted cre
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(
           Layer.mergeAll(
-            Layer.mock(ProviderSessionManagerV2)({}),
+            Layer.mock(ThreadManagementService)({}),
             Layer.mock(WorkstreamGateway)({ purgeAuthorization: () => {} }),
           ),
         ),

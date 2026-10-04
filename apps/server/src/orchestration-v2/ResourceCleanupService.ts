@@ -81,7 +81,11 @@ export const makeOwnedResourceCleanup = (input: {
     : (ownerBirth: TerminalManager.TerminalOwnerBirth) => captureOwnedTargets({
       threadId: ownerBirth.threadId, ownerBirth,
     });
-  return { cleanupOwnedTerminals, cleanupOwnedAttachments, captureOwnedTerminalTargets };
+  return {
+    cleanupOwnedTerminals,
+    cleanupOwnedAttachments,
+    ...(captureOwnedTerminalTargets === undefined ? {} : { captureOwnedTerminalTargets }),
+  };
 };
 
 export class ResourceCleanupService extends Context.Reference<{

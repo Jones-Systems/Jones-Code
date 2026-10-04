@@ -1,4 +1,3 @@
-import * as DeviceDirectGrants from "./device/DeviceDirectGrants.ts";
 import * as NativeCreationRepositoryLayer from "./persistence/Layers/NativeCreationRepository.ts";
 import { NativeCreationAuthorityUnavailable } from "./orchestration-v2/NativeCreationAuthority.ts";
 import * as AuthSessions from "./persistence/AuthSessions.ts";
@@ -88,6 +87,7 @@ import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as DeviceDirectGrants from "./device/DeviceDirectGrants.ts";
 import { deviceHubProxyRouteLayer } from "./device/DeviceHubProxy.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";

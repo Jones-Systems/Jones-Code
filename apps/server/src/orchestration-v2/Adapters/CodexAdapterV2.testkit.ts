@@ -144,6 +144,8 @@ export const makeCodexNativeCreationFixture = (
     hasAutomationEnrollment: () => Effect.succeed(true),
     claim: unexpected, readHistory: unexpected, readHistoryByClaim: unexpected,
     readBoundedHistoryByThread: unexpected, validateCommandAcceptanceV2: unexpected,
+    recordNativeEffectConfirmation: unexpected, readNativeEffectConfirmation: unexpected,
+    readThreadRecoveryCommand: unexpected, reserveThreadRecoveryCommand: unexpected,
     readExecutionReference: () => Effect.succeed(resolved),
     startEffectV2: (actual, timestamp, authorize) => Effect.gen(function* () {
       yield* authorize;
@@ -314,6 +316,7 @@ export function makeReplayServerConfig(
       host: undefined,
       cwd: process.cwd(),
       baseDir,
+      authorityStateDir: path.join(baseDir, "authority-state"),
       staticDir: undefined,
       devUrl: undefined,
       devAllowedOrigins: [],

@@ -13,6 +13,7 @@ import {
   AgentSessionImportSource,
   IsoDateTime,
   ProviderInstanceId,
+  ProviderDriverKind,
   RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
@@ -53,6 +54,108 @@ export const ProviderSessionRuntime = Schema.Struct({
   runtimePayload: Schema.NullOr(Schema.Unknown),
 });
 export type ProviderSessionRuntime = typeof ProviderSessionRuntime.Type;
+
+export const LegacyStoppedRuntimeProofV1 = Schema.Struct({
+  schema: Schema.Literal("t3.legacy-stopped-runtime-proof/v1"),
+  source: Schema.Literal("persisted_runtime_row"),
+  threadId: ThreadId,
+  providerInstanceId: Schema.NullOr(ProviderInstanceId),
+  driver: ProviderDriverKind,
+  nativeThreadId: Schema.NonEmptyString,
+  status: Schema.Literal("stopped"),
+});
+export type LegacyStoppedRuntimeProofV1 = typeof LegacyStoppedRuntimeProofV1.Type;
+
+const LegacyContinuationAccessibilityV1 = Schema.Struct({
+  providerInstanceId: ProviderInstanceId, driver: ProviderDriverKind,
+  nativeThreadId: Schema.NonEmptyString, continuationKey: Schema.NonEmptyString,
+  source: Schema.Literals(["historical_store", "native_read"]),
+});
+const LegacyHistoricalSourceIdentityV1 = Schema.Struct({
+  storeIdentity: Schema.NonEmptyString, sourceHomeIdentity: Schema.NonEmptyString,
+});
+export const LegacyProviderContinuationEvidenceV1 = Schema.Struct({
+  threadId: ThreadId,
+  provenance: Schema.Literals(["legacy_row", "native_import"]),
+  providerInstanceId: Schema.NullOr(ProviderInstanceId), driver: ProviderDriverKind,
+  nativeThreadId: Schema.NullOr(Schema.NonEmptyString), status: ProviderSessionRuntimeStatus,
+  continuationKey: Schema.NullOr(Schema.NonEmptyString),
+  historicalSourceIdentity: Schema.NullOr(LegacyHistoricalSourceIdentityV1),
+  stoppedProof: Schema.NullOr(LegacyStoppedRuntimeProofV1),
+  accessibility: Schema.NullOr(LegacyContinuationAccessibilityV1),
+});
+export type LegacyProviderContinuationEvidenceV1 = typeof LegacyProviderContinuationEvidenceV1.Type;
+
+export interface LegacyProviderContinuationInputV1 {
+  readonly sourceRow?: ProviderSessionRuntime;
+  readonly driver: ProviderDriverKind;
+  readonly nativeThreadId: string | null;
+  readonly continuationKey: string | null;
+  readonly historicalSourceIdentity: typeof LegacyHistoricalSourceIdentityV1.Type | null;
+  readonly accessibility: typeof LegacyContinuationAccessibilityV1.Type | null;
+  readonly target: {
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly driver: ProviderDriverKind;
+    readonly continuationKey: string;
+    readonly supportsNativeResume: boolean;
+  };
+}
+
+export class LegacyProviderContinuationInputsV1 extends Context.Reference<
+  ReadonlyMap<ThreadId, LegacyProviderContinuationInputV1>
+>("t3/persistence/LegacyProviderContinuationInputsV1", { defaultValue: () => new Map() }) {}
+
+/** Only a decoded persisted stopped row can establish historical stop evidence. */
+export function makeLegacyStoppedRuntimeProofV1(input: {
+  readonly sourceRow: ProviderSessionRuntime;
+  readonly source: "persisted_runtime_row" | "synthetic_import";
+  readonly driver: ProviderDriverKind;
+  readonly nativeThreadId: string | null;
+}): LegacyStoppedRuntimeProofV1 | null {
+  if (input.source !== "persisted_runtime_row") return null;
+  const row = Schema.decodeUnknownSync(ProviderSessionRuntime)(input.sourceRow);
+  if (row.status !== "stopped" || row.providerName !== input.driver ||
+      input.nativeThreadId === null || input.nativeThreadId.trim().length === 0) return null;
+  const cursor = row.resumeCursor;
+  if (cursor === null || typeof cursor !== "object" || Array.isArray(cursor)) return null;
+  const nativeId = input.driver === "codex" && "threadId" in cursor ? cursor.threadId :
+    input.driver === "claudeAgent" ? ("resume" in cursor && typeof cursor.resume === "string" ? cursor.resume :
+      "sessionId" in cursor ? cursor.sessionId : undefined) : undefined;
+  if (nativeId !== input.nativeThreadId || (input.driver === "claudeAgent" &&
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.nativeThreadId))) return null;
+  return Schema.decodeUnknownSync(LegacyStoppedRuntimeProofV1)({
+    schema: "t3.legacy-stopped-runtime-proof/v1", source: "persisted_runtime_row",
+    threadId: row.threadId, providerInstanceId: row.providerInstanceId,
+    driver: input.driver, nativeThreadId: input.nativeThreadId, status: row.status,
+  });
+}
+
+export function makeLegacyProviderContinuationEvidenceV1(input: {
+  readonly sourceRow: ProviderSessionRuntime;
+  readonly provenance: "legacy_row" | "native_import";
+  readonly driver: ProviderDriverKind;
+  readonly nativeThreadId: string | null;
+  readonly continuationKey: string | null;
+  readonly historicalSourceIdentity: typeof LegacyHistoricalSourceIdentityV1.Type | null;
+  readonly stoppedProof: LegacyStoppedRuntimeProofV1 | null;
+  readonly accessibility: typeof LegacyContinuationAccessibilityV1.Type | null;
+}): LegacyProviderContinuationEvidenceV1 {
+  const row = Schema.decodeUnknownSync(ProviderSessionRuntime)(input.sourceRow);
+  const proof = input.stoppedProof;
+  if (proof !== null && (proof.threadId !== row.threadId || proof.providerInstanceId !== row.providerInstanceId ||
+      proof.driver !== input.driver || proof.nativeThreadId !== input.nativeThreadId || proof.status !== row.status ||
+      makeLegacyStoppedRuntimeProofV1({ sourceRow: row, source: "persisted_runtime_row",
+        driver: input.driver, nativeThreadId: input.nativeThreadId }) === null)) {
+    throw new Error("Legacy stopped runtime proof does not match its historical source row.");
+  }
+  return Schema.decodeUnknownSync(LegacyProviderContinuationEvidenceV1)({
+    threadId: row.threadId, provenance: input.provenance, providerInstanceId: row.providerInstanceId,
+    driver: input.driver, nativeThreadId: input.nativeThreadId, status: row.status,
+    continuationKey: input.continuationKey, historicalSourceIdentity: input.historicalSourceIdentity,
+    stoppedProof: proof, accessibility: input.accessibility,
+  });
+}
+
 
 export const GetProviderSessionRuntimeInput = Schema.Struct({ threadId: ThreadId });
 export type GetProviderSessionRuntimeInput = typeof GetProviderSessionRuntimeInput.Type;

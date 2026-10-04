@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -22,6 +23,7 @@ export class OpenCodeServerOwner extends Context.Service<
   {
     readonly withServer: <A, E, R>(
       use: (server: OpenCodeRuntime.OpenCodeServerProcess) => Effect.Effect<A, E, R>,
+      beforeNativeCreation?: (directory: string) => Effect.Effect<void, unknown>,
     ) => Effect.Effect<A, E | OpenCodeRuntime.OpenCodeRuntimeError, R>;
   }
 >()("t3/provider/OpenCodeServerOwner") {}
@@ -33,6 +35,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   readonly serverPassword?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly verify?: (url: string) => Effect.Effect<string, OpenCodeRuntime.OpenCodeRuntimeError>;
+  readonly beforeStart?: (generation: string) => Effect.Effect<void, unknown>;
 }) {
   const runtime = yield* OpenCodeRuntime.OpenCodeRuntime;
   const ownerScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
@@ -83,7 +86,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     );
   });
 
-  const acquireServer = mutex.withPermit(
+  const acquireServer = (beforeNativeCreation?: (directory: string) => Effect.Effect<void, unknown>) => mutex.withPermit(
     Effect.gen(function* () {
       yield* cancelIdleClose();
       if (state.server !== null) {
@@ -94,6 +97,13 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
         yield* closeServer(state.server);
       }
 
+      const runtimeGeneration = randomUUID();
+      yield* (input.beforeStart?.(runtimeGeneration) ?? Effect.void).pipe(
+        Effect.andThen(beforeNativeCreation?.(input.directory) ?? Effect.void),
+        Effect.mapError((cause) => new OpenCodeRuntime.OpenCodeRuntimeError({
+          operation: "beforeNativeCreation", detail: "Current creation authority is unavailable.", cause,
+        })),
+      );
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const serverScope = yield* Scope.make();
@@ -117,7 +127,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
             return yield* Effect.failCause(started.cause);
           }
 
-          const server = started.value;
+          const server = { ...started.value, runtimeGeneration };
           state.server = server;
           state.serverScope = serverScope;
           state.borrowers = 1;
@@ -167,9 +177,9 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   );
 
   return OpenCodeServerOwner.of({
-    withServer: (use) =>
+    withServer: (use, beforeNativeCreation) =>
       Effect.uninterruptibleMask((restore) =>
-        restore(acquireServer).pipe(
+        restore(acquireServer(beforeNativeCreation)).pipe(
           Effect.flatMap((server) =>
             restore(use(server)).pipe(Effect.ensuring(releaseServer(server))),
           ),
@@ -185,4 +195,5 @@ export const layer = (input: {
   readonly serverPassword?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly verify?: (url: string) => Effect.Effect<string, OpenCodeRuntime.OpenCodeRuntimeError>;
+  readonly beforeStart?: (generation: string) => Effect.Effect<void, unknown>;
 }) => Layer.effect(OpenCodeServerOwner, make(input));

@@ -1235,3 +1235,43 @@ layer("ProviderEventIngestorV2", (it) => {
     }),
   );
 });
+
+
+it.effect("persists assistant output before flush and revalidates its current owner", () =>
+  Effect.gen(function* () {
+    const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const idAllocator = yield* IdAllocator.IdAllocatorV2;
+    const now = yield* DateTime.now;
+    const created = yield* threadCreatedEvent(now);
+    yield* sink.write({ events: [created] });
+    const providerSessionId = yield* idAllocator.allocate.providerSession({
+      providerInstanceId: modelSelection.instanceId, threadId: created.threadId,
+    });
+    const messageId = MessageId.make("message:awaited-assistant-output");
+    yield* ingestor.ingestNormalized({
+      providerSessionId, providerInstanceId: modelSelection.instanceId, threadId: created.threadId,
+      event: { type: "message.updated", driver: CODEX_DRIVER, message: {
+        createdBy: "agent", creationSource: "provider", id: messageId, threadId: created.threadId,
+        runId: null, nodeId: null, role: "assistant", text: "Durable before flush",
+        attachments: [], streaming: true, createdAt: now, updatedAt: now,
+      } },
+    });
+    assert.equal((yield* projections.getThreadRecords(created.threadId, ["messages"])).messages.find((message) => message.id === messageId)?.text, "Durable before flush");
+    const binding = { threadId: created.threadId,
+      providerThreadId: idAllocator.derive.providerThread({ driver: CODEX_DRIVER, nativeThreadId: "native-thread" }),
+      providerSessionId, instanceId: modelSelection.instanceId, runtimeGeneration: "owned-generation",
+      nativeThreadId: "native-thread" };
+    let revalidated = false;
+    yield* ingestor.flushAssistantOutput({ binding,
+      revalidateCurrentOwner: Effect.sync(() => { revalidated = true; }),
+    });
+    assert.isTrue(revalidated);
+    const denied = yield* ingestor.flushAssistantOutput({ binding,
+      revalidateCurrentOwner: Effect.fail("stale owner"),
+    }).pipe(Effect.flip);
+    assert.equal(denied, "stale owner");
+    assert.equal((yield* projections.getThreadRecords(created.threadId, ["messages"])).messages.find((message) => message.id === messageId)?.text, "Durable before flush");
+  }).pipe(Effect.provide(TestLayer)),
+);

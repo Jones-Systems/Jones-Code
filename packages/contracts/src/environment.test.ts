@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { ExecutionEnvironmentDescriptor, NativeInvocationContext, OrganizationThreadMetadataPage } from "./environment.ts";
 
 const decodeDescriptor = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
 
@@ -149,5 +149,31 @@ describe("ExecutionEnvironmentDescriptor", () => {
         },
       }).capabilities.serverResolvedCommandContext,
     ).toBe(true);
+  });
+});
+
+
+describe("native organization metadata", () => {
+  it("preserves a proved invocation origin and explicit unavailable generation", () => {
+    const input = { environmentId: "env-1", threadId: "thread-1", effectiveBaseDir: "/t3", loopbackOrigin: null, serverVersion: "1.0", serverGeneration: null };
+    expect(Schema.encodeSync(NativeInvocationContext)(Schema.decodeUnknownSync(NativeInvocationContext)(input))).toEqual(input);
+    expect(() => Schema.decodeUnknownSync(NativeInvocationContext)({ ...input, serverGeneration: 1 })).toThrow();
+  });
+  it("round-trips V2 activity metadata and validates snapshot watermarks", () => {
+    const input = {
+      environmentId: "env-1", snapshotSequence: 42, observedAt: "2026-10-04T00:00:00.000Z", nextOffset: null,
+      threads: [{ threadId: "thread-1", projectId: "project-1", title: "A thread",
+        pinnedAt: null, pinOrderKey: null, activeOrderKey: null, snoozedUntil: null,
+        settledOverride: null, settledAt: null, archivedAt: null,
+        createdAt: "2026-10-04T00:00:00.000Z", projectionUpdatedAt: "2026-10-04T00:00:00.000Z",
+        latestUserMessageAt: null, latestRunId: "run-1", activeRunId: null, status: "completed",
+        latestRunRequestedAt: null, latestRunStartedAt: null, latestRunCompletedAt: "2026-10-04T00:00:00.000Z",
+        hasPendingApprovals: false, hasPendingUserInput: false, hasActionableProposedPlan: false,
+      }],
+    };
+    const decode = Schema.decodeUnknownSync(OrganizationThreadMetadataPage);
+    expect(Schema.encodeSync(OrganizationThreadMetadataPage)(decode(input))).toEqual(input);
+    for (const snapshotSequence of [-1, 1.5]) expect(() => decode({ ...input, snapshotSequence })).toThrow();
+    expect(() => decode({ ...input, threads: [{ ...input.threads[0], status: "legacy-running" }] })).toThrow();
   });
 });

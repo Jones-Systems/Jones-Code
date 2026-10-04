@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { WorkstreamGateway } from "../../../workstreams/WorkstreamGateway.ts";
 import { DecisionSnapshotCollector } from "./collector.ts";
 
@@ -50,7 +50,7 @@ export const DecisionSnapshot = Schema.Struct({
 export type DecisionSnapshot = typeof DecisionSnapshot.Type;
 const DecisionSnapshotTool = Tool.make("decision_snapshot", {
   description:
-    "Collect one bounded decision snapshot using the explicitly bound collector release and native thread/registry counts. Missing runtime or source capabilities remain unavailable; display facts do not grant admission authority.",
+    "Collect one bounded decision snapshot using the explicitly bound collector release and native thread/registry counts. Partial thread counts are lower bounds when native background coverage is incomplete. Missing runtime or source capabilities remain unavailable; display facts do not grant admission authority.",
   parameters: Schema.Struct({
     purpose: Schema.optional(SnapshotPurpose),
     projectId: Schema.optional(ProjectId),
@@ -59,7 +59,7 @@ const DecisionSnapshotTool = Tool.make("decision_snapshot", {
   failure: McpCapabilityUnavailableError,
   dependencies: [
     McpInvocationContext,
-    ProjectionSnapshotQuery,
+    ThreadManagementService,
     WorkstreamGateway,
     DecisionSnapshotCollector,
   ],
