@@ -1,7 +1,7 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { ComposerContextId, DraftId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { ComposerContextId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { useComposerDraftStore } from "../composerDraftStore";
+import { DraftId, useComposerDraftStore } from "../composerDraftStore";
 import { buildFileReviewComment } from "../reviewCommentContext";
 import { clearSubmittedComposer, restoreFailedComposerSend } from "./composerSendRecovery";
 

@@ -156,7 +156,7 @@ describe("thread corpus capability", () => {
   });
 
   it("parses native shell placement, nullable identity, lifecycle and activity sequence", () => {
-    const decode = Schema.decodeUnknownSync(OrchestrationV2ShellSnapshot);
+    const decode = Schema.decodeUnknownSync(Schema.toCodecJson(OrchestrationV2ShellSnapshot));
     const snapshot = decode({
       schemaVersion: 1,
       snapshotSequence: 42,
@@ -174,7 +174,7 @@ describe("thread corpus capability", () => {
     expect(snapshot.threads[0]?.archivedAt).toBeNull();
     expect(DateTime.formatIso(snapshot.threads[0]!.latestUserMessageAt!)).toBe(timestamp);
     expect(DateTime.formatIso(snapshot.threads[0]!.updatedAt!)).toBe(timestamp);
-    const encoded = Schema.encodeSync(OrchestrationV2ShellSnapshot)(snapshot);
+    const encoded = Schema.encodeSync(Schema.toCodecJson(OrchestrationV2ShellSnapshot))(snapshot);
     expect(() => decode({ ...encoded, snapshotSequence: -1 })).toThrow();
     expect(() =>
       decode({ ...encoded, projects: [{ ...project, workspaceRoot: null }] }),
@@ -182,9 +182,9 @@ describe("thread corpus capability", () => {
   });
 
   it("preserves bounded snapshots and opaque chronological history page cursors", () => {
-    const decodeDetail = Schema.decodeUnknownSync(OrchestrationV2ThreadDetailSnapshot);
+    const decodeDetail = Schema.decodeUnknownSync(Schema.toCodecJson(OrchestrationV2ThreadDetailSnapshot));
     expect(decodeDetail(detail).historyCursor).toBeUndefined();
-    const decodeBounded = Schema.decodeUnknownSync(OrchestrationV2ThreadBoundedSnapshot);
+    const decodeBounded = Schema.decodeUnknownSync(Schema.toCodecJson(OrchestrationV2ThreadBoundedSnapshot));
     const bounded = {
       ...detail,
       historyCursor: "opaque-history-cursor",
@@ -195,7 +195,7 @@ describe("thread corpus capability", () => {
     expect(decodeBounded(bounded).latestLocalTurnOrdinal).toBe(40);
     expect(() => decodeBounded({ ...bounded, historyCursor: "" })).toThrow();
     expect(() => decodeBounded({ ...bounded, latestLocalTurnOrdinal: -1 })).toThrow();
-    const decodePage = Schema.decodeUnknownSync(OrchestrationV2ThreadHistoryPage);
+    const decodePage = Schema.decodeUnknownSync(Schema.toCodecJson(OrchestrationV2ThreadHistoryPage));
     const page = {
       snapshotSequence: 42,
       items: [],
@@ -212,7 +212,7 @@ describe("thread corpus capability", () => {
 
   it("preserves message text beyond consumer budgets without inventing native truncation", () => {
     const text = "x".repeat(24001);
-    const decoded = Schema.decodeUnknownSync(OrchestrationV2ThreadDetailSnapshot)({
+    const decoded = Schema.decodeUnknownSync(Schema.toCodecJson(OrchestrationV2ThreadDetailSnapshot))({
       ...detail,
       projection: { ...detail.projection, messages: [{ ...message, text }] },
     });

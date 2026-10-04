@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import {
   OrchestrationDispatchCommandError,
   type AuthSessionId,
-  type ClientOrchestrationCommand,
+  type OrchestrationV2ClientCommand,
 } from "@t3tools/contracts";
 import {
   type DeviceListInput,
@@ -240,7 +240,10 @@ export const requiredScopeForDeviceList = (input: DeviceListInput): AuthEnvironm
 
 export const assertLegacyBootstrapAllowed = <E>(input: {
   readonly actorSessionId: AuthSessionId;
-  readonly command: ClientOrchestrationCommand | { readonly type: "thread.create" };
+  readonly command: OrchestrationV2ClientCommand | {
+    readonly type: "thread.turn.start";
+    readonly bootstrap?: unknown;
+  };
   readonly hasAutomationEnrollment: (sessionId: AuthSessionId) => Effect.Effect<boolean, E>;
 }): Effect.Effect<void, OrchestrationDispatchCommandError> =>
   Effect.gen(function* () {
