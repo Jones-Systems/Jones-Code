@@ -446,7 +446,7 @@ it.layer(
     }),
   );
 
-  it.effect("owned custody closes only captured processes and keeps quiescence evidence unavailable", () =>
+  it.effect("captured terminal cleanup closes only captured processes and keeps quiescence evidence unavailable", () =>
     Effect.gen(function* () {
       const ownerBirth = terminalOwnerBirth();
       const { manager, ptyAdapter } = yield* createManager().pipe(
@@ -471,7 +471,7 @@ it.layer(
   );
 
   it.effect.each(["restart", "reopen"] as const)(
-    "owned custody rejects a captured handle after terminal %s", (operation) =>
+    "captured terminal cleanup rejects a captured handle after terminal %s", (operation) =>
       Effect.gen(function* () {
         const ownerBirth = terminalOwnerBirth();
         const { manager, ptyAdapter } = yield* createManager().pipe(
@@ -493,7 +493,7 @@ it.layer(
       }),
   );
 
-  it.effect("owned custody validates every target before closing and rejects foreign managers", () =>
+  it.effect("captured terminal cleanup validates every target before closing and rejects foreign managers", () =>
     Effect.gen(function* () {
       const ownerBirth = terminalOwnerBirth();
       const observation = { observeCurrentBirth: () => Effect.succeed(ownerBirth) };
@@ -523,7 +523,7 @@ it.layer(
     }),
   );
 
-  it.effect("owned custody never assigns a replacement birth to an existing process", () =>
+  it.effect("captured terminal ownership never assigns a replacement birth to an existing process", () =>
     Effect.gen(function* () {
       const original = terminalOwnerBirth();
       const replacement = terminalOwnerBirth("replacement-birth", 2);
@@ -545,7 +545,7 @@ it.layer(
     }),
   );
 
-  it.effect("owned custody refuses a birth that changes while the PTY is spawning", () =>
+  it.effect("captured terminal ownership refuses a birth that changes while the PTY is spawning", () =>
     Effect.gen(function* () {
       const original = terminalOwnerBirth();
       const replacement = terminalOwnerBirth("replacement-birth", 2);
@@ -565,7 +565,7 @@ it.layer(
     }),
   );
 
-  it.effect("owned custody reports an observed PTY exit without claiming descendant quiescence", () =>
+  it.effect("captured terminal cleanup reports an observed PTY exit without claiming descendant quiescence", () =>
     Effect.gen(function* () {
       const ownerBirth = terminalOwnerBirth();
       const { manager, ptyAdapter } = yield* createManager().pipe(
