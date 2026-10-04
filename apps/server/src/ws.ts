@@ -224,7 +224,11 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import { requiredScopeForRpcMethod, requiredScopeForDeviceList, assertLegacyBootstrapAllowed } from "./auth/RpcAuthorization.ts";
+import {
+  requiredScopeForRpcMethod,
+  requiredScopeForDeviceList,
+  assertLegacyBootstrapAllowed,
+} from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -546,13 +550,24 @@ export const nativeBootstrapRpcSerialization: RpcSerialization.RpcSerialization[
       encode: parser.encode,
       decode: (data) => {
         const requests = parser.decode(data);
-        const byteLength = typeof data === "string" ? new TextEncoder().encode(data).byteLength : data.byteLength;
-        if (byteLength > NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES && requests.some((request) =>
-          typeof request === "object" && request !== null && "_tag" in request && request._tag === "Request" &&
-          "tag" in request && (request.tag === "orchestration.dispatchBootstrap" ||
-            request.tag === ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap),
-        )) {
-          throw new RpcSerialization.MaxBufferSizeExceeded({ maxBufferSize: NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES });
+        const byteLength =
+          typeof data === "string" ? new TextEncoder().encode(data).byteLength : data.byteLength;
+        if (
+          byteLength > NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES &&
+          requests.some(
+            (request) =>
+              typeof request === "object" &&
+              request !== null &&
+              "_tag" in request &&
+              request._tag === "Request" &&
+              "tag" in request &&
+              (request.tag === "orchestration.dispatchBootstrap" ||
+                request.tag === ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap),
+          )
+        ) {
+          throw new RpcSerialization.MaxBufferSizeExceeded({
+            maxBufferSize: NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES,
+          });
         }
         return requests;
       },
@@ -563,16 +578,25 @@ export const nativeBootstrapRpcSerialization: RpcSerialization.RpcSerialization[
 const withVerifiedRpcPrincipal = <A, E>(
   effect: Effect.Effect<A, E, EnvironmentAuthenticatedPrincipal>,
   currentSession: EnvironmentAuth.AuthenticatedSession,
-) => effect.pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, {
-  sessionId: currentSession.sessionId,
-  subject: currentSession.subject,
-  method: currentSession.method,
-  scopes: new Set(currentSession.scopes),
-  ...(currentSession.proofKeyThumbprint === undefined ? {} : { proofKeyThumbprint: currentSession.proofKeyThumbprint }),
-  ...(currentSession.expiresAt === undefined ? {} : { expiresAt: currentSession.expiresAt }),
-}));
+) =>
+  effect.pipe(
+    Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+      sessionId: currentSession.sessionId,
+      subject: currentSession.subject,
+      method: currentSession.method,
+      scopes: new Set(currentSession.scopes),
+      ...(currentSession.proofKeyThumbprint === undefined
+        ? {}
+        : { proofKeyThumbprint: currentSession.proofKeyThumbprint }),
+      ...(currentSession.expiresAt === undefined ? {} : { expiresAt: currentSession.expiresAt }),
+    }),
+  );
 
-type NativeBootstrapRpcContext = NativeCreationAuthority | NativeCreationRepository | ServerConfig.ServerConfig | FileSystem.FileSystem;
+type NativeBootstrapRpcContext =
+  | NativeCreationAuthority
+  | NativeCreationRepository
+  | ServerConfig.ServerConfig
+  | FileSystem.FileSystem;
 
 export const dispatchNativeBootstrapRpc = (
   submission: NativeBootstrapSubmission,
@@ -581,119 +605,196 @@ export const dispatchNativeBootstrapRpc = (
   startup: Pick<ServerRuntimeStartup.ServerRuntimeStartup["Service"], "enqueueCommand">,
   nativeContext: Context.Context<NativeBootstrapRpcContext>,
   capabilityAvailable: Effect.Effect<boolean>,
-) => Effect.gen(function* () {
-  if (!(yield* capabilityAvailable)) return yield* new OrchestrationDispatchCommandError({
-    message: "Native bootstrap creation is not supported by this server",
-    creationRejectionCode: "unsupported_authority",
-  });
-  const authority = Context.get(nativeContext, NativeCreationAuthority);
-  if (!(yield* authority.isAutomationEnrolled(currentSession.sessionId))) return yield* new OrchestrationDispatchCommandError({
-    message: "Native session has no permanent automation enrollment",
-    creationRejectionCode: "stale_grant",
-  });
-  return yield* startup.enqueueCommand(withVerifiedRpcPrincipal(
-    Effect.suspend(() => threadLaunch.dispatchNativeBootstrap(submission, {
-      nativeCreationBootId: ServerRuntimeStartup.nativeCreationBootId,
-    })).pipe(Effect.provide(nativeContext)), currentSession,
-  ));
-}).pipe(Effect.mapError((cause) => {
-  if (Schema.is(OrchestrationDispatchCommandError)(cause)) return cause;
-  const code = typeof cause === "object" && cause !== null && "code" in cause && Schema.is(NativeCreationRejectionCode)(cause.code)
-    ? cause.code : undefined;
-  return new OrchestrationDispatchCommandError({
-    message: "Native bootstrap rejected",
-    ...(code === undefined ? {} : { creationRejectionCode: code }),
-  });
-}));
+) =>
+  Effect.gen(function* () {
+    if (!(yield* capabilityAvailable))
+      return yield* new OrchestrationDispatchCommandError({
+        message: "Native bootstrap creation is not supported by this server",
+        creationRejectionCode: "unsupported_authority",
+      });
+    const authority = Context.get(nativeContext, NativeCreationAuthority);
+    if (!(yield* authority.isAutomationEnrolled(currentSession.sessionId)))
+      return yield* new OrchestrationDispatchCommandError({
+        message: "Native session has no permanent automation enrollment",
+        creationRejectionCode: "stale_grant",
+      });
+    return yield* startup.enqueueCommand(
+      withVerifiedRpcPrincipal(
+        Effect.suspend(() =>
+          threadLaunch.dispatchNativeBootstrap(submission, {
+            nativeCreationBootId: ServerRuntimeStartup.nativeCreationBootId,
+          }),
+        ).pipe(Effect.provide(nativeContext)),
+        currentSession,
+      ),
+    );
+  }).pipe(
+    Effect.mapError((cause) => {
+      if (Schema.is(OrchestrationDispatchCommandError)(cause)) return cause;
+      const code =
+        typeof cause === "object" &&
+        cause !== null &&
+        "code" in cause &&
+        Schema.is(NativeCreationRejectionCode)(cause.code)
+          ? cause.code
+          : undefined;
+      return new OrchestrationDispatchCommandError({
+        message: "Native bootstrap rejected",
+        ...(code === undefined ? {} : { creationRejectionCode: code }),
+      });
+    }),
+  );
 
 export const stopCurrentThreadRuntimeRpc = (
   input: OrchestrationV2StopCurrentThreadRuntimeInput,
   currentSession: EnvironmentAuth.AuthenticatedSession,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "stopCurrentThreadRuntime">,
+  threadManagement: Pick<
+    ThreadManagementService.ThreadManagementService["Service"],
+    "stopCurrentThreadRuntime"
+  >,
   startup: Pick<ServerRuntimeStartup.ServerRuntimeStartup["Service"], "enqueueCommand">,
-) => Effect.suspend(() => startup.enqueueCommand(withVerifiedRpcPrincipal(
-  Effect.suspend(() => threadManagement.stopCurrentThreadRuntime(input)), currentSession,
-))).pipe(Effect.mapError((cause) => new OrchestrationV2DispatchCommandError({
-  commandId: input.commandId,
-  commandType: "provider-session.detach",
-  message: userFacingDispatchErrorMessage(cause) ?? "Failed to stop current thread runtime",
-  cause,
-})));
+) =>
+  Effect.suspend(() =>
+    startup.enqueueCommand(
+      withVerifiedRpcPrincipal(
+        Effect.suspend(() => threadManagement.stopCurrentThreadRuntime(input)),
+        currentSession,
+      ),
+    ),
+  ).pipe(
+    Effect.mapError(
+      (cause) =>
+        new OrchestrationV2DispatchCommandError({
+          commandId: input.commandId,
+          commandType: "provider-session.detach",
+          message: userFacingDispatchErrorMessage(cause) ?? "Failed to stop current thread runtime",
+          cause,
+        }),
+    ),
+  );
 
 export const dispatchGuardedRpcCommand = (
   input: OrchestrationV2GuardedDispatchInput,
   currentSession: EnvironmentAuth.AuthenticatedSession,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "dispatchGuarded">,
+  threadManagement: Pick<
+    ThreadManagementService.ThreadManagementService["Service"],
+    "dispatchGuarded"
+  >,
   startup: Pick<ServerRuntimeStartup.ServerRuntimeStartup["Service"], "enqueueCommand">,
-) => Effect.suspend(() => startup.enqueueCommand(
-  withVerifiedRpcPrincipal(
-    Effect.suspend(() => threadManagement.dispatchGuarded(input.command, input.guard)),
-    currentSession,
-  ),
-));
+) =>
+  Effect.suspend(() =>
+    startup.enqueueCommand(
+      withVerifiedRpcPrincipal(
+        Effect.suspend(() => threadManagement.dispatchGuarded(input.command, input.guard)),
+        currentSession,
+      ),
+    ),
+  );
 
 export const reviewImportedHistoryRpc = (
   input: OrchestrationV2ReviewImportedHistoryStartInput,
   currentSession: EnvironmentAuth.AuthenticatedSession,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "reviewImportedHistoryStart">,
-) => withVerifiedRpcPrincipal(
-  Effect.suspend(() => threadManagement.reviewImportedHistoryStart(input)), currentSession,
-).pipe(Effect.catch(() => Effect.succeed<OrchestrationV2ImportedHistoryReviewResult>({
-  version: 2,
-  threadId: input.threadId,
-  target: input.delivery.type === "queued_run"
-    ? { type: "queued_run", runId: input.delivery.runId, messageId: input.delivery.messageId }
-    : { type: "message", messageId: input.delivery.messageId },
-  capability: { startWithImportedHistory: false },
-  applicability: "unknown",
-  qualification: { type: "unknown", reason: "imported_history_observation_unavailable" },
-  restoredBinding: { type: "unknown", reason: "imported_history_observation_unavailable" },
-  nativeEffects: { type: "unknown", reason: "imported_history_observation_unavailable" },
-  transcriptEligibility: { type: "unknown", reason: "imported_history_observation_unavailable" },
-  reviewedBasis: null,
-})));
+  threadManagement: Pick<
+    ThreadManagementService.ThreadManagementService["Service"],
+    "reviewImportedHistoryStart"
+  >,
+) =>
+  withVerifiedRpcPrincipal(
+    Effect.suspend(() => threadManagement.reviewImportedHistoryStart(input)),
+    currentSession,
+  ).pipe(
+    Effect.catch(() =>
+      Effect.succeed<OrchestrationV2ImportedHistoryReviewResult>({
+        version: 2,
+        threadId: input.threadId,
+        target:
+          input.delivery.type === "queued_run"
+            ? {
+                type: "queued_run",
+                runId: input.delivery.runId,
+                messageId: input.delivery.messageId,
+              }
+            : { type: "message", messageId: input.delivery.messageId },
+        capability: { startWithImportedHistory: false },
+        applicability: "unknown",
+        qualification: { type: "unknown", reason: "imported_history_observation_unavailable" },
+        restoredBinding: { type: "unknown", reason: "imported_history_observation_unavailable" },
+        nativeEffects: { type: "unknown", reason: "imported_history_observation_unavailable" },
+        transcriptEligibility: {
+          type: "unknown",
+          reason: "imported_history_observation_unavailable",
+        },
+        reviewedBasis: null,
+      }),
+    ),
+  );
 
 export const startWithImportedHistoryRpc = (
   command: OrchestrationV2StartWithImportedHistoryCommand,
   currentSession: EnvironmentAuth.AuthenticatedSession,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "startWithImportedHistory">,
+  threadManagement: Pick<
+    ThreadManagementService.ThreadManagementService["Service"],
+    "startWithImportedHistory"
+  >,
   startup: Pick<ServerRuntimeStartup.ServerRuntimeStartup["Service"], "enqueueCommand">,
-) => Effect.suspend(() => startup.enqueueCommand(withVerifiedRpcPrincipal(
-  Effect.suspend(() => threadManagement.startWithImportedHistory(command)), currentSession,
-))).pipe(Effect.mapError((cause) => {
-  const detail = userFacingDispatchErrorMessage(cause);
-  return new OrchestrationV2DispatchCommandError({
-    commandId: command.commandId,
-    commandType: command.type,
-    message: detail ?? "Failed to start with imported history",
-    ...(detail === undefined ? {} : { detail }),
-    cause,
-  });
-}));
+) =>
+  Effect.suspend(() =>
+    startup.enqueueCommand(
+      withVerifiedRpcPrincipal(
+        Effect.suspend(() => threadManagement.startWithImportedHistory(command)),
+        currentSession,
+      ),
+    ),
+  ).pipe(
+    Effect.mapError((cause) => {
+      const detail = userFacingDispatchErrorMessage(cause);
+      return new OrchestrationV2DispatchCommandError({
+        commandId: command.commandId,
+        commandType: command.type,
+        message: detail ?? "Failed to start with imported history",
+        ...(detail === undefined ? {} : { detail }),
+        cause,
+      });
+    }),
+  );
 
 export const observeImportedHistoryRpc = (
   input: OrchestrationV2ObserveImportedHistoryStartInput,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "observeImportedHistoryStart">,
-) => Effect.suspend(() => threadManagement.observeImportedHistoryStart(input)).pipe(
-  Effect.catch(() => Effect.succeed<OrchestrationV2ImportedHistoryStartReceipt>({
-    version: 2,
-    commandId: input.commandId,
-    threadId: input.threadId,
-    target: null,
-    reviewedBasis: null,
-    intentStatus: "unknown",
-    receipt: null,
-    rejectionReason: "imported_history_observation_unavailable",
-    execution: {
-      status: "unknown", runId: null, providerThreadId: null, providerSessionId: null,
-      nativeThreadId: null, effectOutcome: null, error: "imported_history_observation_unavailable",
-    },
-  })),
-);
+  threadManagement: Pick<
+    ThreadManagementService.ThreadManagementService["Service"],
+    "observeImportedHistoryStart"
+  >,
+) =>
+  Effect.suspend(() => threadManagement.observeImportedHistoryStart(input)).pipe(
+    Effect.catch(() =>
+      Effect.succeed<OrchestrationV2ImportedHistoryStartReceipt>({
+        version: 2,
+        commandId: input.commandId,
+        threadId: input.threadId,
+        target: null,
+        reviewedBasis: null,
+        intentStatus: "unknown",
+        receipt: null,
+        rejectionReason: "imported_history_observation_unavailable",
+        execution: {
+          status: "unknown",
+          runId: null,
+          providerThreadId: null,
+          providerSessionId: null,
+          nativeThreadId: null,
+          effectOutcome: null,
+          error: "imported_history_observation_unavailable",
+        },
+      }),
+    ),
+  );
 
 export const observeCurrentThreadRuntimeStopRpc = (
   input: OrchestrationV2ObserveCurrentThreadRuntimeStopInput,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "observeCurrentThreadRuntimeStop">,
+  threadManagement: Pick<
+    ThreadManagementService.ThreadManagementService["Service"],
+    "observeCurrentThreadRuntimeStop"
+  >,
 ) => {
   const unknown = (reason: string): OrchestrationV2StopCurrentThreadRuntimeResult => ({
     version: 2,
@@ -707,41 +808,62 @@ export const observeCurrentThreadRuntimeStopRpc = (
     reason,
   });
   return Effect.suspend(() => threadManagement.observeCurrentThreadRuntimeStop(input)).pipe(
-    Effect.map((result) => result.threadId !== input.threadId || result.commandId !== input.commandId ||
+    Effect.map((result) =>
+      result.threadId !== input.threadId ||
+      result.commandId !== input.commandId ||
       (result.target !== null && result.target.binding.threadId !== input.threadId)
-      ? unknown("current_runtime_stop_observation_unbound") : result),
+        ? unknown("current_runtime_stop_observation_unbound")
+        : result,
+    ),
     Effect.catch(() => Effect.succeed(unknown("current_runtime_stop_observation_unavailable"))),
   );
 };
 
 export const readThreadRuntimeObservation = (
   threadId: ThreadId,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "observeCurrentThreadRuntime">,
-) => Effect.suspend(() => threadManagement.observeCurrentThreadRuntime(threadId)).pipe(
-  Effect.map((observation) => ({
-    threadId,
-    observation: observation.binding !== undefined && observation.binding.threadId !== threadId
-      ? { status: "unknown" as const, reason: "runtime_binding_changed" }
-      : observation,
-  })),
-);
+  threadManagement: Pick<
+    ThreadManagementService.ThreadManagementService["Service"],
+    "observeCurrentThreadRuntime"
+  >,
+) =>
+  Effect.suspend(() => threadManagement.observeCurrentThreadRuntime(threadId)).pipe(
+    Effect.map((observation) => ({
+      threadId,
+      observation:
+        observation.binding !== undefined && observation.binding.threadId !== threadId
+          ? { status: "unknown" as const, reason: "runtime_binding_changed" }
+          : observation,
+    })),
+  );
 
 export const readOperatingCounts = (
   input: OrchestrationV2GetOperatingCountsInput,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "getOperatingCounts">,
+  threadManagement: Pick<
+    ThreadManagementService.ThreadManagementService["Service"],
+    "getOperatingCounts"
+  >,
 ) => Effect.suspend(() => threadManagement.getOperatingCounts(input));
 
 export const readThreadRuntimeAttachment = (
   threadId: ThreadId,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "readCurrentThreadRuntimeAttachment">,
-) => Effect.suspend(() => threadManagement.readCurrentThreadRuntimeAttachment(threadId)).pipe(
-  Effect.map((attachment) => ({
-    threadId,
-    attachment: attachment.status === "attached" && attachment.binding.threadId !== threadId
-      ? { status: "unknown" as const, reason: "runtime_binding_changed", observedAt: attachment.observedAt }
-      : attachment,
-  })),
-);
+  threadManagement: Pick<
+    ThreadManagementService.ThreadManagementService["Service"],
+    "readCurrentThreadRuntimeAttachment"
+  >,
+) =>
+  Effect.suspend(() => threadManagement.readCurrentThreadRuntimeAttachment(threadId)).pipe(
+    Effect.map((attachment) => ({
+      threadId,
+      attachment:
+        attachment.status === "attached" && attachment.binding.threadId !== threadId
+          ? {
+              status: "unknown" as const,
+              reason: "runtime_binding_changed",
+              observedAt: attachment.observedAt,
+            }
+          : attachment,
+    })),
+  );
 
 // Optional client identity announced on the /ws upgrade URL next to wsTicket.
 // Lenient by design: absent or malformed values degrade to {} so a connection
@@ -1146,11 +1268,13 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
             if ("aggregateKind" in stored) {
               return yield* projectItem(stored);
             }
-            const shell = yield* threadManagement.getThreadShell(stored.event.threadId).pipe(
-              Effect.catchTag("OrchestratorProjectionError", () =>
-                threadManagement.getThreadShell(stored.event.threadId),
-              ),
-            );
+            const shell = yield* threadManagement
+              .getThreadShell(stored.event.threadId)
+              .pipe(
+                Effect.catchTag("OrchestratorProjectionError", () =>
+                  threadManagement.getThreadShell(stored.event.threadId),
+                ),
+              );
             return shellStreamItemFromThreadShell({ stored, shell });
           }),
         { concurrency: 8 },
@@ -1330,11 +1454,12 @@ const makeWsRpcLayer = (
       };
       const nativeContext = yield* Effect.context<NativeBootstrapRpcContext>();
       const nativeAuthority = yield* NativeCreationAuthority;
-      const ordinaryBootstrapGuard = (command: { readonly type: "thread.create" }) => assertLegacyBootstrapAllowed({
-        actorSessionId: currentSessionId,
-        command,
-        hasAutomationEnrollment: nativeAuthority.isAutomationEnrolled,
-      });
+      const ordinaryBootstrapGuard = (command: { readonly type: "thread.create" }) =>
+        assertLegacyBootstrapAllowed({
+          actorSessionId: currentSessionId,
+          command,
+          hasAutomationEnrollment: nativeAuthority.isAutomationEnrolled,
+        });
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
@@ -2001,17 +2126,33 @@ const makeWsRpcLayer = (
 
       const handlers = ServerWsRpcGroup.of({
         ["orchestration.dispatchBootstrap"]: (_input) =>
-          observeRpcEffect("orchestration.dispatchBootstrap", Effect.fail(new OrchestrationDispatchCommandError({
-            message: "Legacy bootstrap dispatch is unsupported; use orchestration.dispatchNativeBootstrap",
-            creationRejectionCode: "unsupported_authority",
-          })), { "rpc.aggregate": "orchestrationV2" }),
+          observeRpcEffect(
+            "orchestration.dispatchBootstrap",
+            Effect.fail(
+              new OrchestrationDispatchCommandError({
+                message:
+                  "Legacy bootstrap dispatch is unsupported; use orchestration.dispatchNativeBootstrap",
+                creationRejectionCode: "unsupported_authority",
+              }),
+            ),
+            { "rpc.aggregate": "orchestrationV2" },
+          ),
         [ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap]: (submission) =>
           observeRpcEffect(
             ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
-            dispatchNativeBootstrapRpc(submission, currentSession, threadLaunch, startup, nativeContext,
-              serverEnvironment.getDescriptor.pipe(Effect.map((environment) =>
-                environment.capabilities.nativeBootstrapCreation?.observationSchema === "t3.native-creation-observation/v2",
-              )),
+            dispatchNativeBootstrapRpc(
+              submission,
+              currentSession,
+              threadLaunch,
+              startup,
+              nativeContext,
+              serverEnvironment.getDescriptor.pipe(
+                Effect.map(
+                  (environment) =>
+                    environment.capabilities.nativeBootstrapCreation?.observationSchema ===
+                    "t3.native-creation-observation/v2",
+                ),
+              ),
             ),
             { "rpc.aggregate": "orchestrationV2" },
           ),
@@ -2019,13 +2160,19 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
             stopCurrentThreadRuntimeRpc(input, currentSession, threadManagement, startup),
-            { "rpc.aggregate": "orchestrationV2", "orchestration_v2.thread_id": input.threadId, "orchestration_v2.command_id": input.commandId },
+            {
+              "rpc.aggregate": "orchestrationV2",
+              "orchestration_v2.thread_id": input.threadId,
+              "orchestration_v2.command_id": input.commandId,
+            },
           ),
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
             validatePublicCommand(command).pipe(
-              Effect.andThen(command.type === "thread.create" ? ordinaryBootstrapGuard(command) : Effect.void),
+              Effect.andThen(
+                command.type === "thread.create" ? ordinaryBootstrapGuard(command) : Effect.void,
+              ),
               Effect.andThen(
                 startup.enqueueCommand(
                   ThreadMessageIntake.dispatchCommand(
@@ -2236,41 +2383,45 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_V2_WS_METHODS.launchThread,
-            ordinaryBootstrapGuard({ type: "thread.create" }).pipe(Effect.andThen(startup
-              .enqueueCommand(
-                ThreadMessageIntake.launchThread({
-                  commandId: input.commandId,
-                  ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
-                  ...(input.reuseExistingThread === undefined
-                    ? {}
-                    : { reuseExistingThread: input.reuseExistingThread }),
-                  projectId: input.projectId,
-                  title: input.title,
-                  ...(input.generateTitle === undefined
-                    ? {}
-                    : { generateTitle: input.generateTitle }),
-                  modelSelection: input.modelSelection,
-                  runtimeMode: input.runtimeMode,
-                  interactionMode: input.interactionMode,
-                  workspaceStrategy: input.workspaceStrategy,
-                  ...(input.initialMessage === undefined
-                    ? {}
-                    : {
-                        initialMessage: {
-                          ...(input.initialMessage.messageId === undefined
-                            ? {}
-                            : { messageId: input.initialMessage.messageId }),
-                          text: input.initialMessage.text,
-                          attachments: input.initialMessage.attachments,
-                          ...(input.initialMessage.context === undefined
-                            ? {}
-                            : { context: input.initialMessage.context }),
-                        },
-                      }),
-                  createdBy: "user",
-                  creationSource: input.creationSource ?? "web",
-                }).pipe(Effect.provide(intakeContext)),
-              )))
+            ordinaryBootstrapGuard({ type: "thread.create" })
+              .pipe(
+                Effect.andThen(
+                  startup.enqueueCommand(
+                    ThreadMessageIntake.launchThread({
+                      commandId: input.commandId,
+                      ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+                      ...(input.reuseExistingThread === undefined
+                        ? {}
+                        : { reuseExistingThread: input.reuseExistingThread }),
+                      projectId: input.projectId,
+                      title: input.title,
+                      ...(input.generateTitle === undefined
+                        ? {}
+                        : { generateTitle: input.generateTitle }),
+                      modelSelection: input.modelSelection,
+                      runtimeMode: input.runtimeMode,
+                      interactionMode: input.interactionMode,
+                      workspaceStrategy: input.workspaceStrategy,
+                      ...(input.initialMessage === undefined
+                        ? {}
+                        : {
+                            initialMessage: {
+                              ...(input.initialMessage.messageId === undefined
+                                ? {}
+                                : { messageId: input.initialMessage.messageId }),
+                              text: input.initialMessage.text,
+                              attachments: input.initialMessage.attachments,
+                              ...(input.initialMessage.context === undefined
+                                ? {}
+                                : { context: input.initialMessage.context }),
+                            },
+                          }),
+                      createdBy: "user",
+                      creationSource: input.creationSource ?? "web",
+                    }).pipe(Effect.provide(intakeContext)),
+                  ),
+                ),
+              )
               .pipe(
                 Effect.tap(() =>
                   analytics
@@ -2305,7 +2456,10 @@ const makeWsRpcLayer = (
                     }),
                   OrchestrationDispatchCommandError: (cause) =>
                     new OrchestrationV2ThreadLaunchError({
-                      commandId: input.commandId, projectId: input.projectId, message: cause.message, cause,
+                      commandId: input.commandId,
+                      projectId: input.projectId,
+                      message: cause.message,
+                      cause,
                     }),
                   ServerRuntimeStartupError: (cause) =>
                     new OrchestrationV2ThreadLaunchError({
@@ -2997,6 +3151,10 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "cloud" },
           ),
+        [WS_METHODS.pullRequestsCiStatus]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsCiStatus, pullRequests.ciStatus(input), {
+            "rpc.aggregate": "pull-requests",
+          }),
         [WS_METHODS.pullRequestsList]: (input) =>
           observeRpcEffect(WS_METHODS.pullRequestsList, pullRequests.list(input), {
             "rpc.aggregate": "pull-requests",
@@ -4145,7 +4303,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
             ).pipe(
-              Layer.provideMerge(Layer.succeed(RpcSerialization.RpcSerialization, nativeBootstrapRpcSerialization)),
+              Layer.provideMerge(
+                Layer.succeed(RpcSerialization.RpcSerialization, nativeBootstrapRpcSerialization),
+              ),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),
