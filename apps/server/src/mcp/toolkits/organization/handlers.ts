@@ -1,7 +1,16 @@
-import type { CommandId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
+import type {
+  CommandId,
+  OrchestrationV2ThreadShell,
+  OrganizationThreadMetadata,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
+import { HttpServer } from "effect/unstable/http";
+import * as NetAddress from "effect/unstable/net/NetAddress";
+import packageJson from "../../../../package.json" with { type: "json" };
+import { ServerConfig } from "../../../config.ts";
 import { requireMcpCapability } from "../../McpInvocationContext.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import {
@@ -26,6 +35,33 @@ const organizationThread = (
   settledOverride: thread.settledOverride,
   settledAt: iso(thread.settledAt),
   archivedAt: iso(thread.archivedAt),
+});
+const organizationThreadMetadata = (
+  thread: OrchestrationV2ThreadShell,
+  counts: NonNullable<OrchestrationV2ThreadShell["pendingRequestCounts"]>,
+): OrganizationThreadMetadata => ({
+  ...organizationThread(thread),
+  projectId: thread.projectId,
+  createdAt: DateTime.formatIso(thread.createdAt),
+  projectionUpdatedAt: DateTime.formatIso(thread.updatedAt),
+  latestUserMessageAt: iso(thread.latestUserMessageAt),
+  // A V2 run is not a historical provider turn or provider session.
+  latestTurn: null,
+  session: null,
+  hasPendingApprovals: counts.approval > 0,
+  hasPendingUserInput: counts.userInput > 0,
+  hasActionableProposedPlan: thread.hasActionableProposedPlan,
+  backgroundLiveness: "unknown",
+  v2Activity: {
+    latestRunId: thread.latestRunId,
+    status: thread.status,
+    latestRunRequestedAt: iso(thread.latestRunRequestedAt),
+    latestRunStartedAt: iso(thread.latestRunStartedAt),
+    latestRunCompletedAt: iso(thread.latestRunCompletedAt),
+    activeRunId: thread.activeRunId,
+    activityRunStatus: thread.activityRunStatus ?? null,
+    activityRunStartedAt: iso(thread.activityRunStartedAt),
+  },
 });
 const localFailure = (cause: unknown) =>
   new OrganizationToolError({ reason: "local-operation-failed", cause });
@@ -84,6 +120,72 @@ const make = Effect.gen(function* () {
     );
   });
   return OrganizationToolkit.of({
+    get_invocation_context: () =>
+      Effect.gen(function* () {
+        const scope = yield* requireMcpCapability("organization");
+        const config = yield* ServerConfig;
+        const { address } = yield* HttpServer.HttpServer;
+        let loopbackOrigin: string | null = null;
+        if (
+          NetAddress.isInetAddress(address) &&
+          address.port > 0 &&
+          (!NetAddress.isInetAddressV6(address) || address.scopeId === 0) &&
+          (NetAddress.isLoopback(address.address) || NetAddress.isUnspecified(address.address))
+        ) {
+          const host = NetAddress.isUnspecified(address.address)
+            ? NetAddress.isIpv4Address(address.address)
+              ? NetAddress.ipv4Loopback
+              : NetAddress.ipv6Loopback
+            : address.address;
+          loopbackOrigin = `http://${NetAddress.formatUrlHost(host)}:${address.port}`;
+        }
+        return {
+          environmentId: scope.environmentId,
+          threadId: scope.threadId,
+          effectiveBaseDir: config.baseDir,
+          loopbackOrigin,
+          serverVersion: packageJson.version,
+          serverGeneration: null,
+        };
+      }),
+    list_organization_thread_metadata: (input) =>
+      Effect.gen(function* () {
+        const scope = yield* requireMcpCapability("organization");
+        const snapshot = yield* threads
+          .getShellSnapshot()
+          .pipe(
+            Effect.mapError(() => new OrganizationToolError({ reason: "local-operation-failed" })),
+          );
+        if (
+          input.expectedSnapshotSequence !== undefined &&
+          input.expectedSnapshotSequence !== snapshot.snapshotSequence
+        ) {
+          return yield* new OrganizationToolError({
+            reason: "snapshot-sequence-changed",
+            expectedSnapshotSequence: input.expectedSnapshotSequence,
+            snapshotSequence: snapshot.snapshotSequence,
+          });
+        }
+        const start = input.offset ?? 0;
+        const end = start + (input.limit ?? 50);
+        const page = snapshot.threads.slice(start, end);
+        const metadata: OrganizationThreadMetadata[] = [];
+        for (const thread of page) {
+          const counts = thread.pendingRequestCounts;
+          if (counts === undefined) {
+            return yield* new OrganizationToolError({ reason: "local-operation-failed" });
+          }
+          metadata.push(organizationThreadMetadata(thread, counts));
+        }
+        const observedAt = DateTime.formatIso(yield* DateTime.now);
+        return {
+          environmentId: scope.environmentId,
+          snapshotSequence: snapshot.snapshotSequence,
+          observedAt,
+          threads: metadata,
+          nextOffset: end < snapshot.threads.length ? end : null,
+        };
+      }),
     list_organization_threads: (input) =>
       authorized(
         Effect.gen(function* () {
