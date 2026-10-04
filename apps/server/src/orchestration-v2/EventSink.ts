@@ -27,6 +27,7 @@ import {
   OrchestrationV2RunJson,
   TrustedT3PlacementEnvironment,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2AppThread,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
@@ -1029,7 +1030,9 @@ const baseLayer: Layer.Layer<
       withTransaction(Effect.gen(function* () {
         // Reserve the SQLite writer before birth/path reads can pin a stale WAL snapshot.
         // The empty update changes no lease and also works before the first lease exists.
-        yield* sql`UPDATE worktree_ownership_leases SET lease_id = lease_id WHERE 0`;
+        yield* sql`UPDATE worktree_ownership_leases SET lease_id = lease_id WHERE 0`.pipe(
+          Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })),
+        );
         return yield* effect;
       }));
 
@@ -1132,7 +1135,7 @@ const baseLayer: Layer.Layer<
     });
     const captureDeletionWorktreeInventory = Effect.fnUntraced(function* (
       command: Extract<OrchestrationV2Command, { readonly type: "thread.delete" }>,
-      deleted: Extract<OrchestrationV2DomainEvent, { readonly type: "thread.deleted" }>,
+      deleted: Extract<OrchestrationV2DomainEvent, { readonly payload: OrchestrationV2AppThread }>,
       effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>,
       policy: DeletionWorktreePolicyCaptureV1 | undefined,
     ) {

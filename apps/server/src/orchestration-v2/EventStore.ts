@@ -58,6 +58,7 @@ export interface EventStoreV2Shape {
     event: OrchestrationEventStore.UnsequencedProjectEvent,
   ) => Effect.Effect<ApplicationProjectEvent, EventStoreV2Error>;
   readonly read: (input?: {
+    readonly commandId?: CommandId;
     readonly afterSequence?: number;
     readonly throughSequence?: number;
     readonly threadId?: ThreadId;
@@ -88,6 +89,7 @@ const baseLayer: Layer.Layer<EventStoreV2, never, OrchestrationEventStore.Orches
       const read: EventStoreV2Shape["read"] = (input) =>
         applicationEvents
           .readAgentEvents({
+            ...(input?.commandId === undefined ? {} : { commandId: input.commandId }),
             ...(input?.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
             ...(input?.throughSequence === undefined
               ? {}
