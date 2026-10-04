@@ -1093,6 +1093,20 @@
         "scripts/performance-staging/**",
         "docs/operations/performance-sqlite.md"
       ]
+    },
+    {
+      "group_id": "t3-client-history-characterization",
+      "command": "node_modules/.bin/vp test run --no-file-parallelism packages/client-runtime/src/state/orchestrationV2Projection.test.ts apps/mobile/src/lib/threadActivity.test.ts",
+      "modules": [
+        "packages/client-runtime/src/state/orchestrationV2Projection.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts"
+      ],
+      "scope": [
+        "packages/client-runtime/src/state/orchestrationV2Projection.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts",
+        "packages/client-runtime/src/remotePerformance.bench.ts",
+        "apps/mobile/src/lib/threadActivity.bench.ts"
+      ]
     }
   ]
 }
