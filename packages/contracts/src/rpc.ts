@@ -22,7 +22,13 @@ import {
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import { CommandId, NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  CommandId,
+  NonNegativeInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import {
   CodexAuthCallbackInput,
   CodexAuthCallbackState,
@@ -156,6 +162,8 @@ import {
 } from "./provider.ts";
 import { ProviderInstanceId, ProviderInstanceMutation } from "./providerInstance.ts";
 import {
+  PullRequestCiStatusInput,
+  PullRequestCiStatusResult,
   PullRequestActionInput,
   PullRequestActivity,
   PullRequestCommentInput,
@@ -497,6 +505,7 @@ export const WS_METHODS = {
   cloudInstallRelayClient: "cloud.installRelayClient",
 
   // Pull request methods
+  pullRequestsCiStatus: "pullRequests.ciStatus",
   pullRequestsList: "pullRequests.list",
   pullRequestsListStats: "pullRequests.listStats",
   pullRequestsSummary: "pullRequests.summary",
@@ -909,6 +918,12 @@ const PullRequestRpcError = Schema.Union([
   PullRequestOperationError,
   EnvironmentAuthorizationError,
 ]);
+
+const WsPullRequestsCiStatusRpc = Rpc.make(WS_METHODS.pullRequestsCiStatus, {
+  payload: PullRequestCiStatusInput,
+  success: PullRequestCiStatusResult,
+  error: PullRequestRpcError,
+});
 
 const WsPullRequestsListRpc = Rpc.make(WS_METHODS.pullRequestsList, {
   payload: PullRequestListInput,
@@ -1547,7 +1562,9 @@ const OrchestrationV2GuardedMessageCommand = OrchestrationV2ClientCommand.pipe(
     typeof OrchestrationV2ClientCommand,
     Extract<OrchestrationV2ClientCommand, { readonly type: "message.dispatch" }>
   >(
-    (command): command is Extract<OrchestrationV2ClientCommand, { readonly type: "message.dispatch" }> =>
+    (
+      command,
+    ): command is Extract<OrchestrationV2ClientCommand, { readonly type: "message.dispatch" }> =>
       command.type === "message.dispatch",
     { message: "Guarded dispatch requires message.dispatch" },
   ),
@@ -1560,18 +1577,25 @@ const OrchestrationV2GuardedDispatchSchema = Schema.Struct(OrchestrationV2Guarde
 export const OrchestrationV2GuardedDispatchInput = Schema.flip(
   Schema.flip(OrchestrationV2GuardedDispatchSchema).check(
     Schema.makeFilter(
-      (input) => input !== null && typeof input === "object" &&
-        Reflect.ownKeys(input).every((key) => Object.hasOwn(OrchestrationV2GuardedDispatchFields, key)),
+      (input) =>
+        input !== null &&
+        typeof input === "object" &&
+        Reflect.ownKeys(input).every((key) =>
+          Object.hasOwn(OrchestrationV2GuardedDispatchFields, key),
+        ),
     ),
   ),
 );
 export type OrchestrationV2GuardedDispatchInput = typeof OrchestrationV2GuardedDispatchInput.Type;
 
-export const WsOrchestrationV2DispatchGuardedRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchGuarded, {
-  payload: OrchestrationV2GuardedDispatchInput,
-  success: OrchestrationV2RpcSchemas.dispatchCommand.output,
-  error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
-});
+export const WsOrchestrationV2DispatchGuardedRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.dispatchGuarded,
+  {
+    payload: OrchestrationV2GuardedDispatchInput,
+    success: OrchestrationV2RpcSchemas.dispatchCommand.output,
+    error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
+  },
+);
 
 export const OrchestrationV2GetThreadRuntimeAttachmentInput = Schema.Struct({ threadId: ThreadId });
 export type OrchestrationV2GetThreadRuntimeAttachmentInput =
@@ -1588,9 +1612,13 @@ export const WsOrchestrationV2GetThreadRuntimeAttachmentRpc = Rpc.make(
 
 const closedOrchestrationV2RpcInput = <Fields extends Schema.Struct.Fields>(fields: Fields) => {
   const schema = Schema.Struct(fields);
-  return Schema.flip(Schema.flip(schema).check(Schema.makeFilter(
-    (value) => Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
-  )));
+  return Schema.flip(
+    Schema.flip(schema).check(
+      Schema.makeFilter((value) =>
+        Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
+      ),
+    ),
+  );
 };
 
 export const OrchestrationV2GetThreadRuntimeObservationInput = closedOrchestrationV2RpcInput({
@@ -1949,6 +1977,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetBackgroundPolicyRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
+  WsPullRequestsCiStatusRpc,
   WsPullRequestsListRpc,
   WsPullRequestsListStatsRpc,
   WsPullRequestsSummaryRpc,
