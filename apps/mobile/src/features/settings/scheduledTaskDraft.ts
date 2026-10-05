@@ -5,6 +5,7 @@ import type {
   RuntimeMode,
   ScheduledTask,
   ScheduledTaskUpsertSchedule,
+  ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
 
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
@@ -166,7 +167,8 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     modelSelectionIsExplicit: true,
     schedule: scheduleDraftForTask(task),
     workspace: task.workspaceStrategy.type,
-    baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
+    baseRef:
+      task.workspaceStrategy.type === "worktree" ? (task.workspaceStrategy.baseRef ?? "") : "main",
     checkoutPath:
       task.workspaceStrategy.type === "existing_worktree"
         ? task.workspaceStrategy.worktreePath
@@ -177,5 +179,37 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
         ? (task.workspaceStrategy.startFromOrigin ?? false)
         : true,
     runtimeMode: task.runtimeMode,
+  };
+}
+
+/** Shared by the scheduled-task form and its save/reopen contract tests. */
+export function scheduledTaskUpsertInputFromDraft(
+  draft: ScheduledTaskDraft,
+): ScheduledTaskUpsertInput | null {
+  const schedule = scheduleFromDraft(draft.schedule);
+  if (!draft.projectId || !draft.modelSelection || !schedule) return null;
+  const baseRef = draft.baseRef.trim();
+  return {
+    ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
+    title: draft.title.trim(),
+    prompt: draft.prompt.trim(),
+    projectId: draft.projectId,
+    modelSelection: draft.modelSelection,
+    schedule,
+    enabled: draft.enabled,
+    threadId: draft.task?.threadId ?? null,
+    workspaceStrategy:
+      draft.workspace === "root"
+        ? { type: "root" }
+        : draft.workspace === "existing_worktree"
+          ? { type: "existing_worktree", worktreePath: draft.checkoutPath.trim() }
+          : {
+              type: "worktree",
+              ...(baseRef === "" ? {} : { baseRef }),
+              startFromOrigin: draft.startFromOrigin,
+            },
+    runtimeMode: draft.runtimeMode,
+    interactionMode: draft.task?.interactionMode ?? "default",
+    creationSource: draft.task?.creationSource ?? "mobile",
   };
 }

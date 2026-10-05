@@ -198,6 +198,32 @@ describe("UsageAggregator", () => {
     ]);
   });
 
+  it("filters exact daily windows by an inclusive start and exclusive end", () => {
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-06",
+      untilDay: "2026-08-07",
+      resolution: "exactDay",
+      sinceTimeMs: Date.parse("2026-08-06T12:00:00.000Z"),
+      untilTimeMs: Date.parse("2026-08-07T12:00:00.000Z"),
+      rates,
+    });
+    const result = [
+      record({ timestampMs: Date.parse("2026-08-06T11:59:59.999Z") }),
+      record({ timestampMs: Date.parse("2026-08-06T12:00:00.000Z") }),
+      record({ timestampMs: Date.parse("2026-08-07T11:59:59.999Z") }),
+      record({ timestampMs: Date.parse("2026-08-07T12:00:00.000Z") }),
+    ].map((item) => aggregator.add(item));
+    const summary = aggregator.finish();
+
+    expect(result).toEqual([false, true, true, false]);
+    expect(summary.outOfWindow).toBe(2);
+    expect(summary.buckets.map((bucket) => [bucket.day, bucket.hourStart])).toEqual([
+      ["2026-08-06", undefined],
+      ["2026-08-07", undefined],
+    ]);
+  });
+
   it("keeps daily payloads collapsed when hourly resolution is not requested", () => {
     const result = aggregate([
       record({ timestampMs: Date.parse("2026-08-07T04:05:13.944Z") }),
