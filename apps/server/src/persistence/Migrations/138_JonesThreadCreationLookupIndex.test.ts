@@ -193,7 +193,7 @@ it.effect(
 
       assert.deepEqual(yield* runMigrations(), []);
       const forkAfter = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
-      assert.equal(forkAfter.length, 12);
+      assert.equal(forkAfter.length, 13);
       assert.deepEqual(forkAfter.slice(0, 6), forkBefore);
       assert.deepEqual(
         forkAfter.slice(6).map(({ migration_id, name }) => ({ migration_id, name })),
@@ -204,6 +204,7 @@ it.effect(
           { migration_id: 141, name: "OrdinaryCheckoutExecutionLifetime" },
           { migration_id: 142, name: "V2NativeAcceptance" },
           { migration_id: 143, name: "AttachmentCleanup" },
+          { migration_id: 144, name: "ImportedApplicationAttachments" },
         ],
       );
       assert.deepEqual(

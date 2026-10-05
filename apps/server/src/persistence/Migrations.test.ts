@@ -26,6 +26,7 @@ import Jones140 from "./Migrations/140_JonesOrdinaryCheckoutOwnership.ts";
 import Jones141 from "./Migrations/141_JonesOrdinaryCheckoutExecutionLifetime.ts";
 import Jones142 from "./Migrations/142_JonesV2NativeAcceptance.ts";
 import Jones143 from "./Migrations/143_JonesAttachmentCleanup.ts";
+import Jones144 from "./Migrations/144_JonesImportedApplicationAttachments.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const originals = [
@@ -278,16 +279,16 @@ it.effect.each([5, 7])(
       assert.strictEqual(profile.historyMode, "foreign-v2-inert");
       assert.deepStrictEqual(
         profile.excluded.map(({ id }) => id),
-        [139, 140, 141, 142, 143],
+        [139, 140, 141, 142, 143, 144],
       );
       assert.deepStrictEqual(
-        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id BETWEEN 139 AND 143`,
+        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id BETWEEN 139 AND 144`,
         [],
       );
       assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), [[150, "FutureProbe"]]);
       assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), []);
       assert.deepStrictEqual(
-        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id BETWEEN 139 AND 143`,
+        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id BETWEEN 139 AND 144`,
         [],
       );
       assert.deepStrictEqual((yield* readLedger).slice(0, before.length), before);
@@ -441,9 +442,10 @@ const seedForeign = (prefix: number, complete = false) =>
     yield* seedLegacy();
     yield* runMigrations({ toMigrationInclusive: 56 });
     if (complete) {
-      // Receiving139/140/141/143 are byte-identical to frozen008/009/011/010;
+      // Receiving139/140/141/143/144 are byte-identical to frozen008/009/011/010/012;
       // all142 SQL templates equal foreign91's007. Execute them only as foreign fixture DDL.
-      for (const migration of [Jones142, Jones139, Jones140, Jones143, Jones141]) yield* migration;
+      for (const migration of [Jones142, Jones139, Jones140, Jones143, Jones141, Jones144])
+        yield* migration;
       yield* sql`INSERT INTO orchestration_v2_provider_runtime_evidence VALUES (
       'foreign-thread', 'foreign-provider-thread', 'foreign-session', 'foreign-instance', 'codex',
       'foreign-native', 'foreign-generation', 1, '{}', 'foreign-registration')`;
@@ -466,7 +468,7 @@ it.effect.each([1, 5, 7])(
       assert.deepStrictEqual(result.applied, [[138, "ThreadCreationLookupIndex"]]);
       assert.deepStrictEqual(
         result.excluded.map(({ id }) => id),
-        [139, 140, 141, 142, 143],
+        [139, 140, 141, 142, 143, 144],
       );
       assert.deepStrictEqual(result.pendingApplicable, []);
       assert.isFalse(result.ownSchemaPrerequisites.some(([id]) => id === 142));
@@ -476,7 +478,7 @@ it.effect.each([1, 5, 7])(
       assert.deepStrictEqual(yield* readLedger, settled);
       assert.deepStrictEqual(settled.slice(0, before.length), before);
       assert.deepStrictEqual(
-        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id BETWEEN 139 AND 143`,
+        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id BETWEEN 139 AND 144`,
         [],
       );
       assert.deepStrictEqual(

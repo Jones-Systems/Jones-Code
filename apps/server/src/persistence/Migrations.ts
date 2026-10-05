@@ -18,6 +18,7 @@ import JonesMigration0140 from "./Migrations/140_JonesOrdinaryCheckoutOwnership.
 import JonesMigration0141 from "./Migrations/141_JonesOrdinaryCheckoutExecutionLifetime.ts";
 import JonesMigration0142 from "./Migrations/142_JonesV2NativeAcceptance.ts";
 import JonesMigration0143 from "./Migrations/143_JonesAttachmentCleanup.ts";
+import JonesMigration0144 from "./Migrations/144_JonesImportedApplicationAttachments.ts";
 import { runJonesMigrationsDetailed, type JonesMigrationEntry } from "./JonesMigrationGuard.ts";
 
 // Import all migrations statically
@@ -227,6 +228,17 @@ export const jonesMigrationEntries = [
       foreignV2: "inert-excluded",
       requiresOwn: [],
       sourceBasis: "143 creates the foreign attachment cleanup observation family.",
+    },
+  ],
+  [
+    144,
+    "ImportedApplicationAttachments",
+    JonesMigration0144,
+    {
+      foreignV2: "inert-excluded",
+      requiresOwn: [[142, "V2NativeAcceptance"]],
+      sourceBasis:
+        "144 creates immutable imported application attachment inventories tied to own native acceptance.",
     },
   ],
 ] as const satisfies ReadonlyArray<JonesMigrationEntry>;
