@@ -40,6 +40,58 @@ const makeEnvironment = (
   DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  for (const { channel, appVersion, isDevelopment, displayName, stageLabel } of [
+    {
+      channel: "development",
+      appVersion: "0.0.22",
+      isDevelopment: true,
+      displayName: "Jones Code (Dev)",
+      stageLabel: "Dev",
+    },
+    {
+      channel: "stable",
+      appVersion: "0.0.22",
+      isDevelopment: false,
+      displayName: "Jones Code",
+      stageLabel: "Alpha",
+    },
+    {
+      channel: "nightly",
+      appVersion: "0.0.17-nightly.20260413.42",
+      isDevelopment: false,
+      displayName: "Jones Code",
+      stageLabel: "Nightly",
+    },
+    {
+      channel: "preview",
+      appVersion: "0.0.44-preview.20261002.36963972634",
+      isDevelopment: false,
+      displayName: "Jones Code",
+      stageLabel: "Nightly",
+    },
+  ] as const) {
+    it.effect(`uses Jones Code branding for ${channel}`, () =>
+      Effect.gen(function* () {
+        const environment = yield* makeEnvironment(
+          { appVersion, isPackaged: !isDevelopment },
+          isDevelopment ? { VITE_DEV_SERVER_URL: "http://localhost:5173" } : {},
+        );
+
+        assert.equal(environment.isDevelopment, isDevelopment);
+        assert.equal(environment.displayName, displayName);
+        assert.deepEqual(environment.branding, {
+          baseName: "Jones Code",
+          displayName,
+          stageLabel,
+        });
+        assert.equal(
+          environment.appUserModelId,
+          isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+        );
+      }),
+    );
+  }
+
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
