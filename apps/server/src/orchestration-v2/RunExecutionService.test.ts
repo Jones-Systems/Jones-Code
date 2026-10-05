@@ -16,11 +16,13 @@ import {
   type OrchestrationV2RunAttempt,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
+  type ProviderRuntimeEvidenceCapture,
   RunAttemptId,
   RunId,
   ServerSettingsError,
@@ -36,6 +38,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as EventStore from "./EventStore.ts";
 
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -49,6 +54,7 @@ import {
   type ProviderAdapterV2Error,
   type ProviderAdapterV2Event,
   type ProviderAdapterV2SessionRuntime,
+  unobservedRuntimeIdentity,
 } from "./ProviderAdapter.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
@@ -4015,4 +4021,416 @@ it.effect("releases ingestion after idle subagent rows and items settle", () =>
       "root-finalized",
     ]);
   }),
+);
+
+it("leaves runtime identity observation ownership and route state to the session manager", () => {
+  const identity: RunExecutionService.ProviderEventRouteIdentity = {
+    threadId: ThreadId.make("identity-manager-owner"),
+    runId: RunId.make("identity-run"),
+    attemptId: RunAttemptId.make("identity-attempt"),
+    providerThreadId: ProviderThreadId.make("identity-provider-thread"),
+  };
+  const state = RunExecutionService.makeProviderEventRoutingState({
+    identity,
+    providerTurnId: null,
+  });
+  const event: ProviderAdapterV2Event = {
+    type: "runtime_identity.observed",
+    driver,
+    binding: {
+      threadId: identity.threadId,
+      providerThreadId: identity.providerThreadId,
+      providerSessionId: ProviderSessionId.make("identity-session"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      driver,
+      nativeThreadId: "identity-native",
+      runtimeGeneration: "actual-process",
+    },
+    requested: {
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerDriver: driver,
+      model: "requested",
+      serviceTier: null,
+    },
+    observed: unobservedRuntimeIdentity(),
+  };
+  const [accepted, next] = RunExecutionService.routeProviderEvent(event, identity, state);
+  assert.isFalse(accepted);
+  assert.strictEqual(next, state);
+  assert.deepEqual([...next.ownedProviderTurnIds], []);
+});
+
+const runtimeTerminalStores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
+  Layer.provide(SqlitePersistenceMemory),
+);
+const runtimeTerminalTestLayer = Layer.mergeAll(
+  runtimeTerminalStores,
+  SqlitePersistenceMemory,
+  EventSink.layer.pipe(Layer.provide(Layer.merge(runtimeTerminalStores, SqlitePersistenceMemory))),
+);
+
+it.effect.each([
+  { mode: "terminal", replaced: false },
+  { mode: "terminal", replaced: true },
+  { mode: "superseded hard Stop", replaced: false },
+  { mode: "superseded hard Stop", replaced: true },
+] as const)(
+  "guards $mode against a generation replaced before commit: $replaced",
+  ({ mode, replaced }) =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const projection = yield* ProjectionStore.ProjectionStoreV2;
+      const eventStore = yield* EventStore.EventStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread-runtime-terminal");
+      const providerThreadId = ProviderThreadId.make("provider-thread-runtime-terminal");
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const providerSessionId = ProviderSessionId.make("session-runtime-terminal");
+      const runId = RunId.make("run-runtime-terminal");
+      const attemptId = RunAttemptId.make("attempt-runtime-terminal");
+      const rootNodeId = NodeId.make("root-runtime-terminal");
+      const providerTurnId = ProviderTurnId.make("turn-runtime-terminal");
+      const modelSelection = { instanceId: providerInstanceId, model: "requested-model" };
+      const app: OrchestrationV2AppThread = {
+        id: threadId,
+        projectId: ProjectId.make("project-runtime-terminal"),
+        title: "Runtime terminal",
+        createdBy: "user",
+        creationSource: "web",
+        providerInstanceId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        activeProviderThreadId: providerThreadId,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        lastVisitedAt: null,
+        deletedAt: null,
+      };
+      const providerThread: OrchestrationV2ProviderThread = {
+        id: providerThreadId,
+        driver,
+        providerInstanceId,
+        providerSessionId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: { driver, nativeId: "native-runtime-terminal", strength: "strong" },
+        nativeConversationHeadRef: null,
+        status: "active",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const run: OrchestrationV2Run = {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId,
+        userMessageId: MessageId.make("message-runtime-terminal"),
+        rootNodeId,
+        activeAttemptId: attemptId,
+        status: "running",
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      const attempt: OrchestrationV2RunAttempt = {
+        id: attemptId,
+        runId,
+        attemptOrdinal: 1,
+        rootNodeId,
+        providerInstanceId,
+        providerThreadId,
+        providerTurnId,
+        reason: "initial",
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      };
+      const checkpointScope: OrchestrationV2CheckpointScope = {
+        id: CheckpointScopeId.make("checkpoint-scope-runtime-terminal"),
+        threadId,
+        runId,
+        nodeId: rootNodeId,
+        parentScopeId: null,
+        providerThreadId,
+        kind: "root_run",
+        ordinalWithinParent: 0,
+        advancesAppRunCount: true,
+        cwd: "/synthetic/runtime-terminal",
+        createdAt: now,
+      };
+      const rootNode: OrchestrationV2ExecutionNode = {
+        id: rootNodeId,
+        threadId,
+        runId,
+        parentNodeId: null,
+        rootNodeId,
+        kind: "root_turn",
+        status: "running",
+        countsForRun: true,
+        providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: checkpointScope.id,
+        startedAt: now,
+        completedAt: null,
+      };
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("terminal-seed-app"),
+            type: "thread.created",
+            threadId,
+            occurredAt: now,
+            payload: app,
+          },
+          {
+            id: EventId.make("terminal-seed-owner"),
+            type: "provider-thread.updated",
+            threadId,
+            occurredAt: now,
+            payload: providerThread,
+          },
+          {
+            id: EventId.make("terminal-seed-run"),
+            type: "run.created",
+            threadId,
+            occurredAt: now,
+            payload: run,
+          },
+          {
+            id: EventId.make("terminal-seed-attempt"),
+            type: "run-attempt.updated",
+            threadId,
+            occurredAt: now,
+            payload: attempt,
+          },
+          {
+            id: EventId.make("terminal-seed-node"),
+            type: "node.updated",
+            threadId,
+            occurredAt: now,
+            payload: rootNode,
+          },
+        ],
+      });
+      const requested = {
+        providerInstanceId,
+        providerDriver: driver,
+        model: modelSelection.model,
+        serviceTier: null,
+      };
+      const observed = {
+        ...unobservedRuntimeIdentity(),
+        model: {
+          status: "observed" as const,
+          value: "native-model",
+          sourceEvent: "codex.thread/open",
+        },
+      };
+      const bound = {
+        ...providerThread,
+        runtimeIdentity: { runtimeGeneration: "native-producer", requested, observed },
+      };
+      const capture: ProviderRuntimeEvidenceCapture = {
+        threadId,
+        providerThreadId,
+        providerSessionId,
+        providerInstanceId,
+        driver,
+        nativeThreadId: "native-runtime-terminal",
+        runtimeGeneration: "native-producer",
+        evidenceRevision: 1,
+      };
+      const terminal: Extract<ProviderAdapterV2Event, { type: "turn.terminal" }> = {
+        type: "turn.terminal",
+        driver,
+        providerThreadId,
+        providerTurnId,
+        runOrdinal: 1,
+        status: mode === "terminal" ? "completed" : "interrupted",
+        failure: null,
+        threadDisposition: "reusable",
+        runtimeEvidence: capture,
+      };
+      const offerTerminal = yield* Deferred.make<void>();
+      const commitReady =
+        yield* Deferred.make<Parameters<EventSink.EventSinkV2Shape["writeWithEffects"]>[0]>();
+      const commit = yield* Deferred.make<void>();
+      const finished = yield* Deferred.make<void>();
+      const observedSink = EventSink.EventSinkV2.of({
+        ...sink,
+        writeWithEffects: (input) =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(commitReady, input);
+            yield* Deferred.await(commit);
+            return yield* sink.writeWithEffects(input);
+          }).pipe(Effect.ensuring(Deferred.succeed(finished, undefined))),
+      });
+      const executionLayer = RunExecutionService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(EventSink.EventSinkV2, observedSink),
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
+            }),
+            Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+              ingestNormalized: () => Effect.succeed([]),
+            }),
+            IdAllocator.layer,
+            ServerSettings.layerTest(),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const execution = yield* RunExecutionService.RunExecutionServiceV2;
+        yield* execution.startRootRun({
+          commandId: CommandId.make("command-runtime-terminal"),
+          appThread: app,
+          providerSessionId,
+          session: {
+            events: Stream.fromEffect(Deferred.await(offerTerminal)).pipe(
+              Stream.map(() => terminal),
+            ),
+            startTurn: () =>
+              Effect.gen(function* () {
+                yield* sink.write({
+                  runtimeIdentityBoundary: { expectedGeneration: null },
+                  events: [
+                    {
+                      id: EventId.make("terminal-late-native-binding"),
+                      type: "provider-thread.updated",
+                      threadId,
+                      occurredAt: now,
+                      payload: bound,
+                    },
+                  ],
+                });
+                yield* sink.write({
+                  runtimeEvidence: capture,
+                  runtimeIdentityObservation: requested,
+                  events: [
+                    {
+                      id: EventId.make("terminal-native-observation"),
+                      type: "provider-thread.updated",
+                      threadId,
+                      occurredAt: now,
+                      payload: bound,
+                    },
+                  ],
+                });
+                yield* Deferred.succeed(offerTerminal, undefined);
+              }),
+          } as unknown as ProviderAdapterV2SessionRuntime,
+          run,
+          rootNode,
+          checkpointScope,
+          providerThread,
+          attempt,
+          attemptId,
+          providerTurnOrdinal: 1,
+          shouldFinalizeRun: () => Effect.succeed(mode === "terminal"),
+          hasUnpairedRunInterruptRequest: () => Effect.succeed(true),
+          message: {
+            messageId: run.userMessageId,
+            text: "One prompt",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+          },
+          modelSelection,
+          runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+        });
+        const pending = yield* Deferred.await(commitReady);
+        assert.strictEqual(
+          pending.runtimeEvidence,
+          capture,
+          "the native terminal capture must be passed unchanged",
+        );
+        const before = (yield* projection.getThreadProjection(threadId)).providerThreads[0]!;
+        assert.equal(before.runtimeIdentity?.evidenceRevision, 2);
+        if (replaced)
+          yield* sink.write({
+            runtimeIdentityBoundary: { expectedGeneration: "native-producer" },
+            events: [
+              {
+                id: EventId.make("terminal-replacement-before-commit"),
+                type: "provider-thread.updated",
+                threadId,
+                occurredAt: now,
+                payload: {
+                  ...before,
+                  runtimeIdentity: {
+                    ...before.runtimeIdentity!,
+                    runtimeGeneration: "replacement-producer",
+                    observed: {
+                      ...observed,
+                      model: {
+                        status: "observed",
+                        value: "replacement-model",
+                        sourceEvent: "codex.thread/open",
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          });
+        const currentIdentity = (yield* projection.getThreadProjection(threadId)).providerThreads[0]
+          ?.runtimeIdentity;
+        yield* Deferred.succeed(commit, undefined);
+        yield* Deferred.await(finished);
+        const after = yield* projection.getThreadProjection(threadId);
+        assert.deepEqual(after.providerThreads[0]?.runtimeIdentity, currentIdentity);
+        assert.equal(
+          after.providerThreads[0]?.status,
+          mode === "terminal" && !replaced ? "idle" : "active",
+        );
+        assert.equal(
+          after.runs[0]?.status,
+          mode === "terminal" && !replaced ? "waiting" : "running",
+        );
+        assert.equal(
+          after.attempts[0]?.status,
+          mode === "terminal" && !replaced ? "completed" : "running",
+        );
+        const recorded = yield* eventStore.read({ threadId }).pipe(Stream.runCollect);
+        const terminalWrites = recorded.filter(({ event }) =>
+          mode === "terminal"
+            ? event.type === "run.updated"
+            : event.type === "turn-item.updated" && event.payload.type === "run_interrupt_result",
+        );
+        assert.lengthOf(terminalWrites, replaced ? 0 : 1);
+        const checkpointEffects = yield* sql<{ readonly effect_type: string }>`
+        SELECT effect_type FROM orchestration_v2_effect_outbox WHERE effect_id = ${`effect:checkpoint.capture:${runId}`}
+      `;
+        assert.deepEqual(
+          checkpointEffects,
+          mode === "terminal" && !replaced ? [{ effect_type: "checkpoint.capture" }] : [],
+        );
+        if (replaced)
+          assert.equal(
+            after.providerThreads[0]?.runtimeIdentity?.runtimeGeneration,
+            "replacement-producer",
+          );
+        else assert.deepEqual(after.providerThreads[0]?.runtimeIdentity?.observed, observed);
+      }).pipe(Effect.ensuring(Deferred.succeed(commit, undefined)), Effect.provide(executionLayer));
+    }).pipe(Effect.provide(runtimeTerminalTestLayer)),
 );
