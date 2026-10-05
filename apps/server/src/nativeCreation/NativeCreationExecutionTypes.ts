@@ -28,6 +28,10 @@ import {
   ProviderDriverKind,
   AuthSessionId,
   OrchestrationV2Command,
+  OrchestrationV2ProviderSession,
+  OrchestrationV2RunStatus,
+  RunAttemptId,
+  ProviderTurnId,
 } from "@t3tools/contracts";
 import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
 const closedNativeStruct = <Fields extends Schema.Struct.Fields>(fields: Fields) => {
@@ -394,3 +398,117 @@ export const NativeProviderRuntimeObservationV1 = Schema.Union([
   }),
 ]);
 export type NativeProviderRuntimeObservationV1 = typeof NativeProviderRuntimeObservationV1.Type;
+
+export const OrchestrationDispatchBlockerV2 = Schema.Literals([
+  "archived",
+  "deleted",
+  "settled",
+  "queued_run",
+  "held_run",
+  "active_run",
+  "active_attempt",
+  "provider_turn",
+  "execution_node",
+  "provider_activity",
+  "pending_approval",
+  "pending_user_input",
+  "pending_tool",
+  "pending_auth_refresh",
+  "actionable_plan",
+  "subagent_work",
+  "background_work",
+  "completion_delivery",
+  "wake_delivery",
+  "pending_native_effect",
+  "unknown_resume",
+  "unresolved_start",
+  "unknown_evidence",
+]);
+export type OrchestrationDispatchBlockerV2 = typeof OrchestrationDispatchBlockerV2.Type;
+
+export const OrchestrationDispatchTargetV2 = closedNativeStruct({
+  incarnation: Schema.NullOr(NativeThreadIncarnationV2),
+  modelSelection: ModelSelection,
+  activeRunId: Schema.NullOr(RunId),
+  latestRunId: Schema.NullOr(RunId),
+  activeRunAttemptId: Schema.NullOr(RunAttemptId),
+  activeProviderThreadId: Schema.NullOr(ProviderThreadId),
+  providerSessionId: Schema.NullOr(ProviderSessionId),
+  providerSessionStatus: Schema.NullOr(OrchestrationV2ProviderSession.fields.status),
+  runtimeGeneration: Schema.optionalKey(TrimmedNonEmptyString),
+  snapshotSequence: NonNegativeInt,
+  targetEventSequence: NonNegativeInt,
+  complete: Schema.Boolean,
+  requireIdle: Schema.Literal(true),
+  idle: Schema.Boolean,
+  blockers: Schema.Array(OrchestrationDispatchBlockerV2),
+}).check(
+  Schema.makeFilter(
+    (target) =>
+      (target.complete || (!target.idle && target.blockers.includes("unknown_evidence"))) &&
+      (!target.idle || target.blockers.length === 0),
+  ),
+);
+export type OrchestrationDispatchTargetV2 = typeof OrchestrationDispatchTargetV2.Type;
+
+const NativeCommandObservationV2Fields = {
+  version: Schema.Literal(2),
+  threadId: ThreadId,
+  commandId: CommandId,
+  messageId: MessageId,
+  commandStatus: Schema.Literals(["accepted", "rejected", "not_found"]),
+  identity: Schema.NullOr(NativeCommandIdentityV2),
+  identityVerification: Schema.Literals([
+    "verified",
+    "unbound",
+    "missing",
+    "mismatched",
+    "unknown",
+  ]),
+  correlation: Schema.Literals(["exact", "pending", "missing", "ambiguous", "mismatched"]),
+  snapshot: closedNativeStruct({
+    snapshotSequence: NonNegativeInt,
+    targetEventSequence: NonNegativeInt,
+    complete: Schema.Boolean,
+  }),
+  correlatedMessageId: Schema.NullOr(MessageId),
+  run: Schema.NullOr(
+    closedNativeStruct({
+      runId: RunId,
+      runAttemptId: Schema.NullOr(RunAttemptId),
+      providerThreadId: Schema.NullOr(ProviderThreadId),
+      providerTurnId: Schema.NullOr(ProviderTurnId),
+      status: OrchestrationV2RunStatus,
+    }),
+  ),
+  target: Schema.NullOr(OrchestrationDispatchTargetV2),
+};
+
+// Historical receipt acceptance and exact correlation do not attest provider execution or settlement.
+export const NativeCommandObservationV2 = closedNativeStruct({
+  ...NativeCommandObservationV2Fields,
+  receipt: Schema.NullOr(NativeCommandReceiptObservationV2),
+  creation: Schema.optionalKey(NativeCreationObservationV2),
+});
+export type NativeCommandObservationV2 = typeof NativeCommandObservationV2.Type;
+export const NativeCommandObservationV2Json = closedNativeStruct({
+  ...NativeCommandObservationV2Fields,
+  receipt: Schema.NullOr(NativeCommandReceiptObservationV2Json),
+  creation: Schema.optionalKey(NativeCreationObservationV2Json),
+});
+export type NativeCommandObservationV2Json = typeof NativeCommandObservationV2Json.Type;
+
+const NativeObserverRuntimeBinding = closedNativeStruct(NativeProviderRuntimeBindingV1.fields);
+export const ProviderRuntimeObservation = Schema.Union([
+  closedNativeStruct({
+    status: Schema.Literals(["working", "monitoring", "busy", "idle"]),
+    binding: NativeObserverRuntimeBinding,
+    observedAt: Schema.String,
+  }),
+  closedNativeStruct({
+    status: Schema.Literal("unknown"),
+    binding: Schema.optional(NativeObserverRuntimeBinding),
+    reason: Schema.String,
+  }),
+]);
+export type ProviderRuntimeObservation = typeof ProviderRuntimeObservation.Type;
