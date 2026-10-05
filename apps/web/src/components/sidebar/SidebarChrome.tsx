@@ -1,4 +1,10 @@
-import { ArrowLeftIcon, BookOpenIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  BookOpenIcon,
+  ChartNoAxesColumnIcon,
+  ListTodoIcon,
+  SettingsIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -202,6 +208,10 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     closeMobileSidebar();
     void navigate({ to: "/conversations" });
   }, [closeMobileSidebar, navigate]);
+  const handleWorkQueueClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/work-queue" });
+  }, [closeMobileSidebar, navigate]);
   const handleSettingsClick = useCallback(() => {
     closeMobileSidebar();
     void navigate({ to: "/settings" });
@@ -251,6 +261,11 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             icon={<ChartNoAxesColumnIcon />}
             label="Usage"
             onClick={handleUsageClick}
+          />
+          <SidebarUtilityItem
+            icon={<ListTodoIcon />}
+            label="Submitted work"
+            onClick={handleWorkQueueClick}
           />
         </>
       )}
