@@ -562,6 +562,12 @@ describe("orchestrator MCP toolkit", () => {
               },
             },
             registryLayer,
+            {
+              checkoutFixture: {
+                projects: [{ projectId, workspaceRoot: cwd, title: "MCP orchestrator fixture" }],
+                resolvePath: () => undefined,
+              },
+            },
           ).pipe(Layer.provide(continuationProbeLayer));
           const orchestrationLayer = Layer.merge(
             orchestratorLayer,
@@ -3540,6 +3546,12 @@ describe("orchestrator MCP toolkit", () => {
             runtimePolicyOverride: { cwd },
           },
           CodexOrchestratorReplayHarness,
+          {
+            checkoutFixture: {
+              projects: [{ projectId, workspaceRoot: cwd, title: "MCP orchestrator fixture" }],
+              resolvePath: () => undefined,
+            },
+          },
         );
         const orchestrationLayer = Layer.merge(
           orchestratorLayer,
