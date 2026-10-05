@@ -480,6 +480,10 @@ describe("OpenCode2 adapter", () => {
       yield* runtime.startTurn(turnInput(thread));
       const seen = yield* Fiber.join(collected);
       const terminals = seen.filter((event) => event.type === "turn.terminal");
+      assert.equal(terminals[0]?.evidenceKind, "provider_result");
+      assert.equal(terminals[0]?.providerTurn?.id, terminals[0]?.providerTurnId);
+      assert.equal(terminals[0]?.providerTurn?.status, "completed");
+      assert.isNotNull(terminals[0]?.providerTurn?.completedAt);
       assert.deepEqual(
         terminals.map((event) => event.type === "turn.terminal" && event.status),
         ["completed"],

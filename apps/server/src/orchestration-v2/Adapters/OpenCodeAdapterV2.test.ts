@@ -1702,6 +1702,15 @@ describe("OpenCodeAdapterV2", () => {
         assert.isTrue(completionIndex < terminalIndex);
         const terminal = received[terminalIndex];
         assert.equal(terminal?.type === "turn.terminal" ? terminal.status : undefined, "failed");
+        assert.equal(
+          terminal?.type === "turn.terminal" ? terminal.evidenceKind : undefined,
+          "local_failure",
+        );
+        if (terminal?.type === "turn.terminal") {
+          assert.equal(terminal.providerTurn?.id, last.providerTurnId);
+          assert.equal(terminal.providerTurn?.status, "failed");
+          assert.isNotNull(terminal.providerTurn?.completedAt);
+        }
         if (kind === "text") {
           const message = received.findLast((event) => event.type === "message.updated");
           assert.equal(

@@ -587,8 +587,27 @@ export function orchestrationV2RunWorkStartedAt(
   return run.workStartedAt ?? run.startedAt ?? run.requestedAt;
 }
 
+export const OrchestrationV2ProviderSettlement = Schema.Struct({
+  runAttemptId: RunAttemptId,
+  providerTurnId: ProviderTurnId,
+  status: Schema.Literals(["completed", "interrupted", "failed", "cancelled"]),
+  completedAt: Schema.DateTimeUtc,
+});
+export type OrchestrationV2ProviderSettlement = typeof OrchestrationV2ProviderSettlement.Type;
+
+export const OrchestrationV2ProviderSettlementJson = OrchestrationV2ProviderSettlement.mapFields(
+  (fields) => ({
+    ...fields,
+    completedAt: Schema.DateTimeUtcFromString,
+  }),
+);
+export type OrchestrationV2ProviderSettlementJson =
+  typeof OrchestrationV2ProviderSettlementJson.Type;
+
 export const OrchestrationV2RunAttempt = Schema.Struct({
   id: RunAttemptId,
+  // Absence preserves historical replay; null requires attributed provider evidence.
+  providerSettlement: Schema.optional(Schema.NullOr(OrchestrationV2ProviderSettlement)),
   // Provider-thread rows can be reused after recovery; retain the native input destination.
   nativeThreadId: Schema.optional(Schema.String),
   runId: RunId,
@@ -1732,6 +1751,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   latestRunId: Schema.NullOr(RunId),
+  latestRunProviderSettlement: Schema.optional(Schema.NullOr(OrchestrationV2ProviderSettlement)),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   latestRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   latestRunCompletedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -1903,6 +1923,7 @@ export type OrchestrationV2RunJson = typeof OrchestrationV2RunJson.Type;
 
 export const OrchestrationV2RunAttemptJson = OrchestrationV2RunAttempt.mapFields((fields) => ({
   ...fields,
+  providerSettlement: Schema.optional(Schema.NullOr(OrchestrationV2ProviderSettlementJson)),
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   completedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
 }));
@@ -2275,6 +2296,9 @@ export type OrchestrationV2LatestVisibleMessageSummaryJson =
 
 export const OrchestrationV2ThreadShellJson = OrchestrationV2ThreadShell.mapFields((fields) => ({
   ...fields,
+  latestRunProviderSettlement: Schema.optional(
+    Schema.NullOr(OrchestrationV2ProviderSettlementJson),
+  ),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   latestRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   latestRunCompletedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),

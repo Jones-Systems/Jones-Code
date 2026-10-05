@@ -907,6 +907,8 @@ type ShellThreadRow = {
   readonly latest_run_requested_at: string | null;
   readonly latest_run_started_at: string | null;
   readonly latest_run_completed_at: string | null;
+  readonly latest_run_attempt_payload_json: string | null;
+  readonly blocking_run_attempt_payload_json: string | null;
   readonly active_run_id: string | null;
   readonly activity_run_status: string | null;
   readonly activity_run_started_at: string | null;
@@ -1347,6 +1349,9 @@ export function threadShellFromProjection(
     activeProviderThreadId: projection.thread.activeProviderThreadId,
     runs: projection.runs,
   });
+  const latestRunProviderSettlement = projection.attempts.find(
+    (attempt) => attempt.id === latestRun?.activeAttemptId,
+  )?.providerSettlement;
   return {
     createdBy: projection.thread.createdBy,
     creationSource: projection.thread.creationSource,
@@ -1376,6 +1381,7 @@ export function threadShellFromProjection(
       ? {}
       : { historyOrigin: projection.thread.historyOrigin }),
     latestRunId: latestRun?.id ?? null,
+    ...(latestRunProviderSettlement === undefined ? {} : { latestRunProviderSettlement }),
     latestRunRequestedAt: latestRun?.requestedAt ?? null,
     latestRunStartedAt: latestRun?.startedAt ?? null,
     latestRunCompletedAt: latestRun?.completedAt ?? null,
@@ -1478,6 +1484,7 @@ type ShellThreadState = {
   readonly latestRunRequestedAt: DateTime.Utc | null;
   readonly latestRunStartedAt: DateTime.Utc | null;
   readonly latestRunCompletedAt: DateTime.Utc | null;
+  readonly latestRunProviderSettlement?: OrchestrationV2ThreadShell["latestRunProviderSettlement"];
   readonly activeRunId: RunId | null;
   readonly activityRunStatus: ShellActivityRunStatus | null;
   readonly activityRunStartedAt: DateTime.Utc | null;
@@ -1615,6 +1622,9 @@ function shellFromState(input: {
     latestRunRequestedAt: input.state.latestRunRequestedAt,
     latestRunStartedAt: input.state.latestRunStartedAt,
     latestRunCompletedAt: input.state.latestRunCompletedAt,
+    ...(input.state.latestRunProviderSettlement === undefined
+      ? {}
+      : { latestRunProviderSettlement: input.state.latestRunProviderSettlement }),
     activeRunId: input.state.activeRunId,
     activityRunStatus: input.state.activityRunStatus,
     activityRunStartedAt: input.state.activityRunStartedAt,
@@ -4824,6 +4834,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               presented.requested_at AS latest_run_requested_at,
               json_extract(presented.payload_json, '$.startedAt') AS latest_run_started_at,
               presented.completed_at AS latest_run_completed_at,
+              (SELECT attempt.payload_json FROM orchestration_v2_projection_run_attempts attempt
+                WHERE attempt.attempt_id = json_extract(presented.payload_json, '$.activeAttemptId')
+                  AND attempt.run_id = presented.run_id AND attempt.thread_id = t.thread_id
+                LIMIT 1) AS latest_run_attempt_payload_json,
+              (SELECT attempt.payload_json FROM orchestration_v2_projection_run_attempts attempt
+                WHERE attempt.attempt_id = json_extract(blocked.payload_json, '$.activeAttemptId')
+                  AND attempt.run_id = blocked.run_id AND attempt.thread_id = t.thread_id
+                LIMIT 1) AS blocking_run_attempt_payload_json,
               (
                 SELECT r.run_id
                 FROM orchestration_v2_projection_runs r
@@ -5283,6 +5301,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           row.latest_run_completed_at === null
             ? null
             : DateTime.makeUnsafe(row.latest_run_completed_at);
+        let latestRunProviderSettlement =
+          row.latest_run_attempt_payload_json === null
+            ? undefined
+            : (yield* decodeRunAttemptPayload(row.latest_run_attempt_payload_json))
+                .providerSettlement;
         if (row.blocking_run_id !== null && row.blocking_failure_payload_json !== null) {
           const blockingFailure = yield* decodeTurnItemPayload(
             row.blocking_failure_payload_json,
@@ -5296,6 +5319,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             terminalFailureItem = blockingFailure;
             latestRunId = RunId.make(row.blocking_run_id);
             latestRunStatus = "failed";
+            latestRunProviderSettlement =
+              row.blocking_run_attempt_payload_json === null
+                ? undefined
+                : (yield* decodeRunAttemptPayload(row.blocking_run_attempt_payload_json))
+                    .providerSettlement;
             latestRunRequestedAt =
               row.blocking_run_requested_at === null
                 ? null
@@ -5333,6 +5361,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           latestRunRequestedAt,
           latestRunStartedAt,
           latestRunCompletedAt,
+          ...(latestRunProviderSettlement === undefined ? {} : { latestRunProviderSettlement }),
           activeRunId: row.active_run_id === null ? null : RunId.make(row.active_run_id),
           activityRunStartedAt:
             row.activity_run_started_at === null

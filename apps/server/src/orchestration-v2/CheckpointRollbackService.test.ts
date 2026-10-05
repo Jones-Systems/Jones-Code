@@ -344,6 +344,7 @@ it.effect.each([
   { restoreFiles: false, shared: "worktree" },
   { restoreFiles: true, shared: "historical" },
   { restoreFiles: false, shared: "none", targetOrdinal: 1 },
+  { restoreFiles: false, shared: "none", targetOrdinal: 2 },
 ])("rewinds safely with %s", ({ restoreFiles, shared, targetOrdinal = 0 }) => {
   const threadId = ThreadId.make("rewind-files");
   const providerThreadId = ProviderThreadId.make("rewind-provider");
@@ -374,7 +375,20 @@ it.effect.each([
       status: "completed",
     })),
     nodes: [],
-    attempts: [1, 2, 3].map((ordinal) => ({ id: `attempt-${ordinal}`, runId: `run-${ordinal}` })),
+    attempts: [1, 2, 3].map((ordinal) => ({
+      id: `attempt-${ordinal}`,
+      runId: `run-${ordinal}`,
+      rootNodeId: `node-${ordinal}`,
+      providerInstanceId: instanceId,
+      status: "completed",
+      completedAt: "unchanged-attempt-time",
+      providerSettlement: {
+        runAttemptId: `attempt-${ordinal}`,
+        providerTurnId: `turn-${ordinal}`,
+        status: "completed",
+        completedAt: "unchanged-provider-time",
+      },
+    })),
     checkpoints: [
       { id: checkpointId, scopeId, status: "ready", appRunOrdinal: targetOrdinal || null },
     ],
@@ -399,11 +413,32 @@ it.effect.each([
         Layer.mock(EventSink.EventSinkV2)({
           write: ({ events }) =>
             Effect.sync(() => {
-              assert.ok(
-                events.some(
-                  (event) => event.type === "run.updated" && event.payload.status === "rolled_back",
-                ),
-              );
+              if (targetOrdinal !== 2) {
+                assert.ok(
+                  events.some(
+                    (event) =>
+                      event.type === "run.updated" && event.payload.status === "rolled_back",
+                  ),
+                );
+              } else {
+                assert.isFalse(events.some((event) => event.type === "run.updated"));
+              }
+              const markerEvents = events.filter((event) => event.type === "run-attempt.updated");
+              assert.lengthOf(markerEvents, targetOrdinal === 1 ? 1 : 0);
+              if (targetOrdinal === 1) {
+                const restored = markerEvents[0]!;
+                assert.equal(restored.payload.id, `attempt-${targetOrdinal}`);
+                assert.isNull(restored.payload.providerSettlement);
+                assert.equal(restored.payload.status, "completed");
+                assert.equal(restored.payload.completedAt as unknown, "unchanged-attempt-time");
+                assert.isFalse(
+                  events.some(
+                    (event) =>
+                      event.type === "run.updated" && event.runId === `run-${targetOrdinal}`,
+                  ),
+                );
+                assert.isFalse(events.some((event) => event.type === "provider-turn.updated"));
+              }
               calls.push("projection");
               return [];
             }),
@@ -462,9 +497,15 @@ it.effect.each([
       return;
     }
     yield* service.execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles });
+    if (targetOrdinal === 2)
+      assert.equal(projection.attempts[1]?.providerSettlement?.status, "completed");
     assert.deepEqual(
       calls,
-      restoreFiles ? ["provider", "files", "projection"] : ["provider", "projection"],
+      restoreFiles
+        ? ["provider", "files", "projection"]
+        : targetOrdinal === 2
+          ? ["projection"]
+          : ["provider", "projection"],
     );
   }).pipe(Effect.provide(testLayer));
 });
