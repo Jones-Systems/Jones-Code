@@ -68,6 +68,7 @@ export interface LegacySetupPreparationHooks {
   readonly capturedDefinition?: LegacySetupDefinition;
   readonly noScript: () => Effect.Effect<void, Error>;
   readonly beforeSpawn: (definition: LegacySetupDefinition) => Effect.Effect<void, Error>;
+  readonly neverInvoked?: TerminalManager.LegacyTerminalPreparationHooks["neverInvoked"];
   readonly afterSpawn: (
     proof: Parameters<TerminalManager.LegacyTerminalPreparationHooks["afterSpawn"]>[0],
   ) => Effect.Effect<void, Error>;
@@ -519,6 +520,7 @@ export const make = Effect.gen(function* () {
                 };
                 yield* legacy.beforeSpawn(definition);
               }),
+            ...(legacy.neverInvoked === undefined ? {} : { neverInvoked: legacy.neverInvoked }),
             afterSpawn: legacy.afterSpawn,
           });
     yield* open.pipe(

@@ -212,6 +212,19 @@ export class LegacyTerminalControlError extends Schema.TaggedError<LegacyTermina
   { operation: Schema.Literals(["open", "write", "close", "guard"]), detail: Schema.String },
 ) {}
 
+export class LegacyTerminalInputValidationError extends Schema.TaggedError<LegacyTerminalInputValidationError>()(
+  "LegacyTerminalInputValidationError",
+  {
+    binding: LegacyOwnedTerminalControl,
+    shell: Schema.String,
+    shellArgs: Schema.Array(Schema.String),
+    cwd: Schema.String,
+    detail: Schema.String,
+  },
+) {}
+
+const isLegacyTerminalInputValidationError = Schema.is(LegacyTerminalInputValidationError);
+
 export interface LegacyTerminalPreparationHooks {
   readonly binding: LegacyOwnedTerminalControl;
   readonly beforeSpawn: (plan: {
@@ -220,6 +233,9 @@ export interface LegacyTerminalPreparationHooks {
     readonly shellArgs: ReadonlyArray<string>;
     readonly cwd: string;
   }) => Effect.Effect<void, Error>;
+  readonly neverInvoked?: (
+    plan: Parameters<LegacyTerminalPreparationHooks["beforeSpawn"]>[0],
+  ) => Effect.Effect<void, Error>;
   readonly afterSpawn: (proof: {
     readonly binding: LegacyOwnedTerminalControl;
     readonly shell: string;
@@ -257,7 +273,10 @@ export class TerminalManager extends Context.Service<
       (
         input: TerminalOpenInput,
         legacy: LegacyTerminalPreparationHooks,
-      ): Effect.Effect<TerminalSessionSnapshot, TerminalError | LegacyTerminalControlError>;
+      ): Effect.Effect<
+        TerminalSessionSnapshot,
+        TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+      >;
     };
 
     /**
@@ -2434,6 +2453,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     let ptyProcess: PtyAdapter.PtyProcess | null = null;
     let startedShell: string | null = null;
+    let invocationEntered = false;
 
     const startResult = yield* Effect.result(
       increment(terminalSessionsTotal, { lifecycle: eventType }).pipe(
@@ -2498,6 +2518,49 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                   ),
                 );
             }
+            if (
+              legacy !== undefined &&
+              chosenShell !== undefined &&
+              (chosenShell.shell.length === 0 ||
+                chosenShell.shell.includes("\0") ||
+                (chosenShell.args ?? []).some((arg) => arg.includes("\0")))
+            ) {
+              const current = yield* sessionsForThread(session.threadId);
+              if (
+                invocationEntered ||
+                legacy.neverInvoked === undefined ||
+                current.length !== 1 ||
+                current[0] !== session ||
+                session.process !== null ||
+                session.pid !== null ||
+                session.legacyOwnedControl !== undefined ||
+                session.legacyOwnedProcess !== undefined
+              )
+                return yield* new LegacyTerminalControlError({
+                  operation: "open",
+                  detail: "Selected input refusal has no exact no-invocation owner proof.",
+                });
+              const plan = {
+                binding: legacy.binding,
+                shell: chosenShell.shell,
+                shellArgs: chosenShell.args ?? [],
+                cwd: session.cwd,
+              };
+              yield* legacy.neverInvoked(plan).pipe(
+                Effect.mapError(
+                  () =>
+                    new LegacyTerminalControlError({
+                      operation: "open",
+                      detail: "Never-invoked outcome readback is unavailable.",
+                    }),
+                ),
+              );
+              return yield* new LegacyTerminalInputValidationError({
+                ...plan,
+                detail: "Selected setup shell or arguments contain invalid terminal input.",
+              });
+            }
+            invocationEntered = true;
             const spawnResult = yield* trySpawn(
               legacy === undefined ? shellCandidates : shellCandidates.slice(0, 1),
               terminalEnv,
@@ -2593,11 +2656,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       return;
     }
 
-    if (legacy !== undefined)
+    if (legacy !== undefined) {
+      if (!invocationEntered && isLegacyTerminalInputValidationError(startResult.failure))
+        return yield* startResult.failure;
       return yield* new LegacyTerminalControlError({
         operation: "open",
         detail: "Legacy spawn or journal outcome is unknown; retained control cannot be replayed.",
       });
+    }
 
     {
       const error = startResult.failure;
@@ -2652,13 +2718,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     input: TerminalStartInput,
     eventType: "started" | "restarted",
     legacy: LegacyTerminalPreparationHooks | undefined,
-  ): Effect.Effect<void, LegacyTerminalControlError>;
+  ): Effect.Effect<void, LegacyTerminalControlError | LegacyTerminalInputValidationError>;
   function startSession(
     session: TerminalSessionState,
     input: TerminalStartInput,
     eventType: "started" | "restarted",
     legacy?: LegacyTerminalPreparationHooks,
-  ): Effect.Effect<void, LegacyTerminalControlError> {
+  ): Effect.Effect<void, LegacyTerminalControlError | LegacyTerminalInputValidationError> {
     return startSessionEffect(session, input, eventType, legacy);
   }
 
@@ -3027,11 +3093,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   function openWithWorkspaceLease(
     input: TerminalOpenInput,
     legacy: LegacyTerminalPreparationHooks | undefined,
-  ): Effect.Effect<TerminalSessionSnapshot, TerminalError | LegacyTerminalControlError>;
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  >;
   function openWithWorkspaceLease(
     input: TerminalOpenInput,
     legacy?: LegacyTerminalPreparationHooks,
-  ): Effect.Effect<TerminalSessionSnapshot, TerminalError | LegacyTerminalControlError> {
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  > {
     return openWithWorkspaceLeaseEffect(input, legacy);
   }
 
@@ -3041,11 +3113,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   function openLocked(
     input: TerminalOpenInput,
     legacy: LegacyTerminalPreparationHooks | undefined,
-  ): Effect.Effect<TerminalSessionSnapshot, TerminalError | LegacyTerminalControlError>;
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  >;
   function openLocked(
     input: TerminalOpenInput,
     legacy?: LegacyTerminalPreparationHooks,
-  ): Effect.Effect<TerminalSessionSnapshot, TerminalError | LegacyTerminalControlError> {
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  > {
     return withWorkspaceLease(
       path.resolve(input.worktreePath ?? input.cwd),
       openWithWorkspaceLease(input, legacy),
@@ -3056,11 +3134,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   function open(
     input: TerminalOpenInput,
     legacy: LegacyTerminalPreparationHooks,
-  ): Effect.Effect<TerminalSessionSnapshot, TerminalError | LegacyTerminalControlError>;
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  >;
   function open(
     input: TerminalOpenInput,
     legacy?: LegacyTerminalPreparationHooks,
-  ): Effect.Effect<TerminalSessionSnapshot, TerminalError | LegacyTerminalControlError> {
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  > {
     return withThreadLock(
       input.threadId,
       resolveLaunchInputEnvironment(input).pipe(

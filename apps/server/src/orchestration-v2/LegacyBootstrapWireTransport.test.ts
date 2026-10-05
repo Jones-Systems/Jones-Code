@@ -1,7 +1,14 @@
+import * as WsPath from "effect/Path";
+import { nativeWorktreePath } from "../vcs/worktreePath.ts";
+import { makeGitVcsDriverCore } from "../vcs/GitVcsDriverCore.ts";
+import * as ChildProcess from "effect/unstable/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as Sink from "effect/Sink";
+import { projectThreadProjectionForWire } from "./WireProjection.ts";
 import { makeCommandObservationQuery } from "./CommandObservation.ts";
 import * as Deferred from "effect/Deferred";
-import type * as PtyAdapter from "../terminal/PtyAdapter.ts";
-import type { ProjectScript } from "@t3tools/contracts";
+import * as PtyAdapter from "../terminal/PtyAdapter.ts";
+import type { ProjectScript, VcsStatusLocalResult } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -14,7 +21,11 @@ import * as IdAllocator from "./IdAllocator.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
 import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
-import { legacyBootstrapCreateCommandId } from "./LegacyBootstrap.ts";
+import {
+  legacyBootstrapCreateCommandId,
+  legacyNeverInvokedSetupOpen,
+  legacyPreparationReleaseBlocker,
+} from "./LegacyBootstrap.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as WsFileSystem from "effect/FileSystem";
 import { it as effectIt } from "@effect/vitest";
@@ -26,6 +37,8 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationV2ThreadProjectionJson,
+  WorktreeSetupStreamEvent,
+  WS_METHODS,
 } from "@t3tools/contracts";
 import * as WsTraceDiagnostics from "../diagnostics/TraceDiagnostics.ts";
 import * as WsProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
@@ -99,6 +112,7 @@ import * as WsPreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import { expect, it } from "vite-plus/test";
 import {
   CommandId,
+  GitCommandError,
   EnvironmentOrchestrationHttpApi,
   EventId,
   MessageId,
@@ -119,7 +133,11 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import { environmentAuthenticatedAuthLayer } from "../auth/http.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import {
+  SqlitePersistenceMemory,
+  makeSqlitePersistenceLive,
+} from "../persistence/Layers/Sqlite.ts";
+import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ApplicationEvents from "../persistence/Layers/OrchestrationEventStore.ts";
 import * as ProjectEnrichment from "../project/ProjectEnrichmentService.ts";
 import * as Receipts from "./CommandReceiptStore.ts";
@@ -128,7 +146,7 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as Threads from "./ThreadManagementService.ts";
-import { OrchestratorProjectionError } from "./Orchestrator.ts";
+import { OrchestratorProjectionError, OrchestratorDispatchError } from "./Orchestrator.ts";
 import {
   LegacyReleaseDecision,
   LegacyPreparationFailureDecision,
@@ -596,6 +614,13 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
   }
 });
 
+const encodeLegacyCancellationDiagnostic = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+class LegacyCancellationFixtureError extends Schema.TaggedError<LegacyCancellationFixtureError>()(
+  "LegacyCancellationFixtureError",
+  { message: Schema.String, cause: Schema.optional(Schema.Defect()) },
+) {}
+
 effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
   "Authenticated legacy WS serialized forwarding",
   (it) => {
@@ -610,13 +635,34 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
       "actual_sync",
       "actual_async",
       "actual_disconnect",
+      "actual_input_refused",
+      "actual_input_intent_lost",
+      "actual_input_outcome_lost",
+      "actual_entered_error",
+      "actual_worktree_started_cancel",
+      "actual_worktree_started_cancel_persistence_lost",
+      "actual_worktree_started_cancel_readback_lost",
+      "actual_worktree_started_cancel_reply_lost",
+      "actual_worktree_sync_card",
+      "actual_worktree_async_card",
+      "actual_worktree_cancel_pending",
+      "actual_worktree_cancel_partial",
     ] as const)("preserves closed dispatch and authorization for %s", (scenario) =>
       Effect.gen(function* () {
         const fs = yield* WsFileSystem.FileSystem;
+        const path = yield* WsPath.Path;
         const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-ws-forwarding-" });
-        const config = WsServerConfig.layerTest(cwd, `${cwd}/state`);
+        const receivingDatabase = scenario.startsWith("actual_input_")
+          ? makeSqlitePersistenceLive(`${cwd}/lexical.sqlite`).pipe(
+              Layer.provide(NodeServices.layer),
+            )
+          : SqlitePersistenceMemory;
+        const serverConfig = yield* WsServerConfig.ServerConfig.pipe(
+          Effect.provide(WsServerConfig.layerTest(cwd, `${cwd}/state`)),
+        );
+        const config = Layer.succeed(WsServerConfig.ServerConfig, serverConfig);
         const auth = WsEnvironmentAuth.layer.pipe(
-          Layer.provideMerge(SqlitePersistenceMemory),
+          Layer.provideMerge(receivingDatabase),
           Layer.provideMerge(ServerSecretStore.layer),
           Layer.provideMerge(WsServerEnvironment.identityLayer),
           Layer.provide(config),
@@ -683,11 +729,41 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           updatedAt: timestamp,
         });
         const actualReceiving = scenario.startsWith("actual_");
+        const cancelledWorktree = scenario.startsWith("actual_worktree_cancel_");
+        const startedCancellation = scenario.startsWith("actual_worktree_started_cancel");
+        const failurePersistenceLost =
+          scenario === "actual_worktree_started_cancel_persistence_lost";
+        const failureReadbackLost = scenario === "actual_worktree_started_cancel_readback_lost";
+        const failureReplyLost = scenario === "actual_worktree_started_cancel_reply_lost";
+        let failureReadbackCalls = 0;
+        let failureReplyCalls = 0;
+        const successfulWorktree =
+          scenario === "actual_worktree_sync_card" ||
+          scenario === "actual_worktree_async_card" ||
+          startedCancellation;
+        const asyncWorktree = scenario === "actual_worktree_async_card";
+        const worktreeEntered = yield* Deferred.make<void>();
+        const worktreeBarrier = yield* Deferred.make<void>();
+        const releaseWorktree = Deferred.succeed(worktreeBarrier, undefined);
+        const worktreePath =
+          successfulWorktree || cancelledWorktree
+            ? nativeWorktreePath({
+                worktreesDir: serverConfig.worktreesDir,
+                cwd,
+                branch: "owned/forwarding",
+              })
+            : `${cwd}/unresolved-checkout`;
+        if (successfulWorktree || cancelledWorktree)
+          yield* fs.makeDirectory(path.dirname(worktreePath), { recursive: true });
         const startedSetup =
           scenario === "actual_sync" ||
           scenario === "actual_async" ||
-          scenario === "actual_disconnect";
-        const scripts: ReadonlyArray<ProjectScript> = startedSetup
+          scenario === "actual_disconnect" ||
+          successfulWorktree;
+        const lexicalSetup = scenario.startsWith("actual_input_");
+        const selectedSetup = startedSetup || lexicalSetup || scenario === "actual_entered_error";
+        let lexicalRun: import("./RecordedTypes.ts").RecordedRun | undefined;
+        const scripts: ReadonlyArray<ProjectScript> = selectedSetup
           ? [
               {
                 id: "setup",
@@ -695,7 +771,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 command: "synthetic-no-execution",
                 icon: "configure",
                 runOnWorktreeCreate: true,
-                async: scenario === "actual_async",
+                async: scenario === "actual_async" || asyncWorktree,
               },
             ]
           : [];
@@ -704,6 +780,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         const outputListeners = new Set<(chunk: string) => void>();
         const exitListeners = new Set<(event: PtyAdapter.PtyExitEvent) => void>();
         const kills: Array<string | undefined> = [];
+        let spawnCalls = 0;
         const process: PtyAdapter.PtyProcess = {
           pid: 92003,
           write: (data) => {
@@ -734,13 +811,14 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             for (const output of outputListeners) output(`${sentinel}0\r\n`);
         });
         yield* Effect.addFinalizer(() => completeSetup);
+        yield* Effect.addFinalizer(() => releaseWorktree);
 
         const receivingOwners = actualReceiving
           ? yield* Effect.gen(function* () {
               const manager = yield* WsTerminalManager.makeWithOptions({
                 logsDir: `${cwd}/terminal-logs`,
                 env: {},
-                shellResolver: () => "/bin/sh",
+                shellResolver: () => (lexicalSetup ? "/bin/synthetic\0shell" : "/bin/sh"),
                 processTable: Effect.succeed([]),
                 subprocessInspector: () =>
                   Effect.succeed({
@@ -749,10 +827,20 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                     processIds: [],
                   }),
                 ptyAdapter: {
-                  spawn: () =>
-                    startedSetup
+                  spawn: () => {
+                    spawnCalls += 1;
+                    if (scenario === "actual_entered_error")
+                      return Effect.fail(
+                        new PtyAdapter.PtySpawnError({
+                          adapter: "synthetic",
+                          shell: "/bin/sh",
+                          cause: new Error("Synthetic entered failure"),
+                        }),
+                      );
+                    return startedSetup
                       ? Effect.succeed(process)
-                      : Effect.die("No setup/provider PTY in receiving RPC fixture"),
+                      : Effect.die("No setup/provider PTY in receiving RPC fixture");
+                  },
                 },
               }).pipe(Effect.provide(ProcessRunner.layer));
               const terminal = Layer.succeed(WsTerminalManager.TerminalManager, manager);
@@ -800,12 +888,145 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               const orchestrator = makeOrchestratorV2ReplayLayerWithRegistry(
                 { name: "legacy-authenticated-receiving" },
                 registry,
-                { databaseLayer: SqlitePersistenceMemory, runEffectWorker: false },
+                {
+                  databaseLayer: receivingDatabase,
+                  runEffectWorker: false,
+                  checkoutFixture: {
+                    projects: [],
+                    resolvePath: () => undefined,
+                    worktreesDir: serverConfig.worktreesDir,
+                  },
+                },
               ).pipe(Layer.provide(terminal));
-              const threads = Threads.layer.pipe(Layer.provide(orchestrator));
-              const receipts = Receipts.layer.pipe(Layer.provide(SqlitePersistenceMemory));
-              const outbox = WsEffectOutbox.layer.pipe(Layer.provide(SqlitePersistenceMemory));
-              const store = EventStore.layer.pipe(Layer.provide(SqlitePersistenceMemory));
+              const productionThreads = Threads.layer.pipe(Layer.provide(orchestrator));
+              const threads = Layer.effect(
+                Threads.ThreadManagementService,
+                Effect.gen(function* () {
+                  const actual = yield* Threads.ThreadManagementService;
+                  return Threads.ThreadManagementService.of({
+                    ...actual,
+                    dispatch: (command) =>
+                      actual.dispatch(command).pipe(
+                        Effect.flatMap((result) => {
+                          if (failureReplyLost && command.type === "prepared-run.fail") {
+                            failureReplyCalls++;
+                            return Effect.fail(
+                              new OrchestratorDispatchError({
+                                commandId: command.commandId,
+                                commandType: command.type,
+                                cause: "Synthetic accepted preparation failure reply lost",
+                              }),
+                            );
+                          }
+                          if (
+                            command.type === "prepared-run.progress" &&
+                            command.legacyPreparationUpdate?.type ===
+                              (scenario === "actual_input_intent_lost" ? "intent" : "outcome") &&
+                            "step" in command.legacyPreparationUpdate &&
+                            command.legacyPreparationUpdate.step.effect.kind === "setup.open" &&
+                            (scenario === "actual_input_intent_lost" ||
+                              scenario === "actual_input_outcome_lost")
+                          )
+                            return Effect.fail(
+                              new OrchestratorDispatchError({
+                                commandId: command.commandId,
+                                commandType: command.type,
+                                cause: "Synthetic accepted setup journal reply lost",
+                              }),
+                            );
+                          return Effect.succeed(result);
+                        }),
+                      ),
+                  });
+                }),
+              ).pipe(Layer.provide(productionThreads));
+              const receipts = Receipts.layer.pipe(Layer.provide(receivingDatabase));
+              const outbox = WsEffectOutbox.layer.pipe(Layer.provide(receivingDatabase));
+              const store = EventStore.layer.pipe(Layer.provide(receivingDatabase));
+              const successfulCheckout = successfulWorktree
+                ? yield* Effect.gen(function* () {
+                    const common = `${cwd}/.git`;
+                    const gitDirectory = `${common}/worktrees/card-fixture`;
+                    yield* fs.makeDirectory(gitDirectory, { recursive: true });
+                    let added = false;
+                    const branch = "owned/forwarding";
+                    const oid = "9".repeat(40);
+                    const spawner = ChildProcessSpawner.make((command) =>
+                      Effect.gen(function* () {
+                        if (!ChildProcess.isStandardCommand(command))
+                          return yield* Effect.die("Synthetic checkout refuses pipelines");
+                        const args = [...command.args];
+                        if (args.includes("add")) {
+                          yield* fs.makeDirectory(worktreePath);
+                          yield* fs.writeFileString(
+                            `${worktreePath}/.git`,
+                            `gitdir: ${gitDirectory}\n`,
+                          );
+                          added = true;
+                        }
+                        let stdout = "";
+                        let readExitCode: number | undefined;
+                        const readArgs = args.join("\0");
+                        if (readArgs === "status\0--porcelain=2\0--branch\0--no-ahead-behind") {
+                          if (!added || command.options.cwd !== worktreePath)
+                            return yield* Effect.die(
+                              "Synthetic status requires the actual added checkout",
+                            );
+                          yield* fs.stat(worktreePath);
+                          stdout = `# branch.oid ${oid}\n# branch.head ${branch}\n`;
+                        } else if (readArgs === "rev-parse\0--git-path\0index") {
+                          if (command.options.cwd !== cwd && command.options.cwd !== worktreePath)
+                            return yield* Effect.die(
+                              "Synthetic index read requires the captured checkout",
+                            );
+                          stdout = `${command.options.cwd === worktreePath ? gitDirectory : common}/index\n`;
+                        } else if (readArgs === "rev-parse\0--show-toplevel") {
+                          if (command.options.cwd !== cwd && command.options.cwd !== worktreePath)
+                            return yield* Effect.die(
+                              "Synthetic root read requires the captured checkout",
+                            );
+                          stdout = `${yield* fs.realPath(command.options.cwd)}\n`;
+                        } else if (readArgs === "symbolic-ref\0--quiet\0--short\0HEAD") {
+                          stdout = `${command.options.cwd === worktreePath ? branch : "main"}\n`;
+                        } else if (readArgs === "symbolic-ref\0refs/remotes/origin/HEAD") {
+                          readExitCode = 1;
+                        } else if (readArgs === "remote\0get-url\0origin") {
+                          readExitCode = 2;
+                        } else if (args.includes("--git-common-dir")) stdout = `${common}\n`;
+                        else if (args.includes("--absolute-git-dir")) stdout = `${gitDirectory}\n`;
+                        else if (args.includes("symbolic-ref")) stdout = `refs/heads/${branch}\n`;
+                        else if (args.includes("rev-parse")) stdout = `${oid}\n`;
+                        else if (args.includes("--porcelain"))
+                          stdout = added
+                            ? `worktree ${worktreePath}\0HEAD ${oid}\0branch refs/heads/${branch}\0\0`
+                            : "";
+                        else if (args.includes("for-each-ref") && added)
+                          stdout = `refs/heads/${branch}\n`;
+                        return ChildProcessSpawner.makeHandle({
+                          pid: ChildProcessSpawner.ProcessId(1),
+                          exitCode: Effect.succeed(
+                            ChildProcessSpawner.ExitCode(
+                              readExitCode ?? (args.includes("--get-regexp") ? 1 : 0),
+                            ),
+                          ),
+                          isRunning: Effect.succeed(false),
+                          kill: () => Effect.die("No process to kill in synthetic checkout"),
+                          unref: Effect.succeed(Effect.void),
+                          stdin: Sink.drain,
+                          stdout: Stream.encodeText(Stream.make(stdout)),
+                          stderr: Stream.empty,
+                          all: Stream.empty,
+                          getInputFd: () => Sink.drain,
+                          getOutputFd: () => Stream.empty,
+                        });
+                      }),
+                    );
+                    return yield* makeGitVcsDriverCore().pipe(
+                      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+                      Effect.provide(config),
+                    );
+                  })
+                : undefined;
               const external = Layer.mergeAll(
                 terminal,
                 projectOwner,
@@ -815,7 +1036,133 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                   get: () => Effect.succeed(null),
                 }),
                 Layer.mock(WsGitWorkflowService.GitWorkflowService)({
-                  createWorktree: () => Effect.die("No Git create in receiving RPC fixture"),
+                  isRepository: () => Effect.succeed(true),
+                  hasCommit: () => Effect.succeed(true),
+                  resolveCommit: (input) =>
+                    successfulCheckout !== undefined
+                      ? successfulCheckout.resolveCommit(input)
+                      : Effect.fail(
+                          new GitCommandError({
+                            operation: "synthetic receiving resolveCommit",
+                            command: "git",
+                            cwd: input.cwd,
+                            detail: "The actual checkout core is unavailable in this fixture",
+                          }),
+                        ),
+                  localStatus: (input) =>
+                    successfulCheckout !== undefined
+                      ? successfulCheckout
+                          .statusDetailsLocal(input.cwd, {
+                            includeDivergence: false,
+                            includeBranchChanges: true,
+                          })
+                          .pipe(
+                            Effect.map(
+                              (details) =>
+                                ({
+                                  isRepo: details.isRepo,
+                                  hasPrimaryRemote: details.hasOriginRemote,
+                                  isDefaultRef: details.isDefaultBranch,
+                                  refName: details.branch,
+                                  hasWorkingTreeChanges: details.hasWorkingTreeChanges,
+                                  workingTree: details.workingTree,
+                                  ...(details.branchChanges
+                                    ? { branchChanges: details.branchChanges }
+                                    : {}),
+                                }) satisfies VcsStatusLocalResult,
+                            ),
+                          )
+                      : Effect.fail(
+                          new GitCommandError({
+                            operation: "synthetic receiving localStatus",
+                            command: "git",
+                            cwd: input.cwd,
+                            detail: "The actual checkout core is unavailable in this fixture",
+                          }),
+                        ),
+                  createWorktree: (input, options) =>
+                    successfulCheckout !== undefined
+                      ? successfulCheckout.createWorktree(input, options)
+                      : Effect.gen(function* () {
+                          const failure = (cause: unknown) =>
+                            new GitCommandError({
+                              operation: "synthetic unresolved preparation",
+                              command: "git",
+                              cwd,
+                              detail: "Synthetic owner journal or fixture filesystem failed",
+                              cause,
+                            });
+                          const targetPath = yield* Effect.gen(function* () {
+                            if (!cancelledWorktree || options?.legacyPreparation === undefined)
+                              return yield* Effect.die("No Git create in receiving RPC fixture");
+                            if (input.newRefName === undefined)
+                              return yield* Effect.die(
+                                "Synthetic checkout requires a captured branch",
+                              );
+                            if (input.path !== worktreePath)
+                              return yield* Effect.die(
+                                "Synthetic checkout requires the original planned target",
+                              );
+                            const parentPath = path.dirname(input.path);
+                            const parent = yield* fs.stat(parentPath);
+                            const parentRealPath = yield* fs.realPath(parentPath);
+                            yield* options.legacyPreparation.beforeEffect({
+                              kind: "worktree.add",
+                              cwd: input.cwd,
+                              args: [
+                                "worktree",
+                                "add",
+                                "-b",
+                                input.newRefName,
+                                input.path,
+                                input.refName,
+                              ],
+                              worktreePath: input.path,
+                              commonDirectory: input.cwd,
+                              baseCommitOid: "9".repeat(40),
+                              targetRef: `refs/heads/${input.newRefName}`,
+                              before: {
+                                parentPath,
+                                parentRealPath,
+                                parentDevice: String(parent.dev),
+                                parentInode: String(parent.ino),
+                                targetRefAbsent: true,
+                                registrationAbsent: true,
+                              },
+                            });
+                            return input.path;
+                          }).pipe(Effect.mapError(failure));
+                          yield* (
+                            options?.revalidateMutation?.pipe(
+                              Effect.mapError(
+                                (cause) =>
+                                  new GitCommandError({
+                                    operation:
+                                      "GitVcsDriver.createWorktree.revalidateOriginalActor",
+                                    command: "git worktree add",
+                                    cwd: input.cwd,
+                                    detail:
+                                      "The original creation actor no longer authorizes another mutation.",
+                                    cause,
+                                  }),
+                              ),
+                            ) ?? Effect.void
+                          );
+                          return yield* Effect.gen(function* () {
+                            if (scenario === "actual_worktree_cancel_partial") {
+                              yield* fs.makeDirectory(targetPath);
+                              yield* fs.writeFileString(
+                                `${targetPath}/partial`,
+                                "unresolved owner bytes",
+                              );
+                            }
+                            yield* Deferred.succeed(worktreeEntered, undefined);
+                            yield* Deferred.await(worktreeBarrier);
+                            return yield* Effect.die(
+                              "Unresolved synthetic checkout cannot report success",
+                            );
+                          }).pipe(Effect.mapError(failure));
+                        }),
                   removeWorktree: () => Effect.die("No Git cleanup in receiving RPC fixture"),
                   renameBranch: () => Effect.die("No Git rename in receiving RPC fixture"),
                 }),
@@ -831,6 +1178,31 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                   folderForThread: () => Effect.succeed(Option.none()),
                 }),
               );
+              const launchSink = Layer.effect(
+                EventSink.EventSinkV2,
+                Effect.gen(function* () {
+                  const actual = yield* EventSink.EventSinkV2;
+                  return EventSink.EventSinkV2.of({
+                    ...actual,
+                    readByCommandId: (input) => {
+                      if (
+                        failureReadbackLost &&
+                        input.commandId ===
+                          `${legacyBootstrapCreateCommandId(threadId, commandId)}:fail`
+                      ) {
+                        failureReadbackCalls++;
+                        return Stream.fail(
+                          new EventSink.EventSinkStreamError({
+                            threadId,
+                            cause: "Synthetic committed preparation failure readback lost",
+                          }),
+                        );
+                      }
+                      return actual.readByCommandId(input);
+                    },
+                  });
+                }),
+              ).pipe(Layer.provide(orchestrator));
               const launch = WsThreadLaunchService.layer.pipe(
                 Layer.provide(
                   Layer.mergeAll(
@@ -841,6 +1213,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                     outbox,
                     orchestrator,
                     store,
+                    launchSink,
                   ),
                 ),
               );
@@ -852,10 +1225,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 store,
                 orchestrator,
                 external,
-                ProjectStore.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
-                ProjectionStore.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
+                ProjectStore.layer.pipe(Layer.provide(receivingDatabase)),
+                ProjectionStore.layer.pipe(Layer.provide(receivingDatabase)),
                 ApplicationEvents.OrchestrationEventStoreLive.pipe(
-                  Layer.provide(SqlitePersistenceMemory),
+                  Layer.provide(receivingDatabase),
                 ),
               );
             })
@@ -1022,7 +1395,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         yield* Effect.gen(function* () {
           const owner = yield* WsEnvironmentAuth.EnvironmentAuth;
           const issued = yield* owner.issueSession({
-            scopes: [scenario === "read_only" ? "orchestration:read" : "orchestration:operate"],
+            scopes:
+              cancelledWorktree || successfulWorktree
+                ? ["orchestration:read", "orchestration:operate"]
+                : [scenario === "read_only" ? "orchestration:read" : "orchestration:operate"],
           });
           if (actualReceiving) {
             const sink = yield* EventSink.EventSinkV2;
@@ -1077,7 +1453,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 worktreePath: null,
                 createdAt: timestamp,
               },
-              ...(actualReceiving
+              ...(actualReceiving && !cancelledWorktree && !successfulWorktree
                 ? {}
                 : {
                     prepareWorktree: {
@@ -1146,6 +1522,598 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               headers: [],
             }),
           );
+          if (successfulWorktree) {
+            yield* Deferred.await(setupWritten).pipe(Effect.timeout("5 seconds"));
+            const sink = yield* EventSink.EventSinkV2;
+            yield* sink.stream({ threadId, eventType: "run.updated" }).pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "run.updated" &&
+                  stored.event.payload.legacyPreparation?.steps.some(
+                    (step) => step.effect.kind === "setup.write" && step.state === "known_started",
+                  ) === true,
+              ),
+              Stream.runHead,
+              Effect.timeout("5 seconds"),
+            );
+            const receipts = yield* Receipts.CommandReceiptStoreV2;
+            const threads = yield* Threads.ThreadManagementService;
+            const store = yield* EventStore.EventStoreV2;
+            const tracker = yield* WsWorktreeSetupTracker.WorktreeSetupTracker;
+            if (asyncWorktree) {
+              yield* sink.stream({ threadId, eventType: "run.updated" }).pipe(
+                Stream.filter((stored) => stored.commandId === commandId),
+                Stream.runHead,
+                Effect.timeout("5 seconds"),
+              );
+            } else {
+              expect(Option.isNone(yield* receipts.getByCommandId(commandId))).toBe(true);
+            }
+            const preparing = yield* threads.getThreadProjection(threadId);
+            const steps = preparing.runs[0]?.legacyPreparation?.steps;
+            expect(steps?.map((step) => [step.effect.kind, step.state])).toEqual([
+              ["worktree.add", "known_succeeded"],
+              ["worktree.base-config", "known_succeeded"],
+              ["setup.open", "known_succeeded"],
+              ["setup.write", "known_started"],
+            ]);
+            expect(preparing.thread.worktreePath).toBe(worktreePath);
+            expect(preparing.thread.branch).toBe("owned/forwarding");
+            const readSetupFrame = () =>
+              WsQueue.take(outgoing).pipe(
+                Effect.flatMap((raw) =>
+                  Schema.decodeUnknownEffect(
+                    Schema.fromJsonString(
+                      Schema.Struct({
+                        _tag: Schema.String,
+                        requestId: Schema.String,
+                        values: Schema.optional(Schema.Array(WorktreeSetupStreamEvent)),
+                        exit: Schema.optional(
+                          Schema.Struct({
+                            _tag: Schema.String,
+                            value: Schema.optional(Schema.Struct({ sequence: Schema.Number })),
+                          }),
+                        ),
+                      }),
+                    ),
+                  )(typeof raw === "string" ? raw : new TextDecoder().decode(raw)),
+                ),
+                Effect.timeout("5 seconds"),
+              );
+            yield* WsQueue.offer(
+              incoming,
+              yield* encodeSocketRpcRequest({
+                _tag: "Request",
+                id: "2",
+                tag: WS_METHODS.subscribeWorktreeSetup,
+                payload: { threadId },
+                headers: [],
+              }),
+            );
+            let responseSequence: unknown;
+            let runningCard: WorktreeSetupStreamEvent | undefined;
+            for (
+              let count = 0;
+              count < 8 &&
+              (runningCard === undefined || (asyncWorktree && responseSequence === undefined));
+              count++
+            ) {
+              const frame = yield* readSetupFrame();
+              if (frame.requestId === "1") {
+                expect(frame.exit?._tag).toBe("Success");
+                responseSequence = frame.exit?.value?.sequence;
+              }
+              if (frame.requestId === "2" && frame.values !== undefined) {
+                runningCard = frame.values.find((card) => card?.phase === "running");
+                yield* WsQueue.offer(
+                  incoming,
+                  yield* encodeSocketRpcRequest({ _tag: "Ack", requestId: "2" }),
+                );
+              }
+            }
+            expect(runningCard?.phase).toBe("running");
+            expect(runningCard?.stages.find((stage) => stage.id === "fetch")?.status).toBe(
+              "skipped",
+            );
+            expect(runningCard?.stages.find((stage) => stage.id === "checkout")?.status).toBe(
+              "done",
+            );
+            expect(runningCard?.stages.find((stage) => stage.id === "setup-script")?.status).toBe(
+              "running",
+            );
+            expect(runningCard?.stages.find((stage) => stage.id === "agent")?.status).toBe(
+              asyncWorktree ? "done" : "pending",
+            );
+            expect(runningCard?.worktreePath).toBe(worktreePath);
+            expect(runningCard?.setupScript?.command).toBe("synthetic-no-execution");
+            if (!asyncWorktree) expect(responseSequence).toBeUndefined();
+            if (startedCancellation) {
+              const run = preparing.runs[0];
+              const preparation = run?.legacyPreparation;
+              if (
+                run === undefined ||
+                preparation === undefined ||
+                preparation.setup.status !== "resolved"
+              )
+                return yield* Effect.die("Authentic captured setup and control required");
+              const actualManager = yield* WsTerminalManager.TerminalManager;
+              const ownedGuard = actualManager.withLegacyOwnedControlGuard;
+              if (ownedGuard === undefined)
+                return yield* Effect.die("Actual owned control guard required");
+              const binding = {
+                version: 1 as const,
+                policy: preparation.policy,
+                runId: run.id,
+                threadId,
+                claimEventId: preparation.claimEventId,
+                claimSequence: preparation.claimSequence,
+                claimReceiptSequence: preparation.claimReceiptSequence,
+                birthEventId: preparation.birthEventId,
+                birthSequence: preparation.birthSequence,
+                birthReceiptSequence: preparation.birthReceiptSequence,
+                preparationGeneration: preparation.generation,
+                terminalId: preparation.setup.definition.terminalId,
+                generation: preparation.setup.definition.generation,
+              };
+              expect(
+                yield* ownedGuard(binding, Effect.succeed(true)).pipe(
+                  Effect.timeout("2 seconds"),
+                  Effect.mapError(
+                    (cause) =>
+                      new LegacyCancellationFixtureError({
+                        message: "Owned control guard before cancellation did not settle",
+                        cause,
+                      }),
+                  ),
+                ),
+              ).toBe(true);
+              if (failurePersistenceLost) {
+                const sql = yield* SqlClient.SqlClient;
+                const failureId = `${legacyBootstrapCreateCommandId(threadId, commandId)}:fail`;
+                yield* sql.unsafe(
+                  `CREATE TEMP TRIGGER reject_started_cancel_fail BEFORE INSERT ON orchestration_events WHEN NEW.command_id = '${failureId.replaceAll("'", "''")}' BEGIN SELECT RAISE(ABORT, 'synthetic failure transaction refusal'); END`,
+                );
+              }
+              yield* WsQueue.offer(
+                incoming,
+                yield* encodeSocketRpcRequest({
+                  _tag: "Request",
+                  id: "3",
+                  tag: WS_METHODS.worktreeSetupCancel,
+                  payload: { threadId },
+                  headers: [],
+                }),
+              );
+              const cancellationFrames: Array<{
+                requestId: string;
+                tag: string;
+                exit?: string;
+                phases?: Array<string | null>;
+              }> = [];
+              const readCancellationFrame = () =>
+                WsQueue.take(outgoing).pipe(
+                  Effect.flatMap((raw) =>
+                    Schema.decodeUnknownEffect(
+                      Schema.fromJsonString(
+                        Schema.Struct({
+                          _tag: Schema.String,
+                          requestId: Schema.String,
+                          values: Schema.optional(Schema.Array(WorktreeSetupStreamEvent)),
+                          exit: Schema.optional(
+                            Schema.Struct({
+                              _tag: Schema.String,
+                              value: Schema.optional(Schema.Unknown),
+                              cause: Schema.optional(Schema.Unknown),
+                            }),
+                          ),
+                        }),
+                      ),
+                    )(typeof raw === "string" ? raw : new TextDecoder().decode(raw)),
+                  ),
+                  Effect.timeout("5 seconds"),
+                  Effect.mapError(
+                    (cause) =>
+                      new LegacyCancellationFixtureError({
+                        message: `Started cancellation RPC/card frame did not arrive: ${encodeLegacyCancellationDiagnostic(cancellationFrames)}`,
+                        cause,
+                      }),
+                  ),
+                );
+              let cancelAccepted = false;
+              let dispatchFailed = false;
+              let cancelledCard: WorktreeSetupStreamEvent | undefined;
+              for (
+                let count = 0;
+                count < 20 && (!cancelAccepted || !dispatchFailed || cancelledCard === undefined);
+                count++
+              ) {
+                const frame = yield* readCancellationFrame();
+                cancellationFrames.push({
+                  requestId: frame.requestId,
+                  tag: frame._tag,
+                  ...(frame.exit === undefined ? {} : { exit: frame.exit._tag }),
+                  ...(frame.values === undefined
+                    ? {}
+                    : { phases: frame.values.map((card) => card?.phase ?? null) }),
+                });
+                if (frame.requestId === "3") {
+                  expect(frame.exit).toEqual({ _tag: "Success", value: { cancelled: true } });
+                  cancelAccepted = true;
+                }
+                if (frame.requestId === "1") {
+                  expect(frame.exit?._tag).toBe("Failure");
+                  if (failurePersistenceLost || failureReadbackLost) {
+                    expect(encodeLegacyCancellationDiagnostic(frame.exit?.cause ?? null)).toContain(
+                      "read-receipt",
+                    );
+                    expect(
+                      encodeLegacyCancellationDiagnostic(frame.exit?.cause ?? null),
+                    ).not.toContain("Worktree setup cancelled.");
+                  } else {
+                    expect(encodeLegacyCancellationDiagnostic(frame.exit?.cause ?? null)).toContain(
+                      "Worktree setup cancelled.",
+                    );
+                    const failures = yield* Schema.decodeUnknownEffect(
+                      Schema.Array(
+                        Schema.Struct({
+                          _tag: Schema.Literal("Fail"),
+                          error: OrchestrationDispatchCommandError,
+                        }),
+                      ),
+                    )(frame.exit?.cause);
+                    expect(failures).toHaveLength(1);
+                    expect(failures[0]?.error.message).toBe("Worktree setup cancelled.");
+                  }
+                  expect(
+                    encodeLegacyCancellationDiagnostic(frame.exit?.cause ?? null),
+                  ).not.toContain('"bootstrapThreadDisposition":"deleted"');
+                  dispatchFailed = true;
+                }
+                if (frame.requestId === "2" && frame.values !== undefined) {
+                  cancelledCard = frame.values.find((card) => card?.phase === "cancelled");
+                  yield* WsQueue.offer(
+                    incoming,
+                    yield* encodeSocketRpcRequest({ _tag: "Ack", requestId: "2" }),
+                  );
+                }
+              }
+              expect(cancelAccepted).toBe(true);
+              expect(dispatchFailed).toBe(true);
+              expect(cancelledCard?.phase).toBe("cancelled");
+              expect(cancelledCard?.stages.find((stage) => stage.id === "agent")?.status).toBe(
+                "pending",
+              );
+              expect(cancelledCard).toEqual(yield* tracker.get(threadId));
+              const received = yield* threads.getThreadProjection(threadId);
+              expect(received.thread.deletedAt).toBeNull();
+              if (failurePersistenceLost) expect(received.runs[0]?.status).toBe("preparing");
+              else {
+                expect(received.runs[0]?.status).toBe("failed");
+              }
+              expect(received.runs[0]?.legacyPreparation?.steps).toEqual(steps);
+              expect(received.runs[0]?.legacyPreparationFailureDecision).toBeUndefined();
+              expect(Option.isNone(yield* receipts.getByCommandId(commandId))).toBe(true);
+              const b = legacyBootstrapCreateCommandId(threadId, commandId);
+              const failureId = CommandId.make(`${b}:fail`);
+              const failure = yield* receipts.getByCommandId(failureId);
+              const rawFailure = Array.from(
+                yield* store.readByCommandId({ commandId: failureId }).pipe(Stream.runCollect),
+              );
+              if (failurePersistenceLost) {
+                expect(Option.isNone(failure)).toBe(true);
+                expect(rawFailure).toHaveLength(0);
+              } else {
+                expect(Option.isSome(failure)).toBe(true);
+                expect(rawFailure.map((entry) => entry.event.type)).toEqual([
+                  "run-attempt.updated",
+                  "node.updated",
+                  "turn-item.updated",
+                  "turn-item.updated",
+                  "run.updated",
+                ]);
+                if (Option.isSome(failure)) {
+                  expect(failure.value.status).toBe("accepted");
+                  expect(failure.value.commandType).toBe("prepared-run.fail");
+                  expect(failure.value.threadId).toBe(threadId);
+                  expect(rawFailure.at(-1)?.sequence).toBe(failure.value.resultSequence);
+                }
+                const failed = rawFailure.find((entry) => entry.event.type === "run.updated");
+                expect(failed?.event.type === "run.updated" && failed.event.payload).toEqual(
+                  received.runs[0],
+                );
+                const error = rawFailure.find(
+                  (entry) =>
+                    entry.event.type === "turn-item.updated" &&
+                    entry.event.payload.type === "error",
+                );
+                expect(
+                  error?.event.type === "turn-item.updated" &&
+                    error.event.payload.type === "error" &&
+                    error.event.payload.failure.message,
+                ).toBe("Workspace preparation failed: Worktree setup cancelled.");
+              }
+              expect(failureReadbackCalls).toBe(failureReadbackLost ? 1 : 0);
+              expect(failureReplyCalls).toBe(failureReplyLost ? 1 : 0);
+              expect(Option.isNone(yield* receipts.getProjectByCommandId(commandId))).toBe(true);
+              expect(
+                Array.from(yield* store.readByCommandId({ commandId }).pipe(Stream.runCollect)),
+              ).toHaveLength(0);
+              expect(
+                Option.isNone(
+                  yield* receipts.getByCommandId(CommandId.make(`${b}:failure-delete`)),
+                ),
+              ).toBe(true);
+              expect(
+                Option.isNone(
+                  yield* receipts.getByCommandId(CommandId.make(`${b}:workspace-failure-delete`)),
+                ),
+              ).toBe(true);
+              expect(
+                Option.isNone(
+                  yield* receipts.getByCommandId(CommandId.make(`${b}:guard-rejection-delete`)),
+                ),
+              ).toBe(true);
+              const outbox = yield* WsEffectOutbox.EffectOutboxV2;
+              expect(
+                (yield* outbox.listByThreadId(threadId)).filter((entry) =>
+                  ["provider-turn.start", "terminal.cleanup", "attachment.cleanup"].includes(
+                    entry.request.type,
+                  ),
+                ),
+              ).toHaveLength(0);
+              expect(
+                yield* ownedGuard(binding, Effect.succeed(true)).pipe(
+                  Effect.timeout("2 seconds"),
+                  Effect.mapError(
+                    (cause) =>
+                      new LegacyCancellationFixtureError({
+                        message: "Owned control guard after cancellation did not settle",
+                        cause,
+                      }),
+                  ),
+                ),
+              ).toBe(true);
+              expect(yield* fs.readFileString(`${worktreePath}/.git`)).toContain("gitdir:");
+              expect(spawnCalls).toBe(1);
+              expect(kills).toHaveLength(0);
+              const observation = yield* makeCommandObservationQuery();
+              const observed = yield* observation.observe({ threadId, commandId, messageId });
+              expect(observed.commandStatus).toBe("not_found");
+              expect(observed.turn).toBeNull();
+              yield* WsFiber.interrupt(serving);
+              return;
+            }
+            yield* completeSetup;
+            let doneCard: WorktreeSetupStreamEvent | undefined;
+            for (
+              let count = 0;
+              count < 20 && (doneCard === undefined || responseSequence === undefined);
+              count++
+            ) {
+              const frame = yield* readSetupFrame();
+              if (frame.requestId === "1") {
+                expect(frame.exit?._tag).toBe("Success");
+                responseSequence = frame.exit?.value?.sequence;
+              }
+              if (frame.requestId === "2" && frame.values !== undefined) {
+                doneCard = frame.values.find((card) => card?.phase === "done");
+                yield* WsQueue.offer(
+                  incoming,
+                  yield* encodeSocketRpcRequest({ _tag: "Ack", requestId: "2" }),
+                );
+              }
+            }
+            expect(doneCard?.phase).toBe("done");
+            expect(doneCard?.stages.find((stage) => stage.id === "setup-script")?.status).toBe(
+              "done",
+            );
+            expect(doneCard?.stages.find((stage) => stage.id === "agent")?.status).toBe("done");
+            expect(doneCard).toEqual(yield* tracker.get(threadId));
+            const c = yield* receipts.getByCommandId(commandId);
+            expect(Option.isSome(c)).toBe(true);
+            if (Option.isNone(c)) return yield* Effect.die("Actual receiving release required");
+            expect(c.value.status).toBe("accepted");
+            expect(responseSequence).toBe(c.value.resultSequence);
+            const received = yield* threads.getThreadProjection(threadId);
+            const completed = received.runs[0]?.legacyPreparation?.steps;
+            expect(completed?.at(-1)?.effect.kind).toBe("setup.completion");
+            expect(completed?.at(-1)?.state).toBe("known_succeeded");
+            for (const step of completed ?? []) {
+              const outcomeId = step.outcomeCommandId;
+              expect(outcomeId).toBeDefined();
+              if (outcomeId === undefined)
+                return yield* Effect.die("Exact settled owner outcome required");
+              const receipt = yield* receipts.getByCommandId(outcomeId);
+              const raw = Array.from(
+                yield* store.readByCommandId({ commandId: outcomeId }).pipe(Stream.runCollect),
+              );
+              expect(Option.isSome(receipt)).toBe(true);
+              expect(raw).toHaveLength(1);
+              if (Option.isSome(receipt)) {
+                expect(receipt.value.status).toBe("accepted");
+                expect(raw[0]?.sequence).toBe(receipt.value.resultSequence);
+                if (asyncWorktree && step.effect.kind === "setup.completion")
+                  expect(receipt.value.resultSequence).toBeGreaterThan(c.value.resultSequence);
+                else expect(receipt.value.resultSequence).toBeLessThan(c.value.resultSequence);
+              }
+            }
+            expect(received.thread.deletedAt).toBeNull();
+            expect(received.messages[0]?.id).toBe(messageId);
+            expect(spawnCalls).toBe(1);
+            expect(kills).toHaveLength(0);
+            yield* WsFiber.interrupt(serving);
+            return;
+          }
+          if (cancelledWorktree) {
+            yield* Deferred.await(worktreeEntered).pipe(Effect.timeout("5 seconds"));
+            const tracker = yield* WsWorktreeSetupTracker.WorktreeSetupTracker;
+            const threads = yield* Threads.ThreadManagementService;
+            const receipts = yield* Receipts.CommandReceiptStoreV2;
+            const store = yield* EventStore.EventStoreV2;
+            const outbox = yield* WsEffectOutbox.EffectOutboxV2;
+            const runningCard = yield* tracker.get(threadId);
+            expect(runningCard?.phase).toBe("running");
+            expect(runningCard?.stages.find((stage) => stage.id === "checkout")?.status).toBe(
+              "running",
+            );
+            expect(runningCard?.stages.find((stage) => stage.id === "agent")?.status).toBe(
+              "pending",
+            );
+            const preparing = yield* threads.getThreadProjection(threadId);
+            const intent = preparing.runs[0]?.legacyPreparation?.steps[0];
+            expect(preparing.runs[0]?.status).toBe("preparing");
+            expect(intent?.effect.kind).toBe("worktree.add");
+            expect(intent?.state).toBe("intent");
+            if (intent === undefined) return yield* Effect.die("Exact owner intent required");
+            const intentReceipt = yield* receipts.getByCommandId(intent.intentCommandId);
+            const intentEvents = Array.from(
+              yield* store
+                .readByCommandId({ commandId: intent.intentCommandId })
+                .pipe(Stream.runCollect),
+            );
+            expect(Option.isSome(intentReceipt)).toBe(true);
+            expect(intentEvents).toHaveLength(1);
+            if (Option.isSome(intentReceipt)) {
+              expect(intentReceipt.value.status).toBe("accepted");
+              expect(intentEvents[0]?.sequence).toBe(intentReceipt.value.resultSequence);
+            }
+            expect(intent.evidence).toBeUndefined();
+            expect(intent.outcomeCommandId).toBeUndefined();
+            expect(Option.isNone(yield* receipts.getByCommandId(commandId))).toBe(true);
+            const readCardFrame = () =>
+              WsQueue.take(outgoing).pipe(
+                Effect.flatMap((raw) =>
+                  Schema.decodeUnknownEffect(
+                    Schema.fromJsonString(
+                      Schema.Struct({
+                        _tag: Schema.String,
+                        requestId: Schema.String,
+                        values: Schema.optional(Schema.Array(WorktreeSetupStreamEvent)),
+                        exit: Schema.optional(
+                          Schema.Struct({
+                            _tag: Schema.String,
+                            value: Schema.optional(Schema.Unknown),
+                          }),
+                        ),
+                      }),
+                    ),
+                  )(typeof raw === "string" ? raw : new TextDecoder().decode(raw)),
+                ),
+                Effect.timeout("5 seconds"),
+              );
+            yield* WsQueue.offer(
+              incoming,
+              yield* encodeSocketRpcRequest({
+                _tag: "Request",
+                id: "2",
+                tag: WS_METHODS.subscribeWorktreeSetup,
+                payload: { threadId },
+                headers: [],
+              }),
+            );
+            const initialCard = yield* readCardFrame();
+            expect(initialCard._tag).toBe("Chunk");
+            expect(initialCard.requestId).toBe("2");
+            expect(initialCard.values?.[0]).toEqual(runningCard);
+            yield* WsQueue.offer(
+              incoming,
+              yield* encodeSocketRpcRequest({ _tag: "Ack", requestId: "2" }),
+            );
+            yield* WsQueue.offer(
+              incoming,
+              yield* encodeSocketRpcRequest({
+                _tag: "Request",
+                id: "3",
+                tag: WS_METHODS.worktreeSetupCancel,
+                payload: { threadId },
+                headers: [],
+              }),
+            );
+            let cancelAccepted = false;
+            let cancelledWireCard: typeof WorktreeSetupStreamEvent.Type | undefined;
+            for (
+              let frameCount = 0;
+              frameCount < 8 && (!cancelAccepted || cancelledWireCard === undefined);
+              frameCount++
+            ) {
+              const frame = yield* readCardFrame();
+              if (frame.requestId === "3") {
+                expect(frame.exit).toEqual({ _tag: "Success", value: { cancelled: true } });
+                cancelAccepted = true;
+              }
+              if (frame.requestId === "2" && frame.values !== undefined) {
+                cancelledWireCard = frame.values.find((card) => card?.phase === "cancelled");
+                yield* WsQueue.offer(
+                  incoming,
+                  yield* encodeSocketRpcRequest({ _tag: "Ack", requestId: "2" }),
+                );
+              }
+            }
+            expect(cancelAccepted).toBe(true);
+            const cancelledCard = yield* tracker.get(threadId);
+            expect(cancelledCard?.phase).toBe("cancelled");
+            expect(cancelledWireCard).toEqual(cancelledCard);
+            expect(cancelledCard?.sequence).toBeGreaterThan(runningCard!.sequence);
+            expect(cancelledCard?.stages.find((stage) => stage.id === "checkout")?.status).toBe(
+              "skipped",
+            );
+            expect(cancelledCard?.stages.find((stage) => stage.id === "agent")?.status).toBe(
+              "pending",
+            );
+            const received = yield* threads.getThreadProjection(threadId);
+            expect(received.thread.deletedAt).toBeNull();
+            expect(received.thread.modelSelection).toEqual(modelSelection);
+            expect(received.messages[0]?.id).toBe(messageId);
+            expect(received.runs[0]?.status).toBe("failed");
+            expect(received.runs[0]?.legacyPreparation?.steps[0]).toEqual(intent);
+            expect(Option.isNone(yield* receipts.getByCommandId(commandId))).toBe(true);
+            const bId = legacyBootstrapCreateCommandId(threadId, commandId);
+            expect(
+              Array.from(yield* store.readByCommandId({ commandId }).pipe(Stream.runCollect)),
+            ).toHaveLength(0);
+            const failedId = CommandId.make(`${bId}:fail`);
+            const failed = yield* receipts.getByCommandId(failedId);
+            expect(Option.isSome(failed)).toBe(true);
+            if (Option.isSome(failed)) expect(failed.value.status).toBe("accepted");
+            const rawFailure = Array.from(
+              yield* store.readByCommandId({ commandId: failedId }).pipe(Stream.runCollect),
+            );
+            expect(
+              rawFailure.some(
+                (entry) =>
+                  entry.event.type === "run.updated" && entry.event.payload.status === "failed",
+              ),
+            ).toBe(true);
+            expect(
+              Option.isNone(
+                yield* receipts.getByCommandId(CommandId.make(`${bId}:failure-delete`)),
+              ),
+            ).toBe(true);
+            const observation = yield* makeCommandObservationQuery();
+            const observed = yield* observation.observe({ threadId, commandId, messageId });
+            expect(observed.commandStatus).toBe("not_found");
+            expect(observed.acceptedSequence).toBeNull();
+            expect(observed.turn).toBeNull();
+            expect(
+              (yield* outbox.listByThreadId(threadId)).filter((entry) =>
+                ["provider-turn.start", "terminal.cleanup", "attachment.cleanup"].includes(
+                  entry.request.type,
+                ),
+              ),
+            ).toHaveLength(0);
+            expect(yield* fs.exists(worktreePath)).toBe(
+              scenario === "actual_worktree_cancel_partial",
+            );
+            if (scenario === "actual_worktree_cancel_partial")
+              expect(yield* fs.readFileString(`${worktreePath}/partial`)).toBe(
+                "unresolved owner bytes",
+              );
+            expect(spawnCalls).toBe(0);
+            expect(written).toBe("");
+            expect(kills).toHaveLength(0);
+            yield* WsFiber.interrupt(serving);
+            return;
+          }
           if (startedSetup) {
             yield* Deferred.await(setupWritten).pipe(Effect.timeout("5 seconds"));
             const sink = yield* EventSink.EventSinkV2;
@@ -1224,6 +2192,48 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             const store = yield* EventStore.EventStoreV2;
             const outbox = yield* WsEffectOutbox.EffectOutboxV2;
             const c = yield* receipts.getByCommandId(commandId);
+            if (
+              scenario === "actual_input_intent_lost" ||
+              scenario === "actual_input_outcome_lost" ||
+              scenario === "actual_entered_error"
+            ) {
+              expect(frame.exit._tag).toBe("Failure");
+              expect(Option.isNone(c)).toBe(true);
+              const received = yield* threads.getThreadProjection(threadId);
+              expect(received.thread.deletedAt).toBeNull();
+              const step = received.runs[0]?.legacyPreparation?.steps.find(
+                (entry) => entry.effect.kind === "setup.open",
+              );
+              expect(step?.state).toBe(
+                scenario === "actual_input_outcome_lost" ? "known_no_effect_failure" : "intent",
+              );
+              expect(step?.evidence).toEqual(
+                scenario === "actual_input_outcome_lost"
+                  ? {
+                      type: "never_invoked",
+                      owner: "setup",
+                      reason: "input_validation_failed",
+                    }
+                  : undefined,
+              );
+              const bId = legacyBootstrapCreateCommandId(threadId, commandId);
+              expect(
+                Option.isNone(
+                  yield* receipts.getByCommandId(CommandId.make(`${bId}:workspace-failure-delete`)),
+                ),
+              ).toBe(true);
+              expect(
+                (yield* outbox.listByThreadId(threadId)).filter((entry) =>
+                  ["provider-turn.start", "terminal.cleanup", "attachment.cleanup"].includes(
+                    entry.request.type,
+                  ),
+                ),
+              ).toHaveLength(0);
+              expect(spawnCalls).toBe(scenario === "actual_entered_error" ? 1 : 0);
+              expect(written).toBe("");
+              expect(kills).toHaveLength(0);
+              return;
+            }
             expect(Option.isSome(c)).toBe(true);
             if (Option.isNone(c)) return yield* Effect.die("Actual C receipt required");
             expect(c.value.commandType).toBe("prepared-run.release");
@@ -1252,9 +2262,12 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             expect(received.messages[0]?.id).toBe(messageId);
             expect(received.messages[0]?.text).toBe("Forward only");
             expect(received.runs[0]?.legacyBootstrap?.releaseCommandId).toBe(commandId);
-            expect(received.runs[0]?.legacyPreparation?.setup.status).toBe(
-              startedSetup ? "resolved" : "no_script",
-            );
+            if (lexicalSetup)
+              expect(received.runs[0]?.legacyPreparation?.setup.status).toBe("resolved");
+            else
+              expect(received.runs[0]?.legacyPreparation?.setup.status).toBe(
+                startedSetup ? "resolved" : "no_script",
+              );
             expect(order).toEqual([]);
             expect(forwarded).toHaveLength(0);
             const dId = CommandId.make(`${bId}:guard-rejection-delete`);
@@ -1267,6 +2280,33 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               });
               expect(c.value.status).toBe("accepted");
               expect(received.thread.deletedAt).toBeNull();
+              if (scenario === "actual_input_refused") {
+                expect(spawnCalls).toBe(0);
+                expect(written).toBe("");
+                lexicalRun = received.runs[0]!;
+                const preparation = lexicalRun.legacyPreparation;
+                expect(preparation?.steps).toHaveLength(1);
+                const step = preparation!.steps[0]!;
+                expect(step.state).toBe("known_no_effect_failure");
+                expect(step.evidence).toEqual({
+                  type: "never_invoked",
+                  owner: "setup",
+                  reason: "input_validation_failed",
+                });
+                for (const id of [step.intentCommandId, step.outcomeCommandId!]) {
+                  const receipt = yield* receipts.getByCommandId(id);
+                  expect(Option.isSome(receipt)).toBe(true);
+                  const recorded = Array.from(
+                    yield* store.readByCommandId({ commandId: id }).pipe(Stream.runCollect),
+                  );
+                  expect(recorded).toHaveLength(1);
+                  if (Option.isSome(receipt)) {
+                    expect(receipt.value.status).toBe("accepted");
+                    expect(recorded[0]?.sequence).toBe(receipt.value.resultSequence);
+                    expect(receipt.value.resultSequence).toBeLessThan(c.value.resultSequence);
+                  }
+                }
+              }
               expect(Option.isNone(d)).toBe(true);
               expect(received.runs[0]?.status).toBe("starting");
               expect(
@@ -1384,9 +2424,86 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           }
         }).pipe(
           Effect.ensuring(completeSetup),
+          Effect.ensuring(releaseWorktree),
           Effect.provide(dependencies),
+          Effect.scoped,
           Effect.timeout("10 seconds"),
         );
+        if (scenario === "actual_input_refused") {
+          const expected = lexicalRun;
+          if (expected === undefined)
+            return yield* Effect.die("Missing authentic refused setup run");
+          const stores = Layer.mergeAll(
+            EventStore.layer,
+            ProjectionStore.layer,
+            Receipts.layer,
+          ).pipe(Layer.provideMerge(receivingDatabase));
+          const reopened = Layer.mergeAll(
+            stores,
+            EventSink.layer.pipe(Layer.provide(stores)),
+            ProjectionMaintenance.layer.pipe(Layer.provide(stores)),
+          );
+          yield* Effect.gen(function* () {
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+            const receipts = yield* Receipts.CommandReceiptStoreV2;
+            const sink = yield* EventSink.EventSinkV2;
+            const persisted = yield* projections.getThreadProjection(threadId);
+            expect(persisted.runs[0]?.legacyPreparation).toEqual(expected.legacyPreparation);
+            expect((yield* maintenance.rebuild).valid).toBe(true);
+            const replayed = yield* projections.getThreadProjection(threadId);
+            expect(replayed.runs[0]?.legacyPreparation).toEqual(expected.legacyPreparation);
+            expect(legacyPreparationReleaseBlocker({ run: replayed.runs[0]! })).toBeUndefined();
+            const { legacyPreparation: _preparation, ...ordinary } = replayed.runs[0]!;
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make("wire-forward:ordinary-stale"),
+                  threadId,
+                  runId: expected.id,
+                  type: "run.updated",
+                  occurredAt: expected.requestedAt,
+                  payload: ordinary,
+                },
+              ],
+            });
+            const stale = yield* projections.getThreadProjection(threadId);
+            expect(stale.runs[0]?.legacyPreparation).toEqual(expected.legacyPreparation);
+            const preparation = expected.legacyPreparation!;
+            for (const changed of [
+              { ...preparation, generation: "different" },
+              { ...preparation, birthEventId: EventId.make("different") },
+              {
+                ...preparation,
+                policy: { ...preparation.policy, releaseCommandId: CommandId.make("different") },
+              },
+              { ...preparation, steps: [] },
+              {
+                ...preparation,
+                steps: preparation.steps.map((step) => ({ ...step, inputHash: "different" })),
+              },
+              {
+                ...preparation,
+                steps: preparation.steps.map((step) => ({
+                  ...step,
+                  state: "unknown" as const,
+                  evidence: {
+                    type: "unknown" as const,
+                    reason: "process_result_unavailable" as const,
+                  },
+                })),
+              },
+            ])
+              expect(
+                legacyNeverInvokedSetupOpen({ ...expected, legacyPreparation: changed }),
+              ).toBeUndefined();
+            const c = yield* receipts.getByCommandId(commandId);
+            expect(Option.isSome(c)).toBe(true);
+            if (Option.isSome(c)) expect(c.value.status).toBe("accepted");
+            const wire = projectThreadProjectionForWire(stale);
+            expect("legacyPreparation" in wire.runs[0]!).toBe(false);
+          }).pipe(Effect.provide(Layer.fresh(reopened)), Effect.scoped);
+        }
       }),
     );
   },
