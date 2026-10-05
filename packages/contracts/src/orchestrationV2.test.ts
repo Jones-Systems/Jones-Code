@@ -22,6 +22,7 @@ import {
   TurnItemId,
 } from "./index.ts";
 import {
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   OrchestrationV2Checkpoint,
   OrchestrationV2CheckpointScope,
   OrchestrationV2Command,
@@ -1275,5 +1276,24 @@ describe("queued tool delivery command compatibility", () => {
     expect(() =>
       decodeOrchestrationV2Command({ ...command, queuedToolBoundaryEligible: 1 }),
     ).toThrow();
+  });
+});
+
+describe("worktree launch base", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrationV2ThreadLaunchWorkspaceStrategy);
+
+  it("round-trips an omitted base for automatic server selection", () => {
+    const input = { type: "worktree", branch: "feature", startFromOrigin: true };
+    expect(Schema.encodeSync(OrchestrationV2ThreadLaunchWorkspaceStrategy)(decode(input))).toEqual(
+      input,
+    );
+  });
+
+  it("preserves explicit bases and rejects blank bases", () => {
+    expect(decode({ type: "worktree", baseRef: "release/stable" })).toEqual({
+      type: "worktree",
+      baseRef: "release/stable",
+    });
+    expect(() => decode({ type: "worktree", baseRef: " " })).toThrow();
   });
 });

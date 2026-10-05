@@ -29,6 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useAssetUrlRefresh, useAssetUrlState } from "~/assets/assetUrls";
 import { OpenInPicker } from "~/components/chat/OpenInPicker";
+import { ZoomableImage } from "~/components/chat/ZoomableImage";
 import { MediaVideoPlayer } from "~/components/media/MediaVideoPlayer";
 import { MediaActions, type MediaActionSource } from "~/components/media/MediaActions";
 import { MorphIcon } from "~/components/MorphIcon";
@@ -160,14 +161,17 @@ function WorkspaceImagePreview(props: {
   }
 
   return assetUrl._tag === "Success" && imageUrl !== null ? (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden p-4">
       <MediaActions source={actionsSource}>
-        <img
-          className="max-h-full max-w-full object-contain"
-          src={imageUrl}
-          alt={props.alt}
-          onError={() => setFailedUrl(imageUrl)}
-        />
+        <div className="flex min-h-0 min-w-0 flex-1">
+          <ZoomableImage
+            key={`${props.alt}:${imageUrl}`}
+            layout="panel"
+            src={imageUrl}
+            name={props.alt}
+            onError={() => setFailedUrl(imageUrl)}
+          />
+        </div>
       </MediaActions>
     </div>
   ) : (
@@ -202,6 +206,8 @@ function WorkspaceBrowserPreview(props: {
     [insideWorkspace, props.threadRef.threadId, props.absolutePath],
   );
   const assetUrl = useAssetUrlState(props.environmentId, resource);
+  const refresh = useAssetUrlRefresh(props.environmentId, resource);
+  const [retryRevision, setRetryRevision] = useState(0);
   const revisionSuffix =
     props.workspaceMutationId === null
       ? ""
@@ -223,6 +229,12 @@ function WorkspaceBrowserPreview(props: {
   }
   return (
     <BrowserDocumentFrame
+      key={retryRevision}
+      onRetry={async () => {
+        const url = await refresh();
+        if (!url) throw new Error("Reconnect to the environment and try again.");
+        setRetryRevision((value) => value + 1);
+      }}
       src={`${assetUrl.url}${revisionSuffix}`}
       title={props.title}
       pdf={isPdfPreviewFile(props.absolutePath)}
