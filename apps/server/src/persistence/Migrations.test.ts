@@ -20,6 +20,8 @@ import Jones138 from "./Migrations/138_JonesThreadCreationLookupIndex.ts";
 import Jones139 from "./Migrations/139_JonesDeletionWorktreeAdmission.ts";
 import Jones140 from "./Migrations/140_JonesOrdinaryCheckoutOwnership.ts";
 import Jones141 from "./Migrations/141_JonesOrdinaryCheckoutExecutionLifetime.ts";
+import Jones142 from "./Migrations/142_JonesV2NativeAcceptance.ts";
+import Jones143 from "./Migrations/143_JonesAttachmentCleanup.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const originals = [
@@ -36,6 +38,8 @@ const currentJones = [
   [139, "DeletionWorktreeAdmission", Jones139] as const,
   [140, "OrdinaryCheckoutOwnership", Jones140] as const,
   [141, "OrdinaryCheckoutExecutionLifetime", Jones141] as const,
+  [142, "V2NativeAcceptance", Jones142] as const,
+  [143, "AttachmentCleanup", Jones143] as const,
 ];
 const names = currentJones.map(([migration_id, name]) => ({ migration_id, name }));
 const foreignV2Names = [
