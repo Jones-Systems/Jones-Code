@@ -9,6 +9,9 @@ import * as NodePath from "node:path";
 import {
   bundleFileSystem,
   currentQualifiedRuntimeBinding,
+  decodeStagedQualifiedRuntime,
+  QualifiedRuntimeBlockedError,
+  QUALIFIED_UPDATES_PROTOCOL,
   qualifiedRuntimeArtifactFromJonesStage,
   qualifiedPayloadDigest,
   readQualifiedRuntimeReceipt,
@@ -91,6 +94,16 @@ it("stages a fixed source and payload without changing live state or active runt
         validated.push(entry);
       },
     });
+    assert.equal(staged.protocol, QUALIFIED_UPDATES_PROTOCOL);
+    assert.deepEqual(decodeStagedQualifiedRuntime(JSON.parse(JSON.stringify(staged))), staged);
+    assert.equal(decodeStagedQualifiedRuntime({ ...staged, protocol: 0 }), undefined);
+    assert.equal(
+      decodeStagedQualifiedRuntime({
+        ...staged,
+        receipt: { ...staged.receipt, sourceSha: "not-a-source-sha" },
+      }),
+      undefined,
+    );
     assert.equal(staged.binding.activeSourceSha, "c".repeat(40));
     assert.equal(staged.receipt.sourceSha, "a".repeat(40));
     assert.lengthOf(validated, 1);
@@ -110,7 +123,10 @@ it("stages a fixed source and payload without changing live state or active runt
     );
     await NodeAssert.rejects(
       verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle),
-      /different home, database, environment or active source/,
+      (cause: unknown) =>
+        cause instanceof QualifiedRuntimeBlockedError &&
+        cause.reason === "binding-mismatch" &&
+        /different home, database, environment or active source/.test(cause.message),
     );
   });
 });
