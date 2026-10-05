@@ -13,7 +13,8 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
-  type ProviderSessionId,
+  ProviderSessionId,
+  ProviderThreadId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -28,6 +29,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as Schema from "effect/Schema";
 import { TestClock } from "effect/testing";
 import { HttpServer } from "effect/unstable/http";
 
@@ -37,6 +39,12 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSession from "../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { runMigrations, jonesMigrationEntries } from "../persistence/Migrations.ts";
+import { runJonesMigrations } from "../persistence/JonesMigrationGuard.ts";
+import { makeCommitTransaction } from "./CommitTransaction.ts";
+import { makeNativeProviderRuntimeEvidence } from "./NativeProviderRuntimeEvidence.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
@@ -3854,4 +3862,65 @@ it.effect("refuses a missing native ID before committing a runtime boundary", ()
       ),
     );
   }),
+);
+
+const encodeForeignNativeFixture = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+it.effect(
+  "foreign matching current runtime binding stays inert before native read or register",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 56 });
+      yield* runJonesMigrations(jonesMigrationEntries.slice(0, 6));
+      yield* jonesMigrationEntries.find((entry) => entry[0] === 142)![2];
+      yield* sql`INSERT INTO jones_sql_migrations (migration_id,name) VALUES (7,'V2NativeAcceptance')`;
+      yield* runMigrations();
+      const binding = {
+        threadId: ThreadId.make("foreign-thread"),
+        providerThreadId: ProviderThreadId.make("foreign-provider"),
+        providerSessionId: ProviderSessionId.make("foreign-session"),
+        instanceId: modelSelection.instanceId,
+        nativeThreadId: "foreign-native",
+        runtimeGeneration: "foreign-generation",
+      };
+      const driver = CODEX_DRIVER;
+      yield* sql`INSERT INTO orchestration_v2_projection_threads
+      (thread_id,project_id,title,default_provider,runtime_mode,interaction_mode,created_at,updated_at,payload_json)
+      VALUES (${binding.threadId},'project','Foreign','codex','full-access','default','now','now',${encodeForeignNativeFixture({ activeProviderThreadId: binding.providerThreadId, modelSelection: { instanceId: binding.instanceId }, deletedAt: null })})`;
+      yield* sql`INSERT INTO orchestration_v2_projection_provider_sessions
+      (provider_session_id,provider,status,updated_at,payload_json,provider_instance_id,driver)
+      VALUES (${binding.providerSessionId},'codex','ready','now','{}',${binding.instanceId},${driver})`;
+      yield* sql`INSERT INTO orchestration_v2_projection_provider_threads
+      (provider_thread_id,thread_id,provider,provider_session_id,status,updated_at,payload_json,provider_instance_id,driver)
+      VALUES (${binding.providerThreadId},${binding.threadId},'codex',${binding.providerSessionId},'active','now',${encodeForeignNativeFixture({ nativeThreadRef: { driver, nativeId: binding.nativeThreadId } })},${binding.instanceId},${driver})`;
+      yield* sql`INSERT INTO orchestration_v2_projection_provider_session_bindings (provider_session_id,thread_id)
+      VALUES (${binding.providerSessionId},${binding.threadId})`;
+      yield* sql`INSERT INTO orchestration_v2_provider_runtime_evidence VALUES (${binding.threadId},${binding.providerThreadId},${binding.providerSessionId},${binding.instanceId},${driver},${binding.nativeThreadId},${binding.runtimeGeneration},1,NULL,'now')`;
+      const rows = yield* sql`SELECT * FROM orchestration_v2_provider_runtime_evidence`;
+      const ledger = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
+      const service = yield* makeNativeProviderRuntimeEvidence(yield* makeCommitTransaction());
+      assert.isNull(yield* service.readProviderRuntimeEvidence(binding.threadId));
+      assert.isNull(yield* service.readCurrentProviderRuntimeOwner(binding.threadId));
+      assert.deepStrictEqual(
+        yield* service.registerProviderRuntime({
+          expectedBinding: { ...binding, driver },
+          expectedEvidenceRevision: 1,
+          actualBinding: binding,
+        }),
+        {
+          committed: false,
+          rejection: "unregistered_generation",
+          storedEvents: [],
+        },
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM orchestration_v2_provider_runtime_evidence`,
+        rows,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`,
+        ledger,
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );

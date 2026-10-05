@@ -5,7 +5,7 @@
  * All migrations are statically imported - no dynamic file system loading.
  *
  * `runMigrations` is called by the SQLite persistence layer at startup, so the
- * schema is always up to date before the application starts.
+ * applicable schema is current before the application starts.
  */
 
 import * as Migrator from "effect/unstable/sql/Migrator";
@@ -18,7 +18,7 @@ import JonesMigration0140 from "./Migrations/140_JonesOrdinaryCheckoutOwnership.
 import JonesMigration0141 from "./Migrations/141_JonesOrdinaryCheckoutExecutionLifetime.ts";
 import JonesMigration0142 from "./Migrations/142_JonesV2NativeAcceptance.ts";
 import JonesMigration0143 from "./Migrations/143_JonesAttachmentCleanup.ts";
-import { runJonesMigrations } from "./JonesMigrationGuard.ts";
+import { runJonesMigrationsDetailed, type JonesMigrationEntry } from "./JonesMigrationGuard.ts";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -159,20 +159,77 @@ export const migrationManifest = migrationEntries.map(([id, name]) => [id, name]
 
 // Preserve the released Jones identities. New Jones migrations start at 100;
 // IDs 7–99 belong to known foreign histories, never to this rebuild's loader.
-const jonesMigrationEntries = [
+export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
   [2, "ProjectionThreadRuntimeIdentity", JonesMigration0002],
   [3, "NativeCreationIntents", JonesMigration0003],
   [4, "NativeCreationCommandIdentities", JonesMigration0004],
   [5, "WorkstreamsNativeAttempts", JonesMigration0005],
   [6, "WorkstreamsProviderEnrollments", JonesMigration0006],
-  [138, "ThreadCreationLookupIndex", JonesMigration0138],
-  [139, "DeletionWorktreeAdmission", JonesMigration0139],
-  [140, "OrdinaryCheckoutOwnership", JonesMigration0140],
-  [141, "OrdinaryCheckoutExecutionLifetime", JonesMigration0141],
-  [142, "V2NativeAcceptance", JonesMigration0142],
-  [143, "AttachmentCleanup", JonesMigration0143],
-] as const;
+  [
+    138,
+    "ThreadCreationLookupIndex",
+    JonesMigration0138,
+    {
+      foreignV2: "independent",
+      requiresOwn: [],
+      sourceBasis: "138 creates covering indexes on upstream orchestration_events only.",
+    },
+  ],
+  [
+    139,
+    "DeletionWorktreeAdmission",
+    JonesMigration0139,
+    {
+      foreignV2: "inert-excluded",
+      requiresOwn: [],
+      sourceBasis: "139 creates the foreign deletion and worktree admission family.",
+    },
+  ],
+  [
+    140,
+    "OrdinaryCheckoutOwnership",
+    JonesMigration0140,
+    {
+      foreignV2: "inert-excluded",
+      requiresOwn: [[139, "DeletionWorktreeAdmission"]],
+      sourceBasis: "140 creates the foreign ordinary checkout ownership family.",
+    },
+  ],
+  [
+    141,
+    "OrdinaryCheckoutExecutionLifetime",
+    JonesMigration0141,
+    {
+      foreignV2: "inert-excluded",
+      requiresOwn: [
+        [139, "DeletionWorktreeAdmission"],
+        [140, "OrdinaryCheckoutOwnership"],
+      ],
+      sourceBasis: "141 creates the foreign execution lifetime family.",
+    },
+  ],
+  [
+    142,
+    "V2NativeAcceptance",
+    JonesMigration0142,
+    {
+      foreignV2: "inert-excluded",
+      requiresOwn: [],
+      sourceBasis: "142 creates the indivisible foreign V2 native acceptance family.",
+    },
+  ],
+  [
+    143,
+    "AttachmentCleanup",
+    JonesMigration0143,
+    {
+      foreignV2: "inert-excluded",
+      requiresOwn: [],
+      sourceBasis: "143 creates the foreign attachment cleanup observation family.",
+    },
+  ],
+] as const satisfies ReadonlyArray<JonesMigrationEntry>;
 
 const makeMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
@@ -245,7 +302,18 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     ).pipe(Effect.annotateLogs({ divergent }));
   }
   if (toMigrationInclusive === undefined) {
-    const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
+    const jonesResult = yield* runJonesMigrationsDetailed(jonesMigrationEntries);
+    const jonesMigrations = jonesResult.applied;
+    if (jonesResult.excluded.length > 0) {
+      yield* Effect.logWarning(
+        "Jones feature migrations are inapplicable to preserved foreign V2 history",
+      ).pipe(
+        Effect.annotateLogs({
+          historyMode: jonesResult.historyMode,
+          excluded: jonesResult.excluded,
+        }),
+      );
+    }
     if (jonesMigrations.length > 0) {
       yield* Effect.log("Jones migrations ran successfully").pipe(
         Effect.annotateLogs({ migrations: jonesMigrations.map(([id, name]) => `${id}_${name}`) }),

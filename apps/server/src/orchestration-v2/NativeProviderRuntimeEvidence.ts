@@ -12,6 +12,8 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { hasOwnJonesMigration } from "../persistence/JonesMigrationGuard.ts";
+import { jonesMigrationEntries } from "../persistence/Migrations.ts";
 import {
   NativeProviderRuntimeBindingV1,
   NativeProviderRuntimeObservationV1,
@@ -78,7 +80,15 @@ type TransactionOwner = Effect.Success<ReturnType<typeof makeCommitTransaction>>
 export const makeNativeProviderRuntimeEvidence = (transaction: TransactionOwner) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const eligibleNativeStorage = hasOwnJonesMigration(jonesMigrationEntries, [
+      142,
+      "V2NativeAcceptance",
+    ]).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.orElseSucceed(() => false),
+    );
     const readProviderRuntimeEvidenceEffect = Effect.fnUntraced(function* (threadId: ThreadId) {
+      if (!(yield* eligibleNativeStorage)) return null;
       const rows = yield* sql<{
         readonly thread_id: string;
         readonly provider_thread_id: string;
@@ -223,6 +233,8 @@ export const makeNativeProviderRuntimeEvidence = (transaction: TransactionOwner)
     ) {
       return yield* transaction.withTransaction(
         Effect.gen(function* () {
+          if (!(yield* eligibleNativeStorage))
+            return rejectProviderBinding("unregistered_generation");
           const rejection = yield* checkProviderBinding(input);
           if (rejection !== null) return rejectProviderBinding(rejection);
           const actual = yield* Schema.decodeUnknownEffect(NativeProviderRuntimeBindingV1)(

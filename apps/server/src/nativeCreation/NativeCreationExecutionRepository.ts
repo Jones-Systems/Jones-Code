@@ -17,6 +17,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { hasOwnJonesMigration } from "../persistence/JonesMigrationGuard.ts";
+import { jonesMigrationEntries } from "../persistence/Migrations.ts";
 import {
   NativeCommandIdentityV2,
   NativeCreationEffectV2,
@@ -835,11 +837,19 @@ export const make = Effect.gen(function* () {
       confirmedAt: row.confirmed_at,
     }) as NativeEffectConfirmationV1;
   });
+  const eligibleNativeStorage = hasOwnJonesMigration(jonesMigrationEntries, [
+    142,
+    "V2NativeAcceptance",
+  ]).pipe(
+    Effect.provideService(SqlClient.SqlClient, sql),
+    Effect.orElseSucceed(() => false),
+  );
   const readNativeEffectConfirmation: NativeCreationExecutionRepository["Service"]["readNativeEffectConfirmation"] =
     (effectId) =>
       sql
         .withTransaction(
           Effect.gen(function* () {
+            if (!(yield* eligibleNativeStorage)) return null;
             const rows =
               yield* sql<ConfirmationRow>`SELECT * FROM orchestration_v2_native_effect_confirmations WHERE effect_id = ${effectId}`;
             if (rows.length === 0) return null;
@@ -1020,12 +1030,20 @@ export const make = Effect.gen(function* () {
   const recordNativeEffectConfirmation: NativeCreationExecutionRepository["Service"]["recordNativeEffectConfirmation"] =
     (input) =>
       Effect.gen(function* () {
+        if (!(yield* eligibleNativeStorage))
+          return yield* unresolved(
+            "Native confirmation storage lacks eligible own142 migration provenance",
+          );
         if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
           return yield* unresolved(
             "Native confirmation owns its durable transaction; publish its proof after commit",
           );
         return yield* sql.withTransaction(
           Effect.gen(function* () {
+            if (!(yield* eligibleNativeStorage))
+              return yield* unresolved(
+                "Native confirmation storage lost eligible own142 migration provenance",
+              );
             const binding = yield* Schema.decodeUnknownEffect(ProviderRuntimeBinding)(
               input.binding,
               { onExcessProperty: "error" },

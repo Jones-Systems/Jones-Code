@@ -3,7 +3,8 @@ import * as Path from "effect/Path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeOS from "node:os";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import { runMigrations } from "../persistence/Migrations.ts";
+import { runMigrations, jonesMigrationEntries } from "../persistence/Migrations.ts";
+import { runJonesMigrations } from "../persistence/JonesMigrationGuard.ts";
 import { assert, it } from "@effect/vitest";
 import {
   NativeCreationHistoricalBinding,
@@ -32,6 +33,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
+import { makeCommitTransaction } from "../orchestration-v2/CommitTransaction.ts";
+import { makeNativeProviderRuntimeEvidence } from "../orchestration-v2/NativeProviderRuntimeEvidence.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
@@ -197,7 +200,10 @@ const acceptedV2Release = Effect.fnUntraced(function* (messageText = "Synthetic 
   };
 });
 
-const nativeConfirmationFixture = Effect.fnUntraced(function* (messageText = "Synthetic prompt") {
+const nativeConfirmationFixture = Effect.fnUntraced(function* (
+  messageText = "Synthetic prompt",
+  foreignRuntimeRow = false,
+) {
   yield* TestClock.setTime(Date.parse(timestamp));
   const value = yield* acceptedV2Release(messageText);
   const sink = yield* EventSink.EventSinkV2;
@@ -359,14 +365,24 @@ const nativeConfirmationFixture = Effect.fnUntraced(function* (messageText = "Sy
   };
   if (sink.registerProviderRuntime === undefined)
     return yield* Effect.die("Actual EventSink native runtime registration capability missing");
-  const registered = yield* sink.registerProviderRuntime({
-    expectedBinding: { ...binding, driver, runtimeGeneration: null },
-    expectedEvidenceRevision: 0,
-    actualBinding: binding,
-    expectedRunId: value.command.runId,
-    expectedRunAttemptId: attemptId,
-  });
-  if (!registered.committed) return yield* Effect.die(registered.rejection);
+  let evidenceRevision: number;
+  if (foreignRuntimeRow) {
+    // A foreign-shaped row is fixture data for denial, never a registration receipt.
+    yield* value.sql`INSERT INTO orchestration_v2_provider_runtime_evidence VALUES (
+      ${threadId}, ${providerThreadId}, ${providerSessionId}, ${instanceId}, ${driver},
+      ${binding.nativeThreadId}, ${binding.runtimeGeneration}, 1, NULL, ${timestamp})`;
+    evidenceRevision = 1;
+  } else {
+    const registered = yield* sink.registerProviderRuntime({
+      expectedBinding: { ...binding, driver, runtimeGeneration: null },
+      expectedEvidenceRevision: 0,
+      actualBinding: binding,
+      expectedRunId: value.command.runId,
+      expectedRunAttemptId: attemptId,
+    });
+    if (!registered.committed) return yield* Effect.die(registered.rejection);
+    evidenceRevision = registered.evidenceRevision;
+  }
   yield* outbox.enqueue([value.pending]);
   const claimed = Option.getOrThrow(
     yield* outbox.claimNext({ workerId: "worker:native-confirmation", leaseDurationMs: 60_000 }),
@@ -379,7 +395,7 @@ const nativeConfirmationFixture = Effect.fnUntraced(function* (messageText = "Sy
     runId: value.command.runId,
     attemptId,
     binding,
-    expectedEvidenceRevision: registered.evidenceRevision,
+    expectedEvidenceRevision: evidenceRevision,
     evidence: {
       operationId: claimed.id,
       operation:
@@ -810,4 +826,120 @@ it.effect(
         }).pipe(Effect.provide(Layer.fresh(reopenedLayer)));
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+const sourceProfileDatabase = (profile: "foreign" | "lookup") =>
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`PRAGMA foreign_keys = ON`;
+      yield* runMigrations({ toMigrationInclusive: 56 });
+      yield* runJonesMigrations(jonesMigrationEntries.slice(0, 6));
+      if (profile === "foreign") {
+        // Exact receiving effects are frozen foreign007/008/009/010/011 fixture DDL.
+        for (const id of [142, 139, 140, 143, 141])
+          yield* jonesMigrationEntries.find((entry) => entry[0] === id)![2];
+        for (const [index, name] of [
+          "V2NativeAcceptance",
+          "DeletionWorktreeAdmission",
+          "OrdinaryCheckoutOwnership",
+          "AttachmentCleanup",
+          "OrdinaryCheckoutExecutionLifetime",
+        ].entries())
+          yield* sql`INSERT INTO jones_sql_migrations (migration_id,name) VALUES (${index + 7},${name})`;
+      } else {
+        yield* jonesMigrationEntries.find((entry) => entry[0] === 138)![2];
+        yield* sql`INSERT INTO jones_sql_migrations (migration_id,name) VALUES (7,'ThreadCreationLookupIndex')`;
+      }
+      yield* runMigrations();
+    }),
+  ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
+
+it.effect("foreign native-shaped storage cannot issue runtime ownership or confirmation", () =>
+  Effect.gen(function* () {
+    const value = yield* nativeConfirmationFixture("Synthetic prompt", true);
+    const before = yield* value.sql`SELECT * FROM orchestration_v2_provider_runtime_evidence`;
+    const ledger = yield* value.sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
+    const effect =
+      yield* value.sql`SELECT * FROM orchestration_v2_effect_outbox WHERE effect_id = ${value.input.effectId}`;
+    const runtimeEvidence = yield* makeNativeProviderRuntimeEvidence(
+      yield* makeCommitTransaction(),
+    );
+    assert.isNull(
+      yield* runtimeEvidence.readCurrentProviderRuntimeOwner(value.input.binding.threadId),
+    );
+    assert.isNull(yield* runtimeEvidence.readProviderRuntimeEvidence(value.input.binding.threadId));
+    const registration = yield* value.sink.registerProviderRuntime!({
+      expectedBinding: { ...value.input.binding, driver: ProviderDriverKind.make("codex") },
+      expectedEvidenceRevision: 1,
+      actualBinding: value.input.binding,
+      expectedRunId: value.input.runId,
+      expectedRunAttemptId: value.input.attemptId,
+    });
+    assert.isFalse(registration.committed);
+    assert.isNull(yield* value.repository.readNativeEffectConfirmation(value.input.effectId));
+    const failure = yield* value.repository
+      .recordNativeEffectConfirmation(value.input)
+      .pipe(Effect.flip);
+    assert.strictEqual(failure.code, "unresolved_claim");
+    assert.include(failure.message, "own142 migration provenance");
+    assert.deepStrictEqual(
+      yield* value.sql`SELECT * FROM orchestration_v2_native_effect_confirmations`,
+      [],
+    );
+    assert.deepStrictEqual(
+      yield* value.sql`SELECT * FROM orchestration_v2_provider_runtime_evidence`,
+      before,
+    );
+    assert.deepStrictEqual(
+      yield* value.sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`,
+      ledger,
+    );
+    assert.deepStrictEqual(
+      yield* value.sql`SELECT * FROM orchestration_v2_effect_outbox WHERE effect_id = ${value.input.effectId}`,
+      effect,
+    );
+    const copied = yield* Effect.gen(function* () {
+      const own = yield* nativeConfirmationFixture();
+      yield* own.repository.recordNativeEffectConfirmation(own.input);
+      return (yield* own.sql`SELECT * FROM orchestration_v2_native_effect_confirmations WHERE effect_id = ${own.input.effectId}`)[0]!;
+    }).pipe(Effect.provide(Layer.fresh(confirmationLayer)));
+    // Copy authentic storage fixture bytes as inert foreign data. They issue no owner or ACK capability.
+    yield* value.sql`INSERT INTO orchestration_v2_native_effect_confirmations ${value.sql.insert(copied)}`;
+    const confirmationRows =
+      yield* value.sql`SELECT * FROM orchestration_v2_native_effect_confirmations`;
+    assert.isNull(yield* value.repository.readNativeEffectConfirmation(value.input.effectId));
+    assert.deepStrictEqual(
+      yield* value.sql`SELECT * FROM orchestration_v2_native_effect_confirmations`,
+      confirmationRows,
+    );
+    assert.deepStrictEqual(
+      yield* value.sql`SELECT * FROM orchestration_v2_effect_outbox WHERE effect_id = ${value.input.effectId}`,
+      effect,
+    );
+  }).pipe(Effect.provide(layerForDatabase(sourceProfileDatabase("foreign")))),
+);
+
+it.effect("lookup-only history retains actual own142 runtime registration and confirmation", () =>
+  Effect.gen(function* () {
+    const value = yield* nativeConfirmationFixture();
+    const runtimeEvidence = yield* makeNativeProviderRuntimeEvidence(
+      yield* makeCommitTransaction(),
+    );
+    assert.isNotNull(
+      yield* runtimeEvidence.readCurrentProviderRuntimeOwner(value.input.binding.threadId),
+    );
+    const proof = yield* value.repository.recordNativeEffectConfirmation(value.input);
+    assert.deepStrictEqual(
+      yield* value.repository.readNativeEffectConfirmation(value.input.effectId),
+      proof,
+    );
+    assert.deepStrictEqual(
+      yield* value.sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id IN (7,142) ORDER BY migration_id`,
+      [
+        { migration_id: 7, name: "ThreadCreationLookupIndex" },
+        { migration_id: 142, name: "V2NativeAcceptance" },
+      ],
+    );
+  }).pipe(Effect.provide(layerForDatabase(sourceProfileDatabase("lookup")))),
 );
