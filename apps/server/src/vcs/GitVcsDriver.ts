@@ -148,7 +148,27 @@ export interface CreateWorktreeProgress {
   }) => Effect.Effect<void, never>;
 }
 
+export interface LegacyWorktreePreparationStep {
+  readonly kind: "worktree.add" | "worktree.submodules" | "worktree.base-config";
+  readonly cwd: string;
+  readonly args: ReadonlyArray<string>;
+  readonly worktreePath: string;
+  readonly commonDirectory: string;
+  readonly baseCommitOid: string;
+  readonly targetRef: string;
+}
+
+export interface LegacyWorktreePreparationHooks {
+  readonly beforeEffect: (step: LegacyWorktreePreparationStep) => Effect.Effect<void, Error>;
+  readonly afterEffect: (
+    step: LegacyWorktreePreparationStep,
+    outcome: "settled_success" | "failed_or_unknown",
+  ) => Effect.Effect<void, Error>;
+}
+
 export interface CreateWorktreeOptions {
+  /** Private legacy journaling; independent of the producer's physical mutation guard. */
+  readonly legacyPreparation?: LegacyWorktreePreparationHooks;
   readonly progress?: CreateWorktreeProgress;
   /**
    * The project-over-environment `worktreeSubmodules` setting. Null (or

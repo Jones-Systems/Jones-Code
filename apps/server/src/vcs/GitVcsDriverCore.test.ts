@@ -2521,6 +2521,196 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("worktree operations", () => {
+    it.effect("legacy worktree intent refusal prevents add and config writes", () =>
+      Effect.gen(function* () {
+        const commands: string[][] = [];
+        const spawner = ChildProcessSpawner.make((command) => {
+          if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
+          commands.push([...command.args]);
+          const stdout = command.args.includes("--git-common-dir")
+            ? "/fixture/repo/.git\n"
+            : command.args.includes("rev-parse")
+              ? `${"a".repeat(40)}\n`
+              : "";
+          return Effect.succeed(makeSuccessfulHandle(stdout));
+        });
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provide(ServerConfigLayer),
+        );
+        const result = yield* driver
+          .createWorktree(
+            {
+              cwd: "/fixture/repo",
+              refName: "main",
+              newRefName: "legacy/branch",
+              baseRefName: "main",
+              path: "/fixture/owned",
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: () =>
+                  Effect.fail(
+                    new GitCommandError({
+                      operation: "fixture.journal",
+                      command: "git",
+                      cwd: "/fixture/repo",
+                      detail: "Intent readback unavailable",
+                    }),
+                  ),
+                afterEffect: () => Effect.die("No outcome without intent"),
+              },
+            },
+          )
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.isFalse(commands.some((args) => args.includes("add")));
+        assert.isFalse(
+          commands.some((args) => args.includes("branch.legacy/branch.gh-merge-base")),
+        );
+      }),
+    );
+
+    it.effect(
+      "legacy worktree outcome refusal retains the add and prevents later config writes",
+      () =>
+        Effect.gen(function* () {
+          const commands: string[][] = [];
+          const intents: GitVcsDriver.LegacyWorktreePreparationStep[] = [];
+          const spawner = ChildProcessSpawner.make((command) => {
+            if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
+            commands.push([...command.args]);
+            const stdout = command.args.includes("--git-common-dir")
+              ? "/fixture/repo/.git\n"
+              : command.args.includes("rev-parse")
+                ? `${"b".repeat(40)}\n`
+                : "";
+            return Effect.succeed(makeSuccessfulHandle(stdout));
+          });
+          const driver = yield* makeGitVcsDriverCore().pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provide(ServerConfigLayer),
+          );
+          const result = yield* driver
+            .createWorktree(
+              {
+                cwd: "/fixture/repo",
+                refName: "main",
+                newRefName: "legacy/branch",
+                baseRefName: "main",
+                path: "/fixture/owned",
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: (step) =>
+                    Effect.sync(() => {
+                      intents.push(step);
+                    }),
+                  afterEffect: () =>
+                    Effect.fail(
+                      new GitCommandError({
+                        operation: "fixture.journal",
+                        command: "git",
+                        cwd: "/fixture/repo",
+                        detail: "Outcome readback unavailable",
+                      }),
+                    ),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.equal(commands.filter((args) => args.includes("add")).length, 1);
+          assert.isFalse(
+            commands.some((args) => args.includes("branch.legacy/branch.gh-merge-base")),
+          );
+          assert.deepInclude(intents[0], {
+            kind: "worktree.add",
+            worktreePath: "/fixture/owned",
+            commonDirectory: "/fixture/repo/.git",
+            baseCommitOid: "b".repeat(40),
+            targetRef: "refs/heads/legacy/branch",
+          });
+        }),
+    );
+
+    it.effect(
+      "legacy submodule journal refusal escapes best-effort handling before config writes",
+      () =>
+        Effect.gen(function* () {
+          const commands: string[][] = [];
+          const fs = yield* FileSystem.FileSystem;
+          const spawner = ChildProcessSpawner.make((command) => {
+            if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
+            commands.push([...command.args]);
+            const stdout = command.args.includes("--git-common-dir")
+              ? "/fixture/repo/.git\n"
+              : command.args.includes("rev-parse")
+                ? `${"c".repeat(40)}\n`
+                : "";
+            return Effect.succeed(makeSuccessfulHandle(stdout));
+          });
+          const driver = yield* makeGitVcsDriverCore().pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              exists: (path) =>
+                path.endsWith(".gitmodules") ? Effect.succeed(true) : fs.exists(path),
+            }),
+            Effect.provide(ServerConfigLayer),
+          );
+          const seen: string[] = [];
+          const result = yield* driver
+            .createWorktree(
+              {
+                cwd: "/fixture/repo",
+                refName: "main",
+                newRefName: "legacy/submodules",
+                baseRefName: "main",
+                path: "/fixture/owned",
+              },
+              {
+                submodules: "recursive",
+                legacyPreparation: {
+                  beforeEffect: (step) =>
+                    Effect.sync(() => {
+                      seen.push(`intent:${step.kind}`);
+                    }).pipe(
+                      Effect.andThen(
+                        step.kind === "worktree.submodules"
+                          ? Effect.fail(
+                              new GitCommandError({
+                                operation: "fixture.journal",
+                                command: "git",
+                                cwd: "/fixture/repo",
+                                detail: "Intent readback refused",
+                              }),
+                            )
+                          : Effect.void,
+                      ),
+                    ),
+                  afterEffect: (step, outcome) =>
+                    Effect.sync(() => {
+                      seen.push(`${outcome}:${step.kind}`);
+                    }),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(seen, [
+            "intent:worktree.add",
+            "settled_success:worktree.add",
+            "intent:worktree.submodules",
+          ]);
+          assert.equal(commands.filter((args) => args.includes("add")).length, 1);
+          assert.isFalse(commands.some((args) => args.includes("update")));
+          assert.isFalse(
+            commands.some((args) => args.includes("branch.legacy/submodules.gh-merge-base")),
+          );
+        }),
+    );
+
     it.effect("uses parallel checkout without skipping filters or hooks", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

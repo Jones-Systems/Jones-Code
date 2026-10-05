@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -15,6 +16,8 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 
 import type {
   CodexSettings,
+  QualifiedQuotaMap,
+  ProviderInstanceId,
   CustomModelSetting,
   ServerProvider,
   ServerProviderState,
@@ -23,7 +26,12 @@ import type {
   ServerProviderModel,
   ServerProviderSkill,
 } from "@t3tools/contracts";
-import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/contracts";
+import {
+  PREFERRED_DEFAULT_CODEX_MODELS,
+  ServerSettingsError,
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+} from "@t3tools/contracts";
 
 import {
   codexModelFamily,
@@ -41,6 +49,7 @@ import {
 } from "../providerSnapshot.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { makeUnavailableUsageLimits } from "../providerUsageLimits.ts";
+import { beginQuotaProbe, makeQualifiedQuota } from "../qualifiedQuota.ts";
 import {
   codexRateLimitsFailureMessage,
   codexRateLimitsToLimits,
@@ -54,10 +63,10 @@ const RATE_LIMITS_PROBE_TIMEOUT_MS = 3_000;
 type CodexRateLimitsProbe =
   | {
       readonly snapshot: CodexRateLimitSnapshot;
-      readonly rateLimitsByLimitId?:
-        | Readonly<Record<string, CodexRateLimitSnapshot>>
-        | null
-        | undefined;
+      readonly rateLimitsByLimitId?: QualifiedQuotaMap | null | undefined;
+      readonly quotaReceivedAt?: string | undefined;
+      readonly ordinaryUsageAllowed?: boolean | null | undefined;
+      readonly accountId?: string | null | undefined;
       readonly resetCredits: CodexResetCreditsSummary | null | undefined;
     }
   | { readonly failure: string };
@@ -153,9 +162,15 @@ function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"])
 export function mapCodexModelCapabilities(
   model: CodexSchema.V2ModelListResponse__Model,
 ): ModelCapabilities {
+  const catalogDefault =
+    codexModelFamily(model.model) === "gpt-6-astra" ? "medium" : model.defaultReasoningEffort;
+  const requestedDefault =
+    catalogDefault === "low" &&
+    model.supportedReasoningEfforts.some(({ reasoningEffort }) => reasoningEffort === "medium")
+      ? "medium"
+      : catalogDefault;
   const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>
-    reasoningEffort ===
-    (codexModelFamily(model.model) === "gpt-6-astra" ? "medium" : model.defaultReasoningEffort)
+    reasoningEffort === requestedDefault
       ? {
           id: reasoningEffort,
           label: reasoningEffortLabel(reasoningEffort),
@@ -449,11 +464,18 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       input.skipNativeUsage
         ? Effect.succeed(undefined)
         : client.request("account/rateLimits/read", null).pipe(
-            Effect.map((response): CodexRateLimitsProbe => ({
-              snapshot: response.rateLimits,
-              rateLimitsByLimitId: response.rateLimitsByLimitId,
-              resetCredits: response.rateLimitResetCredits,
-            })),
+            Effect.flatMap((response) =>
+              DateTime.now.pipe(
+                Effect.map((receivedAt): CodexRateLimitsProbe => ({
+                  snapshot: response.rateLimits,
+                  rateLimitsByLimitId: response.rateLimitsByLimitId,
+                  resetCredits: response.rateLimitResetCredits,
+                  quotaReceivedAt: DateTime.formatIso(receivedAt),
+                  ordinaryUsageAllowed: response.ordinaryUsageAllowed,
+                  accountId: response.accountId,
+                })),
+              ),
+            ),
             Effect.timeoutOption(Duration.millis(RATE_LIMITS_PROBE_TIMEOUT_MS)),
             Effect.map(
               Option.getOrElse((): CodexRateLimitsProbe => ({
@@ -582,6 +604,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   > = probeCodexAppServerProvider,
   environment?: NodeJS.ProcessEnv,
   managedAuth?: ServerProvider["auth"],
+  instanceId: ProviderInstanceId = defaultInstanceIdForDriver(ProviderDriverKind.make("codex")),
 ): Effect.fn.Return<
   ServerProviderDraft,
   ServerSettingsError,
@@ -590,6 +613,20 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   const resolvedEnvironment = environment ?? process.env;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const emptyModels = emptyCodexModelsFromSettings(codexSettings);
+  const probeId = NodeCrypto.randomUUID();
+  const probeBinding = beginQuotaProbe(instanceId, probeId);
+  const failedQuota = (
+    failureCode: "disabled" | "probe_failed" | "probe_timeout",
+    completedAt: string,
+  ) =>
+    makeQualifiedQuota({
+      instanceId,
+      probeId,
+      probeBinding,
+      attemptedAt: checkedAt,
+      probeCompletedAt: completedAt,
+      failureCode: managedAuth ? "unsupported_account" : failureCode,
+    });
 
   if (!codexSettings.enabled) {
     return buildServerProvider({
@@ -604,6 +641,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         status: "warning",
         auth: { status: "unknown" },
         message: "Codex is disabled in T3 Code settings.",
+        qualifiedQuota: failedQuota("disabled", checkedAt),
       },
     });
   }
@@ -633,6 +671,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       skills: [],
       probe: {
         installed,
+        qualifiedQuota: failedQuota("probe_failed", DateTime.formatIso(yield* DateTime.now)),
         version: null,
         status: "error",
         auth: { status: "unknown" },
@@ -659,6 +698,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         status: "error",
         auth: { status: "unknown" },
         message: "Timed out while checking Codex app-server provider status.",
+        qualifiedQuota: failedQuota("probe_timeout", DateTime.formatIso(yield* DateTime.now)),
       },
     });
   }
@@ -704,6 +744,24 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       auth: accountStatus.auth,
       ...(accountStatus.message ? { message: accountStatus.message } : {}),
       ...(managedAuth ? {} : { usageLimits }),
+      qualifiedQuota: makeQualifiedQuota({
+        instanceId,
+        probeId,
+        probeBinding,
+        attemptedAt: checkedAt,
+        probeCompletedAt: DateTime.formatIso(yield* DateTime.now),
+        models: snapshot.models,
+        ...(managedAuth || snapshot.account.account?.type !== "chatgpt"
+          ? { failureCode: "unsupported_account" as const }
+          : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
+            ? { failureCode: "quota_unavailable" as const }
+            : {
+                rateLimitsByLimitId: snapshot.rateLimits.rateLimitsByLimitId,
+                quotaReceivedAt: snapshot.rateLimits.quotaReceivedAt,
+                ordinaryUsageAllowed: snapshot.rateLimits.ordinaryUsageAllowed,
+                accountId: snapshot.rateLimits.accountId,
+              }),
+      }),
     },
   });
 });

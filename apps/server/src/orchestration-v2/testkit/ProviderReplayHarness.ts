@@ -327,6 +327,7 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     Layer.provide(IdAllocator.layer),
   );
   const persistenceLayer = Layer.mergeAll(
+    databaseLayer,
     storesLayer,
     eventSinkProvided,
     commandReceiptStoreProvided,

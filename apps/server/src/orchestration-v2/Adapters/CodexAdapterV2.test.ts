@@ -1870,6 +1870,62 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       };
     });
 
+  it.effect("reads a bound native goal without starting turns or recovering sessions", () =>
+    Effect.gen(function* () {
+      const requests: Array<{ method: string; params: unknown }> = [];
+      const nativeThreadId = "native-read-only-goal";
+      const transcript = makeCodexReplayTranscript({
+        scenario: "goal-read-only",
+        entries: codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "unused",
+          prompt: "unused",
+        }).slice(0, 5),
+      });
+      const sessionScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+        Scope.close(scope, Exit.void),
+      );
+      const harness = yield* makeCodexReplayHarness(
+        transcript,
+        () => Effect.void,
+        () => Effect.void,
+        undefined,
+        {},
+        (method, params) =>
+          Effect.sync(() => {
+            requests.push({ method, params });
+            return { goal: null };
+          }),
+      ).pipe(Effect.provideService(Scope.Scope, sessionScope));
+      const readGoal = harness.runtime.readGoalState;
+      assert.isDefined(readGoal);
+      assert.deepEqual(yield* readGoal!(harness.providerThread), {
+        nativeThreadId,
+        state: "inactive",
+        reasonCode: "goal_null",
+      });
+      assert.deepEqual(requests, [
+        { method: "thread/goal/get", params: { threadId: nativeThreadId } },
+      ]);
+      assert.lengthOf(
+        harness.events.filter(
+          (e) => e.type === "turn.terminal" || e.type === "provider_turn.updated",
+        ),
+        0,
+      );
+      assert.lengthOf(harness.continuationRequests, 0);
+      const mismatch = yield* readGoal!({
+        ...harness.providerThread,
+        providerSessionId: ProviderSessionId.make("session:other"),
+      });
+      assert.equal(mismatch.reasonCode, "instance_mismatch");
+      assert.lengthOf(requests, 1);
+      yield* Scope.close(sessionScope, Exit.void);
+      assert.equal((yield* readGoal!(harness.providerThread)).reasonCode, "session_stopped");
+      assert.lengthOf(requests, 1);
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
   const goalControlRequest = Schema.Struct({
     method: Schema.String,
     params: Schema.Struct({

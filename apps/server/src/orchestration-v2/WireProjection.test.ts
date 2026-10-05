@@ -1,5 +1,7 @@
 import {
   MessageId,
+  RunId,
+  CommandId,
   ContextHandoffId,
   ProviderThreadId,
   NodeId,
@@ -49,6 +51,112 @@ const base = {
 };
 
 describe("orchestration V2 wire projection", () => {
+  it("omits server-only bootstrap run correlation from wire events while retaining the stored source", () => {
+    const now = base.updatedAt;
+    const policy = {
+      version: 1 as const,
+      createCommandId: CommandId.make("bootstrap:B"),
+      birthCommandId: CommandId.make("bootstrap:B:initial-message"),
+      releaseCommandId: CommandId.make("bootstrap:C"),
+      projectId: ProjectId.make("bootstrap:project"),
+      threadId: base.threadId,
+      messageId: MessageId.make("bootstrap:M"),
+      payloadHash: "fixture-hash",
+      ownsNewThread: true,
+    };
+    const runId = RunId.make("bootstrap:run");
+    const correlation = {
+      policy,
+      threadId: base.threadId,
+      runId,
+      claimEventId: EventId.make("bootstrap:claim"),
+      claimSequence: 1,
+      claimReceiptSequence: 1,
+      birthEventId: EventId.make("bootstrap:birth"),
+      birthSequence: 2,
+      birthReceiptSequence: 2,
+      preparationGeneration: "private-generation",
+      workspacePath: "/private-wire-workspace",
+      projectWorkspaceRoot: "/private-wire-workspace",
+    };
+    const deletion = {
+      ...correlation,
+      version: 1 as const,
+      type: "no_control" as const,
+      commandId: CommandId.make("bootstrap:D"),
+      evidenceEventId: EventId.make("bootstrap:D:event"),
+      control: { ...correlation, version: 1 as const, type: "no_control" as const },
+    };
+    const decision = {
+      version: 1 as const,
+      status: "rejected" as const,
+      policy,
+      claimEventId: correlation.claimEventId,
+      claimSequence: 1,
+      claimReceiptSequence: 1,
+      birthEventId: correlation.birthEventId,
+      birthSequence: 2,
+      birthReceiptSequence: 2,
+      evidenceEventId: EventId.make("bootstrap:C:event"),
+      guard: {
+        observedSnapshotSequence: 0,
+        expectedModelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" },
+        expectedSessionStatus: null,
+        expectedActiveTurnId: null,
+        expectedLatestTurnId: null,
+        requireIdle: true as const,
+      },
+      reason: "Private original rejection",
+      observed: { snapshotSequence: 2, lastEventSequence: 2, target: null },
+      deletion,
+    };
+    const run = {
+      id: runId,
+      threadId: base.threadId,
+      ordinal: 1,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" },
+      providerThreadId: null,
+      userMessageId: policy.messageId,
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "preparing" as const,
+      requestedAt: now,
+      startedAt: null,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+      legacyBootstrap: policy,
+      legacyPreparationFailureKnown: true,
+      workspaceRunSetupScript: false,
+      legacyReleaseDecision: decision,
+    };
+    const event = {
+      id: EventId.make("bootstrap:run-created"),
+      threadId: base.threadId,
+      occurredAt: now,
+      type: "run.created" as const,
+      payload: run,
+    };
+    const projected = projectDomainEventForWire(event);
+    expect(projected.payload).not.toHaveProperty("legacyBootstrap");
+    expect(projected.payload).not.toHaveProperty("legacyPreparationFailureKnown");
+    expect(projected.payload).not.toHaveProperty("workspaceRunSetupScript");
+    expect(projected.payload).not.toHaveProperty("legacyReleaseDecision");
+    expect(JSON.stringify(projected)).not.toContain(deletion.workspacePath);
+    expect(event.payload.legacyReleaseDecision).toEqual(decision);
+    expect(event.payload.legacyBootstrap).toEqual(policy);
+    expect(event.payload.legacyPreparationFailureKnown).toBe(true);
+    expect(event.payload.workspaceRunSetupScript).toBe(false);
+    const {
+      legacyBootstrap: _policy,
+      legacyPreparationFailureKnown: _known,
+      workspaceRunSetupScript: _setup,
+      legacyReleaseDecision: _decision,
+      ...publicRun
+    } = run;
+    expect(projected).toEqual({ ...event, payload: publicRun });
+  });
   it("keeps copied handoff transcripts out of activity items and live events", () => {
     const item = {
       ...base,

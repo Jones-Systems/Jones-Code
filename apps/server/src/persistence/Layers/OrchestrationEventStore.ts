@@ -1,17 +1,19 @@
+import type { ApplicationRecordedLifecycleEvent as ApplicationStoredEvent } from "../../orchestration-v2/RecordedTypes.ts";
+import {
+  RecordedEventJson as OrchestrationV2RecordedEventJson,
+  RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
+  type RecordedEvent as OrchestrationV2RecordedEvent,
+} from "../../orchestration-v2/RecordedTypes.ts";
 import {
   ApplicationEventMetadata,
   ApplicationProjectEvent,
-  type ApplicationStoredEvent,
   CommandId,
   EventId,
   IsoDateTime,
   NonNegativeInt,
-  OrchestrationV2DomainEventJson,
-  OrchestrationV2StoredEvent,
   ProjectId,
   ProjectIconOverride,
   ThreadId,
-  type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
@@ -22,6 +24,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import { isPublicApplicationEvent } from "../../orchestration-v2/WireProjection.ts";
 import { replayAndBufferProjectedLiveEvents } from "../../orchestration-v2/LiveStreamBudget.ts";
 
 import {
@@ -86,13 +89,13 @@ interface ApplicationEventRow {
   readonly correlation_id: string | null;
 }
 
-const decodeV2EventJson = Schema.decodeUnknownEffect(OrchestrationV2DomainEventJson);
-const encodeV2EventJson = Schema.encodeEffect(OrchestrationV2DomainEventJson);
-const decodeV2StoredEvent = Schema.decodeUnknownEffect(OrchestrationV2StoredEvent);
+const decodeV2EventJson = Schema.decodeUnknownEffect(OrchestrationV2RecordedEventJson);
+const encodeV2EventJson = Schema.encodeEffect(OrchestrationV2RecordedEventJson);
+const decodeV2StoredEvent = Schema.decodeUnknownEffect(OrchestrationV2RecordedStoredEvent);
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
-function metadataForV2Event(event: OrchestrationV2DomainEvent): Record<string, unknown> {
+function metadataForV2Event(event: OrchestrationV2RecordedEvent): Record<string, unknown> {
   return {
     ...(event.runId === undefined ? {} : { runId: event.runId }),
     ...(event.nodeId === undefined ? {} : { nodeId: event.nodeId }),
@@ -152,7 +155,7 @@ const rowToProjectEvent = Effect.fn("OrchestrationEventStore.rowToProjectEvent")
 
 function rowToApplicationStoredEvent(
   row: ApplicationEventRow,
-): Effect.Effect<ApplicationStoredEvent, Schema.SchemaError> {
+): Effect.Effect<OrchestrationEventStore.ApplicationRecordedEvent, Schema.SchemaError> {
   return row.aggregate_kind === "project" ? rowToProjectEvent(row) : rowToV2StoredEvent(row);
 }
 
@@ -280,8 +283,9 @@ const makeEventStore = Effect.gen(function* () {
     readonly throughSequence?: number;
     readonly threadId?: ThreadId;
     readonly commandId?: CommandId;
-    readonly eventType?: OrchestrationV2DomainEvent["type"];
+    readonly eventType?: OrchestrationV2RecordedEvent["type"];
     readonly onlyAgentEvents?: boolean;
+    readonly publicOnly?: boolean;
     readonly limit: number;
   }) =>
     sql<ApplicationEventRow>`
@@ -314,6 +318,7 @@ const makeEventStore = Effect.gen(function* () {
                     OR (application_event_version = 2 AND aggregate_kind = 'thread')`
           }
         )
+        AND ${input.onlyAgentEvents === true && input.publicOnly !== true ? sql`1 = 1` : sql`event_type NOT IN ('legacy-bootstrap.preflight-intent', 'legacy-bootstrap.preflight-outcome')`}
         AND ${sql.and([
           ...(input.threadId === undefined ? [] : [sql`stream_id = ${input.threadId}`]),
           ...(input.commandId === undefined ? [] : [sql`command_id = ${input.commandId}`]),
@@ -400,6 +405,7 @@ const makeEventStore = Effect.gen(function* () {
         const pageLimit = Math.min(remaining, READ_PAGE_SIZE);
         return readApplicationRows({
           afterSequence: cursor,
+          ...(input?.publicOnly === undefined ? {} : { publicOnly: input.publicOnly }),
           ...(input?.throughSequence === undefined
             ? {}
             : { throughSequence: input.throughSequence }),
@@ -453,6 +459,7 @@ const makeEventStore = Effect.gen(function* () {
         WHERE aggregate_kind = 'thread'
           AND stream_id = ${input.threadId}
           AND application_event_version = 2
+          AND event_type NOT IN ('legacy-bootstrap.preflight-intent', 'legacy-bootstrap.preflight-outcome')
           AND sequence > ${input.afterSequence}
           AND sequence <= ${input.throughSequence}
         ORDER BY sequence ASC
@@ -477,6 +484,7 @@ const makeEventStore = Effect.gen(function* () {
       FROM orchestration_events INDEXED BY idx_orchestration_events_application_high_water
       WHERE sequence > ${input.afterSequence}
         AND sequence <= ${input.throughSequence}
+        AND event_type NOT IN ('legacy-bootstrap.preflight-intent', 'legacy-bootstrap.preflight-outcome')
         AND (
           aggregate_kind = 'project'
           OR (application_event_version = 2 AND aggregate_kind = 'thread')
@@ -540,6 +548,7 @@ const makeEventStore = Effect.gen(function* () {
           ),
         ),
       ),
+      Stream.filter(isPublicApplicationEvent),
     );
 
   const catchUpApplicationEvents = (input: {
@@ -600,7 +609,10 @@ const makeEventStore = Effect.gen(function* () {
     latestAgentSequence,
     latestApplicationSequence,
     readApplicationEvents: catchUpApplicationEvents,
-    publishCommitted: (events) => PubSub.publishAll(committedEvents, events).pipe(Effect.asVoid),
+    publishCommitted: (events) =>
+      PubSub.publishAll(committedEvents, events.filter(isPublicApplicationEvent)).pipe(
+        Effect.asVoid,
+      ),
     streamApplicationEvents,
     streamProjectedApplicationEvents,
   } satisfies OrchestrationEventStore.OrchestrationEventStoreShape;

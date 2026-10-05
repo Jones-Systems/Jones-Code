@@ -3199,11 +3199,79 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const onCheckoutProgress = progress?.onCheckoutProgress;
 
     const checkoutWorkers = (yield* readConfigValue(input.cwd, "checkout.workers")) ?? "0";
-    yield* executeGit(
-      "GitVcsDriver.createWorktree",
+    const journal = options?.legacyPreparation;
+    const identity =
+      journal === undefined
+        ? undefined
+        : {
+            commonDirectory: (yield* runGitStdoutWithOptions(
+              "GitVcsDriver.createWorktree.commonDirectory",
+              input.cwd,
+              ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+              { env: { GIT_OPTIONAL_LOCKS: "0" } },
+            )).trim(),
+            baseCommitOid: (yield* runGitStdoutWithOptions(
+              "GitVcsDriver.createWorktree.baseCommit",
+              input.cwd,
+              ["rev-parse", "--verify", `${input.refName}^{commit}`],
+              { env: { GIT_OPTIONAL_LOCKS: "0" } },
+            )).trim(),
+            targetRef: input.newRefName ? `refs/heads/${input.newRefName}` : input.refName,
+            worktreePath,
+          };
+    if (
+      identity !== undefined &&
+      (!path.isAbsolute(identity.commonDirectory) ||
+        !/^[a-f0-9]{40,64}$/u.test(identity.baseCommitOid))
+    )
+      return yield* new GitCommandError({
+        ...gitCommandContext({
+          operation: "GitVcsDriver.createWorktree.preparationIdentity",
+          cwd: input.cwd,
+          args: [],
+        }),
+        detail: "Cannot bind the legacy worktree preparation identity.",
+      });
+    const journalStep = <A>(
+      kind: GitVcsDriver.LegacyWorktreePreparationStep["kind"],
+      cwd: string,
+      stepArgs: ReadonlyArray<string>,
+      effect: Effect.Effect<A, GitCommandError>,
+    ): Effect.Effect<A, GitCommandError> =>
+      Effect.gen(function* () {
+        if (journal === undefined || identity === undefined) return yield* effect;
+        const step: GitVcsDriver.LegacyWorktreePreparationStep = {
+          ...identity,
+          kind,
+          cwd,
+          args: [...stepArgs],
+        };
+        const mapJournalError = () =>
+          new GitCommandError({
+            ...gitCommandContext({
+              operation: "GitVcsDriver.createWorktree.preparationJournal",
+              cwd,
+              args: stepArgs,
+            }),
+            detail: "Legacy preparation journal readback failed.",
+          });
+        // Fallible journal callbacks stay outside native best-effort catches.
+        yield* journal.beforeEffect(step).pipe(Effect.mapError(mapJournalError));
+        const result = yield* effect.pipe(Effect.result);
+        yield* journal
+          .afterEffect(step, Result.isSuccess(result) ? "settled_success" : "failed_or_unknown")
+          .pipe(Effect.mapError(mapJournalError));
+        return yield* Result.isSuccess(result)
+          ? Effect.succeed(result.success)
+          : Effect.fail(result.failure);
+      });
+    const addArgs = ["-c", `checkout.workers=${checkoutWorkers}`, ...args];
+    if (identity !== undefined) addArgs[addArgs.length - 1] = identity.baseCommitOid;
+    yield* journalStep(
+      "worktree.add",
       input.cwd,
-      ["-c", `checkout.workers=${checkoutWorkers}`, ...args],
-      {
+      addArgs,
+      executeGit("GitVcsDriver.createWorktree", input.cwd, addArgs, {
         fallbackErrorDetail: "git worktree add failed",
         timeoutMs: WORKTREE_ADD_TIMEOUT_MS,
         ...(onCheckoutProgress
@@ -3219,7 +3287,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               },
             }
           : {}),
-      },
+      }),
     );
 
     if (progress?.onWorktreeClaimed) {
@@ -3265,37 +3333,53 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         yield* progress.onSubmodulesStarted();
       }
       const onSubmoduleLine = progress?.onSubmoduleLine;
-      yield* runGit(
-        "GitVcsDriver.createWorktree.updateSubmodules",
-        worktreePath,
+      const submoduleArgs =
         submoduleMode.value === "recursive"
           ? ["submodule", "update", "--init", "--recursive"]
-          : ["submodule", "update", "--init"],
-        onSubmoduleLine
-          ? {
-              env: { LC_ALL: "C" },
-              progress: { onStdoutLine: onSubmoduleLine, onStderrLine: onSubmoduleLine },
-            }
-          : {},
-      ).pipe(
-        Effect.matchEffect({
-          onFailure: (cause) =>
-            Effect.logWarning("worktree submodule checkout failed; submodule paths are empty", {
-              worktreePath,
-              cause,
-            }).pipe(
-              Effect.andThen(
-                progress?.onSubmodulesFinished
-                  ? progress.onSubmodulesFinished({ ok: false, detail: cause.message })
-                  : Effect.void,
-              ),
-            ),
-          onSuccess: () =>
-            progress?.onSubmodulesFinished
-              ? progress.onSubmodulesFinished({ ok: true, detail: null })
-              : Effect.void,
-        }),
+          : ["submodule", "update", "--init"];
+      const updateSubmodules = journalStep(
+        "worktree.submodules",
+        worktreePath,
+        submoduleArgs,
+        runGit(
+          "GitVcsDriver.createWorktree.updateSubmodules",
+          worktreePath,
+          submoduleArgs,
+          onSubmoduleLine
+            ? {
+                env: { LC_ALL: "C" },
+                progress: { onStdoutLine: onSubmoduleLine, onStderrLine: onSubmoduleLine },
+              }
+            : {},
+        ),
       );
+      yield* journal === undefined
+        ? updateSubmodules.pipe(
+            Effect.matchEffect({
+              onFailure: (cause) =>
+                Effect.logWarning("worktree submodule checkout failed; submodule paths are empty", {
+                  worktreePath,
+                  cause,
+                }).pipe(
+                  Effect.andThen(
+                    progress?.onSubmodulesFinished
+                      ? progress.onSubmodulesFinished({ ok: false, detail: cause.message })
+                      : Effect.void,
+                  ),
+                ),
+              onSuccess: () =>
+                progress?.onSubmodulesFinished
+                  ? progress.onSubmodulesFinished({ ok: true, detail: null })
+                  : Effect.void,
+            }),
+          )
+        : updateSubmodules.pipe(
+            Effect.andThen(
+              progress?.onSubmodulesFinished
+                ? progress.onSubmodulesFinished({ ok: true, detail: null })
+                : Effect.void,
+            ),
+          );
     }
 
     if (input.newRefName && input.baseRefName) {
@@ -3305,11 +3389,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         remoteNames.toSorted((left, right) => right.length - left.length),
       );
       const baseBranch = parsedBaseRef?.branchName ?? input.baseRefName;
-      yield* runGit("GitVcsDriver.createWorktree.configureBaseRef", input.cwd, [
-        "config",
-        `branch.${input.newRefName}.gh-merge-base`,
-        baseBranch,
-      ]);
+      const configArgs = ["config", `branch.${input.newRefName}.gh-merge-base`, baseBranch];
+      yield* journalStep(
+        "worktree.base-config",
+        input.cwd,
+        configArgs,
+        runGit("GitVcsDriver.createWorktree.configureBaseRef", input.cwd, configArgs),
+      );
     }
 
     return {
