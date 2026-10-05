@@ -221,6 +221,7 @@ const multiTerminalHistoryLogPath = (
   );
 
 interface CreateManagerOptions {
+  ownerObservation?: Parameters<typeof TerminalManager.makeWithOptions>[0]["ownerObservation"];
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
   subprocessInspector?: (terminalPid: number) => Effect.Effect<{
@@ -269,6 +270,9 @@ const createManager = (
 
       const manager = yield* TerminalManager.makeWithOptions({
         logsDir,
+        ...(options.ownerObservation === undefined
+          ? {}
+          : { ownerObservation: options.ownerObservation }),
         historyLineLimit,
         ptyAdapter,
         ...(options.historyByteLimit !== undefined
@@ -463,6 +467,210 @@ it.layer(
     }),
   );
 
+  it.effect(
+    "retains birth-bound physical targets after close until the original process actually exits",
+    () =>
+      Effect.gen(function* () {
+        const birth: TerminalManager.TerminalOwnerBirth = {
+          kind: "application_v2_thread_birth",
+          threadId: "thread-1",
+          eventId: "birth:original",
+          sequence: 1,
+        };
+        const { manager, ptyAdapter } = yield* createManager(5, {
+          ownerObservation: { observeCurrentBirth: () => Effect.succeed(birth) },
+        });
+        yield* manager.open(openInput());
+        const initial = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        assert.equal(initial.status, "captured");
+        assert.equal(initial.targets.length, 1);
+        yield* manager.close({
+          threadId: birth.threadId,
+          terminalId: DEFAULT_TERMINAL_ID,
+          deleteHistory: true,
+        });
+        const pending = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        assert.deepEqual(pending.targets, initial.targets);
+        ptyAdapter.processes[0]!.emitExit({ exitCode: 0, signal: null });
+        const ended = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        assert.equal(ended.status, "captured");
+        assert.deepEqual(ended.targets, []);
+      }),
+  );
+  it.effect("owned retirement waits for the retained physical process after UI close", () =>
+    Effect.gen(function* () {
+      const birth: TerminalManager.TerminalOwnerBirth = {
+        kind: "application_v2_thread_birth",
+        threadId: "thread-1",
+        eventId: "birth:retirement",
+        sequence: 1,
+      };
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Effect.succeed(birth) },
+        processKillGraceMs: 1000,
+      });
+      yield* Effect.gen(function* () {
+        yield* manager.open(openInput());
+        const captured = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        const process = ptyAdapter.processes[0]!;
+        yield* manager.close({ threadId: birth.threadId, terminalId: DEFAULT_TERMINAL_ID });
+        const before = process.killSignals.length;
+        const closing = yield* manager.closeOwnedTargets(captured).pipe(Effect.forkScoped);
+        for (let attempt = 0; attempt < 200 && process.killSignals.length <= before; attempt++)
+          yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+        assert.isAbove(process.killSignals.length, before);
+        assert.equal(closing.pollUnsafe(), undefined);
+        assert.equal(process.killSignals[before], "SIGTERM");
+        process.emitExit({ exitCode: 0, signal: null });
+        const result = yield* Fiber.join(closing);
+        assert.equal(result.status, "closed");
+        assert.isTrue(result.processExitObserved);
+        assert.equal(result.descendantsQuiescence, "unavailable");
+        assert.equal(result.futureWakeClosure, "unavailable");
+        assert.deepEqual(
+          (yield* manager.captureOwnedTargets({ threadId: birth.threadId, ownerBirth: birth }))
+            .targets,
+          [],
+        );
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            for (const process of ptyAdapter.processes)
+              process.emitExit({ exitCode: 0, signal: null });
+          }),
+        ),
+      );
+    }),
+  );
+
+  it.effect("owned retirement retains uncertainty when no original physical exit arrives", () =>
+    Effect.gen(function* () {
+      const birth: TerminalManager.TerminalOwnerBirth = {
+        kind: "application_v2_thread_birth",
+        threadId: "thread-1",
+        eventId: "birth:unknown-retirement",
+        sequence: 1,
+      };
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Effect.succeed(birth) },
+        processKillGraceMs: 10,
+      });
+      yield* Effect.gen(function* () {
+        yield* manager.open(openInput());
+        const captured = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        const closing = yield* manager.closeOwnedTargets(captured).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("10 millis");
+        yield* TestClock.adjust("10 millis");
+        const result = yield* Fiber.join(closing);
+        assert.equal(result.status, "unknown");
+        assert.isFalse(result.processExitObserved);
+        assert.deepEqual(ptyAdapter.processes[0]!.killSignals, ["SIGTERM", "SIGKILL"]);
+        assert.deepEqual(
+          (yield* manager.captureOwnedTargets({ threadId: birth.threadId, ownerBirth: birth }))
+            .targets,
+          captured.targets,
+        );
+        ptyAdapter.processes[0]!.emitExit({ exitCode: 0, signal: null });
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            for (const process of ptyAdapter.processes)
+              process.emitExit({ exitCode: 0, signal: null });
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("owned retirement refuses a replacement terminal instead of signalling it", () =>
+    Effect.gen(function* () {
+      const birth: TerminalManager.TerminalOwnerBirth = {
+        kind: "application_v2_thread_birth",
+        threadId: "thread-1",
+        eventId: "birth:before-replacement",
+        sequence: 1,
+      };
+      const currentBirth = yield* Ref.make(birth);
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Ref.get(currentBirth) },
+      });
+      yield* Effect.gen(function* () {
+        yield* manager.open(openInput());
+        const captured = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        yield* manager.close({ threadId: birth.threadId, terminalId: DEFAULT_TERMINAL_ID });
+        yield* Ref.set(currentBirth, { ...birth, eventId: "birth:replacement", sequence: 2 });
+        yield* manager.open(openInput());
+        const result = yield* manager.closeOwnedTargets(captured);
+        assert.equal(result.status, "mismatch");
+        assert.deepEqual(ptyAdapter.processes[1]!.killSignals, []);
+        ptyAdapter.processes[0]!.emitExit({ exitCode: 0, signal: null });
+        ptyAdapter.processes[1]!.emitExit({ exitCode: 0, signal: null });
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            for (const process of ptyAdapter.processes)
+              process.emitExit({ exitCode: 0, signal: null });
+          }),
+        ),
+      );
+    }),
+  );
+
+  it.effect("keeps unknown and foreign births distinct from an original terminal capture", () =>
+    Effect.gen(function* () {
+      const birth: TerminalManager.TerminalOwnerBirth = {
+        kind: "application_v2_thread_birth",
+        threadId: "thread-1",
+        eventId: "birth:original",
+        sequence: 1,
+      };
+      const unknown = yield* createManager();
+      yield* unknown.manager.open(openInput());
+      assert.equal(
+        (yield* unknown.manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        })).status,
+        "unknown",
+      );
+      const foreign = { ...birth, eventId: "birth:successor", sequence: 2 };
+      const known = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Effect.succeed(foreign) },
+      });
+      yield* known.manager.open(openInput());
+      assert.deepEqual(
+        (yield* known.manager.captureOwnedTargets({ threadId: birth.threadId, ownerBirth: birth }))
+          .targets,
+        [],
+      );
+      const actual = yield* known.manager.captureOwnedTargets({
+        threadId: foreign.threadId,
+        ownerBirth: foreign,
+      });
+      assert.equal(actual.status, "captured");
+      assert.equal(actual.targets.length, 1);
+      assert.deepEqual(actual.targets[0]!.ownerBirth, foreign);
+    }),
+  );
   it.effect("keeps attach streams live when a terminal id is closed and reopened", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();

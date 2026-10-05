@@ -3188,6 +3188,19 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input, options) {
+    const revalidate =
+      options?.revalidateMutation?.pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              operation: "GitVcsDriver.createWorktree.revalidateOriginalActor",
+              command: "git worktree add",
+              cwd: input.cwd,
+              detail: "The original creation actor no longer authorizes another mutation.",
+              cause,
+            }),
+        ),
+      ) ?? Effect.void;
     const targetBranch = input.newRefName ?? input.refName;
     const sanitizedBranch = targetBranch.replace(/\//g, "-");
     const repoName = path.basename(input.cwd);
@@ -3199,6 +3212,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const onCheckoutProgress = progress?.onCheckoutProgress;
 
     const checkoutWorkers = (yield* readConfigValue(input.cwd, "checkout.workers")) ?? "0";
+    yield* revalidate;
     yield* executeGit(
       "GitVcsDriver.createWorktree",
       input.cwd,
@@ -3222,6 +3236,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       },
     );
 
+    yield* revalidate;
     if (progress?.onWorktreeClaimed) {
       yield* progress.onWorktreeClaimed(worktreePath);
     }
@@ -3265,6 +3280,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         yield* progress.onSubmodulesStarted();
       }
       const onSubmoduleLine = progress?.onSubmoduleLine;
+      yield* revalidate;
       yield* runGit(
         "GitVcsDriver.createWorktree.updateSubmodules",
         worktreePath,
@@ -3305,6 +3321,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         remoteNames.toSorted((left, right) => right.length - left.length),
       );
       const baseBranch = parsedBaseRef?.branchName ?? input.baseRefName;
+      yield* revalidate;
       yield* runGit("GitVcsDriver.createWorktree.configureBaseRef", input.cwd, [
         "config",
         `branch.${input.newRefName}.gh-merge-base`,
@@ -3312,6 +3329,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ]);
     }
 
+    yield* revalidate;
     return {
       worktree: {
         path: worktreePath,

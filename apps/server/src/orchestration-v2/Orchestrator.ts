@@ -1,3 +1,6 @@
+import * as ServerConfig from "../config.ts";
+import { nativeWorktreePath } from "../vcs/worktreePath.ts";
+import type * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
 import {
   cancelsSelfSettlement,
   selfSettlementRun,
@@ -66,6 +69,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import { DelegatedCheckoutPlanner } from "./DelegatedCheckoutPlanner.ts";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -280,6 +284,18 @@ export interface OrchestratorV2Shape {
   readonly delegatedTaskResultPending: (
     childThreadId: ThreadId,
   ) => Effect.Effect<boolean, OrchestratorProjectionError>;
+  readonly dispatchOrdinaryPreparedBranchRename?: (
+    command: Extract<OrchestrationV2Command, { readonly type: "thread.metadata.update" }>,
+    observation: Extract<
+      import("./ThreadLaunchService.ts").OrdinaryPreparedPhysicalResultV1,
+      { readonly kind: "prepared_branch_renamed" }
+    >,
+  ) => Effect.Effect<void, OrchestratorV2Error>;
+  readonly dispatchOrdinaryPreparedRunRelease?: (
+    command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.release" }>,
+    originalUse: OrdinaryCheckout.OrdinaryCheckoutUseV1,
+    execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
+  ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
@@ -788,6 +804,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   const fileSystem = yield* FileSystem.FileSystem;
+  const serverConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
   const path = yield* Path.Path;
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const continuationRequests = yield* ProviderContinuationRequests;
@@ -6424,6 +6441,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.title === undefined ? {} : { title: command.title }),
         ordinal: parentProjection.subagents.length + 1,
       });
+      const planner = yield* Effect.serviceOption(DelegatedCheckoutPlanner);
+      const project = Option.getOrNull(
+        yield* projects.get(parentProjection.thread.projectId).pipe(mapDispatchError(command)),
+      );
+      if (Option.isNone(planner) || project === null)
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Committed-base delegated checkout capture is unavailable.",
+        });
+      const checkoutPlan = yield* planner.value
+        .capture({
+          commandId: command.commandId,
+          parent: parentProjection.thread,
+          projectWorkspaceRoot: project.workspaceRoot,
+          childThreadId,
+        })
+        .pipe(mapDispatchError(command));
       const childThread: OrchestrationV2AppThread = {
         ...makeSubagentChildThread({
           parentThread: parentProjection.thread,
@@ -6437,6 +6472,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         }),
+        branch: checkoutPlan.branch,
+        worktreePath: checkoutPlan.worktreePath,
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
       };
@@ -6556,7 +6593,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: command.task,
         attachments: [],
         modelSelection: command.modelSelection,
-        dispatchMode: { type: "start_immediately" },
+        dispatchMode: { type: "defer_start", workspaceStrategy: checkoutPlan.workspaceStrategy },
       } satisfies Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
       yield* dispatchMessage(childMessageCommand, events, effects);
 
@@ -6569,6 +6606,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Delegated child thread ${childThreadId} did not create a run.`,
         });
       }
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        {
+          id: `effect:${command.commandId}:delegated-workspace.prepare:${childRun.id}`,
+          commandId: command.commandId,
+          threadId: childThreadId,
+          request: { type: "delegated-workspace.prepare", runId: childRun.id, plan: checkoutPlan },
+        } satisfies PendingOrchestrationEffectV2,
+      ]);
       const spawnTransferId = yield* mapDispatchError(command)(
         idAllocator.allocate.contextTransfer({
           sourceThreadId: command.parentThreadId,
@@ -9710,59 +9756,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
     command: OrchestrationV2ServerCommand,
+    preparation?: {
+      readonly originalUse: OrdinaryCheckout.OrdinaryCheckoutUseV1;
+      readonly execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
+    },
   ): Effect.fn.Return<OrchestratorV2DispatchResult, OrchestratorV2Error> {
     yield* Effect.annotateCurrentSpan({
       "orchestration_v2.command_id": command.commandId,
       "orchestration_v2.command_type": command.type,
       "orchestration_v2.thread_id": commandThreadId(command),
     });
-
-    const checkoutCommand =
-      command.type === "message.dispatch" ||
-      command.type === "checkpoint.rollback" ||
-      command.type === "runtime-request.respond" ||
-      command.type === "thread.user-input.dismiss" ||
-      command.type === "prepared-run.release"
-        ? command
-        : undefined;
-    const ordinaryCheckout =
-      checkoutCommand === undefined
-        ? undefined
-        : yield* Effect.gen(function* () {
-            const thread = yield* projectionStore
-              .getThread(checkoutCommand.threadId)
-              .pipe(mapDispatchError(command));
-            const project = Option.getOrNull(
-              yield* projects.get(thread.projectId).pipe(mapDispatchError(command)),
-            );
-            if (project === null || eventSink.captureOrdinaryCheckout === undefined)
-              return yield* new OrchestratorDispatchError({
-                commandId: command.commandId,
-                commandType: command.type,
-                cause: "Checkout admission is unavailable.",
-              });
-            const canonicalProjectRoot = yield* fileSystem
-              .realPath(path.resolve(project.workspaceRoot))
-              .pipe(mapDispatchError(command));
-            const canonicalCheckoutPath = yield* fileSystem
-              .realPath(path.resolve(thread.worktreePath ?? project.workspaceRoot))
-              .pipe(mapDispatchError(command));
-            return yield* eventSink
-              .captureOrdinaryCheckout({
-                command: checkoutCommand,
-                threadId: thread.id,
-                projectId: thread.projectId,
-                branch: thread.branch,
-                canonicalProjectRoot,
-                canonicalCheckoutPath,
-                source: {
-                  projectWorkspaceRoot: project.workspaceRoot,
-                  worktreePath: thread.worktreePath,
-                },
-                leaseId: yield* randomUuidV4,
-              })
-              .pipe(mapDispatchError(command));
-          });
 
     const existingReceipt = yield* commandReceipts.getByCommandId(command.commandId).pipe(
       Effect.mapError(
@@ -9775,16 +9778,113 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+    const checkoutCommand =
+      command.type === "message.dispatch" ||
+      command.type === "checkpoint.rollback" ||
+      command.type === "runtime-request.respond" ||
+      command.type === "thread.user-input.dismiss" ||
+      command.type === "prepared-run.release"
+        ? command
+        : undefined;
+    const ordinaryCheckout =
+      checkoutCommand === undefined || Option.isSome(existingReceipt)
+        ? undefined
+        : preparation === undefined
+          ? yield* Effect.gen(function* () {
+              const thread = yield* projectionStore
+                .getThread(checkoutCommand.threadId)
+                .pipe(mapDispatchError(command));
+              const project = Option.getOrNull(
+                yield* projects.get(thread.projectId).pipe(mapDispatchError(command)),
+              );
+              if (project === null || eventSink.captureOrdinaryCheckout === undefined)
+                return yield* new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause: "Checkout admission is unavailable.",
+                });
+              const canonicalProjectRoot = yield* fileSystem
+                .realPath(path.resolve(project.workspaceRoot))
+                .pipe(mapDispatchError(command));
+              const checkoutPath = path.resolve(thread.worktreePath ?? project.workspaceRoot);
+              let canonicalCheckoutPath: string;
+              if (
+                checkoutCommand.type === "message.dispatch" &&
+                checkoutCommand.dispatchMode.type === "defer_start" &&
+                checkoutCommand.dispatchMode.workspaceStrategy?.type === "worktree" &&
+                !(yield* fileSystem.exists(checkoutPath).pipe(mapDispatchError(command)))
+              ) {
+                if (
+                  Option.isNone(serverConfig) ||
+                  thread.branch === null ||
+                  thread.worktreePath === null
+                )
+                  return yield* new OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: "The future worktree has no exact configured birth target.",
+                  });
+                const worktreesDir = yield* fileSystem
+                  .realPath(serverConfig.value.worktreesDir)
+                  .pipe(mapDispatchError(command));
+                const expected = nativeWorktreePath({
+                  worktreesDir,
+                  cwd: project.workspaceRoot,
+                  branch: thread.branch,
+                });
+                if (checkoutPath !== expected)
+                  return yield* new OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause:
+                      "The future checkout differs from the configured preplanned birth target.",
+                  });
+                canonicalCheckoutPath = expected;
+              } else
+                canonicalCheckoutPath = yield* fileSystem
+                  .realPath(checkoutPath)
+                  .pipe(mapDispatchError(command));
+              return yield* eventSink
+                .captureOrdinaryCheckout({
+                  command: checkoutCommand,
+                  threadId: thread.id,
+                  projectId: thread.projectId,
+                  branch: thread.branch,
+                  canonicalProjectRoot,
+                  canonicalCheckoutPath,
+                  source: {
+                    projectWorkspaceRoot: project.workspaceRoot,
+                    worktreePath: thread.worktreePath,
+                  },
+                  leaseId: yield* randomUuidV4,
+                })
+                .pipe(mapDispatchError(command));
+            })
+          : yield* Effect.gen(function* () {
+              if (
+                command.type !== "prepared-run.release" ||
+                eventSink.ordinaryCheckoutLifetime === undefined
+              )
+                return yield* new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause: "Original preparation admission is unavailable.",
+                });
+              return yield* eventSink.ordinaryCheckoutLifetime
+                .captureJoinedCommand({ command, ...preparation })
+                .pipe(mapDispatchError(command));
+            });
+
     if (Option.isSome(existingReceipt)) {
-      if (ordinaryCheckout !== undefined) {
-        if (eventSink.validateOrdinaryCheckoutReplay === undefined)
+      if (checkoutCommand !== undefined) {
+        if (eventSink.validateOrdinaryCheckoutCommandReplay === undefined)
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
             cause: "Checkout replay validation is unavailable.",
           });
         yield* eventSink
-          .validateOrdinaryCheckoutReplay(ordinaryCheckout)
+          .validateOrdinaryCheckoutCommandReplay(checkoutCommand, checkoutCommand.threadId)
           .pipe(mapDispatchError(command));
       }
       const receipt = existingReceipt.value;
@@ -9970,6 +10070,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         acceptedAt,
         ...(ordinaryCheckout === undefined ? {} : { ordinaryCheckout }),
+        ...(command.type === "delegated_task.request" ? { ordinaryDelegatedCommand: command } : {}),
         events: plan.events,
         effects: plan.effects,
         ...(plan.cancelUnsettledEffects === undefined
@@ -10010,8 +10111,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     } satisfies OrchestratorV2DispatchResult;
   });
 
-  const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) =>
-    threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
+  const dispatchWithReceipt = (
+    command: OrchestrationV2ServerCommand,
+    preparation?: {
+      readonly originalUse: OrdinaryCheckout.OrdinaryCheckoutUseV1;
+      readonly execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
+    },
+  ) =>
+    threadDispatch.withLock(
+      commandThreadId(command),
+      dispatchWithReceiptEffect(command, preparation),
+    );
 
   const requestSelfSettlement: OrchestratorV2Shape["requestSelfSettlement"] = (input) =>
     threadDispatch.withLock(
@@ -10393,6 +10503,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     recoverDelegatedTask,
     delegatedTaskResultPending,
     dispatch: dispatchWithReceipt,
+    dispatchOrdinaryPreparedBranchRename: (command, observation) =>
+      threadDispatch.withLock(
+        command.threadId,
+        Effect.gen(function* () {
+          if (eventSink.ordinaryCheckoutLifetime === undefined)
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "The owning original branch transition capability is unavailable.",
+            });
+          yield* eventSink.ordinaryCheckoutLifetime
+            .transitionPreparedBranch({
+              commandId: command.commandId,
+              observation,
+              commitMetadata: dispatchWithReceiptEffect(command),
+            })
+            .pipe(mapDispatchError(command));
+        }),
+      ),
+    dispatchOrdinaryPreparedRunRelease: (command, originalUse, execution) =>
+      dispatchWithReceipt(command, { originalUse, execution }),
     getTimelinePage: (threadId, options) =>
       projectionStore
         .getTimelinePage(threadId, options)

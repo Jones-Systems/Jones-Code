@@ -16,6 +16,7 @@ import JonesMigration0138 from "./Migrations/138_JonesThreadCreationLookupIndex.
 import JonesMigration0139 from "./Migrations/139_JonesDeletionWorktreeAdmission.ts";
 import JonesMigration0140 from "./Migrations/140_JonesOrdinaryCheckoutOwnership.ts";
 import JonesMigration0141 from "./Migrations/141_JonesOrdinaryCheckoutExecutionLifetime.ts";
+import JonesMigration0142 from "./Migrations/142_JonesV2NativeAcceptance.ts";
 import { runJonesMigrations } from "./JonesMigrationGuard.ts";
 
 // Import all migrations statically
@@ -168,6 +169,7 @@ const jonesMigrationEntries = [
   [139, "DeletionWorktreeAdmission", JonesMigration0139],
   [140, "OrdinaryCheckoutOwnership", JonesMigration0140],
   [141, "OrdinaryCheckoutExecutionLifetime", JonesMigration0141],
+  [142, "V2NativeAcceptance", JonesMigration0142],
 ] as const;
 
 const makeMigrationLoader = (throughId?: number) =>

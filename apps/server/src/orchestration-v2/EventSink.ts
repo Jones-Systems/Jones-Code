@@ -1,5 +1,7 @@
+export * from "./OrdinaryCheckoutExecution.ts";
 import {
   CommandId,
+  OrchestrationV2Command,
   type OrchestrationV2ProviderThread,
   type ProviderRuntimeEvidenceCapture,
   type RequestedRuntimeIdentity,
@@ -36,10 +38,13 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import { makeCommitTransaction } from "./CommitTransaction.ts";
+import { ordinaryCheckoutCommandDigestV1 } from "./OrdinaryCheckoutOwnership.ts";
 import {
   makeOrdinaryCheckoutStore,
   type OrdinaryCheckoutCaptureInput,
   type OrdinaryCheckoutCommitCapture,
+  type OrdinaryCheckoutSystemEffectsV1,
 } from "./OrdinaryCheckoutStore.ts";
 
 /**
@@ -115,9 +120,14 @@ function runtimeEvidenceMatches(
  * SERVICE DEFINITION
  */
 export interface EventSinkV2Shape {
+  readonly ordinaryCheckoutLifetime?: import("./OrdinaryCheckoutStore.ts").OrdinaryCheckoutLifetime;
   readonly captureOrdinaryCheckout?: (
     input: OrdinaryCheckoutCaptureInput,
   ) => Effect.Effect<OrdinaryCheckoutCommitCapture, EventSinkWriteError>;
+  readonly validateOrdinaryCheckoutCommandReplay?: (
+    command: OrchestrationV2Command,
+    threadId: ThreadId,
+  ) => Effect.Effect<void, EventSinkWriteError>;
   readonly validateOrdinaryCheckoutReplay?: (
     capture: OrdinaryCheckoutCommitCapture,
   ) => Effect.Effect<void, EventSinkWriteError>;
@@ -141,6 +151,7 @@ export interface EventSinkV2Shape {
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
+    readonly ordinaryCheckoutEffects?: ReadonlyArray<OrdinaryCheckoutSystemEffectsV1>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeIfRunCurrent: (input: {
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
@@ -190,6 +201,10 @@ export interface EventSinkV2Shape {
   >;
   readonly commitCommand: (input: {
     readonly ordinaryCheckout?: OrdinaryCheckoutCommitCapture;
+    readonly ordinaryDelegatedCommand?: Extract<
+      OrchestrationV2Command,
+      { readonly type: "delegated_task.request" }
+    >;
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
@@ -281,6 +296,7 @@ const baseLayer: Layer.Layer<
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const projectStore = yield* ProjectStore.ProjectStoreV2;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
+    const commitTransaction = yield* makeCommitTransaction();
     const checkoutStore = yield* makeOrdinaryCheckoutStore();
     const liveEvents = yield* PubSub.unbounded<OrchestrationV2StoredEvent>();
     const liveEventsByType = new Map<
@@ -312,25 +328,18 @@ const baseLayer: Layer.Layer<
       transaction: Effect.Effect<A, E, R>,
       publish: (committed: A) => Effect.Effect<void>,
     ) =>
-      Effect.suspend(() => {
-        let holdsLane = false;
-        const takeLane = publishLane.take(1).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              holdsLane = true;
-            }),
-          ),
-          Effect.uninterruptible,
-        );
-        return sql
-          .withTransaction(Effect.tap(transaction, () => takeLane))
-          .pipe(
-            Effect.tap(publish),
-            Effect.ensuring(
-              Effect.suspend(() => (holdsLane ? publishLane.release(1) : Effect.void)),
+      commitTransaction.withTransaction(
+        transaction.pipe(
+          Effect.tap(() =>
+            commitTransaction.retainUntilSettlement(
+              publishLane,
+              publishLane.take(1),
+              publishLane.release(1),
             ),
-          );
-      });
+          ),
+          Effect.tap((committed) => commitTransaction.afterCommit(publish(committed))),
+        ),
+      );
 
     // A user can answer after terminal normalization reads the pending request.
     // Recheck inside the write transaction so stale cleanup cannot erase answers.
@@ -559,6 +568,8 @@ const baseLayer: Layer.Layer<
           });
           yield* applyStoredEvents(committed);
           yield* effectOutbox.enqueue(input.effects);
+          if (input.ordinaryCheckoutEffects !== undefined)
+            yield* checkoutStore.writeSystemEffects(input.effects, input.ordinaryCheckoutEffects);
           return committed;
         }),
         (storedEvents) =>
@@ -727,14 +738,16 @@ const baseLayer: Layer.Layer<
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
             if (checkoutCapture !== undefined) {
-              const admission = yield* checkoutStore.readAdmission(
-                input.commandId,
-                checkoutCapture.capture.threadId,
+              const binding = (yield* checkoutStore.readCurrentCommands(input.commandId)).find(
+                (item) => item.threadId === checkoutCapture.capture.threadId,
               );
-              if (
-                admission === null ||
-                admission.capture.commandDigest !== checkoutCapture.capture.commandDigest
-              )
+              const digest =
+                checkoutCapture.command === undefined
+                  ? checkoutCapture.capture.commandDigest
+                  : ordinaryCheckoutCommandDigestV1(
+                      yield* Schema.encodeEffect(OrchestrationV2Command)(checkoutCapture.command),
+                    );
+              if (binding === undefined || binding.commandDigest !== digest)
                 return yield* new EventSinkWriteError({
                   commandId: input.commandId,
                   eventCount: input.events.length,
@@ -774,6 +787,79 @@ const baseLayer: Layer.Layer<
               events: storedEvents,
               effects: input.effects,
             });
+          if (input.ordinaryDelegatedCommand !== undefined) {
+            const command = input.ordinaryDelegatedCommand;
+            const preparing = input.effects.filter(
+              (effect) => effect.request.type === "delegated-workspace.prepare",
+            );
+            if (
+              command.commandId !== input.commandId ||
+              command.type !== input.commandType ||
+              command.parentThreadId !== input.threadId ||
+              preparing.length !== 1
+            )
+              return yield* new EventSinkWriteError({
+                commandId: input.commandId,
+                eventCount: storedEvents.length,
+                cause:
+                  "Delegated acceptance requires its unique preparing effect and original outer command.",
+              });
+            const effect = preparing[0]!;
+            if (effect.request.type !== "delegated-workspace.prepare")
+              return yield* Effect.die("Invalid preparation filter");
+            const plan = effect.request.plan;
+            const child = storedEvents.find(
+              (stored) =>
+                stored.event.type === "thread.created" &&
+                stored.event.threadId === plan.childThreadId,
+            );
+            const run = storedEvents.findLast(
+              (stored) =>
+                (stored.event.type === "run.created" || stored.event.type === "run.updated") &&
+                stored.event.threadId === plan.childThreadId,
+            );
+            if (
+              effect.commandId !== input.commandId ||
+              effect.threadId !== plan.childThreadId ||
+              plan.parentThreadId !== command.parentThreadId ||
+              child?.event.type !== "thread.created" ||
+              child.event.payload.branch !== plan.branch ||
+              child.event.payload.worktreePath !== plan.worktreePath ||
+              (run?.event.type !== "run.created" && run?.event.type !== "run.updated") ||
+              run.event.payload.status !== "preparing" ||
+              run.event.payload.id !== effect.request.runId ||
+              run.event.payload.workspacePreparation?.type !== "worktree" ||
+              run.event.payload.workspacePreparation.baseRef !== plan.parentCommit ||
+              run.event.payload.workspacePreparation.branch !== plan.branch ||
+              run.event.payload.workspacePreparation.startFromOrigin !== false
+            )
+              return yield* new EventSinkWriteError({
+                commandId: input.commandId,
+                eventCount: storedEvents.length,
+                cause:
+                  "Delegated preparation changed its pinned child, path, branch or local base.",
+              });
+            const captured = yield* checkoutStore.capture({
+              command,
+              threadId: plan.childThreadId,
+              projectId: child.event.payload.projectId,
+              branch: plan.branch,
+              canonicalProjectRoot: plan.canonicalProjectRoot,
+              canonicalCheckoutPath: plan.worktreePath,
+              source: {
+                projectWorkspaceRoot: plan.projectWorkspaceRoot,
+                worktreePath: plan.worktreePath,
+              },
+              leaseId: `lease:${input.commandId}:${plan.childThreadId}`,
+              origin: { kind: "delegated_child", parentThreadId: command.parentThreadId },
+            });
+            yield* checkoutStore.recordAcceptance({
+              captured: yield* checkoutStore.acquireNewborn(captured, receipt, storedEvents),
+              receipt,
+              events: storedEvents,
+              effects: input.effects,
+            });
+          }
           const cancelledEffectIds =
             input.cancelUnsettledEffects === undefined
               ? []
@@ -967,7 +1053,30 @@ const baseLayer: Layer.Layer<
       );
     };
 
+    const encodeOrdinaryCommand = Schema.encodeEffect(OrchestrationV2Command);
     return EventSinkV2.of({
+      ordinaryCheckoutLifetime: checkoutStore,
+      validateOrdinaryCheckoutCommandReplay: (command, threadId) =>
+        Effect.gen(function* () {
+          const binding = (yield* checkoutStore.readCurrentCommands(command.commandId)).find(
+            (item) => item.threadId === threadId,
+          );
+          const encoded = yield* encodeOrdinaryCommand(command);
+          if (
+            binding === undefined ||
+            binding.commandDigest !== ordinaryCheckoutCommandDigestV1(encoded)
+          )
+            return yield* new EventSinkWriteError({
+              commandId: command.commandId,
+              eventCount: 0,
+              cause: "Replay has another permanent original checkout command.",
+            });
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EventSinkWriteError({ commandId: command.commandId, eventCount: 0, cause }),
+          ),
+        ),
       validateOrdinaryCheckoutReplay: (input) =>
         Effect.gen(function* () {
           const admission = yield* checkoutStore.readAdmission(

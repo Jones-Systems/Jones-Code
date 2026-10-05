@@ -37,6 +37,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
@@ -48,6 +49,48 @@ import type {
   ProviderSelectionTransitionInput,
   ProviderSelectionTransitionPlan,
 } from "./ProviderSelectionTransition.ts";
+
+export const ProviderNativeEffectOperation = Schema.Literals([
+  "open_session",
+  "close_session",
+  "read_thread_snapshot",
+  "ensure_thread",
+  "resume_thread",
+  "inject_history",
+  "start_turn",
+  "compact_thread",
+  "steer_turn",
+  "interrupt_turn",
+  "respond_to_request",
+  "unload_thread",
+  "rollback_thread",
+  "fork_thread",
+]);
+export type ProviderNativeEffectOperation = typeof ProviderNativeEffectOperation.Type;
+
+export const ProviderNativeOperationContext = Schema.Struct({
+  operationId: TrimmedNonEmptyString,
+  operation: ProviderNativeEffectOperation,
+  instanceId: Schema.optional(ProviderInstanceId),
+  threadId: Schema.optional(ThreadId),
+  providerSessionId: Schema.optional(ProviderSessionId),
+  providerThreadId: Schema.optional(ProviderThreadId),
+  runtimeGeneration: Schema.optional(TrimmedNonEmptyString),
+  attemptId: Schema.optional(RunAttemptId),
+});
+export type ProviderNativeOperationContext = typeof ProviderNativeOperationContext.Type;
+
+/**
+ * Evidence covers the complete operation, including eager activation, lazy
+ * initialization, registration and history injection before the final RPC.
+ * Missing or mismatched evidence is unknown; a safe last request cannot prove
+ * that an earlier stage had no effect.
+ */
+export const ProviderNativeEffectEvidence = Schema.Struct({
+  ...ProviderNativeOperationContext.fields,
+  outcome: Schema.Literals(["confirmed_success", "known_no_effect", "unknown"]),
+});
+export type ProviderNativeEffectEvidence = typeof ProviderNativeEffectEvidence.Type;
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,

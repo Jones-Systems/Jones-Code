@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 /**
  * TerminalManager - Terminal session orchestration service interface.
  *
@@ -6,6 +7,10 @@
  *
  * @module TerminalManager
  */
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { ThreadId } from "@t3tools/contracts";
+import { readApplicationThreadBirth } from "../orchestration-v2/ApplicationThreadBirth.ts";
+import { EventSinkWriteError, type EventSinkV2Error } from "../orchestration-v2/EventSink.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
@@ -47,7 +52,9 @@ import { acpRegistryManagedBinaryDirectories } from "../provider/acp/AcpRegistry
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Encoding from "effect/Encoding";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
@@ -108,6 +115,58 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const MAX_TERMINAL_LABEL_LENGTH = 128;
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
+
+export interface TerminalOwnerBirth {
+  readonly kind: "application_v2_thread_birth";
+  readonly threadId: string;
+  readonly eventId: string;
+  readonly sequence: number;
+}
+
+export class TerminalOwnerObservation extends Context.Reference<{
+  readonly observeCurrentBirth: (
+    threadId: string,
+  ) => Effect.Effect<TerminalOwnerBirth | null, EventSinkV2Error>;
+}>("t3/terminal/Manager/TerminalOwnerObservation", {
+  defaultValue: () => ({ observeCurrentBirth: () => Effect.succeed(null) }),
+}) {}
+
+export interface TerminalOwnedTarget {
+  readonly threadId: string;
+  readonly terminalId: string;
+  readonly handleId: string;
+  readonly ownerBirth: TerminalOwnerBirth;
+}
+
+export interface TerminalOwnedTargetCapture {
+  readonly managerId: string;
+  readonly threadId: string;
+  readonly ownerBirth: TerminalOwnerBirth;
+  readonly status: "captured" | "unknown";
+  readonly managedTargetsOnly: true;
+  readonly targets: ReadonlyArray<TerminalOwnedTarget>;
+}
+
+export interface TerminalOwnedTargetCloseResult {
+  readonly status: "closed" | "observed_absent" | "mismatch" | "unknown";
+  readonly managedTargetsOnly: true;
+  readonly processExitObserved: boolean;
+  readonly descendantsQuiescence: "unavailable";
+  readonly futureWakeClosure: "unavailable";
+}
+
+const sameTerminalOwnerBirth = (left: TerminalOwnerBirth, right: TerminalOwnerBirth) =>
+  left.kind === right.kind &&
+  left.threadId === right.threadId &&
+  left.eventId === right.eventId &&
+  left.sequence === right.sequence;
+
+const validTerminalOwnerBirth = (birth: TerminalOwnerBirth, threadId: string) =>
+  birth.kind === "application_v2_thread_birth" &&
+  birth.threadId === threadId &&
+  birth.eventId.trim().length > 0 &&
+  Number.isSafeInteger(birth.sequence) &&
+  birth.sequence >= 0;
 
 class TerminalSubprocessCheckError extends Schema.TaggedError<TerminalSubprocessCheckError>()(
   "TerminalSubprocessCheckError",
@@ -207,6 +266,15 @@ export class TerminalManager extends Context.Service<
      * terminal is considered. Used when a thread settles and when a setup
      * script finishes.
      */
+    readonly closeOwnedTargets: (
+      capture: TerminalOwnedTargetCapture,
+    ) => Effect.Effect<TerminalOwnedTargetCloseResult, TerminalError>;
+
+    readonly captureOwnedTargets: (input: {
+      readonly threadId: string;
+      readonly ownerBirth: TerminalOwnerBirth;
+    }) => Effect.Effect<TerminalOwnedTargetCapture>;
+
     readonly closeIdle: (input: {
       readonly threadId: string;
       readonly terminalId?: string;
@@ -274,6 +342,11 @@ export interface TerminalStartInput extends TerminalOpenInput {
 }
 
 interface TerminalSessionState {
+  ownership: {
+    readonly handleId: string;
+    readonly ownerBirth: TerminalOwnerBirth | null;
+    processExitObserved: boolean;
+  };
   threadId: string;
   terminalId: string;
   cwd: string;
@@ -1345,6 +1418,11 @@ function normalizedRuntimeEnv(
 }
 
 interface TerminalManagerOptions {
+  ownerObservation?: {
+    readonly observeCurrentBirth: (
+      threadId: string,
+    ) => Effect.Effect<TerminalOwnerBirth | null, EventSinkV2Error>;
+  };
   logsDir: string;
   historyLineLimit?: number;
   historyByteLimit?: number;
@@ -1428,6 +1506,7 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.fn("TerminalManager.make")(function* () {
   const { terminalLogsDir, providerStatusCacheDir, baseDir } = yield* ServerConfig.ServerConfig;
+  const sql = yield* SqlClient.SqlClient;
   const ptyAdapter = yield* PtyAdapter.PtyAdapter;
   const portDiscovery = yield* PortScanner.PortDiscovery;
   const nativeTelemetry = yield* NativeTelemetryClient.NativeTelemetryClient;
@@ -1445,6 +1524,13 @@ export const make = Effect.fn("TerminalManager.make")(function* () {
   );
   return yield* makeWithOptions({
     logsDir: terminalLogsDir,
+    ownerObservation: {
+      observeCurrentBirth: (threadId) =>
+        readApplicationThreadBirth(ThreadId.make(threadId)).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })),
+        ),
+    },
     ptyAdapter,
     processTable: nativeTelemetry.processTable.pipe(
       Effect.mapError(
@@ -1467,6 +1553,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
 
+  const ownerObservation = options.ownerObservation ?? (yield* TerminalOwnerObservation);
+  const managerId = NodeCrypto.randomUUID();
+  const pendingOwnedProcesses = new Map<
+    string,
+    {
+      readonly threadId: string;
+      readonly terminalId: string;
+      readonly ownership: TerminalSessionState["ownership"];
+      readonly process: PtyAdapter.PtyProcess;
+    }
+  >();
   const logsDir = options.logsDir;
   const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
   const historyByteLimit = options.historyByteLimit ?? DEFAULT_HISTORY_BYTE_LIMIT;
@@ -2222,6 +2319,21 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     input: TerminalStartInput,
     eventType: "started" | "restarted",
   ) {
+    const observedBirth = yield* ownerObservation
+      .observeCurrentBirth(session.threadId)
+      .pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(null),
+        ),
+      );
+    const ownership = {
+      handleId: NodeCrypto.randomUUID(),
+      ownerBirth:
+        observedBirth !== null && validTerminalOwnerBirth(observedBirth, session.threadId)
+          ? { ...observedBirth }
+          : null,
+      processExitObserved: false,
+    };
     yield* stopProcess(session);
     yield* Effect.annotateCurrentSpan({
       "terminal.thread_id": session.threadId,
@@ -2232,6 +2344,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     const startingAt = yield* nowIso;
     yield* modifyManagerState((state) => {
+      session.ownership = ownership;
       session.status = "starting";
       session.cwd = input.cwd;
       session.worktreePath = input.worktreePath ?? null;
@@ -2292,6 +2405,23 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             }
             const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
             ptyProcess = spawnResult.process;
+            pendingOwnedProcesses.set(ownership.handleId, {
+              threadId: session.threadId,
+              terminalId: session.terminalId,
+              ownership,
+              process: spawnResult.process,
+            });
+            // This observer belongs to the captured process, even after the UI session is removed.
+            let stopPhysicalExit: (() => void) | undefined;
+            let exitReplayed = false;
+            stopPhysicalExit = spawnResult.process.onExit(() => {
+              ownership.processExitObserved = true;
+              pendingOwnedProcesses.delete(ownership.handleId);
+              exitReplayed = true;
+              stopPhysicalExit?.();
+            });
+            if (exitReplayed) stopPhysicalExit();
+
             startedShell = spawnResult.shellLabel;
 
             const processPid = ptyProcess.pid;
@@ -2600,6 +2730,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       const cols = input.cols ?? DEFAULT_OPEN_COLS;
       const rows = input.rows ?? DEFAULT_OPEN_ROWS;
       const session: TerminalSessionState = {
+        ownership: {
+          handleId: NodeCrypto.randomUUID(),
+          ownerBirth: null,
+          processExitObserved: false,
+        },
         threadId: input.threadId,
         terminalId,
         cwd: input.cwd,
@@ -3023,6 +3158,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         const cols = input.cols ?? DEFAULT_OPEN_COLS;
         const rows = input.rows ?? DEFAULT_OPEN_ROWS;
         session = {
+          ownership: {
+            handleId: NodeCrypto.randomUUID(),
+            ownerBirth: null,
+            processExitObserved: false,
+          },
           threadId: input.threadId,
           terminalId,
           cwd: input.cwd,
@@ -3123,6 +3263,166 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }),
     );
 
+  const captureOwnedTargets: TerminalManager["Service"]["captureOwnedTargets"] = (input) =>
+    withThreadLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const sessions = yield* sessionsForThread(input.threadId);
+        const retained = [...pendingOwnedProcesses.values()].filter(
+          (entry) => entry.threadId === input.threadId,
+        );
+        const byHandle = new Map(
+          [...sessions, ...retained].map((session) => [session.ownership.handleId, session]),
+        );
+        const targets = [...byHandle.values()];
+        const unknown =
+          !validTerminalOwnerBirth(input.ownerBirth, input.threadId) ||
+          targets.some((session) => session.ownership.ownerBirth === null);
+        return {
+          managerId,
+          threadId: input.threadId,
+          ownerBirth: { ...input.ownerBirth },
+          status: unknown ? "unknown" : "captured",
+          managedTargetsOnly: true,
+          targets: targets.flatMap((session) =>
+            session.ownership.ownerBirth !== null &&
+            sameTerminalOwnerBirth(session.ownership.ownerBirth, input.ownerBirth)
+              ? [
+                  {
+                    threadId: session.threadId,
+                    terminalId: session.terminalId,
+                    handleId: session.ownership.handleId,
+                    ownerBirth: { ...session.ownership.ownerBirth },
+                  },
+                ]
+              : [],
+          ),
+        } satisfies TerminalOwnedTargetCapture;
+      }),
+    );
+
+  const closeOwnedTargets: TerminalManager["Service"]["closeOwnedTargets"] = (capture) =>
+    withThreadLock(
+      capture.threadId,
+      Effect.gen(function* () {
+        const result = (
+          status: TerminalOwnedTargetCloseResult["status"],
+          processExitObserved = false,
+        ): TerminalOwnedTargetCloseResult => ({
+          status,
+          managedTargetsOnly: true,
+          processExitObserved,
+          descendantsQuiescence: "unavailable",
+          futureWakeClosure: "unavailable",
+        });
+        if (
+          capture.managerId !== managerId ||
+          capture.status !== "captured" ||
+          !validTerminalOwnerBirth(capture.ownerBirth, capture.threadId)
+        )
+          return result("unknown");
+        const liveSessions = yield* sessionsForThread(capture.threadId);
+        const candidates = new Map(
+          liveSessions.map((session) => [
+            session.ownership.handleId,
+            {
+              threadId: session.threadId,
+              terminalId: session.terminalId,
+              ownership: session.ownership,
+              process: session.process,
+              liveSession: session as TerminalSessionState | null,
+            },
+          ]),
+        );
+        for (const retained of pendingOwnedProcesses.values()) {
+          if (retained.threadId !== capture.threadId) continue;
+          const existing = candidates.get(retained.ownership.handleId);
+          if (existing === undefined)
+            candidates.set(retained.ownership.handleId, { ...retained, liveSession: null });
+          else if (existing.ownership === retained.ownership && existing.process === null)
+            candidates.set(retained.ownership.handleId, { ...existing, process: retained.process });
+        }
+        const sessions = [...candidates.values()];
+        if (sessions.some((session) => session.ownership.ownerBirth === null))
+          return result("unknown");
+        const owned = sessions.filter((session) =>
+          sameTerminalOwnerBirth(session.ownership.ownerBirth!, capture.ownerBirth),
+        );
+        if (
+          capture.targets.some(
+            (target) =>
+              target.threadId !== capture.threadId ||
+              !sameTerminalOwnerBirth(target.ownerBirth, capture.ownerBirth),
+          ) ||
+          owned.some(
+            (session) =>
+              !capture.targets.some(
+                (target) =>
+                  target.terminalId === session.terminalId &&
+                  target.handleId === session.ownership.handleId,
+              ),
+          )
+        )
+          return result("mismatch");
+        for (const target of capture.targets) {
+          const current = liveSessions.find((session) => session.terminalId === target.terminalId);
+          if (
+            current !== undefined &&
+            (current.ownership.handleId !== target.handleId ||
+              !sameTerminalOwnerBirth(current.ownership.ownerBirth!, target.ownerBirth))
+          )
+            return result("mismatch");
+        }
+        if (owned.length === 0) return result("observed_absent");
+        let processExitObserved = true;
+        for (const session of owned) {
+          const ownership = session.ownership;
+          const process = session.process;
+          const exited = yield* Deferred.make<void>();
+          const stopExit = process?.onExit(() => {
+            ownership.processExitObserved = true;
+            runFork(Deferred.succeed(exited, undefined));
+          });
+          const closed = yield* Effect.gen(function* () {
+            if (!ownership.processExitObserved && process !== null) {
+              const signalled = yield* Effect.result(Effect.try(() => process.kill("SIGTERM")));
+              if (signalled._tag === "Failure") return false;
+              const gracefulExit = yield* Deferred.await(exited).pipe(
+                Effect.timeoutOption(processKillGraceMs),
+              );
+              if (Option.isNone(gracefulExit)) {
+                const forced = yield* Effect.result(Effect.try(() => process.kill("SIGKILL")));
+                if (forced._tag === "Failure") return false;
+                const forcedExit = yield* Deferred.await(exited).pipe(
+                  Effect.timeoutOption(processKillGraceMs),
+                );
+                if (Option.isNone(forcedExit)) return false;
+              }
+            }
+            if (!ownership.processExitObserved) return false;
+            const live = session.liveSession;
+            if (process !== null) {
+              if (live !== null)
+                yield* modifyManagerState((state) => {
+                  if (live.process === process && live.ownership === ownership) {
+                    cleanupProcessHandles(live);
+                    live.process = null;
+                    live.pid = null;
+                  }
+                  return [undefined, state] as const;
+                });
+              yield* clearKillFiber(process);
+            }
+            if (live !== null) yield* closeSession(session.threadId, session.terminalId, true);
+            return true;
+          }).pipe(Effect.ensuring(Effect.sync(() => stopExit?.())));
+          if (!closed) return result("unknown");
+          processExitObserved &&= ownership.processExitObserved;
+        }
+        return result("closed", processExitObserved);
+      }),
+    );
+
   const closeIdle: TerminalManager["Service"]["closeIdle"] = (input) =>
     withThreadLock(
       input.threadId,
@@ -3177,6 +3477,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     clear,
     restart,
     close,
+    captureOwnedTargets,
+    closeOwnedTargets,
     closeIdle,
     subscribe,
     subscribeMetadata,

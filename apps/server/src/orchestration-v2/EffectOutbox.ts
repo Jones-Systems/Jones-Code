@@ -23,7 +23,15 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { DelegatedCheckoutPlanV1 } from "./DelegatedCheckoutPolicy.ts";
+import { ProviderNativeEffectEvidence } from "./ProviderAdapter.ts";
+
 export const OrchestrationEffectRequestV2 = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("delegated-workspace.prepare"),
+    runId: RunId,
+    plan: DelegatedCheckoutPlanV1,
+  }),
   Schema.Struct({
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
@@ -116,6 +124,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const PROCESS_BOUND_EFFECT_TYPES = [
+  "delegated-workspace.prepare",
   "provider-turn.start",
   "provider-turn.interrupt",
   "provider-turn.steer",
@@ -155,6 +164,51 @@ export interface PendingOrchestrationEffectV2 {
   readonly request: OrchestrationEffectRequestV2;
   readonly availableAt?: DateTime.Utc;
 }
+
+// This records unresolved cleanup; a missing binding grants no access to a resource target.
+const ResourceCleanupUnknownSubjectV1 = {
+  version: Schema.Literal(1),
+  kind: Schema.Literal("resource_cleanup"),
+  operationId: Schema.NonEmptyString,
+  threadId: ThreadId,
+  taskKind: Schema.Literals(["terminal", "attachment", "worktree"]),
+  outcome: Schema.Literal("unknown"),
+};
+export const ResourceCleanupUnknownEvidenceV1 = Schema.Union([
+  Schema.Struct({
+    ...ResourceCleanupUnknownSubjectV1,
+    bindingSha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+  }),
+  Schema.Struct({
+    ...ResourceCleanupUnknownSubjectV1,
+    bindingSha256: Schema.Null,
+    reason: Schema.Literal("task_binding_unavailable"),
+  }),
+]);
+export type ResourceCleanupUnknownEvidenceV1 = typeof ResourceCleanupUnknownEvidenceV1.Type;
+const UnknownEffectHoldEvidenceV2 = Schema.Union([
+  ProviderNativeEffectEvidence,
+  ResourceCleanupUnknownEvidenceV1,
+]);
+
+export interface UnknownEffectHoldV2 {
+  readonly effectId: string;
+  readonly threadId: ThreadId;
+  readonly workerId: string;
+  readonly operationId: string;
+  readonly evidence: ProviderNativeEffectEvidence | ResourceCleanupUnknownEvidenceV1;
+  readonly expectedAttempt: number;
+  readonly heldAt: string;
+}
+export const UnknownEffectHoldSchemaV2 = Schema.Struct({
+  effectId: Schema.NonEmptyString,
+  threadId: ThreadId,
+  workerId: Schema.NonEmptyString,
+  operationId: Schema.NonEmptyString,
+  evidence: UnknownEffectHoldEvidenceV2,
+  expectedAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+  heldAt: Schema.NonEmptyString,
+});
 
 export class EffectOutboxError extends Schema.TaggedError<EffectOutboxError>()(
   "EffectOutboxError",
@@ -202,6 +256,23 @@ export interface EffectOutboxV2Shape {
     readonly excludeRestartContinuations?: boolean;
   }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly nextClaimableAt: Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
+  readonly listHeldByThreadId: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<UnknownEffectHoldV2>, EffectOutboxError>;
+  readonly renewClaim: (input: {
+    readonly effectId: string;
+    readonly workerId: string;
+    readonly expectedAttempt: number;
+    readonly expectedLeaseExpiresAt: string;
+    readonly leaseExpiresAt: string;
+  }) => Effect.Effect<boolean, EffectOutboxError>;
+  readonly holdUnknown: (input: {
+    readonly effectId: string;
+    readonly workerId: string;
+    readonly operationId: string;
+    readonly evidence: ProviderNativeEffectEvidence;
+    readonly expectedAttempt: number;
+  }) => Effect.Effect<boolean, EffectOutboxError>;
   readonly succeed: (input: {
     readonly effectId: string;
     readonly workerId: string;
@@ -295,6 +366,8 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : sql`candidate.available_at <= ${availableBefore}`
         }
         AND candidate.status = 'pending'
+        AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold
+          WHERE hold.effect_id = candidate.effect_id)
         AND NOT EXISTS (
           SELECT 1
           FROM orchestration_v2_effect_outbox AS active
@@ -425,6 +498,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE thread_id = ${threadId}
               AND status IN ('pending', 'running')
               AND effect_type IN ${sql.in(effectTypes)}
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
             RETURNING effect_id
           `;
           return rows.map(({ effect_id }) => effect_id);
@@ -466,6 +540,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             last_error = 'Cancelled because the server process ended before the effect completed.'
           WHERE status IN ('pending', 'running')
             AND effect_type IN ${sql.in(PROCESS_BOUND_EFFECT_TYPES)}
+            AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
           RETURNING effect_id
         `;
         const requeuedRows = yield* sql<{ readonly effect_id: string }>`
@@ -479,6 +554,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             last_error = 'Requeued after the previous server process ended.'
           WHERE status = 'running'
             AND effect_type IN ${sql.in(REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS)}
+            AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
           RETURNING effect_id
         `;
         if (requeuedRows.length > 0) yield* notifyAvailable(requeuedRows.length);
@@ -546,6 +622,125 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : new EffectOutboxError({ operation: "next-claimable", cause }),
         ),
       ),
+      listHeldByThreadId: (threadId) =>
+        sql<{
+          readonly effect_id: string;
+          readonly worker_id: string;
+          readonly operation_id: string;
+          readonly evidence_json: string;
+          readonly expected_attempt: number;
+          readonly held_at: string;
+        }>`
+          SELECT hold.* FROM orchestration_v2_unknown_effect_holds hold
+          JOIN orchestration_v2_effect_outbox effect ON effect.effect_id = hold.effect_id
+          WHERE effect.thread_id = ${threadId} ORDER BY hold.held_at, hold.effect_id
+        `.pipe(
+          Effect.flatMap((rows) =>
+            Effect.forEach(rows, (row) =>
+              Schema.decodeUnknownEffect(Schema.fromJsonString(UnknownEffectHoldEvidenceV2))(
+                row.evidence_json,
+                { onExcessProperty: "error" },
+              ).pipe(
+                Effect.map((evidence): UnknownEffectHoldV2 => ({
+                  effectId: row.effect_id,
+                  threadId,
+                  workerId: row.worker_id,
+                  operationId: row.operation_id,
+                  evidence,
+                  expectedAttempt: row.expected_attempt,
+                  heldAt: row.held_at,
+                })),
+              ),
+            ),
+          ),
+          Effect.mapError((cause) => new EffectOutboxError({ operation: "list-held", cause })),
+        ),
+
+      renewClaim: (input) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const currentTime = yield* DateTime.now;
+              const now = DateTime.formatIso(currentTime);
+              const horizon = DateTime.formatIso(DateTime.add(currentTime, { minutes: 5 }));
+              const previous = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+                input.expectedLeaseExpiresAt,
+              );
+              const next = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+                input.leaseExpiresAt,
+              );
+              if (
+                DateTime.formatIso(previous) !== input.expectedLeaseExpiresAt ||
+                DateTime.formatIso(next) !== input.leaseExpiresAt ||
+                input.expectedLeaseExpiresAt <= now ||
+                input.leaseExpiresAt < input.expectedLeaseExpiresAt ||
+                input.leaseExpiresAt > horizon ||
+                input.workerId.length === 0 ||
+                !Number.isSafeInteger(input.expectedAttempt) ||
+                input.expectedAttempt < 1
+              )
+                return false;
+              const rows =
+                yield* sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at = ${input.leaseExpiresAt}, updated_at = ${now}
+          WHERE effect_id = ${input.effectId} AND status = 'running' AND lease_owner = ${input.workerId}
+            AND attempt_count = ${input.expectedAttempt} AND lease_expires_at = ${input.expectedLeaseExpiresAt} AND lease_expires_at > ${now}
+            AND EXISTS (SELECT 1 FROM orchestration_v2_ordinary_checkout_effect_links link WHERE link.effect_id = ${input.effectId})
+            AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = ${input.effectId}) RETURNING effect_id`;
+              return rows.length === 1;
+            }),
+          )
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new EffectOutboxError({
+                  operation: "renew-ordinary-claim",
+                  effectId: input.effectId,
+                  cause,
+                }),
+            ),
+          ),
+
+      holdUnknown: ({ effectId, workerId, operationId, evidence, expectedAttempt }) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const decoded = yield* Schema.decodeUnknownEffect(ProviderNativeEffectEvidence)(
+                evidence,
+              );
+              if (
+                decoded.outcome !== "unknown" ||
+                decoded.operationId !== operationId ||
+                !Number.isSafeInteger(expectedAttempt) ||
+                expectedAttempt < 1
+              )
+                return yield* new EffectOutboxError({ operation: "hold-unknown", effectId });
+              const now = DateTime.formatIso(yield* DateTime.now);
+              const rows = yield* sql<{ readonly effect_id: string }>`
+            INSERT INTO orchestration_v2_unknown_effect_holds
+              (effect_id, worker_id, operation_id, evidence_json, expected_attempt, held_at)
+            SELECT effect_id, ${workerId}, ${operationId},
+              ${yield* Schema.encodeEffect(Schema.fromJsonString(ProviderNativeEffectEvidence))(decoded).pipe(Effect.orDie)},
+              ${expectedAttempt}, ${now}
+            FROM orchestration_v2_effect_outbox
+            WHERE effect_id = ${effectId} AND status = 'running'
+              AND lease_owner = ${workerId} AND attempt_count = ${expectedAttempt}
+              AND lease_expires_at > ${now}
+              AND (${decoded.threadId ?? null} IS NULL OR thread_id = ${decoded.threadId ?? null})
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold
+                WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
+            RETURNING effect_id
+          `;
+              return rows.length === 1;
+            }),
+          )
+          .pipe(
+            Effect.mapError((cause) =>
+              isEffectOutboxError(cause)
+                ? cause
+                : new EffectOutboxError({ operation: "hold-unknown", effectId, cause }),
+            ),
+          ),
+
       succeed: ({ effectId, workerId }) =>
         Effect.gen(function* () {
           const now = DateTime.formatIso(yield* DateTime.now);
@@ -561,6 +756,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
             RETURNING effect_id
           `;
           if (rows.length === 1) {
@@ -592,6 +788,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
             RETURNING effect_id
           `;
           if (rows.length === 1) {
@@ -619,6 +816,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
             RETURNING effect_id
           `;
           if (rows.length === 1) {

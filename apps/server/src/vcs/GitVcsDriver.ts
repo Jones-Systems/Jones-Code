@@ -150,6 +150,9 @@ export interface CreateWorktreeProgress {
 }
 
 export interface CreateWorktreeOptions {
+  /** Revalidates the original actor before each native mutation; a refusal ends this operation. */
+  readonly revalidateMutation?: Effect.Effect<void, Error>;
+
   readonly progress?: CreateWorktreeProgress;
   /**
    * The project-over-environment `worktreeSubmodules` setting. Null (or

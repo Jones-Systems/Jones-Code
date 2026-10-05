@@ -1,13 +1,13 @@
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { ProviderDriverKind, ProviderReplayTranscript } from "@t3tools/contracts";
+import type { ProjectId, ProviderDriverKind, ProviderReplayTranscript } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
-import type * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { MigrationError } from "effect/unstable/sql/Migrator";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
@@ -254,6 +254,16 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
     >;
+    readonly checkoutFixture?: {
+      readonly projects: ReadonlyArray<{
+        readonly projectId: ProjectId;
+        readonly workspaceRoot: string;
+        readonly title: string;
+      }>;
+      readonly resolvePath: (path: string) => string | undefined;
+      readonly existsPath?: (path: string) => boolean | undefined;
+      readonly worktreesDir?: string;
+    };
     readonly runEffectWorker?: boolean;
     // Start continuation runs for provider wake turns, as the live runtime does.
     // Off by default: most fixtures record no wake turn.
@@ -269,7 +279,15 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
 > {
   const serverConfigLayer = Layer.effect(
     ServerConfig.ServerConfig,
-    makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const config = yield* Effect.acquireRelease(makeReplayServerConfig(scenario.name), (value) =>
+        fs.remove(value.baseDir, { recursive: true }).pipe(Effect.orDie),
+      );
+      return options.checkoutFixture?.worktreesDir === undefined
+        ? config
+        : { ...config, worktreesDir: options.checkoutFixture.worktreesDir };
+    }).pipe(Effect.orDie),
   ).pipe(Layer.provide(NodeServices.layer));
   const runtimeLayer =
     scenario.runtimePolicyOverride === undefined
@@ -289,6 +307,39 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
       ? {}
       : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
   }).pipe(Layer.orDie);
+  const fixtureProjects =
+    options.checkoutFixture === undefined
+      ? Layer.empty
+      : Layer.effectDiscard(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            for (const project of options.checkoutFixture!.projects) {
+              yield* sql`INSERT OR IGNORE INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+          VALUES (${project.projectId}, ${project.title}, ${project.workspaceRoot}, '[]', '2026-06-20T00:00:00.000Z', '2026-06-20T00:00:00.000Z')`;
+            }
+          }),
+        ).pipe(Layer.provide(databaseLayer));
+  const checkoutFileSystem =
+    options.checkoutFixture === undefined
+      ? Layer.empty
+      : Layer.effect(
+          FileSystem.FileSystem,
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            return FileSystem.FileSystem.of({
+              ...fs,
+              exists: (path) => {
+                const observed = options.checkoutFixture!.existsPath?.(path);
+                return observed === undefined ? fs.exists(path) : Effect.succeed(observed);
+              },
+              realPath: (path) => {
+                const observed = options.checkoutFixture!.resolvePath(path);
+                return observed === undefined ? fs.realPath(path) : Effect.succeed(observed);
+              },
+            });
+          }),
+        ).pipe(Layer.provide(NodeServices.layer));
   const storesLayer = Layer.mergeAll(
     EventStore.layer,
     ProjectionStore.layer,
@@ -416,6 +467,8 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
         CommandPolicy.layer,
         contextHandoffServiceProvided,
         persistenceLayer,
+        checkoutFileSystem,
+        serverConfigLayer,
         providedRegistryLayer,
         continuationRequestsLayer,
         runtimeLayer,
@@ -468,6 +521,7 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     orchestratorProvided,
     effectWorkerProvided,
     eventSinkProvided,
+    fixtureProjects,
     continuationWorkerProvided,
   ).pipe(Layer.provide(worktreeRepairDependenciesTestLayer), Layer.provide(NodeServices.layer));
 
@@ -475,7 +529,7 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
   // orchestrator. Keeping this acquisition in the replay layer makes the
   // outbox lifecycle explicit and prevents test-only command-side draining.
   if (options.runEffectWorker === false) {
-    return replayRuntime;
+    return replayRuntime.pipe(Layer.provide(fixtureProjects));
   }
   // Built before the runtime it shares stores with, so recovery commits before
   // the effect worker claims anything, as in serverRuntimeStartup.

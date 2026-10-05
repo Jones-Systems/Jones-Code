@@ -275,6 +275,8 @@ export interface ThreadManagementServiceShape {
   readonly ensureLegacyTranscript: (
     threadId: ThreadId,
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
+  readonly dispatchOrdinaryPreparedBranchRename?: Orchestrator.OrchestratorV2Shape["dispatchOrdinaryPreparedBranchRename"];
+  readonly dispatchOrdinaryPreparedRunRelease?: Orchestrator.OrchestratorV2Shape["dispatchOrdinaryPreparedRunRelease"];
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
   ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
@@ -725,6 +727,8 @@ const make = Effect.gen(function* () {
   return ThreadManagementService.of({
     requestSelfSettlement: orchestrator.requestSelfSettlement,
     ensureLegacyTranscript,
+    dispatchOrdinaryPreparedBranchRename: orchestrator.dispatchOrdinaryPreparedBranchRename,
+    dispatchOrdinaryPreparedRunRelease: orchestrator.dispatchOrdinaryPreparedRunRelease,
     dispatch,
     getTimelinePage: (threadId, options) =>
       ensureProjectionTranscript(threadId).pipe(

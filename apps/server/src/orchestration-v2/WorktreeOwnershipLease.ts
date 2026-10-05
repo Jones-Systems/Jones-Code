@@ -106,7 +106,10 @@ export const makeWorktreeOwnershipLeaseStore = Effect.fn("makeWorktreeOwnershipL
           LIMIT 1
         ) AS creation
         -- An outer WHERE disambiguates SQLite's SELECT ... ON CONFLICT parser.
-        WHERE true
+        WHERE NOT EXISTS (
+          SELECT 1 FROM orchestration_v2_worktree_path_admissions
+          WHERE canonical_path = ${input.resourcePath} AND state NOT IN ('no_effect', 'released')
+        )
         ON CONFLICT (resource_path) DO UPDATE SET
           owner_thread_id = excluded.owner_thread_id,
           owner_incarnation = excluded.owner_incarnation,
@@ -144,6 +147,10 @@ export const makeWorktreeOwnershipLeaseStore = Effect.fn("makeWorktreeOwnershipL
           AND lease_id = ${input.leaseId}
           AND owner_thread_id = ${input.ownerThreadId}
           AND owner_incarnation = ${input.ownerIncarnation}
+          AND NOT EXISTS (
+            SELECT 1 FROM orchestration_v2_worktree_path_admissions
+            WHERE canonical_path = ${input.resourcePath} AND state NOT IN ('no_effect', 'released')
+          )
         RETURNING
           resource_path AS "resourcePath",
           lease_id AS "leaseId",
@@ -164,6 +171,10 @@ export const makeWorktreeOwnershipLeaseStore = Effect.fn("makeWorktreeOwnershipL
           AND lease_id = ${input.leaseId}
           AND owner_thread_id = ${input.ownerThreadId}
           AND owner_incarnation = ${input.ownerIncarnation}
+          AND NOT EXISTS (
+            SELECT 1 FROM orchestration_v2_worktree_path_admissions
+            WHERE canonical_path = ${input.resourcePath} AND state NOT IN ('no_effect', 'released')
+          )
       `,
     });
 

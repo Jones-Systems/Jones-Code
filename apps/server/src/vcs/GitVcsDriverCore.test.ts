@@ -86,6 +86,64 @@ const makeTmpDir = (
     return yield* fileSystem.makeTempDirectoryScoped({ prefix });
   });
 
+describe("original worktree creation authority", () => {
+  it.effect.each([1, 2, 3])(
+    "stops native mutations when original authority is refused at checkpoint %s",
+    (checkpoint) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const commands: Array<ReadonlyArray<string>> = [];
+          const spawner = ChildProcessSpawner.make((command) => {
+            if (!ChildProcess.isStandardCommand(command))
+              return Effect.die("expected a standard Git command");
+            commands.push(command.args);
+            return Effect.succeed(makeSuccessfulHandle(""));
+          });
+          const driver = yield* makeGitVcsDriverCore().pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          );
+          const checks = yield* Ref.make(0);
+          const result = yield* driver
+            .createWorktree(
+              {
+                cwd: "/synthetic-repo",
+                path: "/synthetic-worktree",
+                refName: "main",
+                newRefName: "owned",
+                baseRefName: "main",
+              },
+              {
+                revalidateMutation: Ref.updateAndGet(checks, (count) => count + 1).pipe(
+                  Effect.flatMap((count) =>
+                    count === checkpoint
+                      ? Effect.fail(
+                          new GitCommandError({
+                            operation: "fixture.original-grant",
+                            command: "fixture guard",
+                            cwd: "/synthetic-repo",
+                            detail: "Original grant lost",
+                          }),
+                        )
+                      : Effect.void,
+                  ),
+                ),
+              },
+            )
+            .pipe(Effect.flip);
+          assert.instanceOf(result, GitCommandError);
+          assert.equal(result.operation, "GitVcsDriver.createWorktree.revalidateOriginalActor");
+          assert.equal(yield* Ref.get(checks), checkpoint);
+          assert.equal(
+            commands.filter((args) => args.includes("worktree") && args.includes("add")).length,
+            checkpoint === 1 ? 0 : 1,
+          );
+          assert.isEmpty(commands.filter((args) => args.includes("submodule")));
+          assert.isEmpty(commands.filter((args) => args.includes("branch.owned.gh-merge-base")));
+        }),
+      ).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
+  );
+});
+
 describe("resolveRemoteTrackingCommitIfExists", () => {
   it.effect.each([
     { name: "present", exitCode: 0, stderr: "", expected: "commit" },

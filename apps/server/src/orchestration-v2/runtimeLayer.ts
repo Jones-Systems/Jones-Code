@@ -1,3 +1,4 @@
+import { layer as delegatedCheckoutPlannerLayer } from "./DelegatedCheckoutPlanner.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -197,6 +198,7 @@ const runFinalizationServiceProvided = runFinalizationServiceLayer.pipe(
 const orchestratorProvided = orchestratorLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      delegatedCheckoutPlannerLayer,
       checkpointServiceProvided,
       commandPolicyLayer,
       storesLayer,
@@ -244,6 +246,8 @@ const managedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
 const threadLaunchProvided = threadLaunchServiceLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      eventSinkProvided,
+      effectOutboxLayer,
       ProjectServiceLayerLive,
       ProjectSetupScriptRunnerLayerLive,
       managedProjectFoldersProvided,
@@ -308,7 +312,9 @@ export const OrchestrationV2LayerLive = Layer.mergeAll(
 );
 
 export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
-  OrchestrationV2LayerLive.pipe(Layer.provide(ProjectServiceLayerLive)),
+  OrchestrationV2LayerLive.pipe(
+    Layer.provide(Layer.merge(ProjectServiceLayerLive, threadLaunchProvided)),
+  ),
   ProjectServiceLayerLive,
   managedProjectFoldersProvided,
   threadLaunchProvided,

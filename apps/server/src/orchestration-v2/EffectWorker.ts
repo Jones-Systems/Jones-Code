@@ -1,3 +1,4 @@
+import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import { CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -103,11 +104,35 @@ export const executorLayer: Layer.Layer<
     const threadTitleRegeneration =
       yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
+    const threadLaunch = yield* Effect.serviceOption(ThreadLaunchService.ThreadLaunchService);
     const settings = yield* ServerSettings.ServerSettingsService;
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
+          case "delegated-workspace.prepare": {
+            const prepare = Option.isSome(threadLaunch)
+              ? threadLaunch.value.prepareDelegated
+              : undefined;
+            if (prepare === undefined)
+              return Effect.fail(
+                new OrchestrationEffectExecutionError({
+                  effectId: effect.id,
+                  effectType: effect.request.type,
+                  cause: "The original delegated preparation producer is unavailable.",
+                }),
+              );
+            return prepare(effect).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
+          }
           case "provider-runtime.continue": {
             const sourceRunId = effect.request.sourceRunId;
             return continueRestartedRun({ threadId: effect.threadId, sourceRunId }).pipe(
