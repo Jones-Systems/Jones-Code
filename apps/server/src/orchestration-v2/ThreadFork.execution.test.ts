@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -16,6 +17,8 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
@@ -39,11 +42,31 @@ const forkCases = (["codex", "claudeAgent"] as const).flatMap((driverName) => {
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: () => Effect.die("Execution is paused after dispatch for handoff inspection"),
   };
-  const layer = makeOrchestratorV2ReplayLayerWithRegistry(
-    { name: `fork-boundary-${driver}` },
-    ProviderAdapterRegistry.makeLayer([adapter]),
-    { runEffectWorker: false },
-  );
+  const layer = Layer.unwrap(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-fork-boundary-workspace-",
+      });
+      return makeOrchestratorV2ReplayLayerWithRegistry(
+        { name: `fork-boundary-${driver}` },
+        ProviderAdapterRegistry.makeLayer([adapter]),
+        {
+          runEffectWorker: false,
+          checkoutFixture: {
+            projects: [
+              {
+                projectId: ProjectId.make("fork-boundary-project"),
+                title: "Fork boundary",
+                workspaceRoot,
+              },
+            ],
+            resolvePath: () => undefined,
+          },
+        },
+      );
+    }),
+  ).pipe(Layer.provide(NodeServices.layer));
 
   return (["failed", "interrupted", "cancelled"] as const).map((status) => ({
     driver,
