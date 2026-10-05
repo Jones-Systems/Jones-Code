@@ -30,6 +30,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as EventSink from "../EventSink.ts";
+import { makeCommitTransaction } from "../CommitTransaction.ts";
 import { makeKeyedSerialExecutor } from "../KeyedSerialExecutor.ts";
 import { randomUuidV4 } from "../RandomUuid.ts";
 
@@ -346,6 +347,7 @@ function chunks<A>(items: ReadonlyArray<A>, size: number): Array<ReadonlyArray<A
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const commitTransaction = yield* makeCommitTransaction();
   const eventSink = yield* EventSink.EventSinkV2;
   const transcriptImports = yield* makeKeyedSerialExecutor<ThreadId>();
 
@@ -607,7 +609,7 @@ const make = Effect.gen(function* () {
           payload: thread,
         },
       ];
-      yield* sql.withTransaction(
+      yield* commitTransaction.withTransaction(
         Effect.gen(function* () {
           yield* Effect.forEach(
             previews,

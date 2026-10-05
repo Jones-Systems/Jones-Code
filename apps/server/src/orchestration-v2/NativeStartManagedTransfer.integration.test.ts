@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CodexSettings,
+  AuthSessionId,
   EnvironmentId,
   CheckpointScopeId,
   CommandId,
@@ -38,6 +39,9 @@ import { HttpServer } from "effect/unstable/http";
 import * as NetAddress from "effect/unstable/net/NetAddress";
 import packageJson from "../../package.json" with { type: "json" };
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as NativeAuthority from "../nativeCreation/NativeCreationAuthority.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as ProjectStore from "./ProjectStore.ts";
 import * as LegacyRepositorySqlite from "../nativeCreation/NativeCreationRepositorySqlite.ts";
 import {
   NativeCreationRepository,
@@ -227,12 +231,13 @@ const nativeFixture = Effect.fnUntraced(function* (
   operationId = "fixture-operation",
   text = "Synthetic prompt",
   path = "/fixture/worktree",
+  projectCwd = "/fixture/project",
 ) {
   const binding = decodeFixtureBinding({
     backend_instance: "fixture-backend",
     environment_id: "fixture-environment",
     project_id: "fixture-project",
-    project_cwd: "/fixture/project",
+    project_cwd: projectCwd,
     account_ref: "fixture-account",
     runtime_mode: "full-access" as const,
     interaction_mode: "default" as const,
@@ -307,7 +312,13 @@ const stores = Layer.mergeAll(
   IdAllocator.layer,
 );
 const persistence = EventSink.layer.pipe(Layer.provideMerge(stores));
-const fixtureBase = Effect.fnUntraced(function* (options: { readonly starting?: boolean } = {}) {
+const fixtureBase = Effect.fnUntraced(function* (
+  options: {
+    readonly starting?: boolean;
+    readonly nativeAuthority?: boolean;
+    readonly enrolled?: boolean;
+  } = {},
+) {
   yield* TestClock.setTime(Date.parse(timestamp));
   const sink = yield* EventSink.EventSinkV2;
   const sql = yield* SqlClient.SqlClient;
@@ -328,7 +339,12 @@ const fixtureBase = Effect.fnUntraced(function* (options: { readonly starting?: 
     interactionMode: "default" as const,
     cwd: workspace,
   };
-  const native = yield* nativeFixture("joined-actual-original", prompt, workspace);
+  const native = yield* nativeFixture(
+    "joined-actual-original",
+    prompt,
+    workspace,
+    options.nativeAuthority === true ? workspace : undefined,
+  );
   yield* legacy.claim(native.input, native.authorize);
   const command = releaseCommand(native.preparation);
   if (command.type !== "prepared-run.release") return yield* Effect.die("Original release missing");
@@ -347,8 +363,8 @@ const fixtureBase = Effect.fnUntraced(function* (options: { readonly starting?: 
     modelSelection,
     runtimeMode: "full-access",
     interactionMode: "default",
-    branch: null,
-    worktreePath: null,
+    branch: options.nativeAuthority === true ? native.input.resources.branch : null,
+    worktreePath: options.nativeAuthority === true ? workspace : null,
     activeProviderThreadId: null,
     lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
     forkedFrom: null,
@@ -646,10 +662,10 @@ const fixtureBase = Effect.fnUntraced(function* (options: { readonly starting?: 
     command,
     threadId,
     projectId,
-    branch: null,
+    branch: appThread.branch,
     canonicalProjectRoot: workspace,
     canonicalCheckoutPath: workspace,
-    source: { projectWorkspaceRoot: workspace, worktreePath: null },
+    source: { projectWorkspaceRoot: workspace, worktreePath: appThread.worktreePath },
     leaseId: "lease:joined-original",
   });
   const accepted = yield* sink.commitCommand({
@@ -684,10 +700,103 @@ const fixtureBase = Effect.fnUntraced(function* (options: { readonly starting?: 
     modelSelection,
     runtimePolicy,
   };
+  const authSessionContext = yield* Layer.build(AuthSessions.layer);
+  const authSessions = yield* Effect.service(AuthSessions.AuthSessionRepository).pipe(
+    Effect.provide(authSessionContext),
+  );
+  const actorSessionId = AuthSessionId.make(native.input.actorSessionId);
+  if (options.nativeAuthority === true) {
+    yield* authSessions.create({
+      sessionId: actorSessionId,
+      subject: "Synthetic actual native actor",
+      scopes: ["orchestration:operate"],
+      method: "bearer-access-token",
+      client: {
+        label: null,
+        ipAddress: null,
+        userAgent: null,
+        deviceType: "bot",
+        os: null,
+        browser: null,
+      },
+      issuedAt: now,
+      expiresAt: DateTime.makeUnsafe("2099-01-01T00:00:00Z"),
+    });
+    if (options.enrolled !== false)
+      yield* sql`INSERT INTO native_creation_automation_enrollments (session_id,enrolled_at) VALUES (${actorSessionId},${timestamp})`;
+  }
+  let currentGrant: NativeAuthority.NativeCreationGrant = {
+    grantId: native.input.grantId,
+    revision: native.input.grantRevision,
+    actorSessionId,
+    issuerId: "synthetic-current-issuer",
+    expiresAt: DateTime.makeUnsafe("2099-01-01T00:00:00Z"),
+    revoked: false,
+    operationId: native.preparation.operationId,
+    preparationId: native.preparation.preparationId,
+    preparationSha256: native.preparation.preparationSha256,
+    bindingDigest: native.preparation.bindingDigest,
+    binding: native.historical,
+    resources: native.input.resources,
+    allowedStages: ["claim", "native_command"],
+    recoveryScopes: [],
+  };
+  const authorityContext = yield* Layer.build(
+    NativeAuthority.NativeCreationAuthorityLive.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(AuthSessions.AuthSessionRepository, authSessions),
+          Layer.succeed(NativeCreationRepository, legacy),
+          Layer.succeed(NativeCreationExecutionRepository, repo),
+          Layer.succeed(NativeAuthority.NativeCreationGrantResolver, {
+            resolveCurrent: () =>
+              Effect.sync(() => ({
+                enrolledSessionId: actorSessionId,
+                trustedIssuerId: "synthetic-current-issuer",
+                grant: currentGrant,
+              })),
+          }),
+          Layer.succeed(NativeAuthority.NativeCreationBindingResolver, {
+            resolveCurrent: () => Effect.succeed(native.historical),
+          }),
+        ),
+      ),
+    ),
+  );
+  const authority = yield* Effect.service(NativeAuthority.NativeCreationAuthority).pipe(
+    Effect.provide(authorityContext),
+  );
+  const unavailableContext = yield* Layer.build(
+    NativeAuthority.NativeCreationAuthorityUnavailable.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(AuthSessions.AuthSessionRepository, authSessions),
+          Layer.succeed(NativeCreationRepository, legacy),
+          Layer.succeed(NativeCreationExecutionRepository, repo),
+        ),
+      ),
+    ),
+  );
+  const unavailableAuthority = yield* Effect.service(NativeAuthority.NativeCreationAuthority).pipe(
+    Effect.provide(unavailableContext),
+  );
+  const projectContext = yield* Layer.build(ProjectStore.layer);
+  const projectStore = yield* Effect.service(ProjectStore.ProjectStoreV2).pipe(
+    Effect.provide(projectContext),
+  );
   return {
     sink,
     sql,
     repo,
+    authority,
+    unavailableAuthority,
+    authSessions,
+    actorSessionId,
+    projectStore,
+    nativeResources: native.input.resources,
+    changeGrant: (changes: Partial<NativeAuthority.NativeCreationGrant>) => {
+      currentGrant = { ...currentGrant, ...changes };
+    },
     outbox,
     store,
     input,
@@ -714,8 +823,8 @@ const fixtureBase = Effect.fnUntraced(function* (options: { readonly starting?: 
     },
   };
 });
-const fixture = Effect.fnUntraced(function* () {
-  const f = yield* fixtureBase();
+const fixture = Effect.fnUntraced(function* (options: { readonly nativeAuthority?: boolean } = {}) {
+  const f = yield* fixtureBase(options);
   const effect = Option.getOrThrow(
     yield* f.outbox.claimNext({ workerId: "worker:joined-original", leaseDurationMs: 60_000 }),
   );
@@ -732,11 +841,21 @@ const fixture = Effect.fnUntraced(function* () {
       expectedAttempt: effect.attemptCount,
       leaseExpiresAt: DateTime.makeUnsafe(effect.leaseExpiresAt),
     },
-    targetSource: { projectWorkspaceRoot: f.input.runtimePolicy.cwd!, worktreePath: null },
+    targetSource: {
+      projectWorkspaceRoot: f.input.runtimePolicy.cwd!,
+      worktreePath: f.input.appThread.worktreePath,
+    },
   })).record.subject.use;
   const start = yield* f.store.bindOutboxExecution(originalUse);
-  yield* f.startNativeEffect;
-  return { ...f, effect, start };
+  const nativeExecution =
+    options.nativeAuthority === true
+      ? {
+          context: yield* f.authority.issueExecution!({ reference: f.reference, timestamp }),
+          resources: f.nativeResources,
+        }
+      : undefined;
+  if (options.nativeAuthority !== true) yield* f.startNativeEffect;
+  return { ...f, effect, start, nativeExecution };
 });
 const startedFixture = Effect.fnUntraced(function* () {
   const f = yield* fixture();
@@ -1146,7 +1265,7 @@ it.effect(
   "the actual RunExecution owner commits authentic ACK and transfer after complete native start return",
   () =>
     Effect.gen(function* () {
-      const f = yield* fixture();
+      const f = yield* fixture({ nativeAuthority: true });
       const current = yield* f.projection.getThreadRecords(f.input.threadId, [
         "runs",
         "nodes",
@@ -1182,6 +1301,7 @@ it.effect(
           nativeStart: {
             operation: f.nativeOperation,
             startExecution: f.start,
+            ...(f.nativeExecution === undefined ? {} : { execution: f.nativeExecution }),
             onTransferred: (completion) => {
               completions.push(completion);
             },
@@ -1266,7 +1386,7 @@ it.effect(
 
 const actualWorkerForFixture = Effect.fnUntraced(function* (
   f: Effect.Success<ReturnType<typeof fixtureBase>>,
-  mode?: "lost" | "copied",
+  mode?: "lost" | "copied" | "no_issuer" | "unavailable",
 ) {
   const domains = Layer.mergeAll(
     Layer.succeed(EventSink.EventSinkV2, f.sink),
@@ -1274,13 +1394,26 @@ const actualWorkerForFixture = Effect.fnUntraced(function* (
     Layer.succeed(IdAllocator.IdAllocatorV2, yield* IdAllocator.IdAllocatorV2),
     Layer.succeed(Manager.ProviderSessionManagerV2, f.manager),
     Layer.succeed(RunExecutionService.RunExecutionServiceV2, f.runExecution),
+    ...(mode === "no_issuer"
+      ? []
+      : [
+          Layer.succeed(
+            NativeAuthority.NativeCreationAuthority,
+            mode === "unavailable" ? f.unavailableAuthority : f.authority,
+          ),
+        ]),
     ServerSettings.layerTest(),
     RuntimePolicy.layerWithOverride({ cwd: f.input.runtimePolicy.cwd! }).pipe(
       Layer.provide(RuntimePolicy.layer),
     ),
     Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
     Layer.mock(GitWorkflowService.GitWorkflowService)({}),
-    Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+    Layer.mock(ProjectService.ProjectService)({
+      getById: (id) =>
+        f.projectStore
+          .get(id)
+          .pipe(Effect.map(Option.map((row) => ({ ...row, id: row.projectId }))), Effect.orDie),
+    }),
     Layer.mock(ProviderAuthService.ProviderAuthService)({}),
     Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
       getInstance: () => Effect.succeed(undefined),
@@ -1311,8 +1444,7 @@ const actualWorkerForFixture = Effect.fnUntraced(function* (
           Layer.succeed(EffectOutbox.EffectOutboxV2, f.outbox),
           Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
             execute: (effect, options) =>
-              f.startNativeEffect.pipe(
-                Effect.andThen(actualExecutor.execute(effect, options)),
+              actualExecutor.execute(effect, options).pipe(
                 Effect.flatMap((result) =>
                   mode === "lost"
                     ? Effect.fail(
@@ -1350,13 +1482,20 @@ it.effect(
   "the actual worker and turn-start service consume the authentic ACK transfer without generic resettlement",
   () =>
     Effect.gen(function* () {
-      const f = yield* fixtureBase({ starting: true });
+      const f = yield* fixtureBase({ starting: true, nativeAuthority: true });
       const worker = yield* actualWorkerForFixture(f);
       const running = yield* worker.runOnce.pipe(Effect.forkScoped);
       yield* Deferred.await(f.responseReceived).pipe(Effect.raceFirst(Fiber.join(running)));
       const claimed = Option.getOrThrow(yield* f.outbox.get(f.effectId));
       assert.strictEqual(claimed.status, "running");
       assert.strictEqual(claimed.attemptCount, 1);
+      assert.deepEqual(
+        (yield* f.repo.readHistoryByClaim(f.reference.claimId)).effectsV2.map((fact) => [
+          fact.phase,
+          fact.effectId,
+        ]),
+        [["started", f.effectId]],
+      );
       assert.strictEqual(f.requests(), 1);
       assert.isNull(yield* f.repo.readNativeEffectConfirmation(f.effectId));
       yield* Deferred.succeed(f.releaseResponse, undefined);
@@ -1397,7 +1536,7 @@ it.effect.each(["lost", "copied"] as const)(
   "a %s private worker result retains authentic transferred custody without terminal claim revival",
   (mode) =>
     Effect.gen(function* () {
-      const f = yield* fixtureBase({ starting: true });
+      const f = yield* fixtureBase({ starting: true, nativeAuthority: true });
       const worker = yield* actualWorkerForFixture(f, mode);
       const running = yield* worker.runOnce.pipe(Effect.exit, Effect.forkScoped);
       yield* Deferred.await(f.responseReceived).pipe(Effect.raceFirst(Fiber.join(running)));
@@ -1431,6 +1570,94 @@ it.effect.each(["lost", "copied"] as const)(
       assert.strictEqual((yield* f.outbox.listHeldByThreadId(f.input.threadId)).length, 0);
       assert.isFalse(yield* worker.runOnce);
       assert.strictEqual(f.requests(), 1);
+      yield* f.manager.close(f.runtime.providerSessionId);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(persistence, NodeServices.layer))),
+);
+
+it.effect.each([
+  "revoked_session",
+  "expired_session",
+  "scopes",
+  "enrollment",
+  "revoked_grant",
+  "revision",
+  "resources",
+  "failed_start_commit",
+] as const)("the actual native issuer refuses %s before original provider dispatch", (mode) =>
+  Effect.gen(function* () {
+    const f = yield* fixtureBase({
+      starting: true,
+      nativeAuthority: true,
+      enrolled: mode !== "enrollment",
+    });
+    if (mode === "revoked_session")
+      yield* f.authSessions.revoke({ sessionId: f.actorSessionId, revokedAt: yield* DateTime.now });
+    if (mode === "expired_session")
+      yield* f.sql`UPDATE auth_sessions SET expires_at='2020-01-01T00:00:00Z' WHERE session_id=${f.actorSessionId}`;
+    if (mode === "scopes")
+      yield* f.sql`UPDATE auth_sessions SET scopes='[]' WHERE session_id=${f.actorSessionId}`;
+    if (mode === "revoked_grant") f.changeGrant({ revoked: true });
+    if (mode === "revision") f.changeGrant({ revision: 2 });
+    if (mode === "resources")
+      f.changeGrant({
+        resources: { projectCwd: "/unrelated", branch: "unrelated", worktreePath: "/unrelated" },
+      });
+    if (mode === "failed_start_commit")
+      yield* f.sql.unsafe(
+        `CREATE TRIGGER owned_fail_native_start BEFORE INSERT ON native_creation_effect_facts WHEN json_extract(NEW.fact_json, '$.phase')='started' BEGIN SELECT RAISE(ABORT,'owned original start commit failure'); END`,
+      );
+    const worker = yield* actualWorkerForFixture(f);
+    assert.isTrue(Exit.isFailure(yield* worker.runOnce.pipe(Effect.exit)));
+    assert.strictEqual(f.requests(), 0);
+    assert.isNull(yield* f.repo.readNativeEffectConfirmation(f.effectId));
+    assert.deepEqual((yield* f.repo.readHistoryByClaim(f.reference.claimId)).effectsV2, []);
+    assert.deepEqual(
+      yield* f.sql`SELECT * FROM orchestration_v2_ordinary_checkout_execution_associations WHERE event_kind='activate'`,
+      [],
+    );
+    assert.strictEqual((yield* f.outbox.listHeldByThreadId(f.input.threadId)).length, 1);
+    assert.isFalse(yield* worker.runOnce);
+    yield* f.manager.close(f.runtime.providerSessionId);
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(persistence, NodeServices.layer))),
+);
+
+it.effect(
+  "current native grant loss during the original RPC cannot publish ACK authority or retry",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixtureBase({ starting: true, nativeAuthority: true });
+      const worker = yield* actualWorkerForFixture(f);
+      const running = yield* worker.runOnce.pipe(Effect.exit, Effect.forkScoped);
+      yield* Deferred.await(f.responseReceived).pipe(Effect.raceFirst(Fiber.join(running)));
+      assert.strictEqual(
+        (yield* f.repo.readHistoryByClaim(f.reference.claimId)).effectsV2.length,
+        1,
+      );
+      f.changeGrant({ revoked: true });
+      yield* Deferred.succeed(f.releaseResponse, undefined);
+      assert.isTrue(Exit.isFailure(yield* Fiber.join(running)));
+      assert.isNull(yield* f.repo.readNativeEffectConfirmation(f.effectId));
+      assert.strictEqual(f.requests(), 1);
+      assert.strictEqual((yield* f.outbox.listHeldByThreadId(f.input.threadId)).length, 1);
+      assert.isFalse(yield* worker.runOnce);
+      assert.strictEqual(f.requests(), 1);
+      yield* f.manager.close(f.runtime.providerSessionId);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(persistence, NodeServices.layer))),
+);
+
+it.effect.each(["no_issuer", "unavailable"] as const)(
+  "actual native worker denies %s authority without any native execution start or RPC",
+  (mode) =>
+    Effect.gen(function* () {
+      const f = yield* fixtureBase({ starting: true, nativeAuthority: true });
+      const worker = yield* actualWorkerForFixture(f, mode);
+      assert.isTrue(Exit.isFailure(yield* worker.runOnce.pipe(Effect.exit)));
+      assert.strictEqual(f.requests(), 0);
+      assert.deepEqual((yield* f.repo.readHistoryByClaim(f.reference.claimId)).effectsV2, []);
+      assert.isNull(yield* f.repo.readNativeEffectConfirmation(f.effectId));
+      assert.strictEqual((yield* f.outbox.listHeldByThreadId(f.input.threadId)).length, 1);
+      assert.isFalse(yield* worker.runOnce);
+      assert.strictEqual(f.requests(), 0);
       yield* f.manager.close(f.runtime.providerSessionId);
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(persistence, NodeServices.layer))),
 );

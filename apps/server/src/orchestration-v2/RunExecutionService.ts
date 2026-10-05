@@ -1,3 +1,4 @@
+import * as NativeAuthority from "../nativeCreation/NativeCreationAuthority.ts";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -519,6 +520,10 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly nativeStart?: {
     readonly operation: ProviderNativeOperationContext;
     readonly startExecution: OrdinaryCheckoutExecutionRefV1;
+    readonly execution?: {
+      readonly context: NativeAuthority.NativeCreationExecutionContextV2;
+      readonly resources: NativeAuthority.NativeCreationResources;
+    };
     readonly onTransferred: (completion: {
       readonly confirmation: NativeEffectConfirmationV1;
       readonly execution: OrdinaryCheckoutExecutionRefV1;
@@ -840,6 +845,9 @@ export const layer: Layer.Layer<
           if (native !== undefined) {
             if (
               lifetime === undefined ||
+              native.execution === undefined ||
+              NativeAuthority.getNativeCreationExecutionReference(native.execution.context)
+                ?.effectId !== native.operation.operationId ||
               input.session.driver !== "codex" ||
               !input.session.nativeStartConfirmationOperations?.includes("start_turn") ||
               native.operation.operation !== "start_turn" ||
@@ -853,6 +861,10 @@ export const layer: Layer.Layer<
               return yield* startError(
                 "The original native start producer or claimed lifetime is unavailable.",
               );
+            yield* NativeAuthority.authorizeNativeCreationExecution(native.execution!.context, {
+              stage: "native_command",
+              resources: native.execution!.resources,
+            }).pipe(Effect.mapError(startError));
             yield* lifetime
               .revalidateExecution(native.startExecution)
               .pipe(Effect.mapError(startError));
@@ -1508,6 +1520,14 @@ export const layer: Layer.Layer<
                           return yield* adapterStartError(
                             "The original native entered capture is unavailable or already issued.",
                           );
+                        if (native.execution === undefined)
+                          return yield* adapterStartError(
+                            "The original native issued execution is unavailable.",
+                          );
+                        yield* NativeAuthority.authorizeNativeCreationExecution(
+                          native.execution.context,
+                          { stage: "native_command", resources: native.execution.resources },
+                        ).pipe(Effect.mapError(adapterStartError));
                         nativeCaptures.push(capture);
                         const entered = yield* lifetime
                           .captureNativeStartEnteredParticipant({
@@ -1518,9 +1538,15 @@ export const layer: Layer.Layer<
                         nativeEntered.push(entered);
                         return {
                           evidenceRevision: entered.evidenceRevision,
-                          revalidate: lifetime
-                            .revalidateNativeEnteredBeforeAcknowledgment(entered)
-                            .pipe(Effect.mapError(adapterStartError)),
+                          revalidate: NativeAuthority.authorizeNativeCreationExecution(
+                            native.execution.context,
+                            { stage: "native_command", resources: native.execution.resources },
+                          ).pipe(
+                            Effect.andThen(
+                              lifetime.revalidateNativeEnteredBeforeAcknowledgment(entered),
+                            ),
+                            Effect.mapError(adapterStartError),
+                          ),
                         };
                       }),
                     acknowledged: (acknowledgment: ProviderNativeStartAcknowledgmentV1) =>

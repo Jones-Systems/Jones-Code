@@ -9876,6 +9876,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             });
 
     if (Option.isSome(existingReceipt)) {
+      const receipt = existingReceipt.value;
+      if (receipt.status === "rejected") {
+        return yield* new OrchestratorCommandPreviouslyRejectedError({
+          commandId: command.commandId,
+          commandType: command.type,
+          detail: receipt.error ?? "Previously rejected.",
+        });
+      }
       if (checkoutCommand !== undefined) {
         if (eventSink.validateOrdinaryCheckoutCommandReplay === undefined)
           return yield* new OrchestratorDispatchError({
@@ -9886,14 +9894,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* eventSink
           .validateOrdinaryCheckoutCommandReplay(checkoutCommand, checkoutCommand.threadId)
           .pipe(mapDispatchError(command));
-      }
-      const receipt = existingReceipt.value;
-      if (receipt.status === "rejected") {
-        return yield* new OrchestratorCommandPreviouslyRejectedError({
-          commandId: command.commandId,
-          commandType: command.type,
-          detail: receipt.error ?? "Previously rejected.",
-        });
       }
       // A receipt only proves this exact command was handled for its own
       // thread. Replaying it for a command aimed at another thread would

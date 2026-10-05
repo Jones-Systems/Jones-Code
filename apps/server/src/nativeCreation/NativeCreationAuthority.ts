@@ -1,5 +1,5 @@
 import {
-  type AuthSessionId,
+  AuthSessionId,
   type NativeCreationGuard,
   type NativeCreationEffect,
   NativeCreationHistoricalBinding,
@@ -13,8 +13,10 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 import * as Repository from "./NativeCreationRepository.ts";
+import { NativeCreationExecutionReferenceV2 } from "./NativeCreationExecutionTypes.ts";
 import {
   nativeCreationCanonicalJson,
+  validateNativeCreationPreparation,
   type ValidatedNativeCreationPreparation,
 } from "./NativeCreationPreparation.ts";
 
@@ -54,6 +56,56 @@ export interface NativeCreationAuthorityInput {
   readonly stage: NativeCreationStage;
   readonly recoveryScopeId?: string;
   readonly recoveryResource?: Extract<NativeCreationEffect, { kind: "cleanup" }>["resource"];
+}
+
+declare const issuedExecutionContext: unique symbol;
+
+export interface NativeCreationExecutionContextV2 {
+  readonly [issuedExecutionContext]: true;
+}
+
+export interface NativeCreationExecutionStageInput {
+  readonly resources: NativeCreationResources;
+  readonly stage: NativeCreationStage;
+  readonly recoveryScopeId?: string;
+  readonly recoveryResource?: NativeCreationAuthorityInput["recoveryResource"];
+}
+
+const issuedExecutions = new WeakMap<
+  NativeCreationExecutionContextV2,
+  {
+    readonly reference: NativeCreationExecutionReferenceV2;
+    readonly authorize: (
+      input: NativeCreationExecutionStageInput,
+    ) => Effect.Effect<NativeCreationHistoricalBinding, NativeCreationAuthorityError>;
+  }
+>();
+
+// Historical correlation carries no current permission or execution outcome.
+export const getNativeCreationExecutionReference = (
+  context: NativeCreationExecutionContextV2,
+): NativeCreationExecutionReferenceV2 | null => issuedExecutions.get(context)?.reference ?? null;
+
+// A recheck does not replace the separate durable start required by each actual effect.
+export const authorizeNativeCreationExecution = Effect.fn("authorizeNativeCreationExecution")(
+  function* (context: NativeCreationExecutionContextV2, input: NativeCreationExecutionStageInput) {
+    const execution = issuedExecutions.get(context);
+    if (execution === undefined) {
+      return yield* new NativeCreationAuthorityError({
+        code: "unsupported_authority",
+        message: "Native execution context was not issued by an authority",
+      });
+    }
+    return yield* execution.authorize(input);
+  },
+);
+
+function freezePreparation<Value>(value: Value): Value {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) freezePreparation(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 export interface NativeCreationGrant {
@@ -127,6 +179,17 @@ export class NativeCreationAuthority extends Context.Service<
     readonly isAutomationEnrolled: (
       actorSessionId: AuthSessionId,
     ) => Effect.Effect<boolean, NativeCreationAuthorityError>;
+    readonly issueExecution?: (input: {
+      readonly reference: NativeCreationExecutionReferenceV2;
+      readonly timestamp: string;
+    }) => Effect.Effect<
+      NativeCreationExecutionContextV2,
+      Repository.NativeCreationRepositoryError | NativeCreationAuthorityError
+    >;
+    readonly authorizeExecution?: (
+      context: NativeCreationExecutionContextV2,
+      input: NativeCreationExecutionStageInput,
+    ) => Effect.Effect<NativeCreationHistoricalBinding, NativeCreationAuthorityError>;
   }
 >()("t3/nativeCreation/NativeCreationAuthority") {}
 
@@ -135,6 +198,12 @@ const makeNativeCreationAuthority = Effect.gen(function* () {
   const grants = yield* NativeCreationGrantResolver;
   const bindings = yield* NativeCreationBindingResolver;
   const repository = yield* Repository.NativeCreationRepository;
+  const executionRepositoryModule = yield* Effect.promise(
+    () => import("./NativeCreationExecutionRepository.ts"),
+  );
+  const executionRepository = yield* Effect.serviceOption(
+    executionRepositoryModule.NativeCreationExecutionRepository,
+  );
   const isAutomationEnrolled = (actorSessionId: AuthSessionId) =>
     repository.hasAutomationEnrollment(actorSessionId).pipe(Effect.mapError(() => unavailable()));
 
@@ -238,9 +307,130 @@ const makeNativeCreationAuthority = Effect.gen(function* () {
     }
     return binding;
   });
+  const issueExecution: NonNullable<NativeCreationAuthority["Service"]["issueExecution"]> =
+    Effect.fn("NativeCreationAuthority.issueExecution")(function* (
+      input: Parameters<NonNullable<NativeCreationAuthority["Service"]["issueExecution"]>>[0],
+    ) {
+      const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)(
+        input.reference,
+      ).pipe(
+        Effect.mapError(
+          () =>
+            new NativeCreationAuthorityError({
+              code: "unresolved_claim",
+              message: "Native execution reference is invalid",
+            }),
+        ),
+      );
+      if (reference.stage !== "native_command") {
+        return yield* new NativeCreationAuthorityError({
+          code: "unresolved_claim",
+          message: "Native execution issuance requires a native command stage",
+        });
+      }
+      if (Option.isNone(executionRepository)) return yield* unavailable();
+      const resolved = yield* executionRepository.value.readExecutionReference(reference);
+      const intent = resolved.history.intent;
+      const preparation = yield* validateNativeCreationPreparation(
+        new TextEncoder().encode(intent.canonicalPreparation),
+      ).pipe(
+        Effect.mapError(
+          () =>
+            new NativeCreationAuthorityError({
+              code: "unresolved_claim",
+              message: "Native execution preparation cannot be recovered from its immutable claim",
+            }),
+        ),
+      );
+      if (
+        preparation.canonicalText !== resolved.preparation.canonicalText ||
+        preparation.preparationSha256 !== resolved.preparation.preparationSha256
+      ) {
+        return yield* new NativeCreationAuthorityError({
+          code: "unresolved_claim",
+          message: "Native execution preparation differs from its immutable claim",
+        });
+      }
+      const actorSessionId = yield* Schema.decodeUnknownEffect(Schema.toType(AuthSessionId))(
+        intent.actorSessionId,
+      ).pipe(
+        Effect.mapError(
+          () =>
+            new NativeCreationAuthorityError({
+              code: "unresolved_claim",
+              message: "Native execution claim has an invalid actor session",
+            }),
+        ),
+      );
+      const authorityInput: NativeCreationAuthorityInput = Object.freeze({
+        actorSessionId,
+        preparation: freezePreparation(preparation),
+        guard: Object.freeze({
+          schema: "t3.native-creation-guard/v1" as const,
+          grantId: intent.grantId,
+          grantRevision: intent.grantRevision,
+        }),
+        resources: Object.freeze({ ...intent.resources }),
+        stage: reference.stage,
+      });
+      const started = yield* executionRepository.value.startEffectV2(
+        reference,
+        input.timestamp,
+        authorize(authorityInput),
+      );
+      if (
+        started.status !== "started" ||
+        started.fact.version !== 2 ||
+        started.fact.kind !== "native_command" ||
+        started.fact.phase !== "started" ||
+        started.fact.effectId !== reference.effectId ||
+        started.fact.commandId !== reference.stageCommandId ||
+        started.fact.threadId !== intent.threadId ||
+        started.fact.commandType !== resolved.command.type ||
+        started.fact.commandDigest !== resolved.nativeIdentity.normalizedCommandDigest
+      ) {
+        return yield* new NativeCreationAuthorityError({
+          code: "unresolved_claim",
+          message: "Native execution start disagrees with its immutable reference",
+        });
+      }
+      // Only this invocation's new committed start can mint an in-memory execution context.
+      const context = Object.freeze({}) as NativeCreationExecutionContextV2;
+      issuedExecutions.set(context, {
+        reference: Object.freeze({ ...reference }),
+        authorize: Effect.fn("NativeCreationAuthority.authorizeExecution")(function* (
+          actual: NativeCreationExecutionStageInput,
+        ) {
+          if (
+            nativeCreationCanonicalJson(actual.resources) !==
+            nativeCreationCanonicalJson(authorityInput.resources)
+          ) {
+            return yield* new NativeCreationAuthorityError({
+              code: "binding_mismatch",
+              message: "Native execution resources differ from the immutable claim",
+            });
+          }
+          return yield* authorize({
+            ...authorityInput,
+            stage: actual.stage,
+            resources: actual.resources,
+            ...(actual.recoveryScopeId === undefined
+              ? {}
+              : { recoveryScopeId: actual.recoveryScopeId }),
+            ...(actual.recoveryResource === undefined
+              ? {}
+              : { recoveryResource: actual.recoveryResource }),
+          });
+        }),
+      });
+      return context;
+    });
+
   return NativeCreationAuthority.of({
     authorize,
     isAutomationEnrolled,
+    issueExecution,
+    authorizeExecution: authorizeNativeCreationExecution,
   });
 });
 

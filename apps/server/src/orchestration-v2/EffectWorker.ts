@@ -30,6 +30,7 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 import * as EventSink from "./EventSink.ts";
+import * as NativeAuthority from "../nativeCreation/NativeCreationAuthority.ts";
 import type { RunExecutionServiceV2StartRootRunInput } from "./RunExecutionService.ts";
 import { nativeCreationCanonicalJson } from "../nativeCreation/NativeCreationPreparation.ts";
 
@@ -130,6 +131,7 @@ export const executorLayer: Layer.Layer<
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const threadLaunch = yield* Effect.serviceOption(ThreadLaunchService.ThreadLaunchService);
     const settings = yield* ServerSettings.ServerSettingsService;
+    const nativeAuthority = yield* Effect.serviceOption(NativeAuthority.NativeCreationAuthority);
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
@@ -212,6 +214,42 @@ export const executorLayer: Layer.Layer<
                 ),
               );
             return Effect.gen(function* () {
+              const reference = effect.nativeCreationExecutionReference;
+              const now = yield* DateTime.now;
+              if (
+                Option.isNone(nativeAuthority) ||
+                nativeAuthority.value.issueExecution === undefined ||
+                reference === undefined ||
+                reference.version !== 2 ||
+                reference.stage !== "native_command" ||
+                reference.effectId !== effect.id ||
+                reference.stageCommandId !== effect.commandId ||
+                effect.status !== "running" ||
+                effect.leaseOwner === null ||
+                effect.attemptCount < 1 ||
+                effect.leaseExpiresAt === null ||
+                !Number.isFinite(Date.parse(effect.leaseExpiresAt)) ||
+                Date.parse(effect.leaseExpiresAt) <= DateTime.toEpochMillis(now)
+              )
+                return yield* new NativeAuthority.NativeCreationAuthorityError({
+                  code: "unresolved_claim",
+                  message: "The original native start has no current issuer and exact live claim.",
+                });
+              const executionContext = yield* nativeAuthority.value.issueExecution({
+                reference,
+                timestamp: DateTime.formatIso(now),
+              });
+              const issuedReference =
+                NativeAuthority.getNativeCreationExecutionReference(executionContext);
+              if (
+                issuedReference === null ||
+                nativeCreationCanonicalJson(issuedReference) !==
+                  nativeCreationCanonicalJson(reference)
+              )
+                return yield* new NativeAuthority.NativeCreationAuthorityError({
+                  code: "unresolved_claim",
+                  message: "The issued context differs from the original claimed native reference.",
+                });
               const transferred: NativeStartTransferred[] = [];
               yield* providerTurnStart.start({
                 threadId: effect.threadId,
@@ -219,6 +257,7 @@ export const executorLayer: Layer.Layer<
                 willRetry: false,
                 nativeStartClaim: {
                   effect,
+                  executionContext,
                   onTransferred: (completion) => {
                     if (transferred.length !== 0)
                       throw new Error("The original native start transfer was already published.");

@@ -273,7 +273,7 @@ export function sweepStalePendingAttachments(input: {
   return { deleted };
 }
 
-function parseAttachmentIdFromRelativePath(relativePath: string): string | null {
+export function parseAttachmentIdFromRelativePath(relativePath: string): string | null {
   const normalized = normalizeAttachmentRelativePath(relativePath);
   if (!normalized || normalized.includes("/")) {
     return null;

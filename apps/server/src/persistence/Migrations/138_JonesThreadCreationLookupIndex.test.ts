@@ -161,16 +161,16 @@ it.effect(
       yield* sql`INSERT INTO orchestration_events
       (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
       VALUES ('upgrade-created', 'thread', 'upgrade-thread', 1, 'thread.created', '2026-01-01T00:00:00.000Z', 'user', '{}', '{}', 2)`;
-      const store = yield* makeWorktreeOwnershipLeaseStore();
-      const lease = yield* store.acquire({
-        resourcePath: "/fixture/index-upgrade",
-        leaseId: "upgrade-lease",
-        ownerThreadId: ThreadId.make("upgrade-thread"),
-        branch: "upgrade-branch",
-        nowMs: 10,
-        expiresAtMs: 1_000,
-      });
-      assert.isTrue(Option.isSome(lease));
+      const lease = yield* sql`INSERT INTO worktree_ownership_leases
+      (resource_path, lease_id, owner_thread_id, owner_incarnation, branch, acquired_at_ms, renewed_at_ms, expires_at_ms)
+      SELECT '/fixture/index-upgrade', 'upgrade-lease', stream_id,
+        json_array('t3.orchestration-v2.thread-birth/v1', event_id, sequence),
+        'upgrade-branch', 10, 10, 1000
+      FROM orchestration_events
+      WHERE event_id = 'upgrade-created' AND stream_id = 'upgrade-thread'
+        AND aggregate_kind = 'thread' AND application_event_version = 2 AND event_type = 'thread.created'
+      RETURNING lease_id`;
+      assert.isTrue(lease.length === 1);
       yield* sql`INSERT INTO auth_sessions
       (session_id, subject, scopes, method, issued_at, expires_at)
       VALUES ('upgrade-session', 'upgrade-owner', '[]', 'pairing', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`;
@@ -193,7 +193,7 @@ it.effect(
 
       assert.deepEqual(yield* runMigrations(), []);
       const forkAfter = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
-      assert.equal(forkAfter.length, 10);
+      assert.equal(forkAfter.length, 12);
       assert.deepEqual(forkAfter.slice(0, 6), forkBefore);
       assert.deepEqual(
         forkAfter.slice(6).map(({ migration_id, name }) => ({ migration_id, name })),
@@ -202,6 +202,8 @@ it.effect(
           { migration_id: 139, name: "DeletionWorktreeAdmission" },
           { migration_id: 140, name: "OrdinaryCheckoutOwnership" },
           { migration_id: 141, name: "OrdinaryCheckoutExecutionLifetime" },
+          { migration_id: 142, name: "V2NativeAcceptance" },
+          { migration_id: 143, name: "AttachmentCleanup" },
         ],
       );
       assert.deepEqual(

@@ -1,6 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  CommandId,
+  OrchestrationV2Command,
+  RunId,
   NativeCreationHistoricalBinding,
   ThreadId,
   EventId,
@@ -18,6 +21,21 @@ import migration from "../persistence/Migrations/003_JonesNativeCreationIntents.
 import * as RepositorySqlite from "./NativeCreationRepositorySqlite.ts";
 
 import * as Authority from "./NativeCreationAuthority.ts";
+import * as Repository from "./NativeCreationRepository.ts";
+import * as ExecutionRepository from "./NativeCreationExecutionRepository.ts";
+import {
+  NativeCreationExecutionReferenceV2,
+  NativeCommandIdentityV2,
+} from "./NativeCreationExecutionTypes.ts";
+import {
+  NativeCreationAuthority,
+  NativeCreationAuthorityLive,
+  NativeCreationGrantResolver,
+  NativeCreationBindingResolver,
+  getNativeCreationExecutionReference,
+  authorizeNativeCreationExecution,
+  type NativeCreationGrant,
+} from "./NativeCreationAuthority.ts";
 import {
   NativePreparationBinding,
   nativeCreationCanonicalJson,
@@ -374,4 +392,401 @@ it.effect("unknown native enrollment lookup denies through the authority port", 
       ),
     );
   }),
+);
+
+it.effect("execution references carry only ledger identity and cannot carry authority", () =>
+  Effect.sync(() => {
+    const reference = {
+      version: 2,
+      claimId: "fixture-claim",
+      stageCommandId: CommandId.make("fixture-stage-command"),
+      effectId: "fixture-effect",
+      stage: "native_command",
+    };
+    const decode = Schema.decodeUnknownOption(NativeCreationExecutionReferenceV2);
+    assert.isTrue(Option.isSome(decode(reference)));
+    for (const input of [
+      { ...reference, version: 1 },
+      { ...reference, claimId: "" },
+      { ...reference, effectId: "" },
+      { ...reference, stage: "provider_start" },
+      { ...reference, actorSessionId },
+      { ...reference, guard },
+      {
+        ...reference,
+        resources: { projectCwd: "/fixture", branch: "main", worktreePath: "/worktree" },
+      },
+    ]) {
+      assert.isTrue(Option.isNone(decode(input)));
+    }
+  }),
+);
+
+const nativeCreationV2CommandDigest = (command: OrchestrationV2Command) =>
+  nativeCreationSha256(
+    nativeCreationCanonicalJson(Schema.encodeSync(OrchestrationV2Command)(command)),
+  );
+
+it.effect("issues opaque execution only after a new start and rechecks each actual effect", () =>
+  Effect.gen(function* () {
+    const value = yield* fixture;
+    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+      version: 2,
+      claimId: "fixture-execution-claim",
+      stageCommandId: `${value.preparation.command.commandId}:native:v2:create`,
+      effectId: "fixture-execution-effect",
+      stage: "native_command",
+    }).pipe(Effect.orDie);
+    const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+      type: "thread.create",
+      commandId: reference.stageCommandId,
+      threadId: value.preparation.command.threadId,
+      ...value.preparation.command.bootstrap.createThread,
+      createdBy: "user",
+      creationSource: "server",
+    });
+    if (command.type !== "thread.create") {
+      return yield* Effect.die("Synthetic create stage decoded as another command");
+    }
+    const commandDigest = nativeCreationV2CommandDigest(command);
+    const nativeIdentity = yield* Schema.decodeUnknownEffect(NativeCommandIdentityV2)({
+      kind: "native_creation_stage",
+      version: 2,
+      commandId: reference.stageCommandId,
+      commandType: command.type,
+      aggregateKind: "thread",
+      aggregateId: command.threadId,
+      normalizedCommandDigest: commandDigest,
+      bindingDigest: value.preparation.bindingDigest,
+    }).pipe(Effect.orDie);
+    const resolved: ExecutionRepository.NativeCreationResolvedExecutionV2 = {
+      reference,
+      command,
+      nativeIdentity,
+      preparation: value.preparation,
+      history: {
+        intent: {
+          claimId: reference.claimId,
+          claimedBootId: "fixture-boot",
+          claimedAt: "2026-10-02T12:00:00Z",
+          actorSessionId,
+          grantId: guard.grantId,
+          grantRevision: guard.grantRevision,
+          preparationId: value.preparation.preparationId,
+          operationId: value.preparation.operationId,
+          preparationSha256: value.preparation.preparationSha256,
+          bindingDigest: value.preparation.bindingDigest,
+          promptDigest: value.preparation.promptDigest,
+          commandDigest: value.preparation.commandDigest,
+          commandId: value.preparation.command.commandId,
+          threadId: value.preparation.command.threadId,
+          messageId: value.preparation.command.message.messageId,
+          canonicalPreparation: value.preparation.canonicalText,
+          binding: value.historical,
+          resources: value.resources,
+        },
+        normalizedCommandDigest: null,
+        effects: [],
+        effectsV2: [],
+        effectOverflow: false,
+      },
+    };
+    const releaseCommand: Extract<OrchestrationV2Command, { type: "prepared-run.release" }> = {
+      type: "prepared-run.release",
+      commandId: CommandId.make(value.preparation.command.commandId),
+      threadId: ThreadId.make(value.preparation.command.threadId),
+      runId: RunId.make("fixture-prepared-run"),
+    };
+    const releaseDigest = nativeCreationV2CommandDigest(releaseCommand);
+    const releaseResolved: ExecutionRepository.NativeCreationResolvedExecutionV2 = {
+      ...resolved,
+      command: releaseCommand,
+      history: { ...resolved.history, normalizedCommandDigest: releaseDigest },
+      nativeIdentity: {
+        ...nativeIdentity,
+        commandId: releaseCommand.commandId,
+        commandType: releaseCommand.type,
+        normalizedCommandDigest: releaseDigest,
+      },
+    };
+    let currentGrant: NativeCreationGrant = {
+      ...value.grant,
+      allowedStages: [...value.grant.allowedStages, "native_command"],
+    };
+    let loseNextStart = false;
+    let starts = 0;
+    let resolutionUnavailable = false;
+    let invalidRecordedActor = false;
+    const startedIds = new Set<string>();
+    const startedStageCommands = new Set<string>();
+    const startReferences: Array<NativeCreationExecutionReferenceV2> = [];
+    const ledger = Layer.effect(
+      ExecutionRepository.NativeCreationExecutionRepository,
+      Effect.gen(function* () {
+        const baseline = yield* ExecutionRepository.NativeCreationExecutionRepository;
+        return ExecutionRepository.NativeCreationExecutionRepository.of({
+          ...baseline,
+          readExecutionReference: (input) =>
+            resolutionUnavailable
+              ? Effect.fail(
+                  new Repository.NativeCreationRepositoryError({
+                    code: "unresolved_claim",
+                    message: "Synthetic accepted identity is unavailable",
+                  }),
+                )
+              : Effect.sync(() => {
+                  const stage =
+                    input.stageCommandId === command.commandId ? resolved : releaseResolved;
+                  return {
+                    ...stage,
+                    reference: input,
+                    history: {
+                      ...stage.history,
+                      intent: {
+                        ...stage.history.intent,
+                        actorSessionId: invalidRecordedActor ? "" : actorSessionId,
+                      },
+                    },
+                  };
+                }),
+          startEffectV2: (input, timestamp, authorize) =>
+            Effect.gen(function* () {
+              assert.deepEqual(yield* authorize, value.historical);
+              startReferences.push(input);
+              if (
+                startedIds.has(input.effectId) ||
+                startedStageCommands.has(input.stageCommandId)
+              ) {
+                return yield* new Repository.NativeCreationRepositoryError({
+                  code: "unresolved_claim",
+                  message: "Synthetic effect is already started",
+                });
+              }
+              startedIds.add(input.effectId);
+              startedStageCommands.add(input.stageCommandId);
+              starts++;
+              if (loseNextStart) {
+                loseNextStart = false;
+                return yield* new Repository.NativeCreationRepositoryError({
+                  code: "unresolved_claim",
+                  message: "Synthetic committed start response is lost",
+                });
+              }
+              const stageCommand =
+                input.stageCommandId === command.commandId ? command : releaseCommand;
+              return {
+                status: "started" as const,
+                fact: {
+                  version: 2 as const,
+                  kind: "native_command" as const,
+                  phase: "started" as const,
+                  effectId: input.effectId,
+                  ordinal: starts - 1,
+                  timestamp,
+                  commandId: stageCommand.commandId,
+                  threadId: stageCommand.threadId,
+                  commandType: stageCommand.type,
+                  commandDigest: nativeCreationV2CommandDigest(stageCommand),
+                },
+              };
+            }),
+        });
+      }),
+    ).pipe(Layer.provide(ExecutionRepository.layer.pipe(Layer.provide(database))));
+    const authorityLayer = NativeCreationAuthorityLive.pipe(
+      Layer.provide(ledger),
+      Layer.provide(RepositorySqlite.layer.pipe(Layer.provide(database))),
+      Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+      Layer.provide(
+        Layer.succeed(NativeCreationGrantResolver, {
+          resolveCurrent: () =>
+            Effect.succeed({
+              enrolledSessionId: actorSessionId,
+              trustedIssuerId: "fixture-issuer",
+              grant: currentGrant,
+            }),
+        }),
+      ),
+      Layer.provide(
+        Layer.succeed(NativeCreationBindingResolver, {
+          resolveCurrent: () => Effect.succeed(value.historical),
+        }),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const authority = yield* NativeCreationAuthority;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${actorSessionId}, '2026-10-02T12:00:00Z')`;
+      if (authority.issueExecution === undefined || authority.authorizeExecution === undefined)
+        return yield* Effect.die("Real authority issuer is missing");
+      const input = { reference, timestamp: "2026-10-02T12:00:00Z" };
+      const actual = { stage: "native_command" as const, resources: value.resources };
+      assert.strictEqual(
+        (yield* authority
+          .issueExecution({
+            ...input,
+            reference: { ...reference, stage: "fetch" },
+          })
+          .pipe(Effect.flip)).code,
+        "unresolved_claim",
+      );
+      assert.strictEqual(starts, 0);
+      resolutionUnavailable = true;
+      assert.strictEqual(
+        (yield* authority.issueExecution(input).pipe(Effect.flip)).code,
+        "unresolved_claim",
+      );
+      resolutionUnavailable = false;
+      assert.strictEqual(starts, 0);
+      invalidRecordedActor = true;
+      assert.strictEqual(
+        (yield* authority.issueExecution(input).pipe(Effect.flip)).code,
+        "unresolved_claim",
+      );
+      invalidRecordedActor = false;
+      assert.strictEqual(starts, 0);
+      const context = yield* authority.issueExecution(input);
+      assert.strictEqual(starts, 1);
+      const startedReference = getNativeCreationExecutionReference(context);
+      if (startedReference === null) return yield* Effect.die("Fresh execution has no reference");
+      assert.deepEqual(startedReference, reference);
+      assert.notStrictEqual(startedReference, reference);
+      assert.isTrue(Object.isFrozen(startedReference));
+      assert.isFalse(Reflect.set(startedReference, "effectId", "changed-effect"));
+      assert.strictEqual(getNativeCreationExecutionReference(context), startedReference);
+      assert.isNull(getNativeCreationExecutionReference(Object.assign({}, context)));
+      assert.isNull(getNativeCreationExecutionReference(Object.assign({}, context, reference)));
+      assert.deepEqual(yield* authorizeNativeCreationExecution(context, actual), value.historical);
+      assert.deepEqual(
+        yield* authority.authorizeExecution(context, {
+          ...actual,
+          stage: "fetch",
+        }),
+        value.historical,
+      );
+      assert.strictEqual(
+        (yield* authority
+          .authorizeExecution(Object.assign({}, context, reference), actual)
+          .pipe(Effect.flip)).code,
+        "unsupported_authority",
+      );
+      assert.strictEqual(
+        (yield* authority.issueExecution(input).pipe(Effect.flip)).code,
+        "unresolved_claim",
+      );
+      assert.strictEqual(starts, 1);
+      assert.strictEqual(
+        (yield* authority
+          .issueExecution({
+            ...input,
+            reference: { ...reference, effectId: "fixture-alternate-effect" },
+          })
+          .pipe(Effect.flip)).code,
+        "unresolved_claim",
+      );
+      assert.strictEqual(starts, 1);
+      assert.strictEqual(
+        (yield* authority
+          .authorizeExecution(context, {
+            ...actual,
+            resources: { ...value.resources, worktreePath: "/other/worktree" },
+          })
+          .pipe(Effect.flip)).code,
+        "binding_mismatch",
+      );
+      currentGrant = { ...currentGrant, revoked: true };
+      assert.deepEqual(getNativeCreationExecutionReference(context), reference);
+      assert.strictEqual(
+        (yield* authorizeNativeCreationExecution(context, actual).pipe(Effect.flip)).code,
+        "stale_grant",
+      );
+      currentGrant = { ...currentGrant, revoked: false };
+      loseNextStart = true;
+      const lost = {
+        ...input,
+        reference: {
+          ...reference,
+          stageCommandId: releaseCommand.commandId,
+          effectId: "fixture-lost-effect",
+        },
+      };
+      assert.strictEqual(
+        (yield* authority.issueExecution(lost).pipe(Effect.flip)).code,
+        "unresolved_claim",
+      );
+      assert.strictEqual(
+        (yield* authority.issueExecution(lost).pipe(Effect.flip)).code,
+        "unresolved_claim",
+      );
+      assert.strictEqual(
+        (yield* authority
+          .issueExecution({
+            ...lost,
+            reference: { ...lost.reference, effectId: "fixture-lost-alternate-effect" },
+          })
+          .pipe(Effect.flip)).code,
+        "unresolved_claim",
+      );
+      assert.strictEqual(starts, 2);
+      assert.deepEqual(
+        startReferences.map((entry) => entry.effectId),
+        [
+          reference.effectId,
+          reference.effectId,
+          "fixture-alternate-effect",
+          "fixture-lost-effect",
+          "fixture-lost-effect",
+          "fixture-lost-alternate-effect",
+        ],
+      );
+    }).pipe(Effect.provide(authorityLayer.pipe(Layer.provideMerge(database))));
+  }),
+);
+
+it.effect(
+  "a legacy-only authority cannot issue native execution without its actual repository",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* fixture;
+      const authorityLayer = Authority.NativeCreationAuthorityLive.pipe(
+        Layer.provideMerge(repositoryLayer),
+        Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+        Layer.provide(
+          Layer.succeed(Authority.NativeCreationGrantResolver, {
+            resolveCurrent: () =>
+              Effect.succeed({
+                enrolledSessionId: actorSessionId,
+                trustedIssuerId: "fixture-issuer",
+                grant: value.grant,
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(Authority.NativeCreationBindingResolver, {
+            resolveCurrent: () => Effect.succeed(value.historical),
+          }),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const authority = yield* Authority.NativeCreationAuthority;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO native_creation_automation_enrollments (session_id,enrolled_at) VALUES (${actorSessionId},'2026-10-02T12:00:00Z')`;
+        assert.isTrue(yield* authority.isAutomationEnrolled(actorSessionId));
+        if (authority.issueExecution === undefined) return yield* Effect.die("Real issuer missing");
+        const rejected = yield* authority
+          .issueExecution({
+            reference: {
+              version: 2,
+              claimId: "unavailable-execution-repository",
+              effectId: "unavailable-effect",
+              stageCommandId: CommandId.make("unavailable-command"),
+              stage: "native_command",
+            },
+            timestamp: "2026-10-02T12:00:00Z",
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(rejected.code, "unsupported_authority");
+        assert.deepEqual(yield* sql`SELECT * FROM native_creation_effect_facts`, []);
+      }).pipe(Effect.provide(authorityLayer));
+    }),
 );

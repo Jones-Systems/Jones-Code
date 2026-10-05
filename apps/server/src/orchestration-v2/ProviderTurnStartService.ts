@@ -1,3 +1,5 @@
+import { nativeCreationCanonicalJson } from "../nativeCreation/NativeCreationPreparation.ts";
+import * as NativeAuthority from "../nativeCreation/NativeCreationAuthority.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
@@ -86,6 +88,7 @@ interface ProviderTurnStartInput {
   readonly willRetry?: boolean;
   readonly nativeStartClaim?: {
     readonly effect: OrchestrationEffectV2;
+    readonly executionContext?: NativeAuthority.NativeCreationExecutionContextV2;
     readonly onTransferred: NonNullable<
       RunExecutionService.RunExecutionServiceV2StartRootRunInput["nativeStart"]
     >["onTransferred"];
@@ -555,6 +558,12 @@ export const layer: Layer.Layer<
         .pipe(Effect.map(selectInheritedBackgroundItems));
       const providerSessionId = providerThread.providerSessionId;
       let nativeStartExecution: OrdinaryCheckoutExecutionRefV1 | undefined;
+      let nativeExecution:
+        | {
+            readonly context: NativeAuthority.NativeCreationExecutionContextV2;
+            readonly resources: NativeAuthority.NativeCreationResources;
+          }
+        | undefined;
       const nativeEffect = input.nativeStartClaim?.effect;
       if (nativeEffect !== undefined) {
         const lifetime = eventSink.ordinaryCheckoutLifetime;
@@ -578,6 +587,37 @@ export const layer: Layer.Layer<
             cause:
               "The required original native start producer or exact claimed operation is unsupported.",
           });
+        const context = input.nativeStartClaim?.executionContext;
+        const issuedReference =
+          context === undefined
+            ? null
+            : NativeAuthority.getNativeCreationExecutionReference(context);
+        if (
+          context === undefined ||
+          issuedReference === null ||
+          nativeCreationCanonicalJson(issuedReference) !==
+            nativeCreationCanonicalJson(nativeEffect.nativeCreationExecutionReference) ||
+          worktreePath === null ||
+          branch === null
+        )
+          return yield* new ProviderTurnStartError({
+            runId,
+            cause: "The original native start lacks its issued context and exact current worktree.",
+          });
+        const project = yield* projects.getById(projection.thread.projectId);
+        if (Option.isNone(project))
+          return yield* new ProviderTurnStartError({
+            runId,
+            cause: "Native execution project resources are unavailable.",
+          });
+        nativeExecution = {
+          context,
+          resources: { projectCwd: project.value.workspaceRoot, branch, worktreePath },
+        };
+        yield* NativeAuthority.authorizeNativeCreationExecution(context, {
+          stage: "native_command",
+          resources: nativeExecution.resources,
+        });
         const linked = yield* lifetime.readEffectLink(nativeEffect);
         if (linked === null)
           return yield* new ProviderTurnStartError({
@@ -620,6 +660,14 @@ export const layer: Layer.Layer<
         thread: projection.thread,
         modelSelection: run.modelSelection,
       });
+      if (
+        nativeExecution !== undefined &&
+        resolvedRuntimePolicy.cwd !== nativeExecution.resources.worktreePath
+      )
+        return yield* new ProviderTurnStartError({
+          runId,
+          cause: "Native execution runtime cwd differs from its exact worktree resources.",
+        });
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
@@ -1434,6 +1482,7 @@ export const layer: Layer.Layer<
                   attemptId: attempt.id,
                 },
                 startExecution: nativeStartExecution,
+                ...(nativeExecution === undefined ? {} : { execution: nativeExecution }),
                 onTransferred: (completion) => {
                   nativeParticipants.set(input, completion.execution);
                   input.nativeStartClaim!.onTransferred(completion);

@@ -1,6 +1,10 @@
+import { ImportedApplicationAttachmentRetentionEvidenceV1 } from "./ImportedApplicationAttachmentInventory.ts";
+import { hasOwnJonesMigration } from "../persistence/JonesMigrationGuard.ts";
+import { jonesMigrationEntries } from "../persistence/Migrations.ts";
 import { NativeCreationExecutionReferenceV2 } from "../nativeCreation/NativeCreationExecutionTypes.ts";
 import {
   CheckpointId,
+  EventId,
   CheckpointScopeId,
   CommandId,
   MessageId,
@@ -228,7 +232,142 @@ export class EffectOutboxError extends Schema.TaggedError<EffectOutboxError>()(
 
 const isEffectOutboxError = Schema.is(EffectOutboxError);
 
+const AttachmentNamespaceOwnerBirthV1 = Schema.Struct({
+  kind: Schema.Literal("application_v2_thread_birth"),
+  threadId: ThreadId,
+  eventId: EventId,
+  sequence: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+export const AttachmentNamespaceCleanupReferenceV1 = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(1),
+    mode: Schema.Literal("delete_thread"),
+    ownerBirth: AttachmentNamespaceOwnerBirthV1,
+    triggerEventId: EventId,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    mode: Schema.Literal("prune_thread"),
+    ownerBirth: AttachmentNamespaceOwnerBirthV1,
+    triggerEventId: EventId,
+    rollbackEffectId: Schema.NonEmptyString,
+  }),
+]);
+export type AttachmentNamespaceCleanupReferenceV1 =
+  typeof AttachmentNamespaceCleanupReferenceV1.Type;
+const AttachmentNamespaceSha256V1 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+export const AttachmentNamespaceCleanupTaskV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  effectId: Schema.NonEmptyString,
+  commandId: CommandId,
+  threadId: ThreadId,
+  reference: AttachmentNamespaceCleanupReferenceV1,
+  triggerSequence: Schema.Int.check(Schema.isGreaterThan(0)),
+  bindingSha256: AttachmentNamespaceSha256V1,
+});
+export type AttachmentNamespaceCleanupTaskV1 = typeof AttachmentNamespaceCleanupTaskV1.Type;
+const AttachmentNamespaceClaimV1 = Schema.Struct({
+  workerId: Schema.NonEmptyString,
+  expectedAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+  leaseExpiresAt: Schema.NonEmptyString,
+});
+const AttachmentNamespaceBasisFieldsV1 = {
+  task: AttachmentNamespaceCleanupTaskV1,
+  claim: AttachmentNamespaceClaimV1,
+  basisEventSequence: Schema.Int.check(Schema.isGreaterThan(0)),
+};
+export const QualifiedAttachmentNamespaceCleanupBasisV1 = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("ready"),
+    ...AttachmentNamespaceBasisFieldsV1,
+    retainedRelativePaths: Schema.Array(Schema.NonEmptyString),
+    retentionSourceEvidence: Schema.optionalKey(ImportedApplicationAttachmentRetentionEvidenceV1),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("superseded"),
+    ...AttachmentNamespaceBasisFieldsV1,
+    replacementBirth: AttachmentNamespaceOwnerBirthV1,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("unsafe_namespace"),
+    ...AttachmentNamespaceBasisFieldsV1,
+  }),
+]);
+export const AttachmentNamespaceCleanupObservationV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  producer: Schema.Literal("attachment_namespace"),
+  effectId: Schema.NonEmptyString,
+  bindingSha256: AttachmentNamespaceSha256V1,
+  workerId: Schema.NonEmptyString,
+  expectedAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+  basisEventSequence: Schema.Int.check(Schema.isGreaterThan(0)),
+  configuredRoot: Schema.NonEmptyString,
+  namespaceSegment: Schema.NullOr(Schema.NonEmptyString),
+  observedAt: Schema.NonEmptyString,
+  outcome: Schema.Union([
+    Schema.Struct({
+      status: Schema.Literal("completed"),
+      matchingPaths: Schema.Array(Schema.NonEmptyString),
+      removedPaths: Schema.Array(Schema.NonEmptyString),
+      retainedPaths: Schema.Array(Schema.NonEmptyString),
+      rootAbsent: Schema.Boolean,
+    }),
+    Schema.Struct({
+      status: Schema.Literal("superseded"),
+      replacementBirth: AttachmentNamespaceOwnerBirthV1,
+    }),
+    Schema.Struct({ status: Schema.Literal("unsafe_namespace") }),
+    Schema.Struct({
+      status: Schema.Literal("retryable_failure"),
+      removedPaths: Schema.Array(Schema.NonEmptyString),
+      remainingPaths: Schema.Array(Schema.NonEmptyString),
+      reason: Schema.NonEmptyString,
+    }),
+    Schema.Struct({
+      status: Schema.Literal("unknown"),
+      removedPaths: Schema.Array(Schema.NonEmptyString),
+      reason: Schema.NonEmptyString,
+    }),
+  ]),
+});
+export type AttachmentNamespaceCleanupObservationV1 =
+  typeof AttachmentNamespaceCleanupObservationV1.Type;
+export const AttachmentNamespaceCleanupCorrelationV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  basis: QualifiedAttachmentNamespaceCleanupBasisV1,
+  observationSha256: AttachmentNamespaceSha256V1,
+});
+export const AttachmentNamespaceOrchestrationEffectPayloadV1 = Schema.Struct({
+  request: Schema.Struct({
+    type: Schema.Literal("attachment.cleanup"),
+    attachmentIds: Schema.Array(Schema.String),
+  }),
+  attachmentNamespaceCleanup: AttachmentNamespaceCleanupReferenceV1,
+});
+const decodeAttachmentPayload = Schema.decodeUnknownEffect(
+  AttachmentNamespaceOrchestrationEffectPayloadV1,
+  { onExcessProperty: "error" },
+);
+export const QualifiedDeletionCleanupEvidenceV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  schema: Schema.Literal("t3.deletion-cleanup-observation/v1"),
+  producer: Schema.Literals(["worktree", "managed_terminal", "managed_provider"]),
+  observation: Schema.Record(Schema.String, Schema.Unknown),
+  coveredHolds: Schema.Array(UnknownEffectHoldSchemaV2),
+});
+
+const RecordedCleanupRequestV1 = Schema.Union([
+  OrchestrationEffectRequestV2,
+  Schema.Struct({ type: Schema.Literal("worktree.cleanup") }),
+]);
+type RecordedCleanupEffectV1 = Omit<OrchestrationEffectV2, "request"> & {
+  readonly request: typeof RecordedCleanupRequestV1.Type;
+  readonly attachmentNamespaceCleanup?: AttachmentNamespaceCleanupReferenceV1;
+};
 export interface EffectOutboxV2Shape {
+  readonly readQualifiedCleanupSnapshot?: (
+    effectId: string,
+  ) => Effect.Effect<Option.Option<RecordedCleanupEffectV1>, EffectOutboxError>;
   readonly awaitAvailable: Effect.Effect<void>;
   readonly notifyAvailable: (count?: number) => Effect.Effect<void>;
   readonly claimOrdinaryFinalCheckpointRow?: (input: {
@@ -354,13 +493,26 @@ export const decodeOrchestrationEffectPayloadV2 = (payload: string) =>
       return yield* decodeNativePayload(raw);
     return { request: yield* decodeRequest(payload) };
   });
+const decodeRecordedCleanupPayload = (payload: string) =>
+  Effect.gen(function* () {
+    const raw = yield* decodeJson(payload);
+    if (typeof raw === "object" && raw !== null && Object.hasOwn(raw, "attachmentNamespaceCleanup"))
+      return yield* decodeAttachmentPayload(raw);
+    if (typeof raw === "object" && raw !== null && "type" in raw && raw.type === "worktree.cleanup")
+      return {
+        request: yield* Schema.decodeUnknownEffect(RecordedCleanupRequestV1)(raw, {
+          onExcessProperty: "error",
+        }),
+      };
+    return yield* decodeOrchestrationEffectPayloadV2(payload);
+  });
 const invalidEffectPayload = (message: string) =>
   new EffectOutboxError({ operation: "payload", cause: new Error(message) });
 
 const validateNativeAssociation = (input: {
   readonly id: string;
   readonly commandId: string;
-  readonly request: OrchestrationEffectRequestV2;
+  readonly request: typeof RecordedCleanupRequestV1.Type;
   readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
 }) =>
   Effect.gen(function* () {
@@ -381,8 +533,41 @@ const validateNativeAssociation = (input: {
     }
   });
 
-const rowToEffect = (row: EffectRow) =>
-  decodeOrchestrationEffectPayloadV2(row.payload_json).pipe(
+const validateAttachmentAssociation = (input: {
+  readonly id: string;
+  readonly commandId: string;
+  readonly threadId: string;
+  readonly request: typeof RecordedCleanupRequestV1.Type;
+  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
+  readonly attachmentNamespaceCleanup?: AttachmentNamespaceCleanupReferenceV1;
+}) =>
+  Effect.gen(function* () {
+    const reference = input.attachmentNamespaceCleanup;
+    if (reference === undefined) return;
+    if (
+      input.nativeCreationExecutionReference !== undefined ||
+      input.request.type !== "attachment.cleanup" ||
+      reference.ownerBirth.threadId !== input.threadId ||
+      (reference.mode === "delete_thread"
+        ? input.id !== `effect:${input.commandId}:attachment.cleanup`
+        : input.id !== `${reference.rollbackEffectId}:attachment.cleanup:prune`)
+    )
+      return yield* Effect.fail(
+        invalidEffectPayload("Attachment namespace reference differs from its effect association"),
+      );
+  });
+
+const decodeEffectRow = <
+  Payload extends {
+    readonly request: typeof RecordedCleanupRequestV1.Type;
+    readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
+    readonly attachmentNamespaceCleanup?: AttachmentNamespaceCleanupReferenceV1;
+  },
+>(
+  row: EffectRow,
+  decodePayload: (payload: string) => Effect.Effect<Payload, Schema.SchemaError>,
+) =>
+  decodePayload(row.payload_json).pipe(
     Effect.tap((payload) =>
       payload.request.type === row.effect_type
         ? Effect.void
@@ -393,23 +578,37 @@ const rowToEffect = (row: EffectRow) =>
     Effect.tap((payload) =>
       validateNativeAssociation({ id: row.effect_id, commandId: row.command_id, ...payload }),
     ),
-    Effect.map((payload): OrchestrationEffectV2 => ({
-      ...payload,
+    Effect.tap((payload) =>
+      validateAttachmentAssociation({
+        id: row.effect_id,
+        commandId: row.command_id,
+        threadId: row.thread_id,
+        ...payload,
+      }),
+    ),
+    Effect.flatMap((payload) =>
+      Schema.decodeUnknownEffect(OrchestrationEffectStatusV2)(row.status).pipe(
+        Effect.map((status) => ({
+          ...payload,
 
-      id: row.effect_id,
-      commandId: CommandId.make(row.command_id),
-      threadId: ThreadId.make(row.thread_id),
-      status: row.status as OrchestrationEffectStatusV2,
-      attemptCount: row.attempt_count,
-      availableAt: row.available_at,
-      leaseOwner: row.lease_owner,
-      leaseExpiresAt: row.lease_expires_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      completedAt: row.completed_at,
-      lastError: row.last_error,
-    })),
+          id: row.effect_id,
+          commandId: CommandId.make(row.command_id),
+          threadId: ThreadId.make(row.thread_id),
+          status,
+          attemptCount: row.attempt_count,
+          availableAt: row.available_at,
+          leaseOwner: row.lease_owner,
+          leaseExpiresAt: row.lease_expires_at,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          completedAt: row.completed_at,
+          lastError: row.last_error,
+        })),
+      ),
+    ),
   );
+
+const rowToEffect = (row: EffectRow) => decodeEffectRow(row, decodeOrchestrationEffectPayloadV2);
 
 export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = Layer.effect(
   EffectOutboxV2,
@@ -455,6 +654,8 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : sql`candidate.available_at <= ${availableBefore}`
         }
         AND candidate.status = 'pending'
+        AND candidate.effect_type != 'worktree.cleanup'
+        AND json_type(candidate.payload_json, '$.attachmentNamespaceCleanup') IS NULL
         AND ${includeOrdinaryFinalCheckpoint ? sql`1 = 1` : sql`NOT (${ordinaryFinalCheckpointPredicate()})`}
         AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold
           WHERE hold.effect_id = candidate.effect_id)
@@ -502,6 +703,66 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       );
 
     const service: EffectOutboxV2Shape = {
+      readQualifiedCleanupSnapshot: (effectId) =>
+        Effect.gen(function* () {
+          if (
+            !(yield* hasOwnJonesMigration(jonesMigrationEntries, [142, "V2NativeAcceptance"]).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            )) ||
+            !(yield* hasOwnJonesMigration(jonesMigrationEntries, [
+              139,
+              "DeletionWorktreeAdmission",
+            ]).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+          )
+            return Option.none();
+          const rows =
+            yield* sql<EffectRow>`SELECT * FROM orchestration_v2_effect_outbox WHERE effect_id = ${effectId}`;
+          if (rows.length === 0) return Option.none();
+          if (rows.length !== 1)
+            return yield* invalidEffectPayload("Recorded cleanup effect identity is ambiguous");
+          const row = rows[0]!;
+          const finiteTimestamp = Schema.String.check(
+            Schema.makeFilter((value) => Number.isFinite(Date.parse(value))),
+          );
+          yield* Schema.decodeUnknownEffect(
+            Schema.Struct({
+              effect_id: Schema.NonEmptyString,
+              command_id: CommandId,
+              thread_id: ThreadId,
+              effect_type: Schema.NonEmptyString,
+              payload_json: Schema.NonEmptyString,
+              status: OrchestrationEffectStatusV2,
+              attempt_count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+              available_at: finiteTimestamp,
+              lease_owner: Schema.NullOr(Schema.NonEmptyString),
+              lease_expires_at: Schema.NullOr(finiteTimestamp),
+              created_at: finiteTimestamp,
+              updated_at: finiteTimestamp,
+              completed_at: Schema.NullOr(finiteTimestamp),
+              last_error: Schema.NullOr(Schema.String),
+            }),
+          )(row, { onExcessProperty: "error" });
+          const recorded = yield* decodeEffectRow(row, decodeRecordedCleanupPayload);
+          if (recorded.id !== effectId)
+            return yield* invalidEffectPayload(
+              "Recorded cleanup effect identity differs from the request",
+            );
+          if (
+            "attachmentNamespaceCleanup" in recorded &&
+            recorded.attachmentNamespaceCleanup !== undefined &&
+            !(yield* hasOwnJonesMigration(jonesMigrationEntries, [143, "AttachmentCleanup"]).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ))
+          )
+            return Option.none();
+          return Option.some(recorded);
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EffectOutboxError({ operation: "qualified-cleanup-snapshot", effectId, cause }),
+          ),
+        ),
+
       claimOrdinaryFinalCheckpointRow: (input) =>
         sql
           .withTransaction(

@@ -13,10 +13,27 @@ import {
   RunId,
   RuntimeRequestId,
   NodeId,
-  type ProjectId,
+  ProjectId,
+  EventId,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ProviderDriverKind,
+  ProviderTurnId,
+  WorktreeCleanupRules,
+  OrchestrationV2ThreadDeletionWorktreeRemoval,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as SchemaGetter from "effect/SchemaGetter";
+import * as SchemaIssue from "effect/SchemaIssue";
+import * as Path from "effect/Path";
+import * as NodePathLayer from "@effect/platform-node/NodePath";
+import { hasOwnJonesMigration } from "../persistence/JonesMigrationGuard.ts";
+import { jonesMigrationEntries } from "../persistence/Migrations.ts";
+import {
+  nativeCreationCanonicalJson,
+  nativeCreationSha256,
+} from "../nativeCreation/NativeCreationPreparation.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -27,7 +44,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { identityForRequest } from "./ProviderAdapter.ts";
+import { ProviderNativeOperationContext, identityForRequest } from "./ProviderAdapter.ts";
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/Services/OrchestrationEventStore.ts";
 import { projectDomainEventForWire } from "./WireProjection.ts";
@@ -123,7 +140,557 @@ function runtimeEvidenceMatches(
 /**
  * SERVICE DEFINITION
  */
+import * as ImportedAttachments from "./ImportedApplicationAttachmentInventory.ts";
+import {
+  parseAttachmentIdFromRelativePath,
+  parseThreadSegmentFromAttachmentId,
+  toSafeThreadAttachmentSegment,
+} from "../attachmentStore.ts";
+const EventSinkJsonCodec = (() => {
+  const JsonValue = Schema.String.pipe(
+    Schema.decodeTo(Schema.Unknown, {
+      decode: SchemaGetter.onSome<unknown, string>((input, options) => {
+        try {
+          const value: unknown = JSON.parse(input);
+          return Effect.succeed(Option.some(value));
+        } catch (cause) {
+          return Effect.fail(
+            new SchemaIssue.InvalidValue({ nativeJsonCause: cause }, input, options),
+          );
+        }
+      }),
+      encode: SchemaGetter.forbiddenEncoding,
+    }),
+  );
+
+  const BirthTuple = Schema.Tuple([
+    Schema.Literal("t3.orchestration-v2.thread-birth/v1"),
+    EventId,
+    Schema.Int.check(Schema.isGreaterThan(0)),
+  ]);
+
+  const BirthTupleJson = BirthTuple.pipe(
+    Schema.decodeTo(Schema.String, {
+      decode: SchemaGetter.onSome<string, typeof BirthTuple.Type>((input, options) => {
+        try {
+          return Effect.succeed(Option.some(JSON.stringify(input)));
+        } catch (cause) {
+          return Effect.fail(
+            new SchemaIssue.InvalidValue({ nativeJsonCause: cause }, input, options),
+          );
+        }
+      }),
+      encode: SchemaGetter.forbiddenEncoding,
+    }),
+  );
+
+  const decodeJson = Schema.decodeEffect(JsonValue);
+  const encodeBirthTupleJson = Schema.decodeEffect(BirthTupleJson);
+
+  // Stock JSON getters discard the native exception. Preserve its identity at the
+  // caller's existing defect or domain-error boundary through issue metadata.
+  function jsonCause(error: Schema.SchemaError): unknown {
+    let issue = error.issue;
+    while (issue._tag === "Encoding") issue = issue.issue;
+    if (
+      issue._tag === "InvalidValue" &&
+      issue.annotations !== undefined &&
+      Object.hasOwn(issue.annotations, "nativeJsonCause")
+    ) {
+      return issue.annotations["nativeJsonCause"];
+    }
+    return error;
+  }
+
+  const jsonProjection = <S extends Schema.Top>(output: S, read: (text: string) => S["Type"]) =>
+    Schema.decodeEffect(
+      Schema.String.pipe(
+        Schema.decodeTo(output, {
+          decode: SchemaGetter.onSome<S["Type"], string>((input, options) => {
+            try {
+              return Effect.succeed(Option.some(read(input)));
+            } catch (cause) {
+              return Effect.fail(
+                new SchemaIssue.InvalidValue({ nativeJsonCause: cause }, input, options),
+              );
+            }
+          }),
+          encode: SchemaGetter.forbiddenEncoding,
+        }),
+      ),
+    );
+
+  const decodeOwnerBirth = jsonProjection(
+    Schema.Unknown,
+    (text): unknown => JSON.parse(text).birth,
+  );
+  const decodeCorrelationEvidence = jsonProjection(
+    Schema.Unknown,
+    (text): unknown => JSON.parse(text).evidence,
+  );
+  const decodeBindingSha256 = jsonProjection(
+    Schema.Unknown,
+    (text): unknown => JSON.parse(text).bindingSha256,
+  );
+  const decodeTaskKind = jsonProjection(Schema.Unknown, (text): unknown => JSON.parse(text).kind);
+  const decodeLeaseStatus = jsonProjection(
+    Schema.Unknown,
+    (text): unknown => JSON.parse(text).status,
+  );
+  const decodeTaskWithKind = jsonProjection(
+    Schema.Struct({ value: Schema.Unknown, kind: Schema.Unknown }),
+    (text) => {
+      const value = JSON.parse(text);
+      return { value, kind: value.kind };
+    },
+  );
+  const decodeLeaseWithStatus = jsonProjection(
+    Schema.Struct({ value: Schema.Unknown, status: Schema.Unknown }),
+    (text) => {
+      const value = JSON.parse(text);
+      return { value, status: value.status };
+    },
+  );
+  const decodeCleanupCorrelation = jsonProjection(
+    Schema.Struct({ value: Schema.Unknown, evidenceSchema: Schema.Unknown }),
+    (text) => {
+      const value = JSON.parse(text);
+      return { value, evidenceSchema: value.evidence?.schema };
+    },
+  );
+
+  const decodeDeletionInventoryMismatch = (
+    text: string,
+    expected: {
+      readonly threadId: string;
+      readonly projectId: string;
+      readonly branch: string | null;
+      readonly projectRoot: string | null;
+      readonly path: string | null;
+    },
+    resolvePath: (root: string, path: string) => string,
+  ) =>
+    jsonProjection(Schema.Boolean, (text) => {
+      const deleted = JSON.parse(text);
+      return (
+        deleted.id !== expected.threadId ||
+        deleted.projectId !== expected.projectId ||
+        deleted.branch !== expected.branch ||
+        (deleted.worktreePath === null || expected.projectRoot === null
+          ? null
+          : resolvePath(expected.projectRoot, deleted.worktreePath)) !== expected.path
+      );
+    })(text);
+
+  const decodeCleanupDeletionMismatch = (
+    text: string,
+    expected: {
+      readonly threadId: string;
+      readonly projectId: string;
+      readonly branch: string | null;
+      readonly projectRoot: string | null;
+      readonly path: string | null;
+    },
+    resolvePath: (root: string, path: string) => string,
+  ) =>
+    jsonProjection(Schema.Boolean, (text) => {
+      const deleted = JSON.parse(text);
+      const expectedPath =
+        deleted.worktreePath === null || expected.projectRoot === null
+          ? null
+          : resolvePath(expected.projectRoot, deleted.worktreePath);
+      return (
+        deleted.id !== expected.threadId ||
+        deleted.projectId !== expected.projectId ||
+        expectedPath !== expected.path ||
+        deleted.branch !== expected.branch
+      );
+    })(text);
+
+  return {
+    decodeJson,
+    encodeBirthTupleJson,
+    jsonCause,
+    decodeOwnerBirth,
+    decodeCorrelationEvidence,
+    decodeBindingSha256,
+    decodeTaskKind,
+    decodeLeaseStatus,
+    decodeTaskWithKind,
+    decodeLeaseWithStatus,
+    decodeCleanupCorrelation,
+    decodeDeletionInventoryMismatch,
+    decodeCleanupDeletionMismatch,
+  };
+})();
+const LowerSha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+const CapturedRestartIsoTimestampV1 = Schema.String.check(
+  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/),
+);
+const RegisteredSourceSchemaV2 = Schema.Struct({
+  threadId: ThreadId,
+  providerThreadId: ProviderThreadId,
+  providerSessionId: ProviderSessionId,
+  instanceId: ProviderInstanceId,
+  driver: ProviderDriverKind,
+  nativeThreadId: Schema.NullOr(Schema.String),
+  runtimeGeneration: Schema.NonEmptyString,
+});
+const ApplicationBirthSchemaV2 = Schema.Struct({
+  kind: Schema.Literal("application_v2_thread_birth"),
+  threadId: ThreadId,
+  eventId: EventId,
+  sequence: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+const CleanupLeaseSchemaV2 = Schema.Struct({
+  resourcePath: Schema.NonEmptyString,
+  leaseId: Schema.NonEmptyString,
+  ownerThreadId: ThreadId,
+  ownerIncarnation: Schema.NonEmptyString,
+  branch: Schema.NullOr(Schema.String),
+  acquiredAtMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  renewedAtMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  expiresAtMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+const CleanupDeletionSchemaV2 = Schema.Struct({
+  commandId: CommandId,
+  eventId: EventId,
+  sequence: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+const CleanupTerminalTargetSchemaV2 = Schema.Struct({
+  threadId: Schema.NonEmptyString,
+  terminalId: Schema.NonEmptyString,
+  handleId: Schema.NonEmptyString,
+  ownerBirth: ApplicationBirthSchemaV2,
+});
+const CleanupTerminalCaptureSchemaV2 = Schema.Struct({
+  managerId: Schema.NonEmptyString,
+  threadId: Schema.NonEmptyString,
+  ownerBirth: ApplicationBirthSchemaV2,
+  status: Schema.Literal("captured"),
+  managedTargetsOnly: Schema.Literal(true),
+  targets: Schema.Array(CleanupTerminalTargetSchemaV2),
+});
+const LeaseCleanupTaskV2 = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("provider"),
+    expectedBinding: RegisteredSourceSchemaV2,
+    evidenceRevision: Schema.Int.check(Schema.isGreaterThan(0)),
+  }),
+  Schema.Struct({ kind: Schema.Literal("terminal"), capture: CleanupTerminalCaptureSchemaV2 }),
+  Schema.Struct({
+    kind: Schema.Literal("attachment"),
+    attachmentIds: Schema.Array(Schema.NonEmptyString),
+  }),
+]);
+type LeaseCleanupTaskV2 = typeof LeaseCleanupTaskV2.Type;
+const LeaseCleanupTaskBindingV2 = Schema.Struct({
+  version: Schema.Literal(2),
+  effectId: Schema.NonEmptyString,
+  threadId: ThreadId,
+  lease: CleanupLeaseSchemaV2,
+  ownerBirth: ApplicationBirthSchemaV2,
+  deletion: CleanupDeletionSchemaV2,
+  task: LeaseCleanupTaskV2,
+  bindingSha256: LowerSha256,
+  recordedAt: CapturedRestartIsoTimestampV1,
+});
+type LeaseCleanupTaskBindingV2 = typeof LeaseCleanupTaskBindingV2.Type;
+const UnleasedDeletionCleanupTaskBindingV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  effectId: Schema.NonEmptyString,
+  threadId: ThreadId,
+  leaseInventory: Schema.Struct({
+    status: Schema.Literal("absent"),
+    resourcePath: Schema.NonEmptyString,
+  }),
+  ownerBirth: ApplicationBirthSchemaV2,
+  deletion: CleanupDeletionSchemaV2,
+  task: LeaseCleanupTaskV2,
+  bindingSha256: LowerSha256,
+  recordedAt: CapturedRestartIsoTimestampV1,
+});
+type UnleasedDeletionCleanupTaskBindingV1 = typeof UnleasedDeletionCleanupTaskBindingV1.Type;
+const DeletionCleanupTaskBindingV1 = Schema.Union([
+  LeaseCleanupTaskBindingV2,
+  UnleasedDeletionCleanupTaskBindingV1,
+]);
+type DeletionCleanupTaskBindingV1 = typeof DeletionCleanupTaskBindingV1.Type;
+const deletionCleanupTaskBindingDigestV1 = (
+  input: Omit<DeletionCleanupTaskBindingV1, "bindingSha256" | "recordedAt">,
+) => nativeCreationSha256(nativeCreationCanonicalJson(input));
+const LeaseCleanupTaskOutcomeV2 = Schema.Struct({
+  taskId: Schema.NonEmptyString,
+  result: Schema.NullOr(Schema.Literals(["succeeded", "failed"])),
+  effect: Schema.Literals(["confirmed", "absent", "no_effect", "unknown"]),
+});
+type LeaseCleanupTaskOutcomeV2 = typeof LeaseCleanupTaskOutcomeV2.Type;
+const leaseCleanupTaskBindingDigestV2 = (
+  input: Omit<LeaseCleanupTaskBindingV2, "bindingSha256" | "recordedAt">,
+) => nativeCreationSha256(nativeCreationCanonicalJson(input));
+const DeletionWorktreeLeaseInventoryV1 = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("original"), lease: CleanupLeaseSchemaV2 }),
+  Schema.Struct({ status: Schema.Literal("absent") }),
+  Schema.Struct({ status: Schema.Literal("conflict"), leases: Schema.Array(CleanupLeaseSchemaV2) }),
+  Schema.Struct({ status: Schema.Literal("unavailable") }),
+]);
+const DeletionWorktreeCleanupRequestV1 = Schema.Union([
+  Schema.Struct({
+    origin: Schema.Literal("explicit"),
+    consent: OrchestrationV2ThreadDeletionWorktreeRemoval,
+  }),
+  Schema.Struct({
+    origin: Schema.Literal("policy"),
+    projectId: ProjectId,
+    path: Schema.NonEmptyString,
+    branch: Schema.NullOr(Schema.String),
+    force: Schema.Literal(false),
+    rules: WorktreeCleanupRules,
+  }),
+]);
+type DeletionWorktreeCleanupRequestV1 = typeof DeletionWorktreeCleanupRequestV1.Type;
+const DeletionWorktreeTaskBindingV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  effectId: Schema.NonEmptyString,
+  threadId: ThreadId,
+  leaseInventory: DeletionWorktreeLeaseInventoryV1,
+  ownerBirth: Schema.NullOr(ApplicationBirthSchemaV2),
+  deletion: CleanupDeletionSchemaV2,
+  task: Schema.Struct({
+    kind: Schema.Literal("worktree"),
+    canonicalCommand: OrchestrationV2Command,
+    commandDigest: LowerSha256,
+    consent: Schema.optionalKey(OrchestrationV2ThreadDeletionWorktreeRemoval),
+    request: Schema.optionalKey(DeletionWorktreeCleanupRequestV1),
+    worktree: Schema.Struct({
+      projectId: ProjectId,
+      path: Schema.NullOr(Schema.NonEmptyString),
+      branch: Schema.NullOr(Schema.String),
+    }),
+    projectRoot: Schema.NullOr(Schema.NonEmptyString),
+    prerequisiteEffectIds: Schema.Array(Schema.NonEmptyString),
+    captureStatus: Schema.Literals(["captured", "retained"]),
+    reason: Schema.NullOr(Schema.NonEmptyString),
+  }),
+  bindingSha256: LowerSha256,
+  recordedAt: CapturedRestartIsoTimestampV1,
+});
+type DeletionWorktreeTaskBindingV1 = typeof DeletionWorktreeTaskBindingV1.Type;
+const deletionWorktreeCleanupRequestV1 = (
+  binding: DeletionWorktreeTaskBindingV1,
+): DeletionWorktreeCleanupRequestV1 | null =>
+  binding.task.request ??
+  (binding.task.consent === undefined
+    ? null
+    : { origin: "explicit", consent: binding.task.consent });
+const deletionWorktreeTaskBindingDigestV1 = (
+  input: Omit<DeletionWorktreeTaskBindingV1, "bindingSha256" | "recordedAt">,
+) =>
+  nativeCreationSha256(
+    nativeCreationCanonicalJson(
+      Schema.encodeSync(
+        Schema.Struct({
+          version: DeletionWorktreeTaskBindingV1.fields.version,
+          effectId: DeletionWorktreeTaskBindingV1.fields.effectId,
+          threadId: DeletionWorktreeTaskBindingV1.fields.threadId,
+          leaseInventory: DeletionWorktreeTaskBindingV1.fields.leaseInventory,
+          ownerBirth: DeletionWorktreeTaskBindingV1.fields.ownerBirth,
+          deletion: DeletionWorktreeTaskBindingV1.fields.deletion,
+          task: DeletionWorktreeTaskBindingV1.fields.task,
+        }),
+      )(input),
+    ),
+  );
+const deletionWorktreeEffectIdV1 = (commandId: CommandId, threadId: ThreadId) =>
+  `effect:${commandId}:worktree.cleanup:${threadId}`;
+const DeletionWorktreeRemovalTargetV1 = Schema.Struct({
+  projectId: ProjectId,
+  projectRoot: Schema.NonEmptyString,
+  path: Schema.NonEmptyString,
+  branch: Schema.NullOr(Schema.String),
+  force: Schema.Boolean,
+});
+type DeletionWorktreeRemovalTargetV1 = typeof DeletionWorktreeRemovalTargetV1.Type;
+const DeletionWorktreeRemovalStartV1 = Schema.Struct({
+  schema: Schema.Literal("t3.deletion-worktree-removal-start/v1"),
+  effectId: Schema.NonEmptyString,
+  bindingSha256: LowerSha256,
+  workerId: Schema.NonEmptyString,
+  expectedAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+  target: DeletionWorktreeRemovalTargetV1,
+  startedAt: CapturedRestartIsoTimestampV1,
+});
+type DeletionWorktreeRemovalStartV1 = typeof DeletionWorktreeRemovalStartV1.Type;
+const DeletionWorktreeReadbackSchemaV1 = Schema.Struct({
+  registration: Schema.Union([
+    Schema.Struct({
+      status: Schema.Literal("complete"),
+      projectRoot: Schema.NonEmptyString,
+      gitCommonDirectory: Schema.NonEmptyString,
+      entries: Schema.Array(
+        Schema.Struct({
+          path: Schema.NonEmptyString,
+          head: Schema.NullOr(Schema.String),
+          branch: Schema.NullOr(Schema.String),
+          bare: Schema.Boolean,
+        }),
+      ),
+    }),
+    Schema.Struct({ status: Schema.Literal("unavailable"), reason: Schema.NonEmptyString }),
+  ]),
+  filesystem: Schema.Union([
+    Schema.Struct({ status: Schema.Literals(["present", "absent"]), path: Schema.NonEmptyString }),
+    Schema.Struct({
+      status: Schema.Literal("unavailable"),
+      path: Schema.NonEmptyString,
+      reason: Schema.NonEmptyString,
+    }),
+  ]),
+});
+const DeletionWorktreeRemovalObservationSchemaV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  start: DeletionWorktreeRemovalStartV1,
+  startOrdinal: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  operation: Schema.Union([
+    Schema.Struct({
+      kind: Schema.Literal("executed"),
+      exitCode: Schema.NullOr(Schema.Int),
+      completion: Schema.Literals(["exited", "unknown"]),
+    }),
+    Schema.Struct({ kind: Schema.Literal("reconciled"), completion: Schema.Literal("unknown") }),
+    Schema.Struct({
+      kind: Schema.Literal("already_absent"),
+      completion: Schema.Literal("not_invoked"),
+    }),
+  ]),
+  before: DeletionWorktreeReadbackSchemaV1,
+  after: DeletionWorktreeReadbackSchemaV1,
+  observedAt: CapturedRestartIsoTimestampV1,
+});
+const ManagedTerminalDeletionObservationV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  kind: Schema.Literal("managed_terminal"),
+  effectId: Schema.NonEmptyString,
+  bindingSha256: LowerSha256,
+  workerId: Schema.NonEmptyString,
+  expectedAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+  capture: CleanupTerminalCaptureSchemaV2,
+  result: Schema.Struct({
+    status: Schema.Literals(["closed", "observed_absent", "mismatch", "unknown"]),
+    managedTargetsOnly: Schema.Literal(true),
+    processExitObserved: Schema.Boolean,
+    descendantsQuiescence: Schema.Literal("unavailable"),
+    futureWakeClosure: Schema.Literal("unavailable"),
+  }),
+  observedAt: CapturedRestartIsoTimestampV1,
+});
+type ManagedTerminalDeletionObservationV1 = typeof ManagedTerminalDeletionObservationV1.Type;
+const ManagedProviderDeletionObservationV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  kind: Schema.Literal("managed_provider"),
+  effectId: Schema.NonEmptyString,
+  bindingSha256: LowerSha256,
+  workerId: Schema.NonEmptyString,
+  expectedAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+  binding: RegisteredSourceSchemaV2,
+  evidenceRevision: Schema.Int.check(Schema.isGreaterThan(0)),
+  nativeOperation: ProviderNativeOperationContext,
+  result: Schema.Union([
+    Schema.Struct({
+      status: Schema.Literal("stopped"),
+      operationId: Schema.NonEmptyString,
+      binding: RegisteredSourceSchemaV2,
+      cancelledPendingStart: Schema.Boolean,
+      interruptedProviderTurnIds: Schema.Array(ProviderTurnId),
+      readback: Schema.Struct({ threadAttached: Schema.Literal(false) }),
+    }),
+    Schema.Struct({ status: Schema.Literal("unknown"), reason: Schema.String }),
+  ]),
+  observedAt: CapturedRestartIsoTimestampV1,
+});
+type ManagedProviderDeletionObservationV1 = typeof ManagedProviderDeletionObservationV1.Type;
+const DeletionCleanupObservationV1 = Schema.Union([
+  DeletionWorktreeRemovalObservationSchemaV1,
+  ManagedTerminalDeletionObservationV1,
+  ManagedProviderDeletionObservationV1,
+]);
+type DeletionCleanupObservationV1 = typeof DeletionCleanupObservationV1.Type;
+const deletionWorktreeRemovalTargetV1 = (
+  binding: DeletionWorktreeTaskBindingV1,
+): DeletionWorktreeRemovalTargetV1 | null =>
+  binding.task.worktree.path === null ||
+  binding.task.projectRoot === null ||
+  deletionWorktreeCleanupRequestV1(binding) === null
+    ? null
+    : {
+        ...binding.task.worktree,
+        path: binding.task.worktree.path,
+        projectRoot: binding.task.projectRoot,
+        force: deletionWorktreeCleanupRequestV1(binding)!.origin === "explicit",
+      };
+const DeletionWorktreeInventorySchemaV1 = Schema.Struct({
+  worktree: DeletionWorktreeTaskBindingV1.fields.task.fields.worktree,
+  projectRoot: DeletionWorktreeTaskBindingV1.fields.task.fields.projectRoot,
+  leaseInventory: DeletionWorktreeLeaseInventoryV1,
+  prerequisiteEffectIds: Schema.Array(Schema.NonEmptyString),
+  request: Schema.optionalKey(DeletionWorktreeCleanupRequestV1),
+  captureStatus: Schema.Literals(["captured", "retained"]),
+  reason: Schema.NullOr(Schema.NonEmptyString),
+});
+const ThreadDeletionCommandRecordSchemaV1 = Schema.Struct({
+  command: OrchestrationV2Command,
+  commandDigest: LowerSha256,
+  ownerBirth: Schema.NullOr(ApplicationBirthSchemaV2),
+  inventory: DeletionWorktreeInventorySchemaV1,
+  deletion: CleanupDeletionSchemaV2,
+  recordedAt: CapturedRestartIsoTimestampV1,
+});
+type ThreadDeletionCommandRecordV1 = Omit<
+  typeof ThreadDeletionCommandRecordSchemaV1.Type,
+  "command"
+> & { readonly command: Extract<OrchestrationV2Command, { readonly type: "thread.delete" }> };
+const AttachmentNamespaceCleanupTaskV1 = EffectOutbox.AttachmentNamespaceCleanupTaskV1;
+type AttachmentNamespaceCleanupTaskV1 = typeof AttachmentNamespaceCleanupTaskV1.Type;
+const QualifiedAttachmentNamespaceCleanupBasisCodecV1 =
+  EffectOutbox.QualifiedAttachmentNamespaceCleanupBasisV1;
+const AttachmentNamespaceCleanupBasisV1 = Schema.Union([
+  QualifiedAttachmentNamespaceCleanupBasisCodecV1,
+  Schema.Struct({
+    status: Schema.Literal("unavailable"),
+    effectId: Schema.NonEmptyString,
+    reason: Schema.NonEmptyString,
+  }),
+]);
+type AttachmentNamespaceCleanupBasisV1 = typeof AttachmentNamespaceCleanupBasisV1.Type;
+type QualifiedAttachmentNamespaceCleanupBasisV1 = Exclude<
+  AttachmentNamespaceCleanupBasisV1,
+  { readonly status: "unavailable" }
+>;
+const AttachmentNamespaceCleanupObservationV1 =
+  EffectOutbox.AttachmentNamespaceCleanupObservationV1;
+type AttachmentNamespaceCleanupObservationV1 = typeof AttachmentNamespaceCleanupObservationV1.Type;
+interface AttachmentNamespaceCleanupRecordResultV1 {
+  readonly status: "completed" | "retryable" | "unknown" | "stale";
+  readonly effectId: string;
+  readonly ordinal: number | null;
+}
+interface AttachmentNamespaceCleanupRecordedObservationV1 {
+  readonly ordinal: number;
+  readonly task: AttachmentNamespaceCleanupTaskV1;
+  readonly basis: QualifiedAttachmentNamespaceCleanupBasisV1;
+  readonly observation: AttachmentNamespaceCleanupObservationV1;
+  readonly status: "completed" | "retryable" | "unknown";
+}
+const attachmentTaskDigest = (task: Omit<AttachmentNamespaceCleanupTaskV1, "bindingSha256">) =>
+  nativeCreationSha256(nativeCreationCanonicalJson(task));
+
 export interface EventSinkV2Shape {
+  readonly readUnresolvedDeletionCleanupHolds?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<EffectOutbox.UnknownEffectHoldV2>, EventSinkV2Error>;
+  readonly readAttachmentNamespaceCleanupObservation?: (
+    effectId: string,
+  ) => Effect.Effect<AttachmentNamespaceCleanupRecordedObservationV1 | null, EventSinkV2Error>;
   readonly readProviderRuntimeEvidence?: NativeProviderRuntimeEvidenceShape["readProviderRuntimeEvidence"];
   readonly readCurrentProviderRuntimeOwner?: NativeProviderRuntimeEvidenceShape["readCurrentProviderRuntimeOwner"];
   readonly registerProviderRuntime?: NativeProviderRuntimeEvidenceShape["registerProviderRuntime"];
@@ -297,6 +864,7 @@ const baseLayer: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const NodePath = yield* Path.Path.pipe(Effect.provide(NodePathLayer.layer));
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
@@ -305,7 +873,1099 @@ const baseLayer: Layer.Layer<
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const commitTransaction = yield* makeCommitTransaction();
     const nativeRuntimeEvidence = yield* makeNativeProviderRuntimeEvidence(commitTransaction);
-    const checkoutStore = yield* makeOrdinaryCheckoutStore();
+    const readCleanupSnapshot = (effectId: string) =>
+      effectOutbox.readQualifiedCleanupSnapshot === undefined
+        ? Effect.succeed(Option.none())
+        : effectOutbox.readQualifiedCleanupSnapshot(effectId);
+    const readThreadDeletionCommandEffect = Effect.fnUntraced(function* (commandId: CommandId) {
+      const rows = yield* sql<{
+        readonly thread_id: string;
+        readonly canonical_command_json: string;
+        readonly command_digest: string;
+        readonly owner_birth_json: string;
+        readonly worktree_inventory_json: string;
+        readonly deletion_event_id: string;
+        readonly deletion_event_sequence: number;
+        readonly recorded_at: string;
+      }>`
+        SELECT * FROM orchestration_v2_thread_deletion_commands WHERE command_id = ${commandId}`;
+      if (rows.length === 0) return null;
+      const row = rows[0]!;
+      const record = yield* Schema.decodeUnknownEffect(ThreadDeletionCommandRecordSchemaV1)(
+        {
+          command: yield* EventSinkJsonCodec.decodeJson(row.canonical_command_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          commandDigest: row.command_digest,
+          ownerBirth: yield* EventSinkJsonCodec.decodeOwnerBirth(row.owner_birth_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          inventory: yield* EventSinkJsonCodec.decodeJson(row.worktree_inventory_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          deletion: {
+            commandId,
+            eventId: row.deletion_event_id,
+            sequence: row.deletion_event_sequence,
+          },
+          recordedAt: row.recorded_at,
+        },
+        { onExcessProperty: "error" },
+      );
+      const command = record.command;
+      const receipt = Option.getOrNull(yield* commandReceipts.getByCommandId(commandId));
+      const events = yield* sql<{
+        readonly payload_json: string;
+      }>`SELECT payload_json FROM orchestration_events
+        WHERE event_id = ${record.deletion.eventId} AND sequence = ${record.deletion.sequence} AND command_id = ${commandId}
+          AND application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${row.thread_id} AND event_type = 'thread.deleted'`;
+      if (
+        command.type !== "thread.delete" ||
+        command.commandId !== commandId ||
+        command.threadId !== row.thread_id ||
+        record.commandDigest !==
+          nativeCreationSha256(
+            nativeCreationCanonicalJson(
+              yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
+            ),
+          ) ||
+        receipt?.status !== "accepted" ||
+        receipt.commandType !== command.type ||
+        receipt.threadId !== command.threadId ||
+        receipt.resultSequence < record.deletion.sequence ||
+        events.length !== 1
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          commandId,
+          cause: "Original deletion command lost its accepted event association",
+        });
+      if (
+        yield* EventSinkJsonCodec.decodeDeletionInventoryMismatch(
+          events[0]!.payload_json,
+          {
+            threadId: command.threadId,
+            projectId: record.inventory.worktree.projectId,
+            branch: record.inventory.worktree.branch,
+            projectRoot: record.inventory.projectRoot,
+            path: record.inventory.worktree.path,
+          },
+          NodePath.resolve,
+        ).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))))
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          commandId,
+          cause: "Original deletion inventory differs from its accepted application path",
+        });
+      return { ...record, command } satisfies ThreadDeletionCommandRecordV1;
+    });
+    const readDeletionWorktreeTaskEffect = Effect.fnUntraced(function* (effectId: string) {
+      const rows = yield* sql<{
+        readonly thread_id: string;
+        readonly lease_json: string;
+        readonly owner_birth_json: string;
+        readonly deletion_json: string;
+        readonly task_json: string;
+        readonly binding_sha256: string;
+        readonly recorded_at: string;
+      }>`
+        SELECT * FROM orchestration_v2_lease_cleanup_task_bindings WHERE effect_id = ${effectId}`;
+      if (rows.length === 0) return null;
+      const row = rows[0]!;
+      const parsedTask = yield* EventSinkJsonCodec.decodeTaskWithKind(row.task_json).pipe(
+        Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+      );
+      if (parsedTask.kind !== "worktree") return null;
+      const task = parsedTask.value;
+      const binding = yield* Schema.decodeUnknownEffect(DeletionWorktreeTaskBindingV1)(
+        {
+          version: 1,
+          effectId,
+          threadId: row.thread_id,
+          leaseInventory: yield* EventSinkJsonCodec.decodeJson(row.lease_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          ownerBirth: yield* EventSinkJsonCodec.decodeOwnerBirth(row.owner_birth_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          deletion: yield* EventSinkJsonCodec.decodeJson(row.deletion_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          task,
+          bindingSha256: row.binding_sha256,
+          recordedAt: row.recorded_at,
+        },
+        { onExcessProperty: "error" },
+      );
+      const { bindingSha256, recordedAt: _recordedAt, ...subject } = binding;
+      const command = binding.task.canonicalCommand;
+      const original = yield* readThreadDeletionCommandEffect(binding.deletion.commandId);
+      const request = deletionWorktreeCleanupRequestV1(binding);
+      const originalRequest =
+        original?.inventory.request ??
+        (original?.command.worktreeRemoval === undefined
+          ? null
+          : { origin: "explicit", consent: original.command.worktreeRemoval });
+      const effect = Option.getOrNull(yield* readCleanupSnapshot(effectId));
+      const receipt = Option.getOrNull(
+        yield* commandReceipts.getByCommandId(binding.deletion.commandId),
+      );
+      const events = yield* sql<{
+        readonly payload_json: string;
+      }>`SELECT payload_json FROM orchestration_events
+        WHERE event_id = ${binding.deletion.eventId} AND sequence = ${binding.deletion.sequence}
+          AND application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${binding.threadId}
+          AND event_type = 'thread.deleted' AND command_id = ${binding.deletion.commandId}`;
+      if (
+        original === null ||
+        nativeCreationCanonicalJson(original.command) !== nativeCreationCanonicalJson(command) ||
+        nativeCreationCanonicalJson(original.ownerBirth) !==
+          nativeCreationCanonicalJson(binding.ownerBirth) ||
+        nativeCreationCanonicalJson(original.inventory.leaseInventory) !==
+          nativeCreationCanonicalJson(binding.leaseInventory) ||
+        nativeCreationCanonicalJson(original.deletion) !==
+          nativeCreationCanonicalJson(binding.deletion) ||
+        bindingSha256 !== deletionWorktreeTaskBindingDigestV1(subject) ||
+        command.type !== "thread.delete" ||
+        command.commandId !== binding.deletion.commandId ||
+        command.threadId !== binding.threadId ||
+        request === null ||
+        nativeCreationCanonicalJson(request) !== nativeCreationCanonicalJson(originalRequest) ||
+        (request.origin === "explicit"
+          ? command.worktreeRemoval === undefined ||
+            nativeCreationCanonicalJson(command.worktreeRemoval) !==
+              nativeCreationCanonicalJson(request.consent) ||
+            (binding.task.consent !== undefined &&
+              nativeCreationCanonicalJson(binding.task.consent) !==
+                nativeCreationCanonicalJson(request.consent))
+          : command.worktreeRemoval !== undefined || binding.task.consent !== undefined) ||
+        nativeCreationSha256(
+          nativeCreationCanonicalJson(
+            yield* Schema.encodeEffect(OrchestrationV2Command)(command).pipe(Effect.orDie),
+          ),
+        ) !== binding.task.commandDigest ||
+        effect === null ||
+        effect.id !== deletionWorktreeEffectIdV1(command.commandId, binding.threadId) ||
+        effect.commandId !== command.commandId ||
+        effect.threadId !== binding.threadId ||
+        effect.request.type !== "worktree.cleanup" ||
+        receipt?.status !== "accepted" ||
+        receipt.commandType !== "thread.delete" ||
+        receipt.threadId !== binding.threadId ||
+        receipt.resultSequence < binding.deletion.sequence ||
+        events.length !== 1
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Worktree cleanup lost its original command/deletion/task association",
+        });
+      if (
+        yield* EventSinkJsonCodec.decodeCleanupDeletionMismatch(
+          events[0]!.payload_json,
+          {
+            threadId: binding.threadId,
+            projectId: binding.task.worktree.projectId,
+            branch: binding.task.worktree.branch,
+            projectRoot: binding.task.projectRoot,
+            path: binding.task.worktree.path,
+          },
+          NodePath.resolve,
+        ).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))))
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Worktree cleanup differs from its original application path",
+        });
+      if (binding.ownerBirth !== null) {
+        const births =
+          yield* sql`SELECT event_id FROM orchestration_events WHERE event_id = ${binding.ownerBirth.eventId}
+          AND sequence = ${binding.ownerBirth.sequence} AND application_event_version = 2 AND aggregate_kind = 'thread'
+          AND stream_id = ${binding.threadId} AND event_type = 'thread.created' AND sequence < ${binding.deletion.sequence}
+          AND json_extract(payload_json, '$.id') = ${binding.threadId}
+          AND json_extract(payload_json, '$.projectId') = ${binding.task.worktree.projectId}
+          AND NOT EXISTS (SELECT 1 FROM orchestration_events next WHERE next.application_event_version = 2
+            AND next.aggregate_kind = 'thread' AND next.stream_id = ${binding.threadId} AND next.event_type = 'thread.created'
+            AND next.sequence > ${binding.ownerBirth.sequence} AND next.sequence <= ${binding.deletion.sequence})`;
+        if (binding.ownerBirth.threadId !== binding.threadId || births.length !== 1)
+          return yield* new EventSinkWriteError({
+            eventCount: 0,
+            cause: "Worktree cleanup lost its original application birth",
+          });
+      } else if (binding.task.captureStatus !== "retained")
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "An unavailable application birth cannot authorize worktree cleanup",
+        });
+      if (
+        binding.leaseInventory.status === "original" &&
+        (binding.ownerBirth === null ||
+          binding.leaseInventory.lease.ownerThreadId !== binding.threadId ||
+          binding.leaseInventory.lease.resourcePath !== binding.task.worktree.path ||
+          binding.leaseInventory.lease.ownerIncarnation !==
+            (yield* EventSinkJsonCodec.encodeBirthTupleJson([
+              "t3.orchestration-v2.thread-birth/v1",
+              binding.ownerBirth.eventId,
+              binding.ownerBirth.sequence,
+            ]).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))))))
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Worktree cleanup lost its full original lease",
+        });
+      return binding;
+    });
+    const qualifyDeletionCleanupObservation = Effect.fnUntraced(function* (
+      binding: DeletionWorktreeTaskBindingV1 | DeletionCleanupTaskBindingV1,
+      observation: DeletionCleanupObservationV1,
+    ) {
+      let result: LeaseCleanupTaskOutcomeV2 = {
+        taskId: binding.effectId,
+        result: null,
+        effect: "unknown",
+      };
+      if ("start" in observation) {
+        if (binding.task.kind !== "worktree")
+          return yield* new EventSinkWriteError({
+            eventCount: 0,
+            cause: "Git observation belongs to a different cleanup task",
+          });
+        const worktreeBinding = yield* Schema.decodeUnknownEffect(DeletionWorktreeTaskBindingV1)(
+          binding,
+          { onExcessProperty: "error" },
+        );
+        const rows = yield* sql<{
+          readonly ordinal: number;
+          readonly correlation_json: string;
+        }>`SELECT ordinal, correlation_json
+          FROM orchestration_v2_lease_cleanup_task_outcomes WHERE effect_id = ${binding.effectId}
+          AND json_extract(correlation_json, '$.evidence.schema') = 't3.deletion-worktree-removal-start/v1'`;
+        const admission = yield* sql<{
+          readonly state: string;
+          readonly started_at: string | null;
+          readonly subject_json: string;
+        }>`
+          SELECT state, started_at, subject_json FROM orchestration_v2_worktree_path_admissions WHERE operation_id = ${binding.effectId}`;
+        const start = observation.start;
+        if (
+          rows.length !== 1 ||
+          rows[0]!.ordinal !== observation.startOrdinal ||
+          admission.length !== 1 ||
+          !["started", "unknown", "completed", "released"].includes(admission[0]!.state) ||
+          admission[0]!.started_at !== start.startedAt ||
+          nativeCreationCanonicalJson(
+            yield* EventSinkJsonCodec.decodeCorrelationEvidence(rows[0]!.correlation_json).pipe(
+              Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+            ),
+          ) !== nativeCreationCanonicalJson(start) ||
+          (yield* EventSinkJsonCodec.decodeBindingSha256(admission[0]!.subject_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          )) !== binding.bindingSha256 ||
+          start.effectId !== binding.effectId ||
+          start.bindingSha256 !== binding.bindingSha256 ||
+          nativeCreationCanonicalJson(start.target) !==
+            nativeCreationCanonicalJson(deletionWorktreeRemovalTargetV1(worktreeBinding)) ||
+          !Number.isFinite(Date.parse(observation.observedAt)) ||
+          Date.parse(observation.observedAt) < Date.parse(start.startedAt)
+        )
+          return yield* new EventSinkWriteError({
+            eventCount: 0,
+            cause: "Git observation lost its persisted original removal start",
+          });
+        const target = start.target;
+        for (const readback of [observation.before, observation.after]) {
+          if (
+            readback.filesystem.path !== target.path ||
+            (readback.registration.status === "complete" &&
+              (readback.registration.projectRoot !== target.projectRoot ||
+                !NodePath.isAbsolute(readback.registration.gitCommonDirectory) ||
+                readback.registration.entries.some(
+                  (entry) =>
+                    !NodePath.isAbsolute(entry.path) || NodePath.resolve(entry.path) !== entry.path,
+                ) ||
+                new Set(readback.registration.entries.map((entry) => entry.path)).size !==
+                  readback.registration.entries.length))
+          )
+            return yield* new EventSinkWriteError({
+              eventCount: 0,
+              cause: "Git readback differs from the original canonical target",
+            });
+        }
+        const before = observation.before.registration;
+        const after = observation.after.registration;
+        const absence =
+          before.status === "complete" &&
+          after.status === "complete" &&
+          before.gitCommonDirectory === after.gitCommonDirectory &&
+          observation.after.filesystem.status === "absent" &&
+          !after.entries.some((entry) => entry.path === target.path);
+        const entry =
+          before.status === "complete"
+            ? before.entries.find((candidate) => candidate.path === target.path)
+            : undefined;
+        const registeredTarget =
+          entry !== undefined &&
+          !entry.bare &&
+          target.path !== target.projectRoot &&
+          (entry.branch === target.branch ||
+            entry.branch === (target.branch === null ? null : `refs/heads/${target.branch}`));
+        if (
+          absence &&
+          observation.operation.kind === "executed" &&
+          observation.operation.completion === "exited" &&
+          observation.operation.exitCode === 0 &&
+          registeredTarget &&
+          observation.before.filesystem.status === "present"
+        )
+          result = { taskId: binding.effectId, result: "succeeded", effect: "confirmed" };
+        else if (
+          absence &&
+          (observation.operation.kind === "reconciled" ||
+            (observation.operation.kind === "already_absent" &&
+              entry === undefined &&
+              observation.before.filesystem.status === "absent"))
+        )
+          result = { taskId: binding.effectId, result: "succeeded", effect: "absent" };
+        return {
+          outcome: result,
+          workerId: start.workerId,
+          expectedAttempt: start.expectedAttempt,
+          producer: "worktree" as const,
+        };
+      }
+      if (observation.kind === "managed_provider") {
+        const operation = observation.nativeOperation;
+        if (
+          binding.task.kind !== "provider" ||
+          observation.effectId !== binding.effectId ||
+          observation.bindingSha256 !== binding.bindingSha256 ||
+          observation.evidenceRevision !== binding.task.evidenceRevision ||
+          nativeCreationCanonicalJson(observation.binding) !==
+            nativeCreationCanonicalJson(binding.task.expectedBinding) ||
+          operation.operationId !== binding.effectId ||
+          operation.operation !== "close_session" ||
+          operation.threadId !== binding.threadId ||
+          operation.providerThreadId !== observation.binding.providerThreadId ||
+          operation.providerSessionId !== observation.binding.providerSessionId ||
+          operation.instanceId !== observation.binding.instanceId ||
+          operation.runtimeGeneration !== observation.binding.runtimeGeneration ||
+          !Number.isFinite(Date.parse(observation.observedAt)) ||
+          Date.parse(observation.observedAt) < Date.parse(binding.recordedAt)
+        )
+          return yield* new EventSinkWriteError({
+            eventCount: 0,
+            cause:
+              "Managed provider observation differs from its original operation and pinned task",
+          });
+        if (observation.result.status === "stopped") {
+          if (
+            observation.result.operationId !== binding.effectId ||
+            observation.result.readback.threadAttached !== false ||
+            nativeCreationCanonicalJson(observation.result.binding) !==
+              nativeCreationCanonicalJson(binding.task.expectedBinding) ||
+            new Set(observation.result.interruptedProviderTurnIds).size !==
+              observation.result.interruptedProviderTurnIds.length
+          )
+            return yield* new EventSinkWriteError({
+              eventCount: 0,
+              cause: "Managed provider stop readback belongs to a different captured runtime",
+            });
+          result = { taskId: binding.effectId, result: "succeeded", effect: "confirmed" };
+        }
+        return {
+          outcome: result,
+          workerId: observation.workerId,
+          expectedAttempt: observation.expectedAttempt,
+          producer: "managed_provider" as const,
+        };
+      }
+      if (
+        binding.task.kind !== "terminal" ||
+        observation.effectId !== binding.effectId ||
+        observation.bindingSha256 !== binding.bindingSha256 ||
+        nativeCreationCanonicalJson(observation.capture) !==
+          nativeCreationCanonicalJson(binding.task.capture) ||
+        !Number.isFinite(Date.parse(observation.observedAt)) ||
+        Date.parse(observation.observedAt) < Date.parse(binding.recordedAt)
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Managed terminal observation differs from its issued owner capture",
+        });
+      if (observation.result.status === "closed" && observation.result.processExitObserved)
+        result = { taskId: binding.effectId, result: "succeeded", effect: "confirmed" };
+      else if (observation.result.status === "observed_absent")
+        result = { taskId: binding.effectId, result: "succeeded", effect: "absent" };
+      return {
+        outcome: result,
+        workerId: observation.workerId,
+        expectedAttempt: observation.expectedAttempt,
+        producer: "managed_terminal" as const,
+      };
+    });
+    const cleanupHoldMatchesObservation = (
+      binding: DeletionWorktreeTaskBindingV1 | DeletionCleanupTaskBindingV1,
+      observation: DeletionCleanupObservationV1,
+      hold: EffectOutbox.UnknownEffectHoldV2,
+    ) => {
+      if (!("start" in observation) && observation.kind === "managed_provider") {
+        if (
+          binding.task.kind !== "provider" ||
+          !("operation" in hold.evidence) ||
+          hold.evidence.outcome !== "unknown"
+        )
+          return false;
+        const { outcome: _outcome, ...operation } = hold.evidence;
+        return (
+          nativeCreationCanonicalJson(operation) ===
+          nativeCreationCanonicalJson(
+            Schema.encodeSync(ProviderNativeOperationContext)(observation.nativeOperation),
+          )
+        );
+      }
+      return (
+        "kind" in hold.evidence &&
+        hold.evidence.kind === "resource_cleanup" &&
+        hold.evidence.bindingSha256 === binding.bindingSha256 &&
+        hold.evidence.taskKind === binding.task.kind
+      );
+    };
+    const readLeaseCleanupTaskEffect = Effect.fnUntraced(function* (effectId: string) {
+      const rows = yield* sql<{
+        readonly thread_id: string;
+        readonly lease_json: string;
+        readonly owner_birth_json: string;
+        readonly deletion_json: string;
+        readonly task_json: string;
+        readonly binding_sha256: string;
+        readonly recorded_at: string;
+      }>`
+        SELECT * FROM orchestration_v2_lease_cleanup_task_bindings WHERE effect_id = ${effectId}`;
+      if (rows.length === 0) return null;
+      if (rows.length !== 1)
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Cleanup task binding is ambiguous",
+        });
+      const row = rows[0]!;
+      if (
+        (yield* EventSinkJsonCodec.decodeTaskKind(row.task_json).pipe(
+          Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+        )) === "worktree"
+      )
+        return null;
+      if (
+        (yield* EventSinkJsonCodec.decodeLeaseStatus(row.lease_json).pipe(
+          Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+        )) === "absent"
+      )
+        return null;
+      const binding = yield* Schema.decodeUnknownEffect(LeaseCleanupTaskBindingV2)(
+        {
+          version: 2,
+          effectId,
+          threadId: row.thread_id,
+          lease: yield* EventSinkJsonCodec.decodeJson(row.lease_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          ownerBirth: yield* EventSinkJsonCodec.decodeJson(row.owner_birth_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          deletion: yield* EventSinkJsonCodec.decodeJson(row.deletion_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          task: yield* EventSinkJsonCodec.decodeJson(row.task_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          bindingSha256: row.binding_sha256,
+          recordedAt: row.recorded_at,
+        },
+        { onExcessProperty: "error" },
+      );
+      const { bindingSha256, recordedAt: _recordedAt, ...subject } = binding;
+      const effect = Option.getOrNull(yield* readCleanupSnapshot(effectId));
+      const birth =
+        yield* sql`SELECT event_id FROM orchestration_events WHERE event_id = ${binding.ownerBirth.eventId}
+        AND sequence = ${binding.ownerBirth.sequence} AND application_event_version = 2 AND aggregate_kind = 'thread'
+        AND stream_id = ${binding.threadId} AND event_type = 'thread.created' AND json_extract(payload_json, '$.id') = ${binding.threadId}`;
+      const deletion =
+        yield* sql`SELECT event_id FROM orchestration_events WHERE event_id = ${binding.deletion.eventId}
+        AND sequence = ${binding.deletion.sequence} AND command_id = ${binding.deletion.commandId} AND application_event_version = 2
+        AND aggregate_kind = 'thread' AND stream_id = ${binding.threadId} AND event_type = 'thread.deleted'
+        AND sequence > ${binding.ownerBirth.sequence} AND json_extract(payload_json, '$.id') = ${binding.threadId}`;
+      const receipt = Option.getOrNull(
+        yield* commandReceipts.getByCommandId(binding.deletion.commandId),
+      );
+      if (
+        bindingSha256 !== leaseCleanupTaskBindingDigestV2(subject) ||
+        binding.lease.ownerThreadId !== binding.threadId ||
+        binding.ownerBirth.threadId !== binding.threadId ||
+        binding.lease.ownerIncarnation !==
+          (yield* EventSinkJsonCodec.encodeBirthTupleJson([
+            "t3.orchestration-v2.thread-birth/v1",
+            binding.ownerBirth.eventId,
+            binding.ownerBirth.sequence,
+          ]).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))))) ||
+        birth.length !== 1 ||
+        deletion.length !== 1 ||
+        receipt?.status !== "accepted" ||
+        effect === null ||
+        effect.threadId !== binding.threadId ||
+        effect.commandId !== binding.deletion.commandId
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Cleanup task lost its exact historical lease/effect/deletion association",
+        });
+      const task = binding.task;
+      if (
+        (task.kind === "provider" &&
+          (effect.request.type !== "provider-session.detach" ||
+            effect.request.providerSessionId !== task.expectedBinding.providerSessionId ||
+            task.expectedBinding.threadId !== binding.threadId)) ||
+        (task.kind === "terminal" &&
+          (effect.request.type !== "terminal.cleanup" ||
+            task.capture.threadId !== binding.threadId ||
+            nativeCreationCanonicalJson(task.capture.ownerBirth) !==
+              nativeCreationCanonicalJson(binding.ownerBirth) ||
+            task.capture.targets.some(
+              (target) =>
+                target.threadId !== binding.threadId ||
+                nativeCreationCanonicalJson(target.ownerBirth) !==
+                  nativeCreationCanonicalJson(binding.ownerBirth),
+            ))) ||
+        (task.kind === "attachment" &&
+          (effect.request.type !== "attachment.cleanup" ||
+            nativeCreationCanonicalJson(effect.request.attachmentIds) !==
+              nativeCreationCanonicalJson(task.attachmentIds)))
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Cleanup task differs from its pinned target",
+        });
+      return binding;
+    });
+    const readDeletionCleanupTaskEffect = Effect.fnUntraced(function* (effectId: string) {
+      const rows = yield* sql<{
+        readonly thread_id: string;
+        readonly lease_json: string;
+        readonly owner_birth_json: string;
+        readonly deletion_json: string;
+        readonly task_json: string;
+        readonly binding_sha256: string;
+        readonly recorded_at: string;
+      }>`
+        SELECT * FROM orchestration_v2_lease_cleanup_task_bindings WHERE effect_id = ${effectId}`;
+      if (rows.length === 0) return null;
+      if (rows.length !== 1)
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Deletion cleanup task is ambiguous",
+        });
+      const row = rows[0]!;
+      if (
+        (yield* EventSinkJsonCodec.decodeTaskKind(row.task_json).pipe(
+          Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+        )) === "worktree"
+      )
+        return null;
+      const inventory = yield* EventSinkJsonCodec.decodeLeaseWithStatus(row.lease_json).pipe(
+        Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+      );
+      if (inventory.status !== "absent") return yield* readLeaseCleanupTaskEffect(effectId);
+      const binding = yield* Schema.decodeUnknownEffect(UnleasedDeletionCleanupTaskBindingV1)(
+        {
+          version: 1,
+          effectId,
+          threadId: row.thread_id,
+          leaseInventory: inventory.value,
+          ownerBirth: yield* EventSinkJsonCodec.decodeJson(row.owner_birth_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          deletion: yield* EventSinkJsonCodec.decodeJson(row.deletion_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          task: yield* EventSinkJsonCodec.decodeJson(row.task_json).pipe(
+            Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))),
+          ),
+          bindingSha256: row.binding_sha256,
+          recordedAt: row.recorded_at,
+        },
+        { onExcessProperty: "error" },
+      );
+      const { bindingSha256, recordedAt: _recordedAt, ...subject } = binding;
+      const original = yield* readThreadDeletionCommandEffect(binding.deletion.commandId);
+      const effect = Option.getOrNull(yield* readCleanupSnapshot(effectId));
+      if (
+        bindingSha256 !== deletionCleanupTaskBindingDigestV1(subject) ||
+        original === null ||
+        original.inventory.captureStatus !== "captured" ||
+        original.inventory.leaseInventory.status !== "absent" ||
+        original.inventory.worktree.path !== binding.leaseInventory.resourcePath ||
+        original.command.threadId !== binding.threadId ||
+        nativeCreationCanonicalJson(original.ownerBirth) !==
+          nativeCreationCanonicalJson(binding.ownerBirth) ||
+        nativeCreationCanonicalJson(original.deletion) !==
+          nativeCreationCanonicalJson(binding.deletion) ||
+        effect === null ||
+        effect.threadId !== binding.threadId ||
+        effect.commandId !== binding.deletion.commandId ||
+        !original.inventory.prerequisiteEffectIds.includes(effectId)
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Cleanup absence was not captured with the original deletion",
+        });
+      const task = binding.task;
+      if (
+        (task.kind === "provider" &&
+          (effect.request.type !== "provider-session.detach" ||
+            effect.request.providerSessionId !== task.expectedBinding.providerSessionId ||
+            task.expectedBinding.threadId !== binding.threadId)) ||
+        (task.kind === "terminal" &&
+          (effect.request.type !== "terminal.cleanup" ||
+            task.capture.threadId !== binding.threadId ||
+            nativeCreationCanonicalJson(task.capture.ownerBirth) !==
+              nativeCreationCanonicalJson(binding.ownerBirth) ||
+            task.capture.targets.some(
+              (target) =>
+                target.threadId !== binding.threadId ||
+                nativeCreationCanonicalJson(target.ownerBirth) !==
+                  nativeCreationCanonicalJson(binding.ownerBirth),
+            ))) ||
+        (task.kind === "attachment" &&
+          (effect.request.type !== "attachment.cleanup" ||
+            nativeCreationCanonicalJson(effect.request.attachmentIds) !==
+              nativeCreationCanonicalJson(task.attachmentIds)))
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Unleased cleanup task differs from its original target",
+        });
+      return binding;
+    });
+    const readQualifiedDeletionCleanupOutcomeEffect = Effect.fnUntraced(function* (
+      effectId: string,
+    ) {
+      if (
+        !(yield* hasOwnJonesMigration(jonesMigrationEntries, [142, "V2NativeAcceptance"]).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        )) ||
+        !(yield* hasOwnJonesMigration(jonesMigrationEntries, [
+          139,
+          "DeletionWorktreeAdmission",
+        ]).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+      )
+        return null;
+      const rows = yield* sql<{
+        readonly ordinal: number;
+        readonly outcome_json: string;
+        readonly correlation_json: string;
+      }>`
+        SELECT ordinal, outcome_json, correlation_json FROM orchestration_v2_lease_cleanup_task_outcomes
+        WHERE effect_id = ${effectId} ORDER BY ordinal DESC LIMIT 1`;
+      if (rows.length === 0) return null;
+      const row = rows[0]!;
+      const parsedCorrelation = yield* EventSinkJsonCodec.decodeCleanupCorrelation(
+        row.correlation_json,
+      ).pipe(Effect.catch((error) => Effect.die(EventSinkJsonCodec.jsonCause(error))));
+      if (parsedCorrelation.evidenceSchema !== "t3.deletion-cleanup-observation/v1") return null;
+      const raw = parsedCorrelation.value;
+      const correlation = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({
+          workerId: Schema.NonEmptyString,
+          expectedAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+          bindingSha256: LowerSha256,
+          evidence: EffectOutbox.QualifiedDeletionCleanupEvidenceV1,
+        }),
+      )(raw, { onExcessProperty: "error" });
+      const observation = yield* Schema.decodeUnknownEffect(DeletionCleanupObservationV1)(
+        correlation.evidence.observation,
+        { onExcessProperty: "error" },
+      );
+      const outcome = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(LeaseCleanupTaskOutcomeV2),
+      )(row.outcome_json, { onExcessProperty: "error" });
+      const binding =
+        (yield* readDeletionCleanupTaskEffect(effectId)) ??
+        (yield* readDeletionWorktreeTaskEffect(effectId));
+      if (binding === null || correlation.bindingSha256 !== binding.bindingSha256)
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Qualified cleanup outcome lost its original task",
+        });
+      const qualified = yield* qualifyDeletionCleanupObservation(binding, observation);
+      if (
+        nativeCreationCanonicalJson(qualified.outcome) !== nativeCreationCanonicalJson(outcome) ||
+        qualified.workerId !== correlation.workerId ||
+        qualified.expectedAttempt !== correlation.expectedAttempt ||
+        qualified.producer !== correlation.evidence.producer
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Stored cleanup outcome differs from its finite producer evidence",
+        });
+      const holds = (yield* effectOutbox.listHeldByThreadId(binding.threadId)).filter(
+        (hold) => hold.effectId === effectId,
+      );
+      if (
+        correlation.evidence.coveredHolds.some(
+          (hold, index) =>
+            hold.effectId !== effectId ||
+            hold.threadId !== binding.threadId ||
+            hold.workerId !== qualified.workerId ||
+            hold.expectedAttempt !== qualified.expectedAttempt ||
+            hold.operationId !== effectId ||
+            !cleanupHoldMatchesObservation(binding, observation, hold) ||
+            !holds.some(
+              (stored) => nativeCreationCanonicalJson(stored) === nativeCreationCanonicalJson(hold),
+            ) ||
+            correlation.evidence.coveredHolds
+              .slice(0, index)
+              .some((earlier) => earlier.effectId === hold.effectId),
+        )
+      )
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Stored cleanup coverage differs from its immutable operation holds",
+        });
+      const evidence = { ...correlation.evidence, observation };
+      return {
+        ordinal: row.ordinal,
+        outcome,
+        bindingSha256: correlation.bindingSha256,
+        evidence,
+        correlation,
+      };
+    });
+    const readAttachmentNamespaceCleanupTaskEffect = Effect.fnUntraced(function* (
+      effectId: string,
+    ) {
+      const effect = Option.getOrNull(yield* readCleanupSnapshot(effectId));
+      if (effect === null) return null;
+      const reference = effect.attachmentNamespaceCleanup;
+      const fail = () =>
+        new EventSinkWriteError({
+          eventCount: 0,
+          commandId: effect.commandId,
+          cause: "Attachment namespace task lost its original birth, receipt or completion trigger",
+        });
+      if (
+        reference === undefined ||
+        effect.request.type !== "attachment.cleanup" ||
+        effect.nativeCreationExecutionReference !== undefined
+      )
+        return yield* fail();
+      const birth =
+        yield* sql`SELECT event_id FROM orchestration_events WHERE application_event_version = 2 AND aggregate_kind = 'thread'
+        AND stream_id = ${effect.threadId} AND event_type = 'thread.created' AND event_id = ${reference.ownerBirth.eventId}
+        AND sequence = ${reference.ownerBirth.sequence} AND json_extract(payload_json, '$.id') = ${effect.threadId}`;
+      const receipt = Option.getOrNull(yield* commandReceipts.getByCommandId(effect.commandId));
+      const events = yield* eventStore
+        .readByCommandId({ commandId: effect.commandId })
+        .pipe(Stream.runCollect);
+      const triggers = events.filter(
+        (stored) =>
+          stored.event.id === reference.triggerEventId && stored.event.threadId === effect.threadId,
+      );
+      const trigger = triggers[0];
+      if (
+        birth.length !== 1 ||
+        reference.ownerBirth.threadId !== effect.threadId ||
+        receipt?.status !== "accepted" ||
+        receipt.threadId !== effect.threadId ||
+        triggers.length !== 1 ||
+        trigger === undefined ||
+        trigger.sequence <= reference.ownerBirth.sequence
+      )
+        return yield* fail();
+      if (reference.mode === "delete_thread") {
+        if (
+          receipt.commandType !== "thread.delete" ||
+          effectId !== `effect:${effect.commandId}:attachment.cleanup` ||
+          trigger.event.type !== "thread.deleted" ||
+          trigger.event.payload.id !== effect.threadId ||
+          receipt.resultSequence < trigger.sequence
+        )
+          return yield* fail();
+      } else {
+        const rollback = Option.getOrNull(yield* readCleanupSnapshot(reference.rollbackEffectId));
+        if (
+          receipt.commandType !== "checkpoint.rollback" ||
+          receipt.resultSequence < reference.ownerBirth.sequence ||
+          rollback === null ||
+          rollback.commandId !== effect.commandId ||
+          rollback.threadId !== effect.threadId ||
+          rollback.request.type !== "provider-thread.rollback" ||
+          effectId !== `${rollback.id}:attachment.cleanup:prune` ||
+          trigger.event.type !== "provider-thread.updated" ||
+          trigger.event.payload.id !== rollback.request.providerThreadId ||
+          trigger.event.payload.appThreadId !== effect.threadId
+        )
+          return yield* fail();
+      }
+      const task = {
+        version: 1 as const,
+        effectId,
+        commandId: effect.commandId,
+        threadId: effect.threadId,
+        reference,
+        triggerSequence: trigger.sequence,
+      };
+      return yield* Schema.decodeUnknownEffect(AttachmentNamespaceCleanupTaskV1)(
+        { ...task, bindingSha256: attachmentTaskDigest(task) },
+        { onExcessProperty: "error" },
+      );
+    });
+    const attachmentObservationResult = (
+      observation: AttachmentNamespaceCleanupObservationV1,
+      ordinal: number,
+    ): AttachmentNamespaceCleanupRecordResultV1 => ({
+      status:
+        observation.outcome.status === "retryable_failure"
+          ? "retryable"
+          : observation.outcome.status === "unknown"
+            ? "unknown"
+            : "completed",
+      effectId: observation.effectId,
+      ordinal,
+    });
+    const AttachmentNamespaceCorrelationV1 = EffectOutbox.AttachmentNamespaceCleanupCorrelationV1;
+    const validateAttachmentNamespaceObservation = Effect.fnUntraced(function* (
+      basis: QualifiedAttachmentNamespaceCleanupBasisV1,
+      observation: AttachmentNamespaceCleanupObservationV1,
+    ) {
+      const fail = () =>
+        new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Attachment namespace observation differs from its qualified task, claim or scan",
+        });
+      const observedAt = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+        observation.observedAt,
+      );
+      const segment = toSafeThreadAttachmentSegment(basis.task.threadId);
+      if (
+        observation.effectId !== basis.task.effectId ||
+        observation.bindingSha256 !== basis.task.bindingSha256 ||
+        observation.workerId !== basis.claim.workerId ||
+        observation.expectedAttempt !== basis.claim.expectedAttempt ||
+        observation.basisEventSequence !== basis.basisEventSequence ||
+        observation.namespaceSegment !== segment ||
+        DateTime.formatIso(observedAt) !== observation.observedAt ||
+        observation.configuredRoot.includes("\0") ||
+        !NodePath.isAbsolute(observation.configuredRoot) ||
+        NodePath.resolve(observation.configuredRoot) !== observation.configuredRoot
+      )
+        return yield* fail();
+      const outcome = observation.outcome;
+      if (basis.status === "superseded") {
+        if (
+          outcome.status !== "superseded" ||
+          nativeCreationCanonicalJson(outcome.replacementBirth) !==
+            nativeCreationCanonicalJson(basis.replacementBirth)
+        )
+          return yield* fail();
+        return;
+      }
+      if (basis.status === "unsafe_namespace") {
+        if (segment !== null || outcome.status !== "unsafe_namespace") return yield* fail();
+        return;
+      }
+      if (
+        segment === null ||
+        !["completed", "retryable_failure", "unknown"].includes(outcome.status)
+      )
+        return yield* fail();
+      if (
+        basis.retentionSourceEvidence !== undefined &&
+        nativeCreationCanonicalJson(
+          ImportedAttachments.makeImportedApplicationAttachmentRetentionEvidenceV1({
+            ...basis.retentionSourceEvidence,
+            relativePaths: basis.retainedRelativePaths,
+          }),
+        ) !== nativeCreationCanonicalJson(basis.retentionSourceEvidence)
+      )
+        return yield* fail();
+      const validPaths = (paths: ReadonlyArray<string>) =>
+        new Set(paths).size === paths.length &&
+        paths.every((path) => {
+          if (/[\\/\0]/.test(path) || path === "." || path === "..") return false;
+          const id = parseAttachmentIdFromRelativePath(path);
+          return id !== null && parseThreadSegmentFromAttachmentId(id) === segment;
+        });
+      if (outcome.status === "completed") {
+        const matched = new Set(outcome.matchingPaths);
+        const removed = new Set(outcome.removedPaths);
+        const retained = new Set(basis.retainedRelativePaths);
+        const expectedRetained = outcome.matchingPaths.filter((path) => retained.has(path)).sort();
+        if (
+          ![outcome.matchingPaths, outcome.removedPaths, outcome.retainedPaths].every(validPaths) ||
+          outcome.removedPaths.some((path) => !matched.has(path)) ||
+          outcome.retainedPaths.some((path) => !matched.has(path) || removed.has(path)) ||
+          outcome.matchingPaths.length !==
+            outcome.removedPaths.length + outcome.retainedPaths.length ||
+          nativeCreationCanonicalJson([...outcome.retainedPaths].sort()) !==
+            nativeCreationCanonicalJson(expectedRetained) ||
+          (outcome.rootAbsent && outcome.matchingPaths.length !== 0)
+        )
+          return yield* fail();
+      } else if (outcome.status === "retryable_failure") {
+        if (
+          !validPaths(outcome.removedPaths) ||
+          !validPaths(outcome.remainingPaths) ||
+          outcome.remainingPaths.length === 0 ||
+          outcome.remainingPaths.some(
+            (path) =>
+              outcome.removedPaths.includes(path) || basis.retainedRelativePaths.includes(path),
+          ) ||
+          outcome.removedPaths.some((path) => basis.retainedRelativePaths.includes(path))
+        )
+          return yield* fail();
+      } else if (
+        outcome.status === "unknown" &&
+        (!validPaths(outcome.removedPaths) ||
+          outcome.removedPaths.some((path) => basis.retainedRelativePaths.includes(path)))
+      )
+        return yield* fail();
+    });
+    const readAttachmentNamespaceCleanupHistoryEffect = Effect.fnUntraced(function* (
+      effectId: string,
+    ) {
+      if (
+        !(yield* hasOwnJonesMigration(jonesMigrationEntries, [143, "AttachmentCleanup"]).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ))
+      )
+        return [];
+      const rows = yield* sql<{
+        readonly ordinal: number;
+        readonly binding_sha256: string;
+        readonly canonical_task_json: string;
+        readonly observation_json: string;
+        readonly correlation_json: string;
+        readonly recorded_at: string;
+      }>`
+        SELECT * FROM orchestration_v2_attachment_cleanup_observations WHERE effect_id = ${effectId} ORDER BY ordinal`;
+      if (rows.length === 0) return [];
+      const task = yield* readAttachmentNamespaceCleanupTaskEffect(effectId);
+      if (task === null)
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: "Attachment observation history has no original task",
+        });
+      return yield* Effect.forEach(
+        rows,
+        (row, ordinal) =>
+          Effect.gen(function* () {
+            const recordedTask = yield* Schema.decodeUnknownEffect(
+              Schema.fromJsonString(AttachmentNamespaceCleanupTaskV1),
+            )(row.canonical_task_json, { onExcessProperty: "error" });
+            const observation = yield* Schema.decodeUnknownEffect(
+              Schema.fromJsonString(AttachmentNamespaceCleanupObservationV1),
+            )(row.observation_json, { onExcessProperty: "error" });
+            const correlation = yield* Schema.decodeUnknownEffect(
+              Schema.fromJsonString(AttachmentNamespaceCorrelationV1),
+            )(row.correlation_json, { onExcessProperty: "error" });
+            if (
+              row.ordinal !== ordinal ||
+              row.binding_sha256 !== task.bindingSha256 ||
+              row.recorded_at !== observation.observedAt ||
+              nativeCreationCanonicalJson(recordedTask) !== nativeCreationCanonicalJson(task) ||
+              nativeCreationCanonicalJson(correlation.basis.task) !==
+                nativeCreationCanonicalJson(task) ||
+              correlation.observationSha256 !==
+                nativeCreationSha256(nativeCreationCanonicalJson(observation))
+            )
+              return yield* new EventSinkWriteError({
+                eventCount: 0,
+                cause: "Attachment observation history lost its immutable correlation",
+              });
+            yield* validateAttachmentNamespaceObservation(correlation.basis, observation);
+            const status = attachmentObservationResult(observation, ordinal).status;
+            if (status === "stale")
+              return yield* new EventSinkWriteError({
+                eventCount: 0,
+                cause: "A stale attachment observation was persisted",
+              });
+            return {
+              ordinal,
+              task,
+              basis: correlation.basis,
+              observation,
+              status,
+            } satisfies AttachmentNamespaceCleanupRecordedObservationV1;
+          }),
+        { concurrency: 1 },
+      );
+    });
+    const attachmentNamespaceHoldMatches = (
+      task: AttachmentNamespaceCleanupTaskV1,
+      history: ReadonlyArray<AttachmentNamespaceCleanupRecordedObservationV1>,
+      hold: EffectOutbox.UnknownEffectHoldV2,
+    ) =>
+      hold.effectId === task.effectId &&
+      hold.threadId === task.threadId &&
+      hold.operationId === task.effectId &&
+      "kind" in hold.evidence &&
+      hold.evidence.kind === "resource_cleanup" &&
+      hold.evidence.taskKind === "attachment" &&
+      hold.evidence.operationId === task.effectId &&
+      hold.evidence.threadId === task.threadId &&
+      hold.evidence.bindingSha256 === task.bindingSha256 &&
+      history.some(
+        (entry) =>
+          entry.observation.outcome.status === "unknown" &&
+          entry.observation.workerId === hold.workerId &&
+          entry.observation.expectedAttempt === hold.expectedAttempt,
+      );
+    const readUnresolvedDeletionCleanupHoldsEffect = Effect.fnUntraced(function* (
+      threadId: ThreadId,
+    ) {
+      if (
+        !(yield* hasOwnJonesMigration(jonesMigrationEntries, [142, "V2NativeAcceptance"]).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ))
+      )
+        return yield* effectOutbox.listHeldByThreadId(threadId);
+      const holds = yield* effectOutbox.listHeldByThreadId(threadId);
+      const unresolved: EffectOutbox.UnknownEffectHoldV2[] = [];
+      for (const hold of holds) {
+        const effect = Option.getOrNull(yield* readCleanupSnapshot(hold.effectId));
+        if (effect?.attachmentNamespaceCleanup !== undefined) {
+          const history = yield* readAttachmentNamespaceCleanupHistoryEffect(hold.effectId);
+          const latest = history[history.length - 1];
+          if (
+            latest?.status === "completed" &&
+            effect.status === "succeeded" &&
+            effect.completedAt !== null &&
+            attachmentNamespaceHoldMatches(latest.task, history, hold)
+          )
+            continue;
+          unresolved.push(hold);
+          continue;
+        }
+        const latest = yield* readQualifiedDeletionCleanupOutcomeEffect(hold.effectId);
+        if (
+          latest?.outcome.result !== "succeeded" ||
+          !["confirmed", "absent"].includes(latest.outcome.effect) ||
+          !latest.evidence.coveredHolds.some(
+            (covered) => nativeCreationCanonicalJson(covered) === nativeCreationCanonicalJson(hold),
+          )
+        )
+          unresolved.push(hold);
+      }
+      return unresolved;
+    });
+
+    const checkoutStore = yield* makeOrdinaryCheckoutStore({
+      readUnresolvedDeletionCleanupHolds: (threadId) =>
+        readUnresolvedDeletionCleanupHoldsEffect(threadId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EffectOutbox.EffectOutboxError({ operation: "qualified-retirement-read", cause }),
+          ),
+        ),
+    });
     const liveEvents = yield* PubSub.unbounded<OrchestrationV2StoredEvent>();
     const liveEventsByType = new Map<
       OrchestrationV2DomainEvent["type"],
@@ -1063,6 +2723,17 @@ const baseLayer: Layer.Layer<
 
     const encodeOrdinaryCommand = Schema.encodeEffect(OrchestrationV2Command);
     return EventSinkV2.of({
+      readAttachmentNamespaceCleanupObservation: (effectId) =>
+        commitTransaction
+          .withTransaction(readAttachmentNamespaceCleanupHistoryEffect(effectId))
+          .pipe(
+            Effect.map((history) => history[history.length - 1] ?? null),
+            Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })),
+          ),
+      readUnresolvedDeletionCleanupHolds: (threadId) =>
+        commitTransaction
+          .withTransaction(readUnresolvedDeletionCleanupHoldsEffect(threadId))
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       ...nativeRuntimeEvidence,
       ordinaryCheckoutLifetime: checkoutStore,
       validateOrdinaryCheckoutCommandReplay: (command, threadId) =>
