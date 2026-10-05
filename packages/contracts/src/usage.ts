@@ -54,7 +54,7 @@ export const UsageDay = TrimmedNonEmptyString.check(Schema.isPattern(USAGE_DAY_P
 );
 export type UsageDay = typeof UsageDay.Type;
 
-export const UsageResolution = Schema.Literals(["day", "hour"]);
+export const UsageResolution = Schema.Literals(["day", "hour", "exactDay"]);
 export type UsageResolution = typeof UsageResolution.Type;
 
 /**
@@ -211,11 +211,11 @@ export const UsageSummaryInput = Schema.Struct({
    * any window that crosses a DST boundary.
    */
   timeZone: TrimmedNonEmptyString,
-  /** Defaults to daily for older clients. */
+  /** Defaults to day; `exactDay` filters by paired instants and keeps day buckets. */
   resolution: Schema.optional(UsageResolution),
-  /** Inclusive UTC instant for an hourly rolling window. */
+  /** Inclusive UTC instant for hourly or exact-day windows. */
   sinceTime: Schema.optional(TrimmedNonEmptyString),
-  /** Exclusive UTC instant for an hourly rolling window. */
+  /** Exclusive UTC instant for hourly or exact-day windows. */
   untilTime: Schema.optional(TrimmedNonEmptyString),
 });
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;

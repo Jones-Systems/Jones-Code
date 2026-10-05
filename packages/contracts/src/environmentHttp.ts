@@ -16,6 +16,7 @@ import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/unstable/httpapi/HttpApiMiddleware";
 import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondable";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import { HostStatusSnapshot } from "./hostStatus.ts";
 
 import {
   AuthAccessTokenResult,
@@ -753,8 +754,17 @@ class EnvironmentVoiceReviewHttpApi extends HttpApiGroup.make("voiceReview")
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+class EnvironmentHostStatusHttpApi extends HttpApiGroup.make("hostStatus").add(
+  HttpApiEndpoint.get("snapshot", "/api/host-status", {
+    headers: OptionalBearerHeaders,
+    success: HostStatusSnapshot,
+    error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentVoiceReviewHttpApi)
+  .add(EnvironmentHostStatusHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)

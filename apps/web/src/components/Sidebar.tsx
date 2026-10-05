@@ -102,6 +102,7 @@ import {
   isAtomCommandInterrupted,
   settlePromise,
   squashAtomCommandFailure,
+  executeAtomQuery,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { isElectron } from "../env";
@@ -155,6 +156,8 @@ import {
 } from "../state/entities";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { vcsEnvironment } from "../state/vcs";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { orchestrationEnvironment } from "../state/orchestration";
 import { threadEnvironment } from "../state/threads";
 import { useEnvironmentQuery } from "../state/query";
 import { useThreadSearch } from "../state/queries";
@@ -170,7 +173,11 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
-import { buildDraftActionMenuItems, buildThreadActionMenuItems } from "./threadActionMenu.logic";
+import {
+  buildDraftActionMenuItems,
+  buildThreadActionMenuItems,
+  canStopThreadSession,
+} from "./threadActionMenu.logic";
 import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
@@ -2349,6 +2356,9 @@ export default function Sidebar() {
     archiveThread,
     deleteThread,
   } = useThreadActions();
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
+    reportFailure: false,
+  });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -4437,7 +4447,7 @@ export default function Sidebar() {
           null;
         // Un-settle pins the thread active until real activity clears the pin.
         // Environments without
-        // the settlement capability get no lifecycle items at all.
+        // the settlement capability get no settlement item.
         const supportsSettlement =
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSettlement ===
           true;
@@ -4451,6 +4461,17 @@ export default function Sidebar() {
         const supportsTitleRegeneration =
           serverConfigs.get(thread.environmentId)?.environment.capabilities
             .threadTitleRegeneration === true;
+        const projection = await executeAtomQuery(
+          appAtomRegistry,
+          orchestrationEnvironment.v2.threadProjection({
+            environmentId: threadRef.environmentId,
+            input: { threadId: threadRef.threadId },
+          }),
+          { refresh: true, reportFailure: false },
+        );
+        const canStopSession = canStopThreadSession(
+          projection._tag === "Success" ? projection.value.providerSessions : null,
+        );
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const isSettled = settledThreadKeysRef.current.has(threadKey);
         const isSnoozed = snoozedThreadKeysRef.current.has(threadKey);
@@ -4482,6 +4503,7 @@ export default function Sidebar() {
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
               isRegeneratingTitle,
               isRunning: !threadRuntimeCanArchive(thread.runtime),
+              canStopSession,
               supports: {
                 settlement: supportsSettlement,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -4535,6 +4557,24 @@ export default function Sidebar() {
                 stackedThreadToast({
                   type: "error",
                   title: "Could not create thread",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
+          case "stop-thread": {
+            if (!canStopSession) return;
+            const result = await stopThreadSession({
+              environmentId: threadRef.environmentId,
+              input: { threadId: threadRef.threadId },
+            });
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to stop thread",
                   description: error instanceof Error ? error.message : "An error occurred.",
                 }),
               );
@@ -4702,6 +4742,7 @@ export default function Sidebar() {
       setProjectScopeKey,
       setThreadAutoSettle,
       startThreadRename,
+      stopThreadSession,
       updateThreadMetadata,
       timestampFormat,
     ],

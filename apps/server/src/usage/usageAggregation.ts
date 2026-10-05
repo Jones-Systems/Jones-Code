@@ -137,6 +137,7 @@ export class UsageAggregator {
   readonly #buckets = new Map<string, MutableBucket>();
   readonly #seen = new Set<string>();
   readonly #toDay: (timestampMs: number) => string;
+  readonly #exactWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null;
   readonly #hourlyWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null;
   readonly #options: AggregateOptions;
   #lastBucket: {
@@ -153,17 +154,25 @@ export class UsageAggregator {
   constructor(options: AggregateOptions) {
     this.#options = options;
     this.#toDay = makeDayFormatter(options.timeZone);
-    if (options.resolution === "hour") {
-      if (options.sinceTimeMs === undefined || options.untilTimeMs === undefined) {
-        throw new Error("Hourly usage aggregation requires exact time bounds");
-      }
-      this.#hourlyWindow = {
-        sinceTimeMs: options.sinceTimeMs,
-        untilTimeMs: options.untilTimeMs,
-      };
-    } else {
-      this.#hourlyWindow = null;
+    const hasSinceTime = options.sinceTimeMs !== undefined;
+    const hasUntilTime = options.untilTimeMs !== undefined;
+    if (hasSinceTime !== hasUntilTime) {
+      throw new Error("Exact usage aggregation requires both time bounds");
     }
+    if (options.resolution === "hour" && !hasSinceTime) {
+      throw new Error("Hourly usage aggregation requires exact time bounds");
+    }
+    if (options.resolution === "exactDay" && !hasSinceTime) {
+      throw new Error("Exact-day usage aggregation requires exact time bounds");
+    }
+    this.#exactWindow =
+      hasSinceTime && hasUntilTime
+        ? {
+            sinceTimeMs: options.sinceTimeMs,
+            untilTimeMs: options.untilTimeMs,
+          }
+        : null;
+    this.#hourlyWindow = options.resolution === "hour" ? this.#exactWindow : null;
   }
 
   /**
@@ -182,9 +191,9 @@ export class UsageAggregator {
     }
 
     if (
-      this.#hourlyWindow !== null &&
-      (record.timestampMs < this.#hourlyWindow.sinceTimeMs ||
-        record.timestampMs >= this.#hourlyWindow.untilTimeMs)
+      this.#exactWindow !== null &&
+      (record.timestampMs < this.#exactWindow.sinceTimeMs ||
+        record.timestampMs >= this.#exactWindow.untilTimeMs)
     ) {
       this.#outOfWindow += 1;
       return false;
