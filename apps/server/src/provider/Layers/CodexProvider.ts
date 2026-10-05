@@ -153,9 +153,16 @@ function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"])
 export function mapCodexModelCapabilities(
   model: CodexSchema.V2ModelListResponse__Model,
 ): ModelCapabilities {
+  const supportsMedium = model.supportedReasoningEfforts.some(
+    ({ reasoningEffort }) => reasoningEffort === "medium",
+  );
+  const preferredReasoning =
+    supportsMedium &&
+    (codexModelFamily(model.model) === "gpt-6-astra" || model.defaultReasoningEffort === "low")
+      ? "medium"
+      : model.defaultReasoningEffort;
   const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>
-    reasoningEffort ===
-    (codexModelFamily(model.model) === "gpt-6-astra" ? "medium" : model.defaultReasoningEffort)
+    reasoningEffort === preferredReasoning
       ? {
           id: reasoningEffort,
           label: reasoningEffortLabel(reasoningEffort),

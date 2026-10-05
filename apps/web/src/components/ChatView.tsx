@@ -314,6 +314,7 @@ import { getProviderModelCapabilities } from "../providerModels";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  isProviderInstancePickerReady,
   NO_PROVIDER_MODEL_SELECTION,
   shouldShowInstanceBadge,
   sortProviderInstanceEntries,
@@ -432,6 +433,7 @@ import {
   resolveComposerTimelineInset,
   resolveScrollToEndClearance,
 } from "./composerFooterLayout";
+import { matchesProviderModelLock } from "./chat/ProviderInstanceShortcuts";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
@@ -522,6 +524,7 @@ import {
   reconcileMountedTerminalThreadIds,
   resolveComposerInteractionMode,
   resolveComposerProviderSelection,
+  resolveComposerPickerModelSelection,
   getAntigravitySendBlockReason,
   observeProactivePanelUserChoice,
   resolveProactiveTurnDiffAction,
@@ -1781,6 +1784,10 @@ export default function ChatView(props: ChatViewProps) {
   const [restingComposerControlsHost, setRestingComposerControlsHost] =
     useState<HTMLDivElement | null>(null);
   const [restingComposerControlsVisible, setRestingComposerControlsVisible] = useState(false);
+  const [shortcutControlsHost, setShortcutControlsHost] = useState<HTMLDivElement | null>(null);
+  const [shortcutWorkspaceElement, setShortcutWorkspaceElement] = useState<HTMLDivElement | null>(
+    null,
+  );
   const citeAssistantText = useCallback(
     (citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => {
       const inserted = composerRef.current?.citeAssistantText(citation, sourceAnchor) ?? false;
@@ -1904,6 +1911,11 @@ export default function ChatView(props: ChatViewProps) {
     [],
   );
   const [composerOverlayElement, setComposerOverlayElement] = useState<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    setShortcutWorkspaceElement(
+      composerOverlayElement?.closest<HTMLDivElement>("[data-chat-workspace-drop-target]") ?? null,
+    );
+  }, [composerOverlayElement]);
   // Space the timeline keeps clear above its end. Tracks the overlay while the
   // composer is expanded and holds that height while it rests, so the resting
   // composer never exposes rows that its expansion will cover.
@@ -3165,7 +3177,7 @@ export default function ChatView(props: ChatViewProps) {
       ),
     [providerStatuses, settings],
   );
-  const { selectedProviderEntry, requestedDriverKind } = useMemo(
+  const { selectedProviderEntry, requestedDriverKind, lockedContinuationGroupKey } = useMemo(
     () =>
       resolveComposerProviderSelection({
         entries: providerInstanceEntries,
@@ -10275,12 +10287,25 @@ export default function ChatView(props: ChatViewProps) {
 
   const onProviderModelSelect = useCallback(
     (instanceId: ProviderInstanceId, model: string, options?: { focusComposer?: boolean }) => {
-      if (!activeThread) return;
+      if (
+        !activeThread ||
+        isEnvironmentChanging ||
+        activeEnvironmentUnavailable ||
+        isRevertingCheckpoint
+      )
+        return;
       // Look up the configured instance so model normalization and custom
       // model lookup stay scoped to that exact instance. Unknown instance ids
       // are rejected by returning early; the server remains authoritative too.
-      const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-      const resolvedDriverKind = entry?.driver ?? null;
+      const configuredEntry = providerInstanceEntries.find(
+        (entry) => entry.instanceId === instanceId,
+      );
+      if (!configuredEntry || !isProviderInstancePickerReady(configuredEntry)) {
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+        return;
+      }
+      const entry = configuredEntry.snapshot;
+      const resolvedDriverKind = entry.driver;
       if (
         !supportsProviderSwitchingViaHandoff &&
         lockedProvider !== null &&
@@ -10292,20 +10317,15 @@ export default function ChatView(props: ChatViewProps) {
       }
       if (
         !supportsProviderSwitchingViaHandoff &&
-        lockedProvider !== null &&
-        activeRuntime?.providerInstanceId
+        !matchesProviderModelLock(
+          configuredEntry,
+          lockedProvider,
+          lockedContinuationGroupKey,
+          activeRuntime?.providerInstanceId ?? activeThread.modelSelection.instanceId,
+        )
       ) {
-        const currentEntry = providerStatuses.find(
-          (snapshot) => snapshot.instanceId === activeRuntime.providerInstanceId,
-        );
-        if (
-          currentEntry?.continuation?.groupKey &&
-          entry?.continuation?.groupKey &&
-          currentEntry.continuation.groupKey !== entry.continuation.groupKey
-        ) {
-          if (options?.focusComposer !== false) scheduleComposerFocus();
-          return;
-        }
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+        return;
       }
       const resolvedModel = resolveAppModelSelectionForInstance(
         instanceId,
@@ -10317,16 +10337,19 @@ export default function ChatView(props: ChatViewProps) {
         if (options?.focusComposer !== false) scheduleComposerFocus();
         return;
       }
-      // Restore this model's own remembered options; without any, start it
-      // from its default rather than carrying the previous model's over.
-      const rememberedOptions =
-        useComposerDraftStore.getState().stickyOptionsByModelByProvider[instanceId]?.[
-          resolvedModel
-        ];
-      const nextModelSelection: ModelSelection =
-        rememberedOptions !== undefined && rememberedOptions.length > 0
-          ? { instanceId, model: resolvedModel, options: [...rememberedOptions] }
-          : { instanceId, model: resolvedModel };
+      // Remember other traits, but a model switch inherits current effort instead
+      // of reviving a historical choice from the model's sticky snapshot.
+      const store = useComposerDraftStore.getState();
+      const draft = store.getComposerDraft(composerDraftTarget);
+      const currentInstance = draft?.activeProvider ?? activeThread.modelSelection.instanceId;
+      const currentSelection =
+        draft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
+      const nextModelSelection = resolveComposerPickerModelSelection({
+        instanceId,
+        model: resolvedModel,
+        currentSelection,
+        rememberedOptions: store.stickyOptionsByModelByProvider[instanceId]?.[resolvedModel],
+      });
       const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
         hasStartedSession: activeRuntime !== null,
@@ -10359,6 +10382,12 @@ export default function ChatView(props: ChatViewProps) {
       activeRuntime,
       lockedProvider,
       supportsProviderSwitchingViaHandoff,
+      lockedContinuationGroupKey,
+      providerInstanceEntries,
+      composerDraftTarget,
+      isEnvironmentChanging,
+      activeEnvironmentUnavailable,
+      isRevertingCheckpoint,
       scheduleComposerFocus,
       setComposerDraftModelSelection,
       setStickyComposerModelSelection,
@@ -11080,6 +11109,7 @@ export default function ChatView(props: ChatViewProps) {
               ref={setComposerOverlayElement}
               inert={isRevertingCheckpoint}
               data-chat-composer-overlay="true"
+              data-chat-composer-layout={isDraftHeroState ? "hero" : "docked"}
               className={
                 isDraftHeroState
                   ? "pointer-events-none absolute inset-0 z-20 flex items-center"
@@ -11276,6 +11306,8 @@ export default function ChatView(props: ChatViewProps) {
                                 supportsPullRequests ? activeProjectRepository : null
                               }
                               restingControlsHost={restingComposerControlsHost}
+                              shortcutControlsHost={shortcutControlsHost}
+                              shortcutWorkspaceElement={shortcutWorkspaceElement}
                               restingControlsHaveLeadingContext={
                                 mountComposerContextStrip &&
                                 (isGitRepo || showComposerEnvironmentIndicator)
@@ -11394,11 +11426,28 @@ export default function ChatView(props: ChatViewProps) {
                         </div>
                       </div>
                     </ComposerSurface.Shell>
-                    <div
-                      aria-hidden
-                      className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"
-                    />
+                    {isDraftHeroState ? (
+                      <div
+                        aria-hidden
+                        className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"
+                      />
+                    ) : null}
                   </div>
+                </div>
+              </div>
+              <div
+                className={cn(
+                  "w-full ps-(--workspace-gutter-start) pe-(--workspace-gutter-end)",
+                  isDraftHeroState && "absolute inset-x-0 bottom-0",
+                )}
+              >
+                <div
+                  ref={setShortcutControlsHost}
+                  data-chat-composer-shortcut-host="true"
+                  className="relative w-full"
+                />
+                <div aria-hidden className="pb-safe">
+                  <div className="h-4 sm:h-5" />
                 </div>
               </div>
             </div>

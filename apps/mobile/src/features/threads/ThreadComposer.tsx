@@ -64,6 +64,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import type { ComposerDocumentAttachment } from "../../lib/composerContext";
 import { useProject, useThreadShells } from "../../state/entities";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
@@ -647,9 +648,31 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const lockedProviderInstanceId = props.canSwitchProvider
     ? undefined
     : currentModelSelection.instanceId;
+  const configuredDefaultModelSelection = useMemo(
+    () =>
+      props.serverConfig?.settings
+        ? resolveProjectSettings(
+            props.serverConfig.settings,
+            props.selectedThread.projectId,
+            project,
+          ).settings.defaultModelSelection
+        : null,
+    [props.serverConfig?.settings, props.selectedThread.projectId, project],
+  );
   const modelOptions = useMemo(
-    () => buildModelOptions(props.serverConfig, currentModelSelection, lockedProviderInstanceId),
-    [props.serverConfig, currentModelSelection, lockedProviderInstanceId],
+    () =>
+      buildModelOptions(
+        props.serverConfig,
+        currentModelSelection,
+        lockedProviderInstanceId,
+        configuredDefaultModelSelection,
+      ),
+    [
+      props.serverConfig,
+      currentModelSelection,
+      lockedProviderInstanceId,
+      configuredDefaultModelSelection,
+    ],
   );
   const threadProviderGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);
   const currentModelOption =
