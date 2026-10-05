@@ -337,6 +337,9 @@ export type DesktopTelemetrySetHostPowerIntervals =
 export const DesktopTelemetryRequestDesktopUpdate = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("requestDesktopUpdate"),
+  action: Schema.optionalKey(Schema.Literals(["check", "download"])),
+  artifactId: Schema.optionalKey(Schema.Number),
+  sourceSha: Schema.optionalKey(Schema.String),
   requestId: TrimmedNonEmptyString,
 });
 export type DesktopTelemetryRequestDesktopUpdate = typeof DesktopTelemetryRequestDesktopUpdate.Type;

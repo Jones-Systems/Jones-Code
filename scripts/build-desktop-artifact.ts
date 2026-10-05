@@ -21,6 +21,7 @@ import rootPackageJson from "../package.json" with { type: "json" };
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
 import gnomeCaptureBundle from "../apps/desktop/gnome-extension/bundle.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
+import { jonesNativeHelperSource } from "../apps/desktop/src/updates/jonesNativeHelperSource.ts";
 
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
@@ -922,11 +923,24 @@ interface ResolvedBuildOptions {
   readonly wslRuntime: string | undefined;
 }
 
+const decodeJonesBuildSource = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    repository: Schema.Literal("Jones-Systems/Jones-Code"),
+    sha: Schema.String,
+    tree: Schema.String,
+  }),
+);
+
 interface StagePackageJson {
   readonly name: string;
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
+  readonly jonesSource?: {
+    readonly repository: "Jones-Systems/Jones-Code";
+    readonly sha: string;
+    readonly tree: string;
+  };
   readonly private: true;
   readonly packageManager: string;
   readonly description: string;
@@ -967,6 +981,7 @@ export const DESKTOP_FILE_EXCLUSIONS = [
   "!apps/desktop/prod-resources/windows-server/**/*",
   "!apps/desktop/prod-resources/wsl-runtime.tar.gz",
   "!apps/desktop/prod-resources/wsl-runtime.tar.gz.sha256",
+  "!apps/desktop/prod-resources/jones-update-helper.py",
   "!apps/desktop/gnome-extension",
   "!apps/desktop/gnome-extension/**/*",
 ] as const;
@@ -1073,6 +1088,16 @@ export const WSL_RUNTIME_EXTRA_RESOURCES = [
   WSL_RUNTIME_ARCHIVE_EXTRA_RESOURCE,
   WSL_RUNTIME_ARCHIVE_HASH_EXTRA_RESOURCE,
 ] as const;
+export const JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE = {
+  from: "apps/desktop/prod-resources/jones-update-helper.py",
+  to: "jones-update-helper.py",
+} as const;
+
+const bundlesJonesNativeHelper = (
+  platform: typeof BuildPlatform.Type,
+  version: string,
+  signed: boolean,
+) => platform === "mac" && !signed && /-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(version);
 export const DESKTOP_EXTRA_RESOURCES = [
   {
     from: "apps/desktop/prod-resources/cursor-sdk",
@@ -2687,6 +2712,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       : {}),
     extraResources: [
       ...DESKTOP_EXTRA_RESOURCES,
+      ...(bundlesJonesNativeHelper(platform, version, signed)
+        ? [JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE]
+        : []),
       ...(platform === "linux" ? LINUX_CAPTURE_EXTRA_RESOURCES : []),
       ...(platform === "linux" ? LINUX_BROWSER_SECRET_EXTRA_RESOURCES : []),
       ...(platform === "win" ? WINDOWS_SERVER_EXTRA_RESOURCES : []),
@@ -3577,6 +3605,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* Effect.log("[desktop-artifact] Staging release app...");
   yield* fs.copy(distDirs.desktopDist, path.join(stageAppDir, "apps/desktop/dist-electron"));
   yield* fs.copy(distDirs.desktopResources, stageResourcesDir);
+  if (bundlesJonesNativeHelper(options.platform, appVersion, options.signed)) {
+    const helperSource = path.join(stageAppDir, JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE.from);
+    yield* fs.makeDirectory(path.dirname(helperSource), { recursive: true });
+    yield* fs.writeFileString(helperSource, jonesNativeHelperSource, { flag: "wx", mode: 0o700 });
+  }
   if (options.platform === "linux") {
     const extensionDir = path.join(stageAppDir, "apps/desktop/gnome-extension");
     yield* fs.makeDirectory(extensionDir, { recursive: true });
@@ -3694,6 +3727,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
+    ...("jonesSource" in desktopPackageJson
+      ? {
+          jonesSource: yield* decodeJonesBuildSource(desktopPackageJson.jonesSource),
+        }
+      : {}),
     private: true,
     packageManager: rootPackageJson.packageManager,
     description: "T3 Code desktop build",

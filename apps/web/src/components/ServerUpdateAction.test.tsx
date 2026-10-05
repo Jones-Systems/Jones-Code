@@ -10,7 +10,28 @@ const testState = vi.hoisted(() => ({
   updateServer: vi.fn(),
   toast: vi.fn(),
   continueThreadsAfterServerUpdate: false,
+  jonesEnvironmentIds: new Set<string>(),
 }));
+
+// Existing single-action tests invoke the component directly; evaluate its atoms
+// without React hooks while retaining the real atom derivation used by batch tests.
+vi.mock("@effect/atom-react", async () => {
+  const { AtomRegistry } = await import("effect/unstable/reactivity");
+  const registry = AtomRegistry.make();
+  return { useAtomValue: registry.get.bind(registry) };
+});
+vi.mock("~/state/jonesUpdates", async () => {
+  const { Atom } = await import("effect/unstable/reactivity");
+  return {
+    jonesUpdates: {
+      value: (environmentId: string) =>
+        Atom.make(
+          testState.jonesEnvironmentIds.has(environmentId) ? { channel: "jones-main" } : null,
+        ),
+    },
+  };
+});
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 
 vi.mock("~/hooks/useCopyToClipboard", () => ({
   useCopyToClipboard: () => ({ copyToClipboard: vi.fn() }),
@@ -64,6 +85,7 @@ async function flushPromises(): Promise<void> {
 
 describe("ServerUpdateAction", () => {
   beforeEach(() => {
+    testState.jonesEnvironmentIds.clear();
     testState.updateServer.mockReset();
     testState.toast.mockReset();
     testState.continueThreadsAfterServerUpdate = false;
@@ -243,6 +265,7 @@ describe("ServerUpdatesAction", () => {
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    testState.jonesEnvironmentIds.clear();
     testState.updateServer.mockReset();
     testState.toast.mockReset();
     resetConfirmDialogForTests();
@@ -273,6 +296,18 @@ describe("ServerUpdatesAction", () => {
     expect(testState.toast.mock.calls.map(([toast]) => toast.title)).toEqual([
       "Laptop updated",
       "Office updated",
+    ]);
+  });
+
+  it("keeps Jones hosts out of the version-only bulk update flow", async () => {
+    testState.jonesEnvironmentIds.add("batch-a");
+    testState.updateServer.mockResolvedValue(success);
+    const button = await mount();
+    await act(async () => {
+      button.props.onClick();
+    });
+    expect(testState.updateServer.mock.calls.map(([target]) => target)).toEqual([
+      { environmentId: "batch-b", input: { targetVersion: "0.0.31" } },
     ]);
   });
 

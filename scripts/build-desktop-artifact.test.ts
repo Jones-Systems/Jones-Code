@@ -28,6 +28,7 @@ import {
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
+  JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE,
   LINUX_CAPTURE_EXTRA_RESOURCES,
   LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
   LINUX_FILE_EXCLUSIONS,
@@ -363,7 +364,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const previewChannel = yield* createBuildConfig(
         "mac",
         "dmg",
-        "0.0.41-preview.20260912.1589",
+        "0.0.41-preview.20260912.1589.2",
         false,
         false,
         undefined,
@@ -393,6 +394,15 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.notProperty(previewChannel, "publish");
       assert.notProperty(previewAttempt, "publish");
       assert.deepStrictEqual(malformedAttempt.publish, release.publish);
+      assert.includeDeepMembers(previewChannel.extraResources as unknown[], [
+        JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE,
+      ]);
+      assert.notIncludeDeepMembers(release.extraResources as unknown[], [
+        JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE,
+      ]);
+      assert.notIncludeDeepMembers(preview.extraResources as unknown[], [
+        JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE,
+      ]);
       assert.deepStrictEqual(release.publish, [
         {
           provider: "github",
@@ -583,6 +593,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     for (const resource of [
       ...WSL_RUNTIME_EXTRA_RESOURCES,
       ...LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
+      JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE,
     ]) {
       assert.include(
         DESKTOP_FILE_EXCLUSIONS,
@@ -606,6 +617,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "!apps/desktop/prod-resources/windows-server/**/*",
       "!apps/desktop/prod-resources/wsl-runtime.tar.gz",
       "!apps/desktop/prod-resources/wsl-runtime.tar.gz.sha256",
+      "!apps/desktop/prod-resources/jones-update-helper.py",
       "!apps/desktop/gnome-extension",
       "!apps/desktop/gnome-extension/**/*",
     ]);
@@ -2494,7 +2506,11 @@ it("ignores trailing separators", () => {
 });
 
 it.effect.each([
-  { stdout: "  ABCDEF1234567890ABCDEF1234567890ABCDEF12\n", exitCode: 0, expected: "abcdef1234567890abcdef1234567890abcdef12" },
+  {
+    stdout: "  ABCDEF1234567890ABCDEF1234567890ABCDEF12\n",
+    exitCode: 0,
+    expected: "abcdef1234567890abcdef1234567890abcdef12",
+  },
   { stdout: "abcdef123456", exitCode: 0, expected: "unknown" },
   { stdout: "g".repeat(40), exitCode: 0, expected: "unknown" },
   { stdout: "a".repeat(41), exitCode: 0, expected: "unknown" },
@@ -2504,26 +2520,41 @@ it.effect.each([
   Effect.gen(function* () {
     const commands: ChildProcess.Command[] = [];
     const hash = yield* resolveGitCommitHash("/synthetic/repository").pipe(
-      Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner,
-        ChildProcessSpawner.make((command) => {
-          commands.push(command);
-          return Effect.succeed(mockProcess(exitCode, stdout));
-        }),
-      )),
+      Effect.provide(
+        Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => {
+            commands.push(command);
+            return Effect.succeed(mockProcess(exitCode, stdout));
+          }),
+        ),
+      ),
     );
     assert.equal(hash, expected);
-    assert.deepEqual(commands, [ChildProcess.make("git", ["rev-parse", "HEAD"], { cwd: "/synthetic/repository" })]);
+    assert.deepEqual(commands, [
+      ChildProcess.make("git", ["rev-parse", "HEAD"], { cwd: "/synthetic/repository" }),
+    ]);
   }),
 );
 
 it.effect("reports unknown when resolving Git HEAD cannot spawn", () =>
   resolveGitCommitHash("/synthetic/repository").pipe(
-    Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner,
-      ChildProcessSpawner.make(() => Effect.fail(PlatformError.systemError({
-        _tag: "NotFound", module: "ChildProcess", method: "spawn",
-        pathOrDescriptor: "git", description: "synthetic unavailable Git",
-      }))),
-    )),
+    Effect.provide(
+      Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.fail(
+            PlatformError.systemError({
+              _tag: "NotFound",
+              module: "ChildProcess",
+              method: "spawn",
+              pathOrDescriptor: "git",
+              description: "synthetic unavailable Git",
+            }),
+          ),
+        ),
+      ),
+    ),
     Effect.tap((hash) => Effect.sync(() => assert.equal(hash, "unknown"))),
   ),
 );

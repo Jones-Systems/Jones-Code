@@ -362,7 +362,7 @@ function AboutVersionSection() {
         return;
       }
       void bridge
-        .installUpdate()
+        .installUpdate(updateState?.jones?.stagedHandle)
         .catch((error: unknown) => {
           toastManager.add(
             stackedThreadToast({
