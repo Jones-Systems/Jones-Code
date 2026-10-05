@@ -147,6 +147,44 @@ const withIdentity = <A, E, R>(
 };
 
 describe("DesktopAppIdentity", () => {
+  it.effect("uses an explicit client profile independently of the server home", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        assert.equal(yield* identity.resolveUserDataPath, "/isolated/client-profile");
+        assert.equal(environment.baseDir, "/isolated/server-home");
+      }),
+      {
+        legacyPathExists: true,
+        environment: {
+          env: {
+            T3CODE_HOME: "/isolated/server-home",
+            T3CODE_DESKTOP_USER_DATA_DIR: " /isolated/other/../client-profile ",
+          },
+        },
+      },
+    ),
+  );
+
+  it.effect("never probes the legacy profile for an explicit development profile", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        assert.equal(yield* identity.resolveUserDataPath, "/isolated/client-profile");
+      }),
+      {
+        legacyPathProbeError: PlatformError.systemError({
+          _tag: "PermissionDenied", module: "FileSystem", method: "exists",
+          pathOrDescriptor: "/legacy", description: "must not read legacy profile",
+        }),
+        environment: { env: {
+          VITE_DEV_SERVER_URL: "http://localhost:5173",
+          T3CODE_DESKTOP_USER_DATA_DIR: "/isolated/client-profile",
+        } },
+      },
+    ),
+  );
   it.effect("isolates the V2 profile even when the legacy V1 profile exists", () =>
     withIdentity(
       Effect.gen(function* () {
