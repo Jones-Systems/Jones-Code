@@ -94,6 +94,7 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
   readonly projection?: OrchestrationV2ThreadProjection;
   readonly projectionRequests?: ThreadId[];
   readonly advertiseServerResolvedCommandContext?: boolean;
+  readonly advertiseQueuedToolBoundaryDelivery?: boolean;
 }) {
   const client = {
     [WS_METHODS.vcsListRefs]: input.listRefs ?? (() => Effect.never),
@@ -143,6 +144,9 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
       environment: {
         capabilities: {
           repositoryIdentity: true,
+          ...(input.advertiseQueuedToolBoundaryDelivery === undefined
+            ? {}
+            : { queuedToolBoundaryDelivery: input.advertiseQueuedToolBoundaryDelivery }),
           ...(input.advertiseServerResolvedCommandContext === false
             ? {}
             : { serverResolvedCommandContext: true }),
@@ -1145,6 +1149,58 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 });
+
+it.effect.each([true, false, undefined] as const)(
+  "negotiates queued tool eligibility only with capability %s",
+  (capability) =>
+    Effect.gen(function* () {
+      for (const serverResolution of [true, false]) {
+        const commands: OrchestrationV2Command[] = [];
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          advertiseServerResolvedCommandContext: serverResolution,
+          ...(capability === undefined ? {} : { advertiseQueuedToolBoundaryDelivery: capability }),
+        });
+        for (const mode of ["queue", "auto", "start", "steer", "restart"] as const) {
+          yield* startThreadTurn({
+            commandId: CommandId.make(`policy-${mode}`),
+            threadId: v2ThreadId,
+            message: {
+              messageId: MessageId.make(`message-${mode}`),
+              role: "user",
+              text: "Owner follow-up",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode: mode,
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+          const command = commands.at(-1)!;
+          if (capability === true && (mode === "queue" || mode === "auto"))
+            expect(command).toHaveProperty("queuedToolBoundaryEligible", true);
+          else expect(command).not.toHaveProperty("queuedToolBoundaryEligible");
+        }
+        for (const source of ["mcp", "provider", "server"] as const) {
+          yield* startThreadTurn({
+            commandId: CommandId.make(`policy-source-${source}`),
+            threadId: v2ThreadId,
+            creationSource: source,
+            message: {
+              messageId: MessageId.make(`source-${source}`),
+              role: "user",
+              text: "Special delivery",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode: "queue",
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+          expect(commands.at(-1)).not.toHaveProperty("queuedToolBoundaryEligible");
+        }
+      }
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+);
 
 const automaticWorktreeTurn = {
   commandId: CommandId.make("captured-command"),

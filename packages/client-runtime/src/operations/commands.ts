@@ -734,7 +734,13 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     });
   }
 
-  const serverResolvesCommandContext = yield* supportsServerResolvedCommandContext();
+  const capabilities = (yield* getInitialServerConfig()).environment.capabilities;
+  const serverResolvesCommandContext = capabilities.serverResolvedCommandContext === true;
+  const creationSource = input.creationSource ?? "web";
+  const queuedToolBoundaryEligible =
+    (creationSource === "web" || creationSource === "mobile") &&
+    (requestedMode === "queue" || requestedMode === "auto") &&
+    capabilities.queuedToolBoundaryDelivery === true;
   const projection = serverResolvesCommandContext ? null : yield* getProjection(input.threadId);
   const activeRun = projection?.runs.findLast(
     (run) =>
@@ -794,6 +800,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       ? { deliveryIntent: requestedMode }
       : {}),
     dispatchMode,
+    ...(queuedToolBoundaryEligible ? { queuedToolBoundaryEligible: true } : {}),
   });
 });
 
