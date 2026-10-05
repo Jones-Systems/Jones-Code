@@ -25,6 +25,7 @@ import * as Stream from "effect/Stream";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import type { LegacyWorktreePreparationHooks } from "../vcs/GitVcsDriver.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
@@ -468,22 +469,190 @@ const make = Effect.gen(function* () {
     return true;
   });
 
+  const legacyPreparationJournal = Effect.fn("ThreadLaunchService.legacyPreparationJournal")(
+    function* (input: PreparationInput, threadId: ThreadId, runId: RunId) {
+      const current = yield* threads
+        .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
+        .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+      let preparation = current.runs.find((run) => run.id === runId)?.legacyPreparation;
+      if (preparation === undefined)
+        return yield* mapError(
+          input,
+          "read-receipt",
+          threadId,
+        )("Legacy preparation has no authenticated ledger.");
+      const bound = preparation;
+      const persist = (commandId: CommandId, update: LegacyPreparationUpdate) =>
+        Effect.gen(function* () {
+          const committed = yield* threads
+            .dispatch({
+              type: "prepared-run.progress",
+              commandId,
+              threadId,
+              runId,
+              phase: "setup",
+              legacyPreparationUpdate: update,
+            })
+            .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+          const receipt = yield* readReceipt(input, commandId);
+          const stored = Array.from(
+            yield* eventSink
+              .readByCommandId({ commandId })
+              .pipe(Stream.runCollect, Effect.mapError(mapError(input, "read-receipt", threadId))),
+          );
+          const event = stored[0];
+          const next =
+            event?.event.type === "run.updated" ? event.event.payload.legacyPreparation : undefined;
+          const actual =
+            update.type === "setup-policy"
+              ? next?.setup
+              : update.type === "initialize"
+                ? next
+                : next?.steps.find((step) => step.effectId === update.step.effectId);
+          const expected =
+            update.type === "setup-policy"
+              ? update.setup
+              : update.type === "initialize"
+                ? update.preparation
+                : update.step;
+          if (
+            Option.isNone(receipt) ||
+            receipt.value.status !== "accepted" ||
+            receipt.value.commandType !== "prepared-run.progress" ||
+            receipt.value.threadId !== threadId ||
+            stored.length !== 1 ||
+            event?.event.type !== "run.updated" ||
+            event.event.runId !== runId ||
+            event.commandId !== commandId ||
+            event.event.id !== `${commandId}:event` ||
+            event.sequence !== receipt.value.resultSequence ||
+            committed.sequence !== event.sequence ||
+            next === undefined ||
+            canonicalLegacyPayload(actual) !== canonicalLegacyPayload(expected)
+          )
+            return yield* mapError(
+              input,
+              "read-receipt",
+              threadId,
+            )("Legacy preparation intent or outcome commit/readback is unresolved.");
+          preparation = next;
+        });
+      const intent = (effect: LegacyPreparation["steps"][number]["effect"]) =>
+        Effect.gen(function* () {
+          const effectId = legacyPreparationEffectId({ generation: bound.generation, effect });
+          if (preparation?.steps.some((entry) => entry.effect.kind === effect.kind))
+            return yield* mapError(
+              input,
+              "read-receipt",
+              threadId,
+            )("A recorded preparation effect requires reconciliation, never reexecution.");
+          const stem = `${bound.policy.createCommandId}:preparation:${bound.generation}:${effectId}`;
+          const step: LegacyPreparation["steps"][number] = {
+            effectId,
+            effect,
+            inputHash: legacyPayloadHash(canonicalLegacyPayload(effect)),
+            state: "intent",
+            intentCommandId: CommandId.make(`${stem}:intent`),
+            intentEventId: EventId.make(`${stem}:intent:event`),
+          };
+          yield* persist(step.intentCommandId, { type: "intent", step });
+        });
+      const outcome = (
+        kind: LegacyPreparation["steps"][number]["effect"]["kind"],
+        state: LegacyPreparation["steps"][number]["state"],
+        evidence: NonNullable<LegacyPreparation["steps"][number]["evidence"]>,
+      ) =>
+        Effect.gen(function* () {
+          const step = preparation?.steps.find((entry) => entry.effect.kind === kind);
+          if (step === undefined || step.state !== "intent")
+            return yield* mapError(
+              input,
+              "read-receipt",
+              threadId,
+            )("Legacy preparation outcome has no exact pending intent.");
+          const commandId = CommandId.make(
+            `${step.intentCommandId.slice(0, -":intent".length)}:outcome`,
+          );
+          yield* persist(commandId, {
+            type: "outcome",
+            step: {
+              ...step,
+              state,
+              evidence,
+              outcomeCommandId: commandId,
+              outcomeEventId: EventId.make(`${commandId}:event`),
+            },
+          });
+        });
+      return {
+        bound,
+        get preparation() {
+          return preparation;
+        },
+        persist,
+        intent,
+        outcome,
+      };
+    },
+  );
+
+  const legacyWorktreeHooks = Effect.fn("ThreadLaunchService.legacyWorktreeHooks")(function* (
+    input: PreparationInput,
+    threadId: ThreadId,
+    runId: RunId,
+  ) {
+    const journal = yield* legacyPreparationJournal(input, threadId, runId);
+    const hooks: LegacyWorktreePreparationHooks = {
+      beforeEffect: (step) =>
+        Effect.gen(function* () {
+          if (step.kind === "worktree.add" && step.before === undefined)
+            return yield* mapError(
+              input,
+              "read-receipt",
+              threadId,
+            )("Worktree intent has no exact owner absence observation.");
+          const { kind, ...effectInput } = step;
+          yield* journal.intent({ kind, input: effectInput });
+          if (journal.preparation?.commonDirectory !== step.commonDirectory)
+            return yield* mapError(
+              input,
+              "read-receipt",
+              threadId,
+            )("Worktree intent common-directory readback differs from the executing owner.");
+        }),
+      afterEffect: (step, result, claim) =>
+        Effect.gen(function* () {
+          if (result === "settled_success" && claim !== undefined) {
+            yield* journal.outcome(
+              step.kind,
+              "known_succeeded",
+              step.kind === "worktree.add"
+                ? { type: "worktree_claim", claim }
+                : { type: "settled_git", exitCode: 0, claim },
+            );
+            return;
+          }
+          yield* journal.outcome(step.kind, "unknown", {
+            type: "unknown",
+            reason: claim === undefined ? "ownership_changed" : "partial_material",
+          });
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )("Worktree effect outcome is unknown; preserve exact bytes, identity and journal.");
+        }),
+    };
+    return hooks;
+  });
+
   const legacySetupHooks = Effect.fn("ThreadLaunchService.legacySetupHooks")(function* (
     input: PreparationInput,
     threadId: ThreadId,
     runId: RunId,
   ) {
-    const current = yield* threads
-      .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
-      .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
-    let preparation = current.runs.find((run) => run.id === runId)?.legacyPreparation;
-    if (preparation === undefined)
-      return yield* mapError(
-        input,
-        "read-receipt",
-        threadId,
-      )("Legacy setup has no authenticated preparation ledger.");
-    const bound = preparation;
+    const journal = yield* legacyPreparationJournal(input, threadId, runId);
+    const { bound, persist, intent, outcome } = journal;
     const terminalId = `legacy-setup:${bound.generation}`;
     const generation = legacyPayloadHash(
       canonicalLegacyPayload({ preparationGeneration: bound.generation, terminalId }),
@@ -503,102 +672,6 @@ const make = Effect.gen(function* () {
       birthSequence: bound.birthSequence,
       birthReceiptSequence: bound.birthReceiptSequence,
     };
-    const persist = (commandId: CommandId, update: LegacyPreparationUpdate) =>
-      Effect.gen(function* () {
-        const committed = yield* threads
-          .dispatch({
-            type: "prepared-run.progress",
-            commandId,
-            threadId,
-            runId,
-            phase: "setup",
-            legacyPreparationUpdate: update,
-          })
-          .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
-        const receipt = yield* readReceipt(input, commandId);
-        const stored = Array.from(
-          yield* eventSink
-            .readByCommandId({ commandId })
-            .pipe(Stream.runCollect, Effect.mapError(mapError(input, "read-receipt", threadId))),
-        );
-        const event = stored[0];
-        const next =
-          event?.event.type === "run.updated" ? event.event.payload.legacyPreparation : undefined;
-        const actual =
-          update.type === "setup-policy"
-            ? next?.setup
-            : update.type === "initialize"
-              ? next
-              : next?.steps.find((step) => step.effectId === update.step.effectId);
-        const expected =
-          update.type === "setup-policy"
-            ? update.setup
-            : update.type === "initialize"
-              ? update.preparation
-              : update.step;
-        if (
-          Option.isNone(receipt) ||
-          receipt.value.status !== "accepted" ||
-          receipt.value.commandType !== "prepared-run.progress" ||
-          receipt.value.threadId !== threadId ||
-          stored.length !== 1 ||
-          event?.event.type !== "run.updated" ||
-          event.event.runId !== runId ||
-          event.commandId !== commandId ||
-          event.event.id !== `${commandId}:event` ||
-          event.sequence !== receipt.value.resultSequence ||
-          committed.sequence !== event.sequence ||
-          next === undefined ||
-          canonicalLegacyPayload(actual) !== canonicalLegacyPayload(expected)
-        )
-          return yield* mapError(
-            input,
-            "read-receipt",
-            threadId,
-          )("Legacy setup intent or outcome commit/readback is unresolved.");
-        preparation = next;
-      });
-    const intent = (effect: LegacyPreparation["steps"][number]["effect"]) =>
-      Effect.gen(function* () {
-        const effectId = legacyPreparationEffectId({ generation: bound.generation, effect });
-        const stem = `${bound.policy.createCommandId}:preparation:${bound.generation}:${effectId}`;
-        const step: LegacyPreparation["steps"][number] = {
-          effectId,
-          effect,
-          inputHash: legacyPayloadHash(canonicalLegacyPayload(effect)),
-          state: "intent",
-          intentCommandId: CommandId.make(`${stem}:intent`),
-          intentEventId: EventId.make(`${stem}:intent:event`),
-        };
-        yield* persist(step.intentCommandId, { type: "intent", step });
-      });
-    const outcome = (
-      kind: LegacyPreparation["steps"][number]["effect"]["kind"],
-      state: LegacyPreparation["steps"][number]["state"],
-      evidence: NonNullable<LegacyPreparation["steps"][number]["evidence"]>,
-    ) =>
-      Effect.gen(function* () {
-        const step = preparation?.steps.find((entry) => entry.effect.kind === kind);
-        if (step === undefined || step.state !== "intent")
-          return yield* mapError(
-            input,
-            "read-receipt",
-            threadId,
-          )("Legacy setup outcome has no exact pending intent.");
-        const commandId = CommandId.make(
-          `${step.intentCommandId.slice(0, -":intent".length)}:outcome`,
-        );
-        yield* persist(commandId, {
-          type: "outcome",
-          step: {
-            ...step,
-            state,
-            evidence,
-            outcomeCommandId: commandId,
-            outcomeEventId: EventId.make(`${commandId}:event`),
-          },
-        });
-      });
     const captured = bound.setup.status === "resolved" ? bound.setup.definition : undefined;
     const hooks: ProjectSetupScriptRunner.LegacySetupPreparationHooks = {
       binding,
@@ -614,6 +687,7 @@ const make = Effect.gen(function* () {
             ),
       beforeSpawn: (definition) =>
         Effect.gen(function* () {
+          const preparation = journal.preparation;
           if (preparation?.setup.status === "unresolved")
             yield* persist(
               CommandId.make(
@@ -643,6 +717,7 @@ const make = Effect.gen(function* () {
         }),
       beforeWrite: () =>
         Effect.gen(function* () {
+          const preparation = journal.preparation;
           if (preparation?.setup.status !== "resolved")
             return yield* mapError(
               input,
@@ -675,6 +750,7 @@ const make = Effect.gen(function* () {
             }),
       afterCompletion: (completion) =>
         Effect.gen(function* () {
+          const preparation = journal.preparation;
           if (
             preparation?.setup.status !== "resolved" ||
             preparation.setup.definition.completionToken === null
@@ -762,11 +838,7 @@ const make = Effect.gen(function* () {
       ),
     );
 
-    if (
-      input.legacyBootstrap !== undefined &&
-      runId !== null &&
-      input.workspaceStrategy.type === "root"
-    ) {
+    if (input.legacyBootstrap !== undefined && runId !== null) {
       const current = yield* threads
         .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
         .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
@@ -995,6 +1067,10 @@ const make = Effect.gen(function* () {
         }
         if (startFromOrigin) yield* setupTracker.stageStatus(threadId, "fetch", "done");
         yield* setupTracker.stageStatus(threadId, "checkout", "running");
+        const legacyPreparation =
+          input.legacyBootstrap === undefined || runId === null
+            ? undefined
+            : yield* legacyWorktreeHooks(input, threadId, runId);
         const worktree = yield* git
           .createWorktree(
             {
@@ -1005,6 +1081,7 @@ const make = Effect.gen(function* () {
               path: null,
             },
             {
+              ...(legacyPreparation === undefined ? {} : { legacyPreparation }),
               progress: {
                 onWorktreeClaimed: (path) =>
                   Effect.sync(() => {

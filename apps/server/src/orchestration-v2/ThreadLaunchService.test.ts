@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - synthetic material claims need lstat device/inode; no real Git or setup executes.
+import * as NodeFS from "node:fs";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import type * as PtyAdapter from "../terminal/PtyAdapter.ts";
@@ -51,6 +53,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
@@ -728,6 +731,224 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
         }).pipe(Effect.provide(harness.layer));
       });
     });
+  },
+);
+
+it.layer(NodeServices.layer, { excludeTestServices: true })(
+  "Legacy worktree actual SQL journal",
+  (it) => {
+    it.effect.each([
+      "verified",
+      "unknown",
+      "intent_readback_lost",
+      "outcome_readback_lost",
+    ] as const)("legacy worktree journals before mock add and preserves C for %s", (scenario) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workspaceRoot = yield* fs.makeTempDirectoryScoped({
+          prefix: "legacy-worktree-journal-",
+        });
+        const owned = `${workspaceRoot}/owned`;
+        const commonDirectory = `${workspaceRoot}/.git`;
+        const gitDirectory = `${commonDirectory}/worktrees/owned`;
+        yield* fs.makeDirectory(gitDirectory, { recursive: true });
+        let addCount = 0;
+        const oid = "a".repeat(40);
+        const harness = makeHarness({
+          workspaceRoot,
+          createWorktree: (input, options) =>
+            Effect.gen(function* () {
+              const hooks = options?.legacyPreparation;
+              if (hooks === undefined)
+                return yield* Effect.die("Legacy producer must supply its private journal");
+              const parent = NodeFS.lstatSync(workspaceRoot);
+              const step = {
+                kind: "worktree.add" as const,
+                cwd: workspaceRoot,
+                args: ["worktree", "add", "-b", input.newRefName!, owned, oid],
+                worktreePath: owned,
+                commonDirectory,
+                baseCommitOid: oid,
+                targetRef: `refs/heads/${input.newRefName}`,
+                before: {
+                  parentPath: workspaceRoot,
+                  parentRealPath: NodeFS.realpathSync(workspaceRoot),
+                  parentDevice: String(parent.dev),
+                  parentInode: String(parent.ino),
+                  targetRefAbsent: true as const,
+                  registrationAbsent: true as const,
+                },
+              };
+              yield* hooks.beforeEffect(step);
+              addCount++;
+              yield* fs.makeDirectory(owned);
+              yield* fs.writeFileString(`${owned}/.git`, `gitdir: ${gitDirectory}\n`);
+              const material = NodeFS.lstatSync(owned);
+              const claim = {
+                path: owned,
+                realPath: NodeFS.realpathSync(owned),
+                device: String(material.dev),
+                inode: String(material.ino),
+                parentRealPath: NodeFS.realpathSync(workspaceRoot),
+                gitDirectory,
+                commonDirectory,
+                registeredPath: owned,
+                headRef: step.targetRef,
+                headOid: oid,
+              };
+              yield* hooks.afterEffect(
+                step,
+                scenario === "unknown" ? "failed_or_unknown" : "settled_success",
+                scenario === "unknown" ? undefined : claim,
+              );
+              return { worktree: { path: owned, refName: input.newRefName!, headSha: oid } };
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new GitCommandError({
+                    operation: "fixture.legacyWorktree",
+                    command: "git",
+                    cwd: input.cwd,
+                    detail:
+                      cause instanceof Error
+                        ? cause.message
+                        : "Synthetic owner outcome is unavailable",
+                  }),
+              ),
+            ),
+        });
+        yield* Effect.gen(function* () {
+          const launch = yield* ThreadLaunch.ThreadLaunchService;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const sink = yield* EventSink.EventSinkV2;
+          const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          const projectCommandId = CommandId.make(`legacy-worktree:project:${scenario}`);
+          yield* sink.commitProjectCommand({
+            commandId: projectCommandId,
+            projectId,
+            commandType: "project.create",
+            acceptedAt: yield* DateTime.now,
+            event: {
+              eventId: EventId.make(`${projectCommandId}:event`),
+              aggregateKind: "project",
+              aggregateId: projectId,
+              occurredAt: project.createdAt,
+              commandId: projectCommandId,
+              causationEventId: null,
+              correlationId: null,
+              metadata: {},
+              type: "project.created",
+              payload: {
+                projectId,
+                title: project.title,
+                workspaceRoot,
+                defaultModelSelection: modelSelection,
+                scripts: [],
+                createdAt: project.createdAt,
+                updatedAt: project.updatedAt,
+              },
+            },
+          });
+          const base = launchInput({
+            command: `legacy-worktree:C:${scenario}`,
+            thread: `legacy-worktree:T:${scenario}`,
+            message: "Preserve original worktree delivery",
+          });
+          const b = legacyBootstrapCreateCommandId(base.threadId, base.commandId);
+          const policy = {
+            version: 1 as const,
+            createCommandId: b,
+            birthCommandId: CommandId.make(`${b}:initial-message`),
+            releaseCommandId: base.commandId,
+            projectId,
+            threadId: base.threadId,
+            messageId: base.initialMessage!.messageId,
+            payloadHash: `legacy-worktree:${scenario}`,
+            ownsNewThread: true,
+          };
+          const input = {
+            ...base,
+            commandId: b,
+            preparationReleaseCommandId: base.commandId,
+            legacyBootstrap: policy,
+            runSetupScript: false,
+            workspaceStrategy: {
+              type: "worktree" as const,
+              baseRef: "main",
+              branch: "legacy/qualified",
+              startFromOrigin: false,
+            },
+          };
+          const actualReceipt = receipts.getByCommandId;
+          const lostRead = scenario.endsWith("readback_lost")
+            ? vi
+                .spyOn(receipts, "getByCommandId")
+                .mockImplementation((id) =>
+                  id.endsWith(scenario === "intent_readback_lost" ? ":intent" : ":outcome")
+                    ? Effect.succeed(Option.none())
+                    : actualReceipt(id),
+                )
+            : undefined;
+          const result = yield* launch
+            .launch(input)
+            .pipe(Effect.result, Effect.ensuring(Effect.sync(() => lostRead?.mockRestore())));
+          const projection = yield* threads.getThreadProjection(base.threadId);
+          const preparation = projection.runs[0]!.legacyPreparation;
+          assert.isDefined(
+            preparation,
+            Result.isFailure(result) && Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure)
+              ? canonicalLegacyPayload(result.failure.cause)
+              : "Missing actual journal",
+          );
+          assert.equal(preparation?.commonDirectory, commonDirectory);
+          assert.equal(preparation?.steps[0]?.effect.kind, "worktree.add");
+          const step = preparation!.steps[0]!;
+          assert.isTrue(Option.isSome(yield* receipts.getByCommandId(step.intentCommandId)));
+          const recorded = Array.from(
+            yield* sink
+              .readByCommandId({ commandId: step.intentCommandId })
+              .pipe(Stream.runCollect),
+          );
+          assert.lengthOf(recorded, 1);
+          assert.equal(recorded[0]!.event.type, "run.updated");
+          const c = yield* receipts.getByCommandId(base.commandId);
+          if (scenario === "verified") {
+            assert.isTrue(Result.isSuccess(result));
+            assert.isTrue(Option.isSome(c));
+            if (Option.isSome(c)) assert.equal(c.value.status, "accepted");
+            assert.equal(step.state, "known_succeeded");
+            assert.equal(step.evidence?.type, "worktree_claim");
+            assert.equal(addCount, 1);
+            assert.equal(projection.thread.worktreePath, owned);
+          } else {
+            assert.isTrue(Result.isFailure(result));
+            assert.isTrue(Option.isNone(c));
+            assert.isEmpty(
+              (yield* outbox.listByThreadId(base.threadId)).filter(
+                (effect) => effect.request.type === "provider-turn.start",
+              ),
+            );
+            assert.isNull(projection.thread.deletedAt);
+            assert.isEmpty(harness.removeWorktree.mock.calls);
+            assert.equal(
+              step.state,
+              scenario === "unknown"
+                ? "unknown"
+                : scenario === "intent_readback_lost"
+                  ? "intent"
+                  : "known_succeeded",
+            );
+            assert.equal(addCount, scenario === "intent_readback_lost" ? 0 : 1);
+            const countBefore = addCount;
+            yield* launch.launch(input).pipe(Effect.result);
+            assert.equal(addCount, countBefore);
+            assert.isTrue(Option.isNone(yield* receipts.getByCommandId(base.commandId)));
+            if (scenario !== "intent_readback_lost") assert.isTrue(yield* fs.exists(owned));
+          }
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    );
   },
 );
 

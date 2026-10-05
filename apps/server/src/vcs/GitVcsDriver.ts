@@ -148,6 +148,38 @@ export interface CreateWorktreeProgress {
   }) => Effect.Effect<void, never>;
 }
 
+export interface LegacyWorktreeBeforeObservation {
+  readonly parentPath: string;
+  readonly parentRealPath: string;
+  readonly parentDevice: string;
+  readonly parentInode: string;
+  readonly commonDirectoryDevice?: string;
+  readonly commonDirectoryInode?: string;
+  readonly targetRefAbsent: true;
+  readonly registrationAbsent: true;
+}
+
+export interface LegacyWorktreeMaterialClaim {
+  readonly path: string;
+  readonly realPath: string;
+  readonly device: string;
+  readonly inode: string;
+  readonly parentRealPath: string;
+  readonly gitDirectory: string;
+  readonly commonDirectory: string;
+  readonly registeredPath: string;
+  readonly headRef: string;
+  readonly headOid: string;
+  readonly parentDevice?: string;
+  readonly parentInode?: string;
+  readonly dotGitDevice?: string;
+  readonly dotGitInode?: string;
+  readonly gitDirectoryDevice?: string;
+  readonly gitDirectoryInode?: string;
+  readonly commonDirectoryDevice?: string;
+  readonly commonDirectoryInode?: string;
+}
+
 export interface LegacyWorktreePreparationStep {
   readonly kind: "worktree.add" | "worktree.submodules" | "worktree.base-config";
   readonly cwd: string;
@@ -156,6 +188,7 @@ export interface LegacyWorktreePreparationStep {
   readonly commonDirectory: string;
   readonly baseCommitOid: string;
   readonly targetRef: string;
+  readonly before?: LegacyWorktreeBeforeObservation;
 }
 
 export interface LegacyWorktreePreparationHooks {
@@ -163,6 +196,7 @@ export interface LegacyWorktreePreparationHooks {
   readonly afterEffect: (
     step: LegacyWorktreePreparationStep,
     outcome: "settled_success" | "failed_or_unknown",
+    claim?: LegacyWorktreeMaterialClaim,
   ) => Effect.Effect<void, Error>;
 }
 

@@ -148,6 +148,18 @@ const legacyWorktreeInput = Schema.Struct({
   commonDirectory: Schema.String,
   baseCommitOid: Schema.String,
   targetRef: Schema.String,
+  before: Schema.optional(
+    Schema.Struct({
+      parentPath: Schema.String,
+      parentRealPath: Schema.String,
+      parentDevice: Schema.String,
+      parentInode: Schema.String,
+      commonDirectoryDevice: Schema.optional(Schema.String),
+      commonDirectoryInode: Schema.optional(Schema.String),
+      targetRefAbsent: Schema.Literal(true),
+      registrationAbsent: Schema.Literal(true),
+    }),
+  ),
 });
 const legacySetupDefinition = Schema.Struct({
   id: Schema.String,
@@ -183,6 +195,14 @@ const legacyMaterialClaim = Schema.Struct({
   registeredPath: Schema.String,
   headRef: Schema.String,
   headOid: Schema.String,
+  parentDevice: Schema.optional(Schema.String),
+  parentInode: Schema.optional(Schema.String),
+  dotGitDevice: Schema.optional(Schema.String),
+  dotGitInode: Schema.optional(Schema.String),
+  gitDirectoryDevice: Schema.optional(Schema.String),
+  gitDirectoryInode: Schema.optional(Schema.String),
+  commonDirectoryDevice: Schema.optional(Schema.String),
+  commonDirectoryInode: Schema.optional(Schema.String),
 });
 const legacyStepInput = Schema.Union([
   Schema.Struct({

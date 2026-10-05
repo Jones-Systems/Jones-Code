@@ -2521,31 +2521,81 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("worktree operations", () => {
-    it.effect("legacy worktree intent refusal prevents add and config writes", () =>
+    const syntheticLegacyWorktree = (
+      oid: string,
+      branch: string,
+      submodules = false,
+      loseMaterial = false,
+    ) =>
       Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* makeTmpDir("legacy-worktree-owner-");
+        const cwd = path.join(root, "repo");
+        const owned = path.join(root, "owned");
+        const common = path.join(cwd, ".git");
+        const gitDirectory = path.join(common, "worktrees", "owned");
+        yield* fs.makeDirectory(gitDirectory, { recursive: true });
         const commands: string[][] = [];
-        const spawner = ChildProcessSpawner.make((command) => {
-          if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
-          commands.push([...command.args]);
-          const stdout = command.args.includes("--git-common-dir")
-            ? "/fixture/repo/.git\n"
-            : command.args.includes("rev-parse")
-              ? `${"a".repeat(40)}\n`
-              : "";
-          return Effect.succeed(makeSuccessfulHandle(stdout));
-        });
+        let added = false;
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            if (!ChildProcess.isStandardCommand(command))
+              return yield* Effect.die("Unexpected pipeline");
+            const args = [...command.args];
+            commands.push(args);
+            if (args.includes("add")) {
+              yield* fs.makeDirectory(owned);
+              if (!loseMaterial)
+                yield* fs.writeFileString(path.join(owned, ".git"), `gitdir: ${gitDirectory}\n`);
+              if (submodules)
+                yield* fs.writeFileString(
+                  path.join(owned, ".gitmodules"),
+                  '[submodule "fixture"]\npath=fixture\nurl=fixture\n',
+                );
+              added = true;
+            }
+            let stdout = "";
+            if (args.includes("--git-common-dir")) stdout = `${common}\n`;
+            else if (args.includes("--absolute-git-dir")) stdout = `${gitDirectory}\n`;
+            else if (args.includes("symbolic-ref")) stdout = `refs/heads/${branch}\n`;
+            else if (args.includes("rev-parse")) stdout = `${oid}\n`;
+            else if (args.includes("--porcelain"))
+              stdout = added
+                ? `worktree ${owned}\0HEAD ${oid}\0branch refs/heads/${branch}\0\0`
+                : "";
+            else if (args.includes("for-each-ref")) stdout = added ? `refs/heads/${branch}\n` : "";
+            const handle = makeSuccessfulHandle(stdout);
+            return args.includes("--get-regexp") &&
+              args.some((arg) => arg.endsWith("gh-merge-base$"))
+              ? ChildProcessSpawner.makeHandle({
+                  ...handle,
+                  exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+                })
+              : handle;
+          }),
+        );
         const driver = yield* makeGitVcsDriverCore().pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provide(ServerConfigLayer),
         );
+        return { cwd, owned, common, gitDirectory, commands, driver, fs };
+      });
+
+    it.effect("legacy worktree intent refusal prevents add and config writes", () =>
+      Effect.gen(function* () {
+        const { cwd, owned, commands, driver } = yield* syntheticLegacyWorktree(
+          "a".repeat(40),
+          "legacy/branch",
+        );
         const result = yield* driver
           .createWorktree(
             {
-              cwd: "/fixture/repo",
+              cwd,
               refName: "main",
               newRefName: "legacy/branch",
               baseRefName: "main",
-              path: "/fixture/owned",
+              path: owned,
             },
             {
               legacyPreparation: {
@@ -2554,7 +2604,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
                     new GitCommandError({
                       operation: "fixture.journal",
                       command: "git",
-                      cwd: "/fixture/repo",
+                      cwd,
                       detail: "Intent readback unavailable",
                     }),
                   ),
@@ -2575,30 +2625,19 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       "legacy worktree outcome refusal retains the add and prevents later config writes",
       () =>
         Effect.gen(function* () {
-          const commands: string[][] = [];
-          const intents: GitVcsDriver.LegacyWorktreePreparationStep[] = [];
-          const spawner = ChildProcessSpawner.make((command) => {
-            if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
-            commands.push([...command.args]);
-            const stdout = command.args.includes("--git-common-dir")
-              ? "/fixture/repo/.git\n"
-              : command.args.includes("rev-parse")
-                ? `${"b".repeat(40)}\n`
-                : "";
-            return Effect.succeed(makeSuccessfulHandle(stdout));
-          });
-          const driver = yield* makeGitVcsDriverCore().pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            Effect.provide(ServerConfigLayer),
+          const { cwd, owned, common, commands, driver } = yield* syntheticLegacyWorktree(
+            "b".repeat(40),
+            "legacy/branch",
           );
+          const intents: GitVcsDriver.LegacyWorktreePreparationStep[] = [];
           const result = yield* driver
             .createWorktree(
               {
-                cwd: "/fixture/repo",
+                cwd,
                 refName: "main",
                 newRefName: "legacy/branch",
                 baseRefName: "main",
-                path: "/fixture/owned",
+                path: owned,
               },
               {
                 legacyPreparation: {
@@ -2611,7 +2650,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
                       new GitCommandError({
                         operation: "fixture.journal",
                         command: "git",
-                        cwd: "/fixture/repo",
+                        cwd,
                         detail: "Outcome readback unavailable",
                       }),
                     ),
@@ -2626,8 +2665,8 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           );
           assert.deepInclude(intents[0], {
             kind: "worktree.add",
-            worktreePath: "/fixture/owned",
-            commonDirectory: "/fixture/repo/.git",
+            worktreePath: owned,
+            commonDirectory: common,
             baseCommitOid: "b".repeat(40),
             targetRef: "refs/heads/legacy/branch",
           });
@@ -2638,36 +2677,20 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       "legacy submodule journal refusal escapes best-effort handling before config writes",
       () =>
         Effect.gen(function* () {
-          const commands: string[][] = [];
-          const fs = yield* FileSystem.FileSystem;
-          const spawner = ChildProcessSpawner.make((command) => {
-            if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
-            commands.push([...command.args]);
-            const stdout = command.args.includes("--git-common-dir")
-              ? "/fixture/repo/.git\n"
-              : command.args.includes("rev-parse")
-                ? `${"c".repeat(40)}\n`
-                : "";
-            return Effect.succeed(makeSuccessfulHandle(stdout));
-          });
-          const driver = yield* makeGitVcsDriverCore().pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            Effect.provideService(FileSystem.FileSystem, {
-              ...fs,
-              exists: (path) =>
-                path.endsWith(".gitmodules") ? Effect.succeed(true) : fs.exists(path),
-            }),
-            Effect.provide(ServerConfigLayer),
+          const { cwd, owned, commands, driver } = yield* syntheticLegacyWorktree(
+            "c".repeat(40),
+            "legacy/submodules",
+            true,
           );
           const seen: string[] = [];
           const result = yield* driver
             .createWorktree(
               {
-                cwd: "/fixture/repo",
+                cwd,
                 refName: "main",
                 newRefName: "legacy/submodules",
                 baseRefName: "main",
-                path: "/fixture/owned",
+                path: owned,
               },
               {
                 submodules: "recursive",
@@ -2682,7 +2705,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
                               new GitCommandError({
                                 operation: "fixture.journal",
                                 command: "git",
-                                cwd: "/fixture/repo",
+                                cwd,
                                 detail: "Intent readback refused",
                               }),
                             )
@@ -2709,6 +2732,204 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
             commands.some((args) => args.includes("branch.legacy/submodules.gh-merge-base")),
           );
         }),
+    );
+
+    it.effect("legacy worktree owner journals exact absence and material before later config", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("d".repeat(40), "legacy/verified");
+        const steps: GitVcsDriver.LegacyWorktreePreparationStep[] = [];
+        const claims: GitVcsDriver.LegacyWorktreeMaterialClaim[] = [];
+        yield* fixture.driver.createWorktree(
+          {
+            cwd: fixture.cwd,
+            refName: "main",
+            newRefName: "legacy/verified",
+            baseRefName: "main",
+            path: fixture.owned,
+          },
+          {
+            legacyPreparation: {
+              beforeEffect: (step) =>
+                Effect.sync(() => {
+                  steps.push(step);
+                }),
+              afterEffect: (_step, result, claim) =>
+                Effect.sync(() => {
+                  assert.equal(result, "settled_success");
+                  assert.isDefined(claim);
+                  claims.push(claim!);
+                }),
+            },
+          },
+        );
+        assert.deepEqual(
+          steps.map((step) => step.kind),
+          ["worktree.add", "worktree.base-config"],
+        );
+        assert.deepEqual(steps[0]!.before, steps[1]!.before);
+        assert.equal(steps[0]!.before?.targetRefAbsent, true);
+        assert.equal(steps[0]!.before?.registrationAbsent, true);
+        assert.equal(steps[0]!.args.at(-1), "d".repeat(40));
+        assert.equal(claims[0]!.path, fixture.owned);
+        assert.equal(claims[0]!.realPath, NodeFS.realpathSync(fixture.owned));
+        assert.equal(claims[0]!.device, String(NodeFS.lstatSync(fixture.owned).dev));
+        assert.equal(claims[0]!.inode, String(NodeFS.lstatSync(fixture.owned).ino));
+        assert.equal(claims[0]!.gitDirectory, fixture.gitDirectory);
+        assert.equal(claims[0]!.commonDirectory, fixture.common);
+        assert.equal(claims[0]!.headRef, "refs/heads/legacy/verified");
+        assert.equal(claims[0]!.headOid, "d".repeat(40));
+        assert.deepEqual(claims[1], claims[0]);
+        assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+      }),
+    );
+
+    it.effect("legacy worktree preexisting material refuses without add or journal authority", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("e".repeat(40), "legacy/preexisting");
+        yield* fixture.fs.makeDirectory(fixture.owned);
+        let journalCalls = 0;
+        const result = yield* fixture.driver
+          .createWorktree(
+            {
+              cwd: fixture.cwd,
+              refName: "main",
+              newRefName: "legacy/preexisting",
+              baseRefName: "main",
+              path: fixture.owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: () =>
+                  Effect.sync(() => {
+                    journalCalls++;
+                  }),
+                afterEffect: () => Effect.die("No effect outcome"),
+              },
+            },
+          )
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.equal(journalCalls, 0);
+        assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+        assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+      }),
+    );
+
+    it.effect("legacy worktree replacement after durable claim refuses all later writes", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("f".repeat(40), "legacy/replaced");
+        const kinds: string[] = [];
+        const result = yield* fixture.driver
+          .createWorktree(
+            {
+              cwd: fixture.cwd,
+              refName: "main",
+              newRefName: "legacy/replaced",
+              baseRefName: "main",
+              path: fixture.owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: (step) =>
+                  Effect.sync(() => {
+                    kinds.push(step.kind);
+                  }),
+                afterEffect: (step, outcome, claim) =>
+                  Effect.gen(function* () {
+                    assert.equal(outcome, "settled_success");
+                    assert.isDefined(claim);
+                    if (step.kind === "worktree.add") {
+                      yield* fixture.fs.rename(fixture.owned, `${fixture.owned}-previous`);
+                      yield* fixture.fs.makeDirectory(fixture.owned);
+                      yield* fixture.fs.writeFileString(
+                        `${fixture.owned}/.git`,
+                        `gitdir: ${fixture.gitDirectory}\n`,
+                      );
+                    }
+                  }),
+              },
+            },
+          )
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.deepEqual(kinds, ["worktree.add"]);
+        assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+        assert.isFalse(
+          fixture.commands.some((args) => args.includes("branch.legacy/replaced.gh-merge-base")),
+        );
+        assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+        assert.isTrue(yield* fixture.fs.exists(`${fixture.owned}-previous`));
+      }),
+    );
+
+    it.effect(
+      "legacy worktree unavailable post-add material reports unknown and preserves its target",
+      () =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree(
+            "1".repeat(40),
+            "legacy/lost",
+            false,
+            true,
+          );
+          const outcomes: string[] = [];
+          const result = yield* fixture.driver
+            .createWorktree(
+              {
+                cwd: fixture.cwd,
+                refName: "main",
+                newRefName: "legacy/lost",
+                baseRefName: "main",
+                path: fixture.owned,
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: () => Effect.void,
+                  afterEffect: (step, outcome, claim) =>
+                    Effect.sync(() => {
+                      outcomes.push(`${step.kind}:${outcome}`);
+                      assert.isUndefined(claim);
+                    }),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(outcomes, ["worktree.add:failed_or_unknown"]);
+          assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+          assert.isFalse(
+            fixture.commands.some((args) => args.includes("branch.legacy/lost.gh-merge-base")),
+          );
+          assert.isFalse(
+            fixture.commands.some((args) => args.includes("remove") || args.includes("prune")),
+          );
+          assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+        }),
+    );
+
+    it.effect("native worktree defaults do not execute private material probes", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree(
+          "2".repeat(40),
+          "native/default",
+          false,
+          true,
+        );
+        const result = yield* fixture.driver.createWorktree({
+          cwd: fixture.cwd,
+          refName: "main",
+          newRefName: "native/default",
+          baseRefName: "main",
+          path: fixture.owned,
+        });
+        assert.equal(result.worktree.path, fixture.owned);
+        assert.isFalse(yield* fixture.fs.exists(`${fixture.owned}/.git`));
+        assert.isFalse(fixture.commands.some((args) => args.includes("--get-regexp")));
+        assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+        assert.isTrue(
+          fixture.commands.some((args) => args.includes("branch.native/default.gh-merge-base")),
+        );
+      }),
     );
 
     it.effect("uses parallel checkout without skipping filters or hooks", () =>

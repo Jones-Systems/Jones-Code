@@ -188,9 +188,20 @@ export function transitionLegacyPreparation(input: {
       return rejected("Preparation intent would repeat or pass an unresolved effect.");
     if (step.effect.kind === "setup.open" && current.setup.status !== "resolved")
       return rejected("Preparation setup definition must be captured before terminal opening.");
+    let commonDirectory = current.commonDirectory;
+    if (
+      step.effect.kind === "worktree.add" ||
+      step.effect.kind === "worktree.submodules" ||
+      step.effect.kind === "worktree.base-config"
+    ) {
+      if (commonDirectory === null && step.effect.kind === "worktree.add")
+        commonDirectory = step.effect.input.commonDirectory;
+      if (commonDirectory !== step.effect.input.commonDirectory)
+        return rejected("Worktree intent differs from its immutable common-directory binding.");
+    }
     return {
       type: "accepted" as const,
-      preparation: { ...current, steps: [...current.steps, step] },
+      preparation: { ...current, commonDirectory, steps: [...current.steps, step] },
     };
   }
   if (
