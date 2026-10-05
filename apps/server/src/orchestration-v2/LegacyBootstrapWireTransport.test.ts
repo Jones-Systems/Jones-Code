@@ -69,11 +69,7 @@ import * as WsPreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 
 import { expect, it } from "vite-plus/test";
 import {
-  AuthSessionId,
-  type AuthEnvironmentScope,
   CommandId,
-  EnvironmentAuthenticatedAuth,
-  EnvironmentAuthenticatedPrincipal,
   EnvironmentOrchestrationHttpApi,
   EventId,
   MessageId,
@@ -93,8 +89,7 @@ import * as HttpApi from "effect/unstable/httpapi/HttpApi";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import { failEnvironmentAuthInvalid } from "../auth/http.ts";
+import { environmentAuthenticatedAuthLayer } from "../auth/http.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ApplicationEvents from "../persistence/Layers/OrchestrationEventStore.ts";
 import * as ProjectEnrichment from "../project/ProjectEnrichmentService.ts";
@@ -105,7 +100,12 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as Threads from "./ThreadManagementService.ts";
 import { OrchestratorProjectionError } from "./Orchestrator.ts";
-import { LegacyReleaseDecision, RecordedAppThreadJson, RecordedRunJson } from "./RecordedTypes.ts";
+import {
+  LegacyReleaseDecision,
+  LegacyPreparationFailureDecision,
+  RecordedAppThreadJson,
+  RecordedRunJson,
+} from "./RecordedTypes.ts";
 import { orchestrationHttpApiLayer } from "./http.ts";
 
 const decodeThread = Schema.decodeUnknownSync(RecordedAppThreadJson);
@@ -174,6 +174,8 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
     legacyPreparationFailureKnown: false,
   });
   let snapshotReads = 0;
+  let fixtureToken = "";
+  let switchFailureFixture: (() => Promise<void>) | undefined;
   const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, Receipts.layer).pipe(
     Layer.provideMerge(SqlitePersistenceMemory),
   );
@@ -253,6 +255,51 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
       });
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = ${payload} WHERE run_id = ${runId}`;
+      const failureCommandId = CommandId.make("recorded-http:B:fail");
+      const failureEvidenceEventId = EventId.make("recorded-http:failure:event");
+      const failure = yield* Schema.decodeUnknownEffect(LegacyPreparationFailureDecision)({
+        version: 1,
+        status: "known_workspace_failure",
+        policy,
+        claimEventId: correlation.claimEventId,
+        claimSequence: 1,
+        claimReceiptSequence: 1,
+        birthEventId: correlation.birthEventId,
+        birthSequence: 2,
+        birthReceiptSequence: 2,
+        preparationGeneration: correlation.preparationGeneration,
+        projectWorkspaceRoot: correlation.projectWorkspaceRoot,
+        workspacePath: correlation.workspacePath,
+        failedEffectId: "private-http-failed-effect",
+        failedInputHash: "private-http-failed-input",
+        outcomeCommandId: CommandId.make("recorded-http:owner:outcome"),
+        outcomeEventId: EventId.make("recorded-http:owner:outcome:event"),
+        outcomeEventSequence: 3,
+        outcomeReceiptSequence: 3,
+        failureCommandId,
+        evidenceEventId: failureEvidenceEventId,
+        deletion: {
+          basis: "workspace_failure",
+          provenance: decision.deletion,
+          failureCommandId,
+          failureEvidenceEventId,
+          failureEventSequence: 4,
+          failureReceiptSequence: 4,
+        },
+      });
+      // Sequential private DTO fixtures prove serving omission, not command authority or receipt authenticity.
+      const failurePayload = yield* Schema.encodeEffect(Schema.fromJsonString(RecordedRunJson))({
+        ...run,
+        status: "failed",
+        legacyPreparationFailureDecision: failure,
+      });
+      switchFailureFixture = () =>
+        Effect.runPromise(
+          sql`UPDATE orchestration_v2_projection_runs SET payload_json = ${failurePayload} WHERE run_id = ${runId}`.pipe(
+            Effect.asVoid,
+          ),
+        );
+
       const mapError = (cause: unknown) => new OrchestratorProjectionError({ threadId, cause });
       return Layer.mock(Threads.ThreadManagementService)({
         getThreadSnapshot: (id) =>
@@ -278,21 +325,22 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
       });
     }),
   ).pipe(Layer.provideMerge(persistence));
-  const auth = Layer.succeed(EnvironmentAuthenticatedAuth, (effect) =>
-    Effect.gen(function* () {
-      const request = yield* HttpServerRequest.HttpServerRequest;
-      if (request.headers.authorization !== "Bearer fixture")
-        return yield* failEnvironmentAuthInvalid("missing_credential");
-      return yield* effect.pipe(
-        Effect.provideService(EnvironmentAuthenticatedPrincipal, {
-          sessionId: AuthSessionId.make("recorded-http-auth"),
-          subject: "fixture",
-          method: "bearer-access-token",
-          scopes: new Set<AuthEnvironmentScope>(["orchestration:read"]),
-        }),
-      );
-    }),
+  const config = WsServerConfig.layerTest(process.cwd(), { prefix: "legacy-wire-http-auth-" });
+  const authOwners = WsEnvironmentAuth.layer.pipe(
+    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(ServerSecretStore.layer),
+    Layer.provideMerge(WsServerEnvironment.identityLayer),
+    Layer.provide(config),
+    Layer.provide(NodeServices.layer),
   );
+  const auth = Layer.unwrap(
+    Effect.gen(function* () {
+      const owner = yield* WsEnvironmentAuth.EnvironmentAuth;
+      const issued = yield* owner.issueSession({ scopes: ["orchestration:read"] });
+      fixtureToken = issued.token;
+      return environmentAuthenticatedAuthLayer;
+    }),
+  ).pipe(Layer.provideMerge(authOwners));
   const dependencies = Layer.mergeAll(
     readers,
     Layer.mock(ProjectStore.ProjectStoreV2)({ listShells: () => Effect.succeed([]) }),
@@ -315,7 +363,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
       const response = await http.handler(
         new Request(url, {
           headers: {
-            authorization: "Bearer fixture",
+            authorization: `Bearer ${fixtureToken}`,
             [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
           },
         }),
@@ -334,6 +382,37 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
       expect(serialized).toContain("Ordinary recorded thread");
     }
     expect(snapshotReads).toBe(2);
+    expect(switchFailureFixture).toBeDefined();
+    await switchFailureFixture!();
+    for (const url of [fullUrl, `${fullUrl}/bounded`, "http://test/api/orchestration/shell"]) {
+      const response = await http.handler(
+        new Request(url, {
+          headers: {
+            authorization: `Bearer ${fixtureToken}`,
+            [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+          },
+        }),
+        Context.empty(),
+      );
+      expect(response.status).toBe(200);
+      const serialized = await response.text();
+      expect(serialized).toContain(threadId);
+      for (const privateField of [
+        "legacyPreparationFailureDecision",
+        "legacyReleaseDecision",
+        "legacyPreparation",
+        "legacyBootstrap",
+        "workspaceRunSetupScript",
+        "private-http-failed-effect",
+        "private-http-failed-input",
+        policy.payloadHash,
+        "private-http-workspace",
+        "private-http-generation",
+      ])
+        expect(serialized).not.toContain(privateField);
+      expect(serialized).toContain("Ordinary recorded thread");
+    }
+    expect(snapshotReads).toBe(4);
   } finally {
     await http.dispose();
   }
