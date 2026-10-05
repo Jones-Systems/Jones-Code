@@ -17,6 +17,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
@@ -150,6 +151,7 @@ const seedParentWithTerminalTask = (input: {
   readonly deliveryState: "delivered" | "claimed" | "acknowledged" | "disposed";
   readonly completionWake?: "always" | "settled_only";
   readonly deliveryTaskIds?: ReadonlyArray<NodeId>;
+  readonly workspaceRoot?: string;
   readonly now: DateTime.Utc;
 }) =>
   Effect.gen(function* () {
@@ -164,7 +166,7 @@ const seedParentWithTerminalTask = (input: {
       commandId: CommandId.make(`command:seed-project:${input.threadId}`),
       projectId: input.projectId,
       title: "Delegated completion delivery",
-      workspaceRoot: `/workspace/${input.projectId}`,
+      workspaceRoot: input.workspaceRoot ?? `/workspace/${input.projectId}`,
     });
 
     yield* orchestrator.dispatch({
@@ -497,6 +499,10 @@ it.layer(TestLayer)("delegated completion delivery repairs", (it) => {
 
   it.effect("builds completion text and metadata from the same live cohort", () =>
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({
+        prefix: "delegated-delivery-live-cohort-",
+      });
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const now = yield* DateTime.now;
       const threadId = ThreadId.make("thread:delegated-delivery-live-cohort");
@@ -516,6 +522,7 @@ it.layer(TestLayer)("delegated completion delivery repairs", (it) => {
         deliveryState: "claimed",
         completionWake: "always",
         deliveryTaskIds: [firstTaskId, secondTaskId],
+        workspaceRoot,
         now,
       });
 
@@ -542,7 +549,7 @@ it.layer(TestLayer)("delegated completion delivery repairs", (it) => {
       assert.include(message?.text ?? "", String(firstTaskId));
       assert.include(message?.text ?? "", String(secondTaskId));
       assert.include(message?.text ?? "", "task_status");
-    }),
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
   it.effect("does not re-offer when wake-policy upgrades after delivered ownership settled", () =>
