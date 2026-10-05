@@ -50,6 +50,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Sink from "effect/Sink";
 import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -57,6 +58,7 @@ import packageJson from "../../../package.json" with { type: "json" };
 import codexCollabWire from "../../provider/testFixtures/codexMultiAgentWire.json" with { type: "json" };
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as ServerConfig from "../../config.ts";
+import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { EventNdjsonLogger } from "../../provider/Layers/EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "../../provider/Layers/ProviderEventLoggers.ts";
@@ -728,7 +730,11 @@ describe("CodexAdapterV2 process spawning", () => {
         );
       });
       const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
-        Effect.provide(CodexAdapterV2.codexAppServerClientFactoryFromSettingsLayer),
+        Effect.provide(
+          CodexAdapterV2.codexAppServerClientFactoryFromSettingsLayer.pipe(
+            Layer.provide(ProcessAttribution.layer),
+          ),
+        ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(
           ProviderEventLoggers.ProviderEventLoggers,
@@ -785,7 +791,7 @@ describe("CodexAdapterV2 process spawning", () => {
           Layer.mergeAll(
             CodexAdapterV2.codexAppServerClientFactoryFromSettingsLayer,
             ServerConfig.layerTest(process.cwd(), { prefix: "t3-codex-binary-home-" }),
-          ),
+          ).pipe(Layer.provide(ProcessAttribution.layer)),
         ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(
@@ -808,6 +814,90 @@ describe("CodexAdapterV2 process spawning", () => {
       Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
       Effect.provideService(HostProcessPlatform, "linux"),
     ),
+  );
+});
+
+describe("registerCodexAppServerProcess", () => {
+  it.effect("registers the spawned PID until the runtime scope closes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const attribution = yield* ProcessAttribution.make();
+        const runtimeScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+          Scope.close(scope, Exit.void),
+        );
+
+        yield* CodexAdapterV2.registerCodexAppServerProcess({
+          pid: 4_242,
+          threadId: ThreadId.make("thread-1"),
+          processAttribution: attribution,
+        }).pipe(Effect.provideService(Scope.Scope, runtimeScope));
+
+        assert.deepEqual((yield* attribution.snapshot).get(4_242)?.owner, {
+          kind: "provider",
+          threadId: "thread-1",
+          provider: "codex",
+        });
+
+        yield* Scope.close(runtimeScope, Exit.void);
+        assert.isFalse((yield* attribution.snapshot).has(4_242));
+      }),
+    ),
+  );
+
+  it.effect(
+    "registers the captured factory PID with app-thread ownership in its session scope",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const attribution = yield* ProcessAttribution.make();
+          const runtimeScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+            Scope.close(scope, Exit.void),
+          );
+          const handle = ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(4_242),
+            exitCode: Effect.never,
+            isRunning: Effect.succeed(true),
+            kill: () => Effect.void,
+            unref: Effect.succeed(Effect.void),
+            stdin: Sink.drain,
+            stdout: Stream.never,
+            stderr: Stream.empty,
+            all: Stream.empty,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+          });
+          const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
+            Effect.provide(CodexAdapterV2.codexAppServerClientFactoryFromSettingsLayer),
+            Effect.provideService(ProcessAttribution.ProcessAttribution, attribution),
+            Effect.provideService(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.make(() => Effect.succeed(handle)),
+            ),
+            Effect.provideService(
+              ProviderEventLoggers.ProviderEventLoggers,
+              ProviderEventLoggers.NoOpProviderEventLoggers,
+            ),
+          );
+          yield* factory
+            .open({
+              instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+              threadId: ThreadId.make("app-thread-1"),
+              providerSessionId: ProviderSessionId.make("session-with-different-id"),
+              runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+              settings: DEFAULT_CODEX_SETTINGS,
+              environment: {},
+            })
+            .pipe(Effect.provideService(Scope.Scope, runtimeScope));
+
+          assert.deepEqual((yield* attribution.snapshot).get(4_242)?.owner, {
+            kind: "provider",
+            threadId: "app-thread-1",
+            provider: "codex",
+          });
+          yield* Scope.close(runtimeScope, Exit.void);
+          assert.isFalse((yield* attribution.snapshot).has(4_242));
+        }),
+      ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
   );
 });
 
