@@ -108,6 +108,61 @@ export const layer: Layer.Layer<
               thread.providerInstanceId === current.instanceId &&
               thread.nativeThreadRef !== null,
           );
+          const currentDriver = Option.isSome(currentInstance)
+            ? currentInstance.value.driver
+            : (projection.providerThreads.find(
+                (thread) =>
+                  thread.appThreadId === projection.thread.id &&
+                  thread.ownerNodeId === null &&
+                  thread.providerInstanceId === current.instanceId,
+              )?.driver ?? currentSessions[0]?.driver);
+          const hasCurrentHistory =
+            currentSessions.length > 0 ||
+            projection.providerThreads.some(
+              (thread) =>
+                thread.appThreadId === projection.thread.id &&
+                thread.ownerNodeId === null &&
+                thread.providerInstanceId === current.instanceId,
+            );
+          if (
+            instanceChanged &&
+            hasCurrentHistory &&
+            currentDriver === "codex" &&
+            Option.isSome(targetInstance) &&
+            targetInstance.value.driver === "codex" &&
+            targetInstance.value.enabled
+          ) {
+            // A saved Codex conversation must survive an account switch;
+            // handoff would create another one.
+            if (
+              Option.isNone(currentInstance) ||
+              currentInstance.value.continuationKey.trim().length === 0 ||
+              currentInstance.value.continuationKey !== targetInstance.value.continuationKey
+            ) {
+              return yield* new ProviderSwitchPlanError({
+                threadId: projection.thread.id,
+                targetProviderInstanceId: targetModelSelection.instanceId,
+                cause:
+                  "Cannot switch Codex accounts because the saved conversation is not compatible with the target account. Check that both accounts share the Codex sessions directory.",
+              });
+            }
+            const nativeRef = currentProviderThread?.nativeThreadRef;
+            if (
+              currentProviderThread?.appThreadId !== projection.thread.id ||
+              currentProviderThread.ownerNodeId !== null ||
+              currentProviderThread.driver !== "codex" ||
+              nativeRef?.driver !== "codex" ||
+              nativeRef.nativeId === null ||
+              nativeRef.nativeId.trim().length === 0
+            ) {
+              return yield* new ProviderSwitchPlanError({
+                threadId: projection.thread.id,
+                targetProviderInstanceId: targetModelSelection.instanceId,
+                cause:
+                  "Cannot switch Codex accounts without a valid saved conversation. Check that both accounts share the Codex sessions directory.",
+              });
+            }
+          }
           const selectionTransition =
             current.instanceId === targetModelSelection.instanceId &&
             !modelSelectionsEqual(current, targetModelSelection) &&

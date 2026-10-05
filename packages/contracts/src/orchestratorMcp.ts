@@ -303,6 +303,7 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   model: Schema.String,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  threadMessagesBlocked: Schema.optional(Schema.Boolean),
   linkedPullRequest: Schema.NullOr(ThreadLinkedPullRequest),
   settled: Schema.Boolean,
   settledAt: Schema.NullOr(IsoDateTime),
@@ -348,6 +349,7 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   model: Schema.String,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  threadMessagesBlocked: Schema.optional(Schema.Boolean),
   linkedPullRequest: Schema.NullOr(ThreadLinkedPullRequest),
   titleRegeneration: Schema.NullOr(ThreadTitleRegeneration),
   branch: Schema.NullOr(Schema.String),
@@ -587,3 +589,16 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
     message: Schema.String,
   },
 ) {}
+
+export const OrchestratorMcpThreadSettleInput = Schema.Struct({
+  clientRequestId: OrchestratorMcpClientRequestId,
+});
+export type OrchestratorMcpThreadSettleInput = typeof OrchestratorMcpThreadSettleInput.Type;
+
+export const OrchestratorMcpThreadSettleResult = Schema.Struct({
+  status: Schema.Literal("accepted"),
+  threadId: ThreadId,
+  runId: RunId,
+  clientRequestId: OrchestratorMcpClientRequestId,
+});
+export type OrchestratorMcpThreadSettleResult = typeof OrchestratorMcpThreadSettleResult.Type;
