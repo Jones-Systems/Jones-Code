@@ -136,10 +136,16 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
       });
     }
     const outputDirectory = NodePath.join(directory, "dist-electron");
-    const emittedSources = new Map(await Promise.all(
-      (await NodeFSP.readdir(outputDirectory)).filter((name) => name.endsWith(".cjs"))
-        .map(async (name) => [name, await NodeFSP.readFile(NodePath.join(outputDirectory, name), "utf8")]),
-    ));
+    const emittedSources = new Map(
+      await Promise.all(
+        (await NodeFSP.readdir(outputDirectory))
+          .filter((name) => name.endsWith(".cjs"))
+          .map(async (name) => [
+            name,
+            await NodeFSP.readFile(NodePath.join(outputDirectory, name), "utf8"),
+          ]),
+      ),
+    );
     const runBoot = (override) => {
       const operations = [];
       const modules = new Map();
@@ -150,21 +156,30 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
         const source = emittedSources.get(name);
         assert.ok(source, `Missing packaged bootstrap dependency: ${name}`);
         NodeVM.runInNewContext(source, {
-          module, exports: module.exports,
+          module,
+          exports: module.exports,
           process: { env: { T3CODE_DESKTOP_USER_DATA_DIR: override } },
           require: (specifier) => {
             if (specifier === "node:path") return NodePath.posix;
-            if (specifier === "node:fs") return {
-              mkdirSync: (path, options) => {
-                assert.equal(options.recursive, true);
-                operations.push(`mkdir:${path}`);
-              },
-            };
-            if (specifier === "electron") return {
-              app: { setPath: (role, path) => operations.push(`${role}:${path}`) },
-            };
-            if (specifier === "./compileCache.cjs") { operations.push("cache"); return {}; }
-            if (specifier === "./main.cjs") { operations.push("startup"); return {}; }
+            if (specifier === "node:fs")
+              return {
+                mkdirSync: (path, options) => {
+                  assert.equal(options.recursive, true);
+                  operations.push(`mkdir:${path}`);
+                },
+              };
+            if (specifier === "electron")
+              return {
+                app: { setPath: (role, path) => operations.push(`${role}:${path}`) },
+              };
+            if (specifier === "./compileCache.cjs") {
+              operations.push("cache");
+              return {};
+            }
+            if (specifier === "./main.cjs") {
+              operations.push("startup");
+              return {};
+            }
             return load(NodePath.posix.basename(specifier));
           },
         });
@@ -175,8 +190,11 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
     const isolated = runBoot(" /isolated/other/../profile ");
     isolated.load();
     assert.deepEqual(isolated.operations, [
-      "mkdir:/isolated/profile", "userData:/isolated/profile", "sessionData:/isolated/profile",
-      "cache", "startup",
+      "mkdir:/isolated/profile",
+      "userData:/isolated/profile",
+      "sessionData:/isolated/profile",
+      "cache",
+      "startup",
     ]);
     const defaults = runBoot(undefined);
     defaults.load();

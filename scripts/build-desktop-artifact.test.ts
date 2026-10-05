@@ -2494,7 +2494,11 @@ it("ignores trailing separators", () => {
 });
 
 it.effect.each([
-  { stdout: "  ABCDEF1234567890ABCDEF1234567890ABCDEF12\n", exitCode: 0, expected: "abcdef1234567890abcdef1234567890abcdef12" },
+  {
+    stdout: "  ABCDEF1234567890ABCDEF1234567890ABCDEF12\n",
+    exitCode: 0,
+    expected: "abcdef1234567890abcdef1234567890abcdef12",
+  },
   { stdout: "abcdef123456", exitCode: 0, expected: "unknown" },
   { stdout: "g".repeat(40), exitCode: 0, expected: "unknown" },
   { stdout: "a".repeat(41), exitCode: 0, expected: "unknown" },
@@ -2504,26 +2508,41 @@ it.effect.each([
   Effect.gen(function* () {
     const commands: ChildProcess.Command[] = [];
     const hash = yield* resolveGitCommitHash("/synthetic/repository").pipe(
-      Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner,
-        ChildProcessSpawner.make((command) => {
-          commands.push(command);
-          return Effect.succeed(mockProcess(exitCode, stdout));
-        }),
-      )),
+      Effect.provide(
+        Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => {
+            commands.push(command);
+            return Effect.succeed(mockProcess(exitCode, stdout));
+          }),
+        ),
+      ),
     );
     assert.equal(hash, expected);
-    assert.deepEqual(commands, [ChildProcess.make("git", ["rev-parse", "HEAD"], { cwd: "/synthetic/repository" })]);
+    assert.deepEqual(commands, [
+      ChildProcess.make("git", ["rev-parse", "HEAD"], { cwd: "/synthetic/repository" }),
+    ]);
   }),
 );
 
 it.effect("reports unknown when resolving Git HEAD cannot spawn", () =>
   resolveGitCommitHash("/synthetic/repository").pipe(
-    Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner,
-      ChildProcessSpawner.make(() => Effect.fail(PlatformError.systemError({
-        _tag: "NotFound", module: "ChildProcess", method: "spawn",
-        pathOrDescriptor: "git", description: "synthetic unavailable Git",
-      }))),
-    )),
+    Effect.provide(
+      Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.fail(
+            PlatformError.systemError({
+              _tag: "NotFound",
+              module: "ChildProcess",
+              method: "spawn",
+              pathOrDescriptor: "git",
+              description: "synthetic unavailable Git",
+            }),
+          ),
+        ),
+      ),
+    ),
     Effect.tap((hash) => Effect.sync(() => assert.equal(hash, "unknown"))),
   ),
 );
