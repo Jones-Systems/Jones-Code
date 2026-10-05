@@ -175,7 +175,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
   });
   let snapshotReads = 0;
   let fixtureToken = "";
-  let switchFailureFixture: (() => Promise<void>) | undefined;
+  let serveFailureFixture = false;
   const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, Receipts.layer).pipe(
     Layer.provideMerge(SqlitePersistenceMemory),
   );
@@ -293,17 +293,19 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
         status: "failed",
         legacyPreparationFailureDecision: failure,
       });
-      switchFailureFixture = () =>
-        Effect.runPromise(
-          sql`UPDATE orchestration_v2_projection_runs SET payload_json = ${failurePayload} WHERE run_id = ${runId}`.pipe(
-            Effect.asVoid,
-          ),
-        );
+      const prepareSnapshot = Effect.suspend(() =>
+        serveFailureFixture
+          ? sql`UPDATE orchestration_v2_projection_runs SET payload_json = ${failurePayload} WHERE run_id = ${runId}`.pipe(
+              Effect.asVoid,
+            )
+          : Effect.void,
+      );
 
       const mapError = (cause: unknown) => new OrchestratorProjectionError({ threadId, cause });
       return Layer.mock(Threads.ThreadManagementService)({
         getThreadSnapshot: (id) =>
-          projections.getThreadSnapshot(id).pipe(
+          prepareSnapshot.pipe(
+            Effect.andThen(projections.getThreadSnapshot(id)),
             Effect.tap(() =>
               Effect.sync(() => {
                 snapshotReads++;
@@ -312,7 +314,8 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
             Effect.mapError(mapError),
           ),
         getThreadSnapshotWindow: (id, options) =>
-          projections.getThreadSnapshotWindow(id, options).pipe(
+          prepareSnapshot.pipe(
+            Effect.andThen(projections.getThreadSnapshotWindow(id, options)),
             Effect.tap(() =>
               Effect.sync(() => {
                 snapshotReads++;
@@ -321,7 +324,10 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
             Effect.mapError(mapError),
           ),
         getShellSnapshot: (options) =>
-          projections.getShellSnapshot(options).pipe(Effect.mapError(mapError)),
+          prepareSnapshot.pipe(
+            Effect.andThen(projections.getShellSnapshot(options)),
+            Effect.mapError(mapError),
+          ),
       });
     }),
   ).pipe(Layer.provideMerge(persistence));
@@ -382,8 +388,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
       expect(serialized).toContain("Ordinary recorded thread");
     }
     expect(snapshotReads).toBe(2);
-    expect(switchFailureFixture).toBeDefined();
-    await switchFailureFixture!();
+    serveFailureFixture = true;
     for (const url of [fullUrl, `${fullUrl}/bounded`, "http://test/api/orchestration/shell"]) {
       const response = await http.handler(
         new Request(url, {
