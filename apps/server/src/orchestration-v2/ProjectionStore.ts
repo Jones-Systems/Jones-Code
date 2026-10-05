@@ -131,6 +131,7 @@ export const ProjectionStoreV2Error = Schema.Union([
 export type ProjectionStoreV2Error = typeof ProjectionStoreV2Error.Type;
 
 export type ProjectionRecoveryKind =
+  | "self-settlement"
   | "queued-runs"
   | "runtime"
   | "subagent-results"
@@ -495,6 +496,8 @@ function needsRecovery(
 ): boolean {
   if (projection.thread.deletedAt !== null) return false;
   switch (kind) {
+    case "self-settlement":
+      return projection.thread.selfSettlement != null;
     case "queued-runs":
       return (
         projection.thread.archivedAt === null &&
@@ -1417,6 +1420,7 @@ export function threadShellFromProjection(
     archivedAt: projection.thread.archivedAt,
     settledOverride: projection.thread.settledOverride,
     settledAt: projection.thread.settledAt,
+    threadMessagesBlocked: projection.thread.threadMessagesBlocked ?? false,
     unsettledAt: projection.thread.unsettledAt ?? null,
     snoozedUntil: projection.thread.snoozedUntil ?? null,
     snoozedAt: projection.thread.snoozedAt ?? null,
@@ -1643,6 +1647,7 @@ function shellFromState(input: {
     archivedAt: input.state.thread.archivedAt,
     settledOverride: input.state.thread.settledOverride,
     settledAt: input.state.thread.settledAt,
+    threadMessagesBlocked: input.state.thread.threadMessagesBlocked ?? false,
     unsettledAt: input.state.thread.unsettledAt ?? null,
     snoozedUntil: input.state.thread.snoozedUntil ?? null,
     snoozedAt: input.state.thread.snoozedAt ?? null,
@@ -3398,6 +3403,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       function* (kind: ProjectionRecoveryKind) {
         const candidates = (() => {
           switch (kind) {
+            case "self-settlement":
+              return sql`SELECT thread_id FROM orchestration_v2_projection_threads
+                WHERE CASE WHEN json_valid(payload_json)
+                  THEN json_type(payload_json, '$.selfSettlement') = 'object' ELSE 0 END`;
             case "queued-runs":
               return sql`
                 SELECT thread_id FROM orchestration_v2_projection_runs
