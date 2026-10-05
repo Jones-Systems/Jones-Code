@@ -2733,7 +2733,7 @@ class ClaudeProducerContext extends Context.Reference<ClaudeLiveQueryContext | u
   { defaultValue: () => undefined },
 ) {}
 
-export function claudeObservedRuntimeIdentity(model: string | undefined) {
+function claudeObservedRuntimeIdentity(model: string | undefined) {
   return {
     backend: {
       status: "unavailable" as const,

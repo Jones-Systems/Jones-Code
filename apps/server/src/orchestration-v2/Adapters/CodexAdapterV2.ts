@@ -1612,7 +1612,7 @@ class CodexProducerContext extends Context.Reference<CodexRuntimeProducer | unde
   { defaultValue: () => undefined },
 ) {}
 
-export function codexObservedRuntimeIdentity(response: {
+function codexObservedRuntimeIdentity(response: {
   readonly model?: string | null | undefined;
   readonly modelProvider?: string | null | undefined;
   readonly serviceTier?: string | null | undefined;
