@@ -7771,6 +7771,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 "Setup definition differs from its exact workspace, immutable input or owner generation.",
             });
         }
+        if (
+          update.type === "intent" &&
+          update.step.effect.kind === "branch.rename" &&
+          (projection.thread.worktreePath !== update.step.effect.input.claim.path ||
+            `refs/heads/${projection.thread.branch}` !== update.step.effect.input.oldRef)
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Rename intent target differs from the authoritative receiving workspace.",
+          });
         const transition = transitionLegacyPreparation({
           current: run.legacyPreparation,
           update,

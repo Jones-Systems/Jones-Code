@@ -16,6 +16,7 @@ import {
   canonicalLegacyPayload,
   legacyPayloadHash,
   legacyPreparationEffectId,
+  legacyPreparationReleaseBlocker,
   legacyBootstrapBirth,
   legacyPreparationGeneration,
   sameLegacyBootstrapPolicy,
@@ -596,6 +597,69 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const legacyRenameHooks = Effect.fn("ThreadLaunchService.legacyRenameHooks")(function* (
+    input: PreparationInput,
+    threadId: ThreadId,
+    runId: RunId,
+  ) {
+    const journal = yield* legacyPreparationJournal(input, threadId, runId);
+    const preparation = journal.preparation;
+    if (preparation === undefined)
+      return yield* mapError(
+        input,
+        "read-receipt",
+        threadId,
+      )("Legacy rename preparation is unavailable.");
+    const add = preparation.steps.find((step) => step.effect.kind === "worktree.add");
+    const lastClaim = [...preparation.steps]
+      .reverse()
+      .find(
+        (step) =>
+          step.state === "known_succeeded" &&
+          (step.evidence?.type === "worktree_claim" ||
+            (step.evidence?.type === "settled_git" && step.evidence.claim !== undefined)),
+      );
+    const claim =
+      lastClaim?.evidence !== undefined && "claim" in lastClaim.evidence
+        ? lastClaim.evidence.claim
+        : undefined;
+    if (
+      add?.effect.kind !== "worktree.add" ||
+      add.effect.input.before === undefined ||
+      claim === undefined
+    )
+      return yield* mapError(
+        input,
+        "read-receipt",
+        threadId,
+      )("Legacy rename has no exact durable creation claim.");
+    const hooks: import("../vcs/GitVcsDriver.ts").LegacyBranchRenameHooks = {
+      before: add.effect.input.before,
+      claim,
+      beforeEffect: (step) => journal.intent({ kind: "branch.rename", input: step }),
+      afterEffect: (_step, result, material) =>
+        Effect.gen(function* () {
+          if (result !== "settled_success" || material === undefined) {
+            yield* journal.outcome("branch.rename", "unknown", {
+              type: "unknown",
+              reason: "partial_material",
+            });
+            return yield* mapError(
+              input,
+              "update-thread",
+              threadId,
+            )("Legacy rename outcome is unresolved; preserve material and identity.");
+          }
+          yield* journal.outcome("branch.rename", "known_succeeded", {
+            type: "settled_git",
+            exitCode: 0,
+            claim: material,
+          });
+        }),
+    };
+    return hooks;
+  });
+
   const legacyWorktreeHooks = Effect.fn("ThreadLaunchService.legacyWorktreeHooks")(function* (
     input: PreparationInput,
     threadId: ThreadId,
@@ -1130,11 +1194,18 @@ const make = Effect.gen(function* () {
         const worktreeCwd = worktreePath;
         yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
           Effect.flatMap(({ branch: newBranch, exactName }) =>
-            git.renameBranch({
-              cwd: worktreeCwd,
-              oldBranch,
-              newBranch,
-              ...(exactName ? { exactName: true } : {}),
+            Effect.gen(function* () {
+              const legacyPreparation =
+                input.legacyBootstrap === undefined || runId === null
+                  ? undefined
+                  : yield* legacyRenameHooks(input, threadId, runId);
+              return yield* git.renameBranch({
+                cwd: worktreeCwd,
+                oldBranch,
+                newBranch,
+                ...(exactName ? { exactName: true } : {}),
+                ...(legacyPreparation === undefined ? {} : { legacyPreparation }),
+              });
             }),
           ),
           Effect.flatMap((renamed) =>
@@ -1311,6 +1382,81 @@ const make = Effect.gen(function* () {
       yield* setupTracker.markUncancellable(threadId);
       yield* setupTracker.stageStatus(threadId, "agent", "running");
       if (runId !== null) {
+        if (input.legacyBootstrap !== undefined) {
+          const current = yield* threads
+            .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
+            .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+          const run = current.runs.find((candidate) => candidate.id === runId);
+          if (run === undefined || run.legacyPreparation === undefined)
+            return yield* mapError(
+              input,
+              "read-receipt",
+              threadId,
+            )("Legacy preparation release has no recorded ledger.");
+          const preparation = run.legacyPreparation;
+          const blocked = legacyPreparationReleaseBlocker({ run });
+          if (blocked !== undefined)
+            return yield* mapError(input, "provision-worktree", threadId)(blocked);
+          for (const step of preparation.steps) {
+            for (const transition of ["intent", "outcome"] as const) {
+              const commandId =
+                transition === "intent" ? step.intentCommandId : step.outcomeCommandId;
+              if (commandId === undefined)
+                return yield* mapError(
+                  input,
+                  "read-receipt",
+                  threadId,
+                )("Legacy preparation outcome identity is unavailable.");
+              const receipt = yield* readReceipt(input, commandId);
+              const records = Array.from(
+                yield* eventSink
+                  .readByCommandId({ commandId })
+                  .pipe(
+                    Stream.runCollect,
+                    Effect.mapError(mapError(input, "read-receipt", threadId)),
+                  ),
+              );
+              const record = records[0];
+              const recorded =
+                record?.event.type === "run.updated"
+                  ? record.event.payload.legacyPreparation
+                  : undefined;
+              const actualStep = recorded?.steps.find((entry) => entry.effectId === step.effectId);
+              const expectedStep =
+                transition === "intent"
+                  ? {
+                      effectId: step.effectId,
+                      effect: step.effect,
+                      inputHash: step.inputHash,
+                      state: "intent",
+                      intentCommandId: step.intentCommandId,
+                      intentEventId: step.intentEventId,
+                    }
+                  : step;
+              if (
+                Option.isNone(receipt) ||
+                receipt.value.status !== "accepted" ||
+                receipt.value.commandType !== "prepared-run.progress" ||
+                receipt.value.threadId !== threadId ||
+                records.length !== 1 ||
+                record?.event.type !== "run.updated" ||
+                record.event.runId !== runId ||
+                record.commandId !== commandId ||
+                record.event.id !== `${commandId}:event` ||
+                record.sequence !== receipt.value.resultSequence ||
+                recorded?.generation !== preparation.generation ||
+                canonicalLegacyPayload(recorded.policy) !==
+                  canonicalLegacyPayload(preparation.policy) ||
+                canonicalLegacyPayload(actualStep) !== canonicalLegacyPayload(expectedStep)
+              )
+                return yield* mapError(
+                  input,
+                  "read-receipt",
+                  threadId,
+                )("Legacy preparation release has no exact intent and outcome readback.");
+            }
+          }
+        }
         yield* threads
           .dispatch({
             type: "prepared-run.release",

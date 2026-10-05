@@ -188,6 +188,41 @@ export function transitionLegacyPreparation(input: {
       return rejected("Preparation intent would repeat or pass an unresolved effect.");
     if (step.effect.kind === "setup.open" && current.setup.status !== "resolved")
       return rejected("Preparation setup definition must be captured before terminal opening.");
+    if (step.effect.kind === "branch.rename") {
+      const effect = step.effect;
+      const lastClaim = [...current.steps]
+        .reverse()
+        .find(
+          (entry) =>
+            entry.state === "known_succeeded" &&
+            (entry.evidence?.type === "worktree_claim" ||
+              (entry.evidence?.type === "settled_git" && entry.evidence.claim !== undefined)),
+        );
+      const claim =
+        lastClaim?.evidence !== undefined && "claim" in lastClaim.evidence
+          ? lastClaim.evidence.claim
+          : undefined;
+      if (
+        claim === undefined ||
+        canonicalLegacyPayload(effect.input.claim) !== canonicalLegacyPayload(claim) ||
+        current.commonDirectory !== claim.commonDirectory ||
+        effect.input.oldRef !== claim.headRef ||
+        effect.input.oldOid !== claim.headOid ||
+        !effect.input.targetRef.startsWith("refs/heads/") ||
+        effect.input.targetRef === effect.input.oldRef ||
+        canonicalLegacyPayload(effect.input.args) !==
+          canonicalLegacyPayload([
+            "branch",
+            "-m",
+            "--",
+            effect.input.oldRef.slice("refs/heads/".length),
+            effect.input.targetRef.slice("refs/heads/".length),
+          ])
+      )
+        return rejected(
+          "Rename intent differs from its exact durable material claim or chosen target.",
+        );
+    }
     let commonDirectory = current.commonDirectory;
     if (
       step.effect.kind === "worktree.add" ||
@@ -247,13 +282,17 @@ export function transitionLegacyPreparation(input: {
         claim.headRef === effect.input.targetRef &&
         claim.headOid === effect.input.baseCommitOid
       );
-    if (effect.kind === "branch.rename" || effect.kind === "worktree.remove")
+    if (effect.kind === "branch.rename")
+      return (
+        canonicalLegacyPayload(claim) ===
+        canonicalLegacyPayload({ ...effect.input.claim, headRef: effect.input.targetRef })
+      );
+    if (effect.kind === "worktree.remove")
       return (
         claim.path === effect.input.claim.path &&
         claim.commonDirectory === effect.input.claim.commonDirectory &&
         claim.registeredPath === effect.input.claim.registeredPath &&
-        claim.headRef ===
-          (effect.kind === "branch.rename" ? effect.input.targetRef : effect.input.claim.headRef) &&
+        claim.headRef === effect.input.claim.headRef &&
         claim.headOid === effect.input.claim.headOid
       );
     return false;

@@ -2538,6 +2538,9 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         yield* fs.makeDirectory(gitDirectory, { recursive: true });
         const commands: string[][] = [];
         let added = false;
+        let currentBranch = branch;
+        const occupiedTargets = new Set<string>();
+        let loseRenameMaterial = false;
         const spawner = ChildProcessSpawner.make((command) =>
           Effect.gen(function* () {
             if (!ChildProcess.isStandardCommand(command))
@@ -2555,19 +2558,31 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
                 );
               added = true;
             }
+            if (args.includes("-m")) {
+              currentBranch = args.at(-1)!;
+              if (loseRenameMaterial) yield* fs.remove(path.join(owned, ".git"));
+            }
             let stdout = "";
             if (args.includes("--git-common-dir")) stdout = `${common}\n`;
             else if (args.includes("--absolute-git-dir")) stdout = `${gitDirectory}\n`;
-            else if (args.includes("symbolic-ref")) stdout = `refs/heads/${branch}\n`;
+            else if (args.includes("symbolic-ref")) stdout = `refs/heads/${currentBranch}\n`;
             else if (args.includes("rev-parse")) stdout = `${oid}\n`;
             else if (args.includes("--porcelain"))
               stdout = added
-                ? `worktree ${owned}\0HEAD ${oid}\0branch refs/heads/${branch}\0\0`
+                ? `worktree ${owned}\0HEAD ${oid}\0branch refs/heads/${currentBranch}\0\0`
                 : "";
-            else if (args.includes("for-each-ref")) stdout = added ? `refs/heads/${branch}\n` : "";
+            else if (args.includes("for-each-ref")) {
+              const target = args.at(-1)!;
+              stdout =
+                (added && target === `refs/heads/${currentBranch}`) || occupiedTargets.has(target)
+                  ? `${target}\n`
+                  : "";
+            }
             const handle = makeSuccessfulHandle(stdout);
-            return args.includes("--get-regexp") &&
-              args.some((arg) => arg.endsWith("gh-merge-base$"))
+            return args.includes("--get-regexp") ||
+              (args.includes("show-ref") &&
+                args.at(-1) !== `refs/heads/${currentBranch}` &&
+                !occupiedTargets.has(args.at(-1)!))
               ? ChildProcessSpawner.makeHandle({
                   ...handle,
                   exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
@@ -2579,8 +2594,190 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provide(ServerConfigLayer),
         );
-        return { cwd, owned, common, gitDirectory, commands, driver, fs };
+        return {
+          cwd,
+          owned,
+          common,
+          gitDirectory,
+          commands,
+          driver,
+          fs,
+          occupiedTargets,
+          loseRenameMaterial: () => {
+            loseRenameMaterial = true;
+          },
+        };
       });
+
+    it.effect.each([
+      "suffix",
+      "collision",
+      "lost_outcome",
+      "replacement",
+      "unknown_material",
+    ] as const)(
+      "legacy rename binds chosen target and retains unknown material for %s",
+      (scenario) =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree("4".repeat(40), "legacy/rename-case");
+          let before: GitVcsDriver.LegacyWorktreeBeforeObservation | undefined;
+          let claim: GitVcsDriver.LegacyWorktreeMaterialClaim | undefined;
+          yield* fixture.driver.createWorktree(
+            {
+              cwd: fixture.cwd,
+              refName: "main",
+              newRefName: "legacy/rename-case",
+              path: fixture.owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: (step) =>
+                  Effect.sync(() => {
+                    before = step.before;
+                  }),
+                afterEffect: (_step, _result, material) =>
+                  Effect.sync(() => {
+                    claim = material;
+                  }),
+              },
+            },
+          );
+          if (before === undefined || claim === undefined)
+            return yield* Effect.die("No owned fixture claim");
+          if (scenario === "suffix" || scenario === "collision")
+            fixture.occupiedTargets.add("refs/heads/qualified");
+          if (scenario === "unknown_material") fixture.loseRenameMaterial();
+          const intents: GitVcsDriver.LegacyBranchRenameStep[] = [];
+          const outcomes: string[] = [];
+          const result = yield* fixture.driver
+            .renameBranch({
+              cwd: fixture.owned,
+              oldBranch: "legacy/rename-case",
+              newBranch: "qualified",
+              exactName: scenario !== "suffix",
+              legacyPreparation: {
+                before,
+                claim,
+                beforeEffect: (step) =>
+                  Effect.gen(function* () {
+                    intents.push(step);
+                    assert.isFalse(fixture.commands.some((args) => args.includes("-m")));
+                    if (scenario === "replacement") {
+                      yield* fixture.fs.rename(fixture.owned, `${fixture.owned}-original`);
+                      yield* fixture.fs.makeDirectory(fixture.owned);
+                    }
+                  }),
+                afterEffect: (step, outcome, material) =>
+                  Effect.gen(function* () {
+                    outcomes.push(outcome);
+                    if (scenario === "unknown_material") {
+                      assert.isUndefined(material);
+                      return;
+                    }
+                    assert.equal(outcome, "settled_success");
+                    assert.deepEqual(material, { ...claim, headRef: step.targetRef });
+                    if (scenario === "lost_outcome")
+                      return yield* new GitCommandError({
+                        operation: "fixture.rename.outcome",
+                        command: "git",
+                        cwd: fixture.owned,
+                        detail: "Outcome readback unavailable",
+                      });
+                  }),
+              },
+            })
+            .pipe(Effect.result);
+          assert.equal(
+            fixture.commands.filter((args) => args.includes("-m")).length,
+            scenario === "collision" || scenario === "replacement" ? 0 : 1,
+          );
+          assert.isFalse(
+            fixture.commands.some((args) => args.includes("prune") || args.includes("remove")),
+          );
+          assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+          if (scenario === "suffix") {
+            assert.isTrue(Result.isSuccess(result));
+            assert.equal(Result.isSuccess(result) ? result.success.branch : null, "qualified-1");
+            assert.equal(intents[0]?.targetRef, "refs/heads/qualified-1");
+            assert.deepEqual(intents[0]?.args, [
+              "branch",
+              "-m",
+              "--",
+              "legacy/rename-case",
+              "qualified-1",
+            ]);
+            assert.deepEqual(outcomes, ["settled_success"]);
+          } else {
+            assert.isTrue(Result.isFailure(result));
+            assert.lengthOf(intents, scenario === "collision" ? 0 : 1);
+            assert.deepEqual(
+              outcomes,
+              scenario === "collision" || scenario === "replacement"
+                ? []
+                : [scenario === "unknown_material" ? "failed_or_unknown" : "settled_success"],
+            );
+          }
+        }),
+    );
+
+    it.effect("legacy rename intent refusal prevents branch mutation", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("3".repeat(40), "legacy/rename");
+        let before: GitVcsDriver.LegacyWorktreeBeforeObservation | undefined;
+        let claim: GitVcsDriver.LegacyWorktreeMaterialClaim | undefined;
+        yield* fixture.driver.createWorktree(
+          { cwd: fixture.cwd, refName: "main", newRefName: "legacy/rename", path: fixture.owned },
+          {
+            legacyPreparation: {
+              beforeEffect: (step) =>
+                Effect.sync(() => {
+                  before = step.before;
+                }),
+              afterEffect: (_step, _result, material) =>
+                Effect.sync(() => {
+                  claim = material;
+                }),
+            },
+          },
+        );
+        if (before === undefined || claim === undefined)
+          return yield* Effect.die("No owned fixture claim");
+        let intentCalls = 0;
+        const result = yield* fixture.driver
+          .renameBranch({
+            cwd: fixture.owned,
+            oldBranch: "legacy/rename",
+            newBranch: "qualified",
+            exactName: true,
+            ...{
+              legacyPreparation: {
+                before,
+                claim,
+                beforeEffect: () =>
+                  Effect.sync(() => {
+                    intentCalls++;
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new GitCommandError({
+                          operation: "fixture.rename.intent",
+                          command: "git",
+                          cwd: fixture.owned,
+                          detail: "Intent readback unavailable",
+                        }),
+                      ),
+                    ),
+                  ),
+                afterEffect: () => Effect.die("No outcome without accepted intent"),
+              },
+            },
+          })
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.equal(intentCalls, 1);
+        assert.isFalse(fixture.commands.some((args) => args.includes("-m")));
+      }),
+    );
 
     it.effect("legacy worktree intent refusal prevents add and config writes", () =>
       Effect.gen(function* () {

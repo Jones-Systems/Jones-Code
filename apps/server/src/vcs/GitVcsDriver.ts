@@ -153,8 +153,8 @@ export interface LegacyWorktreeBeforeObservation {
   readonly parentRealPath: string;
   readonly parentDevice: string;
   readonly parentInode: string;
-  readonly commonDirectoryDevice?: string;
-  readonly commonDirectoryInode?: string;
+  readonly commonDirectoryDevice?: string | undefined;
+  readonly commonDirectoryInode?: string | undefined;
   readonly targetRefAbsent: true;
   readonly registrationAbsent: true;
 }
@@ -170,14 +170,14 @@ export interface LegacyWorktreeMaterialClaim {
   readonly registeredPath: string;
   readonly headRef: string;
   readonly headOid: string;
-  readonly parentDevice?: string;
-  readonly parentInode?: string;
-  readonly dotGitDevice?: string;
-  readonly dotGitInode?: string;
-  readonly gitDirectoryDevice?: string;
-  readonly gitDirectoryInode?: string;
-  readonly commonDirectoryDevice?: string;
-  readonly commonDirectoryInode?: string;
+  readonly parentDevice?: string | undefined;
+  readonly parentInode?: string | undefined;
+  readonly dotGitDevice?: string | undefined;
+  readonly dotGitInode?: string | undefined;
+  readonly gitDirectoryDevice?: string | undefined;
+  readonly gitDirectoryInode?: string | undefined;
+  readonly commonDirectoryDevice?: string | undefined;
+  readonly commonDirectoryInode?: string | undefined;
 }
 
 export interface LegacyWorktreePreparationStep {
@@ -249,7 +249,29 @@ export interface GitRangeContext {
   diffPatch: string;
 }
 
+export interface LegacyBranchRenameStep {
+  readonly claim: LegacyWorktreeMaterialClaim;
+  readonly oldRef: string;
+  readonly oldOid: string;
+  readonly targetRef: string;
+  readonly exactName: boolean;
+  readonly args: ReadonlyArray<string>;
+}
+
+export interface LegacyBranchRenameHooks {
+  readonly before: LegacyWorktreeBeforeObservation;
+  readonly claim: LegacyWorktreeMaterialClaim;
+  readonly beforeEffect: (step: LegacyBranchRenameStep) => Effect.Effect<void, Error>;
+  readonly afterEffect: (
+    step: LegacyBranchRenameStep,
+    outcome: "settled_success" | "failed_or_unknown",
+    claim?: LegacyWorktreeMaterialClaim,
+  ) => Effect.Effect<void, Error>;
+}
+
 export interface GitRenameBranchInput {
+  /** Exact private preparation journal, independent of current physical admission. */
+  readonly legacyPreparation?: LegacyBranchRenameHooks;
   /** Fail on a name collision instead of appending a numeric suffix. */
   exactName?: boolean;
   cwd: string;

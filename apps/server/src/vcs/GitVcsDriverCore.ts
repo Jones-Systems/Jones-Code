@@ -3187,6 +3187,157 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  const readLegacyMaterial = (input: {
+    readonly worktreePath: string;
+    readonly identity: {
+      readonly commonDirectory: string;
+      readonly targetRef: string;
+      readonly baseCommitOid: string;
+    };
+    readonly before: GitVcsDriver.LegacyWorktreeBeforeObservation;
+    readonly ownedClaim?: GitVcsDriver.LegacyWorktreeMaterialClaim;
+  }) =>
+    Effect.gen(function* () {
+      const { worktreePath, identity, before, ownedClaim } = input;
+      const observationError = () =>
+        new GitCommandError({
+          ...gitCommandContext({
+            operation: "GitVcsDriver.legacyMaterial",
+            cwd: worktreePath,
+            args: [],
+          }),
+          detail: "Exact legacy worktree ownership is unavailable or changed.",
+        });
+      const fsProbe = <A>(probe: () => Promise<A>) =>
+        Effect.tryPromise({ try: probe, catch: observationError });
+      const readOwnerGit = (cwd: string, args: ReadonlyArray<string>) =>
+        runGitStdoutWithOptions("GitVcsDriver.legacyMaterial", cwd, args, {
+          env: { GIT_OPTIONAL_LOCKS: "0" },
+        });
+      const readRegistration = () =>
+        readOwnerGit(worktreePath, ["worktree", "list", "--porcelain", "-z"]);
+      const physical = yield* fsProbe(async () => {
+        const stat = await NodeFSP.lstat(worktreePath);
+        const parentStat = await NodeFSP.lstat(before.parentPath);
+        const parentRealPath = await NodeFSP.realpath(before.parentPath);
+        if (
+          !stat.isDirectory() ||
+          stat.isSymbolicLink() ||
+          !parentStat.isDirectory() ||
+          parentStat.isSymbolicLink() ||
+          String(parentStat.dev) !== before.parentDevice ||
+          String(parentStat.ino) !== before.parentInode ||
+          parentRealPath !== before.parentRealPath
+        )
+          throw new Error("Replaced target or parent");
+        const realPath = await NodeFSP.realpath(worktreePath);
+        if (
+          realPath !== path.resolve(parentRealPath, path.relative(before.parentPath, worktreePath))
+        )
+          throw new Error("Replaced path ancestry");
+        const dotGitPath = path.join(worktreePath, ".git");
+        const dotGit = await NodeFSP.lstat(dotGitPath);
+        if (!dotGit.isFile() || dotGit.isSymbolicLink() || dotGit.size > 4096)
+          throw new Error("Unsafe gitdir link");
+        const link = (await NodeFSP.readFile(dotGitPath, "utf8")).trim();
+        if (!link.startsWith("gitdir: ")) throw new Error("Missing gitdir link");
+        const gitDirectory = await NodeFSP.realpath(path.resolve(worktreePath, link.slice(8)));
+        const commonDirectory = await NodeFSP.realpath(identity.commonDirectory);
+        const relativeGitDirectory = path.relative(
+          path.join(commonDirectory, "worktrees"),
+          gitDirectory,
+        );
+        if (
+          relativeGitDirectory === "" ||
+          relativeGitDirectory.startsWith("..") ||
+          path.isAbsolute(relativeGitDirectory)
+        )
+          throw new Error("Foreign gitdir");
+        const gitDirectoryStat = await NodeFSP.lstat(gitDirectory);
+        const commonDirectoryStat = await NodeFSP.lstat(commonDirectory);
+        if (
+          !gitDirectoryStat.isDirectory() ||
+          gitDirectoryStat.isSymbolicLink() ||
+          !commonDirectoryStat.isDirectory() ||
+          commonDirectoryStat.isSymbolicLink() ||
+          String(commonDirectoryStat.dev) !== before.commonDirectoryDevice ||
+          String(commonDirectoryStat.ino) !== before.commonDirectoryInode
+        )
+          throw new Error("Replaced Git identity");
+        return {
+          path: worktreePath,
+          realPath,
+          device: String(stat.dev),
+          inode: String(stat.ino),
+          parentRealPath,
+          gitDirectory,
+          commonDirectory,
+          parentDevice: String(parentStat.dev),
+          parentInode: String(parentStat.ino),
+          dotGitDevice: String(dotGit.dev),
+          dotGitInode: String(dotGit.ino),
+          gitDirectoryDevice: String(gitDirectoryStat.dev),
+          gitDirectoryInode: String(gitDirectoryStat.ino),
+          commonDirectoryDevice: String(commonDirectoryStat.dev),
+          commonDirectoryInode: String(commonDirectoryStat.ino),
+        };
+      });
+      const registration = (yield* readRegistration())
+        .split("\0\0")
+        .map((record) => record.split("\0"));
+      const matching = registration.filter((record) => record.includes(`worktree ${worktreePath}`));
+      const headRef = (yield* readOwnerGit(worktreePath, ["symbolic-ref", "HEAD"])).trim();
+      const headOid = (yield* readOwnerGit(worktreePath, [
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}",
+      ])).trim();
+      const gitDirectory = (yield* readOwnerGit(worktreePath, [
+        "rev-parse",
+        "--absolute-git-dir",
+      ])).trim();
+      const commonDirectory = (yield* readOwnerGit(worktreePath, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      ])).trim();
+      if (
+        matching.length !== 1 ||
+        !matching[0]!.includes(`branch ${identity.targetRef}`) ||
+        !matching[0]!.includes(`HEAD ${identity.baseCommitOid}`) ||
+        matching[0]!.some((field) => field.startsWith("prunable") || field.startsWith("locked")) ||
+        headRef !== identity.targetRef ||
+        headOid !== identity.baseCommitOid ||
+        gitDirectory !== physical.gitDirectory ||
+        commonDirectory !== physical.commonDirectory
+      )
+        return yield* observationError();
+      const claim = { ...physical, registeredPath: worktreePath, headRef, headOid };
+      if (
+        ownedClaim !== undefined &&
+        (claim.path !== ownedClaim.path ||
+          claim.realPath !== ownedClaim.realPath ||
+          claim.device !== ownedClaim.device ||
+          claim.inode !== ownedClaim.inode ||
+          claim.parentRealPath !== ownedClaim.parentRealPath ||
+          claim.gitDirectory !== ownedClaim.gitDirectory ||
+          claim.commonDirectory !== ownedClaim.commonDirectory ||
+          claim.registeredPath !== ownedClaim.registeredPath ||
+          claim.headRef !== ownedClaim.headRef ||
+          claim.headOid !== ownedClaim.headOid ||
+          claim.parentDevice !== ownedClaim.parentDevice ||
+          claim.parentInode !== ownedClaim.parentInode ||
+          claim.dotGitDevice !== ownedClaim.dotGitDevice ||
+          claim.dotGitInode !== ownedClaim.dotGitInode ||
+          claim.gitDirectoryDevice !== ownedClaim.gitDirectoryDevice ||
+          claim.gitDirectoryInode !== ownedClaim.gitDirectoryInode ||
+          claim.commonDirectoryDevice !== ownedClaim.commonDirectoryDevice ||
+          claim.commonDirectoryInode !== ownedClaim.commonDirectoryInode)
+      )
+        return yield* observationError();
+      return claim;
+    });
+
   const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input, options) {
@@ -3340,126 +3491,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     let ownedClaim: GitVcsDriver.LegacyWorktreeMaterialClaim | undefined;
     const readMaterial = Effect.gen(function* () {
       if (identity === undefined || before === undefined) return yield* observationError();
-      const physical = yield* fsProbe(async () => {
-        const stat = await NodeFSP.lstat(worktreePath);
-        const parentStat = await NodeFSP.lstat(before!.parentPath);
-        const parentRealPath = await NodeFSP.realpath(before!.parentPath);
-        if (
-          !stat.isDirectory() ||
-          stat.isSymbolicLink() ||
-          !parentStat.isDirectory() ||
-          parentStat.isSymbolicLink() ||
-          String(parentStat.dev) !== before!.parentDevice ||
-          String(parentStat.ino) !== before!.parentInode ||
-          parentRealPath !== before!.parentRealPath
-        )
-          throw new Error("Replaced target or parent");
-        const realPath = await NodeFSP.realpath(worktreePath);
-        if (
-          realPath !== path.resolve(parentRealPath, path.relative(before!.parentPath, worktreePath))
-        )
-          throw new Error("Replaced path ancestry");
-        const dotGitPath = path.join(worktreePath, ".git");
-        const dotGit = await NodeFSP.lstat(dotGitPath);
-        if (!dotGit.isFile() || dotGit.isSymbolicLink() || dotGit.size > 4096)
-          throw new Error("Unsafe gitdir link");
-        const link = (await NodeFSP.readFile(dotGitPath, "utf8")).trim();
-        if (!link.startsWith("gitdir: ")) throw new Error("Missing gitdir link");
-        const gitDirectory = await NodeFSP.realpath(path.resolve(worktreePath, link.slice(8)));
-        const commonDirectory = await NodeFSP.realpath(identity!.commonDirectory);
-        const relativeGitDirectory = path.relative(
-          path.join(commonDirectory, "worktrees"),
-          gitDirectory,
-        );
-        if (
-          relativeGitDirectory === "" ||
-          relativeGitDirectory.startsWith("..") ||
-          path.isAbsolute(relativeGitDirectory)
-        )
-          throw new Error("Foreign gitdir");
-        const gitDirectoryStat = await NodeFSP.lstat(gitDirectory);
-        const commonDirectoryStat = await NodeFSP.lstat(commonDirectory);
-        if (
-          !gitDirectoryStat.isDirectory() ||
-          gitDirectoryStat.isSymbolicLink() ||
-          !commonDirectoryStat.isDirectory() ||
-          commonDirectoryStat.isSymbolicLink() ||
-          String(commonDirectoryStat.dev) !== before!.commonDirectoryDevice ||
-          String(commonDirectoryStat.ino) !== before!.commonDirectoryInode
-        )
-          throw new Error("Replaced Git identity");
-        return {
-          path: worktreePath,
-          realPath,
-          device: String(stat.dev),
-          inode: String(stat.ino),
-          parentRealPath,
-          gitDirectory,
-          commonDirectory,
-          parentDevice: String(parentStat.dev),
-          parentInode: String(parentStat.ino),
-          dotGitDevice: String(dotGit.dev),
-          dotGitInode: String(dotGit.ino),
-          gitDirectoryDevice: String(gitDirectoryStat.dev),
-          gitDirectoryInode: String(gitDirectoryStat.ino),
-          commonDirectoryDevice: String(commonDirectoryStat.dev),
-          commonDirectoryInode: String(commonDirectoryStat.ino),
-        };
+      return yield* readLegacyMaterial({
+        worktreePath,
+        identity,
+        before,
+        ...(ownedClaim === undefined ? {} : { ownedClaim }),
       });
-      const registration = (yield* readRegistration())
-        .split("\0\0")
-        .map((record) => record.split("\0"));
-      const matching = registration.filter((record) => record.includes(`worktree ${worktreePath}`));
-      const headRef = (yield* readOwnerGit(worktreePath, ["symbolic-ref", "HEAD"])).trim();
-      const headOid = (yield* readOwnerGit(worktreePath, [
-        "rev-parse",
-        "--verify",
-        "HEAD^{commit}",
-      ])).trim();
-      const gitDirectory = (yield* readOwnerGit(worktreePath, [
-        "rev-parse",
-        "--absolute-git-dir",
-      ])).trim();
-      const commonDirectory = (yield* readOwnerGit(worktreePath, [
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-common-dir",
-      ])).trim();
-      if (
-        matching.length !== 1 ||
-        !matching[0]!.includes(`branch ${identity.targetRef}`) ||
-        !matching[0]!.includes(`HEAD ${identity.baseCommitOid}`) ||
-        matching[0]!.some((field) => field.startsWith("prunable") || field.startsWith("locked")) ||
-        headRef !== identity.targetRef ||
-        headOid !== identity.baseCommitOid ||
-        gitDirectory !== physical.gitDirectory ||
-        commonDirectory !== physical.commonDirectory
-      )
-        return yield* observationError();
-      const claim = { ...physical, registeredPath: worktreePath, headRef, headOid };
-      if (
-        ownedClaim !== undefined &&
-        (claim.path !== ownedClaim.path ||
-          claim.realPath !== ownedClaim.realPath ||
-          claim.device !== ownedClaim.device ||
-          claim.inode !== ownedClaim.inode ||
-          claim.parentRealPath !== ownedClaim.parentRealPath ||
-          claim.gitDirectory !== ownedClaim.gitDirectory ||
-          claim.commonDirectory !== ownedClaim.commonDirectory ||
-          claim.registeredPath !== ownedClaim.registeredPath ||
-          claim.headRef !== ownedClaim.headRef ||
-          claim.headOid !== ownedClaim.headOid ||
-          claim.parentDevice !== ownedClaim.parentDevice ||
-          claim.parentInode !== ownedClaim.parentInode ||
-          claim.dotGitDevice !== ownedClaim.dotGitDevice ||
-          claim.dotGitInode !== ownedClaim.dotGitInode ||
-          claim.gitDirectoryDevice !== ownedClaim.gitDirectoryDevice ||
-          claim.gitDirectoryInode !== ownedClaim.gitDirectoryInode ||
-          claim.commonDirectoryDevice !== ownedClaim.commonDirectoryDevice ||
-          claim.commonDirectoryInode !== ownedClaim.commonDirectoryInode)
-      )
-        return yield* observationError();
-      return claim;
     });
     const journalStep = <A>(
       kind: GitVcsDriver.LegacyWorktreePreparationStep["kind"],
@@ -3969,15 +4006,111 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ? input.newBranch
       : yield* resolveAvailableBranchName(input.cwd, input.newBranch);
 
-    yield* executeGit(
-      "GitVcsDriver.renameBranch",
-      input.cwd,
-      ["branch", "-m", "--", input.oldBranch, targetBranch],
-      {
-        timeoutMs: 10_000,
-        fallbackErrorDetail: "git branch rename failed",
-      },
-    );
+    const args = ["branch", "-m", "--", input.oldBranch, targetBranch];
+    const mutation = executeGit("GitVcsDriver.renameBranch", input.cwd, args, {
+      timeoutMs: 10_000,
+      fallbackErrorDetail: "git branch rename failed",
+    });
+    const journal = input.legacyPreparation;
+    if (journal === undefined) {
+      yield* mutation;
+    } else {
+      const refusal = () =>
+        new GitCommandError({
+          ...gitCommandContext({
+            operation: "GitVcsDriver.renameBranch.legacyOwnership",
+            cwd: input.cwd,
+            args,
+          }),
+          detail: "Legacy rename ownership, target absence or journal readback is unresolved.",
+        });
+      const oldRef = `refs/heads/${input.oldBranch}`;
+      const targetRef = `refs/heads/${targetBranch}`;
+      if (input.cwd !== journal.claim.path || oldRef !== journal.claim.headRef)
+        return yield* refusal();
+      const identity = {
+        commonDirectory: journal.claim.commonDirectory,
+        targetRef: oldRef,
+        baseCommitOid: journal.claim.headOid,
+      };
+      const material = () =>
+        readLegacyMaterial({
+          worktreePath: input.cwd,
+          identity,
+          before: journal.before,
+          ownedClaim: journal.claim,
+        });
+      const targetAbsent = Effect.gen(function* () {
+        const refs = yield* runGitStdoutWithOptions(
+          "GitVcsDriver.renameBranch.target",
+          input.cwd,
+          ["for-each-ref", "--format=%(refname)", targetRef],
+          { env: { GIT_OPTIONAL_LOCKS: "0" } },
+        );
+        const registrations = yield* runGitStdoutWithOptions(
+          "GitVcsDriver.renameBranch.target",
+          input.cwd,
+          ["worktree", "list", "--porcelain", "-z"],
+          { env: { GIT_OPTIONAL_LOCKS: "0" } },
+        );
+        const config = yield* executeGit(
+          "GitVcsDriver.renameBranch.target",
+          input.cwd,
+          [
+            "config",
+            "--null",
+            "--get-regexp",
+            `^${`branch.${targetBranch}.`.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`,
+          ],
+          { allowNonZeroExit: true, env: { GIT_OPTIONAL_LOCKS: "0" } },
+        );
+        if (
+          refs.trim() !== "" ||
+          registrations.split("\0").includes(`branch ${targetRef}`) ||
+          config.exitCode !== 1
+        )
+          return yield* refusal();
+      });
+      const claim = yield* material();
+      yield* targetAbsent;
+      const step: GitVcsDriver.LegacyBranchRenameStep = {
+        claim,
+        oldRef,
+        oldOid: claim.headOid,
+        targetRef,
+        exactName: input.exactName === true,
+        args,
+      };
+      yield* journal.beforeEffect(step).pipe(Effect.mapError(refusal));
+      yield* material();
+      yield* targetAbsent;
+      const result = yield* mutation.pipe(Effect.result);
+      const renamed = yield* readLegacyMaterial({
+        worktreePath: input.cwd,
+        identity: { ...identity, targetRef },
+        before: journal.before,
+        ownedClaim: { ...journal.claim, headRef: targetRef },
+      }).pipe(Effect.result);
+      const oldRefs = yield* runGitStdoutWithOptions(
+        "GitVcsDriver.renameBranch.outcome",
+        input.cwd,
+        ["for-each-ref", "--format=%(refname)", oldRef],
+        { env: { GIT_OPTIONAL_LOCKS: "0" } },
+      ).pipe(Effect.result);
+      const settled =
+        Result.isSuccess(result) &&
+        Result.isSuccess(renamed) &&
+        Result.isSuccess(oldRefs) &&
+        oldRefs.success.trim() === "";
+      yield* journal
+        .afterEffect(
+          step,
+          settled ? "settled_success" : "failed_or_unknown",
+          Result.isSuccess(renamed) ? renamed.success : undefined,
+        )
+        .pipe(Effect.mapError(refusal));
+      if (!settled) return yield* refusal();
+    }
 
     return { branch: targetBranch };
   });

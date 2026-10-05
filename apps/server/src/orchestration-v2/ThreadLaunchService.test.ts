@@ -742,6 +742,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
       "unknown",
       "intent_readback_lost",
       "outcome_readback_lost",
+      "rename_verified",
+      "rename_unknown",
+      "rename_intent_readback_lost",
+      "rename_outcome_readback_lost",
     ] as const)("legacy worktree journals before mock add and preserves C for %s", (scenario) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -753,9 +757,51 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
         const gitDirectory = `${commonDirectory}/worktrees/owned`;
         yield* fs.makeDirectory(gitDirectory, { recursive: true });
         let addCount = 0;
+        let renameCount = 0;
+        let renameStage = false;
+        const renameCase = scenario.startsWith("rename_");
+        const renameDone = yield* Deferred.make<void>();
         const oid = "a".repeat(40);
         const harness = makeHarness({
           workspaceRoot,
+          renameBranch: (input) =>
+            Effect.gen(function* () {
+              const hooks = input.legacyPreparation;
+              if (hooks === undefined)
+                return yield* Effect.die("Legacy rename must supply its exact journal");
+              renameStage = true;
+              const targetRef = `refs/heads/${input.newBranch}-1`;
+              const step = {
+                claim: hooks.claim,
+                oldRef: hooks.claim.headRef,
+                oldOid: hooks.claim.headOid,
+                targetRef,
+                exactName: input.exactName === true,
+                args: ["branch", "-m", "--", input.oldBranch, `${input.newBranch}-1`],
+              };
+              yield* hooks.beforeEffect(step);
+              renameCount++;
+              yield* hooks.afterEffect(
+                step,
+                scenario === "rename_unknown" ? "failed_or_unknown" : "settled_success",
+                scenario === "rename_unknown" ? undefined : { ...hooks.claim, headRef: targetRef },
+              );
+              return { branch: `${input.newBranch}-1` };
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new GitCommandError({
+                    operation: "fixture.rename",
+                    command: "git",
+                    cwd: input.cwd,
+                    detail:
+                      cause instanceof Error
+                        ? cause.message
+                        : "Synthetic rename owner is unresolved",
+                  }),
+              ),
+              Effect.ensuring(Deferred.succeed(renameDone, undefined)),
+            ),
           createWorktree: (input, options) =>
             Effect.gen(function* () {
               const hooks = options?.legacyPreparation;
@@ -876,7 +922,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
             workspaceStrategy: {
               type: "worktree" as const,
               baseRef: "main",
-              branch: "legacy/qualified",
+              ...(renameCase ? {} : { branch: "legacy/qualified" }),
               startFromOrigin: false,
             },
           };
@@ -885,14 +931,34 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
             ? vi
                 .spyOn(receipts, "getByCommandId")
                 .mockImplementation((id) =>
-                  id.endsWith(scenario === "intent_readback_lost" ? ":intent" : ":outcome")
+                  (!renameCase || renameStage) &&
+                  id.endsWith(scenario.includes("intent_readback_lost") ? ":intent" : ":outcome")
                     ? Effect.succeed(Option.none())
                     : actualReceipt(id),
                 )
             : undefined;
-          const result = yield* launch
-            .launch(input)
-            .pipe(Effect.result, Effect.ensuring(Effect.sync(() => lostRead?.mockRestore())));
+          const actualDispatch = threads.dispatch;
+          const progressFence = renameCase
+            ? vi
+                .spyOn(threads, "dispatch")
+                .mockImplementation((command) =>
+                  command.type === "prepared-run.progress" &&
+                  command.commandId === `${b}:progress:setup`
+                    ? Deferred.await(renameDone).pipe(Effect.andThen(actualDispatch(command)))
+                    : actualDispatch(command),
+                )
+            : undefined;
+          const result = yield* launch.launch(input).pipe(
+            Effect.timeout("5 seconds"),
+            Effect.result,
+            Effect.ensuring(Deferred.succeed(renameDone, undefined)),
+            Effect.ensuring(
+              Effect.sync(() => {
+                lostRead?.mockRestore();
+                progressFence?.mockRestore();
+              }),
+            ),
+          );
           const projection = yield* threads.getThreadProjection(base.threadId);
           const preparation = projection.runs[0]!.legacyPreparation;
           assert.isDefined(
@@ -913,6 +979,51 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
           assert.lengthOf(recorded, 1);
           assert.equal(recorded[0]!.event.type, "run.updated");
           const c = yield* receipts.getByCommandId(base.commandId);
+          if (renameCase) {
+            const renamed = preparation!.steps.find(
+              (entry) => entry.effect.kind === "branch.rename",
+            );
+            assert.isDefined(renamed);
+            assert.equal(
+              renamed?.effect.kind === "branch.rename" ? renamed.effect.input.targetRef : null,
+              "refs/heads/generated-branch-1",
+            );
+            assert.equal(addCount, 1);
+            assert.isTrue(yield* fs.exists(owned));
+            assert.isNull(projection.thread.deletedAt);
+            assert.isEmpty(harness.removeWorktree.mock.calls);
+            if (scenario === "rename_verified") {
+              assert.isTrue(Result.isSuccess(result));
+              assert.equal(renameCount, 1);
+              assert.equal(renamed?.state, "known_succeeded");
+              assert.isTrue(Option.isSome(c));
+              if (Option.isSome(c)) assert.equal(c.value.status, "accepted");
+              assert.equal(projection.thread.branch, "generated-branch-1");
+            } else {
+              assert.isTrue(Result.isFailure(result));
+              assert.isTrue(Option.isNone(c));
+              assert.equal(renameCount, scenario === "rename_intent_readback_lost" ? 0 : 1);
+              assert.equal(
+                renamed?.state,
+                scenario === "rename_unknown"
+                  ? "unknown"
+                  : scenario === "rename_intent_readback_lost"
+                    ? "intent"
+                    : "known_succeeded",
+              );
+              assert.isEmpty(
+                (yield* outbox.listByThreadId(base.threadId)).filter(
+                  (effect) => effect.request.type === "provider-turn.start",
+                ),
+              );
+              const priorRename = renameCount;
+              yield* launch.launch(input).pipe(Effect.result);
+              assert.equal(renameCount, priorRename);
+              assert.equal(addCount, 1);
+              assert.isTrue(Option.isNone(yield* receipts.getByCommandId(base.commandId)));
+            }
+            return;
+          }
           if (scenario === "verified") {
             assert.isTrue(Result.isSuccess(result));
             assert.isTrue(Option.isSome(c));
