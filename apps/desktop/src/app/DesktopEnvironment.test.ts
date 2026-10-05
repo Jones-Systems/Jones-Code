@@ -40,7 +40,7 @@ const makeEnvironment = (
   DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
 
 describe("DesktopEnvironment", () => {
-  for (const { channel, appVersion, isDevelopment, displayName, stageLabel } of [
+  it.effect.each([
     {
       channel: "development",
       appVersion: "0.0.22",
@@ -69,8 +69,9 @@ describe("DesktopEnvironment", () => {
       displayName: "Jones Code",
       stageLabel: "Nightly",
     },
-  ] as const) {
-    it.effect(`uses Jones Code branding for ${channel}`, () =>
+  ] as const)(
+    "uses Jones Code branding for $channel",
+    ({ appVersion, isDevelopment, displayName, stageLabel }) =>
       Effect.gen(function* () {
         const environment = yield* makeEnvironment(
           { appVersion, isPackaged: !isDevelopment },
@@ -89,8 +90,7 @@ describe("DesktopEnvironment", () => {
           isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
         );
       }),
-    );
-  }
+  );
 
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
