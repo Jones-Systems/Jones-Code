@@ -1,3 +1,8 @@
+import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
+import * as Fiber from "effect/Fiber";
+import * as Deferred from "effect/Deferred";
+import { OrchestrationV2ThreadStreamItem } from "@t3tools/contracts";
+import { subscribeOrchestrationV2Thread } from "../ws.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -156,7 +161,14 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
           const maintenance = ProjectionMaintenance.layer.pipe(
             Layer.provide(Layer.mergeAll(stores, database)),
           );
-          const layer = Layer.mergeAll(runtime, management, stores, database, maintenance);
+          const layer = Layer.mergeAll(
+            runtime,
+            management,
+            stores,
+            database,
+            maintenance,
+            OrchestrationEventStoreLive.pipe(Layer.provide(database)),
+          );
           const projectId = ProjectId.make(`known-failure:P:${scenario}`);
           const threadId = ThreadId.make(`known-failure:T:${scenario}`);
           const releaseCommandId = CommandId.make(`known-failure:C:${scenario}`);
@@ -660,12 +672,70 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     occurredAt: yield* DateTime.now,
                     payload: stale,
                   };
+                  const replayFrames = Array.from(
+                    yield* Stream.unwrap(
+                      subscribeOrchestrationV2Thread({
+                        threadId,
+                        afterSequence: failed.sequence,
+                        requestCompletionMarker: true,
+                      }),
+                    ).pipe(Stream.take(3), Stream.runCollect, Effect.timeout("5 seconds")),
+                  );
+                  assert.deepEqual(
+                    replayFrames.map((frame) => frame.kind),
+                    ["event", "event", "synchronized"],
+                  );
+                  assert.deepEqual(
+                    replayFrames
+                      .filter((frame) => frame.kind === "event")
+                      .map((frame) => frame.sequence),
+                    deletionEvents.map((event) => event.sequence),
+                  );
+                  const snapshotFrames = Array.from(
+                    yield* Stream.unwrap(
+                      subscribeOrchestrationV2Thread({
+                        threadId,
+                        requestCompletionMarker: true,
+                      }),
+                    ).pipe(Stream.take(2), Stream.runCollect, Effect.timeout("5 seconds")),
+                  );
+                  assert.deepEqual(
+                    snapshotFrames.map((frame) => frame.kind),
+                    ["snapshot", "synchronized"],
+                  );
+                  const ready = yield* Deferred.make<void>();
+                  const live = yield* Stream.unwrap(
+                    subscribeOrchestrationV2Thread({
+                      threadId,
+                      afterSequence: deletionEvents[1]!.sequence,
+                      requestCompletionMarker: true,
+                    }),
+                  ).pipe(
+                    Stream.tap((frame) =>
+                      frame.kind === "synchronized"
+                        ? Deferred.succeed(ready, undefined)
+                        : Effect.void,
+                    ),
+                    Stream.take(2),
+                    Stream.runCollect,
+                    Effect.timeout("5 seconds"),
+                    Effect.ensuring(Deferred.succeed(ready, undefined)),
+                    Effect.forkChild,
+                  );
+                  yield* Effect.race(
+                    Deferred.await(ready),
+                    Fiber.join(live).pipe(
+                      Effect.andThen(
+                        Effect.die("Live subscription ended before the ordinary event"),
+                      ),
+                    ),
+                  );
                   const staleMemory = ProjectionStore.applyToProjection(memory, ordinary);
                   assert.deepEqual(
                     staleMemory.runs[0]?.legacyPreparationFailureDecision,
                     acceptedRun.legacyPreparationFailureDecision,
                   );
-                  yield* sink.commitCommand({
+                  const staleCommit = yield* sink.commitCommand({
                     commandId: CommandId.make("known-failure:ordinary-stale"),
                     threadId,
                     commandType: "synthetic.stale-native-update",
@@ -673,6 +743,30 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     events: [ordinary],
                     effects: [],
                   });
+                  assert.deepEqual(
+                    (yield* threads.getThreadProjection(threadId)).runs[0]
+                      ?.legacyPreparationFailureDecision,
+                    acceptedRun.legacyPreparationFailureDecision,
+                  );
+                  const liveFrames = Array.from(yield* Fiber.join(live));
+                  assert.deepEqual(
+                    liveFrames.map((frame) => frame.kind),
+                    ["synchronized", "event"],
+                  );
+                  assert.equal(
+                    liveFrames[1]!.kind === "event" ? liveFrames[1]!.sequence : -1,
+                    staleCommit.receipt.resultSequence,
+                  );
+                  for (const frames of [replayFrames, snapshotFrames, liveFrames]) {
+                    const publicFrames = yield* Effect.forEach(frames, (frame) =>
+                      Schema.encodeEffect(OrchestrationV2ThreadStreamItem)(frame),
+                    );
+                    const publicJson = yield* encodeJson(publicFrames);
+                    assert.notInclude(publicJson, "legacyPreparationFailureDecision");
+                    assert.notInclude(publicJson, "legacyReleaseDecision");
+                    assert.notInclude(publicJson, "legacyPreparation");
+                    assert.notInclude(publicJson, receivingPolicy.payloadHash);
+                  }
                   assert.deepEqual(
                     (yield* threads.getThreadProjection(threadId)).runs[0]
                       ?.legacyPreparationFailureDecision,

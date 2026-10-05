@@ -60,6 +60,7 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
@@ -3365,153 +3366,166 @@ it.effect(
 it.layer(NodeServices.layer, { excludeTestServices: true })(
   "Legacy launcher never-invoked failure owner",
   (it) => {
-    it.effect(
-      "reports deleted only after actual no-control failure D and retains uploaded bytes",
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const workspaceRoot = yield* fs.makeTempDirectoryScoped({
-            prefix: "legacy-launch-failure-owner-",
-          });
-          const commonDirectory = `${workspaceRoot}/.git`;
-          yield* fs.makeDirectory(commonDirectory);
-          const commands: string[][] = [];
-          const spawner = ChildProcessSpawner.make((command) =>
-            Effect.gen(function* () {
-              if (!ChildProcess.isStandardCommand(command))
-                return yield* Effect.die("Unexpected synthetic pipeline");
-              const args = [...command.args];
-              commands.push(args);
-              if (args.includes("add"))
-                return yield* Effect.die("Never-invoked owner must not enter worktree mutation");
-              const stdout = args.includes("--git-common-dir")
-                ? `${commonDirectory}\n`
-                : args.includes("rev-parse")
-                  ? `${"a".repeat(40)}\n`
-                  : "";
-              return ChildProcessSpawner.makeHandle({
-                pid: ChildProcessSpawner.ProcessId(1),
-                exitCode: Effect.succeed(
-                  ChildProcessSpawner.ExitCode(args.includes("--get-regexp") ? 1 : 0),
-                ),
-                isRunning: Effect.succeed(false),
-                kill: () => Effect.void,
-                unref: Effect.succeed(Effect.void),
-                stdin: Sink.drain,
-                stdout: Stream.encodeText(Stream.make(stdout)),
-                stderr: Stream.empty,
-                all: Stream.empty,
-                getInputFd: () => Sink.drain,
-                getOutputFd: () => Stream.empty,
-              });
-            }),
-          );
-          const files = ServerConfig.layerTest(workspaceRoot, `${workspaceRoot}/state`);
-          const driver = yield* makeGitVcsDriverCore().pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            Effect.provide(files),
-          );
-          const manager = yield* TerminalManager.makeWithOptions({
-            logsDir: `${workspaceRoot}/terminal-logs`,
-            env: {},
-            shellResolver: () => "/bin/sh",
-            processTable: Effect.succeed([]),
-            processKillGraceMs: 1,
-            subprocessInspector: () =>
-              Effect.succeed({ hasRunningSubprocess: false, childCommand: null, processIds: [] }),
-            ptyAdapter: { spawn: () => Effect.die("No-control failure must never spawn") },
-          }).pipe(Effect.provide(ProcessRunner.layer));
-          const harness = makeHarness({
-            workspaceRoot,
-            terminalOwner: Layer.succeed(TerminalManager.TerminalManager, manager),
-            createWorktree: (input, options) => driver.createWorktree(input, options),
-          });
-          yield* Effect.gen(function* () {
-            const launch = yield* ThreadLaunch.ThreadLaunchService;
-            const sink = yield* EventSink.EventSinkV2;
-            const threads = yield* ThreadManagement.ThreadManagementService;
-            const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
-            const outbox = yield* EffectOutbox.EffectOutboxV2;
-            const projectCommandId = CommandId.make("legacy-launch-failure:project");
-            yield* sink.commitProjectCommand({
+    const qualifyFailure = (deletePersistenceFails: boolean) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workspaceRoot = yield* fs.makeTempDirectoryScoped({
+          prefix: "legacy-launch-failure-owner-",
+        });
+        const commonDirectory = `${workspaceRoot}/.git`;
+        yield* fs.makeDirectory(commonDirectory);
+        const commands: string[][] = [];
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            if (!ChildProcess.isStandardCommand(command))
+              return yield* Effect.die("Unexpected synthetic pipeline");
+            const args = [...command.args];
+            commands.push(args);
+            if (args.includes("add"))
+              return yield* Effect.die("Never-invoked owner must not enter worktree mutation");
+            const stdout = args.includes("--git-common-dir")
+              ? `${commonDirectory}\n`
+              : args.includes("rev-parse")
+                ? `${"a".repeat(40)}\n`
+                : "";
+            return ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Effect.succeed(
+                ChildProcessSpawner.ExitCode(args.includes("--get-regexp") ? 1 : 0),
+              ),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              unref: Effect.succeed(Effect.void),
+              stdin: Sink.drain,
+              stdout: Stream.encodeText(Stream.make(stdout)),
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            });
+          }),
+        );
+        const files = ServerConfig.layerTest(workspaceRoot, `${workspaceRoot}/state`);
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provide(files),
+        );
+        const manager = yield* TerminalManager.makeWithOptions({
+          logsDir: `${workspaceRoot}/terminal-logs`,
+          env: {},
+          shellResolver: () => "/bin/sh",
+          processTable: Effect.succeed([]),
+          processKillGraceMs: 1,
+          subprocessInspector: () =>
+            Effect.succeed({ hasRunningSubprocess: false, childCommand: null, processIds: [] }),
+          ptyAdapter: { spawn: () => Effect.die("No-control failure must never spawn") },
+        }).pipe(Effect.provide(ProcessRunner.layer));
+        const harness = makeHarness({
+          workspaceRoot,
+          terminalOwner: Layer.succeed(TerminalManager.TerminalManager, manager),
+          createWorktree: (input, options) => driver.createWorktree(input, options),
+        });
+        yield* Effect.gen(function* () {
+          const launch = yield* ThreadLaunch.ThreadLaunchService;
+          const sink = yield* EventSink.EventSinkV2;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          const projectCommandId = CommandId.make("legacy-launch-failure:project");
+          yield* sink.commitProjectCommand({
+            commandId: projectCommandId,
+            projectId,
+            commandType: "project.create",
+            acceptedAt: yield* DateTime.now,
+            event: {
+              eventId: EventId.make(`${projectCommandId}:event`),
+              aggregateKind: "project",
+              aggregateId: projectId,
+              occurredAt: project.createdAt,
               commandId: projectCommandId,
-              projectId,
-              commandType: "project.create",
-              acceptedAt: yield* DateTime.now,
-              event: {
-                eventId: EventId.make(`${projectCommandId}:event`),
-                aggregateKind: "project",
-                aggregateId: projectId,
-                occurredAt: project.createdAt,
-                commandId: projectCommandId,
-                causationEventId: null,
-                correlationId: null,
-                metadata: {},
-                type: "project.created",
-                payload: {
-                  projectId,
-                  title: project.title,
-                  workspaceRoot,
-                  defaultModelSelection: project.defaultModelSelection,
-                  scripts: [],
-                  createdAt: project.createdAt,
-                  updatedAt: project.updatedAt,
-                },
+              causationEventId: null,
+              correlationId: null,
+              metadata: {},
+              type: "project.created",
+              payload: {
+                projectId,
+                title: project.title,
+                workspaceRoot,
+                defaultModelSelection: project.defaultModelSelection,
+                scripts: [],
+                createdAt: project.createdAt,
+                updatedAt: project.updatedAt,
               },
-            });
-            const base = launchInput({
-              command: "legacy-launch-failure:C",
-              thread: "legacy-launch-failure:T",
-              message: "Retain original upload",
-            });
-            const createCommandId = legacyBootstrapCreateCommandId(base.threadId, base.commandId);
-            const policy = {
-              version: 1 as const,
-              createCommandId,
-              birthCommandId: CommandId.make(`${createCommandId}:initial-message`),
-              releaseCommandId: base.commandId,
-              projectId,
-              threadId: base.threadId,
-              messageId: base.initialMessage!.messageId,
-              payloadHash: "fixture-hash",
-              ownsNewThread: true,
-            };
-            const config = yield* ServerConfig.ServerConfig;
-            const attachmentId = createPendingAttachmentId();
-            const attachment = {
-              id: ChatAttachmentId.make(attachmentId),
-              type: "image" as const,
-              name: "original.png",
-              mimeType: "image/png",
-              sizeBytes: 8,
-            };
-            const uploaded = resolveAttachmentPath({
-              attachmentsDir: config.attachmentsDir,
-              attachment,
-            })!;
-            yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
-            const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-            yield* fs.writeFile(uploaded, bytes);
-            const result = yield* launch
-              .launch({
-                ...base,
-                commandId: createCommandId,
-                preparationReleaseCommandId: base.commandId,
-                legacyBootstrap: policy,
-                runSetupScript: false,
-                initialMessage: { ...base.initialMessage!, attachments: [attachment] },
-                workspaceStrategy: {
-                  type: "worktree",
-                  baseRef: "main",
-                  branch: "invalid?",
-                  startFromOrigin: false,
-                },
-              })
-              .pipe(Effect.result);
-            assert.isTrue(Result.isFailure(result));
-            if (Result.isFailure(result)) {
-              assert.isTrue(Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure));
-              if (Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure))
+            },
+          });
+          const base = launchInput({
+            command: "legacy-launch-failure:C",
+            thread: "legacy-launch-failure:T",
+            message: "Retain original upload",
+          });
+          const createCommandId = legacyBootstrapCreateCommandId(base.threadId, base.commandId);
+          const policy = {
+            version: 1 as const,
+            createCommandId,
+            birthCommandId: CommandId.make(`${createCommandId}:initial-message`),
+            releaseCommandId: base.commandId,
+            projectId,
+            threadId: base.threadId,
+            messageId: base.initialMessage!.messageId,
+            payloadHash: "fixture-hash",
+            ownsNewThread: true,
+          };
+          const config = yield* ServerConfig.ServerConfig;
+          const attachmentId = createPendingAttachmentId();
+          const attachment = {
+            id: ChatAttachmentId.make(attachmentId),
+            type: "image" as const,
+            name: "original.png",
+            mimeType: "image/png",
+            sizeBytes: 8,
+          };
+          const uploaded = resolveAttachmentPath({
+            attachmentsDir: config.attachmentsDir,
+            attachment,
+          })!;
+          yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+          const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+          yield* fs.writeFile(uploaded, bytes);
+          const sql = yield* SqlClient.SqlClient;
+          if (deletePersistenceFails)
+            yield* sql`CREATE TEMP TRIGGER fail_launcher_failure_D BEFORE INSERT ON orchestration_events
+                WHEN NEW.event_type = 'thread.deleted'
+                BEGIN SELECT RAISE(ABORT, 'synthetic launcher D persistence failure'); END`;
+          const result = yield* launch
+            .launch({
+              ...base,
+              commandId: createCommandId,
+              preparationReleaseCommandId: base.commandId,
+              legacyBootstrap: policy,
+              runSetupScript: false,
+              initialMessage: { ...base.initialMessage!, attachments: [attachment] },
+              workspaceStrategy: {
+                type: "worktree",
+                baseRef: "main",
+                branch: "invalid?",
+                startFromOrigin: false,
+              },
+            })
+            .pipe(
+              Effect.result,
+              Effect.ensuring(
+                deletePersistenceFails
+                  ? sql`DROP TRIGGER fail_launcher_failure_D`.pipe(Effect.orDie, Effect.asVoid)
+                  : Effect.void,
+              ),
+            );
+          assert.isTrue(Result.isFailure(result));
+          if (Result.isFailure(result)) {
+            assert.isTrue(Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure));
+            if (Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure)) {
+              if (deletePersistenceFails)
+                assert.isUndefined(result.failure.bootstrapThreadDisposition);
+              else
                 assert.equal(
                   result.failure.bootstrapThreadDisposition,
                   "deleted",
@@ -3524,35 +3538,64 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                   }),
                 );
             }
-            const projection = yield* threads.getThreadProjection(base.threadId);
+          }
+          const projection = yield* threads.getThreadProjection(base.threadId);
+          if (deletePersistenceFails) {
+            assert.isNull(projection.thread.deletedAt);
+            assert.equal(projection.runs[0]?.status, "failed");
+            assert.isDefined(projection.runs[0]?.legacyPreparationFailureDecision);
+            assert.isUndefined(projection.runs[0]?.legacyPreparationFailureDecision?.deletion);
+          } else {
             assert.isNotNull(projection.thread.deletedAt);
             assert.isDefined(projection.runs[0]?.legacyPreparationFailureDecision?.deletion);
-            assert.isTrue(Option.isNone(yield* receipts.getByCommandId(base.commandId)));
-            assert.isTrue(Option.isNone(yield* receipts.getProjectByCommandId(base.commandId)));
-            const d = yield* receipts.getByCommandId(
-              CommandId.make(`${createCommandId}:failure-delete`),
-            );
-            assert.isTrue(Option.isSome(d));
-            if (Option.isSome(d)) assert.equal(d.value.status, "accepted");
+          }
+          assert.isTrue(Option.isNone(yield* receipts.getByCommandId(base.commandId)));
+          assert.isTrue(Option.isNone(yield* receipts.getProjectByCommandId(base.commandId)));
+          const d = yield* receipts.getByCommandId(
+            CommandId.make(`${createCommandId}:failure-delete`),
+          );
+          if (deletePersistenceFails) {
+            assert.isFalse(Option.isSome(d) && d.value.status === "accepted");
             assert.deepEqual(
-              yield* outbox.listByCommandId(CommandId.make(`${createCommandId}:failure-delete`)),
+              Array.from(
+                yield* (yield* EventStore.EventStoreV2)
+                  .readByCommandId({
+                    commandId: CommandId.make(`${createCommandId}:failure-delete`),
+                  })
+                  .pipe(Stream.runCollect),
+              ),
               [],
             );
-            assert.deepEqual(yield* fs.readFile(uploaded), bytes);
-            assert.isFalse(commands.some((args) => args.includes("add")));
-            assert.isEmpty(harness.removeWorktree.mock.calls);
-            assert.isEmpty(harness.runSetup.mock.calls);
-            const effects = yield* outbox.listByThreadId(base.threadId);
-            assert.isFalse(
-              effects.some(
-                ({ request }) =>
-                  request.type === "provider-turn.start" ||
-                  request.type === "attachment.cleanup" ||
-                  request.type === "terminal.cleanup",
-              ),
-            );
-          }).pipe(Effect.provide(harness.layer.pipe(Layer.provideMerge(files))));
-        }),
+          } else {
+            assert.isTrue(Option.isSome(d));
+            if (Option.isSome(d)) assert.equal(d.value.status, "accepted");
+          }
+          assert.deepEqual(
+            yield* outbox.listByCommandId(CommandId.make(`${createCommandId}:failure-delete`)),
+            [],
+          );
+          assert.deepEqual(yield* fs.readFile(uploaded), bytes);
+          assert.isFalse(commands.some((args) => args.includes("add")));
+          assert.isEmpty(harness.removeWorktree.mock.calls);
+          assert.isEmpty(harness.runSetup.mock.calls);
+          const effects = yield* outbox.listByThreadId(base.threadId);
+          assert.isFalse(
+            effects.some(
+              ({ request }) =>
+                request.type === "provider-turn.start" ||
+                request.type === "attachment.cleanup" ||
+                request.type === "terminal.cleanup",
+            ),
+          );
+        }).pipe(Effect.provide(harness.layer.pipe(Layer.provideMerge(files))));
+      });
+    it.effect(
+      "reports deleted only after actual no-control failure D and retains uploaded bytes",
+      () => qualifyFailure(false),
+    );
+    it.effect(
+      "retains the durable failed shell and undefined disposition when actual SQL failure D cannot commit",
+      () => qualifyFailure(true),
     );
   },
 );
