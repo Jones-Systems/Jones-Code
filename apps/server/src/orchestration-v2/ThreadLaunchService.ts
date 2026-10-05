@@ -313,7 +313,8 @@ const make = Effect.gen(function* () {
       Option.isNone(birth) ||
       claim.value.status !== "accepted" ||
       birth.value.status !== "accepted" ||
-      claim.value.commandType !== "thread.create" ||
+      claim.value.commandType !==
+        (policy.ownsNewThread ? "thread.create" : "thread.metadata.update") ||
       birth.value.commandType !== "message.dispatch" ||
       claim.value.threadId !== threadId ||
       birth.value.threadId !== threadId ||
@@ -1879,14 +1880,164 @@ const make = Effect.gen(function* () {
           : failure,
       ),
     );
-    yield* prepare.pipe(
-      Effect.exit,
-      Effect.flatMap((result) =>
-        completion === undefined ? Effect.void : Deferred.done(completion, result),
-      ),
-      Effect.ensuring(releasePreparation(input.commandId)),
-      Effect.forkIn(preparationScope),
-    );
+    const preparation =
+      completion === undefined
+        ? prepare.pipe(Effect.exit, Effect.ensuring(releasePreparation(input.commandId)))
+        : Effect.uninterruptibleMask((restore) =>
+            restore(prepare).pipe(
+              Effect.exit,
+              Effect.flatMap((result) =>
+                Effect.gen(function* () {
+                  if (yield* Deferred.isDone(completion)) return;
+                  if (Exit.isSuccess(result) || !Cause.hasInterruptsOnly(result.cause)) {
+                    yield* Deferred.done(completion, result);
+                    return;
+                  }
+                  const cancellation = Effect.gen(function* () {
+                    const policy = input.legacyBootstrap;
+                    const unresolved = () =>
+                      mapError(
+                        input,
+                        "read-receipt",
+                        threadId,
+                      )(
+                        "Preparation cancellation has no exact failed-run readback; preserve its unresolved state.",
+                      );
+                    if (
+                      policy === undefined ||
+                      runId === null ||
+                      policy.createCommandId !== input.commandId
+                    )
+                      return yield* unresolved();
+                    const receivingPolicy = { ...policy, runId };
+                    const collect = (commandId: CommandId) =>
+                      eventSink.readByCommandId({ commandId }).pipe(
+                        Stream.runCollect,
+                        Effect.map((events) => Array.from(events)),
+                        Effect.mapError(mapError(input, "read-receipt", threadId)),
+                      );
+                    const c = yield* readReceipt(input, policy.releaseCommandId);
+                    const projectC = yield* receipts
+                      .getProjectByCommandId(policy.releaseCommandId)
+                      .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+                    if (
+                      Option.isSome(c) ||
+                      Option.isSome(projectC) ||
+                      (yield* collect(policy.releaseCommandId)).length !== 0
+                    )
+                      return yield* unresolved();
+                    const failureId = CommandId.make(`${input.commandId}:fail`);
+                    const failure = yield* readReceipt(input, failureId);
+                    const failed = yield* collect(failureId);
+                    const projection = yield* threads
+                      .getThreadProjection(threadId)
+                      .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+                    const run = projection.runs.find((entry) => entry.id === runId);
+                    const birth = legacyBootstrapBirth({
+                      policy: receivingPolicy,
+                      claimEvents: yield* collect(policy.createCommandId),
+                      birthEvents: yield* collect(policy.birthCommandId),
+                    });
+                    const claim = yield* readReceipt(input, policy.createCommandId);
+                    const message = yield* readReceipt(input, policy.birthCommandId);
+                    const failures = failed.filter((entry) => entry.event.type === "run.updated");
+                    const event = failures[0];
+                    const errors = failed.filter(
+                      (entry) =>
+                        entry.event.type === "turn-item.updated" &&
+                        entry.event.payload.type === "error",
+                    );
+                    const errorEvent = errors[0];
+                    const errorItem =
+                      errorEvent?.event.type === "turn-item.updated" &&
+                      errorEvent.event.payload.type === "error"
+                        ? errorEvent.event.payload
+                        : undefined;
+                    const currentError = projection.turnItems.find(
+                      (item) => item.id === errorItem?.id,
+                    );
+                    if (
+                      birth.type !== "valid" ||
+                      Option.isNone(claim) ||
+                      Option.isNone(message) ||
+                      claim.value.status !== "accepted" ||
+                      message.value.status !== "accepted" ||
+                      claim.value.commandType !== "thread.create" ||
+                      message.value.commandType !== "message.dispatch" ||
+                      claim.value.threadId !== threadId ||
+                      message.value.threadId !== threadId ||
+                      Option.isNone(failure) ||
+                      failure.value.status !== "accepted" ||
+                      failure.value.commandType !== "prepared-run.fail" ||
+                      failure.value.threadId !== threadId ||
+                      failures.length !== 1 ||
+                      errors.length !== 1 ||
+                      failed.some(
+                        (entry) =>
+                          entry.commandId !== failureId ||
+                          entry.event.threadId !== threadId ||
+                          entry.event.runId !== runId ||
+                          entry.sequence > failure.value.resultSequence,
+                      ) ||
+                      event?.commandId !== failureId ||
+                      event.event.type !== "run.updated" ||
+                      event.event.threadId !== threadId ||
+                      event.event.runId !== runId ||
+                      event.event.payload.id !== runId ||
+                      event.sequence !== failure.value.resultSequence ||
+                      event.event.payload.status !== "failed" ||
+                      errorItem?.threadId !== threadId ||
+                      errorItem.runId !== runId ||
+                      errorItem.status !== "failed" ||
+                      errorItem.failure.message !== failureDetail("Worktree setup cancelled.") ||
+                      errorItem.failure.code !== "workspace_preparation_failed" ||
+                      currentError?.type !== "error" ||
+                      canonicalLegacyPayload(currentError) !== canonicalLegacyPayload(errorItem) ||
+                      run?.status !== "failed" ||
+                      run.startedAt !== null ||
+                      run.legacyBootstrap === undefined ||
+                      !sameLegacyBootstrapPolicy(run.legacyBootstrap, receivingPolicy) ||
+                      event.event.payload.legacyBootstrap === undefined ||
+                      !sameLegacyBootstrapPolicy(
+                        event.event.payload.legacyBootstrap,
+                        receivingPolicy,
+                      ) ||
+                      canonicalLegacyPayload(event.event.payload.legacyPreparation) !==
+                        canonicalLegacyPayload(run.legacyPreparation) ||
+                      projection.thread.id !== threadId ||
+                      projection.thread.projectId !== input.projectId ||
+                      projection.thread.deletedAt !== null ||
+                      run.userMessageId !== policy.messageId ||
+                      run.legacyPreparation === undefined ||
+                      run.legacyPreparation.claimEventId !== birth.claimEventId ||
+                      run.legacyPreparation.claimReceiptSequence !== claim.value.resultSequence ||
+                      run.legacyPreparation.birthEventId !== birth.birthEventId ||
+                      run.legacyPreparation.birthReceiptSequence !== message.value.resultSequence
+                    )
+                      return yield* unresolved();
+                    return mapError(
+                      input,
+                      "run-setup-script",
+                      threadId,
+                    )("Worktree setup cancelled.");
+                  });
+                  const error = yield* cancellation.pipe(
+                    Effect.catchCause((cause) => {
+                      const failure = Cause.squash(cause);
+                      return Effect.succeed(
+                        isThreadLaunchError(failure)
+                          ? failure
+                          : mapError(input, "read-receipt", threadId)(failure),
+                      );
+                    }),
+                  );
+                  yield* Deferred.fail(completion, error);
+                }),
+              ),
+              Effect.ensuring(releasePreparation(input.commandId)),
+            ),
+          );
+    yield* preparation.pipe(Effect.forkIn(preparationScope));
   });
 
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
