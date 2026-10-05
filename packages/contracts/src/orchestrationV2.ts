@@ -1,3 +1,4 @@
+import { NativeCreationObservation, NativeCreationRejectionCode } from "./nativeCreation.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -532,7 +533,7 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("worktree"),
-    baseRef: TrimmedNonEmptyString,
+    baseRef: Schema.optional(TrimmedNonEmptyString),
     branch: Schema.optional(TrimmedNonEmptyString),
     startFromOrigin: Schema.optional(Schema.Boolean),
   }),
@@ -557,6 +558,8 @@ export const OrchestrationV2Run = Schema.Struct({
   queuePosition: Schema.optional(Schema.NullOr(PositiveInt)),
   /** Restart recovery holds the queue until the user explicitly resumes it. */
   queueHeld: Schema.optional(Schema.Boolean),
+  /** Recorded queue admission; absent or false keeps separate-turn delivery. */
+  queuedToolBoundaryEligible: Schema.optional(Schema.Boolean),
   requestedAt: Schema.DateTimeUtc,
   startedAt: Schema.NullOr(Schema.DateTimeUtc),
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
@@ -2736,6 +2739,8 @@ export const OrchestrationV2Command = Schema.Union([
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
     /** Resolve untargeted delivery against the server's serialized thread state. */
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
+    /** Explicitly opt an owner follow-up into automatic tool-boundary delivery if queued. */
+    queuedToolBoundaryEligible: Schema.optional(Schema.Boolean),
     delegatedCompletion: Schema.optional(
       Schema.Struct({
         parentRunId: RunId,
@@ -3051,6 +3056,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
 export type OrchestrationV2ThreadLaunchInput = typeof OrchestrationV2ThreadLaunchInput.Type;
 
 export const OrchestrationV2ThreadLaunchResult = Schema.Struct({
+  creation: Schema.optionalKey(NativeCreationObservation),
   threadId: ThreadId,
   projection: OrchestrationV2ThreadProjection,
   resumed: Schema.Boolean,
@@ -3220,6 +3226,7 @@ export type OrchestrationV2ThreadStreamItem = typeof OrchestrationV2ThreadStream
 export class OrchestrationV2DispatchCommandError extends Schema.TaggedError<OrchestrationV2DispatchCommandError>()(
   "OrchestrationV2DispatchCommandError",
   {
+    creationRejectionCode: Schema.optionalKey(NativeCreationRejectionCode),
     commandId: CommandId,
     commandType: Schema.String,
     message: Schema.String,

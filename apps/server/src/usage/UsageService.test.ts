@@ -37,10 +37,15 @@ const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unkno
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeUnknownJsonString = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 
-function claudeLine(id: number, outputTokens: number, model = "claude-fable-5"): string {
+function claudeLine(
+  id: number,
+  outputTokens: number,
+  model = "claude-fable-5",
+  timestamp = "2026-08-01T10:00:00Z",
+): string {
   return `${JSON.stringify({
     type: "assistant",
-    timestamp: "2026-08-01T10:00:00Z",
+    timestamp,
     requestId: `req_${id}`,
     sessionId: "session-1",
     message: {
@@ -158,6 +163,74 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live("honors exact time bounds for a multi-day daily usage window", () =>
+    Effect.gen(function* () {
+      const { home, settings } = yield* setup;
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          NodePath.join(home, "claude", "projects", "proj", "session.jsonl"),
+          [
+            claudeLine(1, 5, "claude-fable-5", "2026-08-01T09:59:59.999Z"),
+            claudeLine(2, 7, "claude-fable-5", "2026-08-01T10:00:00.000Z"),
+            claudeLine(3, 11, "claude-fable-5", "2026-08-02T09:59:59.999Z"),
+            claudeLine(4, 17, "claude-fable-5", "2026-08-02T21:59:59.999Z"),
+            claudeLine(5, 13, "claude-fable-5", "2026-08-02T22:00:00.000Z"),
+          ].join(""),
+        ),
+      );
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({ prefix: "usage-service-exact-daily-window", home, settings }),
+        ),
+      );
+      const summary = yield* service.readSummary({
+        timeZone: "UTC",
+        sinceDay: UsageDay.make("2026-08-01"),
+        untilDay: UsageDay.make("2026-08-02"),
+        resolution: "exactDay",
+        sinceTime: "2026-08-01T10:00:00.000Z",
+        untilTime: "2026-08-02T22:00:00.000Z",
+      });
+
+      assert.strictEqual(totalOutputTokens(summary), 35);
+      assert.deepEqual(
+        summary.buckets.map((bucket) => [bucket.day, bucket.hourStart]),
+        [
+          ["2026-08-01", undefined],
+          ["2026-08-02", undefined],
+        ],
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("rejects exact usage windows whose end does not follow their start", () =>
+    Effect.gen(function* () {
+      const { home, settings } = yield* setup;
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({ prefix: "usage-service-invalid-exact-window", home, settings }),
+        ),
+      );
+      const reason = yield* service
+        .readSummary({
+          timeZone: "UTC",
+          sinceDay: UsageDay.make("2026-08-01"),
+          untilDay: UsageDay.make("2026-08-02"),
+          resolution: "exactDay",
+          sinceTime: "2026-08-02T10:00:00.000Z",
+          untilTime: "2026-08-01T10:00:00.000Z",
+        })
+        .pipe(
+          Effect.match({
+            onFailure: (error) => error.reason,
+            onSuccess: () => null,
+          }),
+        );
+
+      assert.strictEqual(reason, "invalidWindow");
+    }).pipe(Effect.scoped),
+  );
+
   it.live.each([
     { explicitDefault: true, label: "explicit" },
     { explicitDefault: false, label: "legacy" },

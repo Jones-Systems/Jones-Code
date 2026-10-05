@@ -9,8 +9,43 @@ import {
   normalizeGitRemoteUrl,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
   parseOriginUrlFromGitConfig,
+  resolveDefaultWorktreeBaseBranch,
   WORKTREE_BRANCH_PREFIX,
 } from "./git.ts";
+
+describe("resolveDefaultWorktreeBaseBranch", () => {
+  const current = { name: "feature/work", current: true, isDefault: false, isRemote: false };
+
+  it.each(["main", "develop", "origin/release/stable"])(
+    "prefers default %s over the current branch",
+    (name) => {
+      expect(
+        resolveDefaultWorktreeBaseBranch([
+          current,
+          { name, current: false, isDefault: true, isRemote: name.startsWith("origin/") },
+        ]),
+      ).toBe(name);
+    },
+  );
+
+  it("uses the current local branch for a local-only repository", () => {
+    expect(resolveDefaultWorktreeBaseBranch([current])).toBe("feature/work");
+  });
+
+  it("uses a known default in a detached repository", () => {
+    expect(
+      resolveDefaultWorktreeBaseBranch([
+        { name: "origin/develop", current: false, isDefault: true, isRemote: true },
+      ]),
+    ).toBe("origin/develop");
+  });
+
+  it("does not invent a base for empty or detached local-only repositories", () => {
+    expect(resolveDefaultWorktreeBaseBranch([])).toBeNull();
+    expect(resolveDefaultWorktreeBaseBranch([{ ...current, current: false }])).toBeNull();
+    expect(resolveDefaultWorktreeBaseBranch([{ ...current, isRemote: true }])).toBeNull();
+  });
+});
 
 describe("normalizeGitRemoteUrl", () => {
   it("canonicalizes equivalent GitHub remotes across protocol variants", () => {

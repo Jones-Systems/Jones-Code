@@ -19,6 +19,18 @@ import {
 } from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("reads CI status under exactly orchestration read permission", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.pullRequestsCiStatus)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
+  it("reads saved accounting under orchestration read permission", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverReadTokenAccounting)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });
@@ -153,6 +165,67 @@ describe("RPC scope middleware", () => {
         requiredScope: AuthOrchestrationOperateScope,
       });
       expect(handled).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("CI status RPC authorization", () => {
+  const group = WsRpcGroup.omit(
+    ...[...WsRpcGroup.requests.keys()].filter(
+      (
+        tag,
+      ): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof WS_METHODS.pullRequestsCiStatus> =>
+        tag !== WS_METHODS.pullRequestsCiStatus,
+    ),
+  );
+
+  it.effect("dispatches CI reads only with the declared read scope", () =>
+    Effect.gen(function* () {
+      const result = {
+        host: "github.com",
+        organization: "Jones-Systems",
+        accountId: "fixture-account",
+        observedAt: "2026-10-04T16:00:00Z",
+        repositories: [],
+        scopeTruncated: false,
+        jobs: { state: "available" as const, reasons: [], items: [] },
+        workflows: { state: "available" as const, reasons: [], items: [] },
+        runners: { state: "available" as const, reasons: [], items: [] },
+      };
+      for (const scopes of [
+        [],
+        [AuthOrchestrationOperateScope],
+        [AuthOrchestrationReadScope],
+      ] as const) {
+        let dispatched = 0;
+        const client = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              group.toLayerHandler(WS_METHODS.pullRequestsCiStatus, () =>
+                Effect.sync(() => {
+                  dispatched++;
+                  return result;
+                }),
+              ),
+              rpcScopeAuthorizationLayer(scopes),
+            ),
+          ),
+        );
+        const read = client[WS_METHODS.pullRequestsCiStatus]({
+          host: "github.com",
+          organization: "Jones-Systems",
+        });
+        if (scopes[0] === AuthOrchestrationReadScope) {
+          expect(yield* read).toEqual(result);
+          expect(dispatched).toBe(1);
+        } else {
+          expect(yield* read.pipe(Effect.flip)).toMatchObject({
+            _tag: "EnvironmentAuthorizationError",
+            requiredScope: AuthOrchestrationReadScope,
+          });
+          expect(dispatched).toBe(0);
+        }
+      }
     }).pipe(Effect.scoped),
   );
 });
