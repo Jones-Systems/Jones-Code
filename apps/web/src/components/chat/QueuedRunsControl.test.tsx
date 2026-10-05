@@ -1,9 +1,13 @@
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { act, createRef, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { create, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   projection: null as unknown,
   workflow: null as unknown,
+  promote: vi.fn(async (_input: unknown): Promise<void> => undefined),
 }));
 
 vi.mock("@t3tools/client-runtime/environment", () => ({
@@ -27,7 +31,8 @@ vi.mock("../../state/threads", () => ({
 }));
 
 vi.mock("../../state/use-atom-command", () => ({
-  useAtomCommand: () => async () => undefined,
+  useAtomCommand: (command: symbol) =>
+    command.description === "promoteQueuedRun" ? state.promote : async () => undefined,
 }));
 
 vi.mock("../../assets/assetUrls", () => ({
@@ -35,7 +40,24 @@ vi.mock("../../assets/assetUrls", () => ({
     resources.map((resource) => `https://assets.test/${resource.attachmentId}`),
 }));
 
-import { QueuedRunsControl } from "./QueuedRunsControl";
+// Keep the control's queue and lock lifecycle while replacing DOM positioning and measurement.
+vi.mock("../ui/tooltip", () => ({
+  Tooltip: ({ children }: ComponentProps<"div">) => <>{children}</>,
+  TooltipTrigger: ({ render, children }: { render: ReactNode; children: ReactNode }) => (
+    <>
+      {render}
+      {children}
+    </>
+  ),
+  TooltipPopup: ({ children }: ComponentProps<"div">) => <>{children}</>,
+}));
+
+vi.mock("../ui/scroll-area", () => ({
+  ScrollArea: ({ children }: ComponentProps<"div">) => <div>{children}</div>,
+}));
+
+import { QueuedRunsControl, type QueuedRunsControlHandle } from "./QueuedRunsControl";
+import { handleComposerEnter } from "./composerSubmission";
 
 describe("QueuedRunsControl automatic completion delivery", () => {
   it("does not render a queue control when only hidden delivery remains", () => {
@@ -167,5 +189,137 @@ describe("QueuedRunsControl attachments and edit mode", () => {
     );
 
     expect(html).toContain("Queued with a screenshot");
+  });
+});
+
+describe("QueuedRunsControl empty composer Enter", () => {
+  it("uses one queue item in order and shares the send lock with the arrow action", async () => {
+    const ref = createRef<QueuedRunsControlHandle>();
+    const onSubmit = vi.fn();
+    let finishSend: (() => void) | undefined;
+    state.promote.mockClear();
+    state.promote.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishSend = resolve;
+        }),
+    );
+    const first = {
+      run: { id: "run:first", userMessageId: "message:first" },
+      text: "first",
+      attachments: [],
+    };
+    const second = {
+      run: { id: "run:second", userMessageId: "message:second" },
+      text: "second",
+      attachments: [],
+    };
+    const workflow = {
+      activeRun: { id: "run:active" },
+      canPromoteToSteer: true,
+      canReorder: true,
+      queuedRuns: [second, first],
+    };
+    state.workflow = workflow;
+    state.projection = { projection: { messages: [] } };
+    const control = () => (
+      <QueuedRunsControl
+        ref={ref}
+        environmentId={"environment:test" as never}
+        optimisticMessages={[]}
+        threadId={"thread:test" as never}
+        editingRunId={null}
+        onEditQueuedRun={() => undefined}
+        onCancelEdit={() => undefined}
+      />
+    );
+    const enter = (repeat = false) =>
+      handleComposerEnter({
+        event: {
+          key: "Enter",
+          shiftKey: false,
+          altKey: false,
+          metaKey: false,
+          ctrlKey: false,
+          isComposing: false,
+          keyCode: 13,
+          repeat,
+        },
+        intent: {
+          keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+          platform: "Linux",
+          isMobileViewport: false,
+          isDraftThread: false,
+          isRunning: true,
+          prompt: "",
+        },
+        hasDraftContext: false,
+        queueActionDisabled: false,
+        onSteerNextQueuedMessage: () => ref.current?.steerNext(false) ?? false,
+        onSubmit,
+      });
+    let renderer: ReactTestRenderer | undefined;
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    try {
+      await act(async () => {
+        renderer = create(control());
+      });
+      const rowAction = renderer!.root
+        .findAllByType("button")
+        .find((button) => button.children.includes("Steer"))!;
+      expect(rowAction).toBeDefined();
+      // Enter and a row click race before React can publish its busy state.
+      await act(async () => {
+        expect(enter()).toBe(true);
+        rowAction.props.onClick();
+        expect(enter()).toBe(true);
+      });
+      expect(state.promote).toHaveBeenCalledExactlyOnceWith({
+        environmentId: "environment:test",
+        input: { threadId: "thread:test", queuedRunId: "run:second", targetRunId: "run:active" },
+      });
+      expect(onSubmit).not.toHaveBeenCalled();
+      await act(async () => {
+        finishSend!();
+      });
+      state.workflow = { ...workflow, queuedRuns: [first] };
+      state.projection = { projection: { messages: [] } };
+      await act(async () => {
+        renderer!.update(control());
+      });
+      await act(async () => {
+        expect(enter(true)).toBe(true);
+      });
+      expect(state.promote).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        expect(enter()).toBe(true);
+      });
+      expect(state.promote).toHaveBeenLastCalledWith({
+        environmentId: "environment:test",
+        input: { threadId: "thread:test", queuedRunId: "run:first", targetRunId: "run:active" },
+      });
+      expect(state.promote).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        finishSend!();
+      });
+      state.workflow = { ...workflow, queuedRuns: [] };
+      state.projection = { projection: { messages: [] } };
+      await act(async () => {
+        renderer!.update(control());
+      });
+      expect(enter()).toBe(true);
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith("foreground");
+      expect(state.promote).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => {
+        finishSend?.();
+        renderer?.unmount();
+      });
+      state.promote.mockReset();
+      state.promote.mockImplementation(async () => undefined);
+      state.projection = null;
+      state.workflow = null;
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -1,3 +1,4 @@
+import { resolveComposerPickerModelSelection } from "./ChatView.logic";
 import { findRecordedWorktreeSetup, resolveVisibleWorktreeSetup } from "./ChatView.logic";
 import {
   recallCheckoutIsRepo,
@@ -2199,5 +2200,35 @@ describe("resolveFirstSendWorktreePreparation", () => {
     expect(
       resolveFirstSendWorktreePreparation({ ...automaticInput, worktreePath: "/repo/worktree" }),
     ).toBeUndefined();
+  });
+});
+
+describe("composer picker effort inheritance", () => {
+  const instanceId = ProviderInstanceId.make("codex-work");
+  const rememberedOptions = [
+    { id: "reasoningEffort", value: "high" },
+    { id: "serviceTier", value: "fast" },
+  ];
+  it("drops historical effort on a model switch and preserves other remembered options", () => {
+    expect(
+      resolveComposerPickerModelSelection({
+        instanceId,
+        model: "gpt-5.4",
+        rememberedOptions,
+        currentSelection: { instanceId, model: "gpt-6", options: rememberedOptions },
+      }).options,
+    ).toEqual([{ id: "serviceTier", value: "fast" }]);
+  });
+  it("keeps the same model's current explicit effort and leaves inherited effort absent", () => {
+    for (const options of [undefined, [{ id: "reasoningEffort", value: "low" }]]) {
+      expect(
+        resolveComposerPickerModelSelection({
+          instanceId,
+          model: "gpt-5.4",
+          rememberedOptions,
+          currentSelection: { instanceId, model: "gpt-5.4", ...(options ? { options } : {}) },
+        }).options,
+      ).toEqual([{ id: "serviceTier", value: "fast" }, ...(options ?? [])]);
+    }
   });
 });

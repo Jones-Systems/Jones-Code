@@ -46,6 +46,7 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { providerModelKey, sortProviderModelItems } from "../../modelOrdering";
+import { matchesProviderModelLock } from "./ProviderInstanceShortcuts";
 
 type ModelPickerItem = {
   slug: string;
@@ -242,25 +243,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       }),
     ) &&
     !isProviderInstancePickerReady(activeEntry);
-  const activeInstanceNeedsSetup =
-    props.onOpenProviderSetup !== undefined &&
-    activeEntry !== undefined &&
-    shouldOfferModelPickerSetup(
-      activeEntry,
-      modelOptionsByInstance.get(props.activeInstanceId) ?? [],
-    );
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
-    () => {
-      if (
-        props.lockedProvider !== null ||
-        activeInstanceHasSelectableUnavailableModel ||
-        activeInstanceNeedsSetup
-      ) {
-        // Keep the active instance visible when it is locked or needs setup.
-        return props.activeInstanceId;
-      }
-      return favorites.length > 0 ? "favorites" : props.activeInstanceId;
-    },
+    "favorites",
   );
   const [expandedLegacyInstances, setExpandedLegacyInstances] = useState(
     () =>
@@ -323,13 +307,17 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     [instanceEntries],
   );
   const matchesLockedProvider = useCallback(
-    (entry: Pick<ProviderInstanceEntry, "driverKind" | "continuationGroupKey">): boolean => {
-      if (props.lockedProvider === null) return true;
-      if (entry.driverKind !== props.lockedProvider) return false;
-      if (!props.lockedContinuationGroupKey) return true;
-      return entry.continuationGroupKey === props.lockedContinuationGroupKey;
+    (
+      entry: Pick<ProviderInstanceEntry, "instanceId" | "driverKind" | "continuationGroupKey">,
+    ): boolean => {
+      return matchesProviderModelLock(
+        entry,
+        props.lockedProvider,
+        props.lockedContinuationGroupKey,
+        props.activeInstanceId,
+      );
     },
-    [props.lockedContinuationGroupKey, props.lockedProvider],
+    [props.activeInstanceId, props.lockedContinuationGroupKey, props.lockedProvider],
   );
 
   const selectableUnavailableInstanceIds = useMemo(() => {

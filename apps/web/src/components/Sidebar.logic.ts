@@ -1,4 +1,7 @@
-import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import {
+  threadRuntimeIsActive,
+  resolveThreadWorkingStartedAt,
+} from "@t3tools/client-runtime/state/models";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
@@ -26,6 +29,41 @@ import type { SidebarThreadSummary, Thread } from "../types";
 import { cn } from "../lib/utils";
 import { isLatestRunSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
+
+export function filterSidebarOperatingThreads<T>(
+  threads: ReadonlyArray<T>,
+  activeOnly: boolean,
+  isOperating: (thread: T) => boolean,
+): ReadonlyArray<T> {
+  return activeOnly ? threads.filter(isOperating) : threads;
+}
+
+export function isSidebarThreadOperating(
+  thread: Pick<
+    SidebarThreadSummary,
+    | "archivedAt"
+    | "runtime"
+    | "latestRun"
+    | "interactionMode"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "hasActionableProposedPlan"
+    | "pendingBackgroundTasks"
+  >,
+): boolean {
+  if (thread.archivedAt !== null) return false;
+  // The projected roster is independent activity, even while the foreground waits.
+  if (thread.pendingBackgroundTasks.length > 0) return true;
+  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
+  if (
+    thread.interactionMode === "plan" &&
+    thread.hasActionableProposedPlan &&
+    isLatestRunSettled(thread.latestRun, thread.runtime)
+  ) {
+    return false;
+  }
+  return threadRuntimeIsActive(thread.runtime);
+}
 
 export function shouldNavigateAfterThreadPark(input: {
   readonly threadKey: string;
