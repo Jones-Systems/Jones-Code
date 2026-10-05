@@ -557,6 +557,8 @@ export const OrchestrationV2Run = Schema.Struct({
   queuePosition: Schema.optional(Schema.NullOr(PositiveInt)),
   /** Restart recovery holds the queue until the user explicitly resumes it. */
   queueHeld: Schema.optional(Schema.Boolean),
+  /** Recorded queue admission; absent or false keeps separate-turn delivery. */
+  queuedToolBoundaryEligible: Schema.optional(Schema.Boolean),
   requestedAt: Schema.DateTimeUtc,
   startedAt: Schema.NullOr(Schema.DateTimeUtc),
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
@@ -2736,6 +2738,8 @@ export const OrchestrationV2Command = Schema.Union([
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
     /** Resolve untargeted delivery against the server's serialized thread state. */
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
+    /** Explicitly opt an owner follow-up into automatic tool-boundary delivery if queued. */
+    queuedToolBoundaryEligible: Schema.optional(Schema.Boolean),
     delegatedCompletion: Schema.optional(
       Schema.Struct({
         parentRunId: RunId,

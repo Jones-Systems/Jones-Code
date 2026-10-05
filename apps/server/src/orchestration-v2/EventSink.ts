@@ -193,6 +193,7 @@ export interface EventSinkV2Shape {
         readonly sequence: number;
         readonly runtimeMode: string;
         readonly interactionMode: string;
+        readonly queuedToolBoundaryEligible: boolean;
       } | null
     >;
   }) => Effect.Effect<boolean, EventSinkV2Error>;
@@ -879,7 +880,8 @@ const baseLayer: Layer.Layer<
           const births = input.births ?? new Map();
           for (const runId of [input.activeRunId, input.queuedRunId]) {
             if (births.has(runId)) continue;
-            const rows = yield* sql<{ sequence: number }>`SELECT sequence FROM orchestration_events
+            const rows = yield* sql<{ sequence: number; eligible: number }>`SELECT sequence,
+              CASE WHEN json_type(payload_json, '$.queuedToolBoundaryEligible') = 'true' THEN 1 ELSE 0 END AS eligible FROM orchestration_events
             WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
               AND event_type = 'run.created' AND json_extract(payload_json, '$.id') = ${runId}
             ORDER BY sequence DESC LIMIT 1`;
@@ -898,6 +900,7 @@ const baseLayer: Layer.Layer<
                 ? null
                 : {
                     sequence: rows[0].sequence,
+                    queuedToolBoundaryEligible: rows[0].eligible === 1,
                     runtimeMode: settings[0].runtime_mode,
                     interactionMode: settings[0].interaction_mode,
                   },
@@ -907,6 +910,7 @@ const baseLayer: Layer.Layer<
           const active = births.get(input.activeRunId);
           if (
             queued == null ||
+            queued.queuedToolBoundaryEligible !== true ||
             active == null ||
             queued.sequence >= input.boundary.sequence ||
             queued.runtimeMode !== input.runtimeMode ||

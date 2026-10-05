@@ -3728,3 +3728,81 @@ it.effect("publishes live events in commit order across concurrent writers", () 
     }).pipe(Effect.provide(eventSinkLayer));
   }).pipe(Effect.provide(databaseLayer)),
 );
+
+it.effect.each([undefined, false, true] as const)(
+  "replays committed queue birth eligibility %s as a Boolean",
+  (eligibility) =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const store = yield* EventStore.EventStoreV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const thread = makeThread(ThreadId.make(`thread:queue-boolean-${eligibility}`), now);
+      const run: OrchestrationV2Run = {
+        id: RunId.make(`run:queue-boolean-${eligibility}`),
+        threadId: thread.id,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make("queue-boolean-message"),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "queued",
+        requestedAt: now,
+        startedAt: null,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: `queue-boolean-thread-${eligibility}`, thread, now }),
+          {
+            id: EventId.make(`queue-boolean-birth-${eligibility}`),
+            type: "run.created",
+            threadId: thread.id,
+            runId: run.id,
+            occurredAt: now,
+            payload: {
+              ...run,
+              ...(eligibility === undefined ? {} : { queuedToolBoundaryEligible: eligibility }),
+            },
+          },
+        ],
+      });
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`queue-boolean-stale-${eligibility}`),
+            type: "run.updated",
+            threadId: thread.id,
+            runId: run.id,
+            occurredAt: now,
+            payload: run,
+          },
+        ],
+      });
+      assert.strictEqual(
+        (yield* projections.getThreadProjection(thread.id)).runs[0]!.queuedToolBoundaryEligible,
+        eligibility,
+      );
+      const rows = yield* sql<{
+        kind: string | null;
+      }>`SELECT json_type(payload_json,'$.queuedToolBoundaryEligible') AS kind FROM orchestration_v2_projection_runs WHERE run_id=${run.id}`;
+      assert.strictEqual(
+        rows[0]!.kind,
+        eligibility === undefined ? null : eligibility ? "true" : "false",
+      );
+      const events = yield* store.read({ threadId: thread.id }).pipe(Stream.runCollect);
+      yield* Effect.gen(function* () {
+        const memory = yield* ProjectionStore.ProjectionStoreV2;
+        for (const event of events) yield* memory.apply(event.event);
+        assert.strictEqual(
+          (yield* memory.getThreadProjection(thread.id)).runs[0]!.queuedToolBoundaryEligible,
+          eligibility,
+        );
+      }).pipe(Effect.provide(ProjectionStore.layerMemory));
+    }).pipe(Effect.provide(TestLayer)),
+);

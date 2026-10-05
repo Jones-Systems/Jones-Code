@@ -14,6 +14,16 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("keeps queued tool delivery unsupported unless explicitly advertised", () => {
+    expect(decodeDescriptor(descriptor).capabilities.queuedToolBoundaryDelivery).toBeUndefined();
+    for (const enabled of [true, false])
+      expect(
+        decodeDescriptor({
+          ...descriptor,
+          capabilities: { ...descriptor.capabilities, queuedToolBoundaryDelivery: enabled },
+        }).capabilities.queuedToolBoundaryDelivery,
+      ).toBe(enabled);
+  });
   it("requires an advertised required-worktree bootstrap capability", () => {
     expect(decodeDescriptor(descriptor).capabilities.requiredWorktreeBootstrap).toBeUndefined();
     expect(

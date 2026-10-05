@@ -156,9 +156,10 @@ On web and desktop, the composer shows **Interrupt** while the agent is working 
 empty. Adding text or attachments replaces it with a steer arrow. Click it to send a message into
 the active turn, or press `Enter` on desktop. Hold `Cmd` on macOS or `Ctrl` on Windows and Linux to
 switch the button to a queue icon. Click while holding that key, or press `Cmd+Enter` or
-`Ctrl+Enter` on desktop, to queue the message for the next safe tool boundary.
+`Ctrl+Enter` on desktop, to queue the message for the next safe tool boundary on supporting servers.
+Older servers keep queued messages for the next turn.
 
-Queue sends compatible messages after the current foreground tool calls finish,
+On supporting servers, Queue sends compatible messages after the current foreground tool calls finish,
 even when you switch threads or disconnect the client. It waits while the agent needs an
 approval or answer. Providers that cannot accept input without restarting, commands such as
 `/compact`, and messages that change the provider, model, or modes wait for a later turn instead.

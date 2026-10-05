@@ -4511,3 +4511,79 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
     }),
   );
 });
+
+it.effect.each([
+  { backend: "memory", eligibility: true },
+  { backend: "memory", eligibility: false },
+  { backend: "memory", eligibility: undefined },
+  { backend: "sql", eligibility: true },
+  { backend: "sql", eligibility: false },
+  { backend: "sql", eligibility: undefined },
+] as const)(
+  "keeps $backend queue eligibility $eligibility Boolean through stale snapshots",
+  ({ backend, eligibility }) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate(
+        `queue-policy-${backend}-${eligibility}`,
+      );
+      const stale = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      yield* store.apply({
+        id: EventId.make(`queue-policy-birth-${backend}-${eligibility}`),
+        type: "run.created",
+        threadId,
+        runId: stale.id,
+        occurredAt: now,
+        payload: {
+          ...stale,
+          ...(eligibility === undefined ? {} : { queuedToolBoundaryEligible: eligibility }),
+        },
+      });
+      yield* store.apply({
+        id: EventId.make(`queue-policy-update-${backend}-${eligibility}`),
+        type: "run.updated",
+        threadId,
+        runId: stale.id,
+        occurredAt: now,
+        payload: { ...stale, status: "completed", completedAt: now },
+      });
+      const persisted = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      assert.strictEqual(persisted.queuedToolBoundaryEligible, eligibility);
+      const thread = (yield* store.getThreadProjection(threadId)).thread;
+      const replay = Effect.gen(function* () {
+        const memory = yield* ProjectionStore.ProjectionStoreV2;
+        yield* memory.apply({
+          id: EventId.make("queue-policy-replay-thread"),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: thread,
+        });
+        yield* memory.apply({
+          id: EventId.make("queue-policy-replay-birth"),
+          type: "run.created",
+          threadId,
+          runId: stale.id,
+          occurredAt: now,
+          payload: {
+            ...stale,
+            ...(eligibility === undefined ? {} : { queuedToolBoundaryEligible: eligibility }),
+          },
+        });
+        yield* memory.apply({
+          id: EventId.make("queue-policy-replay-update"),
+          type: "run.updated",
+          threadId,
+          runId: stale.id,
+          occurredAt: now,
+          payload: stale,
+        });
+        assert.strictEqual(
+          (yield* memory.getThreadProjection(threadId)).runs[0]!.queuedToolBoundaryEligible,
+          eligibility,
+        );
+      });
+      yield* replay.pipe(Effect.provide(ProjectionStore.layerMemory));
+    }).pipe(Effect.provide(backend === "memory" ? ProjectionStore.layerMemory : TestLayer)),
+);

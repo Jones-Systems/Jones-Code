@@ -86,6 +86,7 @@ export function queuedToolBoundaryTarget(
   );
   if (
     queuedRun === undefined ||
+    queuedRun.queuedToolBoundaryEligible !== true ||
     message?.createdBy !== "user" ||
     message.notification !== undefined ||
     message.delegatedCompletion !== undefined ||

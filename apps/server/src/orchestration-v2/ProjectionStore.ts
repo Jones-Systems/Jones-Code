@@ -590,6 +590,10 @@ function preserveRunRecordedFields(
   if (current === undefined) return next;
   return {
     ...next,
+    ...(next.queuedToolBoundaryEligible === undefined &&
+    current.queuedToolBoundaryEligible !== undefined
+      ? { queuedToolBoundaryEligible: current.queuedToolBoundaryEligible }
+      : {}),
     ...(next.delegatedCompletion === undefined && current.delegatedCompletion !== undefined
       ? { delegatedCompletion: current.delegatedCompletion }
       : {}),
@@ -1689,6 +1693,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       END
     `;
 
+    const keepRecordedQueueEligibility = (payload: Statement.Fragment) => sql`
+      CASE WHEN json_type(excluded.payload_json, '$.queuedToolBoundaryEligible') IS NULL
+        AND json_type(orchestration_v2_projection_runs.payload_json, '$.queuedToolBoundaryEligible') IN ('true', 'false')
+      THEN json_set(${payload}, '$.queuedToolBoundaryEligible',
+        json(CASE json_type(orchestration_v2_projection_runs.payload_json, '$.queuedToolBoundaryEligible') WHEN 'true' THEN 'true' ELSE 'false' END))
+      ELSE ${payload} END
+    `;
+
     const apply: ProjectionStoreV2Shape["apply"] = (event) =>
       Effect.gen(function* () {
         switch (event.type) {
@@ -1802,9 +1814,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 status = excluded.status,
                 requested_at = excluded.requested_at,
                 completed_at = excluded.completed_at,
-                payload_json = ${keepRecordedRunField(
-                  keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
-                  "$.restartCancelledBackgroundWork",
+                payload_json = ${keepRecordedQueueEligibility(
+                  keepRecordedRunField(
+                    keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
+                    "$.restartCancelledBackgroundWork",
+                  ),
                 )}
             `;
             break;

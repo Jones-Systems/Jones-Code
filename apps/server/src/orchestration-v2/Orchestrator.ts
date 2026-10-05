@@ -4855,6 +4855,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           rootNodeId,
           activeAttemptId: attemptId,
           status: "queued",
+          ...(command.queuedToolBoundaryEligible === undefined
+            ? {}
+            : { queuedToolBoundaryEligible: command.queuedToolBoundaryEligible }),
           ...(projection.runs.some(
             (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
           )

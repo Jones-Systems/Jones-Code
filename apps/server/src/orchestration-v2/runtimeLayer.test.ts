@@ -592,11 +592,16 @@ const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
       },
     ],
   });
-  const queue = (text: string, selection: ModelSelection = modelSelection) =>
+  const queue = (
+    text: string,
+    selection: ModelSelection = modelSelection,
+    eligibility: boolean | null = true,
+  ) =>
     orchestrator.dispatch({
       type: "message.dispatch",
       threadId,
       commandId: CommandId.make(`${prefix}-queue-${text}`),
+      ...(eligibility === null ? {} : { queuedToolBoundaryEligible: eligibility }),
       messageId: MessageId.make(`${prefix}-${text}`),
       createdBy: "user",
       creationSource: "web",
@@ -689,6 +694,114 @@ const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
 });
 
 it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
+  it.effect.each([null, false] as const)(
+    "retains legacy eligibility %s for a separate terminal turn",
+    (eligibility) =>
+      Effect.gen(function* () {
+        const f = yield* queuedToolFixture(`queue-legacy-${eligibility}`);
+        try {
+          yield* f.queue("Legacy", modelSelection, eligibility);
+          const before = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.find(
+            (run) => run.status === "queued",
+          )!;
+          assert.equal(before.queuedToolBoundaryEligible, eligibility === null ? undefined : false);
+          const boundary = yield* f.react(f.tool("legacy-tool"));
+          const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+          assert.equal(after.runs.find((run) => run.id === before.id)?.status, "queued");
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          assert.isEmpty(
+            yield* outbox.listByCommandId(
+              CommandId.make(
+                `command:queue-tool-boundary:${before.id}:${f.turnId}:${boundary.sequence}`,
+              ),
+            ),
+          );
+        } finally {
+          f.sessionSpy.mockRestore();
+        }
+      }),
+  );
+  it.effect("revalidates eligibility against run birth after a projection update", () =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture("queue-birth-policy");
+      try {
+        yield* f.queue("Legacy", modelSelection, false);
+        const run = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.find(
+          (run) => run.status === "queued",
+        )!;
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make("queue-birth-policy-skew"),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: run.id,
+              occurredAt: f.now,
+              payload: { ...run, queuedToolBoundaryEligible: true },
+            },
+          ],
+        });
+        yield* f.react(f.tool("birth-tool"));
+        assert.equal(
+          (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.find(
+            (candidate) => candidate.id === run.id,
+          )?.status,
+          "queued",
+        );
+      } finally {
+        f.sessionSpy.mockRestore();
+      }
+    }),
+  );
+  it.effect("does not leapfrog a legacy queue head or continue past one", () =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture("queue-mixed-eligibility");
+      try {
+        yield* f.queue("Legacy", modelSelection, null);
+        yield* f.queue("Eligible");
+        yield* f.react(f.tool("mixed-first"));
+        let projection = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.lengthOf(
+          projection.runs.filter((run) => run.status === "queued"),
+          2,
+        );
+        const eligible = projection.runs.find(
+          (run) => run.userMessageId === MessageId.make("queue-mixed-eligibility-Eligible"),
+        )!;
+        yield* f.orchestrator.dispatch({
+          type: "queued-run.reorder",
+          commandId: CommandId.make("mixed-reorder"),
+          threadId: f.threadId,
+          runId: eligible.id,
+          beforeRunId: projection.runs.find(
+            (run) => run.status === "queued" && run.id !== eligible.id,
+          )!.id,
+        });
+        const boundary = yield* f.react(f.tool("mixed-second"));
+        projection = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(projection.runs.find((run) => run.id === eligible.id)?.status, "cancelled");
+        assert.lengthOf(
+          projection.runs.filter((run) => run.status === "queued"),
+          1,
+        );
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const effects = yield* outbox.listByCommandId(
+          CommandId.make(
+            `command:queue-tool-boundary:${eligible.id}:${f.turnId}:${boundary.sequence}`,
+          ),
+        );
+        assert.isTrue(
+          effects.some(
+            (effect) =>
+              effect.request.type === "provider-turn.steer" &&
+              effect.request.messageId === eligible.userMessageId,
+          ),
+        );
+      } finally {
+        f.sessionSpy.mockRestore();
+      }
+    }),
+  );
   it.effect(
     "delivers queued owner messages FIFO at a native tool boundary while the root turn runs",
     () =>
@@ -762,6 +875,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
             type: "message.dispatch",
             threadId,
             commandId: CommandId.make(`${prefix}-${text}`),
+            queuedToolBoundaryEligible: true,
             messageId: MessageId.make(`${prefix}-${text}`),
             createdBy: "user",
             creationSource: "web",
