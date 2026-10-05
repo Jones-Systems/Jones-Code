@@ -402,14 +402,25 @@ const make = Effect.gen(function* () {
                 dispatchCause.cause !== null &&
                 "_tag" in dispatchCause.cause &&
                 dispatchCause.cause._tag === "DispatchGuardRejected"));
+          const launchFailure = Schema.is(Launch.ThreadLaunchError)(cause) ? cause : undefined;
+          const websocketBootstrapDetail =
+            transport === "legacy_websocket" && input.bootstrap !== undefined && launchFailure
+              ? launchFailure.cause instanceof Error
+                ? launchFailure.cause.message
+                : typeof launchFailure.cause === "string"
+                  ? launchFailure.cause
+                  : undefined
+              : undefined;
           const disposition =
-            Schema.is(Launch.ThreadLaunchError)(cause) &&
-            cause.bootstrapThreadDisposition === "deleted"
+            websocketBootstrapDetail !== undefined ||
+            launchFailure?.bootstrapThreadDisposition === "deleted"
               ? new OrchestrationDispatchCommandError({
                   message: guarded
                     ? "Dispatch guard rejected."
-                    : "Failed to dispatch orchestration command.",
-                  bootstrapThreadDisposition: "deleted",
+                    : (websocketBootstrapDetail ?? "Failed to dispatch orchestration command."),
+                  ...(launchFailure?.bootstrapThreadDisposition === "deleted"
+                    ? { bootstrapThreadDisposition: "deleted" as const }
+                    : {}),
                   cause,
                 })
               : cause;

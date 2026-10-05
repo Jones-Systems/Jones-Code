@@ -1,3 +1,15 @@
+import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import * as WsFileSystem from "effect/FileSystem";
+import { it as effectIt } from "@effect/vitest";
+import * as WsSocket from "effect/unstable/socket/Socket";
+import * as WsQueue from "effect/Queue";
+import * as WsFiber from "effect/Fiber";
+import * as WsHttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ORCHESTRATION_V2_WS_METHODS,
+  OrchestrationV2ThreadProjectionJson,
+} from "@t3tools/contracts";
 import * as WsTraceDiagnostics from "../diagnostics/TraceDiagnostics.ts";
 import * as WsProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as WsEffectOutbox from "./EffectOutbox.ts";
@@ -110,6 +122,25 @@ import { orchestrationHttpApiLayer } from "./http.ts";
 
 const decodeThread = Schema.decodeUnknownSync(RecordedAppThreadJson);
 const decodeRun = Schema.decodeUnknownSync(RecordedRunJson);
+const decodeLegacyRpcFailureCause = Schema.decodeUnknownEffect(
+  Schema.Array(
+    Schema.Struct({ _tag: Schema.Literal("Fail"), error: OrchestrationDispatchCommandError }),
+  ),
+);
+const encodeSocketRpcRequest = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeSocketRpcResponse = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      _tag: Schema.String,
+      requestId: Schema.String,
+      exit: Schema.Struct({
+        _tag: Schema.String,
+        value: Schema.optional(Schema.Unknown),
+        cause: Schema.optional(Schema.Unknown),
+      }),
+    }),
+  ),
+);
 
 it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQL without private correlation", async () => {
   const threadId = ThreadId.make("recorded-http:T");
@@ -547,3 +578,383 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     await http.dispose();
   }
 });
+
+effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
+  "Authenticated legacy WS serialized forwarding",
+  (it) => {
+    it.effect.each([
+      "operate",
+      "read_only",
+      "private_field",
+      "deleted_error",
+      "survivor_error",
+    ] as const)("preserves closed dispatch and authorization for %s", (scenario) =>
+      Effect.gen(function* () {
+        const fs = yield* WsFileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-ws-forwarding-" });
+        const config = WsServerConfig.layerTest(cwd, `${cwd}/state`);
+        const auth = WsEnvironmentAuth.layer.pipe(
+          Layer.provideMerge(SqlitePersistenceMemory),
+          Layer.provideMerge(ServerSecretStore.layer),
+          Layer.provideMerge(WsServerEnvironment.identityLayer),
+          Layer.provide(config),
+          Layer.provide(NodeServices.layer),
+        );
+        const timestamp = "2026-10-05T00:00:00.000Z";
+        const threadId = ThreadId.make("wire-forward:T");
+        const projectId = ProjectId.make("wire-forward:P");
+        const commandId = CommandId.make("wire-forward:C");
+        const messageId = MessageId.make("wire-forward:M");
+        const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" };
+        const guard = {
+          observedSnapshotSequence: 3,
+          expectedModelSelection: modelSelection,
+          expectedSessionStatus: null,
+          expectedActiveTurnId: null,
+          expectedLatestTurnId: null,
+          requireIdle: true,
+        };
+        const projection = yield* Schema.decodeUnknownEffect(OrchestrationV2ThreadProjectionJson)({
+          thread: {
+            id: threadId,
+            projectId,
+            title: "Forwarding fixture",
+            createdBy: "user",
+            creationSource: "web",
+            providerInstanceId: modelSelection.instanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            lineage: {
+              parentThreadId: null,
+              relationshipToParent: null,
+              rootThreadId: threadId,
+            },
+            forkedFrom: null,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            archivedAt: null,
+            deletedAt: null,
+            settledAt: null,
+            settledOverride: null,
+            lastVisitedAt: null,
+          },
+          runs: [],
+          attempts: [],
+          nodes: [],
+          subagents: [],
+          providerSessions: [],
+          providerThreads: [],
+          providerTurns: [],
+          runtimeRequests: [],
+          messages: [],
+          plans: [],
+          turnItems: [],
+          checkpointScopes: [],
+          checkpoints: [],
+          contextHandoffs: [],
+          contextTransfers: [],
+          visibleTurnItems: [],
+          updatedAt: timestamp,
+        });
+        const forwarded: WsThreadLaunchService.ThreadLaunchInput[] = [];
+        const preflight: Parameters<
+          WsThreadLaunchService.ThreadLaunchService["Service"]["preflightLegacyBootstrap"]
+        >[0][] = [];
+        const order: string[] = [];
+        const rpcOwners = Layer.mergeAll(
+          Layer.mock(Threads.ThreadManagementService)({
+            getThreadShell: () => Effect.succeed(null),
+            dispatch: () => Effect.die("No ordinary dispatch fallback"),
+          }),
+          Layer.mock(WsApplicationEventStore.OrchestrationEventStore)({}),
+          Layer.mock(ProjectStore.ProjectStoreV2)({}),
+          Layer.mock(WsProjectService.ProjectService)({
+            getById: () =>
+              Effect.succeedSome({
+                id: projectId,
+                title: "Fixture",
+                workspaceRoot: cwd,
+                repositoryIdentity: null,
+                faviconPath: null,
+                defaultModelSelection: modelSelection,
+                defaultThreadEnvMode: null,
+                scripts: [],
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                deletedAt: null,
+              }),
+          }),
+          Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/synthetic-unused-projects",
+          }),
+          Layer.mock(WsThreadSearch.ThreadSearch)({}),
+          Layer.mock(WsProviderSessionManager.ProviderSessionManagerV2)({}),
+          Layer.mock(WsAnalyticsService.AnalyticsService)({ record: () => Effect.void }),
+          Layer.mock(WsThreadLaunchService.ThreadLaunchService)({
+            preflightLegacyBootstrap: (binding) =>
+              Effect.sync(() => {
+                order.push("preflight");
+                preflight.push(binding);
+                return {
+                  binding,
+                  intentCommandId: CommandId.make("wire-forward:mock-preflight-intent"),
+                  intentSequence: 1,
+                  status: "ready" as const,
+                  workspaceStrategy: {
+                    type: "worktree" as const,
+                    baseRef: "main",
+                    branch: "owned/forwarding",
+                    startFromOrigin: false,
+                  },
+                };
+              }),
+            launch: (input) =>
+              Effect.suspend(() => {
+                order.push("launch");
+                forwarded.push(input);
+                if (scenario === "deleted_error" || scenario === "survivor_error")
+                  return Effect.fail(
+                    new WsThreadLaunchService.ThreadLaunchError({
+                      operation: "provision-worktree",
+                      commandId: input.commandId,
+                      projectId: input.projectId,
+                      threadId,
+                      cause: new Error("worktree exploded"),
+                      ...(scenario === "deleted_error"
+                        ? { bootstrapThreadDisposition: "deleted" as const }
+                        : {}),
+                    }),
+                  );
+                return Effect.succeed({
+                  threadId,
+                  projection,
+                  resumed: false,
+                  legacyReleaseSequence: 3,
+                });
+              }),
+          }),
+          Layer.mock(WsScheduledTasks.ScheduledTaskService)({}),
+          Layer.mock(WsPullRequestService.PullRequestService)({}),
+          Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
+          Layer.mock(WsDeviceService.DeviceService)({}),
+          Layer.mock(WsOrchestrator.OrchestratorV2)({
+            dispatch: () => Effect.die("No native command fallback"),
+          }),
+          Layer.mock(WsUsageService.UsageService)({}),
+          Layer.mock(WsUsageLimitSources.UsageLimitSources)({}),
+          Layer.mock(WsProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
+          Layer.mock(WsWorktreeSetupTracker.WorktreeSetupTracker)({}),
+          Layer.mock(WsProjectCloneTracker.ProjectCloneTracker)({
+            get: () => Effect.succeed(null),
+          }),
+          Layer.mock(WsRepositoryIdentityResolver.RepositoryIdentityResolver)({}),
+          Layer.mock(WsAgentSessionImporter.AgentSessionImporter)({}),
+          Layer.mock(WsCheckpointDiffQuery.CheckpointDiffQuery)({}),
+          Layer.mock(WsKeybindings.Keybindings)({}),
+          Layer.mock(WsEnvironmentTheme.EnvironmentThemeService)({}),
+          Layer.mock(WsExternalLauncher.ExternalLauncher)({}),
+          Layer.mock(WsRemoteOpenTargets.RemoteOpenTargets)({}),
+          Layer.mock(WsGitWorkflowService.GitWorkflowService)({}),
+          Layer.mock(WsReviewService.ReviewService)({}),
+          Layer.mock(WsVcsProvisioningService.VcsProvisioningService)({}),
+          Layer.mock(WsVcsStatusBroadcaster.VcsStatusBroadcaster)({}),
+          Layer.mock(WsTerminalManager.TerminalManager)({}),
+          Layer.mock(WsPreviewManager.PreviewManager)({}),
+          Layer.mock(WsPortScanner.PortDiscovery)({}),
+          Layer.mock(WsProviderRegistry.ProviderRegistry)({}),
+          Layer.mock(WsModelManifest.ModelManifest)({}),
+          Layer.succeed(WsProviderMaintenance.ProviderVersionCache, new Map()),
+          Layer.mock(WsProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+          Layer.mock(WsAcpRegistrySupport.AcpRegistryCatalog)({}),
+          Layer.mock(WsAcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
+          Layer.mock(WsProviderAuthService.ProviderAuthService)({}),
+          Layer.mock(WsServerSelfUpdate.ServerSelfUpdate)({}),
+          Layer.mock(WsServerLifecycleEvents.ServerLifecycleEvents)({}),
+          Layer.mock(WsServerSettings.ServerSettingsService)({
+            getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+          }),
+          Layer.mock(WsServerRuntimeStartup.ServerRuntimeStartup)({
+            enqueueCommand: (effect) => effect,
+          }),
+          Layer.mock(WsWorkspaceEntries.WorkspaceEntries)({}),
+          Layer.mock(WsWorkspaceFileSystem.WorkspaceFileSystem)({}),
+          Layer.mock(WsBackgroundPolicy.BackgroundPolicy)({}),
+          Layer.mock(WsSourceControlRepositoryService.SourceControlRepositoryService)({}),
+          Layer.mock(WsProcessDiagnostics.ProcessDiagnostics)({}),
+          Layer.mock(WsHostResources.HostResources)({}),
+          Layer.mock(WsProcessResourceMonitor.ProcessResourceMonitor)({}),
+          Layer.mock(WsResourceTelemetry.ResourceTelemetry)({}),
+          Layer.mock(WsRelayClient.RelayClient)({}),
+          Layer.mock(WsPreviewAutomationBroker.PreviewAutomationBroker)({}),
+          Layer.mock(WsServerEnvironment.ServerEnvironment)({}),
+          Layer.mock(WsAntigravityInstallation.AntigravityInstallation)({
+            managedDirectory: "/synthetic-unused-antigravity",
+          }),
+          Layer.mock(WsCodexInstallation.CodexInstallation)({
+            managedDirectory: "/synthetic-unused-codex",
+          }),
+          Layer.mock(WsVcsProcess.VcsProcess)({}),
+          Layer.mock(WsWorkspacePaths.WorkspacePaths)({}),
+          Layer.succeed(
+            WsHttpClient.HttpClient,
+            WsHttpClient.make(() => Effect.die("Auth gate must not call HTTP client.")),
+          ),
+          Layer.mock(WsTraceDiagnostics.TraceDiagnostics)({}),
+          Layer.mock(WsProjectFaviconResolver.ProjectFaviconResolver)({}),
+          Layer.mock(EventSink.EventSinkV2)({}),
+          Layer.mock(WsEffectOutbox.EffectOutboxV2)({
+            listByThreadId: () => Effect.succeed([]),
+            awaitCompletion: () => Effect.void,
+          }),
+          Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
+          Layer.succeed(HostProcessEnvironment, {}),
+          Layer.succeed(HostProcessPlatform, "linux"),
+        );
+
+        const dependencies = Layer.mergeAll(auth, rpcOwners).pipe(
+          Layer.provideMerge(config),
+          Layer.provideMerge(NodeServices.layer),
+        );
+        yield* Effect.gen(function* () {
+          const owner = yield* WsEnvironmentAuth.EnvironmentAuth;
+          const issued = yield* owner.issueSession({
+            scopes: [scenario === "read_only" ? "orchestration:read" : "orchestration:operate"],
+          });
+          const input = {
+            type: "thread.turn.start",
+            commandId,
+            threadId,
+            createdAt: timestamp,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            modelSelection,
+            message: { messageId, role: "user", text: "Forward only", attachments: [] },
+            dispatchGuard: guard,
+            bootstrap: {
+              createThread: {
+                projectId,
+                title: "Forwarding fixture",
+                modelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                createdAt: timestamp,
+              },
+              prepareWorktree: {
+                projectCwd: cwd,
+                baseBranch: "main",
+                branch: "owned/forwarding",
+                startFromOrigin: false,
+                requireWorktree: true,
+              },
+              runSetupScript: false,
+            },
+            ...(scenario === "private_field" ? { legacyBootstrap: { ownsNewThread: true } } : {}),
+          };
+          const incoming = yield* WsQueue.unbounded<Uint8Array | string>();
+          const outgoing = yield* WsQueue.unbounded<Uint8Array | string>();
+          const socket: WsSocket.Socket = {
+            [WsSocket.TypeId]: WsSocket.TypeId,
+            reader: Effect.succeed({
+              pull: WsQueue.take(incoming).pipe(Effect.map((chunk) => [chunk] as const)),
+              upgrade: () => Effect.die("No TLS/native socket in fixture"),
+            }),
+            writer: Effect.succeed({
+              write: (chunk) =>
+                WsSocket.isCloseEvent(chunk)
+                  ? Effect.void
+                  : WsQueue.offer(outgoing, chunk).pipe(Effect.asVoid),
+              writeAll: (chunks) => WsQueue.offerAll(outgoing, chunks).pipe(Effect.asVoid),
+            }),
+          };
+          const withUpgrade = (
+            request: WsHttpServerRequest.HttpServerRequest,
+          ): WsHttpServerRequest.HttpServerRequest =>
+            new Proxy(request, {
+              get(target, property) {
+                if (property === "upgrade") return Effect.succeed(socket);
+                if (property === "modify")
+                  return (
+                    options: Parameters<WsHttpServerRequest.HttpServerRequest["modify"]>[0],
+                  ) => withUpgrade(target.modify(options));
+                return Reflect.get(target, property, target);
+              },
+            });
+          const request = withUpgrade(
+            WsHttpServerRequest.fromWeb(
+              new Request(
+                `http://test/ws?${ORCHESTRATION_PROTOCOL_QUERY_PARAM}=${ORCHESTRATION_PROTOCOL_VERSION_TEXT}`,
+                { headers: { authorization: `Bearer ${issued.token}` } },
+              ),
+            ),
+          );
+          const handler = yield* HttpRouter.toHttpEffect(
+            websocketRpcRouteLayer.pipe(Layer.provide(dependencies)),
+          );
+          const serving = yield* handler.pipe(
+            Effect.provideService(WsHttpServerRequest.HttpServerRequest, request),
+            Effect.scoped,
+            Effect.forkChild,
+          );
+          yield* Effect.addFinalizer(() => WsFiber.interrupt(serving));
+          yield* WsQueue.offer(
+            incoming,
+            yield* encodeSocketRpcRequest({
+              _tag: "Request",
+              id: "1",
+              tag: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+              payload: input,
+              headers: [],
+            }),
+          );
+          const raw = yield* Effect.race(
+            WsQueue.take(outgoing),
+            WsFiber.join(serving).pipe(Effect.andThen(Effect.die("Socket ended before response"))),
+          ).pipe(Effect.timeout("5 seconds"));
+          const frame = yield* decodeSocketRpcResponse(
+            typeof raw === "string" ? raw : new TextDecoder().decode(raw),
+          );
+          expect(frame._tag).toBe("Exit");
+          expect(frame.requestId).toBe("1");
+          if (scenario === "operate") {
+            // The mocked sequence is forwarding evidence only; live strict guards remain independently tested rejections.
+            expect(frame.exit).toMatchObject({ _tag: "Success", value: { sequence: 3 } });
+            expect(order).toEqual(["preflight", "launch"]);
+            expect(preflight).toHaveLength(1);
+            expect(forwarded).toHaveLength(1);
+            const launch = forwarded[0]!;
+            expect(launch.preparationReleaseCommandId).toBe(commandId);
+            expect(launch.threadId).toBe(threadId);
+            expect(launch.projectId).toBe(projectId);
+            expect(launch.initialMessage?.messageId).toBe(messageId);
+            expect(launch.modelSelection).toEqual(modelSelection);
+            expect(launch.legacyBootstrap?.dispatchGuard).toEqual(guard);
+            expect(launch.commandId).not.toBe(commandId);
+            expect(launch.legacyBootstrap?.birthCommandId).not.toBe(commandId);
+          } else if (scenario === "deleted_error" || scenario === "survivor_error") {
+            expect(frame.exit._tag).toBe("Failure");
+            const failures = yield* decodeLegacyRpcFailureCause(frame.exit.cause);
+            expect(failures).toHaveLength(1);
+            expect(failures[0]!.error._tag).toBe("OrchestrationDispatchCommandError");
+            expect(failures[0]!.error.message).toContain("worktree exploded");
+            expect(failures[0]!.error.bootstrapThreadDisposition).toBe(
+              scenario === "deleted_error" ? "deleted" : undefined,
+            );
+            expect(order).toEqual(["preflight", "launch"]);
+            expect(forwarded).toHaveLength(1);
+          } else {
+            expect(frame.exit._tag).toBe("Failure");
+            expect(order).toEqual([]);
+            expect(preflight).toHaveLength(0);
+            expect(forwarded).toHaveLength(0);
+          }
+        }).pipe(Effect.provide(dependencies), Effect.timeout("10 seconds"));
+      }),
+    );
+  },
+);
