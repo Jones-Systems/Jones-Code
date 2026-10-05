@@ -13,13 +13,16 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   PlanId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   RunId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
   WS_METHODS,
   type OrchestrationV2Command,
+  type OrchestrationV2ProviderSession,
   type OrchestrationV2ThreadLaunchInput,
   type OrchestrationV2ThreadProjection,
   type ProjectMutation,
@@ -59,6 +62,7 @@ import {
   revertThreadCheckpoint,
   settleThread,
   startThreadTurn,
+  stopThreadSession,
   unsettleThread,
   updateProject,
   updateThreadMetadata,
@@ -844,6 +848,163 @@ describe("V2 environment commands", () => {
         }
         expect(projectionRequests).toEqual([v2ThreadId]);
       }
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect(
+    "stops all projected sessions with detach only, preserving thread lifecycle state",
+    () =>
+      Effect.gen(function* () {
+        const projection: OrchestrationV2ThreadProjection = {
+          ...v2Projection,
+          thread: { ...v2Projection.thread, settledOverride: "active" },
+          providerSessions: (["ready", "running"] as const).map(
+            (status, index): OrchestrationV2ProviderSession => ({
+              id: ProviderSessionId.make(`session-${index}`),
+              driver: ProviderDriverKind.make("codex"),
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              status,
+              cwd: "/workspace/project",
+              model: null,
+              capabilities: {
+                sessions: {
+                  supportsMultipleProviderThreadsPerSession: false,
+                  supportsModelSwitchInSession: false,
+                  supportsProviderSwitchingViaHandoff: false,
+                  supportsRuntimeModeSwitchInSession: false,
+                  pendingRequestsSurviveRestart: false,
+                },
+                threads: {
+                  canCreateEmptyThread: false,
+                  canReadThreadSnapshot: false,
+                  canRollbackThread: false,
+                  canForkThread: false,
+                  canForkFromTurn: false,
+                  canForkFromSubagentThread: false,
+                  exposesNativeThreadId: false,
+                },
+                turns: {
+                  exposesNativeTurnId: false,
+                  emitsTurnStarted: false,
+                  emitsTurnCompleted: false,
+                  supportsInterrupt: false,
+                  supportsActiveSteering: false,
+                  supportsSteeringByInterruptRestart: false,
+                  supportsQueuedMessages: false,
+                  terminalStatusQuality: "none",
+                },
+                streaming: {
+                  streamsAssistantText: false,
+                  streamsReasoning: false,
+                  streamsToolOutput: false,
+                  streamsPlanText: false,
+                  emitsMessageCompleted: false,
+                },
+                tools: {
+                  exposesToolItemIds: false,
+                  emitsToolStarted: false,
+                  emitsToolCompleted: false,
+                  emitsToolOutput: false,
+                  supportsMcpTools: false,
+                  supportsDynamicToolCallbacks: false,
+                },
+                approvals: {
+                  supportsCommandApproval: false,
+                  supportsFileReadApproval: false,
+                  supportsFileChangeApproval: false,
+                  supportsApplyPatchApproval: false,
+                  approvalsHaveNativeRequestIds: false,
+                  approvalCallbacksAreLiveOnly: false,
+                  approvalsCanOriginateFromSubagents: false,
+                },
+                planning: {
+                  emitsPlanUpdated: false,
+                  emitsTodoList: false,
+                  emitsProposedPlan: false,
+                  supportsStructuredQuestions: false,
+                  planDeltasHaveItemIds: false,
+                },
+                subagents: {
+                  supportsSubagents: false,
+                  exposesSubagentThreadIds: false,
+                  emitsSubagentLifecycle: false,
+                  canWaitForSubagents: false,
+                  canCloseSubagents: false,
+                  canForkSubagentThread: false,
+                },
+                context: {
+                  acceptsSystemContext: false,
+                  acceptsDeveloperContext: false,
+                  acceptsSyntheticUserContext: false,
+                  canGenerateSummaries: false,
+                  canConsumeHandoffSummaries: false,
+                  supportsDeltaHandoff: false,
+                  supportsFullThreadHandoff: false,
+                  maxRecommendedHandoffChars: null,
+                },
+                checkpointing: {
+                  appCanCheckpointFilesystem: false,
+                  supportsNestedCheckpointScopes: false,
+                  providerCanRollbackConversation: false,
+                  providerRollbackReturnsSnapshot: false,
+                  providerCanReadConversationSnapshot: false,
+                },
+                identity: {
+                  nativeThreadIds: "none",
+                  nativeTurnIds: "none",
+                  nativeItemIds: "none",
+                  nativeRequestIds: "none",
+                },
+                runtimePolicy: {
+                  enforcement: "client-boundary",
+                },
+              },
+              createdAt: v2Now,
+              updatedAt: v2Now,
+              lastError: null,
+            }),
+          ),
+        };
+        const commands: OrchestrationV2Command[] = [];
+        const projectionRequests: ThreadId[] = [];
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          projection,
+          projectionRequests,
+        });
+        const result = yield* stopThreadSession({
+          threadId: v2ThreadId,
+          commandId: CommandId.make("stop-command"),
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        expect(projectionRequests).toEqual([v2ThreadId]);
+        expect(commands).toEqual(
+          projection.providerSessions.map((session) => ({
+            type: "provider-session.detach",
+            threadId: v2ThreadId,
+            commandId: `stop-command:detach:${session.id}`,
+            providerSessionId: session.id,
+            reason: "client-requested",
+          })),
+        );
+        expect(result).toEqual({ sequence: 2 });
+      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("does not dispatch any lifecycle command when no provider sessions remain", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        projection: v2Projection,
+      });
+      const result = yield* stopThreadSession({
+        threadId: v2ThreadId,
+        commandId: CommandId.make("stop-empty"),
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(commands).toEqual([]);
+      expect(result).toEqual({ sequence: 0 });
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 
