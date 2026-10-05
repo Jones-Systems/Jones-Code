@@ -444,9 +444,10 @@ fi
 # Self-contained release archive: no Node, npm, or compiler on the remote.
 # Unpacked into the pinned-runtime layout so \`t3 service install\` reuses it.
 T3_RELEASE_BASE_URL=@@T3_RELEASE_BASE_URL@@
+T3_RELEASE_SOURCE="$T3_RELEASE_BASE_URL/v$T3_ARCHIVE_VERSION"
 T3_RUNTIME_DIR="$HOME/.t3/runtime/versions/$T3_ARCHIVE_VERSION"
 t3_runtime_ready() {
-  [ -x "$T3_RUNTIME_DIR/t3" ] && [ "$(cat "$T3_RUNTIME_DIR/.install-complete" 2>/dev/null)" = "$T3_ARCHIVE_VERSION" ]
+  [ -x "$T3_RUNTIME_DIR/t3" ] && [ "$(cat "$T3_RUNTIME_DIR/.install-complete" 2>/dev/null)" = "$T3_ARCHIVE_VERSION" ] && [ "$(cat "$T3_RUNTIME_DIR/.install-source" 2>/dev/null)" = "$T3_RELEASE_SOURCE" ]
 }
 if ! t3_runtime_ready; then
   mkdir -p "$HOME/.t3/runtime/versions"
@@ -489,6 +490,10 @@ if ! t3_runtime_ready; then
   trap 'rm -rf "$T3_LOCK"' EXIT
 fi
 if ! t3_runtime_ready; then
+  if [ -e "$T3_RUNTIME_DIR" ] || [ -L "$T3_RUNTIME_DIR" ]; then
+    printf 'Cached t3 %s runtime is not ready for the requested release source. Use a distinct version or home; the existing runtime was preserved.\\n' "$T3_ARCHIVE_VERSION" >&2
+    exit 1
+  fi
   case "$(uname -s)" in
     Darwin) T3_PLATFORM="darwin" ;;
     Linux) T3_PLATFORM="linux" ;;
@@ -527,7 +532,7 @@ if ! t3_runtime_ready; then
     printf 'The t3 %s executable does not run on this host.\\n' "$T3_ARCHIVE_VERSION" >&2; exit 1
   fi
   printf '%s\\n' "$T3_ARCHIVE_VERSION" > "$T3_STAGING/.install-complete"
-  rm -rf "$T3_RUNTIME_DIR"
+  printf '%s\\n' "$T3_RELEASE_SOURCE" > "$T3_STAGING/.install-source"
   mv "$T3_STAGING" "$T3_RUNTIME_DIR"
 fi
 if [ -n "\${T3_LOCK:-}" ]; then

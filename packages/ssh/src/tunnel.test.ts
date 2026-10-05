@@ -105,7 +105,7 @@ describe("ssh tunnel scripts", () => {
     assert.include(script, "T3_NODE_SCRIPT_PATH=''");
     assert.include(
       script,
-      "T3_RELEASE_BASE_URL='https://github.com/pingdotgg/t3code/releases/download'",
+      "T3_RELEASE_BASE_URL='https://github.com/Jones-Systems/Jones-Code/releases/download'",
     );
     assert.include(script, 'T3_RUNTIME_DIR="$HOME/.t3/runtime/versions/$T3_ARCHIVE_VERSION"');
     assert.include(script, 'T3_ARCHIVE="t3-$T3_ARCHIVE_VERSION-$T3_PLATFORM-$T3_ARCH.tar.gz"');
@@ -755,6 +755,100 @@ describe("archive runner script", () => {
     assert.equal(Number(yield* child.exitCode), 0);
     return `file://${root}/mirror`;
   });
+
+  it.effect.skipIf(windowsHost)(
+    "preserves same-version caches without matching release provenance and reuses matching caches",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-archive-source-" });
+        const releaseBaseUrl = yield* makeMirror(root);
+        const runner = `${root}/run-t3.sh`;
+        yield* fs.writeFileString(
+          runner,
+          SshTunnel.buildRemoteT3RunnerScript({ archiveVersion, releaseBaseUrl }),
+        );
+        const home = `${root}/home`;
+        const runtime = `${home}/.t3/runtime/versions/${archiveVersion}`;
+        yield* fs.makeDirectory(runtime, { recursive: true });
+
+        for (const source of [
+          undefined,
+          `https://github.com/pingdotgg/t3code/releases/download/v${archiveVersion}`,
+          `https://mirror.example/another-source/v${archiveVersion}`,
+        ]) {
+          yield* fs.writeFileString(`${runtime}/t3`, "#!/bin/sh\necho upstream-cache\n");
+          yield* fs.chmod(`${runtime}/t3`, 0o755);
+          yield* fs.writeFileString(`${runtime}/.install-complete`, `${archiveVersion}\n`);
+          yield* fs.remove(`${runtime}/.install-source`, { force: true });
+          if (source !== undefined) {
+            yield* fs.writeFileString(`${runtime}/.install-source`, `${source}\n`);
+          }
+          const result = yield* runRunner(home, runner);
+          assert.notEqual(result.exitCode, 0);
+          assert.include(result.stderr, "release source");
+          assert.include(result.stderr, "distinct version or home");
+          assert.equal(
+            yield* fs.readFileString(`${runtime}/t3`),
+            "#!/bin/sh\necho upstream-cache\n",
+          );
+          assert.equal(
+            (yield* fs.readFileString(`${runtime}/.install-complete`)).trim(),
+            archiveVersion,
+          );
+          if (source === undefined) {
+            assert.isFalse(yield* fs.exists(`${runtime}/.install-source`));
+          } else {
+            assert.equal((yield* fs.readFileString(`${runtime}/.install-source`)).trim(), source);
+          }
+        }
+
+        for (const state of ["missing-version", "wrong-version", "not-executable"]) {
+          yield* fs.writeFileString(`${runtime}/.install-source`, `${releaseBaseUrl}/v${archiveVersion}\n`);
+          yield* fs.remove(`${runtime}/.install-complete`, { force: true });
+          if (state !== "missing-version") {
+            yield* fs.writeFileString(
+              `${runtime}/.install-complete`,
+              state === "wrong-version" ? "9.9.9\n" : `${archiveVersion}\n`,
+            );
+          }
+          yield* fs.chmod(`${runtime}/t3`, state === "not-executable" ? 0o644 : 0o755);
+          const result = yield* runRunner(home, runner);
+          assert.notEqual(result.exitCode, 0);
+          assert.include(result.stderr, "release source");
+          assert.equal(yield* fs.readFileString(`${runtime}/t3`), "#!/bin/sh\necho upstream-cache\n");
+          assert.equal(
+            yield* fs.readFileString(`${runtime}/.install-source`),
+            `${releaseBaseUrl}/v${archiveVersion}\n`,
+          );
+          if (state === "missing-version") {
+            assert.isFalse(yield* fs.exists(`${runtime}/.install-complete`));
+          } else {
+            assert.equal(
+              yield* fs.readFileString(`${runtime}/.install-complete`),
+              state === "wrong-version" ? "9.9.9\n" : `${archiveVersion}\n`,
+            );
+          }
+        }
+
+        yield* fs.remove(runtime, { recursive: true });
+        const installed = yield* runRunner(home, runner);
+        assert.equal(installed.exitCode, 0, installed.stderr);
+        assert.include(installed.stdout, `t3 v${archiveVersion}`);
+        assert.equal(
+          (yield* fs.readFileString(`${runtime}/.install-source`)).trim(),
+          `${releaseBaseUrl}/v${archiveVersion}`,
+        );
+        yield* fs.remove(`${root}/mirror`, { recursive: true });
+        yield* fs.writeFileString(
+          runner,
+          SshTunnel.buildRemoteT3RunnerScript({ archiveVersion, releaseBaseUrl: `${releaseBaseUrl}/` }),
+        );
+        const cached = yield* runRunner(home, runner);
+        assert.equal(cached.exitCode, 0, cached.stderr);
+        assert.include(cached.stdout, `t3 v${archiveVersion}`);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
 
   it.effect.skipIf(windowsHost)(
     "installs once when several launches race, and reclaims stale locks",

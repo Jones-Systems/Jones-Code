@@ -2,7 +2,7 @@
 # Installs the T3 Code CLI from a GitHub Release archive. Needs only sh, tar,
 # sha256sum or shasum, and curl or wget; no Node, npm, or compiler.
 #
-#   curl -fsSL https://t3.codes/install.sh | sh
+#   sh scripts/install.sh  # from a verified Jones-Code checkout
 #
 # Environment:
 #   T3CODE_CHANNEL           release train to follow: stable, nightly, or preview
@@ -17,8 +17,9 @@
 # instead of fetching the release again.
 set -eu
 
-repo="pingdotgg/t3code"
+repo="Jones-Systems/Jones-Code"
 base_url="${T3CODE_RELEASE_BASE_URL:-https://github.com/${repo}/releases/download}"
+base_url="${base_url%/}"
 t3_home="${T3CODE_HOME:-$HOME/.t3}"
 bin_dir="${T3CODE_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 
@@ -154,10 +155,12 @@ if [ -z "$version" ]; then
     *) fail "T3CODE_CHANNEL must be stable, nightly, or preview" ;;
   esac
   tmp_index="$(mktemp)"
+  trap 'rm -f "$tmp_index"' EXIT
   fetch "https://api.github.com/repos/${repo}/releases?per_page=100" "$tmp_index"
   version="$(sed -n "s/.*\"tag_name\": *\"${tag_pattern}\".*/\1/p" "$tmp_index" | head -n 1)"
   rm -f "$tmp_index"
-  [ -n "$version" ] || fail "could not find a ${channel} release; set T3CODE_VERSION"
+  trap - EXIT
+  [ -n "$version" ] || fail "no published ${channel} release in ${repo}; Actions trial artifacts are not a release channel"
 fi
 case "$version" in
   *-preview.*)
@@ -177,6 +180,10 @@ archive="${stem}.tar.gz"
 versions_dir="${t3_home}/runtime/versions"
 target_dir="${versions_dir}/${version}"
 
+source_url="${base_url}/v${version}"
+if { [ -e "$target_dir" ] || [ -L "$target_dir" ]; } && { [ ! -f "${target_dir}/.install-source" ] || [ "$(cat "${target_dir}/.install-source")" != "$source_url" ]; }; then
+  fail "cached ${version} has unknown or different source provenance; preserve it and use a distinct Jones version or isolated T3CODE_HOME"
+fi
 if [ -f "${target_dir}/.install-complete" ] && [ "$(cat "${target_dir}/.install-complete")" = "$version" ]; then
   step "Version ${version} is already downloaded."
 else
@@ -193,7 +200,7 @@ else
   fetch_status=0
   fetch "${base_url}/v${version}/SHA256SUMS" "${staging}/SHA256SUMS" || fetch_status=$?
   if [ "$fetch_status" -eq 44 ]; then
-    fail "t3 ${version} has no release archive for ${platform}-${arch}; releases before the self-contained CLI can only be installed with \`npm install -g t3@${version}\`"
+    fail "${repo} has no release archive ${version} for ${platform}-${arch}; no upstream replacement is attempted"
   elif [ "$fetch_status" -ne 0 ]; then
     fail "could not download the release checksums"
   fi
@@ -208,8 +215,12 @@ else
   step "Extracting T3 Code..."
   tar -xzf "${staging}/${archive}" -C "$staging" --strip-components=1
   rm -f "${staging}/${archive}" "${staging}/SHA256SUMS"
-  "${staging}/t3" --version >/dev/null || fail "the downloaded executable does not run"
+  reported_version="$("${staging}/t3" --version)" || fail "the downloaded executable does not run"
+  reported_version="${reported_version##* }"
+  reported_version="${reported_version#v}"
+  [ "$reported_version" = "$version" ] || fail "the downloaded executable version does not match ${version}"
   printf '%s\n' "$version" > "${staging}/.install-complete"
+  printf '%s\n' "$source_url" > "${staging}/.install-source"
 
   rm -rf "$target_dir"
   mv "$staging" "$target_dir"

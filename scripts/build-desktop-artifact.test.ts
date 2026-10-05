@@ -292,44 +292,50 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopWebAssetBrand("0.0.17-nightly.20260413.42"), "nightly");
   });
 
-  it.effect("resolves GitHub desktop publish config from Effect config", () =>
+  it.effect("defaults desktop updates to Jones despite an ambient upstream repository", () =>
     Effect.gen(function* () {
-      const latestConfig = yield* resolveGitHubPublishConfig("latest").pipe(
+      const config = yield* resolveGitHubPublishConfig("nightly").pipe(
         Effect.provide(
           ConfigProvider.layer(
-            ConfigProvider.fromEnv({
-              env: {
-                T3CODE_DESKTOP_UPDATE_REPOSITORY: "pingdotgg/t3code",
-              },
-            }),
+            ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
           ),
         ),
       );
-      const nightlyConfig = yield* resolveGitHubPublishConfig("nightly").pipe(
+      assert.deepStrictEqual(config, {
+        provider: "github",
+        owner: "Jones-Systems",
+        repo: "Jones-Code",
+        releaseType: "prerelease",
+        channel: "nightly",
+      });
+      const override = yield* resolveGitHubPublishConfig("latest").pipe(
         Effect.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                T3CODE_DESKTOP_UPDATE_REPOSITORY: "owner/explicit-feed",
                 GITHUB_REPOSITORY: "pingdotgg/t3code",
               },
             }),
           ),
         ),
       );
-
-      assert.deepStrictEqual(latestConfig, {
+      assert.deepStrictEqual(override, {
         provider: "github",
-        owner: "pingdotgg",
-        repo: "t3code",
+        owner: "owner",
+        repo: "explicit-feed",
         releaseType: "release",
       });
-      assert.deepStrictEqual(nightlyConfig, {
-        provider: "github",
-        owner: "pingdotgg",
-        repo: "t3code",
-        releaseType: "prerelease",
-        channel: "nightly",
-      });
+      const invalid = yield* resolveGitHubPublishConfig("latest").pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: { T3CODE_DESKTOP_UPDATE_REPOSITORY: "invalid/repo/path" },
+            }),
+          ),
+        ),
+      );
+      assert.isUndefined(invalid);
     }),
   );
 
@@ -390,8 +396,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.deepStrictEqual(release.publish, [
         {
           provider: "github",
-          owner: "pingdotgg",
-          repo: "t3code",
+          owner: "Jones-Systems",
+          repo: "Jones-Code",
           releaseType: "release",
         },
       ]);

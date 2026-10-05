@@ -62,10 +62,19 @@ or real user state into this first smoke trial.
 
 Versions use `BASE-preview.YYYYMMDD.RUN_ID.RUN_ATTEMPT`, where `BASE` is the
 checked-in server package version. Both the CLI channel parser and desktop build
-recognize that preview form. The archive retains T3 branding. These Actions
+recognize that preview form. Desktop builds use the Jones Code app name and JC
+Mac icon while retaining `T3-Code` artifact filenames. CLI discovery, archive
+downloads and the tracked installers default to `Jones-Systems/Jones-Code`;
+desktop release feeds use the same repository unless
+`T3CODE_DESKTOP_UPDATE_REPOSITORY` explicitly overrides it.
+`T3CODE_RELEASE_BASE_URL` remains an explicit archive-mirror override. A missing
+Jones release fails explicitly and never falls back to upstream. These Actions
 outputs do not create GitHub Releases or populate a release channel: download
-another successful workflow artifact for subsequent trials. Upstream installers
-and release discovery remain separate from these Jones trial workflows.
+another successful workflow artifact for subsequent trials. Use a distinct Jones
+preview version; server runtime caches still require separate provenance
+qualification before an installed transition. Shell, PowerShell and SSH
+installers reject existing caches with missing or different `.install-source`
+origin instead of replacing them.
 
 Publishing this workflow does not authorize a VPS service restart, installation,
 replacement of an active binary, or use of the real T3 home. Those steps need a
