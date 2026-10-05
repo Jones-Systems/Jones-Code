@@ -363,7 +363,7 @@ describe("orchestration V2 merge-back provider replay", () => {
               dispatchMode: { type: "start_immediately" },
             },
           ] satisfies ReadonlyArray<OrchestrationV2Command>;
-          return { commands, sourceThreadId, forkThreadId, forkRunId };
+          return { commands, projectId, sourceThreadId, forkThreadId, forkRunId };
         }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
         const summary = forkDeltaSummary({
           sourceThreadId: materialized.forkThreadId,
@@ -386,6 +386,16 @@ describe("orchestration V2 merge-back provider replay", () => {
               Effect.orDie,
             ),
         );
+        const checkoutFixture = {
+          projects: [
+            {
+              projectId: materialized.projectId,
+              workspaceRoot: cwd,
+              title: "Merge-back replay",
+            },
+          ],
+          resolvePath: () => undefined,
+        };
         const scenario = {
           name: `thread_merge_back_continue/${variant.driver}`,
           commands: materialized.commands,
@@ -416,6 +426,7 @@ describe("orchestration V2 merge-back provider replay", () => {
                   ),
                 },
                 CodexHistoryReplayHarness,
+                { checkoutFixture },
               ).pipe(provideDeterministicTestRuntime)
             : yield* runOrchestratorV2ProviderReplayScenario(
                 {
@@ -426,6 +437,7 @@ describe("orchestration V2 merge-back provider replay", () => {
                     ),
                 },
                 ClaudeOrchestratorReplayHarness,
+                { checkoutFixture },
               ).pipe(provideDeterministicTestRuntime);
 
         const source = result.projections.get(materialized.sourceThreadId);
@@ -594,6 +606,7 @@ describe("orchestration V2 merge-back provider replay", () => {
           ] satisfies ReadonlyArray<OrchestrationV2Command>;
           return {
             commands,
+            projectId,
             sourceThreadId,
             firstForkThreadId,
             secondForkThreadId,
@@ -655,6 +668,16 @@ describe("orchestration V2 merge-back provider replay", () => {
           { type: "dispatch" as const, command: materialized.commands[10]!, await: true },
           { type: "await_thread_idle" as const, threadId: materialized.sourceThreadId },
         ];
+        const checkoutFixture = {
+          projects: [
+            {
+              projectId: materialized.projectId,
+              workspaceRoot: cwd,
+              title: "Merge-back replay",
+            },
+          ],
+          resolvePath: () => undefined,
+        };
         const scenario = {
           name: `thread_merge_back_siblings/${variant.driver}`,
           commands: materialized.commands,
@@ -676,6 +699,7 @@ describe("orchestration V2 merge-back provider replay", () => {
                   ),
                 },
                 CodexHistoryReplayHarness,
+                { checkoutFixture },
               ).pipe(provideDeterministicTestRuntime)
             : yield* runOrchestratorV2ProviderReplayScenario(
                 {
@@ -683,6 +707,7 @@ describe("orchestration V2 merge-back provider replay", () => {
                   transcript: yield* ClaudeOrchestratorReplayHarness.decodeTranscript(transcript),
                 },
                 ClaudeOrchestratorReplayHarness,
+                { checkoutFixture },
               ).pipe(provideDeterministicTestRuntime);
 
         const source = result.projections.get(materialized.sourceThreadId);
