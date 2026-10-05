@@ -45,18 +45,44 @@ every route. See [environment authentication](./environment-auth.md) and the
 [T3 Connect trust boundary](./t3-connect.md).
 
 SSH can launch a server as well as forward a port. Desktop main owns that
-lifecycle because it can spawn SSH and handle authentication prompts. The
-renderer uses the forwarded endpoint through the shared connection runtime.
-[SSH cleanup](../../packages/ssh/src/tunnel.ts) stops a remote server only if the
-launcher owns it; a server it discovered already running must survive a client
-disconnect. Reconnection restores the forward before opening the application
-transport.
+transport lifecycle because it can spawn SSH and handle authentication prompts.
+The renderer uses the forwarded endpoint through the shared connection runtime.
+[SSH cleanup](../../packages/ssh/src/tunnel.ts) releases only the local forward
+on disconnect, connection removal, or desktop shutdown. The host server and
+provider processes remain running, including a server initially launched over
+SSH. Reconnection restores the forward and reuses the host runtime before
+opening the application transport.
+
+Older desktop clients retain the previous cleanup behavior and can stop servers
+they launched over SSH. Persistence on this path requires compatible updated
+clients; a server update alone cannot change an older client's cleanup.
 
 Remote servers can outlive several client releases. Clients must use advertised
 capabilities and handle their absence, rather than assume their own version
-describes the server. Process replacement belongs to the launcher's
-[update protocol](./server-updates.md); the connection runtime handles the
-resulting disconnect.
+describes the server. Reconnection must not replace a running host server to
+match the client's version. Host service restart, update, and uninstall are
+separate operations that can interrupt active work; see the
+[update protocol](./server-updates.md) and
+[background service](../user/background-service.md).
+
+For persistent Jones hosts, prefer a host service with direct private-network
+or Tailscale pairing. The server must be a verified Jones build on the intended
+host and base directory. The default SSH archive resolver still downloads from
+`pingdotgg/t3code`; changing tunnel lifetime does not provision Jones Code.
+Connecting can resolve and install the requested CLI helper archive before
+discovering an existing server, without replacing that server's running version.
+Service installation also resolves a release archive, so a Jones source CLI
+alone does not prove the service runs Jones: use a verified Jones-built pinned
+artifact or mirror, or an approved exact Jones launcher. The default SSH
+discovery path uses `~/.t3`; use direct private pairing for a custom base
+directory, and do not start a second foreground or SSH-launched server for the
+same base.
+
+Host availability remains separate from client connectivity. Linux systemd
+user services need lingering to survive host logout and start at boot. The
+current macOS user LaunchAgent needs the Mac logged in and awake. A laptop
+disconnect is not a Mac Mini logout; persistence does not guarantee active work
+survives host sleep, logout, or reboot.
 
 ### Desktop without a local environment
 

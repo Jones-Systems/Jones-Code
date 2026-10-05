@@ -1,7 +1,33 @@
 # Remote access
 
-Connect a phone, browser, or another desktop app to T3 Code running on a different
+Connect a phone, browser, or another desktop app to Jones Code running on a different
 machine. That machine must stay running and reachable while you work.
+
+## Persistent private hosts
+
+For a VPS, test host, or Mac Mini, prefer a
+[background service](./background-service.md) and direct pairing over an
+authorized private network or Tailscale endpoint. This route does not require a
+T3 hosted account or relay. First verify that the server running on the intended
+host and base directory is a Jones build and that the receiving device can
+reach its authorized endpoint.
+
+The default SSH download and service installer still resolve upstream
+`pingdotgg/t3code` archives. They do not automatically install Jones Code, even
+when invoked from a Jones source CLI. Provisioning Jones requires a verified
+Jones-built pinned artifact or mirror, or an approved exact Jones launcher.
+Use the pairing commands below with that verified installation and its existing
+base directory. For a custom base directory, use direct private pairing:
+desktop SSH discovery looks under `~/.t3`. Do not start another foreground or
+SSH-launched server for a base directory already served by the host service.
+
+Disconnecting a client leaves the host server and provider processes running.
+Restarting or uninstalling the host service is a separate action and interrupts
+active work. On Linux, the systemd user service needs lingering to keep running
+after host logout and start at boot. On macOS, keep the Mac Mini logged in and
+awake for its user LaunchAgent. Disconnecting your laptop does not log out the
+Mini; this does not guarantee work survives host sleep, logout, or reboot. See
+[platform support](./background-service.md#platform-support) for service limits.
 
 ## T3 Connect
 
@@ -127,8 +153,9 @@ credentials, and agent work stay on the remote machine.
 
 The remote host must be Linux or an Apple Silicon Mac with `curl` or `wget`,
 `tar`, `sha256sum` or `shasum`, and [provider setup](./install.md#providers).
-The first launch downloads T3 Code's server to `~/.t3/runtime` on the host, so
-it takes longer than later ones.
+SSH setup can download an upstream CLI archive to `~/.t3/runtime` on the host,
+even when reusing a running server. This is separate from provisioning the
+verified Jones runtime described above.
 Provider CLIs must be on the `PATH` of a non-interactive login shell there;
 check with:
 
@@ -136,9 +163,14 @@ check with:
 ssh user@example.com 'sh -lc "command -v claude codex"'
 ```
 
-If SSH reconnecting fails after an app update, retry the launch once. Removing
-the connection stops a server that T3 Code launched; a server that was already
-running is left alone.
+Disconnecting, removing the SSH connection, or closing the desktop app releases
+only the local port forward. The remote server and provider processes keep
+running, including a server started through SSH. Reconnecting reuses that host
+runtime without replacing it to match the desktop version. Manage host service
+[restarts and removal](./background-service.md#manage-the-service) separately
+when you intend to interrupt work.
+Update other desktop clients that previously launched the same host over SSH
+before relying on persistence; older clients can still stop servers they launched.
 
 For Antigravity's Google callback on a remote host, see
 [remote sign-in](./providers-antigravity.md#sign-in-from-a-remote-device).
