@@ -19,7 +19,7 @@ export class ConversationLibrary extends Context.Service<
       canWrite: boolean,
     ) => Effect.Effect<LibraryReply, ConversationLibraryError>;
   }
->()("t3/conversations/ConversationLibrary") {}
+>()("t3/conversations/Service/ConversationLibrary") {}
 
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;

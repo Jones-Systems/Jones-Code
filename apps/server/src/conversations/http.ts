@@ -101,8 +101,9 @@ function decodeLibraryRequest(bytes: Uint8Array, traceId: string) {
 export const conversationLibraryHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
   "conversationLibrary",
-  (handlers) =>
-    handlers.handleRaw(
+  Effect.fnUntraced(function* (handlers) {
+    const library = yield* ConversationLibrary.ConversationLibrary;
+    return handlers.handleRaw(
       "conversationLibrary",
       Effect.fn("environment.conversationLibrary")(function* ({ request }) {
         const principal = yield* requireEnvironmentScope(AuthOrchestrationReadScope);
@@ -115,10 +116,10 @@ export const conversationLibraryHttpApiLayer = HttpApiBuilder.group(
         const mutates = libraryRequestMutates(libraryRequest);
         if (mutates) yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
 
-        const library = yield* ConversationLibrary.ConversationLibrary;
         return yield* library
           .execute(libraryRequest, principal.scopes.has(AuthOrchestrationOperateScope))
           .pipe(Effect.mapError((cause) => conversationLibraryHttpError(cause.code, traceId)));
       }),
-    ),
+    );
+  }),
 ).pipe(Layer.provide(ConversationLibrary.layer));
