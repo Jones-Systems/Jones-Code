@@ -642,6 +642,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
       "actual_worktree_started_cancel_readback_lost",
       "actual_worktree_started_cancel_reply_lost",
       "actual_worktree_sync_card",
+      "actual_worktree_sync_disconnect_card",
       "actual_worktree_async_card",
       "actual_worktree_cancel_pending",
       "actual_worktree_cancel_partial",
@@ -733,9 +734,11 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         let failureReplyCalls = 0;
         const successfulWorktree =
           scenario === "actual_worktree_sync_card" ||
+          scenario === "actual_worktree_sync_disconnect_card" ||
           scenario === "actual_worktree_async_card" ||
           startedCancellation;
         const asyncWorktree = scenario === "actual_worktree_async_card";
+        const disconnectedWorktree = scenario === "actual_worktree_sync_disconnect_card";
         const worktreeEntered = yield* Deferred.make<void>();
         const worktreeBarrier = yield* Deferred.make<void>();
         const releaseWorktree = Deferred.succeed(worktreeBarrier, undefined);
@@ -1368,14 +1371,15 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           };
           const withUpgrade = (
             request: WsHttpServerRequest.HttpServerRequest,
+            connectionSocket: WsSocket.Socket = socket,
           ): WsHttpServerRequest.HttpServerRequest =>
             new Proxy(request, {
               get(target, property) {
-                if (property === "upgrade") return Effect.succeed(socket);
+                if (property === "upgrade") return Effect.succeed(connectionSocket);
                 if (property === "modify")
                   return (
                     options: Parameters<WsHttpServerRequest.HttpServerRequest["modify"]>[0],
-                  ) => withUpgrade(target.modify(options));
+                  ) => withUpgrade(target.modify(options), connectionSocket);
                 return Reflect.get(target, property, target);
               },
             });
@@ -1441,8 +1445,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             ]);
             expect(preparing.thread.worktreePath).toBe(worktreePath);
             expect(preparing.thread.branch).toBe("owned/forwarding");
+            let setupIncoming = incoming;
+            let setupOutgoing = outgoing;
             const readSetupFrame = () =>
-              WsQueue.take(outgoing).pipe(
+              WsQueue.take(setupOutgoing).pipe(
                 Effect.flatMap((raw) =>
                   Schema.decodeUnknownEffect(
                     Schema.fromJsonString(
@@ -1765,11 +1771,70 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               yield* WsFiber.interrupt(serving);
               return;
             }
+            if (disconnectedWorktree) {
+              yield* WsFiber.interrupt(serving);
+              expect(Option.isNone(yield* receipts.getByCommandId(commandId))).toBe(true);
+              expect(Option.isNone(yield* receipts.getProjectByCommandId(commandId))).toBe(true);
+              expect(
+                Array.from(yield* store.readByCommandId({ commandId }).pipe(Stream.runCollect)),
+              ).toHaveLength(0);
+              const retained = yield* threads.getThreadProjection(threadId);
+              expect(retained.runs[0]?.status).toBe("preparing");
+              expect(retained.runs[0]?.id).toBe(preparing.runs[0]?.id);
+              expect(retained.runs[0]?.legacyPreparation).toEqual(
+                preparing.runs[0]?.legacyPreparation,
+              );
+              expect(retained.thread.deletedAt).toBeNull();
+              expect(kills).toHaveLength(0);
+
+              setupIncoming = yield* WsQueue.unbounded<Uint8Array | string>();
+              setupOutgoing = yield* WsQueue.unbounded<Uint8Array | string>();
+              const resumedSocket: WsSocket.Socket = {
+                [WsSocket.TypeId]: WsSocket.TypeId,
+                reader: Effect.succeed({
+                  pull: WsQueue.take(setupIncoming).pipe(Effect.map((chunk) => [chunk] as const)),
+                  upgrade: () => Effect.die("No TLS/native socket in resumed fixture"),
+                }),
+                writer: Effect.succeed({
+                  write: (chunk) =>
+                    WsSocket.isCloseEvent(chunk)
+                      ? Effect.void
+                      : WsQueue.offer(setupOutgoing, chunk).pipe(Effect.asVoid),
+                  writeAll: (chunks) => WsQueue.offerAll(setupOutgoing, chunks).pipe(Effect.asVoid),
+                }),
+              };
+              const resumedRequest = withUpgrade(
+                WsHttpServerRequest.fromWeb(
+                  new Request(
+                    `http://test/ws?${ORCHESTRATION_PROTOCOL_QUERY_PARAM}=${ORCHESTRATION_PROTOCOL_VERSION_TEXT}`,
+                    { headers: { authorization: `Bearer ${issued.token}` } },
+                  ),
+                ),
+                resumedSocket,
+              );
+              const resumedServing = yield* handler.pipe(
+                Effect.provideService(WsHttpServerRequest.HttpServerRequest, resumedRequest),
+                Effect.scoped,
+                Effect.forkChild,
+              );
+              yield* Effect.addFinalizer(() => WsFiber.interrupt(resumedServing));
+              yield* WsQueue.offer(
+                setupIncoming,
+                yield* encodeSocketRpcRequest({
+                  _tag: "Request",
+                  id: "2",
+                  tag: WS_METHODS.subscribeWorktreeSetup,
+                  payload: { threadId },
+                  headers: [],
+                }),
+              );
+            }
             yield* completeSetup;
             let doneCard: WorktreeSetupStreamEvent | undefined;
             for (
               let count = 0;
-              count < 20 && (doneCard === undefined || responseSequence === undefined);
+              count < 20 &&
+              (doneCard === undefined || (!disconnectedWorktree && responseSequence === undefined));
               count++
             ) {
               const frame = yield* readSetupFrame();
@@ -1780,7 +1845,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               if (frame.requestId === "2" && frame.values !== undefined) {
                 doneCard = frame.values.find((card) => card?.phase === "done");
                 yield* WsQueue.offer(
-                  incoming,
+                  setupIncoming,
                   yield* encodeSocketRpcRequest({ _tag: "Ack", requestId: "2" }),
                 );
               }
@@ -1795,7 +1860,8 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             expect(Option.isSome(c)).toBe(true);
             if (Option.isNone(c)) return yield* Effect.die("Actual receiving release required");
             expect(c.value.status).toBe("accepted");
-            expect(responseSequence).toBe(c.value.resultSequence);
+            if (disconnectedWorktree) expect(responseSequence).toBeUndefined();
+            else expect(responseSequence).toBe(c.value.resultSequence);
             const received = yield* threads.getThreadProjection(threadId);
             const completed = received.runs[0]?.legacyPreparation?.steps;
             expect(completed?.at(-1)?.effect.kind).toBe("setup.completion");
@@ -1821,6 +1887,36 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             }
             expect(received.thread.deletedAt).toBeNull();
             expect(received.messages[0]?.id).toBe(messageId);
+            if (disconnectedWorktree) {
+              expect(received.runs[0]?.id).toBe(preparing.runs[0]?.id);
+              expect(received.runs[0]?.status).toBe("starting");
+              expect(received.thread.worktreePath).toBe(worktreePath);
+              expect(received.thread.branch).toBe("owned/forwarding");
+              expect(yield* fs.readFileString(`${worktreePath}/.git`)).toContain("gitdir:");
+              const b = legacyBootstrapCreateCommandId(threadId, commandId);
+              for (const suffix of [
+                "failure-delete",
+                "workspace-failure-delete",
+                "guard-rejection-delete",
+              ]) {
+                expect(
+                  Option.isNone(yield* receipts.getByCommandId(CommandId.make(`${b}:${suffix}`))),
+                ).toBe(true);
+              }
+              const outbox = yield* WsEffectOutbox.EffectOutboxV2;
+              const effects = yield* outbox.listByThreadId(threadId);
+              expect(
+                effects.filter((entry) =>
+                  ["terminal.cleanup", "attachment.cleanup"].includes(entry.request.type),
+                ),
+              ).toHaveLength(0);
+              expect(
+                effects.filter(
+                  (entry) =>
+                    entry.commandId === commandId && entry.request.type === "provider-turn.start",
+                ),
+              ).toHaveLength(1);
+            }
             expect(spawnCalls).toBe(1);
             expect(kills).toHaveLength(0);
             yield* WsFiber.interrupt(serving);
