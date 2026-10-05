@@ -24,6 +24,16 @@ describe("ExecutionEnvironmentDescriptor", () => {
     ).toBe(true);
   });
 
+  it("preserves automatic worktree base capability while accepting older servers", () => {
+    expect(decodeDescriptor(descriptor).capabilities.worktreeDefaultBase).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, worktreeDefaultBase: true },
+      }).capabilities.worktreeDefaultBase,
+    ).toBe(true);
+  });
+
   it("requires an advertised required-worktree bootstrap capability", () => {
     expect(decodeDescriptor(descriptor).capabilities.requiredWorktreeBootstrap).toBeUndefined();
     expect(
