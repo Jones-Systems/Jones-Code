@@ -14,6 +14,8 @@ import {
   OrchestratorMcpTaskCancelResult,
   OrchestratorMcpUpdateScheduledTaskInput,
   OrchestratorMcpTaskStatusInput,
+  OrchestratorMcpThreadSettleInput,
+  OrchestratorMcpThreadSettleResult,
   OrchestratorMcpThreadInterruptInput,
   OrchestratorMcpThreadInterruptResult,
   OrchestratorMcpThreadListInput,
@@ -187,7 +189,7 @@ const ThreadReadTool = Tool.make("t3_thread_read", {
 
 export const ThreadUpdateTool = Tool.make("t3_thread_update", {
   description:
-    "Update metadata for a thread in the calling project. Omit threadId to update this thread. Use action='rename' with title, action='regenerate_title' with no extra field, action='link_pull_request' with pullRequest, or action='unlink_pull_request'. Workspace and branch changes are intentionally not supported. clientRequestId makes retries idempotent.",
+    "Update metadata for a thread in the calling project. Omit threadId to update this thread. Use action='rename' with title, action='regenerate_title' with no extra field, action='link_pull_request' with pullRequest, or action='unlink_pull_request'. Use block_thread_messages to reject new messages and merge-backs from other agents; allow_thread_messages is self-only. Owner input, self messages, task completion and already accepted work remain available. Workspace and branch changes are intentionally not supported. clientRequestId makes retries idempotent.",
   parameters: ThreadMetadataMcpUpdateInput,
   success: ThreadMetadataMcpUpdateResult,
   failure: OrchestratorMcpFailure,
@@ -237,7 +239,21 @@ const ThreadInterruptTool = Tool.make("t3_thread_interrupt", {
   .annotate(Tool.Title, "Interrupt a T3 thread")
   .annotate(Tool.Destructive, true);
 
+const ThreadSettleTool = Tool.make("t3_thread_settle", {
+  description:
+    "Request settlement of THIS calling thread after this turn succeeds and its checkpoint completes. Returns an accepted deferred request; keep writing the current reply normally. This does not interrupt the turn. User follow-up work, interruption, failure, reverse state actions, or server restart cancel the request. Reuse the same clientRequestId when retrying; the receipt remains bound to the original run.",
+  parameters: OrchestratorMcpThreadSettleInput,
+  success: OrchestratorMcpThreadSettleResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Settle this T3 thread after the reply")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true);
+
 export const OrchestratorToolkit = Toolkit.make(
+  ThreadSettleTool,
   OrchestratorCapabilitiesTool,
   DelegateTaskTool,
   TaskStatusTool,

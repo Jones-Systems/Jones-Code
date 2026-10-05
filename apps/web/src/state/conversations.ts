@@ -25,7 +25,7 @@ export const requestConversationLibrary = createEnvironmentCommand(connectionAto
   label: "web-conversation-library:request",
   execute: (request: LibraryRequest, _registry, environmentId) =>
     Effect.gen(function* () {
-      const supervisor = yield* EnvironmentSupervisor;
+      const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
       const prepared = yield* SubscriptionRef.get(supervisor.prepared);
       if (Option.isNone(prepared)) {
         return yield* new ConversationLibraryConnectionNotReadyError({
