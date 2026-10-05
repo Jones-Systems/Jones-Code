@@ -2490,6 +2490,27 @@ export const OrchestrationV2StoredEventJson = Schema.Struct({
 });
 export type OrchestrationV2StoredEventJson = typeof OrchestrationV2StoredEventJson.Type;
 
+const closedOrchestrationV2Struct = <Fields extends Schema.Struct.Fields>(fields: Fields) => {
+  const schema = Schema.Struct(fields);
+  // Reject original wire overrides before struct decoding can discard them.
+  return Schema.flip(
+    Schema.flip(schema).check(
+      Schema.makeFilter((value) =>
+        Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
+      ),
+    ),
+  );
+};
+
+export const OrchestrationV2ThreadDeletionWorktreeRemoval = closedOrchestrationV2Struct({
+  projectId: ProjectId,
+  path: Schema.String,
+  branch: Schema.NullOr(Schema.String),
+  force: Schema.Literal(true),
+});
+export type OrchestrationV2ThreadDeletionWorktreeRemoval =
+  typeof OrchestrationV2ThreadDeletionWorktreeRemoval.Type;
+
 export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("thread.create"),
@@ -2528,6 +2549,7 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("thread.delete"),
     commandId: CommandId,
     threadId: ThreadId,
+    worktreeRemoval: Schema.optionalKey(OrchestrationV2ThreadDeletionWorktreeRemoval),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.settle"),

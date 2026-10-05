@@ -12,6 +12,10 @@ import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
+import JonesMigration0138 from "./Migrations/138_JonesThreadCreationLookupIndex.ts";
+import JonesMigration0139 from "./Migrations/139_JonesDeletionWorktreeAdmission.ts";
+import JonesMigration0140 from "./Migrations/140_JonesOrdinaryCheckoutOwnership.ts";
+import JonesMigration0141 from "./Migrations/141_JonesOrdinaryCheckoutExecutionLifetime.ts";
 import { runJonesMigrations } from "./JonesMigrationGuard.ts";
 
 // Import all migrations statically
@@ -160,6 +164,10 @@ const jonesMigrationEntries = [
   [4, "NativeCreationCommandIdentities", JonesMigration0004],
   [5, "WorkstreamsNativeAttempts", JonesMigration0005],
   [6, "WorkstreamsProviderEnrollments", JonesMigration0006],
+  [138, "ThreadCreationLookupIndex", JonesMigration0138],
+  [139, "DeletionWorktreeAdmission", JonesMigration0139],
+  [140, "OrdinaryCheckoutOwnership", JonesMigration0140],
+  [141, "OrdinaryCheckoutExecutionLifetime", JonesMigration0141],
 ] as const;
 
 const makeMigrationLoader = (throughId?: number) =>
