@@ -10,9 +10,7 @@ import {
   type LibraryErrorCode,
   type LibraryRequest,
 } from "@t3tools/contracts/conversationLibrary";
-import {
-  libraryRequestMutates,
-} from "@t3tools/shared/conversationLibrary";
+import { libraryRequestMutates } from "@t3tools/shared/conversationLibrary";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -118,12 +116,9 @@ export const conversationLibraryHttpApiLayer = HttpApiBuilder.group(
         if (mutates) yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
 
         const library = yield* ConversationLibrary.ConversationLibrary;
-        return yield* library.execute(
-          libraryRequest,
-          principal.scopes.has(AuthOrchestrationOperateScope),
-        ).pipe(
-          Effect.mapError((cause) => conversationLibraryHttpError(cause.code, traceId)),
-        );
+        return yield* library
+          .execute(libraryRequest, principal.scopes.has(AuthOrchestrationOperateScope))
+          .pipe(Effect.mapError((cause) => conversationLibraryHttpError(cause.code, traceId)));
       }),
     ),
 ).pipe(Layer.provide(ConversationLibrary.layer));
