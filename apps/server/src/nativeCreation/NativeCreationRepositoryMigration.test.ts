@@ -45,6 +45,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         "native_creation_normalized_commands",
         "native_creation_reserved_command_identities",
         "native_creation_reserved_commands",
+        "native_creation_thread_recovery_commands",
       ],
     );
   }).pipe(Effect.provide(memory)),
