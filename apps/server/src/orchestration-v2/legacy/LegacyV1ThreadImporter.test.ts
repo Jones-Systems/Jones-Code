@@ -1,5 +1,12 @@
 import { assert, it } from "@effect/vitest";
-import { EventId, ThreadId, type OrchestrationV2StoredEvent } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  MessageId,
+  ProjectId,
+  ThreadId,
+  type OrchestrationV2StoredEvent,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -470,6 +477,17 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
       const previousRepairThread = {
         ...shellProjection.thread,
         title: "Renamed in v2",
+        legacyBootstrapClaim: {
+          version: 1 as const,
+          createCommandId: CommandId.make("metadata-codec:B"),
+          birthCommandId: CommandId.make("metadata-codec:B:initial-message"),
+          releaseCommandId: CommandId.make("metadata-codec:C"),
+          projectId: ProjectId.make("project:legacy-metadata-upgrade"),
+          threadId,
+          messageId: MessageId.make("metadata-codec:M"),
+          payloadHash: "metadata-codec-payload",
+          ownsNewThread: false,
+        },
         pinnedAt: null,
         pinOrderKey: null,
         linkedPullRequest: null,
@@ -502,6 +520,10 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
       assert.deepStrictEqual(repaired.thread.pullRequests, []);
       assert.equal(repaired.thread.branchPullRequest?.number, 9001);
       assert.equal(repaired.thread.activeOrderKey, "az");
+      assert.deepStrictEqual(
+        repaired.thread.legacyBootstrapClaim,
+        previousRepairThread.legacyBootstrapClaim,
+      );
 
       const eventsBeforeRetry = yield* sql<{ readonly event_id: string }>`
         SELECT event_id

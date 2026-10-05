@@ -9,9 +9,9 @@ import {
   RunId,
   ThreadId,
   OrchestrationV2CheckpointJson,
-  OrchestrationV2StoredEventJson,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import { RecordedStoredEventJson } from "./RecordedTypes.ts";
 import { NativeProviderRuntimeBindingV1 } from "../nativeCreation/NativeCreationExecutionTypes.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -170,7 +170,7 @@ export const OrdinaryCheckpointProducerObservationV1 = Schema.Struct({
       ...fields,
       acceptedAt: Schema.DateTimeUtcFromString,
     })),
-    storedEvents: Schema.Array(OrchestrationV2StoredEventJson),
+    storedEvents: Schema.Array(RecordedStoredEventJson),
     committed: Schema.Boolean,
     cancelledEffectCount: Schema.Int.check(Schema.makeFilter((value) => value >= 0)),
   }),
@@ -255,7 +255,7 @@ export const OrdinaryRollbackProducerObservationV1 = Schema.Struct({
   execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
   completedAt: Schema.NonEmptyString,
   pruneEffectId: Schema.NonEmptyString,
-  storedEvents: Schema.Array(OrchestrationV2StoredEventJson),
+  storedEvents: Schema.Array(RecordedStoredEventJson),
 });
 export type OrdinaryRollbackProducerObservationV1 =
   typeof OrdinaryRollbackProducerObservationV1.Type;

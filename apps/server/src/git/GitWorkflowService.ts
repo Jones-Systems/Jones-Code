@@ -116,6 +116,8 @@ export class GitWorkflowService extends Context.Service<
       input: VcsSwitchRefInput,
     ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
     readonly renameBranch: (input: {
+      readonly revalidateMutation?: Effect.Effect<void, Error>;
+      readonly legacyPreparation?: GitVcsDriver.LegacyBranchRenameHooks;
       readonly exactName?: boolean;
       readonly cwd: string;
       readonly oldBranch: string;

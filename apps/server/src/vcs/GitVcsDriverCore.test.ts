@@ -2644,6 +2644,888 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("worktree operations", () => {
+    const syntheticLegacyWorktree = (
+      oid: string,
+      branch: string,
+      submodules = false,
+      loseMaterial = false,
+    ) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* makeTmpDir("legacy-worktree-owner-");
+        const cwd = path.join(root, "repo");
+        const owned = path.join(root, "owned");
+        const common = path.join(cwd, ".git");
+        const gitDirectory = path.join(common, "worktrees", "owned");
+        yield* fs.makeDirectory(gitDirectory, { recursive: true });
+        const commands: string[][] = [];
+        let added = false;
+        let currentBranch = branch;
+        const occupiedTargets = new Set<string>();
+        let loseRenameMaterial = false;
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            if (!ChildProcess.isStandardCommand(command))
+              return yield* Effect.die("Unexpected pipeline");
+            const args = [...command.args];
+            commands.push(args);
+            if (args.includes("add")) {
+              yield* fs.makeDirectory(owned);
+              if (!loseMaterial)
+                yield* fs.writeFileString(path.join(owned, ".git"), `gitdir: ${gitDirectory}\n`);
+              if (submodules)
+                yield* fs.writeFileString(
+                  path.join(owned, ".gitmodules"),
+                  '[submodule "fixture"]\npath=fixture\nurl=fixture\n',
+                );
+              added = true;
+            }
+            if (args.includes("-m")) {
+              currentBranch = args.at(-1)!;
+              if (loseRenameMaterial) yield* fs.remove(path.join(owned, ".git"));
+            }
+            let stdout = "";
+            if (args.includes("--git-common-dir")) stdout = `${common}\n`;
+            else if (args.includes("--absolute-git-dir")) stdout = `${gitDirectory}\n`;
+            else if (args.includes("symbolic-ref")) stdout = `refs/heads/${currentBranch}\n`;
+            else if (args.includes("rev-parse")) stdout = `${oid}\n`;
+            else if (args.includes("--porcelain"))
+              stdout = added
+                ? `worktree ${owned}\0HEAD ${oid}\0branch refs/heads/${currentBranch}\0\0`
+                : "";
+            else if (args.includes("for-each-ref")) {
+              const target = args.at(-1)!;
+              stdout =
+                (added && target === `refs/heads/${currentBranch}`) || occupiedTargets.has(target)
+                  ? `${target}\n`
+                  : "";
+            }
+            const handle = makeSuccessfulHandle(stdout);
+            return args.includes("--get-regexp") ||
+              (args.includes("show-ref") &&
+                args.at(-1) !== `refs/heads/${currentBranch}` &&
+                !occupiedTargets.has(args.at(-1)!))
+              ? ChildProcessSpawner.makeHandle({
+                  ...handle,
+                  exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+                })
+              : handle;
+          }),
+        );
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provide(ServerConfigLayer),
+        );
+        return {
+          cwd,
+          owned,
+          common,
+          gitDirectory,
+          commands,
+          driver,
+          fs,
+          occupiedTargets,
+          loseRenameMaterial: () => {
+            loseRenameMaterial = true;
+          },
+        };
+      });
+
+    it.effect.each(["before_add", "after_add", "before_config"] as const)(
+      "joined preparation physical refusal $scenario cannot become journal success or later mutation",
+      (scenario) =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree("6".repeat(40), "legacy/joined");
+          let allowed = true;
+          const outcomes: string[] = [];
+          const intents: string[] = [];
+          let neverInvoked = 0;
+          const result = yield* fixture.driver
+            .createWorktree(
+              {
+                cwd: fixture.cwd,
+                refName: "main",
+                newRefName: "legacy/joined",
+                baseRefName: "main",
+                path: fixture.owned,
+              },
+              {
+                revalidateMutation: Effect.gen(function* () {
+                  if (
+                    !allowed ||
+                    (scenario === "after_add" &&
+                      fixture.commands.some((args) => args.includes("add")))
+                  )
+                    return yield* new GitCommandError({
+                      operation: "fixture.joined.physical",
+                      command: "fixture guard",
+                      cwd: fixture.cwd,
+                      detail: "Original physical owner unavailable",
+                    });
+                }),
+                legacyPreparation: {
+                  beforeEffect: (step) =>
+                    Effect.gen(function* () {
+                      intents.push(step.kind);
+                      yield* Effect.yieldNow;
+                      if (
+                        scenario === "before_add" ||
+                        (scenario === "before_config" && step.kind === "worktree.base-config")
+                      )
+                        allowed = false;
+                    }),
+                  afterEffect: (step, outcome) =>
+                    Effect.sync(() => {
+                      outcomes.push(`${step.kind}:${outcome}`);
+                    }),
+                  neverInvoked: () =>
+                    Effect.sync(() => {
+                      neverInvoked++;
+                    }),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          if (Result.isFailure(result))
+            assert.equal(
+              result.failure.operation,
+              "GitVcsDriver.createWorktree.revalidateOriginalActor",
+            );
+          assert.equal(
+            fixture.commands.filter((args) => args.includes("add")).length,
+            scenario === "before_add" ? 0 : 1,
+          );
+          assert.isFalse(
+            fixture.commands.some(
+              (args) =>
+                args.includes("branch.legacy/joined.gh-merge-base") &&
+                !args.includes("--get-regexp"),
+            ),
+          );
+          assert.equal(neverInvoked, 0);
+          assert.deepEqual(
+            intents,
+            scenario === "before_config"
+              ? ["worktree.add", "worktree.base-config"]
+              : ["worktree.add"],
+          );
+          assert.deepEqual(
+            outcomes,
+            scenario === "before_add"
+              ? []
+              : [
+                  `worktree.add:${scenario === "after_add" ? "failed_or_unknown" : "settled_success"}`,
+                ],
+          );
+          assert.isFalse(
+            fixture.commands.some((args) => args.includes("remove") || args.includes("prune")),
+          );
+        }),
+    );
+
+    it.effect.each(["before_entry", "after_entry", "after_outcome"] as const)(
+      "joined rename physical refusal $scenario denies returned success without repeat or cleanup",
+      (scenario) =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree("7".repeat(40), "legacy/joined-rename");
+          let before: GitVcsDriver.LegacyWorktreeBeforeObservation | undefined;
+          let claim: GitVcsDriver.LegacyWorktreeMaterialClaim | undefined;
+          yield* fixture.driver.createWorktree(
+            {
+              cwd: fixture.cwd,
+              refName: "main",
+              newRefName: "legacy/joined-rename",
+              path: fixture.owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: (step) =>
+                  Effect.sync(() => {
+                    before = step.before;
+                  }),
+                afterEffect: (_step, _outcome, material) =>
+                  Effect.sync(() => {
+                    claim = material;
+                  }),
+              },
+            },
+          );
+          if (before === undefined || claim === undefined)
+            return yield* Effect.die("No original owned fixture claim");
+          let allowed = true;
+          let intentCalls = 0;
+          const outcomes: string[] = [];
+          const result = yield* fixture.driver
+            .renameBranch({
+              cwd: fixture.owned,
+              oldBranch: "legacy/joined-rename",
+              newBranch: "qualified",
+              exactName: true,
+              revalidateMutation: Effect.gen(function* () {
+                if (
+                  !allowed ||
+                  (scenario === "after_entry" &&
+                    fixture.commands.some((args) => args.includes("-m")))
+                )
+                  return yield* new GitCommandError({
+                    operation: "fixture.joined.rename",
+                    command: "fixture guard",
+                    cwd: fixture.owned,
+                    detail: "Original rename owner unavailable",
+                  });
+              }),
+              legacyPreparation: {
+                before,
+                claim,
+                beforeEffect: () =>
+                  Effect.gen(function* () {
+                    intentCalls++;
+                    yield* Effect.yieldNow;
+                    if (scenario === "before_entry") allowed = false;
+                  }),
+                afterEffect: (_step, outcome) =>
+                  Effect.gen(function* () {
+                    outcomes.push(outcome);
+                    yield* Effect.yieldNow;
+                    if (scenario === "after_outcome") allowed = false;
+                  }),
+              },
+            })
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          if (Result.isFailure(result))
+            assert.equal(
+              result.failure.operation,
+              "GitVcsDriver.renameBranch.revalidateOriginalActor",
+            );
+          assert.equal(intentCalls, 1);
+          assert.equal(
+            fixture.commands.filter((args) => args.includes("-m")).length,
+            scenario === "before_entry" ? 0 : 1,
+          );
+          assert.deepEqual(
+            outcomes,
+            scenario === "before_entry"
+              ? []
+              : [scenario === "after_entry" ? "failed_or_unknown" : "settled_success"],
+          );
+          assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+          assert.isFalse(
+            fixture.commands.some((args) => args.includes("remove") || args.includes("prune")),
+          );
+        }),
+    );
+
+    it.effect.each([
+      "suffix",
+      "collision",
+      "lost_outcome",
+      "replacement",
+      "unknown_material",
+    ] as const)(
+      "legacy rename binds chosen target and retains unknown material for %s",
+      (scenario) =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree("4".repeat(40), "legacy/rename-case");
+          let before: GitVcsDriver.LegacyWorktreeBeforeObservation | undefined;
+          let claim: GitVcsDriver.LegacyWorktreeMaterialClaim | undefined;
+          yield* fixture.driver.createWorktree(
+            {
+              cwd: fixture.cwd,
+              refName: "main",
+              newRefName: "legacy/rename-case",
+              path: fixture.owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: (step) =>
+                  Effect.sync(() => {
+                    before = step.before;
+                  }),
+                afterEffect: (_step, _result, material) =>
+                  Effect.sync(() => {
+                    claim = material;
+                  }),
+              },
+            },
+          );
+          if (before === undefined || claim === undefined)
+            return yield* Effect.die("No owned fixture claim");
+          if (scenario === "suffix" || scenario === "collision")
+            fixture.occupiedTargets.add("refs/heads/qualified");
+          if (scenario === "unknown_material") fixture.loseRenameMaterial();
+          const intents: GitVcsDriver.LegacyBranchRenameStep[] = [];
+          const outcomes: string[] = [];
+          const result = yield* fixture.driver
+            .renameBranch({
+              cwd: fixture.owned,
+              oldBranch: "legacy/rename-case",
+              newBranch: "qualified",
+              exactName: scenario !== "suffix",
+              legacyPreparation: {
+                before,
+                claim,
+                beforeEffect: (step) =>
+                  Effect.gen(function* () {
+                    intents.push(step);
+                    assert.isFalse(fixture.commands.some((args) => args.includes("-m")));
+                    if (scenario === "replacement") {
+                      yield* fixture.fs.rename(fixture.owned, `${fixture.owned}-original`);
+                      yield* fixture.fs.makeDirectory(fixture.owned);
+                    }
+                  }),
+                afterEffect: (step, outcome, material) =>
+                  Effect.gen(function* () {
+                    outcomes.push(outcome);
+                    if (scenario === "unknown_material") {
+                      assert.isUndefined(material);
+                      return;
+                    }
+                    assert.equal(outcome, "settled_success");
+                    assert.deepEqual(material, { ...claim, headRef: step.targetRef });
+                    if (scenario === "lost_outcome")
+                      return yield* new GitCommandError({
+                        operation: "fixture.rename.outcome",
+                        command: "git",
+                        cwd: fixture.owned,
+                        detail: "Outcome readback unavailable",
+                      });
+                  }),
+              },
+            })
+            .pipe(Effect.result);
+          assert.equal(
+            fixture.commands.filter((args) => args.includes("-m")).length,
+            scenario === "collision" || scenario === "replacement" ? 0 : 1,
+          );
+          assert.isFalse(
+            fixture.commands.some((args) => args.includes("prune") || args.includes("remove")),
+          );
+          assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+          if (scenario === "suffix") {
+            assert.isTrue(Result.isSuccess(result));
+            assert.equal(Result.isSuccess(result) ? result.success.branch : null, "qualified-1");
+            assert.equal(intents[0]?.targetRef, "refs/heads/qualified-1");
+            assert.deepEqual(intents[0]?.args, [
+              "branch",
+              "-m",
+              "--",
+              "legacy/rename-case",
+              "qualified-1",
+            ]);
+            assert.deepEqual(outcomes, ["settled_success"]);
+          } else {
+            assert.isTrue(Result.isFailure(result));
+            assert.lengthOf(intents, scenario === "collision" ? 0 : 1);
+            assert.deepEqual(
+              outcomes,
+              scenario === "collision" || scenario === "replacement"
+                ? []
+                : [scenario === "unknown_material" ? "failed_or_unknown" : "settled_success"],
+            );
+          }
+        }),
+    );
+
+    it.effect("legacy rename intent refusal prevents branch mutation", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("3".repeat(40), "legacy/rename");
+        let before: GitVcsDriver.LegacyWorktreeBeforeObservation | undefined;
+        let claim: GitVcsDriver.LegacyWorktreeMaterialClaim | undefined;
+        yield* fixture.driver.createWorktree(
+          { cwd: fixture.cwd, refName: "main", newRefName: "legacy/rename", path: fixture.owned },
+          {
+            legacyPreparation: {
+              beforeEffect: (step) =>
+                Effect.sync(() => {
+                  before = step.before;
+                }),
+              afterEffect: (_step, _result, material) =>
+                Effect.sync(() => {
+                  claim = material;
+                }),
+            },
+          },
+        );
+        if (before === undefined || claim === undefined)
+          return yield* Effect.die("No owned fixture claim");
+        let intentCalls = 0;
+        const result = yield* fixture.driver
+          .renameBranch({
+            cwd: fixture.owned,
+            oldBranch: "legacy/rename",
+            newBranch: "qualified",
+            exactName: true,
+            ...{
+              legacyPreparation: {
+                before,
+                claim,
+                beforeEffect: () =>
+                  Effect.sync(() => {
+                    intentCalls++;
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new GitCommandError({
+                          operation: "fixture.rename.intent",
+                          command: "git",
+                          cwd: fixture.owned,
+                          detail: "Intent readback unavailable",
+                        }),
+                      ),
+                    ),
+                  ),
+                afterEffect: () => Effect.die("No outcome without accepted intent"),
+              },
+            },
+          })
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.equal(intentCalls, 1);
+        assert.isFalse(fixture.commands.some((args) => args.includes("-m")));
+      }),
+    );
+
+    it.effect(
+      "legacy worktree owner proves invalid-input refusal was never invoked only after accepted intent",
+      () =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree("9".repeat(40), "legacy/invalid?");
+          const trace: string[] = [];
+          const result = yield* fixture.driver
+            .createWorktree(
+              {
+                cwd: fixture.cwd,
+                refName: "main",
+                newRefName: "legacy/invalid?",
+                path: fixture.owned,
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: (step) =>
+                    Effect.sync(() => {
+                      assert.equal(step.targetRef, "refs/heads/legacy/invalid?");
+                      assert.isDefined(step.before);
+                      trace.push("accepted-intent-readback");
+                    }),
+                  neverInvoked: (step, reason) =>
+                    Effect.sync(() => {
+                      assert.equal(step.kind, "worktree.add");
+                      assert.equal(reason, "input_validation_failed");
+                      assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+                      trace.push("never-invoked-outcome-readback");
+                    }),
+                  afterEffect: () => Effect.die("No execution outcome when invocation was refused"),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(trace, ["accepted-intent-readback", "never-invoked-outcome-readback"]);
+          assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+          assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(fixture.owned));
+        }),
+    );
+
+    it.effect.each(["intent_lost", "outcome_lost"] as const)(
+      "legacy never-invoked refusal preserves unknown journal readback for $scenario",
+      (scenario) =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree("8".repeat(40), "legacy/invalid?");
+          const trace: string[] = [];
+          const unavailable = () =>
+            new GitCommandError({
+              operation: "fixture.readback",
+              command: "git",
+              cwd: fixture.cwd,
+              detail: "Exact journal readback unavailable",
+            });
+          const result = yield* fixture.driver
+            .createWorktree(
+              {
+                cwd: fixture.cwd,
+                refName: "main",
+                newRefName: "legacy/invalid?",
+                path: fixture.owned,
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: () =>
+                    Effect.sync(() => {
+                      trace.push("intent");
+                    }).pipe(
+                      Effect.andThen(
+                        scenario === "intent_lost" ? Effect.fail(unavailable()) : Effect.void,
+                      ),
+                    ),
+                  neverInvoked: () =>
+                    Effect.sync(() => {
+                      trace.push("outcome");
+                    }).pipe(Effect.andThen(Effect.fail(unavailable()))),
+                  afterEffect: () => Effect.die("Uninvoked mutation cannot report execution"),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(trace, scenario === "intent_lost" ? ["intent"] : ["intent", "outcome"]);
+          assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+          assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(fixture.owned));
+        }),
+    );
+
+    it.effect("legacy worktree intent refusal prevents add and config writes", () =>
+      Effect.gen(function* () {
+        const { cwd, owned, commands, driver } = yield* syntheticLegacyWorktree(
+          "a".repeat(40),
+          "legacy/branch",
+        );
+        const result = yield* driver
+          .createWorktree(
+            {
+              cwd,
+              refName: "main",
+              newRefName: "legacy/branch",
+              baseRefName: "main",
+              path: owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: () =>
+                  Effect.fail(
+                    new GitCommandError({
+                      operation: "fixture.journal",
+                      command: "git",
+                      cwd,
+                      detail: "Intent readback unavailable",
+                    }),
+                  ),
+                afterEffect: () => Effect.die("No outcome without intent"),
+              },
+            },
+          )
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.isFalse(commands.some((args) => args.includes("add")));
+        assert.isFalse(
+          commands.some((args) => args.includes("branch.legacy/branch.gh-merge-base")),
+        );
+      }),
+    );
+
+    it.effect(
+      "legacy worktree outcome refusal retains the add and prevents later config writes",
+      () =>
+        Effect.gen(function* () {
+          const { cwd, owned, common, commands, driver } = yield* syntheticLegacyWorktree(
+            "b".repeat(40),
+            "legacy/branch",
+          );
+          const intents: GitVcsDriver.LegacyWorktreePreparationStep[] = [];
+          const result = yield* driver
+            .createWorktree(
+              {
+                cwd,
+                refName: "main",
+                newRefName: "legacy/branch",
+                baseRefName: "main",
+                path: owned,
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: (step) =>
+                    Effect.sync(() => {
+                      intents.push(step);
+                    }),
+                  afterEffect: () =>
+                    Effect.fail(
+                      new GitCommandError({
+                        operation: "fixture.journal",
+                        command: "git",
+                        cwd,
+                        detail: "Outcome readback unavailable",
+                      }),
+                    ),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.equal(commands.filter((args) => args.includes("add")).length, 1);
+          assert.isFalse(
+            commands.some((args) => args.includes("branch.legacy/branch.gh-merge-base")),
+          );
+          assert.deepInclude(intents[0], {
+            kind: "worktree.add",
+            worktreePath: owned,
+            commonDirectory: common,
+            baseCommitOid: "b".repeat(40),
+            targetRef: "refs/heads/legacy/branch",
+          });
+        }),
+    );
+
+    it.effect(
+      "legacy submodule journal refusal escapes best-effort handling before config writes",
+      () =>
+        Effect.gen(function* () {
+          const { cwd, owned, commands, driver } = yield* syntheticLegacyWorktree(
+            "c".repeat(40),
+            "legacy/submodules",
+            true,
+          );
+          const seen: string[] = [];
+          const result = yield* driver
+            .createWorktree(
+              {
+                cwd,
+                refName: "main",
+                newRefName: "legacy/submodules",
+                baseRefName: "main",
+                path: owned,
+              },
+              {
+                submodules: "recursive",
+                legacyPreparation: {
+                  beforeEffect: (step) =>
+                    Effect.sync(() => {
+                      seen.push(`intent:${step.kind}`);
+                    }).pipe(
+                      Effect.andThen(
+                        step.kind === "worktree.submodules"
+                          ? Effect.fail(
+                              new GitCommandError({
+                                operation: "fixture.journal",
+                                command: "git",
+                                cwd,
+                                detail: "Intent readback refused",
+                              }),
+                            )
+                          : Effect.void,
+                      ),
+                    ),
+                  afterEffect: (step, outcome) =>
+                    Effect.sync(() => {
+                      seen.push(`${outcome}:${step.kind}`);
+                    }),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(seen, [
+            "intent:worktree.add",
+            "settled_success:worktree.add",
+            "intent:worktree.submodules",
+          ]);
+          assert.equal(commands.filter((args) => args.includes("add")).length, 1);
+          assert.isFalse(commands.some((args) => args.includes("update")));
+          assert.isFalse(
+            commands.some((args) => args.includes("branch.legacy/submodules.gh-merge-base")),
+          );
+        }),
+    );
+
+    it.effect("legacy worktree owner journals exact absence and material before later config", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("d".repeat(40), "legacy/verified");
+        const steps: GitVcsDriver.LegacyWorktreePreparationStep[] = [];
+        const claims: GitVcsDriver.LegacyWorktreeMaterialClaim[] = [];
+        yield* fixture.driver.createWorktree(
+          {
+            cwd: fixture.cwd,
+            refName: "main",
+            newRefName: "legacy/verified",
+            baseRefName: "main",
+            path: fixture.owned,
+          },
+          {
+            legacyPreparation: {
+              beforeEffect: (step) =>
+                Effect.sync(() => {
+                  steps.push(step);
+                }),
+              afterEffect: (_step, result, claim) =>
+                Effect.sync(() => {
+                  assert.equal(result, "settled_success");
+                  assert.isDefined(claim);
+                  claims.push(claim!);
+                }),
+            },
+          },
+        );
+        assert.deepEqual(
+          steps.map((step) => step.kind),
+          ["worktree.add", "worktree.base-config"],
+        );
+        assert.deepEqual(steps[0]!.before, steps[1]!.before);
+        assert.equal(steps[0]!.before?.targetRefAbsent, true);
+        assert.equal(steps[0]!.before?.registrationAbsent, true);
+        assert.equal(steps[0]!.args.at(-1), "d".repeat(40));
+        assert.equal(claims[0]!.path, fixture.owned);
+        assert.equal(claims[0]!.realPath, NodeFS.realpathSync(fixture.owned));
+        assert.equal(claims[0]!.device, String(NodeFS.lstatSync(fixture.owned).dev));
+        assert.equal(claims[0]!.inode, String(NodeFS.lstatSync(fixture.owned).ino));
+        assert.equal(claims[0]!.gitDirectory, fixture.gitDirectory);
+        assert.equal(claims[0]!.commonDirectory, fixture.common);
+        assert.equal(claims[0]!.headRef, "refs/heads/legacy/verified");
+        assert.equal(claims[0]!.headOid, "d".repeat(40));
+        assert.deepEqual(claims[1], claims[0]);
+        assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+      }),
+    );
+
+    it.effect("legacy worktree preexisting material refuses without add or journal authority", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("e".repeat(40), "legacy/preexisting");
+        yield* fixture.fs.makeDirectory(fixture.owned);
+        let journalCalls = 0;
+        const result = yield* fixture.driver
+          .createWorktree(
+            {
+              cwd: fixture.cwd,
+              refName: "main",
+              newRefName: "legacy/preexisting",
+              baseRefName: "main",
+              path: fixture.owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: () =>
+                  Effect.sync(() => {
+                    journalCalls++;
+                  }),
+                afterEffect: () => Effect.die("No effect outcome"),
+              },
+            },
+          )
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.equal(journalCalls, 0);
+        assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+        assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+      }),
+    );
+
+    it.effect("legacy worktree replacement after durable claim refuses all later writes", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("f".repeat(40), "legacy/replaced");
+        const kinds: string[] = [];
+        const result = yield* fixture.driver
+          .createWorktree(
+            {
+              cwd: fixture.cwd,
+              refName: "main",
+              newRefName: "legacy/replaced",
+              baseRefName: "main",
+              path: fixture.owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: (step) =>
+                  Effect.sync(() => {
+                    kinds.push(step.kind);
+                  }),
+                afterEffect: (step, outcome, claim) =>
+                  Effect.gen(function* () {
+                    assert.equal(outcome, "settled_success");
+                    assert.isDefined(claim);
+                    if (step.kind === "worktree.add") {
+                      yield* fixture.fs.rename(fixture.owned, `${fixture.owned}-previous`);
+                      yield* fixture.fs.makeDirectory(fixture.owned);
+                      yield* fixture.fs.writeFileString(
+                        `${fixture.owned}/.git`,
+                        `gitdir: ${fixture.gitDirectory}\n`,
+                      );
+                    }
+                  }),
+              },
+            },
+          )
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.deepEqual(kinds, ["worktree.add"]);
+        assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+        assert.isFalse(
+          fixture.commands.some((args) => args.includes("branch.legacy/replaced.gh-merge-base")),
+        );
+        assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+        assert.isTrue(yield* fixture.fs.exists(`${fixture.owned}-previous`));
+      }),
+    );
+
+    it.effect(
+      "legacy worktree unavailable post-add material reports unknown and preserves its target",
+      () =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree(
+            "1".repeat(40),
+            "legacy/lost",
+            false,
+            true,
+          );
+          const outcomes: string[] = [];
+          const result = yield* fixture.driver
+            .createWorktree(
+              {
+                cwd: fixture.cwd,
+                refName: "main",
+                newRefName: "legacy/lost",
+                baseRefName: "main",
+                path: fixture.owned,
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: () => Effect.void,
+                  afterEffect: (step, outcome, claim) =>
+                    Effect.sync(() => {
+                      outcomes.push(`${step.kind}:${outcome}`);
+                      assert.isUndefined(claim);
+                    }),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(outcomes, ["worktree.add:failed_or_unknown"]);
+          assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+          assert.isFalse(
+            fixture.commands.some((args) => args.includes("branch.legacy/lost.gh-merge-base")),
+          );
+          assert.isFalse(
+            fixture.commands.some((args) => args.includes("remove") || args.includes("prune")),
+          );
+          assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+        }),
+    );
+
+    it.effect("native worktree defaults do not execute private material probes", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree(
+          "2".repeat(40),
+          "native/default",
+          false,
+          true,
+        );
+        const result = yield* fixture.driver.createWorktree({
+          cwd: fixture.cwd,
+          refName: "main",
+          newRefName: "native/default",
+          baseRefName: "main",
+          path: fixture.owned,
+        });
+        assert.equal(result.worktree.path, fixture.owned);
+        assert.isFalse(yield* fixture.fs.exists(`${fixture.owned}/.git`));
+        assert.isFalse(fixture.commands.some((args) => args.includes("--get-regexp")));
+        assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+        assert.isTrue(
+          fixture.commands.some((args) => args.includes("branch.native/default.gh-merge-base")),
+        );
+      }),
+    );
+
     it.effect("uses parallel checkout without skipping filters or hooks", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

@@ -2,8 +2,6 @@ import { NativeCreationRepositoryError } from "../nativeCreation/NativeCreationR
 import {
   CommandId,
   OrchestrationV2Command,
-  type OrchestrationV2StoredEvent,
-  OrchestrationV2StoredEventJson,
   OrchestrationV2CheckpointJson,
   WorktreeOwnershipConflictError,
   type ProjectId,
@@ -40,6 +38,7 @@ import {
   type ProviderManagedActorClosureObservationV1,
   type ProviderManagedActorCompletionError,
 } from "./ProviderManagedActorCompletion.ts";
+import { type RecordedStoredEvent, RecordedStoredEventJson } from "./RecordedTypes.ts";
 import { readApplicationThreadBirth } from "./ApplicationThreadBirth.ts";
 import { canonicalJson, sha256 } from "./CanonicalJson.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
@@ -630,7 +629,7 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
     const acquireNewborn = Effect.fn("OrdinaryCheckoutStore.acquireNewborn")(function* (
       captured: OrdinaryCheckoutCommitCapture,
       receipt: CommandReceiptStore.CommandReceiptV2,
-      events: ReadonlyArray<OrchestrationV2StoredEvent>,
+      events: ReadonlyArray<RecordedStoredEvent>,
     ) {
       yield* transactions.requireOwned;
       const capture = captured.capture;
@@ -684,7 +683,7 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
     const recordAcceptance = Effect.fn("OrdinaryCheckoutStore.recordAcceptance")(function* (input: {
       readonly captured: OrdinaryCheckoutCommitCapture;
       readonly receipt: CommandReceiptStore.CommandReceiptV2;
-      readonly events: ReadonlyArray<OrchestrationV2StoredEvent>;
+      readonly events: ReadonlyArray<RecordedStoredEvent>;
       readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
     }) {
       const { capture } = input.captured;
@@ -864,10 +863,7 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
       return admission;
     });
 
-    const ordinaryEventBasis = (
-      events: ReadonlyArray<OrchestrationV2StoredEvent>,
-      commandId: CommandId,
-    ) =>
+    const ordinaryEventBasis = (events: ReadonlyArray<RecordedStoredEvent>, commandId: CommandId) =>
       events.map((stored) => ({
         eventId: stored.event.id,
         sequence: stored.sequence,
@@ -3028,9 +3024,8 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
           ...receipt,
           acceptedAt: DateTime.formatIso(receipt.acceptedAt),
         }) !== canonicalJson(encoded.commit.receipt) ||
-        canonicalJson(
-          events.map((event) => Schema.encodeSync(OrchestrationV2StoredEventJson)(event)),
-        ) !== canonicalJson(encoded.commit.storedEvents)
+        canonicalJson(events.map((event) => Schema.encodeSync(RecordedStoredEventJson)(event))) !==
+          canonicalJson(encoded.commit.storedEvents)
       )
         return yield* failure(
           admission.capture,
@@ -3137,7 +3132,7 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
       readonly commitMetadata: Effect.Effect<
         {
           readonly sequence: number;
-          readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
+          readonly storedEvents: ReadonlyArray<RecordedStoredEvent>;
         },
         Error
       >;

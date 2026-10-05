@@ -8,6 +8,7 @@ import {
   type ProviderNativeStartDispatchFenceV1,
 } from "../ProviderAdapter.ts";
 import type { ServerProviderModel } from "@t3tools/contracts";
+import { readCodexGoalState, unknownProviderGoal } from "../../provider/providerGoal.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 import {
@@ -7489,6 +7490,25 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   }),
               ),
             ),
+          readGoalState: (providerThread) =>
+            Effect.gen(function* () {
+              if (
+                providerThread.providerSessionId !== input.providerSessionId ||
+                providerThread.providerInstanceId !== adapterOptions.instanceId
+              )
+                return unknownProviderGoal("instance_mismatch");
+              if (capacityScopeClosed) return unknownProviderGoal("session_stopped");
+              const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+              if (providerThread.nativeThreadRef?.driver !== CODEX_PROVIDER || !nativeThreadId)
+                return unknownProviderGoal("native_cursor_missing");
+              return yield* readCodexGoalState(
+                client,
+                Effect.sync(() => ({
+                  nativeThreadId: providerThread.nativeThreadRef?.nativeId ?? null,
+                  stopped: capacityScopeClosed,
+                })),
+              );
+            }),
           readThreadSnapshot: (threadInput) =>
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(threadInput.providerThread);

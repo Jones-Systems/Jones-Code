@@ -1,4 +1,9 @@
 import {
+  type RecordedAppThread as OrchestrationV2AppThread,
+  RecordedAppThreadJson as OrchestrationV2AppThreadJson,
+  type RecordedLifecycleEvent as OrchestrationV2DomainEvent,
+} from "../RecordedTypes.ts";
+import {
   threadPullRequestKeysEqual,
   threadPullRequestsOf,
 } from "@t3tools/shared/threadPullRequests";
@@ -9,10 +14,7 @@ import {
   EventId,
   MessageId,
   ModelSelection,
-  type OrchestrationV2AppThread,
-  OrchestrationV2AppThreadJson,
   type OrchestrationV2ConversationMessage,
-  type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
   ProjectId,
   ProviderInstanceId,

@@ -1,3 +1,5 @@
+import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
+import { QueueDispatchCommand } from "@t3tools/contracts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -150,6 +152,7 @@ import {
 } from "./orchestration-v2/threadHistoryPaging.ts";
 import {
   projectDomainEventForWire,
+  isPublicStoredOrchestrationEvent,
   projectThreadProjectionForWire,
 } from "./orchestration-v2/WireProjection.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -770,6 +773,7 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
           afterSequence,
         })
         .pipe(
+          Stream.filter(isPublicStoredOrchestrationEvent),
           Stream.map((stored) => ({
             kind: "event" as const,
             sequence: stored.sequence,
@@ -792,9 +796,11 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
           threadId: input.threadId,
           afterSequence,
           throughSequence,
+          publicOnly: true,
           limit: THREAD_RESUME_MAX_REPLAY_EVENTS + 1,
         })
         .pipe(
+          Stream.filter(isPublicStoredOrchestrationEvent),
           Stream.map((stored) => ({
             kind: "event" as const,
             sequence: stored.sequence,
@@ -1213,6 +1219,7 @@ const makeWsRpcLayer = (
         }
       };
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
+      const queueCompatibility = yield* QueueCompatibility.QueueCompatibility;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -1792,55 +1799,77 @@ const makeWsRpcLayer = (
 
       const handlers = ServerWsRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
-            startup
-              .enqueueCommand(
-                // A retry also restarts the preparation work the launch owns.
-                (command.type === "prepared-run.retry"
-                  ? threadLaunch.retryPreparation(command)
-                  : ThreadMessageIntake.dispatchCommand(
-                      ThreadManagementService.withCreationProvenance(command, {
-                        createdBy: "user",
-                        creationSource:
-                          "creationSource" in command ? command.creationSource : "web",
-                      }),
-                    )
-                ).pipe(Effect.provide(intakeContext)),
+          Schema.is(QueueDispatchCommand)(command)
+            ? observeRpcEffect(
+                ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+                startup
+                  .enqueueCommand(queueCompatibility.dispatch(command, "legacy_websocket"))
+                  .pipe(
+                    Effect.mapError((error) => {
+                      const cause = error.cause;
+                      return Schema.is(OrchestrationDispatchCommandError)(cause)
+                        ? cause
+                        : new OrchestrationDispatchCommandError({
+                            message:
+                              Schema.is(QueueCompatibility.QueueCompatibilityError)(error) &&
+                              error.reason === "dispatch_guard_rejected"
+                                ? "Dispatch guard rejected."
+                                : "Failed to dispatch orchestration command.",
+                            cause,
+                          });
+                    }),
+                  ),
+                { "rpc.aggregate": "orchestration", "orchestration.command_id": command.commandId },
               )
-              .pipe(
-                Effect.tap(() => recordClientCommandAnalytics(command)),
-                Effect.map((result) => ({ sequence: result.sequence })),
-                Effect.mapError((cause) => {
-                  const detail = userFacingDispatchErrorMessage(cause);
-                  return new OrchestrationV2DispatchCommandError({
-                    commandId: command.commandId,
-                    commandType: command.type,
-                    message: detail ?? "Failed to dispatch orchestration V2 command",
-                    ...(detail === undefined ? {} : { detail }),
-                    cause,
-                  });
-                }),
+            : observeRpcEffect(
+                ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+                startup
+                  .enqueueCommand(
+                    // A retry also restarts the preparation work the launch owns.
+                    (command.type === "prepared-run.retry"
+                      ? threadLaunch.retryPreparation(command)
+                      : ThreadMessageIntake.dispatchCommand(
+                          ThreadManagementService.withCreationProvenance(command, {
+                            createdBy: "user",
+                            creationSource:
+                              "creationSource" in command ? command.creationSource : "web",
+                          }),
+                        )
+                    ).pipe(Effect.provide(intakeContext)),
+                  )
+                  .pipe(
+                    Effect.tap(() => recordClientCommandAnalytics(command)),
+                    Effect.map((result) => ({ sequence: result.sequence })),
+                    Effect.mapError((cause) => {
+                      const detail = userFacingDispatchErrorMessage(cause);
+                      return new OrchestrationV2DispatchCommandError({
+                        commandId: command.commandId,
+                        commandType: command.type,
+                        message: detail ?? "Failed to dispatch orchestration V2 command",
+                        ...(detail === undefined ? {} : { detail }),
+                        cause,
+                      });
+                    }),
+                  ),
+                {
+                  "rpc.aggregate": "orchestrationV2",
+                  "orchestration_v2.command_id": command.commandId,
+                  "orchestration_v2.command_type": command.type,
+                  "orchestration_v2.thread_id":
+                    command.type === "thread.fork" || command.type === "thread.merge_back"
+                      ? command.targetThreadId
+                      : command.type === "delegated_task.request" ||
+                          command.type === "delegated_task.wake-policy" ||
+                          command.type === "delegated_task.completion-delivery.acknowledge" ||
+                          command.type === "delegated_task.completion-delivery.dispose" ||
+                          command.type === "thread.created.record"
+                        ? command.parentThreadId
+                        : command.threadId,
+                  ...(command.type === "thread.fork" || command.type === "thread.merge_back"
+                    ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
+                    : {}),
+                },
               ),
-            {
-              "rpc.aggregate": "orchestrationV2",
-              "orchestration_v2.command_id": command.commandId,
-              "orchestration_v2.command_type": command.type,
-              "orchestration_v2.thread_id":
-                command.type === "thread.fork" || command.type === "thread.merge_back"
-                  ? command.targetThreadId
-                  : command.type === "delegated_task.request" ||
-                      command.type === "delegated_task.wake-policy" ||
-                      command.type === "delegated_task.completion-delivery.acknowledge" ||
-                      command.type === "delegated_task.completion-delivery.dispose" ||
-                      command.type === "thread.created.record"
-                    ? command.parentThreadId
-                    : command.threadId,
-              ...(command.type === "thread.fork" || command.type === "thread.merge_back"
-                ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
-                : {}),
-            },
-          ),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_V2_WS_METHODS.getWorkflowScript,
@@ -1920,13 +1949,12 @@ const makeWsRpcLayer = (
                 rowLimit: THREAD_HISTORY_SNAPSHOT_ROW_LIMIT,
               })
               .pipe(
-                Effect.map((snapshot) =>
-                  projectThreadProjectionForWire(
+                Effect.map(
+                  (snapshot) =>
                     buildBoundedThreadProjection({
-                      projection: snapshot.projection,
+                      projection: projectThreadProjectionForWire(snapshot.projection),
                       snapshotSequence: snapshot.snapshotSequence,
                     }).projection,
-                  ),
                 ),
                 Effect.mapError(
                   (cause) =>
@@ -3835,6 +3863,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
             ).pipe(
+              Layer.provide(QueueCompatibility.layer),
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(AgentSessionScanner.layer),

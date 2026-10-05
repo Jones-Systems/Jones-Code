@@ -62,3 +62,7 @@ export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
 export * from "./worktreeOwnership.ts";
+
+export * from "./providerQueue.ts";
+
+export * from "./queueDispatch.ts";
