@@ -19,6 +19,7 @@ import {
   legacyPayloadHash,
   legacyPreparationEffectId,
   legacyPreparationReleaseBlocker,
+  legacyNeverInvokedSetupOpen,
   legacyBootstrapBirth,
   legacyPreparationGeneration,
   sameLegacyBootstrapPolicy,
@@ -207,6 +208,11 @@ export class ThreadLaunchService extends Context.Service<
 >()("t3/orchestration-v2/ThreadLaunchService") {}
 
 const isThreadLaunchError = Schema.is(ThreadLaunchError);
+
+const isSetupOperationError = Schema.is(ProjectSetupScriptRunner.ProjectSetupScriptOperationError);
+const isTerminalInputValidationError = Schema.is(
+  TerminalManager.LegacyTerminalInputValidationError,
+);
 
 function failureDetail(error: unknown): string {
   if (isThreadLaunchError(error)) {
@@ -900,6 +906,38 @@ const make = Effect.gen(function* () {
             )("Captured setup definition changed before spawn.");
           yield* intent({ kind: "setup.open", input: definition });
         }),
+      neverInvoked: (proof) =>
+        Effect.gen(function* () {
+          const preparation = journal.preparation;
+          const opened = preparation?.steps.find((step) => step.effect.kind === "setup.open");
+          if (
+            preparation?.setup.status !== "resolved" ||
+            opened?.effect.kind !== "setup.open" ||
+            opened.state !== "intent" ||
+            canonicalLegacyPayload(proof.binding) !== canonicalLegacyPayload(binding) ||
+            proof.shell !== preparation.setup.definition.shell ||
+            canonicalLegacyPayload(proof.shellArgs) !==
+              canonicalLegacyPayload(preparation.setup.definition.shellArgs) ||
+            proof.cwd !== preparation.setup.definition.cwd ||
+            canonicalLegacyPayload(opened.effect.input) !==
+              canonicalLegacyPayload(preparation.setup.definition) ||
+            !(
+              proof.shell.length === 0 ||
+              proof.shell.includes("\0") ||
+              proof.shellArgs.some((arg) => arg.includes("\0"))
+            )
+          )
+            return yield* mapError(
+              input,
+              "read-receipt",
+              threadId,
+            )("Never-invoked setup owner differs from its exact accepted intent.");
+          yield* outcome("setup.open", "known_no_effect_failure", {
+            type: "never_invoked",
+            owner: "setup",
+            reason: "input_validation_failed",
+          });
+        }),
       afterSpawn: (proof) =>
         outcome("setup.open", "known_succeeded", {
           type: "terminal_generation",
@@ -1398,7 +1436,52 @@ const make = Effect.gen(function* () {
                 scripts: project.scripts,
               },
             })
-      ).pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
+      ).pipe(
+        Effect.catch((cause) =>
+          Effect.gen(function* () {
+            if (
+              input.legacyBootstrap === undefined ||
+              runId === null ||
+              !isSetupOperationError(cause) ||
+              cause.operation !== "openTerminal" ||
+              !isTerminalInputValidationError(cause.cause)
+            )
+              return yield* Effect.fail(mapError(input, "run-setup-script", threadId)(cause));
+            const proof = cause.cause;
+            const current = yield* threads
+              .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
+              .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+            const run = current.runs.find((candidate) => candidate.id === runId);
+            const candidate = run === undefined ? undefined : legacyNeverInvokedSetupOpen(run);
+            if (
+              candidate === undefined ||
+              proof.binding.threadId !== threadId ||
+              proof.binding.runId !== runId ||
+              canonicalLegacyPayload(proof.binding.policy) !==
+                canonicalLegacyPayload(candidate.preparation.policy) ||
+              proof.binding.preparationGeneration !== candidate.preparation.generation ||
+              proof.binding.generation !== candidate.definition.generation ||
+              proof.binding.terminalId !== candidate.definition.terminalId ||
+              proof.binding.claimEventId !== candidate.preparation.claimEventId ||
+              proof.binding.claimSequence !== candidate.preparation.claimSequence ||
+              proof.binding.claimReceiptSequence !== candidate.preparation.claimReceiptSequence ||
+              proof.binding.birthEventId !== candidate.preparation.birthEventId ||
+              proof.binding.birthSequence !== candidate.preparation.birthSequence ||
+              proof.binding.birthReceiptSequence !== candidate.preparation.birthReceiptSequence ||
+              proof.shell !== candidate.definition.shell ||
+              proof.cwd !== cwd ||
+              canonicalLegacyPayload(proof.shellArgs) !==
+                canonicalLegacyPayload(candidate.definition.shellArgs)
+            )
+              return yield* mapError(
+                input,
+                "read-receipt",
+                threadId,
+              )("Setup lexical refusal has no matching current owner ledger.");
+            return { status: "not-entered" as const, detail: proof.detail };
+          }),
+        ),
+      );
 
       if (setup.status === "no-script" && input.legacyBootstrap !== undefined && runId !== null) {
         const current = yield* threads
@@ -1505,6 +1588,11 @@ const make = Effect.gen(function* () {
         } else {
           yield* setupTracker.stageStatus(threadId, "setup-script", "done");
         }
+      } else if (setup.status === "not-entered") {
+        yield* setupTracker.stage(threadId, "setup-script", {
+          status: "failed",
+          detail: setup.detail,
+        });
       } else {
         yield* setupTracker.stageStatus(threadId, "setup-script", "skipped");
       }

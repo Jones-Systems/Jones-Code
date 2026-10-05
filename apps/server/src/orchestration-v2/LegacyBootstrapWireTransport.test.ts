@@ -1,6 +1,7 @@
+import { projectThreadProjectionForWire } from "./WireProjection.ts";
 import { makeCommandObservationQuery } from "./CommandObservation.ts";
 import * as Deferred from "effect/Deferred";
-import type * as PtyAdapter from "../terminal/PtyAdapter.ts";
+import * as PtyAdapter from "../terminal/PtyAdapter.ts";
 import type { ProjectScript } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -14,7 +15,11 @@ import * as IdAllocator from "./IdAllocator.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
 import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
-import { legacyBootstrapCreateCommandId } from "./LegacyBootstrap.ts";
+import {
+  legacyBootstrapCreateCommandId,
+  legacyNeverInvokedSetupOpen,
+  legacyPreparationReleaseBlocker,
+} from "./LegacyBootstrap.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as WsFileSystem from "effect/FileSystem";
 import { it as effectIt } from "@effect/vitest";
@@ -119,7 +124,11 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import { environmentAuthenticatedAuthLayer } from "../auth/http.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import {
+  SqlitePersistenceMemory,
+  makeSqlitePersistenceLive,
+} from "../persistence/Layers/Sqlite.ts";
+import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ApplicationEvents from "../persistence/Layers/OrchestrationEventStore.ts";
 import * as ProjectEnrichment from "../project/ProjectEnrichmentService.ts";
 import * as Receipts from "./CommandReceiptStore.ts";
@@ -128,7 +137,7 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as Threads from "./ThreadManagementService.ts";
-import { OrchestratorProjectionError } from "./Orchestrator.ts";
+import { OrchestratorProjectionError, OrchestratorDispatchError } from "./Orchestrator.ts";
 import {
   LegacyReleaseDecision,
   LegacyPreparationFailureDecision,
@@ -610,13 +619,22 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
       "actual_sync",
       "actual_async",
       "actual_disconnect",
+      "actual_input_refused",
+      "actual_input_intent_lost",
+      "actual_input_outcome_lost",
+      "actual_entered_error",
     ] as const)("preserves closed dispatch and authorization for %s", (scenario) =>
       Effect.gen(function* () {
         const fs = yield* WsFileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-ws-forwarding-" });
+        const receivingDatabase = scenario.startsWith("actual_input_")
+          ? makeSqlitePersistenceLive(`${cwd}/lexical.sqlite`).pipe(
+              Layer.provide(NodeServices.layer),
+            )
+          : SqlitePersistenceMemory;
         const config = WsServerConfig.layerTest(cwd, `${cwd}/state`);
         const auth = WsEnvironmentAuth.layer.pipe(
-          Layer.provideMerge(SqlitePersistenceMemory),
+          Layer.provideMerge(receivingDatabase),
           Layer.provideMerge(ServerSecretStore.layer),
           Layer.provideMerge(WsServerEnvironment.identityLayer),
           Layer.provide(config),
@@ -687,7 +705,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           scenario === "actual_sync" ||
           scenario === "actual_async" ||
           scenario === "actual_disconnect";
-        const scripts: ReadonlyArray<ProjectScript> = startedSetup
+        const lexicalSetup = scenario.startsWith("actual_input_");
+        const selectedSetup = startedSetup || lexicalSetup || scenario === "actual_entered_error";
+        let lexicalRun: import("./RecordedTypes.ts").RecordedRun | undefined;
+        const scripts: ReadonlyArray<ProjectScript> = selectedSetup
           ? [
               {
                 id: "setup",
@@ -704,6 +725,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         const outputListeners = new Set<(chunk: string) => void>();
         const exitListeners = new Set<(event: PtyAdapter.PtyExitEvent) => void>();
         const kills: Array<string | undefined> = [];
+        let spawnCalls = 0;
         const process: PtyAdapter.PtyProcess = {
           pid: 92003,
           write: (data) => {
@@ -740,7 +762,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               const manager = yield* WsTerminalManager.makeWithOptions({
                 logsDir: `${cwd}/terminal-logs`,
                 env: {},
-                shellResolver: () => "/bin/sh",
+                shellResolver: () => (lexicalSetup ? "/bin/synthetic\0shell" : "/bin/sh"),
                 processTable: Effect.succeed([]),
                 subprocessInspector: () =>
                   Effect.succeed({
@@ -749,10 +771,20 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                     processIds: [],
                   }),
                 ptyAdapter: {
-                  spawn: () =>
-                    startedSetup
+                  spawn: () => {
+                    spawnCalls += 1;
+                    if (scenario === "actual_entered_error")
+                      return Effect.fail(
+                        new PtyAdapter.PtySpawnError({
+                          adapter: "synthetic",
+                          shell: "/bin/sh",
+                          cause: new Error("Synthetic entered failure"),
+                        }),
+                      );
+                    return startedSetup
                       ? Effect.succeed(process)
-                      : Effect.die("No setup/provider PTY in receiving RPC fixture"),
+                      : Effect.die("No setup/provider PTY in receiving RPC fixture");
+                  },
                 },
               }).pipe(Effect.provide(ProcessRunner.layer));
               const terminal = Layer.succeed(WsTerminalManager.TerminalManager, manager);
@@ -800,12 +832,43 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               const orchestrator = makeOrchestratorV2ReplayLayerWithRegistry(
                 { name: "legacy-authenticated-receiving" },
                 registry,
-                { databaseLayer: SqlitePersistenceMemory, runEffectWorker: false },
+                { databaseLayer: receivingDatabase, runEffectWorker: false },
               ).pipe(Layer.provide(terminal));
-              const threads = Threads.layer.pipe(Layer.provide(orchestrator));
-              const receipts = Receipts.layer.pipe(Layer.provide(SqlitePersistenceMemory));
-              const outbox = WsEffectOutbox.layer.pipe(Layer.provide(SqlitePersistenceMemory));
-              const store = EventStore.layer.pipe(Layer.provide(SqlitePersistenceMemory));
+              const productionThreads = Threads.layer.pipe(Layer.provide(orchestrator));
+              const threads = Layer.effect(
+                Threads.ThreadManagementService,
+                Effect.gen(function* () {
+                  const actual = yield* Threads.ThreadManagementService;
+                  return Threads.ThreadManagementService.of({
+                    ...actual,
+                    dispatch: (command) =>
+                      actual.dispatch(command).pipe(
+                        Effect.flatMap((result) => {
+                          if (
+                            command.type === "prepared-run.progress" &&
+                            command.legacyPreparationUpdate?.type ===
+                              (scenario === "actual_input_intent_lost" ? "intent" : "outcome") &&
+                            "step" in command.legacyPreparationUpdate &&
+                            command.legacyPreparationUpdate.step.effect.kind === "setup.open" &&
+                            (scenario === "actual_input_intent_lost" ||
+                              scenario === "actual_input_outcome_lost")
+                          )
+                            return Effect.fail(
+                              new OrchestratorDispatchError({
+                                commandId: command.commandId,
+                                commandType: command.type,
+                                cause: "Synthetic accepted setup journal reply lost",
+                              }),
+                            );
+                          return Effect.succeed(result);
+                        }),
+                      ),
+                  });
+                }),
+              ).pipe(Layer.provide(productionThreads));
+              const receipts = Receipts.layer.pipe(Layer.provide(receivingDatabase));
+              const outbox = WsEffectOutbox.layer.pipe(Layer.provide(receivingDatabase));
+              const store = EventStore.layer.pipe(Layer.provide(receivingDatabase));
               const external = Layer.mergeAll(
                 terminal,
                 projectOwner,
@@ -852,10 +915,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 store,
                 orchestrator,
                 external,
-                ProjectStore.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
-                ProjectionStore.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
+                ProjectStore.layer.pipe(Layer.provide(receivingDatabase)),
+                ProjectionStore.layer.pipe(Layer.provide(receivingDatabase)),
                 ApplicationEvents.OrchestrationEventStoreLive.pipe(
-                  Layer.provide(SqlitePersistenceMemory),
+                  Layer.provide(receivingDatabase),
                 ),
               );
             })
@@ -1224,6 +1287,48 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             const store = yield* EventStore.EventStoreV2;
             const outbox = yield* WsEffectOutbox.EffectOutboxV2;
             const c = yield* receipts.getByCommandId(commandId);
+            if (
+              scenario === "actual_input_intent_lost" ||
+              scenario === "actual_input_outcome_lost" ||
+              scenario === "actual_entered_error"
+            ) {
+              expect(frame.exit._tag).toBe("Failure");
+              expect(Option.isNone(c)).toBe(true);
+              const received = yield* threads.getThreadProjection(threadId);
+              expect(received.thread.deletedAt).toBeNull();
+              const step = received.runs[0]?.legacyPreparation?.steps.find(
+                (entry) => entry.effect.kind === "setup.open",
+              );
+              expect(step?.state).toBe(
+                scenario === "actual_input_outcome_lost" ? "known_no_effect_failure" : "intent",
+              );
+              expect(step?.evidence).toEqual(
+                scenario === "actual_input_outcome_lost"
+                  ? {
+                      type: "never_invoked",
+                      owner: "setup",
+                      reason: "input_validation_failed",
+                    }
+                  : undefined,
+              );
+              const bId = legacyBootstrapCreateCommandId(threadId, commandId);
+              expect(
+                Option.isNone(
+                  yield* receipts.getByCommandId(CommandId.make(`${bId}:workspace-failure-delete`)),
+                ),
+              ).toBe(true);
+              expect(
+                (yield* outbox.listByThreadId(threadId)).filter((entry) =>
+                  ["provider-turn.start", "terminal.cleanup", "attachment.cleanup"].includes(
+                    entry.request.type,
+                  ),
+                ),
+              ).toHaveLength(0);
+              expect(spawnCalls).toBe(scenario === "actual_entered_error" ? 1 : 0);
+              expect(written).toBe("");
+              expect(kills).toHaveLength(0);
+              return;
+            }
             expect(Option.isSome(c)).toBe(true);
             if (Option.isNone(c)) return yield* Effect.die("Actual C receipt required");
             expect(c.value.commandType).toBe("prepared-run.release");
@@ -1252,9 +1357,12 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             expect(received.messages[0]?.id).toBe(messageId);
             expect(received.messages[0]?.text).toBe("Forward only");
             expect(received.runs[0]?.legacyBootstrap?.releaseCommandId).toBe(commandId);
-            expect(received.runs[0]?.legacyPreparation?.setup.status).toBe(
-              startedSetup ? "resolved" : "no_script",
-            );
+            if (lexicalSetup)
+              expect(received.runs[0]?.legacyPreparation?.setup.status).toBe("resolved");
+            else
+              expect(received.runs[0]?.legacyPreparation?.setup.status).toBe(
+                startedSetup ? "resolved" : "no_script",
+              );
             expect(order).toEqual([]);
             expect(forwarded).toHaveLength(0);
             const dId = CommandId.make(`${bId}:guard-rejection-delete`);
@@ -1267,6 +1375,33 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               });
               expect(c.value.status).toBe("accepted");
               expect(received.thread.deletedAt).toBeNull();
+              if (scenario === "actual_input_refused") {
+                expect(spawnCalls).toBe(0);
+                expect(written).toBe("");
+                lexicalRun = received.runs[0]!;
+                const preparation = lexicalRun.legacyPreparation;
+                expect(preparation?.steps).toHaveLength(1);
+                const step = preparation!.steps[0]!;
+                expect(step.state).toBe("known_no_effect_failure");
+                expect(step.evidence).toEqual({
+                  type: "never_invoked",
+                  owner: "setup",
+                  reason: "input_validation_failed",
+                });
+                for (const id of [step.intentCommandId, step.outcomeCommandId!]) {
+                  const receipt = yield* receipts.getByCommandId(id);
+                  expect(Option.isSome(receipt)).toBe(true);
+                  const recorded = Array.from(
+                    yield* store.readByCommandId({ commandId: id }).pipe(Stream.runCollect),
+                  );
+                  expect(recorded).toHaveLength(1);
+                  if (Option.isSome(receipt)) {
+                    expect(receipt.value.status).toBe("accepted");
+                    expect(recorded[0]?.sequence).toBe(receipt.value.resultSequence);
+                    expect(receipt.value.resultSequence).toBeLessThan(c.value.resultSequence);
+                  }
+                }
+              }
               expect(Option.isNone(d)).toBe(true);
               expect(received.runs[0]?.status).toBe("starting");
               expect(
@@ -1385,8 +1520,84 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         }).pipe(
           Effect.ensuring(completeSetup),
           Effect.provide(dependencies),
+          Effect.scoped,
           Effect.timeout("10 seconds"),
         );
+        if (scenario === "actual_input_refused") {
+          const expected = lexicalRun;
+          if (expected === undefined)
+            return yield* Effect.die("Missing authentic refused setup run");
+          const stores = Layer.mergeAll(
+            EventStore.layer,
+            ProjectionStore.layer,
+            Receipts.layer,
+          ).pipe(Layer.provideMerge(receivingDatabase));
+          const reopened = Layer.mergeAll(
+            stores,
+            EventSink.layer.pipe(Layer.provide(stores)),
+            ProjectionMaintenance.layer.pipe(Layer.provide(stores)),
+          );
+          yield* Effect.gen(function* () {
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+            const receipts = yield* Receipts.CommandReceiptStoreV2;
+            const sink = yield* EventSink.EventSinkV2;
+            const persisted = yield* projections.getThreadProjection(threadId);
+            expect(persisted.runs[0]?.legacyPreparation).toEqual(expected.legacyPreparation);
+            expect((yield* maintenance.rebuild).valid).toBe(true);
+            const replayed = yield* projections.getThreadProjection(threadId);
+            expect(replayed.runs[0]?.legacyPreparation).toEqual(expected.legacyPreparation);
+            expect(legacyPreparationReleaseBlocker({ run: replayed.runs[0]! })).toBeUndefined();
+            const { legacyPreparation: _preparation, ...ordinary } = replayed.runs[0]!;
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make("wire-forward:ordinary-stale"),
+                  threadId,
+                  runId: expected.id,
+                  type: "run.updated",
+                  occurredAt: expected.requestedAt,
+                  payload: ordinary,
+                },
+              ],
+            });
+            const stale = yield* projections.getThreadProjection(threadId);
+            expect(stale.runs[0]?.legacyPreparation).toEqual(expected.legacyPreparation);
+            const preparation = expected.legacyPreparation!;
+            for (const changed of [
+              { ...preparation, generation: "different" },
+              { ...preparation, birthEventId: EventId.make("different") },
+              {
+                ...preparation,
+                policy: { ...preparation.policy, releaseCommandId: CommandId.make("different") },
+              },
+              { ...preparation, steps: [] },
+              {
+                ...preparation,
+                steps: preparation.steps.map((step) => ({ ...step, inputHash: "different" })),
+              },
+              {
+                ...preparation,
+                steps: preparation.steps.map((step) => ({
+                  ...step,
+                  state: "unknown" as const,
+                  evidence: {
+                    type: "unknown" as const,
+                    reason: "process_result_unavailable" as const,
+                  },
+                })),
+              },
+            ])
+              expect(
+                legacyNeverInvokedSetupOpen({ ...expected, legacyPreparation: changed }),
+              ).toBeUndefined();
+            const c = yield* receipts.getByCommandId(commandId);
+            expect(Option.isSome(c)).toBe(true);
+            if (Option.isSome(c)) expect(c.value.status).toBe("accepted");
+            const wire = projectThreadProjectionForWire(stale);
+            expect("legacyPreparation" in wire.runs[0]!).toBe(false);
+          }).pipe(Effect.provide(Layer.fresh(reopened)), Effect.scoped);
+        }
       }),
     );
   },

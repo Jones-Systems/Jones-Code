@@ -381,6 +381,59 @@ export function transitionLegacyPreparation(input: {
   };
 }
 
+/** Candidate only; release also requires exact accepted raw intent/outcome receipts. */
+export function legacyNeverInvokedSetupOpen(run: import("./RecordedTypes.ts").RecordedRun) {
+  const preparation = run.legacyPreparation;
+  const policy = run.legacyBootstrap;
+  if (
+    preparation === undefined ||
+    policy === undefined ||
+    preparation.setup.status !== "resolved" ||
+    !sameLegacyBootstrapPolicy(preparation.policy, policy) ||
+    run.id !== policy.runId ||
+    run.threadId !== policy.threadId ||
+    run.userMessageId !== policy.messageId ||
+    preparation.generation !==
+      legacyPreparationGeneration({
+        runId: run.id,
+        birthEventId: preparation.birthEventId,
+        birthSequence: preparation.birthSequence,
+      })
+  )
+    return undefined;
+  const definition = preparation.setup.definition;
+  const steps = preparation.steps.filter((step) => step.effect.kind.startsWith("setup."));
+  const opened = steps[0];
+  if (
+    steps.length !== 1 ||
+    opened?.effect.kind !== "setup.open" ||
+    opened.state !== "known_no_effect_failure" ||
+    opened.evidence?.type !== "never_invoked" ||
+    opened.evidence.owner !== "setup" ||
+    opened.evidence.reason !== "input_validation_failed" ||
+    opened.outcomeCommandId === undefined ||
+    opened.outcomeEventId === undefined ||
+    opened.inputHash !== legacyPayloadHash(canonicalLegacyPayload(opened.effect)) ||
+    opened.effectId !==
+      legacyPreparationEffectId({ generation: preparation.generation, effect: opened.effect }) ||
+    canonicalLegacyPayload(opened.effect.input) !== canonicalLegacyPayload(definition) ||
+    definition.generation !==
+      legacyPayloadHash(
+        canonicalLegacyPayload({
+          preparationGeneration: preparation.generation,
+          terminalId: definition.terminalId,
+        }),
+      ) ||
+    !(
+      definition.shell.length === 0 ||
+      definition.shell.includes("\0") ||
+      definition.shellArgs.some((arg) => arg.includes("\0"))
+    )
+  )
+    return undefined;
+  return { preparation, definition, opened };
+}
+
 export function legacyPreparationReleaseBlocker(input: {
   readonly run: import("./RecordedTypes.ts").RecordedRun;
 }): string | undefined {
@@ -389,7 +442,14 @@ export function legacyPreparationReleaseBlocker(input: {
   if (preparation === undefined) return "Legacy preparation evidence is unavailable.";
   if (preparation.setup.status === "unresolved")
     return "Legacy setup policy has not been captured.";
-  if (preparation.steps.some((step) => !["known_succeeded", "known_started"].includes(step.state)))
+  const neverInvokedSetup = legacyNeverInvokedSetupOpen(run);
+  if (
+    preparation.steps.some(
+      (step) =>
+        !["known_succeeded", "known_started"].includes(step.state) &&
+        step !== neverInvokedSetup?.opened,
+    )
+  )
     return "Legacy preparation has an unresolved, failed or cancelled owner outcome.";
   if (
     preparation.steps.some(
@@ -410,6 +470,7 @@ export function legacyPreparationReleaseBlocker(input: {
       return "Legacy setup effects conflict with the captured skip policy.";
     return undefined;
   }
+  if (neverInvokedSetup !== undefined) return undefined;
   const definition = preparation.setup.definition;
   const opened = preparation.steps.find((step) => step.effect.kind === "setup.open");
   const written = preparation.steps.find((step) => step.effect.kind === "setup.write");

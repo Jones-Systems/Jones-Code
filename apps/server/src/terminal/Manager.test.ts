@@ -424,6 +424,10 @@ it("preserves retained lines as older storage is compacted", () => {
   }
 });
 
+const isTerminalInputValidationError = Schema.is(
+  TerminalManager.LegacyTerminalInputValidationError,
+);
+
 function ownedControl(generation = "terminal-generation:one") {
   const threadId = ThreadId.make("thread-1");
   const releaseCommandId = CommandId.make("legacy-terminal:C");
@@ -467,6 +471,98 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect.each([
+    "qualified",
+    "intent_lost",
+    "outcome_lost",
+    "missing_hook",
+    "existing_control",
+    "entered_error",
+    "native_default",
+  ] as const)("legacy lexical spawn refusal preserves owner proof for %s", (scenario) =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        shellResolver: () => (scenario === "entered_error" ? "/bin/sh" : "/bin/synthetic\0shell"),
+      });
+      const binding = ownedControl();
+      const order: string[] = [];
+      if (scenario === "existing_control")
+        yield* manager.open(openInput({ terminalId: binding.terminalId }));
+      if (scenario === "entered_error")
+        ptyAdapter.spawnFailures.push(new Error("Synthetic entered failure"));
+      const hooks: TerminalManager.LegacyTerminalPreparationHooks = {
+        ...ownedOpenHooks(binding),
+        beforeSpawn: (plan) =>
+          Effect.gen(function* () {
+            assert.lengthOf(ptyAdapter.spawnInputs, 0);
+            assert.equal(plan.binding, binding);
+            order.push("intent");
+            if (scenario === "intent_lost")
+              return yield* Effect.fail(
+                new TerminalManager.LegacyTerminalControlError({
+                  operation: "open",
+                  detail: "Synthetic lost intent",
+                }),
+              );
+          }),
+        ...(scenario === "missing_hook"
+          ? {}
+          : {
+              neverInvoked: (
+                plan: Parameters<TerminalManager.LegacyTerminalPreparationHooks["beforeSpawn"]>[0],
+              ) =>
+                Effect.gen(function* () {
+                  assert.lengthOf(ptyAdapter.spawnInputs, 0);
+                  assert.equal(plan.shell, "/bin/synthetic\0shell");
+                  assert.deepEqual(plan.shellArgs, []);
+                  assert.deepEqual(order, ["intent"]);
+                  order.push("outcome");
+                  if (scenario === "outcome_lost")
+                    return yield* Effect.fail(
+                      new TerminalManager.LegacyTerminalControlError({
+                        operation: "open",
+                        detail: "Synthetic lost outcome",
+                      }),
+                    );
+                }),
+            }),
+        afterSpawn: () =>
+          Effect.sync(() => {
+            order.push("entered");
+          }),
+      };
+      const result = yield* (
+        scenario === "native_default"
+          ? manager.open(openInput({ terminalId: binding.terminalId }))
+          : manager.open(openInput({ terminalId: binding.terminalId }), hooks)
+      ).pipe(Effect.result);
+      if (scenario === "native_default") {
+        assert.equal(result._tag, "Success");
+        assert.lengthOf(ptyAdapter.spawnInputs, 1);
+        assert.deepEqual(order, []);
+      } else {
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.equal(isTerminalInputValidationError(result.failure), scenario === "qualified");
+        assert.lengthOf(
+          ptyAdapter.spawnInputs,
+          scenario === "existing_control" || scenario === "entered_error" ? 1 : 0,
+        );
+        assert.deepEqual(
+          order,
+          scenario === "existing_control"
+            ? []
+            : scenario === "qualified" || scenario === "outcome_lost"
+              ? ["intent", "outcome"]
+              : ["intent"],
+        );
+        assert.isTrue(
+          ptyAdapter.processes.every((process) => process.writes.length === 0 && !process.killed),
+        );
+      }
+    }),
+  );
+
   it.effect("legacy terminal spawn waits for its fallible intent and retains a lost outcome", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();
