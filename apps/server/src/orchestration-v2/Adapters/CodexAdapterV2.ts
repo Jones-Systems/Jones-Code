@@ -1890,6 +1890,17 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           ).hasSubagents = true;
         };
         const pendingRootTurns = yield* Ref.make(new Map<string, ProviderAdapterV2TurnInput>());
+        type PendingCodexCompaction = {
+          readonly input: ProviderAdapterV2TurnInput;
+          readonly producer: CodexRuntimeProducer;
+          readonly capture: ProviderNativeStartProducerCaptureV1;
+          readonly nativeStarted: Deferred.Deferred<CodexSchema.V2TurnStartedNotification>;
+          acknowledged: boolean;
+          nativeStart?: CodexSchema.V2TurnStartedNotification;
+          ambiguous: boolean;
+        };
+        const pendingCompactions = new Map<string, PendingCodexCompaction>();
+        const dispatchedCompactionOperations = new Set<string>();
         type CapacityRequest = {
           state: CodexCapacityContinuationState;
           readonly input: ProviderAdapterV2TurnInput;
@@ -4317,6 +4328,33 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
 
         yield* client.handleServerNotification("turn/started", (payload) =>
           Effect.gen(function* () {
+            const compact = pendingCompactions.get(payload.threadId);
+            if (compact !== undefined) {
+              const producer = yield* CodexProducerContext;
+              if (
+                producer !== compact.producer ||
+                producer !== currentProducer ||
+                !producer.active ||
+                producer.generation !== compact.capture.binding.runtimeGeneration ||
+                payload.threadId !== compact.capture.binding.nativeThreadId
+              )
+                return;
+              if (
+                payload.turn.id.length === 0 ||
+                payload.turn.id.trim() !== payload.turn.id ||
+                (yield* Ref.get(activeTurns)).has(payload.turn.id) ||
+                (yield* Ref.get(settledTurns)).has(payload.turn.id) ||
+                (compact.nativeStart !== undefined &&
+                  compact.nativeStart.turn.id !== payload.turn.id)
+              )
+                compact.ambiguous = true;
+              compact.nativeStart ??= Object.freeze({
+                ...payload,
+                turn: Object.freeze({ ...payload.turn }),
+              });
+              yield* Deferred.succeed(compact.nativeStarted, compact.nativeStart);
+              return;
+            }
             const context = (yield* Ref.get(activeTurns)).get(payload.turn.id);
             if (context !== undefined) {
               if (context.nativeStartReady !== undefined) {
@@ -7818,6 +7856,236 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               }
             }
           });
+        const compactWithNativeConfirmation = (turnInput: ProviderAdapterV2TurnInput) =>
+          Effect.gen(function* () {
+            const confirmation = turnInput.nativeStartConfirmation;
+            if (confirmation === undefined || turnInput.nativeOperation === undefined)
+              return yield* toProtocolError(
+                "Native compaction has no original confirmation request.",
+              );
+            if (nativeStartUnknown || capacityScopeClosed)
+              return yield* toProtocolError("Codex has unconfirmed or closed native custody.");
+            const threadId = yield* getNativeThreadId(turnInput.providerThread);
+            const target = currentProducer;
+            const capturedClient = target.client;
+            const capturedScope = target.scope;
+            const capturedGeneration = target.generation;
+            const bound = target.bindings.get(threadId);
+            const operation = yield* Schema.decodeUnknownEffect(ProviderNativeOperationContext)(
+              turnInput.nativeOperation,
+              { onExcessProperty: "error" },
+            );
+            if (
+              nativeStartPacketBytes(operation) !==
+                nativeStartPacketBytes(turnInput.nativeOperation) ||
+              operation.operation !== "compact_thread" ||
+              operation.threadId !== turnInput.threadId ||
+              operation.providerThreadId !== turnInput.providerThread.id ||
+              operation.providerSessionId !== input.providerSessionId ||
+              operation.instanceId !== adapterOptions.instanceId ||
+              operation.attemptId !== turnInput.attemptId ||
+              (operation.runtimeGeneration !== undefined &&
+                operation.runtimeGeneration !== capturedGeneration) ||
+              turnInput.providerThread.driver !== CODEX_DRIVER_KIND ||
+              turnInput.providerThread.appThreadId !== turnInput.threadId ||
+              turnInput.providerThread.providerSessionId !== input.providerSessionId ||
+              turnInput.providerThread.providerInstanceId !== adapterOptions.instanceId ||
+              turnInput.providerThread.nativeThreadRef?.driver !== CODEX_DRIVER_KIND ||
+              turnInput.providerThread.nativeThreadRef.nativeId !== threadId ||
+              bound?.id !== turnInput.providerThread.id ||
+              bound.appThreadId !== turnInput.threadId ||
+              bound.providerSessionId !== input.providerSessionId ||
+              bound.providerInstanceId !== adapterOptions.instanceId ||
+              bound.driver !== CODEX_DRIVER_KIND ||
+              bound.nativeThreadRef?.driver !== CODEX_DRIVER_KIND ||
+              bound.nativeThreadRef.nativeId !== threadId ||
+              !target.active ||
+              capturedGeneration.length === 0 ||
+              capturedGeneration.trim() !== capturedGeneration ||
+              pendingCompactions.has(threadId) ||
+              (yield* Ref.get(pendingRootTurns)).has(threadId) ||
+              capacityByThread.has(threadId) ||
+              dispatchedCompactionOperations.has(operation.operationId)
+            )
+              return yield* toProtocolError(
+                "Native compaction lost its original subjects or current producer binding.",
+              );
+            const binding = {
+              threadId: turnInput.threadId,
+              providerThreadId: bound.id,
+              providerSessionId: input.providerSessionId,
+              instanceId: adapterOptions.instanceId,
+              runtimeGeneration: capturedGeneration,
+              nativeThreadId: threadId,
+            };
+            const decodedBinding = yield* Schema.decodeUnknownEffect(
+              NativeProviderRuntimeBindingV1,
+            )(binding, { onExcessProperty: "error" });
+            if (nativeStartPacketBytes(binding) !== nativeStartPacketBytes(decodedBinding))
+              return yield* toProtocolError(
+                "Native compaction binding is not a complete exact identity.",
+              );
+            const capture = Object.freeze({
+              nativeOperation: Object.freeze({ ...operation }),
+              driver: CODEX_DRIVER_KIND,
+              binding: Object.freeze(binding),
+              runId: turnInput.runId,
+              attemptId: turnInput.attemptId,
+              rootNodeId: turnInput.rootNodeId,
+              messageId: turnInput.message.messageId,
+            }) as unknown as ProviderNativeStartProducerCaptureV1;
+            const pending: PendingCodexCompaction = {
+              input: turnInput,
+              producer: target,
+              capture,
+              nativeStarted: yield* Deferred.make<CodexSchema.V2TurnStartedNotification>(),
+              acknowledged: false,
+              ambiguous: false,
+            };
+            const revalidate = Effect.suspend(() =>
+              currentProducer === target &&
+              target.active &&
+              target.client === capturedClient &&
+              target.scope === capturedScope &&
+              target.generation === capturedGeneration &&
+              !nativeStartUnknown &&
+              !capacityScopeClosed &&
+              !pending.ambiguous &&
+              target.bindings.get(threadId) === bound &&
+              bound.id === capture.binding.providerThreadId &&
+              bound.appThreadId === capture.binding.threadId &&
+              bound.providerSessionId === capture.binding.providerSessionId &&
+              bound.providerInstanceId === capture.binding.instanceId &&
+              bound.driver === capture.driver &&
+              bound.nativeThreadRef?.driver === capture.driver &&
+              bound.nativeThreadRef.nativeId === capture.binding.nativeThreadId &&
+              turnInput.providerThread.appThreadId === capture.binding.threadId &&
+              turnInput.providerThread.providerSessionId === capture.binding.providerSessionId &&
+              turnInput.providerThread.providerInstanceId === capture.binding.instanceId &&
+              turnInput.threadId === capture.binding.threadId &&
+              turnInput.providerThread.id === capture.binding.providerThreadId &&
+              turnInput.providerThread.driver === capture.driver &&
+              turnInput.providerThread.nativeThreadRef?.driver === capture.driver &&
+              turnInput.providerThread.nativeThreadRef.nativeId ===
+                capture.binding.nativeThreadId &&
+              turnInput.runId === capture.runId &&
+              turnInput.attemptId === capture.attemptId &&
+              turnInput.rootNodeId === capture.rootNodeId &&
+              turnInput.message.messageId === capture.messageId &&
+              nativeStartPacketBytes(turnInput.nativeOperation) ===
+                nativeStartPacketBytes(capture.nativeOperation)
+                ? Effect.void
+                : Effect.fail(
+                    toProtocolError(
+                      "The captured native compaction producer or original request was lost.",
+                    ),
+                  ),
+            );
+            issuedNativeStartCaptures.set(capture, {
+              bytes: nativeStartPacketBytes(capture),
+              revalidate,
+            });
+            pendingCompactions.set(threadId, pending);
+            let dispatched = false;
+            yield* Effect.gen(function* () {
+              yield* revalidate;
+              const returnedFence = yield* confirmation.beforeDispatch(capture);
+              const fence = Object.freeze({
+                evidenceRevision: returnedFence.evidenceRevision,
+                revalidate: returnedFence.revalidate,
+              });
+              if (!Number.isSafeInteger(fence.evidenceRevision) || fence.evidenceRevision < 1)
+                return yield* toProtocolError(
+                  "Native compaction registration has no exact positive revision.",
+                );
+              yield* revalidate;
+              yield* fence.revalidate;
+              yield* Ref.update(pendingRootTurns, (current) =>
+                new Map(current).set(threadId, turnInput),
+              );
+              dispatchedCompactionOperations.add(operation.operationId);
+              dispatched = true;
+              yield* capturedClient
+                .request("thread/compact/start", { threadId })
+                .pipe(Effect.timeout("30 seconds"));
+              yield* revalidate;
+              yield* fence.revalidate;
+              pending.acknowledged = true;
+              const start = yield* Deferred.await(pending.nativeStarted).pipe(
+                Effect.timeout("30 seconds"),
+              );
+              yield* Effect.gen(function* () {
+                if (
+                  !pending.acknowledged ||
+                  pending.ambiguous ||
+                  pendingCompactions.get(threadId) !== pending ||
+                  pending.nativeStart !== start ||
+                  start.threadId !== binding.nativeThreadId ||
+                  (yield* Ref.get(activeTurns)).has(start.turn.id) ||
+                  (yield* Ref.get(settledTurns)).has(start.turn.id)
+                )
+                  return yield* toProtocolError(
+                    "Native compaction ACK has no sole matching current native notification.",
+                  );
+                const issued = readIssuedCodexNativeStartCapture(capture);
+                if (issued === null)
+                  return yield* toProtocolError("Native compaction capture was copied or changed.");
+                yield* issued.revalidate;
+                yield* fence.revalidate;
+                yield* registerRootTurn({
+                  turnInput,
+                  nativeTurnId: start.turn.id,
+                  startedAt: codexTimestamp(start.turn.startedAt),
+                });
+                const acknowledgment = Object.freeze({
+                  capture,
+                  method: "thread/compact/start",
+                  nativeTurnId: start.turn.id,
+                  evidenceRevision: fence.evidenceRevision,
+                  observedAt: DateTime.formatIso(yield* DateTime.now),
+                }) as ProviderNativeStartAcknowledgmentV1;
+                issuedNativeStartAcknowledgments.set(acknowledgment, {
+                  bytes: nativeStartPacketBytes(acknowledgment),
+                  revalidate,
+                });
+                yield* confirmation.acknowledged(acknowledgment);
+                yield* issued.revalidate;
+              }).pipe(turnTerminalizationPermit.withPermits(1));
+            }).pipe(
+              Effect.onExit((exit) =>
+                Effect.sync(() => {
+                  if (dispatched && Exit.isFailure(exit)) nativeStartUnknown = true;
+                }),
+              ),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  if (pendingCompactions.get(threadId) === pending)
+                    pendingCompactions.delete(threadId);
+                }).pipe(
+                  Effect.andThen(
+                    Ref.update(pendingRootTurns, (current) => {
+                      if (current.get(threadId) !== turnInput) return current;
+                      const next = new Map(current);
+                      next.delete(threadId);
+                      return next;
+                    }),
+                  ),
+                ),
+              ),
+            );
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterTurnStartError({
+                  driver: CODEX_DRIVER_KIND,
+                  threadId: turnInput.threadId,
+                  providerThreadId: turnInput.providerThread.id,
+                  runId: turnInput.runId,
+                  cause,
+                }),
+            ),
+          );
+
         const withProducer = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
           Effect.suspend(() =>
             effect.pipe(Effect.provideService(CodexProducerContext, currentProducer)),
@@ -7827,20 +8095,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           get runtimeGeneration() {
             return currentProducer.generation;
           },
-          nativeStartConfirmationOperations: ["start_turn"],
+          nativeStartConfirmationOperations: ["start_turn", "compact_thread"],
           compactThread: (value) =>
             value.nativeStartConfirmation === undefined
               ? runtime.compactThread!(value)
-              : Effect.fail(
-                  new ProviderAdapterTurnStartError({
-                    driver: CODEX_DRIVER_KIND,
-                    threadId: value.threadId,
-                    providerThreadId: value.providerThread.id,
-                    runId: value.runId,
-                    cause:
-                      "Required native compact confirmation is held until the captured ACK/notification join is qualified.",
-                  }),
-                ),
+              : lifecyclePermit.withPermits(1)(compactWithNativeConfirmation(value)),
           ensureThread: (value) =>
             lifecyclePermit.withPermits(1)(
               Effect.suspend(() =>
