@@ -8,6 +8,7 @@ import {
   type ProviderReplayTranscript,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 
 import { classifyClaudeNativeTool } from "../Adapters/ClaudeAdapterV2.ts";
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
@@ -147,6 +148,18 @@ describe("Claude Agent SDK replay fixtures", () => {
         driver: ProviderDriverKind.make("claudeAgent"),
         modelSelection: CLAUDE_MODEL_SELECTION,
       }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-claude-replay-subagent-",
+      });
+      const checkoutFixture = {
+        projects: materialized.commands.flatMap((command) =>
+          command.type === "thread.create"
+            ? [{ projectId: command.projectId, workspaceRoot, title: "subagent" }]
+            : [],
+        ),
+        resolvePath: () => undefined,
+      };
       const scenario = {
         name: "subagent/claudeAgent:read-only-child",
         transcript,
@@ -188,12 +201,14 @@ describe("Claude Agent SDK replay fixtures", () => {
         assert.deepEqual(after.messages, child.messages);
       }).pipe(
         Effect.provide(
-          makeOrchestratorV2ProviderReplayLayer(scenario, ClaudeOrchestratorReplayHarness),
+          makeOrchestratorV2ProviderReplayLayer(scenario, ClaudeOrchestratorReplayHarness, {
+            checkoutFixture,
+          }),
         ),
         provideDeterministicTestRuntime,
         Effect.scoped,
       );
-    }),
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
   it.effect("classifies every Claude fixture tool use through the native tool table", () =>
