@@ -32,7 +32,13 @@ import { PreviewAutomationHosts } from "./PreviewAutomationHosts";
 
 const mocks = vi.hoisted(() => ({
   environments: [] as Array<{ environmentId: EnvironmentId }>,
-  automationRequests: vi.fn<(target: { environmentId: EnvironmentId; input: PreviewAutomationHost }) => typeof requestsAtom>(),
+  automationRequests:
+    vi.fn<
+      (target: {
+        environmentId: EnvironmentId;
+        input: PreviewAutomationHost;
+      }) => typeof requestsAtom
+    >(),
   getClientSettings: vi.fn<() => Promise<ClientSettings | null>>(),
   setClientSettings: vi.fn(),
   open: vi.fn(async (_target: { environmentId: EnvironmentId; input: PreviewOpenInput }) =>
@@ -376,15 +382,19 @@ const runtimeIdentity: PreviewAutomationRuntimeIdentity = {
   buildCommit: "a".repeat(40),
 };
 
-async function remountWithRuntimeGetter(
-  getter?: () => Promise<PreviewAutomationRuntimeIdentity>,
-) {
+async function remountWithRuntimeGetter(getter?: () => Promise<PreviewAutomationRuntimeIdentity>) {
   await act(() => renderer?.unmount());
   renderer = null;
   mocks.automationRequests.mockClear();
-  Object.assign(window, { desktopBridge: getter ? { getPreviewAutomationRuntimeIdentity: getter } : {} });
+  Object.assign(window, {
+    desktopBridge: getter ? { getPreviewAutomationRuntimeIdentity: getter } : {},
+  });
   await act(() => {
-    renderer = create(<AppAtomRegistryProvider><PreviewAutomationHosts /></AppAtomRegistryProvider>);
+    renderer = create(
+      <AppAtomRegistryProvider>
+        <PreviewAutomationHosts />
+      </AppAtomRegistryProvider>,
+    );
   });
 }
 
@@ -397,7 +407,10 @@ describe("PreviewAutomationHosts runtime identity", () => {
     await remountWithRuntimeGetter(getter);
     expect(getter).toHaveBeenCalledOnce();
     expect(mocks.automationRequests).not.toHaveBeenCalled();
-    await act(async () => { pending.resolve(runtimeIdentity); await pending.promise; });
+    await act(async () => {
+      pending.resolve(runtimeIdentity);
+      await pending.promise;
+    });
     for (const id of [environmentId, secondEnvironmentId]) {
       expect(mocks.automationRequests).toHaveBeenCalledWith({
         environmentId: id,
@@ -427,7 +440,10 @@ describe("PreviewAutomationHosts runtime identity", () => {
     await remountWithRuntimeGetter(() => pending.promise);
     await act(() => renderer?.unmount());
     renderer = null;
-    await act(async () => { pending.resolve(runtimeIdentity); await pending.promise; });
+    await act(async () => {
+      pending.resolve(runtimeIdentity);
+      await pending.promise;
+    });
     expect(mocks.automationRequests).not.toHaveBeenCalled();
   });
 });
