@@ -375,7 +375,7 @@ it.effect("caches the embedded descriptor independently from the About override"
       readPackageJson: () =>
         Effect.sync(() => {
           reads += 1;
-          return JSON.stringify({ t3codeCommitHash: (reads === 1 ? "A" : "B").repeat(40) });
+          return `{"t3codeCommitHash":"${(reads === 1 ? "A" : "B").repeat(40)}"}`;
         }),
     },
   );
