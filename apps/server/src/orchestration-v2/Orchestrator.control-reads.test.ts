@@ -52,15 +52,31 @@ const adapter = {
   openSession: () => Effect.die("No provider process needed for metadata controls"),
 } as ProviderAdapterV2Shape;
 const database = SqlitePersistenceMemory;
-const testLayer = Layer.mergeAll(
-  database,
-  ProjectionStore.layer.pipe(Layer.provide(database)),
-  makeOrchestratorV2ReplayLayerWithRegistry(
-    { name: "control-reads" },
-    ProviderAdapterRegistry.makeLayer([adapter]),
-    { databaseLayer: database, runEffectWorker: false },
-  ),
-);
+const makeTestLayer = (projectId: ProjectId) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-control-reads-workspace-",
+      });
+      return Layer.mergeAll(
+        database,
+        ProjectionStore.layer.pipe(Layer.provide(database)),
+        makeOrchestratorV2ReplayLayerWithRegistry(
+          { name: "control-reads" },
+          ProviderAdapterRegistry.makeLayer([adapter]),
+          {
+            databaseLayer: database,
+            runEffectWorker: false,
+            checkoutFixture: {
+              projects: [{ projectId, title: "Control reads", workspaceRoot }],
+              resolvePath: () => undefined,
+            },
+          },
+        ),
+      );
+    }),
+  ).pipe(Layer.provide(NodeServices.layer));
 
 it.effect(
   "dispatches metadata, queue resume and request controls without hydrating unrelated history",
@@ -239,11 +255,15 @@ it.effect(
         assert.equal(response.node?.status, mode === "live" ? "completed" : "cancelled");
         assert.equal(response.item?.status, mode === "live" ? "completed" : "cancelled");
       }
+      const fs = yield* FileSystem.FileSystem;
+      const newWorkspaceRoot = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-control-reads-new-workspace-",
+      });
       yield* orchestrator.dispatch({
         type: "thread.metadata.update",
         commandId: CommandId.make("workspace-control"),
         threadId,
-        worktreePath: "/new-repo",
+        worktreePath: newWorkspaceRoot,
       });
       const thread = yield* projections.getThread(threadId);
       assert.equal(thread.title, "After");
@@ -290,7 +310,15 @@ it.effect(
         threadId,
       });
       assert.isNotNull((yield* projections.getThread(threadId)).deletedAt);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          makeTestLayer(ProjectId.make("project:control-dispatch")),
+          NodeServices.layer,
+        ),
+      ),
+      Effect.scoped,
+    ),
 );
 
 it.effect("implements a proposed plan that the command projection leaves out", () =>
@@ -344,7 +372,7 @@ it.effect("implements a proposed plan that the command projection leaves out", (
     });
 
     assert.equal((yield* projections.getPlan(threadId, planId))?.status, "completed");
-  }).pipe(Effect.provide(testLayer)),
+  }).pipe(Effect.provide(makeTestLayer(ProjectId.make("project:implement-plan")))),
 );
 
 // Stop's settle follow-up runs after the provider interrupt returns, possibly
@@ -545,7 +573,7 @@ it.effect("settles only the stopped run's background work, once", () =>
       `${commandItem(2)}:running`,
       `${commandItem(3)}:running`,
     ]);
-  }).pipe(Effect.provide(testLayer)),
+  }).pipe(Effect.provide(makeTestLayer(ProjectId.make("project:settle-binding")))),
 );
 
 it.effect("persists message blocking and rejects foreign content before any effects", () =>
@@ -750,7 +778,7 @@ it.effect("persists message blocking and rejects foreign content before any effe
     assert.isTrue(
       blocked.storedEvents.some((stored) => stored.event.type === "thread.metadata-updated"),
     );
-  }).pipe(Effect.provide(testLayer)),
+  }).pipe(Effect.provide(makeTestLayer(ProjectId.make("project:block-messages")))),
 );
 
 it.effect("keeps peer blocking and accepted receipts across a scoped SQLite close and reopen", () =>
@@ -759,6 +787,8 @@ it.effect("keeps peer blocking and accepted receipts across a scoped SQLite clos
     const path = yield* Path.Path;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-peer-block-reopen-" });
     const dbPath = path.join(directory, "state.sqlite");
+    const workspaceRoot = path.join(directory, "workspace");
+    yield* fs.makeDirectory(workspaceRoot);
     const threadId = ThreadId.make("thread:peer-block-reopen");
     const senderThreadId = ThreadId.make("thread:peer-block-reopen-sender");
     const scope: McpInvocationScope = {
@@ -777,7 +807,20 @@ it.effect("keeps peer blocking and accepted receipts across a scoped SQLite clos
         makeOrchestratorV2ReplayLayerWithRegistry(
           { name: "peer-block-reopen" },
           ProviderAdapterRegistry.makeLayer([adapter]),
-          { databaseLayer: database, runEffectWorker: false },
+          {
+            databaseLayer: database,
+            runEffectWorker: false,
+            checkoutFixture: {
+              projects: [
+                {
+                  projectId: ProjectId.make("project:peer-block-reopen"),
+                  title: "Restart controls",
+                  workspaceRoot,
+                },
+              ],
+              resolvePath: () => undefined,
+            },
+          },
         ),
       );
       const threads = ThreadManagement.layer.pipe(Layer.provideMerge(core));
@@ -959,5 +1002,5 @@ it.effect(
       yield* orchestrator.dispatch(resume);
       assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, effectsAfter);
       assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 2);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(makeTestLayer(ProjectId.make("project:blocked-accepted-queue")))),
 );
