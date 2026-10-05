@@ -20,6 +20,13 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 4, name: "NativeCreationCommandIdentities" },
         { migration_id: 5, name: "WorkstreamsNativeAttempts" },
         { migration_id: 6, name: "WorkstreamsProviderEnrollments" },
+        { migration_id: 138, name: "ThreadCreationLookupIndex" },
+        { migration_id: 139, name: "DeletionWorktreeAdmission" },
+        { migration_id: 140, name: "OrdinaryCheckoutOwnership" },
+        { migration_id: 141, name: "OrdinaryCheckoutExecutionLifetime" },
+        { migration_id: 142, name: "V2NativeAcceptance" },
+        { migration_id: 143, name: "AttachmentCleanup" },
+        { migration_id: 144, name: "ImportedApplicationAttachments" },
       ],
     );
     assert.deepEqual(
