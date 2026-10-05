@@ -37,6 +37,7 @@ import {
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadStreamItem,
   OrchestrationV2ThreadShell,
+  OrchestrationV2PendingRequestCounts,
   OrchestrationV2TurnItem,
   OrchestrationV2TurnItemJson,
 } from "./orchestrationV2.ts";
@@ -1040,6 +1041,17 @@ describe("orchestration V2 contracts", () => {
       decodeOrchestrationV2ThreadShell({ ...shell, threadMessagesBlocked: true })
         .threadMessagesBlocked,
     ).toBe(true);
+    expect(shell.pendingRequestCounts).toBeUndefined();
+    const encodeShell = Schema.encodeSync(OrchestrationV2ThreadShell);
+    const historical = encodeShell(shell);
+    const decodeStrict = Schema.decodeUnknownSync(OrchestrationV2ThreadShell, {
+      onExcessProperty: "error",
+    });
+    expect(decodeStrict(historical).pendingRequestCounts).toBeUndefined();
+    expect(
+      decodeStrict({ ...historical, pendingRequestCounts: { approval: 0, userInput: 0 } })
+        .pendingRequestCounts,
+    ).toEqual({ approval: 0, userInput: 0 });
   });
 });
 
@@ -1252,4 +1264,18 @@ describe("limit recovery choice updates", () => {
   ])("accepts an explicit independent choice %j", (choice) => {
     expect(decode({ ...identity, ...choice })).toEqual({ ...identity, ...choice });
   });
+});
+
+it("validates independent pending counts without defaulting absent coverage or admitting private fields", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrationV2PendingRequestCounts, {
+    onExcessProperty: "error",
+  });
+  expect(decode({ approval: 3, userInput: 2 })).toEqual({ approval: 3, userInput: 2 });
+  for (const counts of [
+    { approval: -1, userInput: 0 },
+    { approval: 0, userInput: 0.5 },
+    { approval: 0 },
+    { approval: 0, userInput: 0, requestBody: "private" },
+  ])
+    expect(() => decode(counts)).toThrow();
 });

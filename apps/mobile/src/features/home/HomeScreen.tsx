@@ -1,3 +1,14 @@
+import {
+  mobileThreadOrderScope,
+  mobileThreadOrderSection,
+  mobileThreadOrderScopes,
+  type MobileThreadMoveContext,
+} from "../../lib/threadOrderScope";
+import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
+import {
+  projectMobileWorkstreamList,
+  mobileWorkstreamMoveDestination,
+} from "../workstreams/listProjection";
 import { useAndroidControlSizing } from "../../components/useAndroidControlSizing";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
 import { computeThreadMoveAvailability } from "../threads/threadOrder";
@@ -39,6 +50,7 @@ import { threadListEnvironmentsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
 import {
+  ThreadListV2WorkstreamHeader,
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
@@ -110,6 +122,7 @@ interface HomeScreenProps {
   readonly onMoveThread: (
     thread: EnvironmentThreadShell,
     direction: ThreadMoveDestination,
+    context?: MobileThreadMoveContext,
   ) => Promise<boolean>;
   readonly onRenameThread: (thread: EnvironmentThreadShell) => void;
   readonly onRegenerateThreadTitle: (thread: EnvironmentThreadShell) => Promise<boolean>;
@@ -222,6 +235,7 @@ function HomeTopContentSpacer() {
 /* ─── Main screen ────────────────────────────────────────────────────── */
 
 export function HomeScreen(props: HomeScreenProps) {
+  const workstreams = useMobileWorkstreams(props.threads);
   const queuedThreadKeys = useQueuedThreadKeys();
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const insets = useSafeAreaInsets();
@@ -395,7 +409,7 @@ export function HomeScreen(props: HomeScreenProps) {
           ),
     [v2ScopedProjectGroup],
   );
-  // Thread List v2 (beta): one flat list in creation order, no grouping.
+  // Active Workstreams share one flat list with the native shelves.
   // Settled threads collapse into a recency tail below the card block.
   // Settled threads stay in the live shell stream (settled ≠ archived), so
   // the partition works directly off live shells — no snapshot merging or
@@ -420,8 +434,12 @@ export function HomeScreen(props: HomeScreenProps) {
     [props.onPinThread],
   );
   const handleMoveThread = useCallback(
-    (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
-      void props.onMoveThread(thread, direction);
+    (
+      thread: EnvironmentThreadShell,
+      direction: ThreadMoveDestination,
+      context?: MobileThreadMoveContext,
+    ) => {
+      void props.onMoveThread(thread, direction, context);
     },
     [props.onMoveThread],
   );
@@ -508,8 +526,9 @@ export function HomeScreen(props: HomeScreenProps) {
   // rebuild (see computeThreadMoveAvailability): per-thread planner calls made
   // list construction quadratic, and this list rebuilds on every minute tick.
   const threadMoveAvailability = useMemo(() => {
-    const sectionAvailability = (section: "pinned" | "active") =>
-      computeThreadMoveAvailability({
+    const scopeAvailability = (scope: MobileThreadMoveContext["scope"]) => {
+      const section = mobileThreadOrderSection(scope);
+      return computeThreadMoveAvailability({
         allThreads: props.threads,
         section,
         pendingOrder,
@@ -518,6 +537,8 @@ export function HomeScreen(props: HomeScreenProps) {
         ordered: getThreadListV2OrderedSection({
           threads: props.threads,
           section,
+          scope,
+          snapshot: workstreams.orderSnapshot,
           pendingOrder,
           now: new Date().toISOString(),
           settlementEnvironmentIds,
@@ -525,12 +546,15 @@ export function HomeScreen(props: HomeScreenProps) {
           queuedThreadKeys,
         }),
       });
-    // The Working beta orders the inbox by time, so only pins can move.
-    return new Map([
-      ...sectionAvailability("pinned"),
-      ...(workingShelfEnabled ? [] : sectionAvailability("active")),
-    ]);
+    };
+    // The Working beta orders the inbox by time, so only pin slots can move.
+    return new Map(
+      mobileThreadOrderScopes(workstreams.orderSnapshot)
+        .filter((scope) => !workingShelfEnabled || mobileThreadOrderSection(scope) === "pinned")
+        .flatMap((scope) => [...scopeAvailability(scope)]),
+    );
   }, [
+    workstreams.orderSnapshot,
     workingShelfEnabled,
     pinReorderEnvironmentIds,
     activeReorderEnvironmentIds,
@@ -547,6 +571,7 @@ export function HomeScreen(props: HomeScreenProps) {
     // Settled threads are live shells; archived threads keep their original
     // "hidden from lists" meaning.
     return buildThreadListV2Items({
+      snapshot: workstreams.orderSnapshot,
       pendingOrder,
       threads: props.threads.filter((thread) => thread.archivedAt === null),
       environmentId: props.selectedEnvironmentId,
@@ -566,6 +591,7 @@ export function HomeScreen(props: HomeScreenProps) {
       selectedThreadKey: null,
     });
   }, [
+    workstreams.orderSnapshot,
     workingShelfEnabled,
     workingShelfExpanded,
     pendingOrder,
@@ -617,7 +643,7 @@ export function HomeScreen(props: HomeScreenProps) {
       ),
     [props.pendingTasks, props.selectedEnvironmentId, v2ScopedProjectKeys, v2SearchQuery],
   );
-  const threadListV2Items = useMemo(
+  const nativeThreadListV2Items = useMemo(
     () =>
       buildThreadListV2ListItems({
         items: threadListV2Layout.items,
@@ -651,6 +677,48 @@ export function HomeScreen(props: HomeScreenProps) {
     ],
   );
 
+  const threadListV2Items = useMemo(
+    () =>
+      projectMobileWorkstreamList(nativeThreadListV2Items, {
+        enabled: workstreams.enabled,
+        groups: workstreams.groups,
+        collapsedKeys: workstreams.collapsedKeys,
+        secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+        pendingOrder,
+        searching: props.searchQuery.trim().length > 0,
+      }),
+    [
+      nativeThreadListV2Items,
+      pendingOrder,
+      workstreams.enabled,
+      workstreams.groups,
+      workstreams.collapsedKeys,
+      workstreams.secondaryLabelsByKey,
+      props.searchQuery,
+    ],
+  );
+  const moveWithinWorkstream = useCallback(
+    (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
+      const target = workstreams.enabled
+        ? mobileWorkstreamMoveDestination(threadListV2Items, thread, direction)
+        : direction;
+      if (target !== null)
+        handleMoveThread(thread, target, {
+          scope: mobileThreadOrderScope(thread, workstreams.orderSnapshot),
+          source: workstreams.orderSource,
+          removePrimary: workstreams.removePrimary,
+        });
+    },
+    [
+      workstreams.enabled,
+      workstreams.orderSnapshot,
+      workstreams.orderSource,
+      workstreams.removePrimary,
+      threadListV2Items,
+      handleMoveThread,
+    ],
+  );
+
   useThreadJumpShortcuts(threadListV2Items, props.onSelectThread);
   useEffect(() => {
     if (swipeEnabled) activateVisibleRows(threadListV2Items);
@@ -658,6 +726,15 @@ export function HomeScreen(props: HomeScreenProps) {
 
   const renderV2Item = useCallback(
     ({ item }: { readonly item: ThreadListV2ListItem }) => {
+      if (item.type === "v2-workstream") {
+        return (
+          <ThreadListV2WorkstreamHeader
+            {...item}
+            onToggle={() => workstreams.toggleGroup(item.groupKey)}
+            onOpen={() => workstreams.openGroup(item.groupKey)}
+          />
+        );
+      }
       if (item.type === "v2-pending") {
         const pendingScopeKey = scopedProjectKey(
           item.pendingTask.environmentId,
@@ -717,6 +794,8 @@ export function HomeScreen(props: HomeScreenProps) {
         <ThreadListV2Row
           onNewThreadOnBranch={props.onNewThreadOnBranch}
           thread={thread}
+          onOpenWorkstreams={workstreams.openThread}
+          secondaryWorkstreamLabel={item.secondaryWorkstreamLabel}
           variant={item.item.variant}
           hasQueuedMessages={item.hasQueuedMessages}
           snoozed={item.item.snoozed}
@@ -770,7 +849,7 @@ export function HomeScreen(props: HomeScreenProps) {
           onPinThread={handlePinThread}
           onUnpinThread={handleUnpinThread}
           onSetThreadAutoSettle={handleSetThreadAutoSettle}
-          onMoveThread={handleMoveThread}
+          onMoveThread={moveWithinWorkstream}
           onSwipeableClose={handleSwipeableClose}
           onSwipeableWillOpen={handleSwipeableWillOpen}
           activationKey={item.key}
@@ -779,6 +858,10 @@ export function HomeScreen(props: HomeScreenProps) {
     },
     [
       handleDeleteThread,
+      workstreams.toggleGroup,
+      workstreams.openGroup,
+      workstreams.openThread,
+      moveWithinWorkstream,
       activeReorderEnvironmentIds,
       handleMoveThread,
       handlePinThread,
@@ -826,6 +909,7 @@ export function HomeScreen(props: HomeScreenProps) {
   // the same reason: the clock text is precomputed per item instead.
   const v2ExtraData = useMemo(
     () => ({
+      workstreamBindingRevision: workstreams.bindingRevision,
       projectByKey,
       projectTitleByProjectKey: v2ProjectTitleByProjectKey,
       listEnvironments,
@@ -836,6 +920,7 @@ export function HomeScreen(props: HomeScreenProps) {
       workingShelfEnabled,
     }),
     [
+      workstreams.bindingRevision,
       projectByKey,
       props.searchQuery,
       props.savedConnectionsById,
@@ -869,6 +954,7 @@ export function HomeScreen(props: HomeScreenProps) {
   if (!hasAnyThreads) {
     return (
       <View className="flex-1 bg-screen android:bg-header">
+        {workstreams.sheet}
         <View
           className={cn(
             "flex-1 items-center justify-center bg-screen px-8",
@@ -880,6 +966,7 @@ export function HomeScreen(props: HomeScreenProps) {
           }}
         >
           <View className="w-full max-w-[430px]">
+            {workstreams.controls}
             <EmptyState
               title={emptyState.title}
               detail={emptyState.detail}
@@ -913,7 +1000,12 @@ export function HomeScreen(props: HomeScreenProps) {
 
   // Project scoping lives in the header filter menu (no inline chip row on
   // mobile — the menu is the one filter surface).
-  const v2ListHeader = listHeader;
+  const v2ListHeader = (
+    <>
+      {listHeader}
+      {workstreams.controls}
+    </>
+  );
 
   // Use the v2 project scope for its empty state. Snoozed threads need no
   // special empty state: their shelf header is a list row even while collapsed.
@@ -959,6 +1051,7 @@ export function HomeScreen(props: HomeScreenProps) {
 
   return (
     <View className="flex-1 bg-screen android:bg-header">
+      {workstreams.sheet}
       <View
         className={
           Platform.OS === "android"
