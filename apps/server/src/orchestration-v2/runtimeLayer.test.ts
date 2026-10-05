@@ -28,6 +28,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Exit from "effect/Exit";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -233,6 +234,21 @@ const TestLayer = Layer.mergeAll(
   Layer.provide(ProjectServiceTestLayer),
   Layer.provide(PlatformTestLayer),
 );
+
+const ReceivingCheckoutFixtureLayer = Layer.merge(TestLayer, SqlitePersistenceMemory);
+
+const arrangeReceivingProject = (projectId: ProjectId) =>
+  Effect.gen(function* () {
+    const projects = yield* ProjectStore.ProjectStoreV2;
+    if (Option.isSome(yield* projects.get(projectId))) return;
+    const fs = yield* FileSystem.FileSystem;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "runtime-receiving-project-" });
+    const workspaceRoot = yield* fs.realPath(directory);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO projection_projects
+      (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+      VALUES (${projectId}, 'Runtime receiving fixture', ${workspaceRoot}, '[]', '2026-06-20T00:00:00.000Z', '2026-06-20T00:00:00.000Z')`;
+  }).pipe(Effect.provide(NodeServices.layer));
 
 const LegacyImportTestLayer = OrchestrationV2LayerLive.pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
@@ -972,6 +988,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
 
   it.effect("rejects non-ready rollback targets before persisting events or effects", () =>
     Effect.gen(function* () {
+      yield* arrangeReceivingProject(ProjectId.make("runtime-rollback-readiness-project"));
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -1128,11 +1145,12 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
         }
       }
-    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(ReceivingCheckoutFixtureLayer))),
   );
 
   it.effect("resolves delivery intent against the active run and starts after it completes", () =>
     Effect.gen(function* () {
+      yield* arrangeReceivingProject(ProjectId.make("runtime-delivery-intent-project"));
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -1301,11 +1319,12 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         (yield* outbox.listByCommandId(nextCommandId)).map((effect) => effect.request.type),
         ["provider-turn.start"],
       );
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(ReceivingCheckoutFixtureLayer))),
   );
 
   it.effect("answers an async question after its provider exits and commits the answer once", () =>
     Effect.gen(function* () {
+      yield* arrangeReceivingProject(ProjectId.make("runtime-async-question-project"));
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
       const now = yield* DateTime.now;
@@ -1453,7 +1472,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         .pipe(Effect.result);
       assert.equal(duplicate._tag, "Failure");
       assert.equal((yield* orchestrator.getThreadProjection(threadId)).messages.length, 1);
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(ReceivingCheckoutFixtureLayer))),
   );
 
   it.effect("dismisses message-capable questions directly and while settling", () =>
@@ -1462,6 +1481,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       const eventSink = yield* EventSink.EventSinkV2;
 
       const seedQuestion = Effect.fn("runtimeLayerTest.seedQuestion")(function* (name: string) {
+        yield* arrangeReceivingProject(ProjectId.make(`${name}-project`));
         const threadId = ThreadId.make(`${name}-thread`);
         const requestId = RuntimeRequestId.make(`${name}-request`);
         const nodeId = NodeId.make(`${name}-node`);
@@ -1596,7 +1616,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         settledProjection.turnItems.find((item) => item.id === settled.itemId)?.status,
         "cancelled",
       );
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(ReceivingCheckoutFixtureLayer))),
   );
 
   it.effect("merges an explicit provider-finished run while checkpoint capture is pending", () =>
@@ -4596,7 +4616,7 @@ it.layer(TestLayer)("usage-limit recovery", (it) => {
           yield* orchestrator.dispatch(scheduledResume);
         }
         assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 3);
-      }),
+      }).pipe(Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect.each([
@@ -5096,6 +5116,6 @@ it.layer(TestLayer)("usage-limit recovery", (it) => {
         assert.equal(resumed.runs[1]?.status, "starting");
         assert.isFalse(resumed.runs[1]?.queueHeld);
       }
-    }),
+    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
   );
 });
