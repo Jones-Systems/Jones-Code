@@ -1,6 +1,8 @@
 import {
   EnvironmentId,
   ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   ThreadId,
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
@@ -8,6 +10,7 @@ import * as Option from "effect/Option";
 import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
+import { presentThreadShell } from "./models.ts";
 import { PrimaryConnectionTarget } from "../connection/model.ts";
 import { v2ShellSnapshot, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import { applyShellStreamEvent } from "./shellReducer.ts";
@@ -198,4 +201,30 @@ describe("v2 thread shell lists", () => {
       harness.registry.dispose();
     }
   });
+});
+
+it("retains optional server-selected runtime identity without activating replayed generations", () => {
+  const identity = {
+    runtimeGeneration: "historical-native-process",
+    evidenceRevision: 4,
+    requested: {
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerDriver: ProviderDriverKind.make("codex"),
+      model: "requested",
+      serviceTier: null,
+    },
+    observed: {
+      backend: { status: "unknown" as const },
+      model: { status: "observed" as const, value: "native", sourceEvent: "codex.thread/open" },
+      account: { status: "unavailable" as const, reason: "Not reported." },
+      serviceTier: { status: "unavailable" as const, reason: "Not reported." },
+    },
+  };
+  const presented = presentThreadShell(environmentId, {
+    ...v2ThreadShell,
+    runtimeIdentity: identity,
+  });
+  expect(presented.runtimeIdentity).toEqual(identity);
+  expect(presented.modelSelection).toEqual(v2ThreadShell.modelSelection);
+  expect(presentThreadShell(environmentId, v2ThreadShell)).not.toHaveProperty("runtimeIdentity");
 });

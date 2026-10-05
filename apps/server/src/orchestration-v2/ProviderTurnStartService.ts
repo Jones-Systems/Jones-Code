@@ -37,6 +37,10 @@ import {
 import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
 import {
   ProviderAdapterTurnStartError,
+  hasUnknownRuntimeBinding,
+  runtimeBinding,
+  identityForRequest,
+  requestedRuntimeIdentity,
   type ProviderAdapterV2Error,
   type ProviderAdapterV2HistoricalContext,
   type ProviderAdapterV2SessionRuntime,
@@ -684,6 +688,8 @@ export const layer: Layer.Layer<
           return resumed.success;
         }
 
+        if (hasUnknownRuntimeBinding(resumed.failure))
+          return yield* loadFromProvider(Effect.fail(resumed.failure));
         yield* Effect.logWarning("Provider resume failed; attempting a fresh native session", {
           driver: session.driver,
           providerThreadId: providerThread.id,
@@ -818,6 +824,10 @@ export const layer: Layer.Layer<
       });
       const runningProviderThread: OrchestrationV2ProviderThread = {
         ...loadedProviderThread,
+        runtimeIdentity: identityForRequest(
+          requestedRuntimeIdentity(run.modelSelection, session.driver),
+          loadedProviderThread.runtimeIdentity,
+        ),
         contextUsage: handoffUsage,
         id: providerThread.id,
         driver: session.driver,
@@ -930,7 +940,28 @@ export const layer: Layer.Layer<
           payload: runningRootNode,
         },
       ];
+      const runningBinding =
+        loadedProviderThread.runtimeIdentity?.runtimeGeneration === undefined
+          ? undefined
+          : runtimeBinding(
+              runningProviderThread,
+              loadedProviderThread.runtimeIdentity.runtimeGeneration,
+            );
       const runningWrite = yield* eventSink.writeIfRunCurrent({
+        runtimeIdentityRequest: runningProviderThread.runtimeIdentity!.requested,
+        ...(loadedProviderThread.runtimeIdentity === undefined
+          ? {}
+          : {
+              runtimeIdentityPreviousRequest: loadedProviderThread.runtimeIdentity.requested,
+            }),
+        ...(runningBinding === undefined
+          ? {}
+          : {
+              runtimeEvidence: {
+                ...runningBinding,
+                evidenceRevision: loadedProviderThread.runtimeIdentity?.evidenceRevision,
+              },
+            }),
         threadId: projection.thread.id,
         runId: run.id,
         activeAttemptId: attempt.id,

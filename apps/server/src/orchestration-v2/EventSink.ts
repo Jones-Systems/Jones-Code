@@ -1,5 +1,8 @@
 import {
   CommandId,
+  type OrchestrationV2ProviderThread,
+  type ProviderRuntimeEvidenceCapture,
+  type RequestedRuntimeIdentity,
   type OrchestrationV2Run,
   OrchestrationV2DomainEvent,
   OrchestrationV2StoredEvent,
@@ -22,6 +25,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { identityForRequest } from "./ProviderAdapter.ts";
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/Services/OrchestrationEventStore.ts";
 import { projectDomainEventForWire } from "./WireProjection.ts";
@@ -67,22 +71,72 @@ export class EventSinkStreamError extends Schema.TaggedError<EventSinkStreamErro
 export const EventSinkV2Error = Schema.Union([EventSinkWriteError, EventSinkStreamError]);
 export type EventSinkV2Error = typeof EventSinkV2Error.Type;
 
+export function runtimeEvidenceMatches(
+  current: OrchestrationV2ProviderThread | null,
+  capture: ProviderRuntimeEvidenceCapture,
+): boolean {
+  if (
+    current === null ||
+    current.appThreadId !== capture.threadId ||
+    current.id !== capture.providerThreadId ||
+    current.providerSessionId !== capture.providerSessionId ||
+    current.providerInstanceId !== capture.providerInstanceId ||
+    current.driver !== capture.driver ||
+    current.nativeThreadRef?.driver !== capture.driver ||
+    current.nativeThreadRef.nativeId !== capture.nativeThreadId ||
+    current.runtimeIdentity === undefined
+  )
+    return false;
+  const identity = current.runtimeIdentity;
+  if (
+    capture.runtimeGeneration !== undefined &&
+    identity.runtimeGeneration !== capture.runtimeGeneration
+  )
+    return false;
+  if (capture.evidenceRevision !== undefined) {
+    const revision = identity.evidenceRevision;
+    if (
+      revision === undefined ||
+      (capture.runtimeGeneration === undefined
+        ? revision !== capture.evidenceRevision
+        : revision < capture.evidenceRevision)
+    )
+      return false;
+  }
+  return true;
+}
+
 /**
  * SERVICE DEFINITION
  */
 export interface EventSinkV2Shape {
   readonly write: (input: {
+    readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
+    readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
+    readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
+    readonly runtimeIdentityObservation?: RequestedRuntimeIdentity;
+    readonly runtimeIdentityBoundary?: { readonly expectedGeneration: string | null };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeWithEffects: (input: {
+    readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
+    readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
+    readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
+    readonly runtimeIdentityObservation?: RequestedRuntimeIdentity;
+    readonly runtimeIdentityBoundary?: { readonly expectedGeneration: string | null };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeIfRunCurrent: (input: {
+    readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
+    readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
+    readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
+    readonly runtimeIdentityObservation?: RequestedRuntimeIdentity;
+    readonly runtimeIdentityBoundary?: { readonly expectedGeneration: string | null };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly threadId: ThreadId;
@@ -104,6 +158,11 @@ export interface EventSinkV2Shape {
    * a newer attempt that already claimed the thread.
    */
   readonly writeIfProviderThreadOwner: (input: {
+    readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
+    readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
+    readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
+    readonly runtimeIdentityObservation?: RequestedRuntimeIdentity;
+    readonly runtimeIdentityBoundary?: { readonly expectedGeneration: string | null };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly providerThreadId: ProviderThreadId;
@@ -305,6 +364,111 @@ const baseLayer: Layer.Layer<
         });
       });
 
+    const guardRuntimeIdentity = (
+      input: Pick<
+        Parameters<EventSinkV2Shape["write"]>[0],
+        | "events"
+        | "runtimeEvidence"
+        | "runtimeIdentityObservation"
+        | "runtimeIdentityBoundary"
+        | "runtimeIdentityRequest"
+        | "runtimeIdentityPreviousRequest"
+      >,
+    ) =>
+      Effect.gen(function* () {
+        const capture = input.runtimeEvidence;
+        const update = input.events.find((event) => event.type === "provider-thread.updated");
+        if (input.runtimeIdentityBoundary !== undefined) {
+          if (update?.type !== "provider-thread.updated") return null;
+          const current =
+            (yield* projectionStore.getThreadRecords(update.threadId, [
+              "providerThreads",
+            ])).providerThreads.find((thread) => thread.id === update.payload.id) ?? null;
+          if (
+            (capture !== undefined && !runtimeEvidenceMatches(current, capture)) ||
+            (current?.runtimeIdentity?.runtimeGeneration ?? null) !==
+              input.runtimeIdentityBoundary.expectedGeneration ||
+            (current !== null &&
+              (current.appThreadId !== update.payload.appThreadId ||
+                current.providerInstanceId !== update.payload.providerInstanceId ||
+                current.driver !== update.payload.driver))
+          )
+            return null;
+          return input.events.map((event) =>
+            event.type === "provider-thread.updated" && event.payload.id === update.payload.id
+              ? {
+                  ...event,
+                  payload: {
+                    ...event.payload,
+                    runtimeIdentity:
+                      event.payload.runtimeIdentity === undefined
+                        ? undefined
+                        : {
+                            ...event.payload.runtimeIdentity,
+                            evidenceRevision: (current?.runtimeIdentity?.evidenceRevision ?? 0) + 1,
+                          },
+                  },
+                }
+              : event,
+          );
+        }
+        if (capture === undefined) return input.events;
+        const current =
+          (yield* projectionStore.getThreadRecords(capture.threadId, [
+            "providerThreads",
+          ])).providerThreads.find((thread) => thread.id === capture.providerThreadId) ?? null;
+        if (!runtimeEvidenceMatches(current, capture) || current === null) return null;
+        const identity = current.runtimeIdentity!;
+        if (
+          input.runtimeIdentityRequest !== undefined &&
+          capture.evidenceRevision !== identity.evidenceRevision
+        ) {
+          const previous = input.runtimeIdentityPreviousRequest;
+          if (
+            previous === undefined ||
+            identity.requested.providerInstanceId !== previous.providerInstanceId ||
+            identity.requested.providerDriver !== previous.providerDriver ||
+            identity.requested.model !== previous.model ||
+            identity.requested.serviceTier !== previous.serviceTier
+          )
+            return null;
+        }
+        if (input.runtimeIdentityObservation !== undefined) {
+          const requested = input.runtimeIdentityObservation;
+          if (
+            identity.requested.providerInstanceId !== requested.providerInstanceId ||
+            identity.requested.providerDriver !== requested.providerDriver ||
+            identity.requested.model !== requested.model ||
+            identity.requested.serviceTier !== requested.serviceTier ||
+            identity.evidenceRevision !== capture.evidenceRevision
+          )
+            return null;
+        }
+        return input.events.map((event) =>
+          event.type === "provider-thread.updated" && event.payload.id === current.id
+            ? {
+                ...event,
+                payload: {
+                  ...event.payload,
+                  runtimeIdentity:
+                    input.runtimeIdentityObservation === undefined
+                      ? input.runtimeIdentityRequest === undefined
+                        ? identity
+                        : {
+                            ...identityForRequest(input.runtimeIdentityRequest, identity),
+                            evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
+                          }
+                      : {
+                          ...identity,
+                          observed: event.payload.runtimeIdentity!.observed,
+                          evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
+                        },
+                },
+              }
+            : event,
+        );
+      });
+
     const normalizeEvents = (events: ReadonlyArray<OrchestrationV2DomainEvent>) => {
       const runOrdinals = new Map(
         events.flatMap((event) =>
@@ -369,10 +533,12 @@ const baseLayer: Layer.Layer<
 
       return yield* commitThenPublish(
         Effect.gen(function* () {
+          const identityEvents = yield* guardRuntimeIdentity(input);
+          if (identityEvents === null) return [];
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
-              ? yield* guardUserInputCancellations(input.events)
-              : input.events,
+              ? yield* guardUserInputCancellations(identityEvents)
+              : identityEvents,
           );
           const committed = yield* eventStore.append({
             ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
@@ -427,10 +593,16 @@ const baseLayer: Layer.Layer<
               };
             }
 
+            const identityEvents = yield* guardRuntimeIdentity(input);
+            if (identityEvents === null)
+              return {
+                committed: false as const,
+                storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              };
             const normalized = yield* normalizeEvents(
               input.guardPendingUserInputCancellations === true
-                ? yield* guardUserInputCancellations(input.events)
-                : input.events,
+                ? yield* guardUserInputCancellations(identityEvents)
+                : identityEvents,
             );
             const storedEvents = yield* eventStore.append({
               ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
@@ -484,10 +656,16 @@ const baseLayer: Layer.Layer<
             };
           }
 
+          const identityEvents = yield* guardRuntimeIdentity(input);
+          if (identityEvents === null)
+            return {
+              committed: false as const,
+              storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+            };
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
-              ? yield* guardUserInputCancellations(input.events)
-              : input.events,
+              ? yield* guardUserInputCancellations(identityEvents)
+              : identityEvents,
           );
           const storedEvents = yield* eventStore.append({
             ...(input.commandId === undefined ? {} : { commandId: input.commandId }),

@@ -10,6 +10,8 @@ import type {
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
+import type { ProcessAttributionRecord } from "./ProcessAttribution.ts";
+
 const MAX_DELTA_INTERVAL_MS = 30_000;
 const ELECTRON_IDENTITY_TOLERANCE_MS = 2_000;
 
@@ -49,6 +51,7 @@ export interface MergeProcessesInput {
   readonly desktopSnapshot: Option.Option<DesktopHostTelemetrySnapshot>;
   readonly electronRootPids?: ReadonlySet<number>;
   readonly electronRootStartTimes?: ReadonlyMap<number, number>;
+  readonly processAttributions?: ReadonlyMap<number, ProcessAttributionRecord>;
   readonly previous: ReadonlyMap<string, ProcessState>;
   readonly counters: TelemetryCounters;
   readonly updatePrevious: boolean;
@@ -497,18 +500,23 @@ export function mergeProcesses(input: MergeProcessesInput): MergeProcessesResult
         })
       : 0;
     const electronMetric = matchElectronMetric(process, metricsByPid);
+    const processAttribution = input.processAttributions?.get(process.pid);
+    const matchesAttribution =
+      processAttribution !== undefined && process.startTimeMs <= processAttribution.registeredAtMs;
     const category: ResourceTelemetryProcessCategory =
       process.pid === input.serverPid
         ? "server"
         : Option.contains(input.sidecarPid, process.pid)
           ? "resource-monitor"
-          : explicitElectronRootPids.has(process.pid)
-            ? "electron-main"
-            : electronMetric
-              ? electronCategory(electronMetric)
-              : isElectronDescendant(process.pid, processesByPid, electronPids)
-                ? inferredElectronCategory(process)
-                : "server-child";
+          : matchesAttribution
+            ? processAttribution.category
+            : explicitElectronRootPids.has(process.pid)
+              ? "electron-main"
+              : electronMetric
+                ? electronCategory(electronMetric)
+                : isElectronDescendant(process.pid, processesByPid, electronPids)
+                  ? inferredElectronCategory(process)
+                  : "server-child";
     const firstSeenAt = previous?.process.firstSeenAt ?? DateTime.makeUnsafe(sampledAtMs);
     const preservePreviousRates = !input.updatePrevious && previous !== undefined;
     const cpuPercent = preservePreviousRates
@@ -530,6 +538,7 @@ export function mergeProcesses(input: MergeProcessesInput): MergeProcessesResult
       command: process.command,
       status: process.status,
       category,
+      ...(matchesAttribution ? { owner: processAttribution.owner } : {}),
       ...(electronMetric ? { electronType: electronMetric.type } : {}),
       ...(electronMetric?.serviceName ? { electronServiceName: electronMetric.serviceName } : {}),
       cpuPercent: finiteNonNegative(cpuPercent),
