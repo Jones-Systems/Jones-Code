@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./conversations": {
+      "types": "./src/conversations/index.ts",
+      "default": "./src/conversations/index.ts"
+    },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"
