@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./conversationLibrary": {
+      "types": "./src/conversationLibrary.ts",
+      "import": "./src/conversationLibrary.ts"
+    },
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
