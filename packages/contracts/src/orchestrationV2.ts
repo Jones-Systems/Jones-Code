@@ -1,3 +1,4 @@
+import { RuntimeIdentityAttestation } from "./providerRuntimeIdentity.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -845,6 +846,7 @@ export type OrchestrationV2ProviderThreadNativeMetadata =
   typeof OrchestrationV2ProviderThreadNativeMetadata.Type;
 
 export const OrchestrationV2ProviderThread = Schema.Struct({
+  runtimeIdentity: Schema.optional(RuntimeIdentityAttestation),
   id: ProviderThreadId,
   driver: ProviderDriverKind,
   providerInstanceId: ProviderInstanceId,
@@ -1731,6 +1733,7 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  runtimeIdentity: Schema.optional(RuntimeIdentityAttestation),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,

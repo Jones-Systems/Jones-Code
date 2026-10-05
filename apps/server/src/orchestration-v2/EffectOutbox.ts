@@ -27,6 +27,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
+    preparedForRestart: Schema.optional(Schema.Boolean),
+    continueWithoutPreference: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("provider-session.detach"),
@@ -295,6 +297,8 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : sql`candidate.available_at <= ${availableBefore}`
         }
         AND candidate.status = 'pending'
+        AND NOT (candidate.effect_type = 'provider-runtime.continue'
+          AND COALESCE(json_extract(candidate.payload_json, '$.preparedForRestart'), 0) = 1)
         AND NOT EXISTS (
           SELECT 1
           FROM orchestration_v2_effect_outbox AS active
@@ -304,6 +308,8 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               OR (
                 active.status = 'pending'
                 AND active.rowid < candidate.rowid
+                AND NOT (active.effect_type = 'provider-runtime.continue'
+                  AND COALESCE(json_extract(active.payload_json, '$.preparedForRestart'), 0) = 1)
                 AND ${
                   excludeRestartContinuations
                     ? sql`active.effect_type != 'provider-runtime.continue'`
@@ -481,8 +487,18 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             AND effect_type IN ${sql.in(REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS)}
           RETURNING effect_id
         `;
-        if (requeuedRows.length > 0) yield* notifyAvailable(requeuedRows.length);
-        return { requeued: requeuedRows.length, cancelled: cancelledRows.length };
+        const preparedRows = yield* sql<{ readonly effect_id: string }>`
+          UPDATE orchestration_v2_effect_outbox SET
+            payload_json = json_set(payload_json, '$.preparedForRestart', json('false')),
+            available_at = ${now}, updated_at = ${now}
+          WHERE status = 'pending' AND effect_type = 'provider-runtime.continue'
+            AND json_extract(payload_json, '$.preparedForRestart') = 1 RETURNING effect_id`;
+        if (requeuedRows.length + preparedRows.length > 0)
+          yield* notifyAvailable(requeuedRows.length + preparedRows.length);
+        return {
+          requeued: requeuedRows.length + preparedRows.length,
+          cancelled: cancelledRows.length,
+        };
       }).pipe(
         Effect.mapError(
           (cause) => new EffectOutboxError({ operation: "reconcile-process-loss", cause }),

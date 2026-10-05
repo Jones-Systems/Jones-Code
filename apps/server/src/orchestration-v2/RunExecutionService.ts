@@ -369,6 +369,8 @@ export function routeProviderEvent(
   });
 
   switch (event.type) {
+    case "runtime_identity.observed":
+      return [false, state];
     case "provider_session.updated":
       // The session manager persists process-wide status once for every
       // attached app thread before broadcasting the adapter event.
@@ -590,6 +592,9 @@ export const layer: Layer.Layer<
                 : yield* input.hasUnpairedRunInterruptRequest();
             if (hasUnpairedRequest) {
               yield* eventSink.writeWithEffects({
+                ...(input.terminal.runtimeEvidence === undefined
+                  ? {}
+                  : { runtimeEvidence: input.terminal.runtimeEvidence }),
                 effects: [],
                 events: [
                   {
@@ -665,6 +670,9 @@ export const layer: Layer.Layer<
         // the next message. The capture is enqueued with these terminal events,
         // ahead of any later run's start on this thread's effect lane.
         const finalization = {
+          ...(input.terminal.runtimeEvidence === undefined
+            ? {}
+            : { runtimeEvidence: input.terminal.runtimeEvidence }),
           effects:
             input.terminal.status === "completed" ||
             input.terminal.status === "interrupted" ||
@@ -777,6 +785,9 @@ export const layer: Layer.Layer<
         } satisfies Parameters<typeof eventSink.writeWithEffects>[0];
         if (input.writeIfRunCurrent !== undefined) {
           const result = yield* eventSink.writeIfRunCurrent({
+            ...(input.terminal.runtimeEvidence === undefined
+              ? {}
+              : { runtimeEvidence: input.terminal.runtimeEvidence }),
             threadId: input.run.threadId,
             runId: input.run.id,
             activeAttemptId: input.writeIfRunCurrent.activeAttemptId,

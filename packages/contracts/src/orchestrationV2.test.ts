@@ -14,6 +14,7 @@ import {
   NonNegativeInt,
   ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
   ProviderReplayTranscript,
   ProviderThreadId,
   RunId,
@@ -972,6 +973,32 @@ describe("orchestration V2 contracts", () => {
     expect(providerThread.pendingBackgroundTasks).toEqual([]);
     expect(providerThread.contextUsage).toBeNull();
     expect(providerThread.nativeMetadata).toBeNull();
+    expect(providerThread.runtimeIdentity).toBeUndefined();
+    const identity = {
+      runtimeGeneration: "native-query-7",
+      evidenceRevision: 3,
+      requested: {
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        providerDriver: ProviderDriverKind.make("claudeAgent"),
+        model: "requested",
+        serviceTier: null,
+      },
+      observed: {
+        backend: { status: "unavailable" as const, reason: "Not reported." },
+        model: {
+          status: "observed" as const,
+          value: "native-model",
+          sourceEvent: "claude.system:init",
+        },
+        account: { status: "unavailable" as const, reason: "Not bound." },
+        serviceTier: { status: "unavailable" as const, reason: "Not reported." },
+      },
+    };
+    expect(
+      decodeOrchestrationV2ProviderThreadJson(
+        encodeOrchestrationV2ProviderThreadJson({ ...providerThread, runtimeIdentity: identity }),
+      ).runtimeIdentity,
+    ).toEqual(identity);
 
     const runtimeThread = decodeOrchestrationV2ProviderThread({
       id: "provider-thread-2",
@@ -993,6 +1020,7 @@ describe("orchestration V2 contracts", () => {
     expect(runtimeThread.pendingBackgroundTasks).toEqual([]);
     expect(runtimeThread.contextUsage).toBeNull();
     expect(runtimeThread.nativeMetadata).toBeNull();
+    expect(runtimeThread.runtimeIdentity).toBeUndefined();
   });
 
   it("decodes historical thread shell JSON without pendingBackgroundTasks as empty roster", () => {
