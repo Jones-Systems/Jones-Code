@@ -15,7 +15,10 @@ import {
   NativeCreationObservation,
 } from "./nativeCreation.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
-import { OrchestrationV2ThreadLaunchResult, OrchestrationV2DispatchCommandError } from "./orchestrationV2.ts";
+import {
+  OrchestrationV2ThreadLaunchResult,
+  OrchestrationV2DispatchCommandError,
+} from "./orchestrationV2.ts";
 
 const guard = {
   schema: "t3.native-creation-guard/v1",
@@ -313,7 +316,6 @@ it("keeps dispatch rejection codes optional and closed", () => {
   assert.throws(() => decode({ ...error, creationRejectionCode: "invented" }));
 });
 
-
 it("keeps V2 dispatch rejection codes optional without altering current error fields", () => {
   const decode = Schema.decodeUnknownSync(OrchestrationV2DispatchCommandError);
   const error = {
@@ -323,23 +325,27 @@ it("keeps V2 dispatch rejection codes optional without altering current error fi
     message: "Rejected",
   };
   assert.equal(decode(error).creationRejectionCode, undefined);
-  assert.equal(decode({ ...error, creationRejectionCode: "stale_grant" }).creationRejectionCode, "stale_grant");
+  assert.equal(
+    decode({ ...error, creationRejectionCode: "stale_grant" }).creationRejectionCode,
+    "stale_grant",
+  );
   assert.throws(() => decode({ ...error, creationRejectionCode: "invented" }));
 });
 
 it("does not reinterpret V2 execution commands as historical native command facts", () => {
   const accepts = acceptsWire(NativeCreationEffect);
-  assert.isFalse(accepts({
-    ...effect,
-    kind: "native_command",
-    phase: "started",
-    commandId: "command-1",
-    threadId: "thread-1",
-    commandType: "message.dispatch",
-    commandDigest: digest,
-  }));
+  assert.isFalse(
+    accepts({
+      ...effect,
+      kind: "native_command",
+      phase: "started",
+      commandId: "command-1",
+      threadId: "thread-1",
+      commandType: "message.dispatch",
+      commandDigest: digest,
+    }),
+  );
 });
-
 
 it("round-trips current launch results in both upgrade directions without changing historical bytes", () => {
   const now = DateTime.makeUnsafe("2026-10-02T12:00:00Z");
@@ -393,7 +399,7 @@ it("round-trips current launch results in both upgrade directions without changi
   assert.equal(acceptedLegacy.creation, undefined);
   assert.deepEqual<unknown>(acceptedLegacy, Schema.decodeUnknownSync(beforeCreation)(legacy));
   const accepted = decode({ ...legacy, creation });
-  assert.deepEqual<unknown>(Schema.encodeSync(NativeCreationObservation)(accepted.creation!), creation);
+  assert.deepEqual<unknown>(encodeCreation(accepted.creation!), creation);
   assert.deepEqual<unknown>(
     Schema.decodeUnknownSync(beforeCreation)({ ...legacy, creation }),
     acceptedLegacy,

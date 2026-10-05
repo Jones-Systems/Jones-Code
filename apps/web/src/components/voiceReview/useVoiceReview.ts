@@ -20,7 +20,7 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import { useAtomCommand } from "../../state/use-atom-command";
 
 const requestContext = Effect.gen(function* () {
-  const supervisor = yield* EnvironmentSupervisor;
+  const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
   const prepared = yield* SubscriptionRef.get(supervisor.prepared);
   if (Option.isNone(prepared)) return yield* Effect.fail({ _tag: "VoiceReviewUnavailableError" });
   const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelay.ManagedRelayDpopSigner);

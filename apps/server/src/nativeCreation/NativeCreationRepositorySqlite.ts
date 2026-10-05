@@ -250,31 +250,29 @@ const make = Effect.gen(function* () {
     claimId,
     command,
   ) => sql.withTransaction(reserve(claimId, command)).pipe(Effect.mapError(mapRepositoryError));
-  const recordNormalizedCommand: Repository.NativeCreationRepository["Service"]["recordNormalizedCommand"] = (
-    claimId,
-    command,
-  ) =>
-    sql
-      .withTransaction(
-        Effect.gen(function* () {
-          const { intent } = yield* readByClaim(claimId);
-          if (command.commandId !== intent.commandId || command.type !== "message.dispatch")
-            return yield* fail("Normalized command identity differs from intent");
-          yield* reserve(claimId, command);
-          const canonicalCommand = nativeCreationCanonicalJson(command);
-          const existing = yield* sql<{
-            canonical_command: string;
-          }>`SELECT canonical_command FROM native_creation_normalized_commands WHERE claim_id = ${claimId}`;
-          if (existing.length > 0) {
-            if (existing[0]!.canonical_command !== canonicalCommand)
-              return yield* fail("Normalized creation command is immutable");
-            return;
-          }
-          yield* sql`INSERT INTO native_creation_normalized_commands (claim_id, command_digest, canonical_command)
+  const recordNormalizedCommand: Repository.NativeCreationRepository["Service"]["recordNormalizedCommand"] =
+    (claimId, command) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const { intent } = yield* readByClaim(claimId);
+            if (command.commandId !== intent.commandId || command.type !== "message.dispatch")
+              return yield* fail("Normalized command identity differs from intent");
+            yield* reserve(claimId, command);
+            const canonicalCommand = nativeCreationCanonicalJson(command);
+            const existing = yield* sql<{
+              canonical_command: string;
+            }>`SELECT canonical_command FROM native_creation_normalized_commands WHERE claim_id = ${claimId}`;
+            if (existing.length > 0) {
+              if (existing[0]!.canonical_command !== canonicalCommand)
+                return yield* fail("Normalized creation command is immutable");
+              return;
+            }
+            yield* sql`INSERT INTO native_creation_normalized_commands (claim_id, command_digest, canonical_command)
       VALUES (${claimId}, ${nativeCreationSha256(canonicalCommand)}, ${canonicalCommand})`;
-        }),
-      )
-      .pipe(Effect.mapError(mapRepositoryError));
+          }),
+        )
+        .pipe(Effect.mapError(mapRepositoryError));
 
   const append = Effect.fnUntraced(function* (
     claimId: string,
@@ -376,7 +374,10 @@ const make = Effect.gen(function* () {
         }),
       )
       .pipe(Effect.mapError(mapError));
-  const completeEffect: Repository.NativeCreationRepository["Service"]["completeEffect"] = (claimId, fact) =>
+  const completeEffect: Repository.NativeCreationRepository["Service"]["completeEffect"] = (
+    claimId,
+    fact,
+  ) =>
     sql
       .withTransaction(
         Effect.gen(function* () {

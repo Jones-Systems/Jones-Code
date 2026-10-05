@@ -368,7 +368,7 @@ it.effect("unknown native enrollment lookup denies through the authority port", 
     }).pipe(
       Effect.provide(
         Authority.NativeCreationAuthorityUnavailable.pipe(
-          Layer.provide(repository.pipe(Layer.provide(memory))),
+          Layer.provide(RepositorySqlite.layer.pipe(Layer.provide(memory))),
           Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
         ),
       ),

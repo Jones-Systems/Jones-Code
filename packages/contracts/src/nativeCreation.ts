@@ -1,6 +1,13 @@
 import * as Schema from "effect/Schema";
 
-import { CommandId, EventId, IsoDateTime, NonNegativeInt, ProjectId, ThreadId } from "./baseSchemas.ts";
+import {
+  CommandId,
+  EventId,
+  IsoDateTime,
+  NonNegativeInt,
+  ProjectId,
+  ThreadId,
+} from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { RuntimeMode, ProviderInteractionMode } from "./providerPolicy.ts";
 
@@ -272,4 +279,3 @@ export const NativeCreationObservation = nativeCreationStruct({
   outcome: Schema.Literals(["complete", "in_progress", "incomplete", "unknown"]),
 });
 export type NativeCreationObservation = typeof NativeCreationObservation.Type;
-

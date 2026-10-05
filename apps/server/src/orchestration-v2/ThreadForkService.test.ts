@@ -56,6 +56,7 @@ function makeSourceThread(): OrchestrationV2AppThread {
     settledOverride: null,
     settledAt: null,
     lastVisitedAt: null,
+    threadMessagesBlocked: true,
     snoozedUntil,
     snoozedAt,
     deletedAt: null,
@@ -145,6 +146,7 @@ it.effect("keeps a fork awake when its source thread is snoozed", () =>
     const sourceRun = makeSourceRun("completed");
     const result = yield* planFork(sourceRun);
 
+    assert.isFalse(result.targetThread.threadMessagesBlocked);
     assert.isNull(result.targetThread.snoozedUntil);
     assert.isNull(result.targetThread.snoozedAt);
     assert.equal(result.targetThread.projectId, sourceThread.projectId);
