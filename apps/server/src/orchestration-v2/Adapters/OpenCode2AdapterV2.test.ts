@@ -3653,6 +3653,107 @@ describe("OpenCode2 adapter", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect.each(["native", "orchestration"] as const)(
+    "keeps a fork's %s thread identity through its first turn",
+    (identity) =>
+      Effect.gen(function* () {
+        const FORK = "ses_f1484db83ffeLGtrRCFimo1H0e";
+        const targetThreadId = ThreadId.make("thread:opencode2-adapter:fork");
+        const runtime = yield* openCode2ReplayRuntime([
+          ...opening,
+          out("session.get", { sessionID: SESSION }),
+          replyData("session.get", sessionInfo()),
+          ...noOpenRequests,
+          out("session.fork", { sessionID: SESSION }),
+          replyData("session.fork", sessionInfo({ id: FORK })),
+          out("session.update", {
+            sessionID: FORK,
+            permissions: [
+              { action: "*", resource: "*", effect: "allow" },
+              { action: "t3-code-*", resource: "*", effect: "deny" },
+              { action: "t3-code-thread_opencode2-adapter_fork_*", resource: "*", effect: "allow" },
+            ],
+          }),
+          reply("session.update", null),
+          out("session.instructions.entry.put", {
+            sessionID: FORK,
+            key: "t3-code",
+            value: "<any>",
+          }),
+          reply("session.instructions.entry.put", null),
+          out("session.prompt", { sessionID: FORK, text: "hi" }),
+          replyData("session.prompt", {
+            id: PROMPT_ID,
+            sessionID: FORK,
+            time: { created: 1790656601410 },
+            type: "user",
+            payload: { text: "hi" },
+            delivery: "steer",
+          }),
+          event("session.execution.started", { sessionID: FORK }),
+          event("session.execution.succeeded", { sessionID: FORK }),
+        ]);
+        const source = yield* runtime.resumeThread({
+          providerThread: providerThread(yield* DateTime.now),
+          threadId,
+          modelSelection: bigPickle,
+          runtimePolicy: policy(),
+        });
+        const forked = yield* runtime.forkThread({
+          sourceProviderThread: source,
+          targetThreadId,
+          runtimePolicy: policy(),
+        });
+        const expectedId =
+          identity === "native"
+            ? forked.id
+            : ProviderThreadId.make("provider-thread:orchestration-owned-fork");
+        // Orchestration binds the returned native fork to its already-recorded thread ID.
+        const input = {
+          ...turnInput({ ...forked, id: expectedId }),
+          threadId: targetThreadId,
+        };
+        const collected = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        yield* runtime.startTurn(input);
+        const seen = yield* Fiber.join(collected);
+        const turns = seen.filter((event) => event.type === "provider_turn.updated");
+        assert.deepEqual(
+          turns.map(({ providerTurn }) => [providerTurn.providerThreadId, providerTurn.status]),
+          [
+            [expectedId, "running"],
+            [expectedId, "completed"],
+          ],
+        );
+        const threads = seen.filter((event) => event.type === "provider_thread.updated");
+        assert.deepEqual(
+          threads.map(({ providerThread }) => [providerThread.id, providerThread.status]),
+          [
+            [expectedId, "active"],
+            [expectedId, "idle"],
+          ],
+        );
+        for (const { providerThread } of threads) {
+          assert.deepEqual(providerThread.nativeThreadRef, forked.nativeThreadRef);
+          assert.equal(providerThread.providerSessionId, forked.providerSessionId);
+          assert.deepEqual(providerThread.forkedFrom, { providerThreadId: source.id });
+          assert.deepEqual(providerThread.nativeMetadata, forked.nativeMetadata);
+        }
+        const terminal = seen.find((event) => event.type === "turn.terminal");
+        assert.isDefined(terminal);
+        assert.equal(terminal?.providerThreadId, expectedId);
+        assert.equal(terminal?.status, "completed");
+        assert.equal(terminal?.evidenceKind, "provider_result");
+        assert.deepEqual(terminal?.providerTurn, turns.at(-1)?.providerTurn);
+        assert.equal(terminal?.providerTurn?.runAttemptId, input.attemptId);
+        assert.equal(terminal?.providerTurnId, turns[0]?.providerTurn.id);
+        assert.equal(terminal?.runOrdinal, input.runOrdinal);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("moves a fork into its target thread's worktree before the first prompt", () =>
     Effect.gen(function* () {
       const FORK = "ses_f1484db83ffeLGtrRCFimo1H0e";
