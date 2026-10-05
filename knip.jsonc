@@ -34,6 +34,11 @@
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
         "src/provider/testFixtures/*.mjs",
+        // Staged native creation substrate is consumed by the deferred L39 execution slice.
+        // Analyzer entries preserve these APIs without registering runtime authority or launch.
+        "src/nativeCreation/NativeCreationPreparation.ts",
+        "src/nativeCreation/NativeCreationAuthority.ts",
+        "src/nativeCreation/NativeCreationRepositorySqlite.ts",
       ],
       // Keep the transitive Effect runtime pinned for standalone npm installs.
       // The Vite+ web build prerequisite.
