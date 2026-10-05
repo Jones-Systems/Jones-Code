@@ -71,7 +71,7 @@ export class EventSinkStreamError extends Schema.TaggedError<EventSinkStreamErro
 export const EventSinkV2Error = Schema.Union([EventSinkWriteError, EventSinkStreamError]);
 export type EventSinkV2Error = typeof EventSinkV2Error.Type;
 
-export function runtimeEvidenceMatches(
+function runtimeEvidenceMatches(
   current: OrchestrationV2ProviderThread | null,
   capture: ProviderRuntimeEvidenceCapture,
 ): boolean {
