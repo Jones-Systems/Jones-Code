@@ -334,3 +334,21 @@ export function shouldIncludeBranchPickerItem(input: {
     lowerItemValue.includes(sanitizedQuery)
   );
 }
+
+export function resolveAutomaticWorktreeBaseBranch(input: {
+  effectiveEnvMode: EnvMode;
+  envLocked: boolean;
+  activeWorktreePath: string | null;
+  activeThreadBranch: string | null;
+  worktreeBaseBranchCandidate: string | null;
+}): string | null {
+  if (
+    input.envLocked ||
+    input.effectiveEnvMode !== "worktree" ||
+    input.activeWorktreePath !== null ||
+    input.activeThreadBranch !== null
+  ) {
+    return null;
+  }
+  return input.worktreeBaseBranchCandidate;
+}

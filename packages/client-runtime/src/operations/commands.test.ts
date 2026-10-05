@@ -5,6 +5,10 @@ import {
   CommandId,
   EnvironmentId,
   MessageId,
+  GitCommandError,
+  OrchestrationDispatchCommandError,
+  type VcsListRefsInput,
+  type VcsListRefsResult,
   NodeId,
   ORCHESTRATION_V2_WS_METHODS,
   PlanId,
@@ -22,7 +26,10 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -34,6 +41,7 @@ import {
 } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
+import type { EnvironmentRpcFailure } from "../rpc/client.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import { v2Now, v2Projection, v2ThreadId } from "../state/orchestrationV2TestFixtures.ts";
 import {
@@ -72,6 +80,10 @@ const TARGET = new PrimaryConnectionTarget({
 });
 
 const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(function* (input: {
+  readonly listRefs?: (
+    input: VcsListRefsInput,
+  ) => Effect.Effect<VcsListRefsResult, EnvironmentRpcFailure<typeof WS_METHODS.vcsListRefs>>;
+  readonly onLaunch?: () => Effect.Effect<void>;
   readonly commands: OrchestrationV2Command[];
   readonly projects: ProjectMutation[];
   readonly launches?: OrchestrationV2ThreadLaunchInput[];
@@ -80,6 +92,7 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
   readonly advertiseServerResolvedCommandContext?: boolean;
 }) {
   const client = {
+    [WS_METHODS.vcsListRefs]: input.listRefs ?? (() => Effect.never),
     [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) =>
       Effect.sync(() => {
         input.commands.push(command);
@@ -93,8 +106,9 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
         return input.projection ?? v2Projection;
       }),
     [ORCHESTRATION_V2_WS_METHODS.launchThread]: (launchInput: OrchestrationV2ThreadLaunchInput) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         input.launches?.push(launchInput);
+        yield* input.onLaunch?.() ?? Effect.void;
         return {
           threadId: launchInput.threadId ?? v2ThreadId,
           projection: input.projection ?? v2Projection,
@@ -967,6 +981,313 @@ describe("V2 environment commands", () => {
           holdQueue: true,
         },
       ]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+});
+
+const automaticWorktreeTurn = {
+  commandId: CommandId.make("captured-command"),
+  threadId: ThreadId.make("captured-thread"),
+  message: {
+    messageId: MessageId.make("captured-message"),
+    role: "user" as const,
+    text: "Start the task",
+    attachments: [],
+  },
+  runtimeMode: "full-access" as const,
+  interactionMode: "default" as const,
+  bootstrap: {
+    createThread: {
+      projectId: ProjectId.make("captured-project"),
+      title: "Captured draft",
+      modelSelection: v2Projection.thread.modelSelection,
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+      branch: null,
+      worktreePath: null,
+      createdAt: DateTime.formatIso(v2Now),
+    },
+    prepareWorktree: {
+      projectCwd: "/workspace/project",
+      branch: "t3/captured-branch",
+      startFromOrigin: true,
+    },
+    runSetupScript: true,
+  },
+};
+
+const automaticWorktreeLaunch = {
+  commandId: automaticWorktreeTurn.commandId,
+  creationSource: "web" as const,
+  threadId: automaticWorktreeTurn.threadId,
+  projectId: automaticWorktreeTurn.bootstrap.createThread.projectId,
+  title: automaticWorktreeTurn.bootstrap.createThread.title,
+  generateTitle: false,
+  modelSelection: automaticWorktreeTurn.bootstrap.createThread.modelSelection,
+  runtimeMode: automaticWorktreeTurn.runtimeMode,
+  interactionMode: automaticWorktreeTurn.interactionMode,
+  workspaceStrategy: {
+    type: "worktree" as const,
+    branch: automaticWorktreeTurn.bootstrap.prepareWorktree.branch,
+    startFromOrigin: true,
+  },
+  initialMessage: {
+    messageId: automaticWorktreeTurn.message.messageId,
+    text: automaticWorktreeTurn.message.text,
+    attachments: [],
+  },
+};
+
+const refsResult = (refs: VcsListRefsResult["refs"], isRepo = true): VcsListRefsResult => ({
+  refs,
+  isRepo,
+  hasPrimaryRemote: refs.some((ref) => ref.isRemote === true),
+  nextCursor: null,
+  totalCount: refs.length,
+});
+
+const withBaseRef = (baseRef: string) => ({
+  ...automaticWorktreeLaunch,
+  workspaceStrategy: { ...automaticWorktreeLaunch.workspaceStrategy, baseRef },
+});
+
+describe("v2 worktree start compatibility", () => {
+  it.effect("waits for one unfiltered default-ref lookup before launching on older servers", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const lookups: VcsListRefsInput[] = [];
+      const firstOperation = yield* Deferred.make<"refs" | "launch">();
+      const refs = yield* Deferred.make<VcsListRefsResult>();
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        launches,
+        onLaunch: () => Deferred.succeed(firstOperation, "launch").pipe(Effect.asVoid),
+        listRefs: (input) =>
+          Effect.gen(function* () {
+            lookups.push(input);
+            yield* Deferred.succeed(firstOperation, "refs");
+            return yield* Deferred.await(refs);
+          }),
+      });
+      const start = yield* startThreadTurn(automaticWorktreeTurn).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.forkChild,
+      );
+
+      expect(yield* Deferred.await(firstOperation)).toBe("refs");
+      expect(lookups).toEqual([{ cwd: "/workspace/project", limit: 100 }]);
+      expect(launches).toEqual([]);
+      yield* Deferred.succeed(
+        refs,
+        refsResult([
+          { name: "feature/current", current: true, isDefault: false, worktreePath: null },
+          {
+            name: "origin/develop",
+            current: false,
+            isDefault: true,
+            isRemote: true,
+            worktreePath: null,
+          },
+        ]),
+      );
+      expect(yield* Fiber.join(start)).toMatchObject({ threadId: automaticWorktreeTurn.threadId });
+      expect(launches).toEqual([withBaseRef("origin/develop")]);
+      expect(commands).toEqual([]);
+      expect(automaticWorktreeTurn.bootstrap.prepareWorktree).not.toHaveProperty("baseBranch");
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER), Effect.scoped),
+  );
+
+  it.effect("passes automatic intent directly to capable servers without the client hint", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const lookups: VcsListRefsInput[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        launches,
+        listRefs: (input) =>
+          Effect.sync(() => {
+            lookups.push(input);
+            return refsResult([]);
+          }),
+      });
+      yield* startThreadTurn({ ...automaticWorktreeTurn, serverResolvesWorktreeBase: true }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      );
+      expect(lookups).toEqual([]);
+      expect(launches).toEqual([automaticWorktreeLaunch]);
+      expect(commands).toEqual([]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect(
+    "keeps independent command and thread identities for automatic multi-model launches",
+    () =>
+      Effect.gen(function* () {
+        const launches: OrchestrationV2ThreadLaunchInput[] = [];
+        const lookups: VcsListRefsInput[] = [];
+        const supervisor = yield* makeSupervisor({
+          commands: [],
+          projects: [],
+          launches,
+          listRefs: (input) =>
+            Effect.sync(() => {
+              lookups.push(input);
+              return refsResult([]);
+            }),
+        });
+        for (const suffix of ["one", "two"]) {
+          yield* startThreadTurn({
+            ...automaticWorktreeTurn,
+            commandId: CommandId.make(`multi-model-command-${suffix}`),
+            threadId: ThreadId.make(`multi-model-thread-${suffix}`),
+            serverResolvesWorktreeBase: true,
+            message: {
+              ...automaticWorktreeTurn.message,
+              messageId: MessageId.make(`multi-model-message-${suffix}`),
+            },
+            bootstrap: {
+              ...automaticWorktreeTurn.bootstrap,
+              prepareWorktree: {
+                projectCwd: "/workspace/project",
+                requireWorktree: true,
+                startFromOrigin: true,
+              },
+            },
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        }
+        expect(lookups).toEqual([]);
+        expect(launches).toEqual(
+          ["one", "two"].map((suffix) => ({
+            ...automaticWorktreeLaunch,
+            commandId: CommandId.make(`multi-model-command-${suffix}`),
+            threadId: ThreadId.make(`multi-model-thread-${suffix}`),
+            initialMessage: {
+              ...automaticWorktreeLaunch.initialMessage,
+              messageId: MessageId.make(`multi-model-message-${suffix}`),
+            },
+            workspaceStrategy: { type: "worktree", startFromOrigin: true },
+          })),
+        );
+      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("preserves an explicit base and skips lookup for current-checkout launches", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const lookups: VcsListRefsInput[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        launches,
+        listRefs: (input) =>
+          Effect.sync(() => {
+            lookups.push(input);
+            return refsResult([]);
+          }),
+      });
+      yield* startThreadTurn({
+        ...automaticWorktreeTurn,
+        serverResolvesWorktreeBase: false,
+        bootstrap: {
+          ...automaticWorktreeTurn.bootstrap,
+          prepareWorktree: {
+            ...automaticWorktreeTurn.bootstrap.prepareWorktree,
+            baseBranch: "upstream/release",
+          },
+        },
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      yield* startThreadTurn({
+        ...automaticWorktreeTurn,
+        serverResolvesWorktreeBase: false,
+        bootstrap: { createThread: automaticWorktreeTurn.bootstrap.createThread },
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(lookups).toEqual([]);
+      expect(launches).toEqual([
+        withBaseRef("upstream/release"),
+        { ...automaticWorktreeLaunch, workspaceStrategy: { type: "root" } },
+      ]);
+      expect(commands).toEqual([]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("uses the current local branch when an older server reports no default", () =>
+    Effect.gen(function* () {
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands: [],
+        projects: [],
+        launches,
+        listRefs: () =>
+          Effect.succeed(
+            refsResult([
+              { name: "feature/local", current: true, isDefault: false, worktreePath: null },
+            ]),
+          ),
+      });
+      yield* startThreadTurn({ ...automaticWorktreeTurn, serverResolvesWorktreeBase: false }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      );
+      expect(launches).toEqual([withBaseRef("feature/local")]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("fails clearly without launching when no valid automatic base exists", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      for (const isRepo of [true, false]) {
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          launches,
+          listRefs: () => Effect.succeed(refsResult([], isRepo)),
+        });
+        const failure = yield* startThreadTurn(automaticWorktreeTurn).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.flip,
+        );
+        expect(failure).toBeInstanceOf(OrchestrationDispatchCommandError);
+        expect(failure.message).toContain("base branch");
+      }
+      expect(launches).toEqual([]);
+      expect(commands).toEqual([]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("propagates lookup failure without launching or retrying", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      let lookupCount = 0;
+      const refsFailure = new GitCommandError({
+        operation: "listRefs",
+        command: "git",
+        cwd: "/workspace/project",
+        detail: "Repository unavailable",
+      });
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        launches,
+        listRefs: () =>
+          Effect.suspend(() => {
+            lookupCount += 1;
+            return Effect.fail(refsFailure);
+          }),
+      });
+      const failure = yield* startThreadTurn(automaticWorktreeTurn).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.flip,
+      );
+      expect(failure).toBe(refsFailure);
+      expect(lookupCount).toBe(1);
+      expect(launches).toEqual([]);
+      expect(commands).toEqual([]);
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 });

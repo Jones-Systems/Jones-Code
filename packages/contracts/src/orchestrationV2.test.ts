@@ -22,6 +22,7 @@ import {
   TurnItemId,
 } from "./index.ts";
 import {
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   OrchestrationV2Checkpoint,
   OrchestrationV2CheckpointScope,
   OrchestrationV2Command,
@@ -1246,5 +1247,24 @@ describe("limit recovery choice updates", () => {
     { autoResume: true, snooze: false },
   ])("accepts an explicit independent choice %j", (choice) => {
     expect(decode({ ...identity, ...choice })).toEqual({ ...identity, ...choice });
+  });
+});
+
+describe("worktree launch base", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrationV2ThreadLaunchWorkspaceStrategy);
+
+  it("round-trips an omitted base for automatic server selection", () => {
+    const input = { type: "worktree", branch: "feature", startFromOrigin: true };
+    expect(Schema.encodeSync(OrchestrationV2ThreadLaunchWorkspaceStrategy)(decode(input))).toEqual(
+      input,
+    );
+  });
+
+  it("preserves explicit bases and rejects blank bases", () => {
+    expect(decode({ type: "worktree", baseRef: "release/stable" })).toEqual({
+      type: "worktree",
+      baseRef: "release/stable",
+    });
+    expect(() => decode({ type: "worktree", baseRef: " " })).toThrow();
   });
 });

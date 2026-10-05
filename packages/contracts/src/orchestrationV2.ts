@@ -520,7 +520,7 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("worktree"),
-    baseRef: TrimmedNonEmptyString,
+    baseRef: Schema.optional(TrimmedNonEmptyString),
     branch: Schema.optional(TrimmedNonEmptyString),
     startFromOrigin: Schema.optional(Schema.Boolean),
   }),
