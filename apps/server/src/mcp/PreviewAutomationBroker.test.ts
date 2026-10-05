@@ -94,6 +94,71 @@ it.effect("atomically registers a connected host and correlates its response", (
   ),
 );
 
+it.effect("adds a connection-bound selected client receipt to status only", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: { available: true, selectedClient: { clientId: "forged" } },
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const result = yield* broker.invoke<{
+        available: boolean;
+        selectedClient: {
+          clientId: string;
+          connectionId: string;
+          requestId: string;
+          runtimeIdentity: null;
+        };
+      }>({ scope, operation: "status", input: {} });
+      expect(result.selectedClient).toMatchObject({
+        clientId: "client-1",
+        requestId: "preview-0",
+        runtimeIdentity: null,
+      });
+      expect(result.selectedClient.connectionId).toBeTruthy();
+    }),
+  ),
+);
+
+it.effect("binds the runtime descriptor to the selected connection", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const runtimeIdentity = {
+        schemaVersion: 1,
+        runtimeKind: "electron",
+        runtimeInstanceId: "runtime-1",
+        appVersion: "0.1.0",
+        buildCommit: "a".repeat(40),
+      } as const;
+      const requests = requestsFrom(yield* broker.connect(makeHost({ runtimeIdentity })));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: { available: true, selectedClient: { clientId: "forged" } },
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const result = yield* broker.invoke<{
+        selectedClient: { runtimeIdentity: typeof runtimeIdentity; completedAt: string };
+      }>({ scope, operation: "status", input: {} });
+      expect(result.selectedClient.runtimeIdentity).toEqual(runtimeIdentity);
+      expect(Number.isNaN(Date.parse(result.selectedClient.completedAt))).toBe(false);
+    }),
+  ),
+);
+
 it.effect("targets multiple tabs explicitly while retaining a default tab", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1490,4 +1555,70 @@ it.effect("keeps a host that responds with an operation timeout", () =>
       expect(yield* broker.invoke({ scope, operation: "status", input: {} })).toBe("responsive");
     }),
   ),
+);
+
+it.effect("authors status receipts only for successful object results", () =>
+  Effect.scoped(Effect.gen(function* () {
+    const broker = yield* makeBroker;
+    let responseResult: unknown = null;
+    const requests = requestsFrom(yield* broker.connect(makeHost()));
+    yield* Stream.runForEach(requests, (request) => broker.respond({
+      clientId: "client-1", connectionId: request.connectionId, requestId: request.requestId,
+      ok: true, result: responseResult,
+    })).pipe(Effect.forkScoped);
+    yield* Effect.yieldNow;
+    for (const result of [null, [], "legacy-status", 42]) {
+      responseResult = result;
+      expect(yield* broker.invoke({ scope, operation: "status", input: {} })).toEqual(result);
+    }
+    for (const operation of ["open", "navigate"] as const) {
+      responseResult = { available: true, selectedClient: { clientId: "client-authored-action" } };
+      expect(yield* broker.invoke({ scope, operation, input: {} })).toEqual(responseResult);
+    }
+  })),
+);
+
+it.effect("never transfers a pending runtime receipt to a replacement connection", () =>
+  Effect.scoped(Effect.gen(function* () {
+    const broker = yield* makeBroker;
+    const oldIdentity = {
+      schemaVersion: 1, runtimeKind: "electron", runtimeInstanceId: "old-runtime",
+      appVersion: "1.0.0", buildCommit: "a".repeat(40),
+    } as const;
+    const newIdentity = { ...oldIdentity, runtimeInstanceId: "new-runtime", buildCommit: "b".repeat(40) };
+    const oldRequestReady = yield* Deferred.make<RoutedRequest>();
+    yield* Stream.runForEach(
+      requestsFrom(yield* broker.connect(makeHost({ runtimeIdentity: oldIdentity }))),
+      (request) => Deferred.succeed(oldRequestReady, request),
+    ).pipe(Effect.forkScoped);
+    const pending = yield* broker.invoke({ scope, operation: "status", input: {} }).pipe(Effect.flip, Effect.forkScoped);
+    const oldRequest = yield* Deferred.await(oldRequestReady);
+    const newRequestReady = yield* Deferred.make<RoutedRequest>();
+    yield* Stream.runForEach(
+      requestsFrom(yield* broker.connect(makeHost({ runtimeIdentity: newIdentity }))),
+      (request) => Deferred.succeed(newRequestReady, request),
+    ).pipe(Effect.forkScoped);
+    expect(yield* Fiber.join(pending)).toBeInstanceOf(PreviewAutomationClientDisconnectedError);
+    const current = yield* broker.invoke<{
+      selectedClient: { clientId: string; connectionId: string; requestId: string; runtimeIdentity: typeof newIdentity };
+    }>({ scope, operation: "status", input: {} }).pipe(Effect.forkScoped);
+    const request = yield* Deferred.await(newRequestReady);
+    expect(request.connectionId).not.toBe(oldRequest.connectionId);
+    for (const mismatch of [
+      { clientId: "foreign", connectionId: request.connectionId, requestId: request.requestId },
+      { clientId: "client-1", connectionId: oldRequest.connectionId, requestId: request.requestId },
+      { clientId: "client-1", connectionId: request.connectionId, requestId: oldRequest.requestId },
+    ]) {
+      yield* broker.respond({ ...mismatch, ok: true, result: { selectedClient: { runtimeIdentity: oldIdentity } } });
+    }
+    yield* broker.respond({
+      clientId: "client-1", connectionId: request.connectionId, requestId: request.requestId,
+      ok: true, result: { selectedClient: { clientId: "forged", runtimeIdentity: oldIdentity } },
+    });
+    const result = yield* Fiber.join(current);
+    expect(result.selectedClient).toMatchObject({
+      clientId: "client-1", connectionId: request.connectionId, requestId: request.requestId,
+      runtimeIdentity: newIdentity,
+    });
+  })),
 );

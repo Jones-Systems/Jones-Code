@@ -4,6 +4,8 @@ import {
   ThreadId,
   type ClientSettings,
   type PreviewAutomationResponse,
+  type PreviewAutomationRuntimeIdentity,
+  type PreviewAutomationHost,
   type PreviewAutomationStreamEvent,
   type PreviewOpenInput,
   type PreviewSessionSnapshot,
@@ -29,6 +31,8 @@ import { appAtomRegistry, AppAtomRegistryProvider } from "~/rpc/atomRegistry";
 import { PreviewAutomationHosts } from "./PreviewAutomationHosts";
 
 const mocks = vi.hoisted(() => ({
+  environments: [] as Array<{ environmentId: EnvironmentId }>,
+  automationRequests: vi.fn<(target: { environmentId: EnvironmentId; input: PreviewAutomationHost }) => typeof requestsAtom>(),
   getClientSettings: vi.fn<() => Promise<ClientSettings | null>>(),
   setClientSettings: vi.fn(),
   open: vi.fn(async (_target: { environmentId: EnvironmentId; input: PreviewOpenInput }) =>
@@ -48,11 +52,11 @@ vi.mock("~/localApi", () => ({
 }));
 vi.mock("~/env", () => ({ isElectron: true }));
 vi.mock("~/state/environments", () => ({
-  useEnvironments: () => ({ environments: [{ environmentId }] }),
+  useEnvironments: () => ({ environments: mocks.environments }),
 }));
 vi.mock("~/state/preview", () => ({
   previewEnvironment: {
-    automationRequests: () => requestsAtom,
+    automationRequests: mocks.automationRequests,
     list: () => listAtom,
     open: mocks.open,
     resize: mocks.resize,
@@ -117,6 +121,8 @@ let renderer: ReactTestRenderer | null = null;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.environments = [{ environmentId }];
+  mocks.automationRequests.mockReset().mockReturnValue(requestsAtom);
   mocks.getClientSettings.mockReset().mockResolvedValue(savedSettings);
   mocks.respond.mockReset();
   mocks.focus.mockReset().mockResolvedValue(AsyncResult.success(undefined));
@@ -359,5 +365,69 @@ describe("PreviewAutomationHosts ownership", () => {
       ok: true,
       result: { available: false, tabId: snapshot.tabId },
     });
+  });
+});
+
+const runtimeIdentity: PreviewAutomationRuntimeIdentity = {
+  schemaVersion: 1,
+  runtimeKind: "electron",
+  runtimeInstanceId: "synthetic-desktop-runtime",
+  appVersion: "1.2.3",
+  buildCommit: "a".repeat(40),
+};
+
+async function remountWithRuntimeGetter(
+  getter?: () => Promise<PreviewAutomationRuntimeIdentity>,
+) {
+  await act(() => renderer?.unmount());
+  renderer = null;
+  mocks.automationRequests.mockClear();
+  Object.assign(window, { desktopBridge: getter ? { getPreviewAutomationRuntimeIdentity: getter } : {} });
+  await act(() => {
+    renderer = create(<AppAtomRegistryProvider><PreviewAutomationHosts /></AppAtomRegistryProvider>);
+  });
+}
+
+describe("PreviewAutomationHosts runtime identity", () => {
+  it("waits for the descriptor before registering it for every environment", async () => {
+    const pending = deferred<PreviewAutomationRuntimeIdentity>();
+    const getter = vi.fn(() => pending.promise);
+    const secondEnvironmentId = EnvironmentId.make("second-environment");
+    mocks.environments = [{ environmentId }, { environmentId: secondEnvironmentId }];
+    await remountWithRuntimeGetter(getter);
+    expect(getter).toHaveBeenCalledOnce();
+    expect(mocks.automationRequests).not.toHaveBeenCalled();
+    await act(async () => { pending.resolve(runtimeIdentity); await pending.promise; });
+    for (const id of [environmentId, secondEnvironmentId]) {
+      expect(mocks.automationRequests).toHaveBeenCalledWith({
+        environmentId: id,
+        input: expect.objectContaining({ environmentId: id, runtimeIdentity }),
+      });
+    }
+  });
+
+  it("registers legacy hosts when the optional getter is absent", async () => {
+    await remountWithRuntimeGetter();
+    expect(mocks.automationRequests).toHaveBeenCalled();
+    for (const [target] of mocks.automationRequests.mock.calls) {
+      expect(target.input).not.toHaveProperty("runtimeIdentity");
+    }
+  });
+
+  it("registers legacy hosts after the descriptor getter rejects", async () => {
+    await remountWithRuntimeGetter(() => Promise.reject(new Error("synthetic unavailable IPC")));
+    expect(mocks.automationRequests).toHaveBeenCalled();
+    for (const [target] of mocks.automationRequests.mock.calls) {
+      expect(target.input).not.toHaveProperty("runtimeIdentity");
+    }
+  });
+
+  it("ignores a descriptor resolved after unmount", async () => {
+    const pending = deferred<PreviewAutomationRuntimeIdentity>();
+    await remountWithRuntimeGetter(() => pending.promise);
+    await act(() => renderer?.unmount());
+    renderer = null;
+    await act(async () => { pending.resolve(runtimeIdentity); await pending.promise; });
+    expect(mocks.automationRequests).not.toHaveBeenCalled();
   });
 });

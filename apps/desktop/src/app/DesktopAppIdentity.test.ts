@@ -113,6 +113,7 @@ const withIdentity = <A, E, R>(
     readonly legacyPathExists?: boolean;
     readonly legacyPathProbeError?: PlatformError.PlatformError;
     readonly packageJson?: string;
+    readonly readPackageJson?: () => Effect.Effect<string, PlatformError.PlatformError>;
     readonly pngIconPath?: Option.Option<string>;
   } = {},
 ) => {
@@ -134,8 +135,8 @@ const withIdentity = <A, E, R>(
                 : Effect.succeed(
                     input.legacyPathExists === true && /T3 Code \((Alpha|Dev)\)/.test(path),
                   ),
-            readFileString: () =>
-              Effect.succeed(input.packageJson ?? '{"t3codeCommitHash":"abcdef1234567890"}'),
+            readFileString: input.readPackageJson ?? (() =>
+              Effect.succeed(input.packageJson ?? '{"t3codeCommitHash":"abcdef1234567890"}')),
           }),
         ),
         Layer.provideMerge(makeAssetsLayer(input.pngIconPath ?? Option.none())),
@@ -147,6 +148,40 @@ const withIdentity = <A, E, R>(
 };
 
 describe("DesktopAppIdentity", () => {
+  it.effect("keeps a process runtime identity with only the full embedded commit", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        const first = yield* identity.previewAutomationRuntimeIdentity;
+        const second = yield* identity.previewAutomationRuntimeIdentity;
+        assert.deepEqual(second, first);
+        assert.match(first.runtimeInstanceId, /^[0-9a-f-]{36}$/i);
+        assert.deepEqual(first, {
+          schemaVersion: 1,
+          runtimeKind: "electron",
+          runtimeInstanceId: first.runtimeInstanceId,
+          appVersion: "1.2.3",
+          buildCommit: "abcdef1234567890abcdef1234567890abcdef12",
+        });
+      }),
+      {
+        packageJson: '{"t3codeCommitHash":"ABCDEF1234567890ABCDEF1234567890ABCDEF12"}',
+        environment: { env: { T3CODE_COMMIT_HASH: "0123456789abcdef" } },
+      },
+    ),
+  );
+
+  it.effect("reports no build commit when embedded metadata is abbreviated", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        const runtime = yield* identity.previewAutomationRuntimeIdentity;
+        assert.equal(runtime.buildCommit, null);
+      }),
+      { packageJson: '{"t3codeCommitHash":"abcdef123456"}' },
+    ),
+  );
+
   it.effect("uses an explicit client profile independently of the server home", () =>
     withIdentity(
       Effect.gen(function* () {
@@ -299,3 +334,46 @@ describe("DesktopAppIdentity", () => {
     );
   });
 });
+
+it.effect.each(['{}', '{"t3codeCommitHash":42}', '{broken', '{"t3codeCommitHash":"z"}'])(
+  "reports no runtime commit for invalid or missing metadata: %s",
+  (packageJson) => withIdentity(Effect.gen(function* () {
+    const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+    assert.equal((yield* identity.previewAutomationRuntimeIdentity).buildCommit, null);
+  }), { packageJson }),
+);
+
+it.effect("caches the embedded descriptor independently from the About override", () => {
+  let reads = 0;
+  const calls: ElectronAppCalls = { setAboutPanelOptions: [], setDockIcon: [], setName: [] };
+  return withIdentity(Effect.gen(function* () {
+    const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+    const first = yield* identity.previewAutomationRuntimeIdentity;
+    const second = yield* identity.previewAutomationRuntimeIdentity;
+    assert.strictEqual(second, first);
+    assert.equal(reads, 1);
+    yield* identity.configure;
+    assert.equal(calls.setAboutPanelOptions[0]?.version, "0123456789ab");
+    assert.equal(first.buildCommit, "a".repeat(40));
+    assert.equal(reads, 1);
+  }), {
+    calls,
+    environment: { env: { T3CODE_COMMIT_HASH: "0123456789abcdef" } },
+    readPackageJson: () => Effect.sync(() => {
+      reads += 1;
+      return JSON.stringify({ t3codeCommitHash: (reads === 1 ? "A" : "B").repeat(40) });
+    }),
+  });
+});
+
+it.effect("reports no runtime commit when package metadata is unreadable", () =>
+  withIdentity(Effect.gen(function* () {
+    const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+    assert.equal((yield* identity.previewAutomationRuntimeIdentity).buildCommit, null);
+  }), {
+    readPackageJson: () => Effect.fail(PlatformError.systemError({
+      _tag: "PermissionDenied", module: "FileSystem", method: "readFileString",
+      pathOrDescriptor: "/synthetic/package.json", description: "synthetic denied read",
+    })),
+  }),
+);
