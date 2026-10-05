@@ -240,8 +240,8 @@ export function resolveThreadOutboxDispatchStep(input: {
 }
 
 /**
- * A queued creation can only be dispatched once its payload would pass server
- * validation; incomplete payloads stay pending until the user edits them.
+ * A queued creation needs a task and model before dispatch; its base can stay
+ * automatic until delivery. Incomplete payloads stay pending until edited.
  */
 export function isQueuedThreadCreationSendable(message: QueuedThreadMessage): boolean {
   if (!message.creation) {
@@ -250,7 +250,11 @@ export function isQueuedThreadCreationSendable(message: QueuedThreadMessage): bo
   if (message.text.trim().length === 0 || message.modelSelection === undefined) {
     return false;
   }
-  return message.creation.workspaceMode !== "worktree" || Boolean(message.creation.branch);
+  return (
+    message.creation.workspaceMode !== "worktree" ||
+    message.creation.branch === null ||
+    message.creation.branch.trim().length > 0
+  );
 }
 
 function errorMessage(error: unknown): string | null {
