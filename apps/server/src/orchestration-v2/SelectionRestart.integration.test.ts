@@ -486,6 +486,18 @@ it.live("restarts selection as a new attempt and retries after old-session clean
           makeOrchestratorV2ReplayLayerWithRegistry(
             { name: "selection-restart-lifecycle" },
             registry,
+            {
+              checkoutFixture: {
+                projects: [
+                  {
+                    projectId: ProjectId.make("project:selection-restart"),
+                    workspaceRoot: cwd,
+                    title: "Selection restart",
+                  },
+                ],
+                resolvePath: () => undefined,
+              },
+            },
           ),
         ),
       );
@@ -680,7 +692,18 @@ it.live.each(["stopped", "error"] as const)(
             liveSessionId: liveSession.id,
             detachedSessionIds,
           };
-        }).pipe(Effect.provide(makeOrchestratorV2ReplayLayerWithRegistry({ name }, registry)));
+        }).pipe(
+          Effect.provide(
+            makeOrchestratorV2ReplayLayerWithRegistry({ name }, registry, {
+              checkoutFixture: {
+                projects: [
+                  { projectId: ProjectId.make(`project:${name}`), workspaceRoot: cwd, title: name },
+                ],
+                resolvePath: () => undefined,
+              },
+            }),
+          ),
+        );
 
         const { projection, captured } = result;
         assert.lengthOf(projection.runs, 2);
@@ -809,6 +832,18 @@ it.live("detaches the old provider session after an active provider handoff", ()
           makeOrchestratorV2ReplayLayerWithRegistry(
             { name: "selection-provider-handoff-lifecycle" },
             registry,
+            {
+              checkoutFixture: {
+                projects: [
+                  {
+                    projectId: ProjectId.make("project:selection-handoff"),
+                    workspaceRoot: cwd,
+                    title: "Selection provider handoff",
+                  },
+                ],
+                resolvePath: () => undefined,
+              },
+            },
           ),
         ),
       );
@@ -1076,7 +1111,18 @@ it.live.each([
         assert.equal(returnedThread.providerInstanceId, providerInstanceId);
         assert.isEmpty(third.contextHandoffs);
         assert.deepEqual(messages, ["first", "second", "third"]);
-      }).pipe(Effect.provide(makeOrchestratorV2ReplayLayerWithRegistry({ name }, registry)));
+      }).pipe(
+        Effect.provide(
+          makeOrchestratorV2ReplayLayerWithRegistry({ name }, registry, {
+            checkoutFixture: {
+              projects: [
+                { projectId: ProjectId.make(`project:${name}`), workspaceRoot: cwd, title: name },
+              ],
+              resolvePath: () => undefined,
+            },
+          }),
+        ),
+      );
     }),
   ),
 );
