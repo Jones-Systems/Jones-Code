@@ -74,6 +74,8 @@ import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { deviceHubProxyRouteLayer } from "./device/DeviceHubProxy.ts";
+import { jonesUpdatesHttpApiLayer } from "./jonesUpdates/http.ts";
+import * as JonesUpdates from "./jonesUpdates/service.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as ProcessRunner from "./processRunner.ts";
@@ -649,6 +651,7 @@ const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(orchestrationHttpApiLayer),
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(workstreamHttpApiLayer),
+      Layer.provide(jonesUpdatesHttpApiLayer),
       Layer.provide(projectHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),
@@ -676,6 +679,7 @@ const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(PullRequestServiceLive),
   Layer.provide(workstreamGatewayLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer))),
   Layer.provide(PreviewAutomationBroker.layer),
+  Layer.provide(JonesUpdates.layer.pipe(Layer.provide(DesktopTelemetryReceiverLayerLive))),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),
   Layer.provide(workstreamResponseHeadersLayer),
