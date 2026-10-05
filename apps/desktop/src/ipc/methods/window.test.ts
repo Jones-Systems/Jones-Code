@@ -314,37 +314,54 @@ it.effect.skipIf(HostProcessPlatform.defaultValue() === "win32")(
 
 describe("getPreviewAutomationRuntimeIdentity", () => {
   const descriptor = {
-    schemaVersion: 1, runtimeKind: "electron", runtimeInstanceId: "synthetic-runtime",
-    appVersion: "1.2.3", buildCommit: "a".repeat(40),
+    schemaVersion: 1,
+    runtimeKind: "electron",
+    runtimeInstanceId: "synthetic-runtime",
+    appVersion: "1.2.3",
+    buildCommit: "a".repeat(40),
   } as const;
 
   it.effect("returns the service descriptor through the registered async IPC method", () =>
     Effect.gen(function* () {
       let listener: DesktopIpc.DesktopIpcHandleListener | undefined;
       const ipc = DesktopIpc.make({
-        removeHandler: vi.fn(), removeAllListeners: vi.fn(), on: vi.fn(),
+        removeHandler: vi.fn(),
+        removeAllListeners: vi.fn(),
+        on: vi.fn(),
         handle: (channel, registered) => {
           assert.equal(channel, IpcChannels.GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL);
           listener = registered;
         },
       });
       yield* ipc.handle(getPreviewAutomationRuntimeIdentity);
-      assert.deepEqual(yield* Effect.promise(async () => listener!({ sender: { id: 1 } }, undefined)), descriptor);
-      const invalidPayload = yield* Effect.exit(getPreviewAutomationRuntimeIdentity.handler("unexpected"));
+      assert.deepEqual(
+        yield* Effect.promise(async () => listener!({ sender: { id: 1 } }, undefined)),
+        descriptor,
+      );
+      const invalidPayload = yield* Effect.exit(
+        getPreviewAutomationRuntimeIdentity.handler("unexpected"),
+      );
       assert.equal(invalidPayload._tag, "Failure");
     }).pipe(
       Effect.scoped,
-      Effect.provide(Layer.mock(DesktopAppIdentity.DesktopAppIdentity)({
-        previewAutomationRuntimeIdentity: Effect.succeed(descriptor),
-      })),
+      Effect.provide(
+        Layer.mock(DesktopAppIdentity.DesktopAppIdentity)({
+          previewAutomationRuntimeIdentity: Effect.succeed(descriptor),
+        }),
+      ),
     ),
   );
 
   it.effect("rejects a descriptor that violates the IPC result schema", () =>
     getPreviewAutomationRuntimeIdentity.handler(undefined).pipe(
-      Effect.provide(Layer.mock(DesktopAppIdentity.DesktopAppIdentity)({
-        previewAutomationRuntimeIdentity: Effect.succeed({ ...descriptor, schemaVersion: 2 } as unknown as typeof descriptor),
-      })),
+      Effect.provide(
+        Layer.mock(DesktopAppIdentity.DesktopAppIdentity)({
+          previewAutomationRuntimeIdentity: Effect.succeed({
+            ...descriptor,
+            schemaVersion: 2,
+          } as unknown as typeof descriptor),
+        }),
+      ),
       Effect.exit,
       Effect.tap((exit) => Effect.sync(() => assert.equal(exit._tag, "Failure"))),
     ),
@@ -354,10 +371,14 @@ describe("getPreviewAutomationRuntimeIdentity", () => {
     vi.stubGlobal("window", { addEventListener: vi.fn() });
     try {
       await import("../../preload.ts");
-      const bridge = exposeInMainWorld.mock.calls.find(([name]) => name === "desktopBridge")?.[1] as DesktopBridge;
+      const bridge = exposeInMainWorld.mock.calls.find(
+        ([name]) => name === "desktopBridge",
+      )?.[1] as DesktopBridge;
       invoke.mockResolvedValueOnce(descriptor);
       assert.deepEqual(await bridge.getPreviewAutomationRuntimeIdentity!(), descriptor);
-      assert.deepEqual(invoke.mock.calls.at(-1), [IpcChannels.GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL]);
+      assert.deepEqual(invoke.mock.calls.at(-1), [
+        IpcChannels.GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL,
+      ]);
     } finally {
       vi.unstubAllGlobals();
     }
