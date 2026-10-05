@@ -186,6 +186,14 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
   const before = yield* Effect.scoped(
     runOrchestratorV2ProviderReplayScenario(scenario("before-restart", phase1Steps), harness, {
       databaseLayer,
+      checkoutFixture: {
+        projects: materialized.commands.flatMap((command) =>
+          command.type === "thread.create"
+            ? [{ projectId: command.projectId, workspaceRoot: workspace, title: SCENARIO }]
+            : [],
+        ),
+        resolvePath: () => undefined,
+      },
     }),
   );
   const settled = projectionFor(before, SCENARIO);
@@ -195,6 +203,14 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
   const after = yield* Effect.scoped(
     runOrchestratorV2ProviderReplayScenario(scenario("after-restart", phase2Steps), harness, {
       databaseLayer,
+      checkoutFixture: {
+        projects: materialized.commands.flatMap((command) =>
+          command.type === "thread.create"
+            ? [{ projectId: command.projectId, workspaceRoot: workspace, title: SCENARIO }]
+            : [],
+        ),
+        resolvePath: () => undefined,
+      },
       recoverOnStartup: true,
       continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
     }),
