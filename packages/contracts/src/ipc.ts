@@ -452,6 +452,20 @@ export const DesktopSshEnvironmentEnsureResultSchema = Schema.Union([
   DesktopSshPasswordPromptCancelledResultSchema,
 ]);
 
+export const DesktopDeviceMediaTunnelInputSchema = Schema.Struct({
+  target: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$/)),
+  gatewayPort: Schema.Int.check(Schema.isBetween({ minimum: 1024, maximum: 65535 })),
+  owner: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+  generation: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+});
+export type DesktopDeviceMediaTunnelInput = typeof DesktopDeviceMediaTunnelInputSchema.Type;
+
+export const DesktopDeviceMediaTunnelSchema = Schema.Struct({
+  id: Schema.String,
+  httpBase: Schema.String,
+});
+export type DesktopDeviceMediaTunnel = typeof DesktopDeviceMediaTunnelSchema.Type;
+
 export const DesktopSshHttpBaseUrlInputSchema = Schema.Struct({
   httpBaseUrl: Schema.String,
 });
@@ -1180,6 +1194,11 @@ export interface DesktopBridge {
     options?: { issuePairingToken?: boolean },
   ) => Promise<DesktopSshEnvironmentBootstrap>;
   disconnectSshEnvironment: (target: DesktopSshEnvironmentTarget) => Promise<void>;
+  openDeviceMediaTunnel?: (
+    input: DesktopDeviceMediaTunnelInput,
+  ) => Promise<DesktopDeviceMediaTunnel>;
+  closeDeviceMediaTunnel?: (id: string) => Promise<void>;
+
   fetchSshEnvironmentDescriptor: (httpBaseUrl: string) => Promise<ExecutionEnvironmentDescriptor>;
   bootstrapSshBearerSession: (
     httpBaseUrl: string,
