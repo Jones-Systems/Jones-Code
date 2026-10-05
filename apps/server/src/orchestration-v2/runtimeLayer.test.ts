@@ -285,6 +285,46 @@ const TestLayer = Layer.mergeAll(
   Layer.provide(PlatformTestLayer),
 );
 
+const ReceivingCheckoutFixtureLayer = Layer.merge(TestLayer, SqlitePersistenceMemory);
+
+const arrangeReceivingProject = (projectId: ProjectId) =>
+  Effect.gen(function* () {
+    const projects = yield* ProjectStore.ProjectStoreV2;
+    if (Option.isSome(yield* projects.get(projectId))) return;
+    const fs = yield* FileSystem.FileSystem;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "runtime-receiving-project-" });
+    const workspaceRoot = yield* fs.realPath(directory);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO projection_projects
+      (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+      VALUES (${projectId}, 'Runtime receiving fixture', ${workspaceRoot}, '[]', '2026-06-20T00:00:00.000Z', '2026-06-20T00:00:00.000Z')`;
+  }).pipe(Effect.provide(NodeServices.layer));
+
+const arrangeReceivingProjectAt = (projectId: ProjectId, workspaceRoot: string) =>
+  Effect.gen(function* () {
+    const projects = yield* ProjectStore.ProjectStoreV2;
+    if (Option.isSome(yield* projects.get(projectId))) return;
+    yield* seedProject({
+      projectId,
+      title: "Runtime receiving fixture",
+      workspaceRoot,
+      defaultModelSelection: modelSelection,
+      createdAt: DateTime.formatIso(yield* DateTime.now),
+    });
+  });
+
+const arrangeReceivingWorktree = (projectId: ProjectId) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "runtime-receiving-checkout-" });
+    const workspaceRoot = `${directory}/project`;
+    const worktreePath = `${directory}/checkout`;
+    yield* fs.makeDirectory(workspaceRoot);
+    yield* fs.makeDirectory(worktreePath);
+    yield* arrangeReceivingProjectAt(projectId, yield* fs.realPath(workspaceRoot));
+    return yield* fs.realPath(worktreePath);
+  }).pipe(Effect.provide(NodeServices.layer));
+
 const LegacyImportTestLayer = OrchestrationV2LayerLive.pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provideMerge(SqlitePersistenceMemory),
@@ -821,7 +861,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           ),
           0,
         );
-      }),
+      }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("emits model updates separately from provider switches", () =>
@@ -878,6 +918,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       const eventSink = yield* EventSink.EventSinkV2;
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const threadId = ThreadId.make(name);
+      const receivingWorktreePath = yield* arrangeReceivingWorktree(
+        ProjectId.make(`${name}-project`),
+      );
       yield* orchestrator.dispatch({
         type: "thread.create",
         createdBy: "user",
@@ -891,7 +934,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         interactionMode: "default",
         branch: null,
         // Its own path, so other rollback tests keep an isolated worktree.
-        worktreePath: `/tmp/t3-${name}`,
+        worktreePath: receivingWorktreePath,
       });
       yield* orchestrator.dispatch({
         type: "message.dispatch",
@@ -978,7 +1021,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       yield* rollback(CommandId.make("runtime-rollback-failure-retry"));
       const retried = yield* orchestrator.getThreadProjection(threadId);
       assert.isNull(retried.thread.rollbackFailure);
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("ignores a late failure from a rollback that a newer one superseded", () =>
@@ -1018,11 +1061,12 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         requestId: newerCommandId,
         message: ROLLBACK_FAILED_MESSAGE,
       });
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("rejects non-ready rollback targets before persisting events or effects", () =>
     Effect.gen(function* () {
+      yield* arrangeReceivingProject(ProjectId.make("runtime-rollback-readiness-project"));
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -1179,11 +1223,12 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
         }
       }
-    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(ReceivingCheckoutFixtureLayer))),
   );
 
   it.effect("resolves delivery intent against the active run and starts after it completes", () =>
     Effect.gen(function* () {
+      yield* arrangeReceivingProject(ProjectId.make("runtime-delivery-intent-project"));
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -1352,11 +1397,12 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         (yield* outbox.listByCommandId(nextCommandId)).map((effect) => effect.request.type),
         ["provider-turn.start"],
       );
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(ReceivingCheckoutFixtureLayer))),
   );
 
   it.effect("answers an async question after its provider exits and commits the answer once", () =>
     Effect.gen(function* () {
+      yield* arrangeReceivingProject(ProjectId.make("runtime-async-question-project"));
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
       const now = yield* DateTime.now;
@@ -1504,7 +1550,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         .pipe(Effect.result);
       assert.equal(duplicate._tag, "Failure");
       assert.equal((yield* orchestrator.getThreadProjection(threadId)).messages.length, 1);
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(ReceivingCheckoutFixtureLayer))),
   );
 
   it.effect("dismisses message-capable questions directly and while settling", () =>
@@ -1513,6 +1559,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       const eventSink = yield* EventSink.EventSinkV2;
 
       const seedQuestion = Effect.fn("runtimeLayerTest.seedQuestion")(function* (name: string) {
+        yield* arrangeReceivingProject(ProjectId.make(`${name}-project`));
         const threadId = ThreadId.make(`${name}-thread`);
         const requestId = RuntimeRequestId.make(`${name}-request`);
         const nodeId = NodeId.make(`${name}-node`);
@@ -1647,7 +1694,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         settledProjection.turnItems.find((item) => item.id === settled.itemId)?.status,
         "cancelled",
       );
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(ReceivingCheckoutFixtureLayer))),
   );
 
   it.effect("merges an explicit provider-finished run while checkpoint capture is pending", () =>
@@ -2966,6 +3013,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const eventSink = yield* EventSink.EventSinkV2;
         const threadId = ThreadId.make("runtime-layer-restart-continuation");
+        const receivingWorktreePath = yield* arrangeReceivingWorktree(
+          ProjectId.make("restart-project"),
+        );
         yield* orchestrator.dispatch({
           type: "thread.create",
           createdBy: "user",
@@ -2978,7 +3028,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           runtimeMode: "full-access",
           interactionMode: "default",
           branch: null,
-          worktreePath: "/tmp/runtime-layer-restart",
+          worktreePath: receivingWorktreePath,
         });
         yield* orchestrator.dispatch({
           type: "message.dispatch",
@@ -3038,7 +3088,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         const raced = yield* orchestrator.getThreadProjection(threadId);
         assert.lengthOf(raced.runs, 2);
         assert.isFalse(raced.messages.some((message) => message.id === "restart-stale-race"));
-      }),
+      }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("does not admit a restart continuation of a failed run that lost background work", () =>
@@ -3046,6 +3096,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
       const threadId = ThreadId.make("runtime-layer-restart-failed-source");
+      const receivingWorktreePath = yield* arrangeReceivingWorktree(
+        ProjectId.make("restart-project"),
+      );
       yield* orchestrator.dispatch({
         type: "thread.create",
         createdBy: "user",
@@ -3058,7 +3111,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: "/tmp/runtime-layer-restart-failed",
+        worktreePath: receivingWorktreePath,
       });
       yield* orchestrator.dispatch({
         type: "message.dispatch",
@@ -3118,7 +3171,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       const projection = yield* orchestrator.getThreadProjection(threadId);
       assert.lengthOf(projection.runs, 1);
       assert.equal(projection.runs[0]?.status, "failed");
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("rejects settling a thread while a run is active", () =>
@@ -3126,6 +3179,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const threadId = ThreadId.make("runtime-layer-active-settle-thread");
 
+      const receivingWorktreePath = yield* arrangeReceivingWorktree(
+        ProjectId.make("runtime-layer-active-settle-project"),
+      );
       yield* orchestrator.dispatch({
         type: "thread.create",
         createdBy: "user",
@@ -3138,7 +3194,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: "/tmp/runtime-layer-active-settle",
+        worktreePath: receivingWorktreePath,
       });
       yield* orchestrator.dispatch({
         type: "thread.settle",
@@ -3183,7 +3239,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.isNull(projection.thread.settledOverride);
       assert.isNull(projection.thread.settledAt);
       assert.isNotNull(projection.thread.unsettledAt);
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("settles past held automatic runs but not held user messages", () =>
@@ -3192,6 +3248,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       const eventSink = yield* EventSink.EventSinkV2;
       const threadId = ThreadId.make("runtime-layer-settle-automatic-queued");
 
+      const receivingWorktreePath = yield* arrangeReceivingWorktree(
+        ProjectId.make("settle-automatic-project"),
+      );
       yield* orchestrator.dispatch({
         type: "thread.create",
         createdBy: "user",
@@ -3204,7 +3263,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: "/tmp/runtime-layer-settle-automatic",
+        worktreePath: receivingWorktreePath,
       });
       yield* orchestrator.dispatch({
         type: "message.dispatch",
@@ -3308,7 +3367,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         })
         .pipe(Effect.flip);
       assert.equal(error._tag, "OrchestratorDispatchError");
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("cancels queued work when a thread is archived", () =>
@@ -3316,6 +3375,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const threadId = ThreadId.make("runtime-layer-archive-queued-thread");
 
+      const receivingWorktreePath = yield* arrangeReceivingWorktree(
+        ProjectId.make("runtime-layer-archive-queued-project"),
+      );
       yield* orchestrator.dispatch({
         type: "thread.create",
         createdBy: "user",
@@ -3328,7 +3390,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: "/tmp/runtime-layer-archive-queued",
+        worktreePath: receivingWorktreePath,
       });
       yield* orchestrator.dispatch({
         type: "message.dispatch",
@@ -3390,7 +3452,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
 
       const afterPromotion = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(afterPromotion.runs.find((run) => run.id === queuedRun.id)?.status, "cancelled");
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect.each([false, true])(
@@ -3401,6 +3463,10 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         const eventSink = yield* EventSink.EventSinkV2;
         const threadId = ThreadId.make(`runtime-layer-serialized-queue-thread-${automatic}`);
 
+        yield* arrangeReceivingProjectAt(
+          ProjectId.make(`runtime-layer-serialized-queue-project-${automatic}`),
+          process.cwd(),
+        );
         yield* orchestrator.dispatch({
           type: "thread.create",
           createdBy: "user",
@@ -3591,7 +3657,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           afterSecondPromotion.runs.find((run) => run.id === secondQueuedRun.id)?.status,
           "starting",
         );
-      }),
+      }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("starts a wake's work clock from the run that ran before it", () =>
@@ -3601,6 +3667,10 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       const threadId = ThreadId.make("runtime-layer-wake-work-start-thread");
       const messageId = (key: string) => MessageId.make(`runtime-layer-wake-work-start-${key}`);
 
+      yield* arrangeReceivingProjectAt(
+        ProjectId.make("runtime-layer-wake-work-start-project"),
+        process.cwd(),
+      );
       yield* orchestrator.dispatch({
         type: "thread.create",
         createdBy: "user",
@@ -3709,7 +3779,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       yield* settle("queued", queuedStartedAt);
       assert.equal(yield* Queue.take(startedRunIds), (yield* runFor("late-wake")).id);
       assert.equal(millis((yield* runFor("late-wake")).workStartedAt), millis(queuedStartedAt));
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect.each(["usage_limit", "provider_error"] as const)(
@@ -3720,6 +3790,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         const eventSink = yield* EventSink.EventSinkV2;
         const threadId = ThreadId.make(`runtime-layer-failed-queue-${failureClass}`);
 
+        yield* arrangeReceivingProjectAt(ProjectId.make(`${threadId}:project`), process.cwd());
         yield* orchestrator.dispatch({
           type: "thread.create",
           createdBy: "user",
@@ -3846,13 +3917,14 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         assert.equal(shell?.latestRunId, activeRun.id);
         assert.equal(shell?.status, "failed");
         assert.equal(shell?.lastErrorClass, "usage_limit");
-      }),
+      }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("keeps the queue after a user interrupts the active run", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const threadId = ThreadId.make("runtime-layer-interrupted-queue");
+      yield* arrangeReceivingProjectAt(ProjectId.make(`${threadId}:project`), process.cwd());
       yield* orchestrator.dispatch({
         type: "thread.create",
         createdBy: "user",
@@ -3898,7 +3970,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.equal(after.runs.find((run) => run.id === queuedRun.id)?.status, "queued");
       assert.isTrue(after.runs.find((run) => run.id === queuedRun.id)?.queueHeld);
       assert.isFalse(after.turnItems.some((item) => item.runId === queuedRun.id));
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect.each(["startup", "shutdown"] as const)(
@@ -3908,6 +3980,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
         const threadId = ThreadId.make(`queue-hold-${trigger}`);
+        yield* arrangeReceivingProjectAt(ProjectId.make(`${threadId}:project`), process.cwd());
         yield* orchestrator.dispatch({
           type: "thread.create",
           createdBy: "user",
@@ -3999,7 +4072,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           "Edited second message",
         );
         assert.equal(resumed.runs.length, 3, "resume retries must not duplicate messages or runs");
-      }),
+      }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("edits and removes queued runs", () =>
@@ -4007,6 +4080,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const threadId = ThreadId.make("runtime-layer-queued-edit-thread");
 
+      const receivingWorktreePath = yield* arrangeReceivingWorktree(
+        ProjectId.make("runtime-layer-queued-edit-project"),
+      );
       yield* orchestrator.dispatch({
         type: "thread.create",
         createdBy: "user",
@@ -4019,7 +4095,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: "/tmp/runtime-layer-queued-edit",
+        worktreePath: receivingWorktreePath,
       });
       yield* orchestrator.dispatch({
         type: "message.dispatch",
@@ -4153,7 +4229,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         })
         .pipe(Effect.flip);
       assert.equal(cancelAgainError._tag, "OrchestratorDispatchError");
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 });
 
@@ -4167,11 +4243,16 @@ it.layer(SharedApplicationDataPlaneTestLayer)("pending provider interruption", (
       const projectId = ProjectId.make("runtime-layer-pending-interrupt-project");
       const threadId = ThreadId.make("runtime-layer-pending-interrupt-thread");
 
+      const receivingWorkspaceRoot = yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "runtime-receiving-root-" });
+        return yield* fs.realPath(directory);
+      }).pipe(Effect.provide(NodeServices.layer));
       yield* projects.create({
         commandId: CommandId.make("runtime-layer-pending-interrupt-project-create"),
         projectId,
         title: "Pending interrupt project",
-        workspaceRoot: "/tmp/runtime-layer-pending-interrupt-project",
+        workspaceRoot: receivingWorkspaceRoot,
       });
       yield* orchestrator.dispatch({
         type: "thread.create",
@@ -4227,7 +4308,7 @@ it.layer(SharedApplicationDataPlaneTestLayer)("pending provider interruption", (
       );
       assert.deepEqual(interrupted.providerTurns, []);
       assert.isFalse(yield* effectWorker.runOnce);
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(SharedApplicationDataPlaneTestLayer))),
   );
 });
 
@@ -4240,11 +4321,16 @@ it.layer(SharedApplicationDataPlaneTestLayer)("snooze projection", (it) => {
       const threadId = ThreadId.make("runtime-layer-snoozed-thread");
       const snoozedUntil = "2099-07-25T09:00:00.000Z";
 
+      const receivingWorkspaceRoot = yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "runtime-receiving-root-" });
+        return yield* fs.realPath(directory);
+      }).pipe(Effect.provide(NodeServices.layer));
       yield* projects.create({
         commandId: CommandId.make("runtime-layer-snoozed-project-create"),
         projectId,
         title: "Snoozed shell projection",
-        workspaceRoot: "/tmp/runtime-layer-snoozed-project",
+        workspaceRoot: receivingWorkspaceRoot,
       });
       yield* orchestrator.dispatch({
         type: "thread.create",
@@ -4302,7 +4388,7 @@ it.layer(SharedApplicationDataPlaneTestLayer)("snooze projection", (it) => {
       const awakened = yield* orchestrator.getThreadProjection(threadId);
       assert.isNull(awakened.thread.snoozedUntil);
       assert.isNull(awakened.thread.snoozedAt);
-    }),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(SharedApplicationDataPlaneTestLayer))),
   );
 });
 
@@ -4647,7 +4733,7 @@ it.layer(TestLayer)("usage-limit recovery", (it) => {
           yield* orchestrator.dispatch(scheduledResume);
         }
         assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 3);
-      }),
+      }).pipe(Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect.each([
@@ -5147,7 +5233,7 @@ it.layer(TestLayer)("usage-limit recovery", (it) => {
         assert.equal(resumed.runs[1]?.status, "starting");
         assert.isFalse(resumed.runs[1]?.queueHeld);
       }
-    }),
+    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
   );
 });
 
