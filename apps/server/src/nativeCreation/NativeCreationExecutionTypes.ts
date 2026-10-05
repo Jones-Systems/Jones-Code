@@ -26,7 +26,10 @@ import {
   ProviderSessionId,
   ProviderThreadId,
   ProviderDriverKind,
+  AuthSessionId,
+  OrchestrationV2Command,
 } from "@t3tools/contracts";
+import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
 const closedNativeStruct = <Fields extends Schema.Struct.Fields>(fields: Fields) => {
   const schema = Schema.Struct(fields);
   // Validate original wire keys before struct decoding can discard them.
@@ -60,6 +63,62 @@ export const NativeThreadIncarnationV2 = closedNativeStruct({
   sequence: NonNegativeInt,
 });
 export type NativeThreadIncarnationV2 = typeof NativeThreadIncarnationV2.Type;
+
+const PlacementId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/));
+const PlacementNamespace = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(512),
+  Schema.isPattern(/^[^\u0000-\u001f\u007f]+$/),
+);
+const PlacementGeneration = Schema.Number.check(
+  Schema.isInt(),
+  Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+);
+const SettlementProviderBinding = closedNativeStruct({
+  threadId: ThreadId,
+  providerThreadId: ProviderThreadId,
+  providerSessionId: ProviderSessionId,
+  instanceId: ProviderInstanceId,
+  driver: ProviderDriverKind,
+  nativeThreadId: Schema.NullOr(Schema.String),
+  runtimeGeneration: Schema.NullOr(Schema.NonEmptyString),
+});
+export const NativeWorkstreamSettlementWitnessV2 = closedNativeStruct({
+  version: Schema.Literal(2),
+  command: OrchestrationV2Command,
+  attemptKey: closedNativeStruct({
+    owner_id: Schema.NonEmptyString,
+    principal_id: Schema.NonEmptyString,
+    command_id: Schema.NonEmptyString,
+  }),
+  dispatchStartedAt: Schema.NonEmptyString,
+  actorSessionId: AuthSessionId,
+  enrollmentSha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  requestBytesSha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  authority: closedNativeStruct({
+    environmentId: PlacementId,
+    authorityNamespace: PlacementNamespace,
+    storeGeneration: PlacementGeneration,
+  }),
+  incarnation: NativeThreadIncarnationV2,
+  targetEventSequence: NonNegativeInt,
+  provider: Schema.NullOr(
+    closedNativeStruct({
+      binding: SettlementProviderBinding,
+      evidenceRevision: Schema.Int.check(Schema.isGreaterThan(0)),
+    }),
+  ),
+});
+export type NativeWorkstreamSettlementWitnessV2 = typeof NativeWorkstreamSettlementWitnessV2.Type;
+export const nativeWorkstreamSettlementWitnessBindingDigestV2 = (
+  witness: NativeWorkstreamSettlementWitnessV2,
+): string =>
+  nativeCreationSha256(
+    nativeCreationCanonicalJson({
+      schema: "t3.workstream-settlement-binding/v2",
+      witness: Schema.encodeSync(NativeWorkstreamSettlementWitnessV2)(witness),
+    }),
+  );
 
 const NativeCommandReceiptObservationV2Fields = {
   commandId: CommandId,

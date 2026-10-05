@@ -31,6 +31,7 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ImportedAttachments from "./ImportedApplicationAttachmentInventory.ts";
 import { makeCommitTransaction } from "./CommitTransaction.ts";
+import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 
 const database = SqlitePersistenceMemory;
 const stores = Layer.mergeAll(
@@ -38,7 +39,13 @@ const stores = Layer.mergeAll(
   EventStore.layer.pipe(Layer.provide(database)),
   ProjectionStore.layer.pipe(Layer.provide(database)),
 );
-const persistence = EventSink.layer.pipe(Layer.provideMerge(stores));
+const currentSourceReader = Layer.effect(
+  EventSink.LegacyCurrentSourceReader,
+  LegacyV1ThreadImporter.makeLegacyCurrentSourceReader,
+).pipe(Layer.provide(database));
+const persistence = EventSink.layer.pipe(
+  Layer.provideMerge(Layer.merge(stores, currentSourceReader)),
+);
 const timestamp = "2026-10-05T00:00:00.000Z";
 const threadId = ThreadId.make("reader-namespace");
 const commandId = CommandId.make("command:reader:delete");
@@ -1364,7 +1371,13 @@ it.effect(
           EventStore.layer.pipe(Layer.provide(database)),
           ProjectionStore.layer.pipe(Layer.provide(database)),
         );
-        const reopenedLayer = EventSink.layer.pipe(Layer.provideMerge(reopenedStores));
+        const reopenedSourceReader = Layer.effect(
+          EventSink.LegacyCurrentSourceReader,
+          LegacyV1ThreadImporter.makeLegacyCurrentSourceReader,
+        ).pipe(Layer.provide(database));
+        const reopenedLayer = EventSink.layer.pipe(
+          Layer.provideMerge(Layer.merge(reopenedStores, reopenedSourceReader)),
+        );
         const recorded = yield* Effect.gen(function* () {
           const value = yield* importedApplicationInventoryFixture();
           const inventory = yield* value.prepare(value.input);

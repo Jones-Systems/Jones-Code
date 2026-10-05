@@ -31,7 +31,13 @@ const databaseLayer = SqlitePersistenceMemory;
 const eventStoreProvided = EventStore.layer.pipe(Layer.provideMerge(databaseLayer));
 const projectionStoreProvided = ProjectionStore.layer.pipe(Layer.provideMerge(databaseLayer));
 const storesProvided = Layer.mergeAll(databaseLayer, eventStoreProvided, projectionStoreProvided);
-const eventSinkProvided = EventSink.layer.pipe(Layer.provide(storesProvided));
+const currentSourceReaderProvided = Layer.effect(
+  EventSink.LegacyCurrentSourceReader,
+  LegacyV1ThreadImporter.makeLegacyCurrentSourceReader,
+).pipe(Layer.provide(databaseLayer));
+const eventSinkProvided = EventSink.layer.pipe(
+  Layer.provide(Layer.merge(storesProvided, currentSourceReaderProvided)),
+);
 const importerProvided = LegacyV1ThreadImporter.layer.pipe(
   Layer.provide(Layer.mergeAll(storesProvided, eventSinkProvided)),
 );

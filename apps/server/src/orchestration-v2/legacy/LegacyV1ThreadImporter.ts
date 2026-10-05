@@ -131,6 +131,58 @@ export class LegacyV1ThreadImporter extends Context.Service<
   LegacyV1ThreadImporterShape
 >()("t3/orchestration-v2/legacy/LegacyV1ThreadImporter") {}
 
+export const makeLegacyCurrentSourceReader = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  let live = true;
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      live = false;
+    }),
+  );
+  const read: EventSink.LegacyCurrentSourceReaderShape["read"] = Effect.fnUntraced(
+    function* (input) {
+      if (!live || input.sql !== sql)
+        return {
+          status: "unavailable",
+          reason: "legacy_current_source_connection_unavailable",
+        } as const;
+      const threadRows = yield* sql<EventSink.LegacyCurrentSourceSnapshot["threadRows"][number]>`
+      SELECT * FROM projection_threads WHERE thread_id = ${input.threadId}`;
+      const messageRows = yield* sql<EventSink.LegacyCurrentSourceSnapshot["messageRows"][number]>`
+      SELECT * FROM projection_thread_messages WHERE thread_id = ${input.threadId} ORDER BY message_id`;
+      const observationMessageRows = yield* sql`
+      SELECT * FROM projection_thread_messages WHERE thread_id = ${input.threadId}
+        AND role IN ('user', 'assistant') ORDER BY created_at, message_id`;
+      const answerRows = yield* sql<EventSink.LegacyCurrentSourceSnapshot["answerRows"][number]>`
+      SELECT * FROM projection_thread_activities WHERE thread_id = ${input.threadId}
+        AND kind = 'user-input.answer-submitted' ORDER BY activity_id`;
+      const births = yield* sql<EventSink.LegacyCurrentSourceSnapshot["births"][number]>`
+      SELECT event_id, sequence, payload_json FROM orchestration_events
+      WHERE application_event_version = 1 AND aggregate_kind = 'thread'
+        AND stream_id = ${input.threadId} AND event_type = 'thread.created'
+      ORDER BY sequence DESC LIMIT 1`;
+      const boundary = yield* sql<{ readonly sequence: number }>`
+      SELECT coalesce(max(sequence), 0) AS sequence FROM orchestration_events
+      WHERE application_event_version = 1`;
+      const positions = yield* sql<EventSink.LegacyCurrentSourceSnapshot["positions"][number]>`
+      SELECT projector, last_applied_sequence FROM projection_state
+      WHERE projector IN ('projection.threads', 'projection.thread-messages',
+        'projection.thread-activities', 'projection.thread-turns')`;
+      return {
+        status: "complete",
+        threadRows,
+        messageRows,
+        observationMessageRows,
+        answerRows,
+        births,
+        legacyEventSequence: boundary[0]!.sequence,
+        positions,
+      } satisfies EventSink.LegacyCurrentSourceSnapshot;
+    },
+  );
+  return { read } satisfies EventSink.LegacyCurrentSourceReaderShape;
+});
+
 const decodeModelSelection = Schema.decodeUnknownOption(ModelSelection);
 const decodeAttachments = Schema.decodeUnknownOption(Schema.Array(ChatAttachment));
 const decodePullRequests = Schema.decodeUnknownOption(Schema.Array(ThreadPullRequestLink));

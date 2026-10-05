@@ -4,6 +4,7 @@ import {
   type RecordedRun as OrchestrationV2Run,
   RecordedLifecycleEvent as OrchestrationV2DomainEvent,
   type RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
+  type RecordedThreadProjection,
   RecordedStoredLifecycleEvent as OrchestrationV2StoredEvent,
 } from "./RecordedTypes.ts";
 import {
@@ -43,7 +44,15 @@ import {
   WorktreeCleanupRules,
   OrchestrationV2ThreadDeletionWorktreeRemoval,
   ThreadId,
+  AuthSessionId,
 } from "@t3tools/contracts";
+import * as NativeExecutionRepository from "../nativeCreation/NativeCreationExecutionRepository.ts";
+import {
+  NativeCommandIdentityV2,
+  NativeThreadIncarnationV2,
+  NativeWorkstreamSettlementWitnessV2,
+  nativeWorkstreamSettlementWitnessBindingDigestV2,
+} from "../nativeCreation/NativeCreationExecutionTypes.ts";
 import * as Context from "effect/Context";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaIssue from "effect/SchemaIssue";
@@ -64,6 +73,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import type * as SqlError from "effect/unstable/sql/SqlError";
 
 import { ProviderNativeOperationContext, identityForRequest } from "./ProviderAdapter.ts";
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
@@ -122,6 +132,67 @@ export class EventSinkStreamError extends Schema.TaggedError<EventSinkStreamErro
 
 export const EventSinkV2Error = Schema.Union([EventSinkWriteError, EventSinkStreamError]);
 export type EventSinkV2Error = typeof EventSinkV2Error.Type;
+
+export class NativeCommandPreconditionError extends Schema.TaggedError<NativeCommandPreconditionError>()(
+  "NativeCommandPreconditionError",
+  {
+    commandId: CommandId,
+    reason: Schema.Literals([
+      "identity_conflict",
+      "unbound_receipt",
+      "missing_target",
+      "stale_target",
+      "unknown_evidence",
+      "authority_changed",
+    ]),
+  },
+) {}
+export interface NativeCommandAuthorityReadV2 {
+  readonly actorSessionId?: AuthSessionId;
+  readonly claimId?: string;
+  readonly projectId?: ProjectId;
+  readonly resourcePaths?: ReadonlyArray<string>;
+}
+export interface NativeCommandTargetSnapshotV2 {
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly targetEventSequence: number;
+  readonly incarnation: NativeThreadIncarnationV2 | null;
+  readonly creationProvenance: "native_created" | "legacy_import" | "unavailable";
+  readonly records: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, unknown>>>>>;
+  readonly authority: NativeCommandAuthorityReadV2;
+  readonly authorityRecords: Readonly<
+    Record<string, ReadonlyArray<Readonly<Record<string, unknown>>>>
+  >;
+}
+interface NativeCommandEventMetadata {
+  readonly eventId: string;
+  readonly commandId: string | null;
+  readonly aggregateKind: "thread" | "project";
+  readonly aggregateId: string;
+  readonly sequence: number;
+  readonly type: string;
+  readonly occurredAt: string;
+  readonly applicationEventVersion: number;
+}
+export interface NativeCommandFactsV2 {
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly receipt: CommandReceiptStore.CommandReceiptV2 | null;
+  readonly identity: NativeCommandIdentityV2 | null;
+  readonly events: ReadonlyArray<OrchestrationV2RecordedStoredEvent>;
+  readonly eventMetadata: ReadonlyArray<NativeCommandEventMetadata>;
+  readonly eventMetadataOverflow: boolean;
+  readonly snapshotSequence: number;
+  readonly targetEventSequence: number;
+  readonly incarnation: NativeThreadIncarnationV2 | null;
+  readonly creationProvenance: NativeCommandTargetSnapshotV2["creationProvenance"];
+  readonly projection: RecordedThreadProjection | null;
+  readonly commitSnapshot: NativeCommandTargetSnapshotV2;
+  readonly creationHistory: ReadonlyArray<Readonly<Record<string, unknown>>>;
+  readonly nativeCreationHistory: NativeExecutionRepository.NativeCreationBoundedHistoryV2 | null;
+  readonly workstreamWitness: NativeWorkstreamSettlementWitnessV2 | null;
+}
 
 function runtimeEvidenceMatches(
   current: OrchestrationV2ProviderThread | null,
@@ -712,6 +783,61 @@ interface ImportedApplicationAttachmentInventoryInput {
 interface ImportedApplicationAttachmentInventoryReadInput extends ImportedApplicationAttachmentInventoryInput {
   readonly inventoryId?: string;
 }
+export interface LegacyCurrentSourceSnapshot {
+  readonly status: "complete";
+  readonly threadRows: ReadonlyArray<
+    Readonly<Record<string, unknown>> & {
+      readonly project_id: string;
+      readonly created_at: string;
+      readonly deleted_at: string | null;
+    }
+  >;
+  readonly messageRows: ReadonlyArray<
+    Readonly<Record<string, unknown>> & {
+      readonly message_id: string;
+      readonly thread_id: string;
+      readonly turn_id: string | null;
+      readonly role: string;
+      readonly attachments_json: string | null;
+      readonly created_at: string;
+      readonly updated_at: string;
+    }
+  >;
+  readonly observationMessageRows: ReadonlyArray<Readonly<Record<string, unknown>>>;
+  readonly answerRows: ReadonlyArray<
+    Readonly<Record<string, unknown>> & {
+      readonly activity_id: string;
+      readonly thread_id: string;
+      readonly turn_id: string | null;
+      readonly sequence: number | null;
+      readonly payload_json: string;
+      readonly created_at: string;
+    }
+  >;
+  readonly births: ReadonlyArray<{
+    readonly event_id: string;
+    readonly sequence: number;
+    readonly payload_json: string;
+  }>;
+  readonly legacyEventSequence: number;
+  readonly positions: ReadonlyArray<{
+    readonly projector: string;
+    readonly last_applied_sequence: number;
+  }>;
+}
+export interface LegacyCurrentSourceReaderShape {
+  readonly read: (input: {
+    readonly sql: SqlClient.SqlClient;
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<
+    LegacyCurrentSourceSnapshot | { readonly status: "unavailable"; readonly reason: string },
+    SqlError.SqlError
+  >;
+}
+export class LegacyCurrentSourceReader extends Context.Reference<LegacyCurrentSourceReaderShape | null>(
+  "t3/orchestration-v2/EventSink/LegacyCurrentSourceReader",
+  { defaultValue: () => null },
+) {}
 interface EventSinkStreamInput {
   readonly threadId?: ThreadId;
   readonly afterSequence?: number;
@@ -722,6 +848,11 @@ interface EventSinkStreamInput {
 }
 
 export interface EventSinkV2Shape {
+  readonly readNativeCommandFacts?: (input: {
+    readonly commandId: CommandId;
+    readonly threadId: ThreadId;
+    readonly authority?: NativeCommandAuthorityReadV2;
+  }) => Effect.Effect<NativeCommandFactsV2, EventSinkV2Error | NativeCommandPreconditionError>;
   readonly readThreadRetainedAttachmentPaths?: (
     threadId: ThreadId,
   ) => Effect.Effect<ProjectionStore.ProjectionThreadRetainedAttachmentPaths, EventSinkV2Error>;
@@ -943,6 +1074,7 @@ const baseLayer: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const legacyCurrentSource = yield* LegacyCurrentSourceReader;
     const NodePath = yield* Path.Path.pipe(Effect.provide(NodePathLayer.layer));
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
@@ -952,6 +1084,331 @@ const baseLayer: Layer.Layer<
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const commitTransaction = yield* makeCommitTransaction();
     const nativeRuntimeEvidence = yield* makeNativeProviderRuntimeEvidence(commitTransaction);
+    const nativeCreationRepository = yield* NativeExecutionRepository.make;
+    const nativeCommandSnapshotApplicable = hasOwnJonesMigration(jonesMigrationEntries, [
+      142,
+      "V2NativeAcceptance",
+    ]).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.catchCause(() => Effect.succeed(false)),
+    );
+    const readIncarnation = Effect.fnUntraced(function* (threadId: ThreadId) {
+      const rows = yield* sql<{
+        readonly eventId: string;
+        readonly sequence: number;
+        readonly payload: string;
+        readonly birthPayload: string;
+      }>`
+        SELECT event.event_id AS "eventId", event.sequence, projection.payload_json AS payload, event.payload_json AS "birthPayload"
+        FROM orchestration_events event
+        JOIN orchestration_v2_projection_threads projection ON projection.thread_id = event.stream_id
+        WHERE event.application_event_version = 2 AND event.aggregate_kind = 'thread'
+          AND event.stream_id = ${threadId} AND event.event_type = 'thread.created'
+        ORDER BY event.sequence ASC
+      `;
+      if (rows.length !== 1)
+        return { incarnation: null, creationProvenance: "unavailable" as const };
+      const row = rows[0]!;
+      const decodeBirthIdentity = Schema.decodeUnknownEffect(
+        Schema.fromJsonString(
+          Schema.Struct({
+            id: ThreadId,
+            historyOrigin: Schema.optional(Schema.String),
+          }),
+        ),
+      );
+      const payload = yield* decodeBirthIdentity(row.payload);
+      const birthPayload = yield* decodeBirthIdentity(row.birthPayload);
+      if (payload.id !== threadId || birthPayload.id !== threadId)
+        return { incarnation: null, creationProvenance: "unavailable" as const };
+      const imports =
+        yield* sql`SELECT thread_id FROM orchestration_v2_legacy_imports WHERE thread_id = ${threadId}`;
+      if (
+        payload.historyOrigin === "v1_import" ||
+        birthPayload.historyOrigin === "v1_import" ||
+        imports.length > 0 ||
+        row.eventId.startsWith("migration:v1:")
+      )
+        return { incarnation: null, creationProvenance: "legacy_import" as const };
+      return {
+        incarnation: yield* Schema.decodeUnknownEffect(NativeThreadIncarnationV2)({
+          eventId: row.eventId,
+          sequence: row.sequence,
+        }),
+        creationProvenance: "native_created" as const,
+      };
+    });
+    const readIdentity = Effect.fnUntraced(function* (commandId: CommandId) {
+      const rows = yield* sql`
+        SELECT command_id AS "commandId", kind, version, command_type AS "commandType",
+          aggregate_kind AS "aggregateKind", aggregate_id AS "aggregateId",
+          normalized_command_digest AS "normalizedCommandDigest", binding_digest AS "bindingDigest"
+        FROM orchestration_v2_native_command_identities WHERE command_id = ${commandId}
+      `;
+      return rows.length === 0
+        ? null
+        : yield* Schema.decodeUnknownEffect(NativeCommandIdentityV2)(rows[0]);
+    });
+    const readWorkstreamWitness = Effect.fnUntraced(function* (commandId: CommandId) {
+      const rows = yield* sql<{ readonly thread_id: string; readonly witness_json: string }>`
+        SELECT thread_id, witness_json FROM orchestration_v2_workstream_settlement_witnesses WHERE command_id = ${commandId}`;
+      if (rows.length === 0) return null;
+      const witness = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(NativeWorkstreamSettlementWitnessV2),
+      )(rows[0]!.witness_json, { onExcessProperty: "error" });
+      if (
+        (witness.command.type !== "thread.settle" && witness.command.type !== "thread.unsettle") ||
+        witness.command.commandId !== commandId ||
+        witness.command.threadId !== rows[0]!.thread_id ||
+        (witness.provider !== null &&
+          (witness.provider.binding.threadId !== witness.command.threadId ||
+            witness.provider.binding.runtimeGeneration === null ||
+            witness.provider.binding.nativeThreadId === null))
+      )
+        return yield* new NativeCommandPreconditionError({ commandId, reason: "unknown_evidence" });
+      const identity = yield* readIdentity(commandId);
+      const receipt = Option.getOrNull(yield* commandReceipts.getByCommandId(commandId));
+      if (
+        identity?.kind !== "workstream_settlement" ||
+        receipt === null ||
+        receipt.threadId !== witness.command.threadId ||
+        receipt.commandType !== witness.command.type ||
+        identity.aggregateId !== witness.command.threadId ||
+        identity.commandType !== witness.command.type ||
+        identity.normalizedCommandDigest !==
+          nativeCreationSha256(nativeCreationCanonicalJson(witness.command)) ||
+        identity.bindingDigest !== nativeWorkstreamSettlementWitnessBindingDigestV2(witness)
+      )
+        return yield* new NativeCommandPreconditionError({ commandId, reason: "unknown_evidence" });
+      return yield* new NativeCommandPreconditionError({ commandId, reason: "unknown_evidence" });
+    });
+    const targetTables = [
+      "threads",
+      "runs",
+      "run_attempts",
+      "nodes",
+      "provider_threads",
+      "provider_turns",
+      "runtime_requests",
+      "messages",
+      "plans",
+      "turn_items",
+      "checkpoint_scopes",
+      "checkpoints",
+      "context_handoffs",
+      "subagents",
+    ] as const;
+    const readCommitSnapshot = Effect.fnUntraced(function* (
+      threadId: ThreadId,
+      commandId: CommandId,
+      authority: NativeCommandAuthorityReadV2,
+    ) {
+      const records: Record<string, ReadonlyArray<Readonly<Record<string, unknown>>>> = {};
+      for (const table of targetTables) {
+        records[table] = yield* sql`SELECT * FROM ${sql(`orchestration_v2_projection_${table}`)}
+          WHERE thread_id = ${threadId} ORDER BY rowid`;
+      }
+      records.context_transfers =
+        yield* sql`SELECT * FROM orchestration_v2_projection_context_transfers
+        WHERE source_thread_id = ${threadId} OR target_thread_id = ${threadId} ORDER BY context_transfer_id`;
+      records.project = yield* sql`SELECT * FROM projection_projects
+        WHERE project_id = ${authority.projectId ?? null} OR project_id IN (
+          SELECT project_id FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}
+        ) ORDER BY project_id`;
+      records.projection_schema = yield* sql`SELECT projection_name, schema_version
+        FROM orchestration_v2_projection_metadata WHERE projection_name = 'thread-projections'`;
+      records.source_runtime =
+        yield* sql`SELECT * FROM provider_session_runtime WHERE thread_id = ${threadId}`;
+      records.turn_item_positions =
+        yield* sql`SELECT * FROM orchestration_v2_turn_item_positions WHERE thread_id = ${threadId} ORDER BY turn_item_id`;
+      records.provider_sessions = yield* sql`
+        SELECT session.* FROM orchestration_v2_projection_provider_sessions session
+        WHERE session.provider_session_id IN (
+          SELECT provider_session_id FROM orchestration_v2_projection_provider_session_bindings WHERE thread_id = ${threadId}
+          UNION SELECT provider_session_id FROM orchestration_v2_projection_provider_threads WHERE thread_id = ${threadId}
+        ) ORDER BY session.provider_session_id`;
+      records.session_bindings =
+        yield* sql`SELECT * FROM orchestration_v2_projection_provider_session_bindings
+        WHERE thread_id = ${threadId} ORDER BY provider_session_id`;
+      records.effects =
+        yield* sql`SELECT * FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} ORDER BY effect_id`;
+      records.thread_deletion_commands =
+        yield* sql`SELECT * FROM orchestration_v2_thread_deletion_commands WHERE thread_id = ${threadId} ORDER BY command_id`;
+      records.cleanup_task_bindings =
+        yield* sql`SELECT * FROM orchestration_v2_lease_cleanup_task_bindings WHERE thread_id = ${threadId} ORDER BY effect_id`;
+      records.cleanup_task_outcomes =
+        yield* sql`SELECT outcome.* FROM orchestration_v2_lease_cleanup_task_outcomes outcome
+        JOIN orchestration_v2_lease_cleanup_task_bindings binding ON binding.effect_id = outcome.effect_id
+        WHERE binding.thread_id = ${threadId} ORDER BY outcome.effect_id, outcome.ordinal`;
+      records.worktree_path_admissions =
+        yield* sql`SELECT * FROM orchestration_v2_worktree_path_admissions
+        WHERE state NOT IN ('no_effect', 'released') OR json_extract(subject_json, '$.threadId') = ${threadId} ORDER BY operation_id`;
+      records.unknown_effect_holds =
+        yield* sql`SELECT hold.* FROM orchestration_v2_unknown_effect_holds hold
+        JOIN orchestration_v2_effect_outbox effect ON effect.effect_id = hold.effect_id
+        WHERE effect.thread_id = ${threadId} ORDER BY hold.effect_id`;
+      records.launch_workflows =
+        yield* sql`SELECT * FROM orchestration_v2_thread_launch_workflows WHERE thread_id = ${threadId} ORDER BY command_id`;
+      records.runtime_evidence =
+        yield* sql`SELECT * FROM orchestration_v2_provider_runtime_evidence WHERE thread_id = ${threadId}`;
+      records.continuation_sources =
+        yield* sql`SELECT * FROM orchestration_v2_provider_continuation_sources WHERE thread_id = ${threadId} ORDER BY source_id`;
+      records.restart_continuations =
+        yield* sql`SELECT * FROM orchestration_v2_restart_continuation_markers WHERE thread_id = ${threadId} ORDER BY marker_id`;
+      records.legacy_continuation =
+        yield* sql`SELECT * FROM orchestration_v2_legacy_continuation_dispositions WHERE thread_id = ${threadId}`;
+      records.native_import_seals =
+        yield* sql`SELECT * FROM orchestration_v2_native_import_transcript_seals WHERE thread_id = ${threadId}`;
+      records.legacy_import_markers =
+        yield* sql`SELECT * FROM orchestration_v2_legacy_imports WHERE thread_id = ${threadId}`;
+      if (legacyCurrentSource === null)
+        return yield* new NativeCommandPreconditionError({ commandId, reason: "unknown_evidence" });
+      const currentSource = yield* legacyCurrentSource.read({ sql, threadId });
+      if (currentSource.status !== "complete")
+        return yield* new NativeCommandPreconditionError({ commandId, reason: "unknown_evidence" });
+      records.legacy_source_threads = currentSource.threadRows;
+      records.legacy_source_messages = currentSource.observationMessageRows;
+      records.imported_source_events =
+        yield* sql`SELECT * FROM orchestration_events WHERE stream_id = ${threadId}
+        AND application_event_version = 2 AND aggregate_kind = 'thread'
+        AND (event_id LIKE 'migration:v1:%' OR event_id LIKE 'agent-session-import:v2:%') ORDER BY sequence`;
+      records.native_confirmations =
+        yield* sql`SELECT * FROM orchestration_v2_native_effect_confirmations WHERE thread_id = ${threadId} ORDER BY effect_id`;
+      records.imported_choices =
+        yield* sql`SELECT * FROM orchestration_v2_imported_history_start_choices WHERE thread_id = ${threadId} ORDER BY command_id`;
+      records.imported_outcomes =
+        yield* sql`SELECT outcome.* FROM orchestration_v2_imported_history_start_outcomes outcome
+        JOIN orchestration_v2_imported_history_start_choices choice ON choice.command_id = outcome.command_id
+        WHERE choice.thread_id = ${threadId} ORDER BY outcome.command_id`;
+      records.stop_intents =
+        yield* sql`SELECT * FROM orchestration_v2_current_runtime_stop_intents WHERE thread_id = ${threadId} ORDER BY command_id`;
+      records.stop_fences =
+        yield* sql`SELECT * FROM orchestration_v2_queued_runtime_stop_fences WHERE thread_id = ${threadId} ORDER BY stop_command_id, run_id`;
+      records.start_reservations =
+        yield* sql`SELECT * FROM orchestration_v2_queued_start_reservations WHERE thread_id = ${threadId} ORDER BY effect_id`;
+      records.workstream_witnesses =
+        yield* sql`SELECT * FROM orchestration_v2_workstream_settlement_witnesses WHERE thread_id = ${threadId} ORDER BY command_id`;
+      const authorityRecords: Record<string, ReadonlyArray<Readonly<Record<string, unknown>>>> = {};
+      authorityRecords.sessions =
+        yield* sql`SELECT session_id, subject, scopes, method, issued_at, expires_at, revoked_at
+        FROM auth_sessions WHERE session_id = ${authority.actorSessionId ?? null}`;
+      authorityRecords.automation_enrollment =
+        yield* sql`SELECT * FROM native_creation_automation_enrollments WHERE session_id = ${authority.actorSessionId ?? null}`;
+      authorityRecords.provider_enrollment =
+        yield* sql`SELECT * FROM workstreams_native_enrollments WHERE session_id = ${authority.actorSessionId ?? null}`;
+      authorityRecords.attempts = yield* sql`SELECT * FROM workstreams_native_attempts
+        WHERE native_command_id = ${commandId} OR json_extract(request_json, '$.identity.native_id') = ${threadId} ORDER BY owner_id, principal_id, command_id`;
+      authorityRecords.claims = yield* sql`SELECT * FROM native_creation_intents
+        WHERE claim_id = ${authority.claimId ?? null} OR thread_id = ${threadId}
+          OR worktree_path IN ${sql.in(authority.resourcePaths ?? [])} ORDER BY claim_id`;
+      for (const table of [
+        "normalized_commands",
+        "reserved_commands",
+        "reserved_command_identities",
+        "effect_facts",
+      ] as const) {
+        authorityRecords[table] = yield* sql`SELECT * FROM ${sql(`native_creation_${table}`)}
+          WHERE claim_id IN ${sql.in(authorityRecords.claims.map((claim) => claim.claim_id))}
+          ORDER BY rowid`;
+      }
+      authorityRecords.leases = yield* sql`SELECT * FROM worktree_ownership_leases
+        WHERE owner_thread_id = ${threadId} OR resource_path IN ${sql.in(authority.resourcePaths ?? [])} ORDER BY resource_path`;
+      const decodeStoredJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+      for (const group of [records, authorityRecords]) {
+        for (const rows of Object.values(group)) {
+          for (const row of rows)
+            for (const [key, value] of Object.entries(row)) {
+              if (key.endsWith("_json") && value !== null) yield* decodeStoredJson(value);
+            }
+        }
+      }
+      const latest = yield* eventStore.latestSequence({ threadId });
+      const birth = yield* readIncarnation(threadId);
+      return {
+        commandId,
+        threadId,
+        targetEventSequence: latest,
+        ...birth,
+        records,
+        authority,
+        authorityRecords,
+      };
+    });
+    const readNativeCommandFactsEffect = Effect.fnUntraced(function* (
+      input: Parameters<NonNullable<EventSinkV2Shape["readNativeCommandFacts"]>>[0],
+    ) {
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          if (!(yield* nativeCommandSnapshotApplicable))
+            return yield* new NativeCommandPreconditionError({
+              commandId: input.commandId,
+              reason: "unknown_evidence",
+            });
+          const commitSnapshot = yield* readCommitSnapshot(
+            input.threadId,
+            input.commandId,
+            input.authority ?? {},
+          );
+          const receipt = yield* commandReceipts.getByCommandId(input.commandId);
+          const eventMetadata = yield* sql<NativeCommandEventMetadata>`
+          SELECT event_id AS "eventId", command_id AS "commandId", aggregate_kind AS "aggregateKind",
+            stream_id AS "aggregateId", sequence, event_type AS type, occurred_at AS "occurredAt",
+            application_event_version AS "applicationEventVersion"
+          FROM orchestration_events WHERE command_id = ${input.commandId} ORDER BY sequence ASC LIMIT 257`;
+          const events = yield* eventStore
+            .read({ commandId: input.commandId, limit: 257 })
+            .pipe(Stream.runCollect);
+          const localProjection =
+            (commitSnapshot.records.threads?.length ?? 0) === 0
+              ? null
+              : yield* projectionStore.getThreadRecords(input.threadId, [
+                  "runs",
+                  "attempts",
+                  "nodes",
+                  "subagents",
+                  "providerSessions",
+                  "providerThreads",
+                  "providerTurns",
+                  "runtimeRequests",
+                  "messages",
+                  "plans",
+                  "turnItems",
+                  "checkpointScopes",
+                  "checkpoints",
+                  "contextHandoffs",
+                  "contextTransfers",
+                ]);
+          return {
+            commandId: input.commandId,
+            threadId: input.threadId,
+            receipt: Option.getOrNull(receipt),
+            identity: yield* readIdentity(input.commandId),
+            events,
+            eventMetadata,
+            eventMetadataOverflow: eventMetadata.length > 256,
+            snapshotSequence: yield* eventStore.latestApplicationSequence,
+            targetEventSequence: commitSnapshot.targetEventSequence,
+            incarnation: commitSnapshot.incarnation,
+            creationProvenance: commitSnapshot.creationProvenance,
+            projection:
+              localProjection === null
+                ? null
+                : {
+                    ...localProjection,
+                    visibleTurnItems: [],
+                    updatedAt: localProjection.thread.updatedAt,
+                  },
+            commitSnapshot,
+            creationHistory: commitSnapshot.authorityRecords.claims ?? [],
+            nativeCreationHistory: yield* nativeCreationRepository.readBoundedHistoryByThread(
+              input.threadId,
+            ),
+            workstreamWitness: yield* readWorkstreamWitness(input.commandId),
+          } satisfies NativeCommandFactsV2;
+        }),
+      );
+    });
+
     const readCleanupSnapshot = (effectId: string) =>
       effectOutbox.readQualifiedCleanupSnapshot === undefined
         ? Effect.succeed(Option.none())
@@ -1806,19 +2263,12 @@ const baseLayer: Layer.Layer<
       const carriers: Array<ImportedAttachments.ImportedApplicationAttachmentCarrierV1> = [];
       let source: ImportedAttachments.ImportedApplicationAttachmentSourceV1;
       {
-        const sourceRows = yield* sql<{
-          readonly project_id: string;
-          readonly created_at: string;
-          readonly deleted_at: string | null;
-        }>`
-          SELECT project_id, created_at, deleted_at FROM projection_threads WHERE thread_id = ${input.threadId}`;
-        const legacyBirths = yield* sql<{
-          readonly event_id: string;
-          readonly sequence: number;
-          readonly payload_json: string;
-        }>`
-          SELECT event_id, sequence, payload_json FROM orchestration_events WHERE application_event_version = 1 AND aggregate_kind = 'thread'
-            AND stream_id = ${input.threadId} AND event_type = 'thread.created' ORDER BY sequence DESC LIMIT 1`;
+        if (legacyCurrentSource === null)
+          return unavailable("legacy_current_source_reader_unavailable");
+        const currentSource = yield* legacyCurrentSource.read({ sql, threadId: input.threadId });
+        if (currentSource.status !== "complete") return unavailable(currentSource.reason);
+        const sourceRows = currentSource.threadRows;
+        const legacyBirths = currentSource.births;
         if (
           sourceRows.length !== 1 ||
           legacyBirths.length !== 1 ||
@@ -1841,14 +2291,7 @@ const baseLayer: Layer.Layer<
           input.expectedBirth.eventId !== `migration:v1:thread:${input.threadId}:created`
         )
           return unavailable("legacy_application_source_birth_unavailable");
-        const boundary = yield* sql<{
-          readonly sequence: number;
-        }>`SELECT coalesce(max(sequence), 0) AS sequence FROM orchestration_events WHERE application_event_version = 1`;
-        const positions = yield* sql<{
-          readonly projector: string;
-          readonly last_applied_sequence: number;
-        }>`SELECT projector, last_applied_sequence FROM projection_state
-          WHERE projector IN ('projection.threads', 'projection.thread-messages', 'projection.thread-activities', 'projection.thread-turns')`;
+        const positions = currentSource.positions;
         const position = (name: string) =>
           positions.find((item) => item.projector === name)?.last_applied_sequence;
         const threads = position("projection.threads"),
@@ -1862,29 +2305,12 @@ const baseLayer: Layer.Layer<
           activities === undefined ||
           turns === undefined ||
           [threads, messages, activities, turns].some(
-            (value) => !Number.isSafeInteger(value) || value < boundary[0]!.sequence,
+            (value) => !Number.isSafeInteger(value) || value < currentSource.legacyEventSequence,
           )
         )
           return unavailable("legacy_application_source_cut_incomplete");
-        const messageRows = yield* sql<{
-          readonly message_id: string;
-          readonly thread_id: string;
-          readonly turn_id: string | null;
-          readonly role: string;
-          readonly attachments_json: string | null;
-          readonly created_at: string;
-          readonly updated_at: string;
-        }>`
-          SELECT * FROM projection_thread_messages WHERE thread_id = ${input.threadId} ORDER BY message_id`;
-        const answerRows = yield* sql<{
-          readonly activity_id: string;
-          readonly thread_id: string;
-          readonly turn_id: string | null;
-          readonly sequence: number | null;
-          readonly payload_json: string;
-          readonly created_at: string;
-        }>`
-          SELECT * FROM projection_thread_activities WHERE thread_id = ${input.threadId} AND kind = 'user-input.answer-submitted' ORDER BY activity_id`;
+        const messageRows = currentSource.messageRows;
+        const answerRows = currentSource.answerRows;
         for (const row of messageRows) {
           const attachments =
             row.attachments_json === null
@@ -1940,7 +2366,7 @@ const baseLayer: Layer.Layer<
           projectId: birth.projectId,
           sourceCreatedAt: sourceRows[0]!.created_at,
           sourceCut: {
-            legacyEventSequence: boundary[0]!.sequence,
+            legacyEventSequence: currentSource.legacyEventSequence,
             projectorPositions: { threads, messages, activities, turns },
             messageRowsSha256:
               ImportedAttachments.importedApplicationAttachmentSha256V1(messageRows),
@@ -4119,6 +4545,14 @@ const baseLayer: Layer.Layer<
               new EventSinkStreamError({
                 cause,
               }),
+          ),
+        ),
+      readNativeCommandFacts: (input) =>
+        readNativeCommandFactsEffect(input).pipe(
+          Effect.mapError((cause) =>
+            Schema.is(NativeCommandPreconditionError)(cause)
+              ? cause
+              : new EventSinkWriteError({ eventCount: 0, commandId: input.commandId, cause }),
           ),
         ),
     } satisfies EventSinkV2Shape);
