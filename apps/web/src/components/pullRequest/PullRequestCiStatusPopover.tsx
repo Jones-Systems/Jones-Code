@@ -60,7 +60,9 @@ export function PullRequestCiStatusPopover({
         <TooltipPopup>CI testing queue</TooltipPopup>
       </Tooltip>
       <PopoverPopup align="end" width="lg" padding="compact">
-        <PopoverTitle className="px-1 pt-2">CI jobs — connected repositories</PopoverTitle>
+        <div className="px-1 pt-2">
+          <PopoverTitle>CI jobs — connected repositories</PopoverTitle>
+        </div>
         <div className="space-y-3 px-1 py-3">
           {scopedEnvironmentId === null && environments.length > 1 ? (
             <Select
