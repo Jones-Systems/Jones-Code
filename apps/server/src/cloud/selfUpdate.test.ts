@@ -424,3 +424,81 @@ it.layer(NodeServices.layer)("server self update", (it) => {
     }),
   );
 });
+
+it.effect(
+  "preserves native continuations and blocks duplicate Install after an uncertain handoff",
+  () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const wrapped = yield* ServerSelfUpdate.withRunningThreadContinuation({
+        mode: "web",
+        selfUpdate: {
+          update: () => Effect.die("legacy update must not run"),
+          commitDesktopUpdate: () => Effect.never,
+          installQualified: () =>
+            Effect.fail(
+              new ServerSelfUpdateError({
+                reason: "handoff uncertain",
+                cause: new ServiceLauncherClient.ServiceLauncherClientError({
+                  operation: "timeout",
+                }),
+              }),
+            ),
+        },
+        prepare: Effect.sync(() => {
+          events.push("prepare");
+          return [ThreadId.make("running-native")];
+        }),
+        clear: () =>
+          Effect.sync(() => {
+            events.push("clear");
+          }),
+      });
+      const install = wrapped.installQualified;
+      if (install === undefined) return yield* Effect.die("missing qualified Install");
+      const request = { stagedHandle: "fixed-candidate", continueRunningThreads: true };
+      yield* install(request).pipe(Effect.flip);
+      const duplicate = yield* install(request).pipe(Effect.flip);
+      expect(duplicate.reason).toContain("needs reconciliation");
+      expect(events).toEqual(["prepare"]);
+    }),
+);
+
+it.effect(
+  "clears continuation preparation after a definite qualified rejection and permits retry",
+  () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const wrapped = yield* ServerSelfUpdate.withRunningThreadContinuation({
+        mode: "web",
+        selfUpdate: {
+          update: () => Effect.die("legacy update must not run"),
+          commitDesktopUpdate: () => Effect.never,
+          installQualified: () =>
+            Effect.fail(
+              new ServerSelfUpdateError({
+                reason: "stale binding",
+                cause: new ServiceLauncherClient.ServiceLauncherRejectedError({
+                  targetVersion: "0.0.0-preview.20261002.101.1",
+                  reason: "stale binding",
+                }),
+              }),
+            ),
+        },
+        prepare: Effect.sync(() => {
+          events.push("prepare");
+          return [ThreadId.make("running-native")];
+        }),
+        clear: () =>
+          Effect.sync(() => {
+            events.push("clear");
+          }),
+      });
+      const install = wrapped.installQualified;
+      if (install === undefined) return yield* Effect.die("missing qualified Install");
+      const request = { stagedHandle: "fixed-candidate", continueRunningThreads: true };
+      yield* install(request).pipe(Effect.flip);
+      yield* install(request).pipe(Effect.flip);
+      expect(events).toEqual(["prepare", "clear", "prepare", "clear"]);
+    }),
+);
