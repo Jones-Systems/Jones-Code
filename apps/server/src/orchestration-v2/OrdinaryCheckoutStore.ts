@@ -17,6 +17,8 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  OrdinaryCheckoutExecutionOutcomeFactV1,
+  StartRetryBeforeOpenObservationV1,
   OrdinaryCheckoutExecutionEvidenceV1,
   OrdinaryCheckoutCompletionEvidenceV1,
   OrdinaryManagedStartObservationV1,
@@ -34,6 +36,8 @@ import { canonicalJson, sha256 } from "./CanonicalJson.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventStore from "./EventStore.ts";
+import * as NativeExecutionRepository from "../nativeCreation/NativeCreationExecutionRepository.ts";
+import { makeNativeProviderRuntimeEvidence } from "./NativeProviderRuntimeEvidence.ts";
 import { makeCommitTransaction } from "./CommitTransaction.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Ordinary from "./OrdinaryCheckoutOwnership.ts";
@@ -167,6 +171,9 @@ export interface OrdinaryCheckoutCaptureInput {
 export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const transactions = yield* makeCommitTransaction();
+  const nativeCreationRepository = yield* NativeExecutionRepository.make;
+  const nativeRuntimeEvidence = yield* makeNativeProviderRuntimeEvidence(transactions);
+  const ordinaryRetryObservations = new Map<string, StartRetryBeforeOpenObservationV1>();
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
   const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
@@ -1520,44 +1527,8 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
       );
     return lease;
   });
-  const readCurrentProviderRuntimeOwnerEffect = Effect.fn(
-    "OrdinaryCheckoutStore.readCurrentRuntimeOwner",
-  )(function* (threadId: ThreadId) {
-    const local = yield* projectionStore.getThreadRecords(threadId, [
-      "providerThreads",
-      "providerSessions",
-    ]);
-    const provider = local.providerThreads.find(
-      (item) => item.id === local.thread.activeProviderThreadId,
-    );
-    const session = local.providerSessions.find((item) => item.id === provider?.providerSessionId);
-    const identity = provider?.runtimeIdentity;
-    if (
-      local.thread.deletedAt !== null ||
-      provider === undefined ||
-      provider.appThreadId !== threadId ||
-      session === undefined ||
-      provider.providerSessionId === null ||
-      session.providerInstanceId !== provider.providerInstanceId ||
-      session.driver !== provider.driver ||
-      provider.nativeThreadRef?.nativeId === undefined ||
-      identity?.runtimeGeneration === undefined ||
-      identity.evidenceRevision === undefined
-    )
-      return null;
-    return {
-      binding: {
-        threadId,
-        providerThreadId: provider.id,
-        providerSessionId: provider.providerSessionId,
-        instanceId: provider.providerInstanceId,
-        driver: provider.driver,
-        nativeThreadId: provider.nativeThreadRef.nativeId,
-        runtimeGeneration: identity.runtimeGeneration,
-      },
-      evidenceRevision: identity.evidenceRevision,
-    };
-  });
+  const readCurrentProviderRuntimeOwnerEffect =
+    nativeRuntimeEvidence.readCurrentProviderRuntimeOwner;
 
   const validateSource = Effect.fnUntraced(function* (
     use: Ordinary.OrdinaryCheckoutUseV1,
@@ -3940,7 +3911,225 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
     } satisfies OrdinaryCheckoutCommitCapture;
   });
 
+  const activateOrdinaryCheckoutManagedRun = Effect.fnUntraced(function* <E>(input: {
+    readonly startExecution: Ordinary.OrdinaryCheckoutExecutionRefV1;
+    readonly managedExecutor: Extract<
+      Ordinary.OrdinaryCheckoutExecutionExecutorV1,
+      { kind: "captured_managed_run" }
+    >;
+    readonly actualStartObservation: typeof OrdinaryManagedStartObservationV1.Type;
+    readonly revalidateCaptured: Effect.Effect<void, E>;
+  }) {
+    const revalidateCaptured = input.revalidateCaptured.pipe(
+      Effect.mapError(
+        (cause) =>
+          new OrdinaryCheckoutHistoryError({
+            message: "Captured managed start is no longer current",
+            cause,
+          }),
+      ),
+    );
+    return yield* transactions.withTransaction(
+      Effect.gen(function* () {
+        const start = yield* Schema.decodeUnknownEffect(
+          Schema.toType(Ordinary.OrdinaryCheckoutExecutionRefV1),
+        )(input.startExecution, { onExcessProperty: "error" });
+        const observation = yield* Schema.decodeUnknownEffect(
+          Schema.toType(OrdinaryManagedStartObservationV1),
+        )(input.actualStartObservation, { onExcessProperty: "error" });
+        const managed = yield* Schema.decodeUnknownEffect(
+          Schema.toType(Ordinary.OrdinaryCheckoutExecutionExecutorV1),
+        )(input.managedExecutor, { onExcessProperty: "error" });
+        const admission = yield* resolveAdmission(start.originalUse.admission);
+        if (
+          start.executor.kind !== "actual_outbox_claim" ||
+          managed.kind !== "captured_managed_run" ||
+          observation.managedExecutor.kind !== "captured_managed_run" ||
+          ordinaryExecutionBytes(observation.startExecution) !== ordinaryExecutionBytes(start) ||
+          canonicalJson(
+            yield* Schema.encodeEffect(Ordinary.OrdinaryCheckoutExecutionExecutorV1)(
+              observation.managedExecutor,
+            ).pipe(Effect.orDie),
+          ) !==
+            canonicalJson(
+              yield* Schema.encodeEffect(Ordinary.OrdinaryCheckoutExecutionExecutorV1)(
+                managed,
+              ).pipe(Effect.orDie),
+            )
+        )
+          return yield* failure(
+            admission.capture,
+            "stale_admission",
+            "Managed activation differs from its original returned start and captured executor",
+          );
+        const observedAt = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+          observation.observedAt,
+        );
+        const now = yield* DateTime.now;
+        if (
+          DateTime.formatIso(observedAt) !== observation.observedAt ||
+          DateTime.toEpochMillis(observedAt) > DateTime.toEpochMillis(now)
+        )
+          return yield* failure(
+            admission.capture,
+            "unknown_use",
+            "Managed start observation has no exact current source timestamp",
+          );
+        const ref = Ordinary.makeOrdinaryCheckoutExecutionRefV1({
+          originalUse: start.originalUse,
+          executor: managed,
+        });
+        const history = yield* readOrdinaryCheckoutExecutionAssociationsEffect(start.originalUse);
+        yield* revalidateCaptured;
+        const existing = history.participants.find(
+          (item) => item.ref.associationId === ref.associationId,
+        );
+        if (existing !== undefined) {
+          const activation = history.facts.find(
+            (fact) =>
+              ordinaryExecutionBytes(fact.ref) === ordinaryExecutionBytes(ref) &&
+              fact.evidence.schema === "t3.ordinary-checkout-execution-activation/v1" &&
+              canonicalJson(
+                Schema.encodeSync(OrdinaryManagedStartObservationV1)(
+                  fact.evidence.actualStartObservation,
+                ),
+              ) ===
+                canonicalJson(Schema.encodeSync(OrdinaryManagedStartObservationV1)(observation)),
+          );
+          if (existing.state !== "active" || activation === undefined)
+            return yield* failure(
+              admission.capture,
+              "unknown_use",
+              "Managed successor was retired, changed or lacks its original activation",
+            );
+          yield* validateOrdinaryCheckoutExecutionEffect(ref);
+          return ref;
+        }
+        const current = yield* validateOrdinaryCheckoutExecutionEffect(start);
+        if (
+          current.record.state !== "started" ||
+          current.record.startedAt === null ||
+          observation.observedAt < current.record.startedAt ||
+          observation.observedAt > current.participant.expiresAt ||
+          history.participants.some((item) => item.state === "unknown")
+        )
+          return yield* failure(
+            admission.capture,
+            "unknown_use",
+            "Managed run has no entered original start without uncertainty",
+          );
+        const effect = Option.getOrNull(yield* outbox.get(start.executor.source.link.effectId));
+        if (
+          effect === null ||
+          !["provider-turn.start", "provider-turn.restart"].includes(effect.request.type)
+        )
+          return yield* failure(
+            admission.capture,
+            "claim_mismatch",
+            "Managed activation cannot settle another effect type",
+          );
+        yield* validateOrdinaryManagedExecutor(managed, admission);
+        const importedChoices =
+          effect.request.type === "provider-turn.start"
+            ? yield* sql`SELECT command_id FROM orchestration_v2_imported_history_start_choices
+          WHERE command_id = ${effect.commandId} AND thread_id = ${effect.threadId}`
+            : [];
+        if (
+          effect.request.type === "provider-turn.start" &&
+          (effect.nativeCreationExecutionReference !== undefined || importedChoices.length > 0)
+        ) {
+          const confirmation = yield* nativeCreationRepository.readNativeEffectConfirmation(
+            effect.id,
+          );
+          const owner = yield* readCurrentProviderRuntimeOwnerEffect(effect.threadId);
+          if (
+            confirmation === null ||
+            owner === null ||
+            confirmation.commandId !== effect.commandId ||
+            confirmation.runId !== managed.run.runId ||
+            confirmation.effectId !== effect.id ||
+            confirmation.threadId !== effect.threadId ||
+            confirmation.workerId !== start.executor.source.workerId ||
+            confirmation.expectedAttempt !== start.executor.source.expectedAttempt ||
+            confirmation.attemptId !== managed.run.runAttemptId ||
+            confirmation.evidenceRevision !== owner.evidenceRevision ||
+            confirmation.binding.providerThreadId !== managed.binding.providerThreadId ||
+            confirmation.binding.providerSessionId !== managed.binding.providerSessionId ||
+            confirmation.binding.instanceId !== managed.binding.instanceId ||
+            canonicalJson(confirmation.binding) !== canonicalJson(owner.binding)
+          )
+            return yield* failure(
+              admission.capture,
+              "unknown_use",
+              "Imported or prepared native start lost its required actual acknowledgment",
+            );
+        }
+        yield* revalidateCaptured;
+        const expiry = DateTime.formatIso(DateTime.add(now, { minutes: 5 }));
+        const ordinal = yield* appendOrdinaryCheckoutExecutionFact(
+          ref,
+          "activate",
+          expiry,
+          undefined,
+          undefined,
+          input.actualStartObservation,
+        );
+        const retirement = yield* Schema.decodeUnknownEffect(
+          Schema.toType(OrdinaryCheckoutExecutionOutcomeFactV1),
+        )(
+          {
+            version: 1,
+            schema: "t3.ordinary-checkout-execution-outcome/v1",
+            kind: "retire",
+            expiresAt: current.participant.expiresAt,
+            actualProducerOutcome: {
+              kind: "start_activated",
+              managedExecution: ref,
+              actualStartObservation: observation,
+            },
+          },
+          { onExcessProperty: "error" },
+        );
+        yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_execution_associations
+          (operation_id, ordinal, predecessor_ordinal, association_id, admission_id, executor_kind, effect_id, event_kind, association_json, evidence_json, recorded_at)
+          VALUES (${start.originalUse.operationId}, ${ordinal + 1}, ${ordinal}, ${start.associationId}, ${start.originalUse.admission.admissionId},
+            'actual_outbox_claim', ${effect.id}, 'retire', ${ordinaryExecutionBytes(start)},
+            ${canonicalJson(yield* Schema.encodeEffect(OrdinaryCheckoutExecutionOutcomeFactV1)(retirement).pipe(Effect.orDie))}, ${DateTime.formatIso(now)})`;
+        if (outbox.settleOrdinaryCheckoutStartClaim === undefined)
+          return yield* failure(
+            admission.capture,
+            "unavailable",
+            "Original start settlement capability is unavailable",
+          );
+        if (
+          !(yield* outbox.settleOrdinaryCheckoutStartClaim({
+            effectId: effect.id,
+            workerId: start.executor.source.workerId,
+            expectedAttempt: start.executor.source.expectedAttempt,
+            expectedLeaseExpiresAt: current.participant.expiresAt,
+          }))
+        )
+          return yield* failure(
+            admission.capture,
+            "claim_mismatch",
+            "Original start claim changed before atomic managed transfer",
+          );
+        yield* readOrdinaryCheckoutExecutionAssociationsEffect(start.originalUse);
+        yield* transactions.afterCommit(
+          Effect.sync(() => {
+            ordinaryExecutionCallbacks.set(ref.associationId, revalidateCaptured);
+            for (const [key, observation] of ordinaryRetryObservations)
+              if (observation.execution.originalUse.operationId === ref.originalUse.operationId)
+                ordinaryRetryObservations.delete(key);
+          }),
+        );
+        return ref;
+      }),
+    );
+  });
+
   return {
+    activateManagedRun: activateOrdinaryCheckoutManagedRun,
     capture,
     acquireBeforeRead,
     acquireNewborn,
@@ -3995,4 +4184,5 @@ export type OrdinaryCheckoutLifetime = Pick<
   | "joinClaim"
   | "captureJoinedCommand"
   | "transitionPreparedBranch"
+  | "activateManagedRun"
 >;

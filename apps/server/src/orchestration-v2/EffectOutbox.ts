@@ -1,3 +1,4 @@
+import { NativeCreationExecutionReferenceV2 } from "../nativeCreation/NativeCreationExecutionTypes.ts";
 import {
   CheckpointId,
   CheckpointScopeId,
@@ -142,6 +143,7 @@ export const OrchestrationEffectStatusV2 = Schema.Literals([
 export type OrchestrationEffectStatusV2 = typeof OrchestrationEffectStatusV2.Type;
 
 export interface OrchestrationEffectV2 {
+  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
   readonly id: string;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -158,6 +160,7 @@ export interface OrchestrationEffectV2 {
 }
 
 export interface PendingOrchestrationEffectV2 {
+  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
   readonly id: string;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -228,6 +231,12 @@ const isEffectOutboxError = Schema.is(EffectOutboxError);
 export interface EffectOutboxV2Shape {
   readonly awaitAvailable: Effect.Effect<void>;
   readonly notifyAvailable: (count?: number) => Effect.Effect<void>;
+  readonly settleOrdinaryCheckoutStartClaim?: (input: {
+    readonly effectId: string;
+    readonly workerId: string;
+    readonly expectedAttempt: number;
+    readonly expectedLeaseExpiresAt: string;
+  }) => Effect.Effect<boolean, EffectOutboxError>;
   /** Persist rows only. Notify workers after the surrounding transaction commits. */
   readonly enqueue: (
     effects: ReadonlyArray<PendingOrchestrationEffectV2>,
@@ -316,13 +325,74 @@ const decodeRequest = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationEffectRequestV2),
 );
 
+export const NativeOrchestrationEffectPayloadV2 = Schema.Struct({
+  request: OrchestrationEffectRequestV2,
+  nativeCreationExecutionReference: NativeCreationExecutionReferenceV2,
+});
+const decodeNativePayload = Schema.decodeUnknownEffect(NativeOrchestrationEffectPayloadV2, {
+  onExcessProperty: "error",
+});
+const encodeNativePayload = Schema.encodeSync(
+  Schema.fromJsonString(NativeOrchestrationEffectPayloadV2),
+);
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+// A malformed envelope cannot lose its authority lineage by decoding as ordinary work.
+export const decodeOrchestrationEffectPayloadV2 = (payload: string) =>
+  Effect.gen(function* () {
+    const raw = yield* decodeJson(payload);
+    if (
+      typeof raw === "object" &&
+      raw !== null &&
+      (Object.hasOwn(raw, "request") || Object.hasOwn(raw, "nativeCreationExecutionReference"))
+    )
+      return yield* decodeNativePayload(raw);
+    return { request: yield* decodeRequest(payload) };
+  });
+const invalidEffectPayload = (message: string) =>
+  new EffectOutboxError({ operation: "payload", cause: new Error(message) });
+
+const validateNativeAssociation = (input: {
+  readonly id: string;
+  readonly commandId: string;
+  readonly request: OrchestrationEffectRequestV2;
+  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
+}) =>
+  Effect.gen(function* () {
+    const reference = input.nativeCreationExecutionReference;
+    if (reference === undefined) return;
+    if (
+      reference.effectId !== input.id ||
+      reference.stageCommandId !== input.commandId ||
+      reference.stage !== "native_command" ||
+      (input.request.type === "provider-turn.start" &&
+        input.id !== `effect:${input.commandId}:provider-turn.start:${input.request.runId}`) ||
+      (input.request.type !== "provider-turn.start" &&
+        input.request.type !== "thread-title.generate")
+    ) {
+      return yield* Effect.fail(
+        invalidEffectPayload("Native outbox reference differs from its effect association"),
+      );
+    }
+  });
+
 const rowToEffect = (row: EffectRow) =>
-  decodeRequest(row.payload_json).pipe(
-    Effect.map((request): OrchestrationEffectV2 => ({
+  decodeOrchestrationEffectPayloadV2(row.payload_json).pipe(
+    Effect.tap((payload) =>
+      payload.request.type === row.effect_type
+        ? Effect.void
+        : Effect.fail(
+            invalidEffectPayload("Outbox effect type differs from its persisted payload"),
+          ),
+    ),
+    Effect.tap((payload) =>
+      validateNativeAssociation({ id: row.effect_id, commandId: row.command_id, ...payload }),
+    ),
+    Effect.map((payload): OrchestrationEffectV2 => ({
+      ...payload,
+
       id: row.effect_id,
       commandId: CommandId.make(row.command_id),
       threadId: ThreadId.make(row.thread_id),
-      request,
       status: row.status as OrchestrationEffectStatusV2,
       attemptCount: row.attempt_count,
       availableAt: row.available_at,
@@ -412,13 +482,54 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       );
 
     const service: EffectOutboxV2Shape = {
+      settleOrdinaryCheckoutStartClaim: (input) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const now = DateTime.formatIso(yield* DateTime.now);
+              const rows =
+                yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'succeeded', lease_owner = NULL, lease_expires_at = NULL,
+          completed_at = ${now}, updated_at = ${now}, last_error = NULL WHERE effect_id = ${input.effectId}
+            AND effect_type IN ('provider-turn.start', 'provider-turn.restart') AND status = 'running'
+            AND lease_owner = ${input.workerId} AND attempt_count = ${input.expectedAttempt}
+            AND lease_expires_at = ${input.expectedLeaseExpiresAt} AND lease_expires_at > ${now}
+            AND EXISTS (SELECT 1 FROM orchestration_v2_ordinary_checkout_effect_links link WHERE link.effect_id = ${input.effectId})
+            AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = ${input.effectId}) RETURNING effect_id`;
+              return rows.length === 1;
+            }),
+          )
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new EffectOutboxError({
+                  operation: "settle-ordinary-start",
+                  effectId: input.effectId,
+                  cause,
+                }),
+            ),
+          ),
       enqueue: (effects) =>
-        Effect.gen(function* () {
-          const now = yield* DateTime.now;
-          const nowIso = DateTime.formatIso(now);
-          yield* Effect.forEach(
-            effects,
-            (effect) => sql`
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              const nowIso = DateTime.formatIso(now);
+              yield* Effect.forEach(
+                effects,
+                (effect) =>
+                  Effect.gen(function* () {
+                    yield* validateNativeAssociation(effect);
+                    const payload =
+                      effect.nativeCreationExecutionReference === undefined
+                        ? encodeRequest(effect.request)
+                        : encodeNativePayload(
+                            yield* decodeNativePayload({
+                              request: effect.request,
+                              nativeCreationExecutionReference:
+                                effect.nativeCreationExecutionReference,
+                            }),
+                          );
+                    yield* sql`
               INSERT INTO orchestration_v2_effect_outbox (
                 effect_id,
                 command_id,
@@ -436,7 +547,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 ${effect.commandId},
                 ${effect.threadId},
                 ${effect.request.type},
-                ${encodeRequest(effect.request)},
+                ${payload},
                 'pending',
                 0,
                 ${DateTime.formatIso(effect.availableAt ?? now)},
@@ -444,13 +555,34 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 ${nowIso}
               )
               ON CONFLICT(effect_id) DO NOTHING
-            `,
-            { concurrency: 1, discard: true },
-          );
-          // Do not signal here: callers enqueue inside a larger transaction,
-          // and workers must only observe availability after that transaction
-          // commits. EventSink owns the corresponding post-commit notification.
-        }).pipe(Effect.mapError((cause) => new EffectOutboxError({ operation: "enqueue", cause }))),
+            `;
+                    const existing =
+                      yield* sql<EffectRow>`SELECT * FROM orchestration_v2_effect_outbox
+                WHERE effect_id = ${effect.id}
+                AND (${effect.nativeCreationExecutionReference !== undefined ? sql`1 = 1` : sql`0 = 1`} OR
+                  CASE WHEN json_valid(payload_json) THEN
+                    json_type(payload_json, '$.request') IS NOT NULL OR json_type(payload_json, '$.nativeCreationExecutionReference') IS NOT NULL
+                  ELSE 0 END)`;
+                    if (
+                      existing.length !== 0 &&
+                      (existing.length !== 1 ||
+                        existing[0]!.command_id !== effect.commandId ||
+                        existing[0]!.thread_id !== effect.threadId ||
+                        existing[0]!.effect_type !== effect.request.type ||
+                        existing[0]!.payload_json !== payload)
+                    )
+                      return yield* invalidEffectPayload(
+                        "Referenced outbox effect identity is already bound differently",
+                      );
+                  }),
+                { concurrency: 1, discard: true },
+              );
+              // Do not signal here: callers enqueue inside a larger transaction,
+              // and workers must only observe availability after that transaction
+              // commits. EventSink owns the corresponding post-commit notification.
+            }),
+          )
+          .pipe(Effect.mapError((cause) => new EffectOutboxError({ operation: "enqueue", cause }))),
       get: (effectId) =>
         sql<EffectRow>`
           SELECT *

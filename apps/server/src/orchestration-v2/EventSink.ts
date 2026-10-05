@@ -38,6 +38,10 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import {
+  makeNativeProviderRuntimeEvidence,
+  type NativeProviderRuntimeEvidenceShape,
+} from "./NativeProviderRuntimeEvidence.ts";
 import { makeCommitTransaction } from "./CommitTransaction.ts";
 import { ordinaryCheckoutCommandDigestV1 } from "./OrdinaryCheckoutOwnership.ts";
 import {
@@ -120,6 +124,8 @@ function runtimeEvidenceMatches(
  * SERVICE DEFINITION
  */
 export interface EventSinkV2Shape {
+  readonly readProviderRuntimeEvidence?: NativeProviderRuntimeEvidenceShape["readProviderRuntimeEvidence"];
+  readonly registerProviderRuntime?: NativeProviderRuntimeEvidenceShape["registerProviderRuntime"];
   readonly ordinaryCheckoutLifetime?: import("./OrdinaryCheckoutStore.ts").OrdinaryCheckoutLifetime;
   readonly captureOrdinaryCheckout?: (
     input: OrdinaryCheckoutCaptureInput,
@@ -297,6 +303,7 @@ const baseLayer: Layer.Layer<
     const projectStore = yield* ProjectStore.ProjectStoreV2;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const commitTransaction = yield* makeCommitTransaction();
+    const nativeRuntimeEvidence = yield* makeNativeProviderRuntimeEvidence(commitTransaction);
     const checkoutStore = yield* makeOrdinaryCheckoutStore();
     const liveEvents = yield* PubSub.unbounded<OrchestrationV2StoredEvent>();
     const liveEventsByType = new Map<
@@ -1055,6 +1062,7 @@ const baseLayer: Layer.Layer<
 
     const encodeOrdinaryCommand = Schema.encodeEffect(OrchestrationV2Command);
     return EventSinkV2.of({
+      ...nativeRuntimeEvidence,
       ordinaryCheckoutLifetime: checkoutStore,
       validateOrdinaryCheckoutCommandReplay: (command, threadId) =>
         Effect.gen(function* () {

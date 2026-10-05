@@ -504,11 +504,11 @@ it.effect("returns a visible preparing message while provisioning is still block
     const setupEntered = yield* Deferred.make<void>();
     const allowSetup = yield* Deferred.make<void>();
     const harness = makeHarness({
-      createWorktree: () =>
+      createWorktree: (input) =>
         Deferred.succeed(worktreeEntered, undefined).pipe(
           Effect.andThen(Deferred.await(allowWorktree)),
           Effect.as({
-            worktree: { path: "/repo-worktrees/feature", refName: "feature", headSha: "abc" },
+            worktree: { path: input.path!, refName: input.newRefName, headSha: "abc" },
           } as never),
         ),
       runSetup: () =>
@@ -759,7 +759,7 @@ it.effect("enqueues provider work only after setup has been initiated", () =>
     const setupEntered = yield* Deferred.make<void>();
     const allowSetup = yield* Deferred.make<void>();
     const harness = makeHarness({
-      runSetup: () =>
+      runSetup: ({ worktreePath: cwd }) =>
         Deferred.succeed(setupEntered, undefined).pipe(
           Effect.andThen(Deferred.await(allowSetup)),
           Effect.as({
@@ -769,7 +769,8 @@ it.effect("enqueues provider work only after setup has been initiated", () =>
             scriptName: "Setup",
             scriptCommand: "vp install",
             terminalId: "setup",
-            cwd: "/repo",
+            cwd,
+            completion: Effect.succeed({ exitCode: 0, durationMs: 1 }),
           }),
         ),
     });
@@ -781,7 +782,7 @@ it.effect("enqueues provider work only after setup has been initiated", () =>
         command: "command:launch:release",
         thread: "thread:launch:release",
         message: "Start after setup",
-        workspace: { type: "worktree", baseRef: "main" },
+        workspace: { type: "worktree", baseRef: "main", branch: "feature" },
       });
       const launched = yield* launches.launch(input);
       yield* Deferred.await(setupEntered);
@@ -796,7 +797,7 @@ it.effect("enqueues provider work only after setup has been initiated", () =>
       );
       const projection = yield* threads.getThreadProjection(launched.threadId);
       assert.equal(projection.runs[0]?.status, "starting");
-      assert.equal(projection.checkpointScopes[0]?.cwd, "/repo-worktrees/feature");
+      assert.equal(projection.checkpointScopes[0]?.cwd, "/repo-worktrees/repo/feature");
       assert.equal(
         projection.turnItems.find((item) => item.type === "command_execution")?.status,
         "completed",
