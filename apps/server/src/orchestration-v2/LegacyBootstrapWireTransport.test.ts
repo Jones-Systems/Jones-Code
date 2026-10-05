@@ -31,6 +31,8 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationV2ThreadProjectionJson,
+  WorktreeSetupStreamEvent,
+  WS_METHODS,
 } from "@t3tools/contracts";
 import * as WsTraceDiagnostics from "../diagnostics/TraceDiagnostics.ts";
 import * as WsProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
@@ -104,6 +106,7 @@ import * as WsPreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import { expect, it } from "vite-plus/test";
 import {
   CommandId,
+  GitCommandError,
   EnvironmentOrchestrationHttpApi,
   EventId,
   MessageId,
@@ -623,6 +626,8 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
       "actual_input_intent_lost",
       "actual_input_outcome_lost",
       "actual_entered_error",
+      "actual_worktree_cancel_pending",
+      "actual_worktree_cancel_partial",
     ] as const)("preserves closed dispatch and authorization for %s", (scenario) =>
       Effect.gen(function* () {
         const fs = yield* WsFileSystem.FileSystem;
@@ -701,6 +706,11 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           updatedAt: timestamp,
         });
         const actualReceiving = scenario.startsWith("actual_");
+        const cancelledWorktree = scenario.startsWith("actual_worktree_cancel_");
+        const worktreeEntered = yield* Deferred.make<void>();
+        const worktreeBarrier = yield* Deferred.make<void>();
+        const releaseWorktree = Deferred.succeed(worktreeBarrier, undefined);
+        const worktreePath = `${cwd}/unresolved-checkout`;
         const startedSetup =
           scenario === "actual_sync" ||
           scenario === "actual_async" ||
@@ -756,6 +766,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             for (const output of outputListeners) output(`${sentinel}0\r\n`);
         });
         yield* Effect.addFinalizer(() => completeSetup);
+        yield* Effect.addFinalizer(() => releaseWorktree);
 
         const receivingOwners = actualReceiving
           ? yield* Effect.gen(function* () {
@@ -878,7 +889,63 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                   get: () => Effect.succeed(null),
                 }),
                 Layer.mock(WsGitWorkflowService.GitWorkflowService)({
-                  createWorktree: () => Effect.die("No Git create in receiving RPC fixture"),
+                  isRepository: () => Effect.succeed(true),
+                  hasCommit: () => Effect.succeed(true),
+                  createWorktree: (input, options) =>
+                    Effect.gen(function* () {
+                      if (!cancelledWorktree || options?.legacyPreparation === undefined)
+                        return yield* Effect.die("No Git create in receiving RPC fixture");
+                      if (input.newRefName === undefined)
+                        return yield* Effect.die("Synthetic checkout requires a captured branch");
+                      const parent = yield* fs.stat(cwd);
+                      yield* options.legacyPreparation.beforeEffect({
+                        kind: "worktree.add",
+                        cwd,
+                        args: [
+                          "worktree",
+                          "add",
+                          "-b",
+                          input.newRefName,
+                          worktreePath,
+                          input.refName,
+                        ],
+                        worktreePath,
+                        commonDirectory: cwd,
+                        baseCommitOid: "9".repeat(40),
+                        targetRef: `refs/heads/${input.newRefName}`,
+                        before: {
+                          parentPath: cwd,
+                          parentRealPath: cwd,
+                          parentDevice: String(parent.dev),
+                          parentInode: String(parent.ino),
+                          targetRefAbsent: true,
+                          registrationAbsent: true,
+                        },
+                      });
+                      if (scenario === "actual_worktree_cancel_partial") {
+                        yield* fs.makeDirectory(worktreePath);
+                        yield* fs.writeFileString(
+                          `${worktreePath}/partial`,
+                          "unresolved owner bytes",
+                        );
+                      }
+                      yield* Deferred.succeed(worktreeEntered, undefined);
+                      yield* Deferred.await(worktreeBarrier);
+                      return yield* Effect.die(
+                        "Unresolved synthetic checkout cannot report success",
+                      );
+                    }).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new GitCommandError({
+                            operation: "synthetic unresolved preparation",
+                            command: "git",
+                            cwd,
+                            detail: "Synthetic owner journal or fixture filesystem failed",
+                            cause,
+                          }),
+                      ),
+                    ),
                   removeWorktree: () => Effect.die("No Git cleanup in receiving RPC fixture"),
                   renameBranch: () => Effect.die("No Git rename in receiving RPC fixture"),
                 }),
@@ -1085,7 +1152,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         yield* Effect.gen(function* () {
           const owner = yield* WsEnvironmentAuth.EnvironmentAuth;
           const issued = yield* owner.issueSession({
-            scopes: [scenario === "read_only" ? "orchestration:read" : "orchestration:operate"],
+            scopes: cancelledWorktree
+              ? ["orchestration:read", "orchestration:operate"]
+              : [scenario === "read_only" ? "orchestration:read" : "orchestration:operate"],
           });
           if (actualReceiving) {
             const sink = yield* EventSink.EventSinkV2;
@@ -1140,7 +1209,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 worktreePath: null,
                 createdAt: timestamp,
               },
-              ...(actualReceiving
+              ...(actualReceiving && !cancelledWorktree
                 ? {}
                 : {
                     prepareWorktree: {
@@ -1209,6 +1278,176 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               headers: [],
             }),
           );
+          if (cancelledWorktree) {
+            yield* Deferred.await(worktreeEntered).pipe(Effect.timeout("5 seconds"));
+            const tracker = yield* WsWorktreeSetupTracker.WorktreeSetupTracker;
+            const threads = yield* Threads.ThreadManagementService;
+            const receipts = yield* Receipts.CommandReceiptStoreV2;
+            const store = yield* EventStore.EventStoreV2;
+            const outbox = yield* WsEffectOutbox.EffectOutboxV2;
+            const runningCard = yield* tracker.get(threadId);
+            expect(runningCard?.phase).toBe("running");
+            expect(runningCard?.stages.find((stage) => stage.id === "checkout")?.status).toBe(
+              "running",
+            );
+            expect(runningCard?.stages.find((stage) => stage.id === "agent")?.status).toBe(
+              "pending",
+            );
+            const preparing = yield* threads.getThreadProjection(threadId);
+            const intent = preparing.runs[0]?.legacyPreparation?.steps[0];
+            expect(preparing.runs[0]?.status).toBe("preparing");
+            expect(intent?.effect.kind).toBe("worktree.add");
+            expect(intent?.state).toBe("intent");
+            if (intent === undefined) return yield* Effect.die("Exact owner intent required");
+            const intentReceipt = yield* receipts.getByCommandId(intent.intentCommandId);
+            const intentEvents = Array.from(
+              yield* store
+                .readByCommandId({ commandId: intent.intentCommandId })
+                .pipe(Stream.runCollect),
+            );
+            expect(Option.isSome(intentReceipt)).toBe(true);
+            expect(intentEvents).toHaveLength(1);
+            if (Option.isSome(intentReceipt)) {
+              expect(intentReceipt.value.status).toBe("accepted");
+              expect(intentEvents[0]?.sequence).toBe(intentReceipt.value.resultSequence);
+            }
+            expect(intent.evidence).toBeUndefined();
+            expect(intent.outcomeCommandId).toBeUndefined();
+            expect(Option.isNone(yield* receipts.getByCommandId(commandId))).toBe(true);
+            const readCardFrame = () =>
+              WsQueue.take(outgoing).pipe(
+                Effect.flatMap((raw) =>
+                  Schema.decodeUnknownEffect(
+                    Schema.fromJsonString(
+                      Schema.Struct({
+                        _tag: Schema.String,
+                        requestId: Schema.String,
+                        values: Schema.optional(Schema.Array(WorktreeSetupStreamEvent)),
+                        exit: Schema.optional(
+                          Schema.Struct({
+                            _tag: Schema.String,
+                            value: Schema.optional(Schema.Unknown),
+                          }),
+                        ),
+                      }),
+                    ),
+                  )(typeof raw === "string" ? raw : new TextDecoder().decode(raw)),
+                ),
+                Effect.timeout("5 seconds"),
+              );
+            yield* WsQueue.offer(
+              incoming,
+              yield* encodeSocketRpcRequest({
+                _tag: "Request",
+                id: "2",
+                tag: WS_METHODS.subscribeWorktreeSetup,
+                payload: { threadId },
+                headers: [],
+              }),
+            );
+            const initialCard = yield* readCardFrame();
+            expect(initialCard._tag).toBe("Chunk");
+            expect(initialCard.requestId).toBe("2");
+            expect(initialCard.values?.[0]).toEqual(runningCard);
+            yield* WsQueue.offer(
+              incoming,
+              yield* encodeSocketRpcRequest({ _tag: "Ack", requestId: "2" }),
+            );
+            yield* WsQueue.offer(
+              incoming,
+              yield* encodeSocketRpcRequest({
+                _tag: "Request",
+                id: "3",
+                tag: WS_METHODS.worktreeSetupCancel,
+                payload: { threadId },
+                headers: [],
+              }),
+            );
+            let cancelAccepted = false;
+            let cancelledWireCard: typeof WorktreeSetupStreamEvent.Type | undefined;
+            for (
+              let frameCount = 0;
+              frameCount < 8 && (!cancelAccepted || cancelledWireCard === undefined);
+              frameCount++
+            ) {
+              const frame = yield* readCardFrame();
+              if (frame.requestId === "3") {
+                expect(frame.exit).toEqual({ _tag: "Success", value: { cancelled: true } });
+                cancelAccepted = true;
+              }
+              if (frame.requestId === "2" && frame.values !== undefined) {
+                cancelledWireCard = frame.values.find((card) => card?.phase === "cancelled");
+                yield* WsQueue.offer(
+                  incoming,
+                  yield* encodeSocketRpcRequest({ _tag: "Ack", requestId: "2" }),
+                );
+              }
+            }
+            expect(cancelAccepted).toBe(true);
+            const cancelledCard = yield* tracker.get(threadId);
+            expect(cancelledCard?.phase).toBe("cancelled");
+            expect(cancelledWireCard).toEqual(cancelledCard);
+            expect(cancelledCard?.sequence).toBeGreaterThan(runningCard!.sequence);
+            expect(cancelledCard?.stages.find((stage) => stage.id === "checkout")?.status).toBe(
+              "skipped",
+            );
+            expect(cancelledCard?.stages.find((stage) => stage.id === "agent")?.status).toBe(
+              "pending",
+            );
+            const received = yield* threads.getThreadProjection(threadId);
+            expect(received.thread.deletedAt).toBeNull();
+            expect(received.thread.modelSelection).toEqual(modelSelection);
+            expect(received.messages[0]?.id).toBe(messageId);
+            expect(received.runs[0]?.status).toBe("failed");
+            expect(received.runs[0]?.legacyPreparation?.steps[0]).toEqual(intent);
+            expect(Option.isNone(yield* receipts.getByCommandId(commandId))).toBe(true);
+            const bId = legacyBootstrapCreateCommandId(threadId, commandId);
+            expect(
+              Array.from(yield* store.readByCommandId({ commandId }).pipe(Stream.runCollect)),
+            ).toHaveLength(0);
+            const failedId = CommandId.make(`${bId}:fail`);
+            const failed = yield* receipts.getByCommandId(failedId);
+            expect(Option.isSome(failed)).toBe(true);
+            if (Option.isSome(failed)) expect(failed.value.status).toBe("accepted");
+            const rawFailure = Array.from(
+              yield* store.readByCommandId({ commandId: failedId }).pipe(Stream.runCollect),
+            );
+            expect(
+              rawFailure.some(
+                (entry) =>
+                  entry.event.type === "run.updated" && entry.event.payload.status === "failed",
+              ),
+            ).toBe(true);
+            expect(
+              Option.isNone(
+                yield* receipts.getByCommandId(CommandId.make(`${bId}:failure-delete`)),
+              ),
+            ).toBe(true);
+            const observation = yield* makeCommandObservationQuery();
+            const observed = yield* observation.observe({ threadId, commandId, messageId });
+            expect(observed.commandStatus).toBe("not_found");
+            expect(observed.acceptedSequence).toBeNull();
+            expect(observed.turn).toBeNull();
+            expect(
+              (yield* outbox.listByThreadId(threadId)).filter((entry) =>
+                ["provider-turn.start", "terminal.cleanup", "attachment.cleanup"].includes(
+                  entry.request.type,
+                ),
+              ),
+            ).toHaveLength(0);
+            expect(yield* fs.exists(worktreePath)).toBe(
+              scenario === "actual_worktree_cancel_partial",
+            );
+            if (scenario === "actual_worktree_cancel_partial")
+              expect(yield* fs.readFileString(`${worktreePath}/partial`)).toBe(
+                "unresolved owner bytes",
+              );
+            expect(spawnCalls).toBe(0);
+            expect(written).toBe("");
+            expect(kills).toHaveLength(0);
+            yield* WsFiber.interrupt(serving);
+            return;
+          }
           if (startedSetup) {
             yield* Deferred.await(setupWritten).pipe(Effect.timeout("5 seconds"));
             const sink = yield* EventSink.EventSinkV2;
@@ -1519,6 +1758,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           }
         }).pipe(
           Effect.ensuring(completeSetup),
+          Effect.ensuring(releaseWorktree),
           Effect.provide(dependencies),
           Effect.scoped,
           Effect.timeout("10 seconds"),
