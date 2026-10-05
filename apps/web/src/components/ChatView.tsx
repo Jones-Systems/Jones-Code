@@ -527,6 +527,7 @@ import {
   resolveProactiveTurnDiffAction,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
+  resolveFirstSendWorktreePreparation,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
   startNewThreadForProject,
@@ -8417,15 +8418,12 @@ export default function ChatView(props: ChatViewProps) {
     }
     if (
       multipleModelSelections !== null &&
-      (!isLocalDraftThread ||
-        !isGitRepo ||
-        !activeThreadBranch ||
-        multipleModelSelections.length === 0)
+      (!isLocalDraftThread || !isGitRepo || multipleModelSelections.length === 0)
     ) {
       toastManager.add(
         stackedThreadToast({
           type: "warning",
-          title: "Choose models and a base branch",
+          title: "Choose models in a Git project",
           description:
             "Multiple models need a new thread in a Git project. Each gets its own worktree.",
         }),
@@ -8813,19 +8811,15 @@ export default function ChatView(props: ChatViewProps) {
     }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeMessageCount === 0;
-    const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
-        ? activeThreadBranch
-        : null;
-
-    // In worktree mode, require an explicit base branch so we don't silently
-    // fall back to local execution when branch selection is missing.
-    const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
-    if (shouldCreateWorktree && !activeThreadBranch) {
-      setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
-      return;
-    }
+    const worktreePreparation = resolveFirstSendWorktreePreparation({
+      isFirstMessage,
+      sendEnvMode,
+      worktreePath: activeThread.worktreePath,
+      projectCwd: activeProject.workspaceRoot,
+      baseBranch: activeThreadBranch,
+      startFromOrigin,
+    });
+    const shouldCreateWorktree = worktreePreparation !== undefined;
 
     const submittedComposerDraft = useComposerDraftStore
       .getState()
@@ -9022,13 +9016,13 @@ export default function ChatView(props: ChatViewProps) {
       await dockStarted;
     }
     beginLocalDispatch({
-      preparingWorktree: multipleModelSelections !== null || Boolean(baseBranchForWorktree),
+      preparingWorktree: multipleModelSelections !== null || shouldCreateWorktree,
       // Only a draft has a background submission to hide behind its hero.
       submissionIntent:
         submissionIntent === "background" && !isLocalDraftThread ? "foreground" : submissionIntent,
     });
     setWorktreeSetupRef(
-      multipleModelSelections === null && baseBranchForWorktree
+      multipleModelSelections === null && shouldCreateWorktree
         ? {
             environmentId: activeThread.environmentId,
             threadId: threadIdForSend,
@@ -9118,6 +9112,9 @@ export default function ChatView(props: ChatViewProps) {
                 environmentId,
                 input: {
                   threadId: targetThreadId,
+                  serverResolvesWorktreeBase:
+                    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)
+                      ?.environment.capabilities.worktreeDefaultBase === true,
                   message: {
                     messageId: newMessageId(),
                     role: "user",
@@ -9148,7 +9145,7 @@ export default function ChatView(props: ChatViewProps) {
                     },
                     prepareWorktree: {
                       projectCwd: activeProject.workspaceRoot,
-                      baseBranch: activeThreadBranch!,
+                      ...(activeThreadBranch === null ? {} : { baseBranch: activeThreadBranch }),
                       requireWorktree: true,
                       ...(startFromOrigin ? { startFromOrigin: true } : {}),
                     },
@@ -9470,7 +9467,7 @@ export default function ChatView(props: ChatViewProps) {
     let turnStartSucceeded = false;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
       const bootstrap =
-        isLocalDraftThread || baseBranchForWorktree
+        isLocalDraftThread || shouldCreateWorktree
           ? {
               ...(isLocalDraftThread
                 ? {
@@ -9486,12 +9483,10 @@ export default function ChatView(props: ChatViewProps) {
                     },
                   }
                 : {}),
-              ...(baseBranchForWorktree
+              ...(worktreePreparation
                 ? {
                     prepareWorktree: {
-                      projectCwd: activeProject.workspaceRoot,
-                      baseBranch: baseBranchForWorktree,
-                      ...(startFromOrigin ? { startFromOrigin: true } : {}),
+                      ...worktreePreparation,
                     },
                     runSetupScript: true,
                   }
@@ -9507,6 +9502,9 @@ export default function ChatView(props: ChatViewProps) {
         environmentId,
         input: {
           threadId: threadIdForSend,
+          serverResolvesWorktreeBase:
+            appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
+              .capabilities.worktreeDefaultBase === true,
           message: {
             messageId: messageIdForSend,
             role: "user",
@@ -11365,7 +11363,7 @@ export default function ChatView(props: ChatViewProps) {
                                         setPendingServerThreadBranch,
                                     }
                                   : {})}
-                                envLocked={envLocked}
+                                envLocked={envLocked || isSendBusy}
                                 onComposerFocusRequest={scheduleComposerFocus}
                                 {...(canCheckoutPullRequestIntoThread
                                   ? { onCheckoutPullRequestRequest: openPullRequestDialog }
