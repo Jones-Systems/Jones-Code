@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  EventId,
   NodeId,
   ProjectId,
   ProviderDriverKind,
@@ -16,6 +17,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
+import { emptyProjection } from "../orchestration-v2/ProjectionStore.ts";
+import { v2PullRequestThread } from "../orchestration-v2/testkit/pullRequestFixtures.ts";
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -1137,3 +1140,71 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 });
+
+it.effect(
+  "serializes historical and blocked flags through actual MCP thread list and detail methods",
+  () =>
+    Effect.gen(function* () {
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const threadId = ThreadId.make("thread:mcp-block-serializer");
+      const scope: McpInvocationScope = {
+        environmentId: EnvironmentId.make("environment:mcp-block-serializer"),
+        threadId,
+        providerSessionId: "session:mcp-block-serializer",
+        providerInstanceId,
+        capabilities: new Set(["orchestration"]),
+        issuedAt: 1,
+      };
+      for (const blocked of [undefined, false, true]) {
+        const shell = {
+          ...v2PullRequestThread({
+            id: threadId,
+            projectId: ProjectId.make("project:mcp-block-serializer"),
+            title: "Serializer fixture",
+            modelSelection: { instanceId: providerInstanceId, model: "test-model" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            pullRequests: [],
+            latestUserMessageAt: null,
+            createdAt: "2026-10-04T00:00:00Z",
+            updatedAt: "2026-10-04T00:00:00Z",
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+          }),
+          ...(blocked === undefined ? {} : { threadMessagesBlocked: blocked }),
+        };
+        const projection = emptyProjection({
+          type: "thread.created",
+          id: EventId.make("fixture:mcp-block-serializer"),
+          threadId,
+          occurredAt: shell.createdAt,
+          payload: { ...shell, lastVisitedAt: null },
+        });
+        const dependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () => Effect.succeed(projection),
+            listProjectThreads: () => Effect.succeed([shell]),
+            getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const listed = yield* service.listThreads(scope, {});
+          const detail = yield* service.readThread(scope, { threadId });
+          assert.equal(listed.threads[0]?.threadMessagesBlocked, blocked ?? false);
+          assert.equal(detail.thread.threadMessagesBlocked, blocked ?? false);
+          assert.equal(listed.threads[0]?.threadId, threadId);
+          assert.equal(detail.thread.threadId, threadId);
+          assert.equal(listed.threads[0]?.title, "Serializer fixture");
+          assert.equal(detail.thread.title, "Serializer fixture");
+        }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+      }
+    }),
+);
