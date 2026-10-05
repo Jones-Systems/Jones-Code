@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   EventId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -12,7 +13,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import {
+  SqlitePersistenceMemory,
+  makeSqlitePersistenceLive,
+} from "../persistence/Layers/Sqlite.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeOS from "node:os";
 import {
   nativeCreationCanonicalJson,
   nativeCreationSha256,
@@ -22,6 +30,7 @@ import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ImportedAttachments from "./ImportedApplicationAttachmentInventory.ts";
+import { makeCommitTransaction } from "./CommitTransaction.ts";
 
 const database = SqlitePersistenceMemory;
 const stores = Layer.mergeAll(
@@ -40,7 +49,7 @@ const digest = (value: unknown) => nativeCreationSha256(nativeCreationCanonicalJ
 const json = nativeCreationCanonicalJson;
 
 // These SQL carriers qualify persisted readers; they do not issue a cleanup producer capability.
-const fixture = Effect.fnUntraced(function* () {
+const fixture = Effect.fnUntraced(function* (options: { readonly retainFirst?: boolean } = {}) {
   yield* TestClock.setTime(Date.parse(timestamp));
   const sql = yield* SqlClient.SqlClient;
   const sink = yield* EventSink.EventSinkV2;
@@ -79,6 +88,41 @@ const fixture = Effect.fnUntraced(function* () {
     eventId: birthId,
     sequence: birth.sequence,
   };
+  if (options.retainFirst) {
+    const attachmentId = `${toSafeThreadAttachmentSegment(threadId)}-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa`;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("event:reader:retained-message"),
+          type: "message.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: MessageId.make("message:reader:retained"),
+            threadId,
+            runId: null,
+            nodeId: null,
+            role: "user",
+            text: "Actually retained reference",
+            attachments: [
+              {
+                type: "file",
+                id: attachmentId,
+                name: "retained.bin",
+                mimeType: "application/octet-stream",
+                sizeBytes: 10,
+              },
+            ],
+            streaming: false,
+            createdBy: "user",
+            creationSource: "web",
+            createdAt: now,
+            updatedAt: now,
+          },
+        },
+      ],
+    });
+  }
   const triggerEventId = EventId.make("event:reader:deleted");
   const deletion = yield* sink.commitCommand({
     commandId,
@@ -120,12 +164,18 @@ const fixture = Effect.fnUntraced(function* () {
   const segment = toSafeThreadAttachmentSegment(threadId)!;
   const firstPath = `${segment}-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.bin`;
   const secondPath = `${segment}-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.bin`;
+  const retainedReader = sink.readThreadRetainedAttachmentPaths;
+  if (retainedReader === undefined) return yield* Effect.die("Authentic retention reader missing");
+  const retained = yield* retainedReader(threadId);
+  if (retained.status !== "complete")
+    return yield* Effect.die(`Actual retention fixture unavailable: ${retained.reason}`);
   const basis = {
     status: "ready" as const,
     task,
     claim: { workerId, expectedAttempt: 1, leaseExpiresAt: "2026-10-05T00:01:00.000Z" },
     basisEventSequence: deletion.storedEvents[0]!.sequence,
-    retainedRelativePaths: [] as ReadonlyArray<string>,
+    retainedRelativePaths: retained.relativePaths,
+    retentionSourceEvidence: retained.sourceEvidence,
   };
   const observation = {
     version: 1 as const,
@@ -581,7 +631,7 @@ it.effect.each([
   "retry retained removal",
 ])("namespace reader refuses finite scan %s mismatch", (variant) =>
   Effect.gen(function* () {
-    const value = yield* fixture();
+    const value = yield* fixture({ retainFirst: true });
     const retained = [value.firstPath];
     const basis = {
       ...value.basis,
@@ -589,7 +639,7 @@ it.effect.each([
       retentionSourceEvidence:
         ImportedAttachments.makeImportedApplicationAttachmentRetentionEvidenceV1({
           segments: [],
-          visibleV2CarrierSetSha256: digest([]),
+          visibleV2CarrierSetSha256: value.basis.retentionSourceEvidence.visibleV2CarrierSetSha256,
           relativePaths: retained,
         }),
     };
@@ -645,14 +695,15 @@ it.effect(
   "namespace reader rehashes exact retained references and preserves valid retained paths",
   () =>
     Effect.gen(function* () {
-      const value = yield* fixture();
+      const value = yield* fixture({ retainFirst: true });
       const basis = {
         ...value.basis,
         retainedRelativePaths: [value.firstPath],
         retentionSourceEvidence:
           ImportedAttachments.makeImportedApplicationAttachmentRetentionEvidenceV1({
             segments: [],
-            visibleV2CarrierSetSha256: digest([]),
+            visibleV2CarrierSetSha256:
+              value.basis.retentionSourceEvidence.visibleV2CarrierSetSha256,
             relativePaths: [value.firstPath],
           }),
       };
@@ -680,14 +731,15 @@ it.effect(
   "namespace reader denies changed retained-reference evidence even with a matching observation digest",
   () =>
     Effect.gen(function* () {
-      const value = yield* fixture();
+      const value = yield* fixture({ retainFirst: true });
       const basis = {
         ...value.basis,
         retainedRelativePaths: [value.firstPath],
         retentionSourceEvidence:
           ImportedAttachments.makeImportedApplicationAttachmentRetentionEvidenceV1({
             segments: [],
-            visibleV2CarrierSetSha256: digest([]),
+            visibleV2CarrierSetSha256:
+              value.basis.retentionSourceEvidence.visibleV2CarrierSetSha256,
             relativePaths: [],
           }),
       };
@@ -832,4 +884,577 @@ it.effect(
         2,
       );
     }).pipe(Effect.provide(Layer.fresh(persistence))),
+);
+
+const importedApplicationInventoryFixture = Effect.fnUntraced(function* () {
+  const sink = yield* EventSink.EventSinkV2;
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* DateTime.now;
+  const projectId = ProjectId.make("project:reader:inventory");
+  const instanceId = ProviderInstanceId.make("codex");
+  const owner = yield* makeCommitTransaction();
+  const prepare = sink.prepareImportedApplicationAttachmentInventory;
+  const read = sink.readImportedApplicationAttachmentInventory;
+  const readBirth = sink.readApplicationBirthRecord;
+  if (prepare === undefined || read === undefined || readBirth === undefined)
+    return yield* Effect.die("Authentic inventory owner missing");
+  const createdAt = DateTime.formatIso(now);
+  const legacyBirthId = EventId.make("event:application-inventory:legacy-birth");
+  const legacyPayload = {
+    threadId,
+    projectId,
+    title: "Imported application",
+    modelSelection: { instanceId, model: "fixture-model" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdAt,
+    updatedAt: createdAt,
+  };
+  yield* sql`INSERT INTO orchestration_events
+    (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
+    VALUES (${legacyBirthId}, 'thread', ${threadId}, 1, 'thread.created', ${createdAt}, 'user', ${json(legacyPayload)}, '{}', 1)`;
+  yield* sql`INSERT INTO projection_threads (thread_id, project_id, title, created_at, updated_at, deleted_at)
+    VALUES (${threadId}, ${projectId}, 'Imported application', ${createdAt}, ${createdAt}, NULL)`;
+  const app: OrchestrationV2AppThread = {
+    id: threadId,
+    projectId,
+    title: "Imported application",
+    providerInstanceId: instanceId,
+    modelSelection: { instanceId, model: "fixture-model" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    activeProviderThreadId: null,
+    lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
+    forkedFrom: null,
+    createdBy: "user",
+    creationSource: "server",
+    historyOrigin: "v1_import",
+    createdAt: now,
+    updatedAt: now,
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    lastVisitedAt: null,
+    deletedAt: null,
+  };
+  yield* sink.write({
+    events: [
+      {
+        id: EventId.make(`migration:v1:thread:${threadId}:created`),
+        threadId,
+        type: "thread.created",
+        occurredAt: now,
+        payload: app,
+      },
+    ],
+  });
+  const birth = (yield* readBirth(threadId))!;
+  assert.isNotNull(birth);
+  const legacySequence = (yield* sql<{
+    readonly sequence: number;
+  }>`SELECT sequence FROM orchestration_events WHERE event_id = ${legacyBirthId}`)[0]!.sequence;
+  for (const projector of [
+    "projection.threads",
+    "projection.thread-messages",
+    "projection.thread-activities",
+    "projection.thread-turns",
+  ])
+    yield* sql`INSERT INTO projection_state (projector, last_applied_sequence, updated_at) VALUES (${projector}, ${legacySequence}, ${createdAt})
+      ON CONFLICT(projector) DO UPDATE SET last_applied_sequence = excluded.last_applied_sequence, updated_at = excluded.updated_at`;
+  const file = {
+    type: "file",
+    id: "application-retained-file",
+    name: "notes.TXT",
+    mimeType: "text/plain",
+    sizeBytes: 10,
+  } as const;
+  for (const role of ["system", "user", "assistant"])
+    yield* sql`INSERT INTO projection_thread_messages
+    (message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at, attachments_json)
+    VALUES (${`message:application:${role}`}, ${threadId}, NULL, ${role}, 'Original text stays in the source row', 0,
+      ${createdAt}, ${createdAt}, ${role === "system" ? json([file]) : null})`;
+  const answer = {
+    requestId: "request:application:duplicate",
+    questionTextById: { first: "Preserved question" },
+    answers: { first: "yes" },
+    attachmentsByQuestionId: { first: [{ ...file, id: "application-answer-file" }] },
+  };
+  for (const [id, payload] of [
+    ["answer:application:one", answer],
+    ["answer:application:two", { ...answer, attachmentsByQuestionId: {} }],
+  ] as const)
+    yield* sql`INSERT INTO projection_thread_activities (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at, sequence)
+      VALUES (${id}, ${threadId}, NULL, 'info', 'user-input.answer-submitted', 'Answered', ${json(payload)}, ${createdAt}, NULL)`;
+  return {
+    sink,
+    owner,
+    prepare,
+    read,
+    sql,
+    birth,
+    app,
+    now,
+    createdAt,
+    legacySequence,
+    input: { threadId, expectedBirth: birth },
+  };
+});
+
+it.effect(
+  "adopts all retained imported message roles and distinct answer rows with exact immutable SQL parity",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* importedApplicationInventoryFixture();
+      const result = yield* value.prepare(value.input);
+      assert.strictEqual(result.status, "complete");
+      if (result.status !== "complete") return;
+      assert.strictEqual(result.inventory.header.messageCarrierCount, 3);
+      assert.strictEqual(result.inventory.header.answerCarrierCount, 2);
+      assert.strictEqual(result.inventory.header.attachmentReferenceCount, 2);
+      assert.deepEqual(
+        result.inventory.carriers
+          .filter((row) => row.kind === "legacy_message")
+          .map((row) => row.role)
+          .sort(),
+        ["assistant", "system", "user"],
+      );
+      const answers = result.inventory.carriers.filter((row) => row.kind === "legacy_answer");
+      assert.deepEqual(
+        answers.map((row) => row.answer.requestId),
+        ["request:application:duplicate", "request:application:duplicate"],
+      );
+      assert.deepEqual(answers[0]!.answer.questionTextById, { first: "Preserved question" });
+      const paths = ImportedAttachments.collectImportedApplicationAttachmentPathsV1(
+        result.inventory.carriers,
+      );
+      assert.strictEqual(paths.status, "complete");
+      if (paths.status === "complete")
+        assert.deepEqual(paths.relativePaths, [
+          "application-answer-file.txt",
+          "application-retained-file.txt",
+        ]);
+      assert.deepEqual(yield* value.read(value.input), result);
+      assert.strictEqual(
+        (yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_carriers`)
+          .length,
+        5,
+      );
+    }).pipe(Effect.provide(Layer.fresh(persistence))),
+);
+
+it.effect(
+  "inventory adoption rolls back all rows and preserves its original header across unrelated cursor churn",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* importedApplicationInventoryFixture();
+      const aborted = yield* value.owner
+        .withTransaction(
+          Effect.gen(function* () {
+            assert.strictEqual((yield* value.prepare(value.input)).status, "complete");
+            return yield* Effect.fail("abort inventory adoption");
+          }),
+        )
+        .pipe(Effect.result);
+      assert.strictEqual(aborted._tag, "Failure");
+      assert.deepEqual(
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`,
+        [],
+      );
+      assert.deepEqual(
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_carriers`,
+        [],
+      );
+      const original = yield* value.prepare(value.input);
+      yield* TestClock.adjust("1 minute");
+      yield* value.sql`UPDATE projection_state SET last_applied_sequence = last_applied_sequence + 20`;
+      assert.deepEqual(yield* value.prepare(value.input), original);
+      assert.strictEqual(
+        (yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`)
+          .length,
+        1,
+      );
+    }).pipe(Effect.provide(Layer.fresh(persistence))),
+);
+
+it.effect(
+  "materialized legacy removal appends an adoption while malformed and partial sources never become complete zero",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* importedApplicationInventoryFixture();
+      yield* value.sql`UPDATE projection_state SET last_applied_sequence = 0 WHERE projector = 'projection.thread-activities'`;
+      assert.deepEqual(yield* value.prepare(value.input), {
+        status: "unavailable",
+        reason: "legacy_application_source_cut_incomplete",
+      });
+      assert.deepEqual(
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`,
+        [],
+      );
+      yield* value.sql`UPDATE projection_state SET last_applied_sequence = ${value.legacySequence}`;
+      const original = yield* value.prepare(value.input);
+      assert.strictEqual(original.status, "complete");
+      yield* value.sql`DELETE FROM projection_thread_activities WHERE activity_id = 'answer:application:one'`;
+      const changed = yield* value.prepare(value.input);
+      assert.strictEqual(changed.status, "complete");
+      if (original.status === "complete" && changed.status === "complete") {
+        assert.notStrictEqual(
+          changed.inventory.header.inventoryId,
+          original.inventory.header.inventoryId,
+        );
+        assert.strictEqual(changed.inventory.header.answerCarrierCount, 1);
+        assert.strictEqual(changed.inventory.header.attachmentReferenceCount, 1);
+        assert.deepEqual(
+          yield* value.read({
+            ...value.input,
+            inventoryId: original.inventory.header.inventoryId,
+          }),
+          original,
+        );
+      }
+      yield* value.sql`UPDATE projection_thread_activities SET payload_json = '{malformed' WHERE activity_id = 'answer:application:two'`;
+      assert.deepEqual(yield* value.prepare(value.input), {
+        status: "unavailable",
+        reason: "carrier_decode_unavailable",
+      });
+      assert.strictEqual(
+        (yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`)
+          .length,
+        2,
+      );
+    }).pipe(Effect.provide(Layer.fresh(persistence))),
+);
+
+it.effect(
+  "same-time legacy recreation cannot replace the source birth of a retained imported inventory",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* importedApplicationInventoryFixture();
+      const original = yield* value.prepare(value.input);
+      yield* value.sql`INSERT INTO orchestration_events
+      (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
+      SELECT 'event:application-inventory:replacement', aggregate_kind, stream_id,
+        (SELECT max(stream_version) + 1 FROM orchestration_events WHERE stream_id = ${threadId} AND aggregate_kind = 'thread'),
+        event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version FROM orchestration_events
+        WHERE event_id = 'event:application-inventory:legacy-birth'`;
+      assert.deepEqual(yield* value.prepare(value.input), {
+        status: "unavailable",
+        reason: "legacy_application_source_birth_unavailable",
+      });
+      assert.deepEqual(yield* value.read(value.input), original);
+      assert.strictEqual(
+        (yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`)
+          .length,
+        1,
+      );
+    }).pipe(Effect.provide(Layer.fresh(persistence))),
+);
+
+it.effect(
+  "inventory readers deny a copied header row without rewriting either immutable adoption",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* importedApplicationInventoryFixture();
+      const original = yield* value.prepare(value.input);
+      assert.equal(original.status, "complete");
+      if (original.status !== "complete") return;
+      const rows =
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`;
+      const copiedId = "a".repeat(64);
+      yield* value.sql`INSERT INTO orchestration_v2_imported_application_attachment_inventories ${value.sql.insert({ ...rows[0]!, inventory_id: copiedId, adoption_ordinal: 1 })}`;
+      const before =
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories ORDER BY adoption_ordinal`;
+      assert.deepEqual(yield* value.read({ ...value.input, inventoryId: copiedId }), {
+        status: "unavailable",
+        reason: "inventory_header_row_parity_unavailable",
+      });
+      assert.deepEqual(yield* value.prepare(value.input), {
+        status: "unavailable",
+        reason: "inventory_header_row_parity_unavailable",
+      });
+      assert.deepEqual(
+        yield* value.read({ ...value.input, inventoryId: original.inventory.header.inventoryId }),
+        original,
+      );
+      assert.deepEqual(
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories ORDER BY adoption_ordinal`,
+        before,
+      );
+    }).pipe(Effect.provide(Layer.fresh(persistence))),
+);
+
+it.effect.each([142, 144])(
+  "inventory reader and issuer refuse invalid own migration %s provenance before any feature mutation",
+  (missing) =>
+    Effect.gen(function* () {
+      const value = yield* importedApplicationInventoryFixture();
+      assert.equal((yield* value.prepare(value.input)).status, "complete");
+      const headers =
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`;
+      const carriers =
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_carriers`;
+      // Deliberately corrupt only this disposable registered loader's ledger; it must confer no authority.
+      yield* value.sql`DELETE FROM jones_sql_migrations WHERE migration_id=${missing}`;
+      const ledger = yield* value.sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
+      assert.deepEqual(yield* value.read(value.input), {
+        status: "unavailable",
+        reason: "imported_application_inventory_schema_unavailable",
+      });
+      assert.deepEqual(yield* value.prepare(value.input), {
+        status: "unavailable",
+        reason: "imported_application_inventory_schema_unavailable",
+      });
+      assert.deepEqual(
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`,
+        headers,
+      );
+      assert.deepEqual(
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_carriers`,
+        carriers,
+      );
+      assert.deepEqual(
+        yield* value.sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`,
+        ledger,
+      );
+    }).pipe(Effect.provide(Layer.fresh(persistence))),
+);
+
+it.effect(
+  "syntactically matching native inventory storage cannot substitute for the missing authentic native seal producer",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* importedApplicationInventoryFixture();
+      const legacy = yield* value.prepare(value.input);
+      assert.equal(legacy.status, "complete");
+      if (legacy.status !== "complete") return;
+      const source: ImportedAttachments.ImportedApplicationAttachmentSourceV1 = {
+        kind: "native_import_batch",
+        parserPolicy: "agent_session_visible_messages_v1",
+        birth: value.birth,
+        source: {
+          provider: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerSessionId: "session:unissued",
+          filePath: "/synthetic/unissued.jsonl",
+          size: 100,
+          mtimeMs: null,
+          device: 1,
+          inode: null,
+          birthtimeMs: null,
+        },
+        eventsSha256: digest("unissued stored bytes"),
+        messageCount: 2,
+        eventBasis: [0, 1, 2, 3].map((index) => ({
+          eventId: EventId.make(`event:unissued:${index}`),
+          sequence: value.birth.sequence + index + 1,
+        })),
+      };
+      const empty = ImportedAttachments.collectImportedApplicationAttachmentPathsV1([]);
+      if (empty.status !== "complete") return yield* Effect.die("Empty carrier paths failed");
+      const { inventoryId: _id, recordedAt, ...prior } = legacy.inventory.header;
+      const identity = {
+        ...prior,
+        source,
+        sourceHistoryCoverage: "native_visible_message_subset" as const,
+        messageCarrierCount: 2,
+        answerCarrierCount: 0,
+        attachmentReferenceCount: 0,
+        carrierSetSha256: empty.carrierSetSha256,
+      };
+      const header = {
+        ...identity,
+        inventoryId: ImportedAttachments.makeImportedApplicationAttachmentInventoryIdV1(identity),
+        recordedAt,
+      };
+      assert.equal(
+        ImportedAttachments.qualifyImportedApplicationAttachmentSnapshotV1({ header, carriers: [] })
+          .status,
+        "complete",
+      );
+      const original =
+        (yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`)[0]!;
+      yield* value.sql`INSERT INTO orchestration_v2_imported_application_attachment_inventories ${value.sql.insert(
+        {
+          ...original,
+          inventory_id: header.inventoryId,
+          adoption_ordinal: 1,
+          source_kind: source.kind,
+          canonical_header_json: json(header),
+          canonical_source_json: json(source),
+          message_carrier_count: 2,
+          answer_carrier_count: 0,
+          attachment_reference_count: 0,
+          carrier_set_sha256: empty.carrierSetSha256,
+        },
+      )}`;
+      const before =
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories ORDER BY adoption_ordinal`;
+      assert.deepEqual(yield* value.read(value.input), {
+        status: "unavailable",
+        reason: "native_import_transcript_seal_producer_unavailable",
+      });
+      assert.deepEqual(yield* value.prepare(value.input), {
+        status: "unavailable",
+        reason: "native_import_transcript_seal_producer_unavailable",
+      });
+      assert.deepEqual(
+        yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories ORDER BY adoption_ordinal`,
+        before,
+      );
+    }).pipe(Effect.provide(Layer.fresh(persistence))),
+);
+
+it.effect(
+  "a matching imported retention digest cannot resolve a namespace hold without authentic current-source inventory evidence",
+  () =>
+    Effect.gen(function* () {
+      const value = yield* fixture();
+      const basis = {
+        ...value.basis,
+        retentionSourceEvidence:
+          ImportedAttachments.makeImportedApplicationAttachmentRetentionEvidenceV1({
+            segments: [
+              {
+                inventoryId: "a".repeat(64),
+                applicationBirth: value.task.reference.ownerBirth,
+                carrierSetSha256: digest([]),
+                forkBasis: [],
+              },
+            ],
+            visibleV2CarrierSetSha256: digest([]),
+            relativePaths: [],
+          }),
+      };
+      yield* insertHold(value.task.bindingSha256);
+      yield* value.sql`INSERT INTO orchestration_v2_attachment_cleanup_observations ${value.sql.insert({ ...value.row, correlation_json: json({ version: 1, basis, observationSha256: digest(value.observation) }) })}`;
+      yield* value.sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded',completed_at=${timestamp} WHERE effect_id=${effectId}`;
+      const holds = yield* value.sql`SELECT * FROM orchestration_v2_unknown_effect_holds`;
+      const history =
+        yield* value.sql`SELECT * FROM orchestration_v2_attachment_cleanup_observations`;
+      assert.equal((yield* Effect.result(value.read(effectId)))._tag, "Failure");
+      assert.equal((yield* Effect.result(value.unresolved(threadId)))._tag, "Failure");
+      assert.deepEqual(
+        yield* value.sql`SELECT * FROM orchestration_v2_unknown_effect_holds`,
+        holds,
+      );
+      assert.deepEqual(
+        yield* value.sql`SELECT * FROM orchestration_v2_attachment_cleanup_observations`,
+        history,
+      );
+    }).pipe(Effect.provide(Layer.fresh(persistence))),
+);
+
+it.effect(
+  "actual registered inventory and whole-source retention reopen and refuse a changed legacy source without rewriting history",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped({
+          directory: process.env.TMPDIR ?? NodeOS.tmpdir(),
+          prefix: "application-retention-fixture-",
+        });
+        const database = makeSqlitePersistenceLive(path.join(directory, "fixture.sqlite"));
+        const reopenedStores = Layer.mergeAll(
+          database,
+          EventStore.layer.pipe(Layer.provide(database)),
+          ProjectionStore.layer.pipe(Layer.provide(database)),
+        );
+        const reopenedLayer = EventSink.layer.pipe(Layer.provideMerge(reopenedStores));
+        const recorded = yield* Effect.gen(function* () {
+          const value = yield* importedApplicationInventoryFixture();
+          const inventory = yield* value.prepare(value.input);
+          assert.equal(inventory.status, "complete");
+          if (inventory.status !== "complete")
+            return yield* Effect.die("Authentic adoption missing");
+          const retentionReader = value.sink.readThreadRetainedAttachmentPaths;
+          if (retentionReader === undefined)
+            return yield* Effect.die("Authentic retention reader missing");
+          const retention = yield* retentionReader(threadId);
+          assert.equal(retention.status, "complete");
+          if (retention.status !== "complete") return yield* Effect.die(retention.reason);
+          assert.deepEqual(retention.relativePaths, [
+            "application-answer-file.txt",
+            "application-retained-file.txt",
+          ]);
+          assert.deepEqual(retention.sourceEvidence.segments, [
+            {
+              inventoryId: inventory.inventory.header.inventoryId,
+              applicationBirth: value.birth,
+              carrierSetSha256: inventory.inventory.header.carrierSetSha256,
+              forkBasis: [],
+            },
+          ]);
+          return {
+            input: value.input,
+            inventory,
+            retention,
+            headers:
+              yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`,
+            carriers:
+              yield* value.sql`SELECT * FROM orchestration_v2_imported_application_attachment_carriers`,
+            ledger: yield* value.sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`,
+          };
+        }).pipe(Effect.provide(Layer.fresh(reopenedLayer)));
+        yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const sink = yield* EventSink.EventSinkV2;
+          const read = sink.readImportedApplicationAttachmentInventory;
+          const prepare = sink.prepareImportedApplicationAttachmentInventory;
+          const retain = sink.readThreadRetainedAttachmentPaths;
+          if (read === undefined || prepare === undefined || retain === undefined)
+            return yield* Effect.die("Authentic reopened owners missing");
+          assert.deepEqual(yield* read(recorded.input), recorded.inventory);
+          assert.deepEqual(yield* retain(threadId), recorded.retention);
+          assert.deepEqual(
+            yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`,
+            recorded.ledger,
+          );
+          yield* sql`UPDATE projection_thread_messages SET attachments_json='[]' WHERE message_id='message:application:system'`;
+          assert.deepEqual(yield* retain(threadId), {
+            status: "unavailable",
+            reason: "imported_application_inventory_source_changed",
+          });
+          assert.deepEqual(yield* read(recorded.input), recorded.inventory);
+          assert.deepEqual(
+            yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`,
+            recorded.headers,
+          );
+          assert.deepEqual(
+            yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_carriers`,
+            recorded.carriers,
+          );
+          const current = yield* prepare(recorded.input);
+          assert.equal(current.status, "complete");
+          if (current.status !== "complete") return yield* Effect.die(current.reason);
+          assert.notEqual(
+            current.inventory.header.inventoryId,
+            recorded.inventory.inventory.header.inventoryId,
+          );
+          const retention = yield* retain(threadId);
+          assert.equal(retention.status, "complete");
+          if (retention.status !== "complete") return yield* Effect.die(retention.reason);
+          assert.deepEqual(retention.relativePaths, ["application-answer-file.txt"]);
+          assert.equal(
+            retention.sourceEvidence.segments[0]!.inventoryId,
+            current.inventory.header.inventoryId,
+          );
+          assert.notEqual(
+            retention.sourceEvidence.retentionBasisSha256,
+            recorded.retention.sourceEvidence.retentionBasisSha256,
+          );
+          assert.deepEqual(
+            yield* read({
+              ...recorded.input,
+              inventoryId: recorded.inventory.inventory.header.inventoryId,
+            }),
+            recorded.inventory,
+          );
+        }).pipe(Effect.provide(Layer.fresh(reopenedLayer)));
+      }).pipe(Effect.provide(NodeServices.layer)),
+    ),
 );

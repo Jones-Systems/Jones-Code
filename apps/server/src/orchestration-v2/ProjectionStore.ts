@@ -54,6 +54,8 @@ import {
   ThreadId,
   TurnItemId,
   NodeId,
+  ChatAttachment,
+  UserInputAttachmentAnswerPayload,
 } from "@t3tools/contracts";
 import {
   createOrchestrationV2TurnItemVisibility,
@@ -69,6 +71,19 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type * as Statement from "effect/unstable/sql/Statement";
+
+import { attachmentRelativePath } from "../attachmentStore.ts";
+import { normalizeAttachmentRelativePath } from "../attachmentPaths.ts";
+import {
+  ImportedApplicationAttachmentBirthV1,
+  ImportedApplicationAttachmentEventBasisV1,
+  type ImportedApplicationAttachmentForkBasisV1,
+  type ImportedApplicationAttachmentRetentionEvidenceV1,
+  type ImportedApplicationAttachmentSnapshotV1,
+  importedApplicationAttachmentSha256V1,
+  makeImportedApplicationAttachmentRetentionEvidenceV1,
+  visibleImportedApplicationAttachmentSegments,
+} from "./ImportedApplicationAttachmentInventory.ts";
 
 import {
   isThreadHistoryUserTurn,
@@ -307,7 +322,40 @@ export interface ProjectionTimelinePage {
   readonly hasMore: boolean;
 }
 
+export interface ProjectionImportedApplicationAttachmentRetentionInputV1 {
+  readonly targetBirth: ImportedApplicationAttachmentBirthV1;
+  readonly visibleImportedBirths: ReadonlyArray<ImportedApplicationAttachmentBirthV1>;
+  readonly inventories: ReadonlyArray<{
+    readonly inventory: ImportedApplicationAttachmentSnapshotV1;
+    readonly forkBasis: ReadonlyArray<ImportedApplicationAttachmentForkBasisV1>;
+  }>;
+  readonly baselineCopies: ReadonlyArray<{
+    readonly applicationBirth: ImportedApplicationAttachmentBirthV1;
+    readonly messageId: MessageId;
+    readonly itemId: TurnItemId;
+    readonly messageEvent: ImportedApplicationAttachmentEventBasisV1;
+    readonly itemEvent: ImportedApplicationAttachmentEventBasisV1;
+    readonly messagePayloadSha256: string;
+    readonly itemPayloadSha256: string;
+  }>;
+}
+export class ImportedApplicationAttachmentRetentionInputV1 extends Context.Reference<ProjectionImportedApplicationAttachmentRetentionInputV1 | null>(
+  "t3/orchestration-v2/ImportedApplicationAttachmentRetentionInputV1",
+  { defaultValue: () => null },
+) {}
+
+export type ProjectionThreadRetainedAttachmentPaths =
+  | {
+      readonly status: "complete";
+      readonly relativePaths: ReadonlyArray<string>;
+      readonly sourceEvidence: ImportedApplicationAttachmentRetentionEvidenceV1;
+    }
+  | { readonly status: "unavailable"; readonly reason: string };
+
 export interface ProjectionStoreV2Shape {
+  readonly getThreadRetainedAttachmentPaths: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProjectionThreadRetainedAttachmentPaths, ProjectionStoreV2Error>;
   readonly getThreadAttachmentIds: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<string>, ProjectionStoreV2Error>;
@@ -489,6 +537,257 @@ export class ProjectionStoreV2 extends Context.Service<ProjectionStoreV2, Projec
 ) {}
 
 export const ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION = 2;
+
+function retainedAttachmentPathsForProjection(
+  projection: OrchestrationV2ThreadProjection,
+  sources: ReadonlyMap<ThreadId, OrchestrationV2ThreadProjection>,
+  imported: Extract<
+    ReturnType<typeof visibleImportedApplicationAttachmentSegments>,
+    { status: "complete" }
+  >,
+  baselineCopies: ProjectionImportedApplicationAttachmentRetentionInputV1["baselineCopies"],
+): ProjectionThreadRetainedAttachmentPaths {
+  const paths = new Set<string>(imported.relativePaths);
+  const visibleCarriers = new Map<string, unknown>();
+  const baselineMessage = (message: OrchestrationV2ConversationMessage) =>
+    baselineCopies.some(
+      (copy) =>
+        copy.applicationBirth.threadId === message.threadId &&
+        copy.messageId === message.id &&
+        copy.messagePayloadSha256 ===
+          importedApplicationAttachmentSha256V1(
+            Schema.encodeSync(OrchestrationV2ConversationMessageJsonSchema)(message),
+          ),
+    );
+  const baselineItem = (item: OrchestrationV2TurnItem) =>
+    baselineCopies.some(
+      (copy) =>
+        copy.applicationBirth.threadId === item.threadId &&
+        copy.itemId === item.id &&
+        copy.itemPayloadSha256 ===
+          importedApplicationAttachmentSha256V1(
+            Schema.encodeSync(OrchestrationV2TurnItemJsonSchema)(item),
+          ),
+    );
+  const attachments: Array<unknown> = [];
+  const visibilityFor = (source: OrchestrationV2ThreadProjection) =>
+    createOrchestrationV2TurnItemVisibility({
+      runs: source.runs,
+      attempts: source.attempts,
+      items: source.turnItems,
+    });
+  const visibility = new Map([...sources].map(([id, source]) => [id, visibilityFor(source)]));
+  const messagesBySource = new Map(
+    [...sources].map(([id, source]) => [
+      id,
+      new Map(source.messages.map((message) => [message.id, message])),
+    ]),
+  );
+  const isVisible = visibilityFor(projection);
+  const representedMessages = new Set<string>();
+  const visibleMessages = new Set<string>();
+  for (const item of projection.turnItems) {
+    if (item.type !== "user_message" && item.type !== "assistant_message") continue;
+    representedMessages.add(item.messageId);
+    if (isVisible(item)) visibleMessages.add(item.messageId);
+  }
+  const rolledBack = new Set(
+    projection.runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
+  );
+  for (const message of projection.messages) {
+    if (
+      (message.runId !== null && rolledBack.has(message.runId)) ||
+      (representedMessages.has(message.id) && !visibleMessages.has(message.id)) ||
+      baselineMessage(message)
+    )
+      continue;
+    if (!Array.isArray(message.attachments)) {
+      return { status: "unavailable", reason: "attachment_representation_unavailable" };
+    }
+    attachments.push(...message.attachments);
+    visibleCarriers.set(`message:${message.threadId}:${message.id}`, {
+      kind: "message",
+      sourceThreadId: message.threadId,
+      messageId: message.id,
+      runId: message.runId,
+      attachments: message.attachments,
+    });
+  }
+  for (const { item } of projection.visibleTurnItems) {
+    const source = sources.get(item.threadId);
+    const sourceVisibility = visibility.get(item.threadId);
+    if (source === undefined || sourceVisibility === undefined) {
+      return { status: "unavailable", reason: "attachment_history_unavailable" };
+    }
+    if (!sourceVisibility(item)) continue;
+    if (item.type === "user_message" || item.type === "assistant_message") {
+      if (!baselineItem(item)) {
+        if (item.attachments !== undefined) {
+          if (!Array.isArray(item.attachments)) {
+            return { status: "unavailable", reason: "attachment_representation_unavailable" };
+          }
+          attachments.push(...item.attachments);
+        }
+        visibleCarriers.set(`item:${item.threadId}:${item.id}`, {
+          kind: item.type,
+          sourceThreadId: item.threadId,
+          itemId: item.id,
+          messageId: item.messageId,
+          runId: item.runId,
+          attachments: item.attachments,
+        });
+      }
+      const message = messagesBySource.get(item.threadId)?.get(item.messageId);
+      if (message !== undefined && !baselineMessage(message)) {
+        if (!Array.isArray(message.attachments)) {
+          return { status: "unavailable", reason: "attachment_representation_unavailable" };
+        }
+        attachments.push(...message.attachments);
+        visibleCarriers.set(`message:${message.threadId}:${message.id}`, {
+          kind: "message",
+          sourceThreadId: message.threadId,
+          messageId: message.id,
+          runId: message.runId,
+          attachments: message.attachments,
+        });
+      }
+    } else if (item.type === "user_input_request" && item.questionAnswer !== undefined) {
+      if (!Schema.is(UserInputAttachmentAnswerPayload)(item.questionAnswer)) {
+        return { status: "unavailable", reason: "answer_representation_unavailable" };
+      }
+      attachments.push(...Object.values(item.questionAnswer.attachmentsByQuestionId).flat());
+      visibleCarriers.set(`answer:${item.threadId}:${item.id}`, {
+        kind: "question_answer",
+        sourceThreadId: item.threadId,
+        itemId: item.id,
+        runId: item.runId,
+        questionAnswer: item.questionAnswer,
+      });
+    }
+  }
+  for (const attachment of attachments) {
+    if (!Schema.is(ChatAttachment)(attachment)) {
+      return { status: "unavailable", reason: "attachment_representation_unavailable" };
+    }
+    const relativePath = attachmentRelativePath(attachment);
+    if (relativePath === null || normalizeAttachmentRelativePath(relativePath) !== relativePath) {
+      return { status: "unavailable", reason: "attachment_path_unavailable" };
+    }
+    paths.add(relativePath);
+  }
+  const relativePaths = [...paths].sort();
+  return {
+    status: "complete",
+    relativePaths,
+    sourceEvidence: makeImportedApplicationAttachmentRetentionEvidenceV1({
+      segments: imported.segments,
+      relativePaths,
+      visibleV2CarrierSetSha256: importedApplicationAttachmentSha256V1(
+        [...visibleCarriers].toSorted(([left], [right]) =>
+          left < right ? -1 : left > right ? 1 : 0,
+        ),
+      ),
+    }),
+  };
+}
+
+const readRetainedAttachmentPaths = (
+  threadId: ThreadId,
+  getThread: ProjectionStoreV2Shape["getThread"],
+  getProjection: ProjectionStoreV2Shape["getThreadProjection"],
+): Effect.Effect<ProjectionThreadRetainedAttachmentPaths, ProjectionStoreV2Error> =>
+  Effect.gen(function* () {
+    const seen = new Set<ThreadId>();
+    const importedThreads = new Set<ThreadId>();
+    let currentThreadId = threadId;
+    while (true) {
+      if (seen.has(currentThreadId)) {
+        return { status: "unavailable", reason: "attachment_history_cycle" } as const;
+      }
+      seen.add(currentThreadId);
+      const thread = yield* getThread(currentThreadId);
+      // The materialized imported baseline needs its separately qualified carrier
+      // inventory; projected message rows cannot prove that answer files are absent.
+      if (thread.historyOrigin === "v1_import") importedThreads.add(currentThreadId);
+      if (thread.forkedFrom?.type !== "run") break;
+      currentThreadId = thread.forkedFrom.threadId;
+    }
+    const sources = new Map<ThreadId, OrchestrationV2ThreadProjection>();
+    for (const id of seen) sources.set(id, yield* getProjection(id));
+    const input = yield* ImportedApplicationAttachmentRetentionInputV1;
+    let imported: Extract<
+      ReturnType<typeof visibleImportedApplicationAttachmentSegments>,
+      { status: "complete" }
+    > = { status: "complete", relativePaths: [], segments: [] };
+    if (importedThreads.size > 0 || (input !== null && input.visibleImportedBirths.length > 0)) {
+      if (input === null)
+        return { status: "unavailable", reason: "imported_inventory_unavailable" } as const;
+      if (
+        !Array.isArray(input.baselineCopies) ||
+        input.baselineCopies.some(
+          (copy) =>
+            !Schema.is(ImportedApplicationAttachmentBirthV1)(copy.applicationBirth) ||
+            !Schema.is(ImportedApplicationAttachmentEventBasisV1)(copy.messageEvent) ||
+            !Schema.is(ImportedApplicationAttachmentEventBasisV1)(copy.itemEvent) ||
+            copy.messageEvent.sequence <= copy.applicationBirth.sequence ||
+            copy.itemEvent.sequence <= copy.messageEvent.sequence ||
+            !/^[0-9a-f]{64}$/.test(copy.messagePayloadSha256) ||
+            !/^[0-9a-f]{64}$/.test(copy.itemPayloadSha256) ||
+            !input.visibleImportedBirths.some(
+              (birth) =>
+                importedApplicationAttachmentSha256V1(birth) ===
+                importedApplicationAttachmentSha256V1(copy.applicationBirth),
+            ),
+        )
+      ) {
+        return {
+          status: "unavailable",
+          reason: "imported_baseline_copy_evidence_unavailable",
+        } as const;
+      }
+      if (
+        input.targetBirth.threadId !== threadId ||
+        input.visibleImportedBirths.length !== importedThreads.size ||
+        new Set(input.visibleImportedBirths.map((birth) => birth.threadId)).size !==
+          importedThreads.size ||
+        input.visibleImportedBirths.some((birth) => !importedThreads.has(birth.threadId)) ||
+        input.inventories.some(({ inventory }) => {
+          const source = sources.get(inventory.header.applicationBirth.threadId);
+          return source !== undefined && source.thread.projectId !== inventory.header.projectId;
+        })
+      )
+        return { status: "unavailable", reason: "imported_source_binding_unavailable" } as const;
+      const qualified = visibleImportedApplicationAttachmentSegments(input);
+      if (qualified.status !== "complete") return qualified;
+      imported = qualified;
+      for (const { forkBasis } of imported.segments) {
+        for (const edge of forkBasis) {
+          const target = sources.get(edge.targetBirth.threadId);
+          const source = sources.get(edge.sourceBirth.threadId);
+          const fork = target?.thread.forkedFrom;
+          const run = source?.runs.find((run) => run.id === edge.sourceRunId);
+          if (
+            fork?.type !== "run" ||
+            fork.threadId !== edge.sourceBirth.threadId ||
+            fork.runId !== edge.sourceRunId ||
+            run?.ordinal !== edge.sourceRunOrdinal
+          ) {
+            return { status: "unavailable", reason: "fork_basis_unavailable" } as const;
+          }
+        }
+      }
+    }
+    return retainedAttachmentPathsForProjection(
+      sources.get(threadId)!,
+      sources,
+      imported,
+      importedThreads.size === 0 ? [] : input!.baselineCopies,
+    );
+  }).pipe(
+    Effect.catch(() =>
+      Effect.succeed({ status: "unavailable", reason: "projection_unavailable" } as const),
+    ),
+  );
 
 function needsRecovery(
   projection: OrchestrationV2ThreadProjection,
@@ -4565,6 +4864,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError((cause) => new ProjectionStoreReadError({ threadId, cause })),
       );
 
+    const getThreadRetainedAttachmentPaths: ProjectionStoreV2Shape["getThreadRetainedAttachmentPaths"] =
+      (threadId) =>
+        sql
+          .withTransaction(readRetainedAttachmentPaths(threadId, getThread, getThreadProjection))
+          .pipe(
+            Effect.catch(() =>
+              Effect.succeed({ status: "unavailable", reason: "projection_unavailable" } as const),
+            ),
+          );
+
     const getThreadRecords: ProjectionStoreV2Shape["getThreadRecords"] = (
       threadId,
       fields,
@@ -5605,6 +5914,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThreadSnapshotWindow,
       getTimelinePage,
       getThreadAttachmentIds,
+      getThreadRetainedAttachmentPaths,
     } satisfies ProjectionStoreV2Shape;
   }),
 );
@@ -5853,6 +6163,8 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
               state.projections.get(threadId)?.turnItems.find((item) => item.id === itemId) ?? null,
           ),
         ),
+      getThreadRetainedAttachmentPaths: (threadId) =>
+        readRetainedAttachmentPaths(threadId, service.getThread, service.getThreadProjection),
       getThreadAttachmentIds: (threadId) =>
         service
           .getThreadProjection(threadId)

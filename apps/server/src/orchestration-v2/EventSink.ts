@@ -1,5 +1,11 @@
 export * from "./OrdinaryCheckoutExecution.ts";
 import {
+  ChatAttachment,
+  UserInputAttachmentAnswerPayload,
+  OrchestrationV2AppThreadJson,
+  OrchestrationV2ConversationMessageJson,
+  OrchestrationV2TurnItemJson,
+  OrchestrationV2RunJson,
   CommandId,
   OrchestrationV2Command,
   type OrchestrationV2ProviderThread,
@@ -684,7 +690,38 @@ interface AttachmentNamespaceCleanupRecordedObservationV1 {
 const attachmentTaskDigest = (task: Omit<AttachmentNamespaceCleanupTaskV1, "bindingSha256">) =>
   nativeCreationSha256(nativeCreationCanonicalJson(task));
 
+interface ImportedApplicationAttachmentInventoryInput {
+  readonly threadId: ThreadId;
+  readonly expectedBirth: ImportedAttachments.ImportedApplicationAttachmentBirthV1;
+}
+interface ImportedApplicationAttachmentInventoryReadInput extends ImportedApplicationAttachmentInventoryInput {
+  readonly inventoryId?: string;
+}
 export interface EventSinkV2Shape {
+  readonly readThreadRetainedAttachmentPaths?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProjectionStore.ProjectionThreadRetainedAttachmentPaths, EventSinkV2Error>;
+
+  readonly readApplicationBirthRecord?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<
+    ImportedAttachments.ImportedApplicationAttachmentBirthV1 | null,
+    EventSinkV2Error
+  >;
+
+  readonly prepareImportedApplicationAttachmentInventory?: (
+    input: ImportedApplicationAttachmentInventoryInput,
+  ) => Effect.Effect<
+    ImportedAttachments.ImportedApplicationAttachmentQualificationV1,
+    EventSinkV2Error
+  >;
+  readonly readImportedApplicationAttachmentInventory?: (
+    input: ImportedApplicationAttachmentInventoryReadInput,
+  ) => Effect.Effect<
+    ImportedAttachments.ImportedApplicationAttachmentQualificationV1,
+    EventSinkV2Error
+  >;
+
   readonly readUnresolvedDeletionCleanupHolds?: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<EffectOutbox.UnknownEffectHoldV2>, EventSinkV2Error>;
@@ -1544,6 +1581,718 @@ const baseLayer: Layer.Layer<
         });
       return binding;
     });
+    const readApplicationBirthRecordEffect = Effect.fnUntraced(function* (threadId: ThreadId) {
+      const births = yield* sql<{
+        readonly event_id: string;
+        readonly sequence: number;
+        readonly payload_json: string;
+      }>`
+        SELECT event_id, sequence, payload_json FROM orchestration_events WHERE application_event_version = 2
+          AND aggregate_kind = 'thread' AND stream_id = ${threadId} AND event_type = 'thread.created'
+        ORDER BY sequence DESC LIMIT 1`;
+      if (births.length === 0) return null;
+      const current = yield* sql<{
+        readonly payload_json: string;
+      }>`SELECT payload_json FROM orchestration_v2_projection_threads
+        WHERE thread_id = ${threadId} AND json_extract(payload_json, '$.deletedAt') IS NULL`;
+      if (current.length !== 1) return null;
+      const identity = Schema.fromJsonString(
+        Schema.Struct({ id: ThreadId, projectId: ProjectId, createdAt: Schema.String }),
+      );
+      const birth = yield* Schema.decodeUnknownEffect(identity)(births[0]!.payload_json);
+      const projection = yield* Schema.decodeUnknownEffect(identity)(current[0]!.payload_json);
+      if (
+        birth.id !== threadId ||
+        projection.id !== threadId ||
+        birth.projectId !== projection.projectId ||
+        birth.createdAt !== projection.createdAt
+      )
+        return null;
+      return {
+        kind: "application_v2_thread_birth",
+        threadId,
+        eventId: EventId.make(births[0]!.event_id),
+        sequence: births[0]!.sequence,
+      } satisfies ImportedAttachments.ImportedApplicationAttachmentBirthV1;
+    });
+    const importedApplicationInventoryApplicable = Effect.gen(function* () {
+      for (const required of [
+        [142, "V2NativeAcceptance"],
+        [144, "ImportedApplicationAttachments"],
+      ] as const)
+        if (
+          !(yield* hasOwnJonesMigration(jonesMigrationEntries, required).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.catch(() => Effect.succeed(false)),
+          ))
+        )
+          return false;
+      return true;
+    });
+    const readImportedApplicationBirthEffect = Effect.fnUntraced(function* (input: {
+      readonly threadId: ThreadId;
+      readonly expectedBirth: ImportedAttachments.ImportedApplicationAttachmentBirthV1;
+    }) {
+      if (
+        !Schema.is(ImportedAttachments.ImportedApplicationAttachmentBirthV1)(input.expectedBirth) ||
+        input.expectedBirth.threadId !== input.threadId
+      )
+        return null;
+      const rows = yield* sql<{
+        readonly payload_json: string;
+        readonly command_id: string | null;
+      }>`
+        SELECT payload_json, command_id FROM orchestration_events WHERE event_id = ${input.expectedBirth.eventId}
+          AND sequence = ${input.expectedBirth.sequence} AND application_event_version = 2 AND aggregate_kind = 'thread'
+          AND stream_id = ${input.threadId} AND event_type = 'thread.created'`;
+      if (rows.length !== 1 || rows[0]!.command_id !== null) return null;
+      const value = Schema.decodeUnknownOption(Schema.fromJsonString(OrchestrationV2AppThreadJson))(
+        rows[0]!.payload_json,
+      );
+      return Option.isSome(value) &&
+        value.value.id === input.threadId &&
+        value.value.historyOrigin === "v1_import"
+        ? value.value
+        : null;
+    });
+    const readImportedApplicationAttachmentInventoryEffect = Effect.fnUntraced(function* (
+      input: ImportedApplicationAttachmentInventoryReadInput,
+    ) {
+      const unavailable = (
+        reason: string,
+      ): ImportedAttachments.ImportedApplicationAttachmentQualificationV1 => ({
+        status: "unavailable",
+        reason,
+      });
+      if (!(yield* importedApplicationInventoryApplicable))
+        return unavailable("imported_application_inventory_schema_unavailable");
+      const birth = yield* readImportedApplicationBirthEffect(input);
+      if (birth === null) return unavailable("imported_application_birth_unavailable");
+      const rows = yield* sql<{
+        readonly inventory_id: string;
+        readonly thread_id: string;
+        readonly project_id: string;
+        readonly application_birth_event_id: string;
+        readonly application_birth_sequence: number;
+        readonly adoption_ordinal: number;
+        readonly source_kind: string;
+        readonly canonical_header_json: string;
+        readonly canonical_source_json: string;
+        readonly message_carrier_count: number;
+        readonly answer_carrier_count: number;
+        readonly attachment_reference_count: number;
+        readonly carrier_set_sha256: string;
+        readonly recorded_at: string;
+      }>`
+        SELECT * FROM orchestration_v2_imported_application_attachment_inventories
+        WHERE thread_id = ${input.threadId} AND application_birth_event_id = ${input.expectedBirth.eventId}
+          AND application_birth_sequence = ${input.expectedBirth.sequence}
+          AND (${input.inventoryId ?? null} IS NULL OR inventory_id = ${input.inventoryId ?? null}) ORDER BY adoption_ordinal DESC`;
+      if (rows.length === 0) return unavailable("imported_application_inventory_not_found");
+      for (const row of rows) {
+        const header = Schema.decodeUnknownOption(
+          Schema.fromJsonString(ImportedAttachments.ImportedApplicationAttachmentInventoryV1),
+        )(row.canonical_header_json);
+        if (Option.isNone(header)) return unavailable("inventory_decode_unavailable");
+        const value = header.value;
+        if (value.source.kind === "native_import_batch")
+          return unavailable("native_import_transcript_seal_producer_unavailable");
+        const carrierRows = yield* sql<{
+          readonly carrier_kind: string;
+          readonly carrier_id: string;
+          readonly canonical_carrier_json: string;
+          readonly source_row_sha256: string;
+        }>`SELECT carrier_kind, carrier_id, canonical_carrier_json, source_row_sha256
+          FROM orchestration_v2_imported_application_attachment_carriers WHERE inventory_id = ${row.inventory_id} ORDER BY carrier_kind, carrier_id`;
+        const carriers: Array<ImportedAttachments.ImportedApplicationAttachmentCarrierV1> = [];
+        for (const carrierRow of carrierRows) {
+          const carrier = Schema.decodeUnknownOption(
+            Schema.fromJsonString(ImportedAttachments.ImportedApplicationAttachmentCarrierV1),
+          )(carrierRow.canonical_carrier_json);
+          if (
+            Option.isNone(carrier) ||
+            carrier.value.kind !== carrierRow.carrier_kind ||
+            ImportedAttachments.importedApplicationAttachmentCarrierIdV1(carrier.value) !==
+              carrierRow.carrier_id ||
+            carrier.value.sourceRowSha256 !== carrierRow.source_row_sha256
+          )
+            return unavailable("inventory_carrier_row_parity_unavailable");
+          carriers.push(carrier.value);
+        }
+        if (
+          value.inventoryId !== row.inventory_id ||
+          value.projectId !== birth.projectId ||
+          value.projectId !== row.project_id ||
+          nativeCreationCanonicalJson(value.applicationBirth) !==
+            nativeCreationCanonicalJson(input.expectedBirth) ||
+          row.source_kind !== value.source.kind ||
+          nativeCreationCanonicalJson(value.source) !== row.canonical_source_json ||
+          value.messageCarrierCount !== row.message_carrier_count ||
+          value.answerCarrierCount !== row.answer_carrier_count ||
+          value.attachmentReferenceCount !== row.attachment_reference_count ||
+          value.carrierSetSha256 !== row.carrier_set_sha256 ||
+          value.recordedAt !== row.recorded_at
+        )
+          return unavailable("inventory_header_row_parity_unavailable");
+        return ImportedAttachments.qualifyImportedApplicationAttachmentSnapshotV1({
+          header: value,
+          carriers,
+        });
+      }
+      return unavailable("imported_application_inventory_not_found");
+    });
+    const collectImportedApplicationAttachmentInventoryEffect = Effect.fnUntraced(function* (
+      input: ImportedApplicationAttachmentInventoryInput,
+    ) {
+      const unavailable = (
+        reason: string,
+      ): ImportedAttachments.ImportedApplicationAttachmentQualificationV1 => ({
+        status: "unavailable",
+        reason,
+      });
+      if (!(yield* importedApplicationInventoryApplicable))
+        return unavailable("imported_application_inventory_schema_unavailable");
+      const birth = yield* readImportedApplicationBirthEffect(input);
+      if (
+        birth === null ||
+        nativeCreationCanonicalJson(yield* readApplicationBirthRecordEffect(input.threadId)) !==
+          nativeCreationCanonicalJson(input.expectedBirth)
+      )
+        return unavailable("imported_application_birth_unavailable");
+      if (input.expectedBirth.eventId !== `migration:v1:thread:${input.threadId}:created`)
+        return unavailable("native_import_transcript_seal_producer_unavailable");
+      const carriers: Array<ImportedAttachments.ImportedApplicationAttachmentCarrierV1> = [];
+      let source: ImportedAttachments.ImportedApplicationAttachmentSourceV1;
+      {
+        const sourceRows = yield* sql<{
+          readonly project_id: string;
+          readonly created_at: string;
+          readonly deleted_at: string | null;
+        }>`
+          SELECT project_id, created_at, deleted_at FROM projection_threads WHERE thread_id = ${input.threadId}`;
+        const legacyBirths = yield* sql<{
+          readonly event_id: string;
+          readonly sequence: number;
+          readonly payload_json: string;
+        }>`
+          SELECT event_id, sequence, payload_json FROM orchestration_events WHERE application_event_version = 1 AND aggregate_kind = 'thread'
+            AND stream_id = ${input.threadId} AND event_type = 'thread.created' ORDER BY sequence DESC LIMIT 1`;
+        if (
+          sourceRows.length !== 1 ||
+          legacyBirths.length !== 1 ||
+          sourceRows[0]!.deleted_at !== null ||
+          sourceRows[0]!.project_id !== birth.projectId ||
+          legacyBirths[0]!.sequence >= input.expectedBirth.sequence ||
+          Date.parse(sourceRows[0]!.created_at) !== DateTime.toEpochMillis(birth.createdAt)
+        )
+          return unavailable("legacy_application_source_birth_unavailable");
+        const legacyBirth = Schema.decodeUnknownOption(
+          Schema.fromJsonString(
+            Schema.Struct({ threadId: ThreadId, projectId: ProjectId, createdAt: Schema.String }),
+          ),
+        )(legacyBirths[0]!.payload_json);
+        if (
+          Option.isNone(legacyBirth) ||
+          legacyBirth.value.threadId !== input.threadId ||
+          legacyBirth.value.projectId !== birth.projectId ||
+          legacyBirth.value.createdAt !== sourceRows[0]!.created_at ||
+          input.expectedBirth.eventId !== `migration:v1:thread:${input.threadId}:created`
+        )
+          return unavailable("legacy_application_source_birth_unavailable");
+        const boundary = yield* sql<{
+          readonly sequence: number;
+        }>`SELECT coalesce(max(sequence), 0) AS sequence FROM orchestration_events WHERE application_event_version = 1`;
+        const positions = yield* sql<{
+          readonly projector: string;
+          readonly last_applied_sequence: number;
+        }>`SELECT projector, last_applied_sequence FROM projection_state
+          WHERE projector IN ('projection.threads', 'projection.thread-messages', 'projection.thread-activities', 'projection.thread-turns')`;
+        const position = (name: string) =>
+          positions.find((item) => item.projector === name)?.last_applied_sequence;
+        const threads = position("projection.threads"),
+          messages = position("projection.thread-messages"),
+          activities = position("projection.thread-activities"),
+          turns = position("projection.thread-turns");
+        if (
+          positions.length !== 4 ||
+          threads === undefined ||
+          messages === undefined ||
+          activities === undefined ||
+          turns === undefined ||
+          [threads, messages, activities, turns].some(
+            (value) => !Number.isSafeInteger(value) || value < boundary[0]!.sequence,
+          )
+        )
+          return unavailable("legacy_application_source_cut_incomplete");
+        const messageRows = yield* sql<{
+          readonly message_id: string;
+          readonly thread_id: string;
+          readonly turn_id: string | null;
+          readonly role: string;
+          readonly attachments_json: string | null;
+          readonly created_at: string;
+          readonly updated_at: string;
+        }>`
+          SELECT * FROM projection_thread_messages WHERE thread_id = ${input.threadId} ORDER BY message_id`;
+        const answerRows = yield* sql<{
+          readonly activity_id: string;
+          readonly thread_id: string;
+          readonly turn_id: string | null;
+          readonly sequence: number | null;
+          readonly payload_json: string;
+          readonly created_at: string;
+        }>`
+          SELECT * FROM projection_thread_activities WHERE thread_id = ${input.threadId} AND kind = 'user-input.answer-submitted' ORDER BY activity_id`;
+        for (const row of messageRows) {
+          const attachments =
+            row.attachments_json === null
+              ? Option.some([])
+              : Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(ChatAttachment)))(
+                  row.attachments_json,
+                );
+          if (Option.isNone(attachments)) return unavailable("carrier_decode_unavailable");
+          const value = Schema.decodeUnknownOption(
+            ImportedAttachments.ImportedApplicationAttachmentCarrierV1,
+          )({
+            kind: "legacy_message",
+            messageId: row.message_id,
+            sourceThreadId: row.thread_id,
+            turnId: row.turn_id,
+            role: row.role,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+            attachmentsJson: row.attachments_json,
+            attachments: attachments.value,
+            sourceRowSha256: ImportedAttachments.importedApplicationAttachmentSha256V1(row),
+          });
+          if (Option.isNone(value)) return unavailable("carrier_decode_unavailable");
+          carriers.push(value.value);
+        }
+        for (const row of answerRows) {
+          const answer = Schema.decodeUnknownOption(
+            Schema.fromJsonString(UserInputAttachmentAnswerPayload),
+          )(row.payload_json);
+          if (Option.isNone(answer)) return unavailable("carrier_decode_unavailable");
+          const value = Schema.decodeUnknownOption(
+            ImportedAttachments.ImportedApplicationAttachmentCarrierV1,
+          )({
+            kind: "legacy_answer",
+            activityId: row.activity_id,
+            sourceThreadId: row.thread_id,
+            turnId: row.turn_id,
+            sequence: row.sequence,
+            createdAt: row.created_at,
+            payloadJson: row.payload_json,
+            answer: answer.value,
+            sourceRowSha256: ImportedAttachments.importedApplicationAttachmentSha256V1(row),
+          });
+          if (Option.isNone(value)) return unavailable("carrier_decode_unavailable");
+          carriers.push(value.value);
+        }
+        source = {
+          kind: "legacy_projection",
+          legacyBirth: {
+            eventId: EventId.make(legacyBirths[0]!.event_id),
+            sequence: legacyBirths[0]!.sequence,
+          },
+          projectId: birth.projectId,
+          sourceCreatedAt: sourceRows[0]!.created_at,
+          sourceCut: {
+            legacyEventSequence: boundary[0]!.sequence,
+            projectorPositions: { threads, messages, activities, turns },
+            messageRowsSha256:
+              ImportedAttachments.importedApplicationAttachmentSha256V1(messageRows),
+            answerRowsSha256: ImportedAttachments.importedApplicationAttachmentSha256V1(answerRows),
+          },
+        };
+      }
+      const paths = ImportedAttachments.collectImportedApplicationAttachmentPathsV1(carriers);
+      if (paths.status !== "complete") return paths;
+      const identity = {
+        version: 1 as const,
+        domain: "jones_materialized_attachment_references/v1" as const,
+        applicationBirth: input.expectedBirth,
+        projectId: birth.projectId,
+        source,
+        sourceHistoryCoverage:
+          source.kind === "legacy_projection"
+            ? ("legacy_materialized_projection" as const)
+            : ("native_visible_message_subset" as const),
+        completeness: "complete_application_refs" as const,
+        messageCarrierCount: paths.messageCarrierCount,
+        answerCarrierCount: paths.answerCarrierCount,
+        attachmentReferenceCount: paths.attachmentReferenceCount,
+        carrierSetSha256: paths.carrierSetSha256,
+      };
+      const latest = yield* readImportedApplicationAttachmentInventoryEffect(input);
+      if (
+        latest.status === "complete" &&
+        source.kind === "legacy_projection" &&
+        latest.inventory.header.source.kind === "legacy_projection"
+      ) {
+        const original = latest.inventory.header.source;
+        if (
+          nativeCreationCanonicalJson(original.legacyBirth) ===
+            nativeCreationCanonicalJson(source.legacyBirth) &&
+          original.projectId === source.projectId &&
+          original.sourceCreatedAt === source.sourceCreatedAt &&
+          original.sourceCut.messageRowsSha256 === source.sourceCut.messageRowsSha256 &&
+          original.sourceCut.answerRowsSha256 === source.sourceCut.answerRowsSha256 &&
+          latest.inventory.header.carrierSetSha256 === paths.carrierSetSha256
+        )
+          return latest;
+      }
+      if (
+        latest.status === "unavailable" &&
+        latest.reason !== "imported_application_inventory_not_found"
+      )
+        return latest;
+      const inventoryId =
+        ImportedAttachments.makeImportedApplicationAttachmentInventoryIdV1(identity);
+      const prior =
+        yield* sql`SELECT inventory_id FROM orchestration_v2_imported_application_attachment_inventories WHERE inventory_id = ${inventoryId}`;
+      if (prior.length !== 0)
+        return yield* readImportedApplicationAttachmentInventoryEffect({ ...input, inventoryId });
+      const header = {
+        ...identity,
+        inventoryId,
+        recordedAt: DateTime.formatIso(yield* DateTime.now),
+      };
+      const qualification = ImportedAttachments.qualifyImportedApplicationAttachmentSnapshotV1({
+        header,
+        carriers,
+      });
+      if (qualification.status !== "complete") return qualification;
+      return qualification;
+    });
+    const prepareImportedApplicationAttachmentInventoryEffect = Effect.fnUntraced(function* (
+      input: ImportedApplicationAttachmentInventoryInput,
+    ) {
+      const qualification = yield* collectImportedApplicationAttachmentInventoryEffect(input);
+      if (qualification.status !== "complete") return qualification;
+      const { header, carriers } = qualification.inventory;
+      const existing =
+        yield* sql`SELECT inventory_id FROM orchestration_v2_imported_application_attachment_inventories WHERE inventory_id = ${header.inventoryId}`;
+      if (existing.length !== 0)
+        return yield* readImportedApplicationAttachmentInventoryEffect({
+          ...input,
+          inventoryId: header.inventoryId,
+        });
+      const ordinal = yield* sql<{
+        readonly ordinal: number;
+      }>`SELECT coalesce(max(adoption_ordinal), -1) + 1 AS ordinal
+        FROM orchestration_v2_imported_application_attachment_inventories WHERE thread_id = ${input.threadId}
+          AND application_birth_event_id = ${input.expectedBirth.eventId} AND application_birth_sequence = ${input.expectedBirth.sequence}`;
+      yield* sql`INSERT INTO orchestration_v2_imported_application_attachment_inventories
+        (inventory_id, thread_id, project_id, application_birth_event_id, application_birth_sequence, adoption_ordinal, source_kind,
+          canonical_header_json, canonical_source_json, message_carrier_count, answer_carrier_count, attachment_reference_count, carrier_set_sha256, recorded_at)
+        VALUES (${header.inventoryId}, ${input.threadId}, ${header.projectId}, ${input.expectedBirth.eventId}, ${input.expectedBirth.sequence}, ${ordinal[0]!.ordinal}, ${header.source.kind},
+          ${nativeCreationCanonicalJson(header)}, ${nativeCreationCanonicalJson(header.source)}, ${header.messageCarrierCount}, ${header.answerCarrierCount},
+          ${header.attachmentReferenceCount}, ${header.carrierSetSha256}, ${header.recordedAt})`;
+      for (const carrier of carriers)
+        yield* sql`INSERT INTO orchestration_v2_imported_application_attachment_carriers
+        (inventory_id, carrier_kind, carrier_id, canonical_carrier_json, source_row_sha256)
+        VALUES (${header.inventoryId}, ${carrier.kind}, ${ImportedAttachments.importedApplicationAttachmentCarrierIdV1(carrier)},
+          ${nativeCreationCanonicalJson(carrier)}, ${carrier.sourceRowSha256})`;
+      return yield* readImportedApplicationAttachmentInventoryEffect({
+        ...input,
+        inventoryId: header.inventoryId,
+      });
+    });
+    const readImportedBaselineCopiesEffect = Effect.fnUntraced(function* (
+      inventory: ImportedAttachments.ImportedApplicationAttachmentSnapshotV1,
+    ) {
+      type Copies =
+        ProjectionStore.ProjectionImportedApplicationAttachmentRetentionInputV1["baselineCopies"];
+      const copies: Array<Copies[number]> = [];
+      if (inventory.header.source.kind === "native_import_batch") return copies;
+      const birth = inventory.header.applicationBirth;
+      const rows = yield* sql<{
+        readonly event_id: string;
+        readonly sequence: number;
+        readonly payload_json: string;
+      }>`
+        SELECT event_id, sequence, payload_json FROM orchestration_events WHERE application_event_version = 2
+          AND aggregate_kind = 'thread' AND stream_id = ${birth.threadId} AND event_type = 'message.updated'
+          AND command_id IS NULL AND sequence > ${birth.sequence} AND event_id LIKE 'migration:v1:message:%' ORDER BY sequence`;
+      const adoptions = yield* sql<{ readonly inventory_id: string }>`SELECT inventory_id
+        FROM orchestration_v2_imported_application_attachment_inventories WHERE thread_id = ${birth.threadId}
+          AND application_birth_event_id = ${birth.eventId} AND application_birth_sequence = ${birth.sequence} ORDER BY adoption_ordinal`;
+      const historical: Array<ImportedAttachments.ImportedApplicationAttachmentSnapshotV1> = [];
+      for (const adoption of adoptions) {
+        const qualified = yield* readImportedApplicationAttachmentInventoryEffect({
+          threadId: birth.threadId,
+          expectedBirth: birth,
+          inventoryId: adoption.inventory_id,
+        });
+        if (qualified.status !== "complete") return null;
+        historical.push(qualified.inventory);
+      }
+      for (const row of rows) {
+        const decoded = Schema.decodeUnknownOption(
+          Schema.fromJsonString(OrchestrationV2ConversationMessageJson),
+        )(row.payload_json);
+        if (Option.isNone(decoded)) return null;
+        const message = decoded.value;
+        const itemRows = yield* sql<{
+          readonly event_id: string;
+          readonly sequence: number;
+          readonly payload_json: string;
+        }>`
+          SELECT event_id, sequence, payload_json FROM orchestration_events WHERE application_event_version = 2
+            AND aggregate_kind = 'thread' AND stream_id = ${birth.threadId} AND event_type = 'turn-item.updated'
+            AND command_id IS NULL AND event_id = ${`migration:v1:turn-item:${message.id}`} AND sequence > ${row.sequence}`;
+        if (itemRows.length !== 1) return null;
+        const itemRow = itemRows[0]!;
+        const decodedItem = Schema.decodeUnknownOption(
+          Schema.fromJsonString(OrchestrationV2TurnItemJson),
+        )(itemRow.payload_json);
+        if (Option.isNone(decodedItem)) return null;
+        const item = decodedItem.value;
+        if (
+          row.event_id !== `migration:v1:message:${message.id}` ||
+          message.threadId !== birth.threadId ||
+          message.runId !== null ||
+          message.nodeId !== null ||
+          message.creationSource !== "server" ||
+          message.streaming ||
+          !(
+            (item.type === "user_message" && message.role === "user") ||
+            (item.type === "assistant_message" && message.role === "assistant")
+          ) ||
+          !(item.type === "user_message" || item.type === "assistant_message") ||
+          item.messageId !== message.id ||
+          item.id !== `migration:v1:turn-item:${message.id}` ||
+          item.threadId !== birth.threadId ||
+          item.runId !== null ||
+          item.nodeId !== null ||
+          item.providerThreadId !== null ||
+          item.providerTurnId !== null ||
+          item.nativeItemRef !== null ||
+          item.parentItemId !== null ||
+          item.text !== message.text ||
+          item.startedAt === null ||
+          DateTime.toEpochMillis(item.startedAt) !== DateTime.toEpochMillis(message.createdAt) ||
+          DateTime.toEpochMillis(item.updatedAt) !== DateTime.toEpochMillis(message.updatedAt) ||
+          nativeCreationCanonicalJson("context" in item ? (item.context ?? null) : null) !==
+            nativeCreationCanonicalJson(message.context ?? null) ||
+          (item.type === "user_message" &&
+            nativeCreationCanonicalJson(item.attachments) !==
+              nativeCreationCanonicalJson(message.attachments))
+        )
+          return null;
+        const carrier = historical
+          .flatMap((snapshot) => snapshot.carriers)
+          .find(
+            (value) =>
+              value.kind === "legacy_message" &&
+              value.messageId === message.id &&
+              value.sourceThreadId === birth.threadId &&
+              value.role === message.role &&
+              Date.parse(value.createdAt) === DateTime.toEpochMillis(message.createdAt) &&
+              Date.parse(value.updatedAt) === DateTime.toEpochMillis(message.updatedAt) &&
+              nativeCreationCanonicalJson(value.attachments) ===
+                nativeCreationCanonicalJson(message.attachments),
+          );
+        if (carrier === undefined) return null;
+        copies.push({
+          applicationBirth: birth,
+          messageId: message.id,
+          itemId: item.id,
+          messageEvent: { eventId: EventId.make(row.event_id), sequence: row.sequence },
+          itemEvent: { eventId: EventId.make(itemRow.event_id), sequence: itemRow.sequence },
+          messagePayloadSha256: ImportedAttachments.importedApplicationAttachmentSha256V1(
+            yield* Schema.encodeEffect(OrchestrationV2ConversationMessageJson)(message).pipe(
+              Effect.orDie,
+            ),
+          ),
+          itemPayloadSha256: ImportedAttachments.importedApplicationAttachmentSha256V1(
+            yield* Schema.encodeEffect(OrchestrationV2TurnItemJson)(item).pipe(Effect.orDie),
+          ),
+        });
+      }
+      return copies;
+    });
+    const readQualifiedThreadRetainedAttachmentPathsEffect = Effect.fnUntraced(function* (
+      threadId: ThreadId,
+    ) {
+      const unavailable = (
+        reason: string,
+      ): ProjectionStore.ProjectionThreadRetainedAttachmentPaths => ({
+        status: "unavailable",
+        reason,
+      });
+      const readBirth = Effect.fnUntraced(function* (id: ThreadId, beforeSequence?: number) {
+        const rows = yield* sql<{
+          readonly event_id: string;
+          readonly sequence: number;
+          readonly payload_json: string;
+        }>`
+          SELECT event_id, sequence, payload_json FROM orchestration_events WHERE application_event_version = 2
+            AND aggregate_kind = 'thread' AND stream_id = ${id} AND event_type = 'thread.created'
+            AND (${beforeSequence ?? null} IS NULL OR sequence < ${beforeSequence ?? null}) ORDER BY sequence DESC LIMIT 1`;
+        const latest = yield* sql<{
+          readonly event_id: string;
+          readonly sequence: number;
+        }>`SELECT event_id, sequence FROM orchestration_events
+          WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${id} AND event_type = 'thread.created' ORDER BY sequence DESC LIMIT 1`;
+        const current = yield* sql<{
+          readonly payload_json: string;
+        }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id = ${id}`;
+        if (
+          rows.length !== 1 ||
+          latest.length !== 1 ||
+          current.length !== 1 ||
+          rows[0]!.event_id !== latest[0]!.event_id ||
+          rows[0]!.sequence !== latest[0]!.sequence
+        )
+          return null;
+        const original = Schema.decodeUnknownOption(
+          Schema.fromJsonString(OrchestrationV2AppThreadJson),
+        )(rows[0]!.payload_json);
+        const projected = Schema.decodeUnknownOption(
+          Schema.fromJsonString(OrchestrationV2AppThreadJson),
+        )(current[0]!.payload_json);
+        if (
+          Option.isNone(original) ||
+          Option.isNone(projected) ||
+          original.value.id !== id ||
+          projected.value.id !== id ||
+          original.value.projectId !== projected.value.projectId ||
+          original.value.historyOrigin !== projected.value.historyOrigin ||
+          DateTime.toEpochMillis(original.value.createdAt) !==
+            DateTime.toEpochMillis(projected.value.createdAt)
+        )
+          return null;
+        return {
+          birth: {
+            kind: "application_v2_thread_birth" as const,
+            threadId: id,
+            eventId: EventId.make(rows[0]!.event_id),
+            sequence: rows[0]!.sequence,
+          },
+          thread: projected.value,
+        };
+      });
+      const target = yield* readBirth(threadId);
+      if (target === null) return unavailable("attachment_application_birth_unavailable");
+      const visibleImportedBirths: Array<ImportedAttachments.ImportedApplicationAttachmentBirthV1> =
+        [];
+      const inventories: Array<
+        ProjectionStore.ProjectionImportedApplicationAttachmentRetentionInputV1["inventories"][number]
+      > = [];
+      const baselineCopies: Array<
+        ProjectionStore.ProjectionImportedApplicationAttachmentRetentionInputV1["baselineCopies"][number]
+      > = [];
+      const forkBasis: Array<ImportedAttachments.ImportedApplicationAttachmentForkBasisV1> = [];
+      const seen = new Set<ThreadId>();
+      let current = target;
+      while (true) {
+        if (seen.has(current.birth.threadId)) return unavailable("attachment_history_cycle");
+        seen.add(current.birth.threadId);
+        if (current.thread.historyOrigin === "v1_import") {
+          const input = { threadId: current.birth.threadId, expectedBirth: current.birth };
+          const persisted = yield* readImportedApplicationAttachmentInventoryEffect(input);
+          if (persisted.status !== "complete") return unavailable(persisted.reason);
+          const materialized = yield* collectImportedApplicationAttachmentInventoryEffect(input);
+          if (materialized.status !== "complete") return unavailable(materialized.reason);
+          if (
+            materialized.inventory.header.inventoryId !== persisted.inventory.header.inventoryId ||
+            nativeCreationCanonicalJson(materialized.inventory.carriers) !==
+              nativeCreationCanonicalJson(persisted.inventory.carriers)
+          )
+            return unavailable("imported_application_inventory_source_changed");
+          const copies = yield* readImportedBaselineCopiesEffect(persisted.inventory);
+          if (copies === null) return unavailable("imported_baseline_copy_evidence_unavailable");
+          visibleImportedBirths.push(current.birth);
+          inventories.push({ inventory: persisted.inventory, forkBasis: [...forkBasis] });
+          baselineCopies.push(...copies);
+        }
+        const fork = current.thread.forkedFrom;
+        if (fork?.type !== "run") break;
+        const runs = yield* sql<{
+          readonly event_id: string;
+          readonly sequence: number;
+          readonly command_id: string | null;
+          readonly payload_json: string;
+        }>`
+          SELECT event_id, sequence, command_id, payload_json FROM orchestration_events WHERE application_event_version = 2
+            AND aggregate_kind = 'thread' AND stream_id = ${fork.threadId} AND event_type = 'run.created' AND json_extract(payload_json, '$.id') = ${fork.runId}`;
+        if (runs.length !== 1 || runs[0]!.command_id === null)
+          return unavailable("fork_source_run_unavailable");
+        const runEvent = runs[0]!;
+        const decodedRun = Schema.decodeUnknownOption(
+          Schema.fromJsonString(OrchestrationV2RunJson),
+        )(runEvent.payload_json);
+        const runReceipt = Option.getOrNull(
+          yield* commandReceipts.getByCommandId(CommandId.make(runEvent.command_id!)),
+        );
+        const source = yield* readBirth(fork.threadId, runEvent.sequence);
+        if (
+          source === null ||
+          Option.isNone(decodedRun) ||
+          decodedRun.value.id !== fork.runId ||
+          decodedRun.value.threadId !== fork.threadId ||
+          runReceipt?.status !== "accepted" ||
+          runReceipt.threadId !== fork.threadId ||
+          runReceipt.resultSequence < runEvent.sequence
+        )
+          return unavailable("fork_source_run_unavailable");
+        const forkEvents = yield* sql<{
+          readonly event_id: string;
+          readonly sequence: number;
+          readonly command_id: string | null;
+          readonly payload_json: string;
+        }>`
+          SELECT event_id, sequence, command_id, payload_json FROM orchestration_events WHERE application_event_version = 2
+            AND aggregate_kind = 'thread' AND stream_id = ${current.birth.threadId} AND event_type IN ('thread.created', 'thread.metadata-updated')
+            AND sequence >= ${current.birth.sequence} AND json_extract(payload_json, '$.forkedFrom.type') = 'run'
+            AND json_extract(payload_json, '$.forkedFrom.threadId') = ${fork.threadId} AND json_extract(payload_json, '$.forkedFrom.runId') = ${fork.runId}
+            ORDER BY sequence LIMIT 1`;
+        const forkEvent = forkEvents[0];
+        if (forkEvent === undefined || forkEvent.sequence <= runEvent.sequence)
+          return unavailable("fork_application_event_unavailable");
+        const decodedFork = Schema.decodeUnknownOption(
+          Schema.fromJsonString(OrchestrationV2AppThreadJson),
+        )(forkEvent.payload_json);
+        if (
+          Option.isNone(decodedFork) ||
+          decodedFork.value.id !== current.birth.threadId ||
+          decodedFork.value.projectId !== current.thread.projectId ||
+          nativeCreationCanonicalJson(decodedFork.value.forkedFrom) !==
+            nativeCreationCanonicalJson(fork)
+        )
+          return unavailable("fork_application_event_unavailable");
+        if (forkEvent.command_id !== null) {
+          const receipt = Option.getOrNull(
+            yield* commandReceipts.getByCommandId(CommandId.make(forkEvent.command_id)),
+          );
+          if (
+            receipt?.status !== "accepted" ||
+            receipt.threadId !== current.birth.threadId ||
+            receipt.resultSequence < forkEvent.sequence
+          )
+            return unavailable("fork_application_event_unavailable");
+        }
+        forkBasis.push({
+          targetBirth: current.birth,
+          sourceBirth: source.birth,
+          sourceRunId: fork.runId,
+          sourceRunOrdinal: decodedRun.value.ordinal,
+          sourceRunEvent: { eventId: EventId.make(runEvent.event_id), sequence: runEvent.sequence },
+          forkEvent: { eventId: EventId.make(forkEvent.event_id), sequence: forkEvent.sequence },
+        });
+        current = source;
+      }
+      return yield* projectionStore.getThreadRetainedAttachmentPaths(threadId).pipe(
+        Effect.provideService(ProjectionStore.ImportedApplicationAttachmentRetentionInputV1, {
+          targetBirth: target.birth,
+          visibleImportedBirths,
+          inventories,
+          baselineCopies,
+        }),
+      );
+    });
     const readQualifiedDeletionCleanupOutcomeEffect = Effect.fnUntraced(function* (
       effectId: string,
     ) {
@@ -1774,6 +2523,17 @@ const baseLayer: Layer.Layer<
       if (
         segment === null ||
         !["completed", "retryable_failure", "unknown"].includes(outcome.status)
+      )
+        return yield* fail();
+      const actualRetention = yield* readQualifiedThreadRetainedAttachmentPathsEffect(
+        basis.task.threadId,
+      );
+      if (
+        actualRetention.status !== "complete" ||
+        nativeCreationCanonicalJson(actualRetention.relativePaths) !==
+          nativeCreationCanonicalJson(basis.retainedRelativePaths) ||
+        nativeCreationCanonicalJson(actualRetention.sourceEvidence) !==
+          nativeCreationCanonicalJson(basis.retentionSourceEvidence)
       )
         return yield* fail();
       if (
@@ -2723,6 +3483,22 @@ const baseLayer: Layer.Layer<
 
     const encodeOrdinaryCommand = Schema.encodeEffect(OrchestrationV2Command);
     return EventSinkV2.of({
+      readThreadRetainedAttachmentPaths: (threadId) =>
+        commitTransaction
+          .withTransaction(readQualifiedThreadRetainedAttachmentPathsEffect(threadId))
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      readApplicationBirthRecord: (threadId) =>
+        commitTransaction
+          .withTransaction(readApplicationBirthRecordEffect(threadId))
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      prepareImportedApplicationAttachmentInventory: (input) =>
+        commitTransaction
+          .withTransaction(prepareImportedApplicationAttachmentInventoryEffect(input))
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      readImportedApplicationAttachmentInventory: (input) =>
+        commitTransaction
+          .withTransaction(readImportedApplicationAttachmentInventoryEffect(input))
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       readAttachmentNamespaceCleanupObservation: (effectId) =>
         commitTransaction
           .withTransaction(readAttachmentNamespaceCleanupHistoryEffect(effectId))

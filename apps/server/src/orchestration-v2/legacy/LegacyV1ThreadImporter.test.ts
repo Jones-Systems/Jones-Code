@@ -6,6 +6,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -751,4 +752,199 @@ it.live(
       yield* observer.barrier;
       assert.isFalse(observer.observed.some((item) => item.event.threadId === threadId));
     }).pipe(Effect.provide(TestLayer)),
+);
+
+const seedAuthenticLegacyInventorySource = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seedCommitShell(threadId);
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const legacyBirthJson = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+      threadId,
+      projectId: `project:${threadId}`,
+      createdAt,
+    });
+    yield* sql`INSERT INTO orchestration_events
+      (event_id,aggregate_kind,stream_id,stream_version,event_type,occurred_at,actor_kind,payload_json,metadata_json,application_event_version)
+      VALUES (${`event:${threadId}:legacy-birth`},'thread',${threadId},1,'thread.created',${createdAt},'user',
+        ${legacyBirthJson},'{}',1)`;
+    const sequence = (yield* sql<{
+      readonly sequence: number;
+    }>`SELECT max(sequence) AS sequence FROM orchestration_events WHERE application_event_version=1`)[0]!
+      .sequence;
+    for (const projector of [
+      "projection.threads",
+      "projection.thread-messages",
+      "projection.thread-activities",
+      "projection.thread-turns",
+    ])
+      yield* sql`INSERT INTO projection_state (projector,last_applied_sequence,updated_at)
+        VALUES (${projector},${sequence},${createdAt}) ON CONFLICT(projector) DO UPDATE SET last_applied_sequence=excluded.last_applied_sequence,updated_at=excluded.updated_at`;
+  });
+
+it.live(
+  "the real importer atomically appends its legacy inventory and publishes only after the enclosing owner commits",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+      const sink = yield* EventSink.EventSinkV2;
+      const owner = yield* makeCommitTransaction();
+      const observer = yield* observeCommitImports(
+        ThreadId.make("thread:inventory-commit-barrier"),
+      );
+      const threadId = ThreadId.make("thread:inventory-commit-target");
+      yield* seedAuthenticLegacyInventorySource(threadId);
+      yield* owner.withTransaction(
+        Effect.gen(function* () {
+          assert.deepStrictEqual(yield* importer.reconcileShells, {
+            importedThreadCount: 1,
+            importedMessageCount: 1,
+          });
+          assert.lengthOf(
+            yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories WHERE thread_id=${threadId}`,
+            1,
+          );
+          assert.lengthOf(
+            yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_carriers`,
+            1,
+          );
+          assert.isFalse(observer.observed.some((value) => value.event.threadId === threadId));
+        }),
+      );
+      yield* observer.awaitImport(threadId);
+      assert.lengthOf(
+        observer.observed.filter((value) => value.event.threadId === threadId),
+        4,
+      );
+      const readBirth = sink.readApplicationBirthRecord;
+      const ensure = importer.ensureApplicationAttachmentInventory;
+      if (readBirth === undefined || ensure === undefined)
+        return yield* Effect.die("Authentic inventory owner missing");
+      const birth = yield* readBirth(threadId);
+      assert.isNotNull(birth);
+      if (birth === null) return;
+      const original = yield* ensure({ threadId, expectedBirth: birth });
+      assert.equal(original.status, "complete");
+      const headers =
+        yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories WHERE thread_id=${threadId}`;
+      assert.deepStrictEqual(yield* importer.ensureTranscript(threadId), {
+        importedThreadCount: 1,
+        importedMessageCount: 0,
+      });
+      assert.deepStrictEqual(yield* importer.ensureTranscript(threadId), {
+        importedThreadCount: 0,
+        importedMessageCount: 0,
+      });
+      assert.deepStrictEqual(yield* ensure({ threadId, expectedBirth: birth }), original);
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories WHERE thread_id=${threadId}`,
+        headers,
+      );
+    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
+
+it.live(
+  "a real inventory carrier failure rolls back shell events, projection, marker, header and publication together",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+      const observer = yield* observeCommitImports(
+        ThreadId.make("thread:inventory-failure-barrier"),
+      );
+      const threadId = ThreadId.make("thread:inventory-failure-target");
+      yield* seedAuthenticLegacyInventorySource(threadId);
+      const before = yield* readCommitImportState(threadId);
+      yield* sql`CREATE TRIGGER synthetic_inventory_carrier_failure BEFORE INSERT ON orchestration_v2_imported_application_attachment_carriers
+      BEGIN SELECT CASE WHEN
+        (SELECT COUNT(*) FROM orchestration_v2_imported_application_attachment_inventories)=1
+        AND (SELECT COUNT(*) FROM orchestration_v2_legacy_imports WHERE thread_id='thread:inventory-failure-target')=1
+        AND (SELECT COUNT(*) FROM orchestration_events WHERE application_event_version=2 AND stream_id='thread:inventory-failure-target')=4
+        THEN RAISE(ABORT,'owned synthetic inventory carrier failure after header and marker')
+        ELSE RAISE(ABORT,'fixture missed actual inventory append') END; END`;
+      const result = yield* Effect.exit(importer.reconcileShells);
+      assert.isTrue(Exit.isFailure(result));
+      if (Exit.isFailure(result))
+        assert.match(
+          Cause.pretty(result.cause),
+          /owned synthetic inventory carrier failure after header and marker/,
+        );
+      assert.deepStrictEqual(yield* readCommitImportState(threadId), before);
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories`,
+        [],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_carriers`,
+        [],
+      );
+      yield* observer.barrier;
+      assert.isFalse(observer.observed.some((value) => value.event.threadId === threadId));
+    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
+
+it.live(
+  "outer owned transcript rollback discards its new adoption and cache confirmation so the original caller can retry",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+      const owner = yield* makeCommitTransaction();
+      const observer = yield* observeCommitImports(
+        ThreadId.make("thread:inventory-transcript-barrier"),
+      );
+      const threadId = ThreadId.make("thread:inventory-transcript-target");
+      yield* seedAuthenticLegacyInventorySource(threadId);
+      yield* importer.reconcileShells;
+      yield* observer.awaitImport(threadId);
+      yield* sql`INSERT INTO projection_thread_messages (message_id,thread_id,turn_id,role,text,attachments_json,is_streaming,created_at,updated_at)
+      VALUES ('message:inventory:later',${threadId},NULL,'user','Later retained original','[]',0,'2026-01-02T00:00:00.000Z','2026-01-02T00:00:00.000Z')`;
+      const before = yield* readCommitImportState(threadId);
+      const inventories =
+        yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories WHERE thread_id=${threadId}`;
+      const failure = yield* Effect.exit(
+        owner.withTransaction(
+          Effect.gen(function* () {
+            assert.deepStrictEqual(yield* importer.ensureTranscript(threadId), {
+              importedThreadCount: 1,
+              importedMessageCount: 1,
+            });
+            assert.lengthOf(
+              yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories WHERE thread_id=${threadId}`,
+              2,
+            );
+            assert.lengthOf(
+              observer.observed.filter((value) => value.event.threadId === threadId),
+              4,
+            );
+            return yield* Effect.fail("rollback after real transcript marker and inventory");
+          }),
+        ),
+      );
+      assert.isTrue(Exit.isFailure(failure));
+      assert.deepStrictEqual(yield* readCommitImportState(threadId), before);
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM orchestration_v2_imported_application_attachment_inventories WHERE thread_id=${threadId}`,
+        inventories,
+      );
+      yield* observer.barrier;
+      assert.lengthOf(
+        observer.observed.filter((value) => value.event.threadId === threadId),
+        4,
+      );
+      assert.deepStrictEqual(yield* importer.ensureTranscript(threadId), {
+        importedThreadCount: 1,
+        importedMessageCount: 1,
+      });
+      const sink = yield* EventSink.EventSinkV2;
+      const committed = yield* sink
+        .stream({ threadId })
+        .pipe(Stream.take(6), Stream.runCollect, Effect.timeout("2 seconds"));
+      assert.lengthOf(committed, 6);
+      assert.deepStrictEqual(yield* importer.ensureTranscript(threadId), {
+        importedThreadCount: 0,
+        importedMessageCount: 0,
+      });
+    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
 );
