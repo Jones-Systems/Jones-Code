@@ -328,7 +328,50 @@ it.effect("memory recovery selection includes unfinished items from missing runs
   }).pipe(Effect.provide(ProjectionStore.layerMemory)),
 );
 
+const selfSettlementRecoveryRoundtrip = Effect.gen(function* () {
+  const store = yield* ProjectionStore.ProjectionStoreV2;
+  const threadId = yield* addRolledBackRecoveryCandidate("self-settlement-recovery");
+  const thread = yield* store.getThread(threadId);
+  const now = yield* DateTime.now;
+  const intent = {
+    mcpCredentialId: "synthetic-credential",
+    commandId: CommandId.make("synthetic-settlement-request"),
+    runId: RunId.make("synthetic-requesting-run"),
+    providerSessionId: ProviderSessionId.make("synthetic-session"),
+    providerInstanceId,
+  };
+  assert.notInclude(yield* store.getRecoveryThreadIds("self-settlement"), threadId);
+  for (const type of ["thread.metadata-updated", "thread.settled", "thread.unsettled"] as const) {
+    yield* store.apply({
+      id: EventId.make(`self-settlement-recovery:${type}`),
+      type,
+      threadId,
+      occurredAt: now,
+      payload: { ...thread, selfSettlement: intent, updatedAt: now },
+    });
+    assert.deepEqual((yield* store.getThreadProjection(threadId)).thread.selfSettlement, intent);
+    assert.include(yield* store.getRecoveryThreadIds("self-settlement"), threadId);
+  }
+  yield* store.apply({
+    id: EventId.make("self-settlement-recovery:cancel"),
+    type: "thread.metadata-updated",
+    threadId,
+    occurredAt: now,
+    payload: { ...thread, selfSettlement: null, updatedAt: now },
+  });
+  assert.isNull((yield* store.getThread(threadId)).selfSettlement);
+  assert.notInclude(yield* store.getRecoveryThreadIds("self-settlement"), threadId);
+});
+
+it.effect("memory projection retains self-settlement intent until cancellation", () =>
+  selfSettlementRecoveryRoundtrip.pipe(Effect.provide(ProjectionStore.layerMemory)),
+);
+
 it.layer(TestLayer)("ProjectionStoreV2", (it) => {
+  it.effect(
+    "retains self-settlement intent until cancellation",
+    () => selfSettlementRecoveryRoundtrip,
+  );
   it.effect(
     "keeps restart-cancelled work through a stale run.updated",
     () => restartCancelledWorkSurvivesStaleRunUpdate,
