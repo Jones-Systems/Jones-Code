@@ -79,6 +79,11 @@ const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
 const GROK_DRIVER = ProviderDriverKind.make("acp");
 
+const providerSwitchCheckoutFixture = (workspaceRoot: string, fixtureProjectId = projectId) => ({
+  projects: [{ projectId: fixtureProjectId, title: "Provider switch", workspaceRoot }],
+  resolvePath: () => undefined,
+});
+
 interface CapturedTurn {
   readonly driver: ProviderDriverKind;
   readonly threadId: ThreadId;
@@ -882,6 +887,7 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registry,
+              { checkoutFixture: providerSwitchCheckoutFixture(cwd) },
             ),
           ),
         );
@@ -1044,6 +1050,7 @@ describe("orchestration v2 provider switching", () => {
                   },
                 },
                 registry,
+                { checkoutFixture: providerSwitchCheckoutFixture(cwd) },
               ),
             ),
           );
@@ -1216,6 +1223,7 @@ describe("orchestration v2 provider switching", () => {
           assert.notInclude(back.text, originalPrompt);
           assert.notInclude(back.text, partialResponse);
         }).pipe(
+          Effect.ensuring(Deferred.succeed(release, undefined)),
           Effect.provide(
             makeOrchestratorV2ReplayLayerWithRegistry(
               {
@@ -1231,6 +1239,7 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registryLayer,
+              { checkoutFixture: providerSwitchCheckoutFixture(cwd) },
             ),
           ),
         );
@@ -1354,6 +1363,12 @@ describe("orchestration v2 provider switching", () => {
                   },
                 },
                 registryLayer,
+                {
+                  checkoutFixture: providerSwitchCheckoutFixture(
+                    cwd,
+                    ProjectId.make(`project:queued-capability:${key}`),
+                  ),
+                },
               ),
             ),
           );
@@ -1547,6 +1562,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registryLayer,
+              {
+                checkoutFixture: providerSwitchCheckoutFixture(
+                  cwd,
+                  ProjectId.make("project:queued-steer-provider-switch"),
+                ),
+              },
             ),
           ),
         );
@@ -1738,6 +1759,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registryLayer,
+              {
+                checkoutFixture: providerSwitchCheckoutFixture(
+                  cwd,
+                  ProjectId.make("project:queued-account-switch"),
+                ),
+              },
             ),
           ),
         );
@@ -1949,7 +1976,13 @@ describe("orchestration v2 provider switching", () => {
                   },
                 },
                 registryLayer,
-                { databaseLayer },
+                {
+                  databaseLayer,
+                  checkoutFixture: providerSwitchCheckoutFixture(
+                    cwd,
+                    ProjectId.make("project:queued-provider-switch"),
+                  ),
+                },
               ),
               outboxProvided,
             ),
@@ -2176,6 +2209,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registryLayer,
+              {
+                checkoutFixture: providerSwitchCheckoutFixture(
+                  cwd,
+                  ProjectId.make("project:queued-handoff-rejection"),
+                ),
+              },
             ),
           ),
         );
@@ -2270,7 +2309,7 @@ describe("orchestration v2 provider switching", () => {
             },
           },
           registryLayer,
-          { databaseLayer },
+          { databaseLayer, checkoutFixture: { projects: [], resolvePath: () => undefined } },
         );
         const testLayer = Layer.mergeAll(
           storesProvided,
@@ -2449,7 +2488,10 @@ describe("orchestration v2 provider switching", () => {
           const rebuilt = yield* orchestrator.getThreadProjection(importedThreadId);
           assert.deepEqual(rebuilt.attempts, beforeRebuild.attempts);
           return rebuilt;
-        }).pipe(Effect.provide(testLayer));
+        }).pipe(
+          Effect.ensuring(Deferred.succeed(releaseFirstTurn, undefined)),
+          Effect.provide(testLayer),
+        );
 
         const turns = yield* Ref.get(capturedTurns);
         assert.deepEqual(
@@ -2630,6 +2672,7 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registryLayer,
+              { checkoutFixture: providerSwitchCheckoutFixture(cwd) },
             ),
           ),
         );
@@ -2812,6 +2855,7 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registryLayer,
+              { checkoutFixture: providerSwitchCheckoutFixture(cwd) },
             ),
           ),
         );
@@ -2948,6 +2992,7 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registryLayer,
+              { checkoutFixture: providerSwitchCheckoutFixture(cwd) },
             ),
           ),
         );
@@ -3160,6 +3205,7 @@ describe("orchestration v2 provider switching", () => {
                   },
                 },
                 registryLayer,
+                { checkoutFixture: providerSwitchCheckoutFixture(cwd) },
               ),
             ),
           );
@@ -3290,6 +3336,7 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registryLayer,
+              { checkoutFixture: providerSwitchCheckoutFixture(cwd) },
             ),
           ),
         );
