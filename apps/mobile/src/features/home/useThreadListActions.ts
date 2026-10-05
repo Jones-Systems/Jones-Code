@@ -1,3 +1,11 @@
+import { executeMobileShelfMove } from "../workstreams/actions";
+import { nativeWorkstreamThreadKey } from "@t3tools/client-runtime/state/workstreams";
+import {
+  mobileThreadOrderScope,
+  mobileThreadOrderSection,
+  sameMobileThreadOrderScope,
+  type MobileThreadMoveContext,
+} from "../../lib/threadOrderScope";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
@@ -251,6 +259,7 @@ export function useThreadListActions(): {
   readonly moveThread: (
     thread: EnvironmentThreadShell,
     direction: ThreadMoveDestination,
+    context?: MobileThreadMoveContext,
   ) => Promise<boolean>;
   readonly renameThread: (thread: EnvironmentThreadShell) => void;
   readonly regenerateThreadTitle: (thread: EnvironmentThreadShell) => Promise<boolean>;
@@ -571,7 +580,11 @@ export function useThreadListActions(): {
     reportFailure: false,
   });
   const moveThread = useCallback(
-    async (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
+    async (
+      thread: EnvironmentThreadShell,
+      direction: ThreadMoveDestination,
+      context?: MobileThreadMoveContext,
+    ) => {
       if (getPendingThreadOrder() !== null || appAtomRegistry.get(threadDropBusyAtom)) return false;
       const shells = appAtomRegistry.get(environmentThreadShells.threadShellsAtom);
       const current = shells.find(
@@ -579,12 +592,28 @@ export function useThreadListActions(): {
       );
       if (!current || current.archivedAt !== null) return false;
       thread = current;
+      const snapshot = context?.source.read();
+      if (context !== undefined && snapshot == null) return false;
+      const explicitShelf =
+        typeof direction === "object" &&
+        (direction.section === "pinned" || direction.section === "active");
+      const scope = explicitShelf
+        ? { kind: "shelf" as const, section: direction.section as "pinned" | "active" }
+        : (context?.scope ?? {
+            kind: "shelf" as const,
+            section: thread.pinnedAt != null ? ("pinned" as const) : ("active" as const),
+          });
+      if (
+        !explicitShelf &&
+        context !== undefined &&
+        snapshot != null &&
+        !sameMobileThreadOrderScope(scope, mobileThreadOrderScope(thread, snapshot))
+      )
+        return false;
       const section =
-        typeof direction === "object" && direction.section !== undefined
-          ? direction.section
-          : thread.pinnedAt != null
-            ? "pinned"
-            : "active";
+        typeof direction === "object" && direction.section === "settled"
+          ? "settled"
+          : mobileThreadOrderSection(scope);
       if (section === "settled") {
         if (!environmentSupportsSettlement(thread.environmentId)) return false;
         appAtomRegistry.set(threadDropBusyAtom, true);
@@ -611,6 +640,8 @@ export function useThreadListActions(): {
       const ordered = getThreadListV2OrderedSection({
         threads: shells,
         section,
+        scope,
+        snapshot,
         now: new Date().toISOString(),
         queuedThreadKeys: appAtomRegistry.get(queuedThreadKeysAtom),
         settlementEnvironmentIds: new Set(
@@ -632,9 +663,14 @@ export function useThreadListActions(): {
       })(scopedThreadKey(thread.environmentId, thread.id), direction);
       if (assignments === null) return false;
       const lifecycle = threadDropLifecycle(thread, section, new Date().toISOString());
-      const crossSection = !ordered.some(
-        (row) => row.id === thread.id && row.environmentId === thread.environmentId,
-      );
+      const changesMembership =
+        explicitShelf &&
+        snapshot?.primaryGroupByThreadKey.has(
+          nativeWorkstreamThreadKey(thread.environmentId, thread.id),
+        ) === true;
+      const crossSection =
+        changesMembership ||
+        !ordered.some((row) => row.id === thread.id && row.environmentId === thread.environmentId);
       if (
         crossSection &&
         (((section === "pinned" || thread.pinnedAt != null) &&
@@ -655,17 +691,25 @@ export function useThreadListActions(): {
         : beginPendingThreadOrder(
             createPendingThreadOrder({
               section,
+              scope,
+              sourceRevision: snapshot?.revision,
               ordered,
               movedId: scopedThreadKey(thread.environmentId, thread.id),
               direction,
               assignments,
             }),
+            context?.source,
           );
       let succeeded = false;
       const reorder = section === "pinned" ? reorderPinnedMutation : reorderActiveMutation;
-      try {
+      const moveNative = async () => {
         if (crossSection) {
-          if (section === "pinned") {
+          if (
+            section === "pinned" &&
+            (thread.pinnedAt == null ||
+              thread.settledOverride === "settled" ||
+              effectiveSnoozed(thread, { now: new Date().toISOString() }))
+          ) {
             const orderKey = assignments.find(
               ({ id }) => id === scopedThreadKey(thread.environmentId, thread.id),
             )?.orderKey;
@@ -677,7 +721,7 @@ export function useThreadListActions(): {
               Alert.alert("Could not pin thread", String(Cause.squash(result.cause)));
               return false;
             }
-          } else {
+          } else if (section === "active") {
             if (lifecycle.unpin && !(await unpinThread(thread))) return false;
             if (lifecycle.unsettle && !(await unsettleThread(thread))) return false;
             if (lifecycle.unsnooze && !(await unsnoozeThread(thread))) return false;
@@ -713,6 +757,24 @@ export function useThreadListActions(): {
         succeeded = true;
         pending?.complete();
         return true;
+      };
+      try {
+        return explicitShelf && context !== undefined
+          ? await executeMobileShelfMove({
+              removePrimary: async () => {
+                if (context.source.read()?.revision !== snapshot?.revision)
+                  throw new Error("Workstream arrangement changed before the shelf move.");
+                await context.removePrimary(thread);
+              },
+              moveNative,
+            })
+          : await moveNative();
+      } catch (error) {
+        Alert.alert(
+          "Could not move thread",
+          error instanceof Error ? error.message : String(error),
+        );
+        return false;
       } finally {
         if (!succeeded) pending?.cancel();
         appAtomRegistry.set(threadDropBusyAtom, false);

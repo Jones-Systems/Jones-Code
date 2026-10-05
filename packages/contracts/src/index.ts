@@ -62,3 +62,5 @@ export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
 
 export * from "./jonesUpdates.ts";
+export * from "./workstreams.ts";
+export * from "./workstreamPlacements.ts";

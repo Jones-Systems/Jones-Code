@@ -19,7 +19,7 @@ const isShelfHeader = (item: SidebarListItem | undefined) =>
     item.marker === "snoozed-header" ||
     item.marker === "settled-header");
 
-/** Keep the lifted card below the Pins label, including when Pins is empty.
+/** Keep the lifted card below the supplied label boundary, including empty shelves.
  * The container rect follows scrolling; the offset is measured once at pickup. */
 export function restrictBelowSidebarLabel(
   { transform, containerNodeRect, draggingNodeRect }: Parameters<Modifier>[0],
@@ -185,10 +185,17 @@ export function createSidebarSortingStrategy(input: {
       if (groups[name].length > 0) projected.push(...groups[name]);
       else marker(`${name}-placeholder`);
     };
-    marker("pinned-header");
-    projected.push(...groups.pinned);
-    marker("pinned-divider");
-    section("active");
+    if (items[0]?.kind === "marker" && items[0].marker === "active-placeholder") {
+      section("active");
+      marker("pinned-header");
+      projected.push(...groups.pinned);
+      marker("pinned-divider");
+    } else {
+      marker("pinned-header");
+      projected.push(...groups.pinned);
+      marker("pinned-divider");
+      section("active");
+    }
     if (items.some((item) => item.kind === "marker" && item.marker === "working-header")) {
       marker("working-header");
       projected.push(...groups.working);

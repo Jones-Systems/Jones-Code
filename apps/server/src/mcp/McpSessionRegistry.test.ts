@@ -77,6 +77,11 @@ it.effect("always grants pull-requests and gates browser and device access indep
       providerInstanceId: ProviderInstanceId.make("codex"),
       capabilities: new Set(["device"]),
     });
+    const withOrganization = yield* registry.issue({
+      threadId: ThreadId.make("thread-organization"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      capabilities: new Set(["organization"]),
+    });
     const capabilitiesOf = (issued: typeof withPreview) =>
       registry
         .resolve(issued.config.authorizationHeader.replace(/^Bearer\s+/, ""))
@@ -90,6 +95,12 @@ it.effect("always grants pull-requests and gates browser and device access indep
     ]);
     expect(yield* capabilitiesOf(withoutPreview)).toEqual([
       "orchestration",
+      "pull-requests",
+      "worktree",
+    ]);
+    expect(yield* capabilitiesOf(withOrganization)).toEqual([
+      "orchestration",
+      "organization",
       "pull-requests",
       "worktree",
     ]);
