@@ -180,6 +180,7 @@ const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
+    threadMessagesBlocked: Schema.Boolean,
   }),
 })
   .annotate(Tool.Readonly, true)
