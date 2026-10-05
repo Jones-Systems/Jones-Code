@@ -110,6 +110,28 @@ describe("orchestration V2 wire projection", () => {
       observed: { snapshotSequence: 2, lastEventSequence: 2, target: null },
       deletion,
     };
+    const failureDecision = {
+      version: 1 as const,
+      status: "known_workspace_failure" as const,
+      policy,
+      claimEventId: correlation.claimEventId,
+      claimSequence: 1,
+      claimReceiptSequence: 1,
+      birthEventId: correlation.birthEventId,
+      birthSequence: 2,
+      birthReceiptSequence: 2,
+      preparationGeneration: correlation.preparationGeneration,
+      projectWorkspaceRoot: correlation.projectWorkspaceRoot,
+      workspacePath: correlation.workspacePath,
+      failedEffectId: "private-failed-effect",
+      failedInputHash: "private-effect-input-hash",
+      outcomeCommandId: CommandId.make("bootstrap:outcome"),
+      outcomeEventId: EventId.make("bootstrap:outcome:event"),
+      outcomeEventSequence: 3,
+      outcomeReceiptSequence: 3,
+      failureCommandId: CommandId.make("bootstrap:B:fail"),
+      evidenceEventId: EventId.make("bootstrap:failure:event"),
+    };
     const run = {
       id: runId,
       threadId: base.threadId,
@@ -130,6 +152,7 @@ describe("orchestration V2 wire projection", () => {
       legacyPreparationFailureKnown: true,
       workspaceRunSetupScript: false,
       legacyReleaseDecision: decision,
+      legacyPreparationFailureDecision: failureDecision,
     };
     const event = {
       id: EventId.make("bootstrap:run-created"),
@@ -143,6 +166,8 @@ describe("orchestration V2 wire projection", () => {
     expect(projected.payload).not.toHaveProperty("legacyPreparationFailureKnown");
     expect(projected.payload).not.toHaveProperty("workspaceRunSetupScript");
     expect(projected.payload).not.toHaveProperty("legacyReleaseDecision");
+    expect(projected.payload).not.toHaveProperty("legacyPreparationFailureDecision");
+    expect(event.payload.legacyPreparationFailureDecision).toEqual(failureDecision);
     expect(JSON.stringify(projected)).not.toContain(deletion.workspacePath);
     expect(event.payload.legacyReleaseDecision).toEqual(decision);
     expect(event.payload.legacyBootstrap).toEqual(policy);
@@ -153,6 +178,7 @@ describe("orchestration V2 wire projection", () => {
       legacyPreparationFailureKnown: _known,
       workspaceRunSetupScript: _setup,
       legacyReleaseDecision: _decision,
+      legacyPreparationFailureDecision: _failureDecision,
       ...publicRun
     } = run;
     expect(projected).toEqual({ ...event, payload: publicRun });

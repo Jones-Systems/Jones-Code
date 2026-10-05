@@ -208,6 +208,7 @@ export function projectRecordedRunForWire(run: RecordedRun): OrchestrationV2Run 
     !("legacyPreparationFailureKnown" in run) &&
     !("workspaceRunSetupScript" in run) &&
     !("legacyReleaseDecision" in run) &&
+    !("legacyPreparationFailureDecision" in run) &&
     !("legacyPreparation" in run)
   )
     return run;
@@ -216,6 +217,7 @@ export function projectRecordedRunForWire(run: RecordedRun): OrchestrationV2Run 
     legacyPreparationFailureKnown: _known,
     workspaceRunSetupScript: _setup,
     legacyReleaseDecision: _decision,
+    legacyPreparationFailureDecision: _failureDecision,
     legacyPreparation: _preparation,
     ...publicRun
   } = run;

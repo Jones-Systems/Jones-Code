@@ -1,6 +1,9 @@
 import {
   type RecordedServerCommand,
   type LegacyGuardRejectionDeleteCommand,
+  type LegacyFailureDeleteCommand,
+  LegacyPreparationFailureDecision,
+  LegacyFailureDeletionProvenance,
   LegacyPreparationUpdate,
   LegacyOwnedTerminalControl,
   LegacyNoTerminalControl,
@@ -12,7 +15,10 @@ import {
   type RecordedThreadProjection as OrchestrationV2ThreadProjection,
   type RecordedThreadSnapshot,
 } from "./RecordedTypes.ts";
-type OrchestrationV2ServerCommand = RecordedServerCommand | LegacyGuardRejectionDeleteCommand;
+type OrchestrationV2ServerCommand =
+  | RecordedServerCommand
+  | LegacyGuardRejectionDeleteCommand
+  | LegacyFailureDeleteCommand;
 import { threadCreationCleanupEffects } from "./ThreadDeletion.ts";
 import {
   legacyBootstrapBirth,
@@ -23,6 +29,7 @@ import {
   legacyPreparationGeneration,
   transitionLegacyPreparation,
   legacyPreparationReleaseBlocker,
+  legacyNeverInvokedWorkspaceFailure,
 } from "./LegacyBootstrap.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { TerminalManager } from "../terminal/Manager.ts";
@@ -284,6 +291,9 @@ export interface OrchestratorV2Shape {
   ) => Effect.Effect<boolean, OrchestratorProjectionError>;
   readonly dispatch: (
     command: RecordedServerCommand,
+  ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
+  readonly dispatchLegacyFailureDelete?: (
+    command: LegacyFailureDeleteCommand,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
   readonly dispatchLegacyGuardRejectionDelete?: (
     command: LegacyGuardRejectionDeleteCommand,
@@ -8028,6 +8038,313 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ]);
     });
 
+  const authenticateNeverInvokedFailure = (
+    command: OrchestrationV2ServerCommand,
+    run: OrchestrationV2Run,
+    allowDeleted = false,
+  ) =>
+    Effect.gen(function* () {
+      const candidate = legacyNeverInvokedWorkspaceFailure(run);
+      if (candidate === undefined) return undefined;
+      const { preparation, step, policy } = candidate;
+      const collect = (commandId: CommandId) =>
+        eventSink.readByCommandId({ commandId }).pipe(
+          Stream.runCollect,
+          Effect.map((events) => Array.from(events)),
+          mapDispatchError(command),
+        );
+      const proof = legacyBootstrapBirth({
+        policy,
+        claimEvents: yield* collect(policy.createCommandId),
+        birthEvents: yield* collect(policy.birthCommandId),
+      });
+      const claim = yield* commandReceipts
+        .getByCommandId(policy.createCommandId)
+        .pipe(mapDispatchError(command));
+      const birth = yield* commandReceipts
+        .getByCommandId(policy.birthCommandId)
+        .pipe(mapDispatchError(command));
+      const project = yield* projects.get(policy.projectId).pipe(mapDispatchError(command));
+      const thread = yield* projectionStore
+        .getThread(commandThreadId(command))
+        .pipe(mapDispatchError(command));
+      const outcomeId = step.outcomeCommandId!;
+      const intent = yield* commandReceipts
+        .getByCommandId(step.intentCommandId)
+        .pipe(mapDispatchError(command));
+      const outcome = yield* commandReceipts
+        .getByCommandId(outcomeId)
+        .pipe(mapDispatchError(command));
+      const intentEvents = yield* collect(step.intentCommandId);
+      const outcomeEvents = yield* collect(outcomeId);
+      const before = intentEvents[0];
+      const after = outcomeEvents[0];
+      const accepted = (
+        receipt: Option.Option<import("./CommandReceiptStore.ts").CommandReceiptV2>,
+        type: string,
+      ) =>
+        Option.isSome(receipt) &&
+        receipt.value.status === "accepted" &&
+        receipt.value.commandType === type &&
+        receipt.value.threadId === policy.threadId;
+      const intentStep =
+        before?.event.type === "run.updated"
+          ? before.event.payload.legacyPreparation?.steps.find(
+              (entry) => entry.effectId === step.effectId,
+            )
+          : undefined;
+      const outcomeStep =
+        after?.event.type === "run.updated"
+          ? after.event.payload.legacyPreparation?.steps.find(
+              (entry) => entry.effectId === step.effectId,
+            )
+          : undefined;
+      if (
+        proof.type !== "valid" ||
+        !accepted(claim, "thread.create") ||
+        !accepted(birth, "message.dispatch") ||
+        !accepted(intent, "prepared-run.progress") ||
+        !accepted(outcome, "prepared-run.progress") ||
+        Option.isNone(claim) ||
+        Option.isNone(birth) ||
+        Option.isNone(intent) ||
+        Option.isNone(outcome) ||
+        Option.isNone(project) ||
+        (!allowDeleted && thread.deletedAt !== null) ||
+        thread.projectId !== policy.projectId ||
+        (thread.worktreePath ?? project.value.workspaceRoot) !== preparation.projectWorkspaceRoot ||
+        preparation.projectWorkspaceRoot !== project.value.workspaceRoot ||
+        preparation.claimEventId !== proof.claimEventId ||
+        preparation.claimSequence !== proof.claimSequence ||
+        preparation.claimReceiptSequence !== claim.value.resultSequence ||
+        preparation.birthEventId !== proof.birthEventId ||
+        preparation.birthSequence !== proof.sequence ||
+        preparation.birthReceiptSequence !== birth.value.resultSequence ||
+        intentEvents.length !== 1 ||
+        outcomeEvents.length !== 1 ||
+        before?.event.type !== "run.updated" ||
+        after?.event.type !== "run.updated" ||
+        before.commandId !== step.intentCommandId ||
+        after.commandId !== outcomeId ||
+        before.event.id !== step.intentEventId ||
+        after.event.id !== step.outcomeEventId ||
+        before.event.threadId !== run.threadId ||
+        after.event.threadId !== run.threadId ||
+        before.event.runId !== run.id ||
+        after.event.runId !== run.id ||
+        before.event.payload.id !== run.id ||
+        after.event.payload.id !== run.id ||
+        before.sequence !== intent.value.resultSequence ||
+        after.sequence !== outcome.value.resultSequence ||
+        before.sequence <= birth.value.resultSequence ||
+        before.sequence >= after.sequence ||
+        intentStep?.state !== "intent" ||
+        intentStep.outcomeCommandId !== undefined ||
+        canonicalLegacyPayload(intentStep.effect) !== canonicalLegacyPayload(step.effect) ||
+        intentStep.inputHash !== step.inputHash ||
+        intentStep.intentEventId !== step.intentEventId ||
+        canonicalLegacyPayload(outcomeStep) !== canonicalLegacyPayload(step) ||
+        canonicalLegacyPayload(after.event.payload.legacyPreparation) !==
+          canonicalLegacyPayload(preparation) ||
+        canonicalLegacyPayload(before.event.payload.legacyBootstrap) !==
+          canonicalLegacyPayload(policy) ||
+        canonicalLegacyPayload(after.event.payload.legacyBootstrap) !==
+          canonicalLegacyPayload(policy) ||
+        Option.isSome(
+          yield* commandReceipts
+            .getByCommandId(policy.releaseCommandId)
+            .pipe(mapDispatchError(command)),
+        ) ||
+        Option.isSome(
+          yield* commandReceipts
+            .getProjectByCommandId(policy.releaseCommandId)
+            .pipe(mapDispatchError(command)),
+        )
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            "Never-invoked workspace failure lacks exact birth, owner journal or absent C receipts.",
+        });
+      return {
+        version: 1 as const,
+        status: "known_workspace_failure" as const,
+        policy,
+        claimEventId: proof.claimEventId,
+        claimSequence: proof.claimSequence,
+        claimReceiptSequence: claim.value.resultSequence,
+        birthEventId: proof.birthEventId,
+        birthSequence: proof.sequence,
+        birthReceiptSequence: birth.value.resultSequence,
+        preparationGeneration: preparation.generation,
+        projectWorkspaceRoot: preparation.projectWorkspaceRoot,
+        workspacePath: preparation.projectWorkspaceRoot,
+        failedEffectId: step.effectId,
+        failedInputHash: step.inputHash,
+        outcomeCommandId: outcomeId,
+        outcomeEventId: step.outcomeEventId!,
+        outcomeEventSequence: after.sequence,
+        outcomeReceiptSequence: outcome.value.resultSequence,
+      };
+    });
+
+  const authenticateFailureDecision = (
+    command: OrchestrationV2ServerCommand,
+    run: OrchestrationV2Run,
+    allowDeleted = false,
+  ) =>
+    Effect.gen(function* () {
+      const decision = run.legacyPreparationFailureDecision;
+      const candidate = yield* authenticateNeverInvokedFailure(command, run, allowDeleted);
+      if (
+        decision === undefined ||
+        candidate === undefined ||
+        run.status !== "failed" ||
+        decision.failureCommandId !== `${candidate.policy.createCommandId}:fail`
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Failure D requires a distinct authenticated never-invoked failure decision.",
+        });
+      const failure = yield* commandReceipts
+        .getByCommandId(decision.failureCommandId)
+        .pipe(mapDispatchError(command));
+      const events = Array.from(
+        yield* eventSink
+          .readByCommandId({ commandId: decision.failureCommandId })
+          .pipe(Stream.runCollect, mapDispatchError(command)),
+      );
+      const evidence = events.at(-1);
+      const { deletion: _deletion, ...original } = decision;
+      if (
+        Option.isNone(failure) ||
+        failure.value.status !== "accepted" ||
+        failure.value.commandType !== "prepared-run.fail" ||
+        failure.value.threadId !== run.threadId ||
+        evidence?.event.type !== "run.updated" ||
+        evidence.commandId !== decision.failureCommandId ||
+        evidence.event.id !== decision.evidenceEventId ||
+        evidence.event.threadId !== run.threadId ||
+        evidence.event.runId !== run.id ||
+        evidence.event.payload.id !== run.id ||
+        evidence.event.payload.status !== "failed" ||
+        evidence.sequence !== failure.value.resultSequence ||
+        canonicalLegacyPayload(evidence.event.payload.legacyPreparationFailureDecision) !==
+          canonicalLegacyPayload(original) ||
+        canonicalLegacyPayload(original) !==
+          canonicalLegacyPayload({
+            ...candidate,
+            failureCommandId: decision.failureCommandId,
+            evidenceEventId: evidence.event.id,
+          })
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Failure D lacks exact accepted fail receipt and original raw decision.",
+        });
+      return { decision: original, failure: failure.value, evidence };
+    });
+
+  const failureDeletionProvenanceFor = (
+    command: LegacyFailureDeleteCommand,
+    run: OrchestrationV2Run,
+    failure: import("./CommandReceiptStore.ts").CommandReceiptV2,
+    evidence: OrchestrationV2StoredEvent,
+  ) => {
+    const decision = run.legacyPreparationFailureDecision;
+    if (decision === undefined) return undefined;
+    const control = command.legacyNoControl;
+    return {
+      basis: "workspace_failure",
+      failureCommandId: decision.failureCommandId,
+      failureEvidenceEventId: decision.evidenceEventId,
+      failureEventSequence: evidence.sequence,
+      failureReceiptSequence: failure.resultSequence,
+      provenance: {
+        version: 1,
+        type: "no_control",
+        commandId: command.commandId,
+        threadId: command.threadId,
+        runId: command.runId,
+        policy: command.legacyBootstrap,
+        claimEventId: decision.claimEventId,
+        claimSequence: decision.claimSequence,
+        claimReceiptSequence: decision.claimReceiptSequence,
+        birthEventId: decision.birthEventId,
+        birthSequence: decision.birthSequence,
+        birthReceiptSequence: decision.birthReceiptSequence,
+        preparationGeneration: decision.preparationGeneration,
+        workspacePath: decision.workspacePath,
+        projectWorkspaceRoot: decision.projectWorkspaceRoot,
+        evidenceEventId: EventId.make(`${command.commandId}:event`),
+        control,
+      },
+    };
+  };
+
+  const readFailureDeletion = (command: LegacyFailureDeleteCommand) =>
+    Effect.gen(function* () {
+      const receipt = yield* commandReceipts
+        .getByCommandId(command.commandId)
+        .pipe(mapDispatchError(command));
+      const events = Array.from(
+        yield* eventSink
+          .readByCommandId({ commandId: command.commandId })
+          .pipe(Stream.runCollect, mapDispatchError(command)),
+      );
+      const evidence = events[0];
+      const tombstone = events[1];
+      const run = evidence?.event.type === "run.updated" ? evidence.event.payload : undefined;
+      if (run === undefined)
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Failure D raw run evidence is absent.",
+        });
+      const authenticated = yield* authenticateFailureDecision(command, run, true);
+      const expected = yield* Schema.decodeUnknownEffect(LegacyFailureDeletionProvenance)(
+        failureDeletionProvenanceFor(command, run, authenticated.failure, authenticated.evidence),
+      ).pipe(mapDispatchError(command));
+      const effects = yield* effectOutbox
+        .listByCommandId(command.commandId)
+        .pipe(mapDispatchError(command));
+      if (
+        Option.isNone(receipt) ||
+        receipt.value.status !== "accepted" ||
+        receipt.value.commandType !== command.type ||
+        receipt.value.threadId !== command.threadId ||
+        events.length !== 2 ||
+        evidence?.commandId !== command.commandId ||
+        evidence.event.type !== "run.updated" ||
+        evidence.event.id !== expected.provenance.evidenceEventId ||
+        evidence.event.threadId !== command.threadId ||
+        evidence.event.runId !== command.runId ||
+        run.id !== command.runId ||
+        canonicalLegacyPayload(run.legacyPreparationFailureDecision?.deletion) !==
+          canonicalLegacyPayload(expected) ||
+        tombstone?.commandId !== command.commandId ||
+        tombstone.event.type !== "thread.deleted" ||
+        tombstone.event.threadId !== command.threadId ||
+        tombstone.event.payload.deletedAt === null ||
+        canonicalLegacyPayload(tombstone.event.payload.legacyBootstrapClaim) !==
+          canonicalLegacyPayload(
+            (({ runId: _runId, ...claim }) => claim)(command.legacyBootstrap),
+          ) ||
+        evidence.sequence + 1 !== tombstone.sequence ||
+        tombstone.sequence !== receipt.value.resultSequence ||
+        effects.length !== 0
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            "Exact failure D receipt, provenance, tombstone or zero-effects readback is unavailable.",
+        });
+    });
+
   const dispatchPreparedRunFail = (
     command: Extract<OrchestrationV2ServerCommand, { readonly type: "prepared-run.fail" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -8115,7 +8432,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
         },
       });
-      yield* emitEvent({
+      const candidate = yield* authenticateNeverInvokedFailure(command, state.run);
+      const failureEvent = yield* makeEvent<
+        Extract<OrchestrationV2DomainEvent, { readonly type: "run.updated" }>
+      >(command, {
         type: "run.updated",
         threadId: command.threadId,
         runId: state.run.id,
@@ -8131,6 +8451,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : { legacyPreparationFailureKnown: command.legacyPreparationFailureKnown }),
         },
       });
+      const decision =
+        candidate === undefined || command.commandId !== `${candidate.policy.createCommandId}:fail`
+          ? undefined
+          : yield* Schema.decodeUnknownEffect(LegacyPreparationFailureDecision)({
+              ...candidate,
+              failureCommandId: command.commandId,
+              evidenceEventId: failureEvent.id,
+            }).pipe(mapDispatchError(command));
+      yield* Ref.update(events, (existing) => [
+        ...existing,
+        {
+          ...failureEvent,
+          payload: {
+            ...failureEvent.payload,
+            ...(decision === undefined ? {} : { legacyPreparationFailureDecision: decision }),
+          },
+        },
+      ]);
     });
 
   /**
@@ -10029,7 +10367,110 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ),
         };
       }
-      case "legacy-bootstrap.failure-delete":
+      case "legacy-bootstrap.failure-delete": {
+        if (!("legacyNoControl" in command) || command.legacyNoControl === undefined)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause:
+              "Failure D requires actual owner-authenticated no-control proof; legacy Boolean is insufficient.",
+          });
+        const privateCommand: LegacyFailureDeleteCommand = command;
+        const control = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)(
+          command.legacyNoControl,
+        ).pipe(mapDispatchError(command));
+        const projection = yield* projectionStore
+          .getThreadProjection(command.threadId)
+          .pipe(mapDispatchError(command));
+        const run = projection.runs.find((entry) => entry.id === command.runId);
+        if (run === undefined)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Failure D run is absent.",
+          });
+        const authenticated = yield* authenticateFailureDecision(command, run);
+        const decision = authenticated.decision;
+        const effects = yield* effectOutbox
+          .listByThreadId(command.threadId)
+          .pipe(mapDispatchError(command));
+        if (
+          run.legacyPreparationFailureDecision?.deletion !== undefined ||
+          projection.thread.deletedAt !== null ||
+          projection.thread.projectId !== decision.policy.projectId ||
+          !sameLegacyBootstrapPolicy(command.legacyBootstrap, decision.policy) ||
+          !sameLegacyBootstrapPolicy(control.policy, decision.policy) ||
+          control.threadId !== command.threadId ||
+          control.runId !== run.id ||
+          control.preparationGeneration !== decision.preparationGeneration ||
+          control.workspacePath !== decision.workspacePath ||
+          control.projectWorkspaceRoot !== decision.projectWorkspaceRoot ||
+          (
+            [
+              "claimEventId",
+              "claimSequence",
+              "claimReceiptSequence",
+              "birthEventId",
+              "birthSequence",
+              "birthReceiptSequence",
+            ] as const
+          ).some((field) => control[field] !== decision[field]) ||
+          projection.runs.length !== 1 ||
+          projection.messages.length !== 1 ||
+          projection.messages[0]?.id !== decision.policy.messageId ||
+          projection.providerSessions.length !== 0 ||
+          projection.providerTurns.length !== 0 ||
+          projection.subagents.length !== 0 ||
+          projection.runtimeRequests.length !== 0 ||
+          effects.some(
+            (effect) =>
+              effect.request.type === "provider-turn.start" ||
+              effect.request.type === "terminal.cleanup" ||
+              effect.request.type === "provider-session.detach" ||
+              effect.request.type === "attachment.cleanup",
+          )
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Failure D owner, workspace, birth or no-new-work proof changed.",
+          });
+        const deletion = yield* Schema.decodeUnknownEffect(LegacyFailureDeletionProvenance)(
+          failureDeletionProvenanceFor(
+            privateCommand,
+            run,
+            authenticated.failure,
+            authenticated.evidence,
+          ),
+        ).pipe(mapDispatchError(command));
+        const plan = yield* planThreadDeletion({
+          command: {
+            type: "thread.delete",
+            commandId: command.commandId,
+            threadId: command.threadId,
+          },
+          projection,
+          attachmentIds: [],
+          now: yield* DateTime.now,
+          idAllocator,
+        }).pipe(mapDispatchError(command));
+        return {
+          ...plan,
+          events: [
+            {
+              type: "run.updated",
+              id: deletion.provenance.evidenceEventId,
+              threadId: command.threadId,
+              runId: run.id,
+              providerInstanceId: run.providerInstanceId,
+              occurredAt: plan.events[0]!.occurredAt,
+              payload: { ...run, legacyPreparationFailureDecision: { ...decision, deletion } },
+            },
+            ...plan.events,
+          ],
+          effects: plan.effects.filter((effect) => effect.request.type !== "terminal.cleanup"),
+        };
+      }
       case "thread.delete": {
         const projection = yield* projectionStore
           .getThreadRecords(command.threadId, [
@@ -10045,72 +10486,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
             ),
           );
-        if (command.type === "legacy-bootstrap.failure-delete") {
-          const policy = command.legacyBootstrap;
-          const collect = (commandId: CommandId) =>
-            eventSink.readByCommandId({ commandId }).pipe(
-              Stream.runCollect,
-              Effect.map((stored) => Array.from(stored)),
-              mapDispatchError(command),
-            );
-          const proof = legacyBootstrapBirth({
-            policy,
-            claimEvents: yield* collect(policy.createCommandId),
-            birthEvents: yield* collect(policy.birthCommandId),
-          });
-          const run = projection.runs.find((r) => r.id === command.runId);
-          const failureId = CommandId.make(`${policy.createCommandId}:fail`);
-          const failure = yield* commandReceipts
-            .getByCommandId(failureId)
-            .pipe(mapDispatchError(command));
-          const failedEvents = yield* collect(failureId);
-          const effects = yield* effectOutbox
-            .listByThreadId(command.threadId)
-            .pipe(mapDispatchError(command));
-          if (
-            !policy.ownsNewThread ||
-            proof.type !== "valid" ||
-            projection.thread.projectId !== policy.projectId ||
-            run === undefined ||
-            run.legacyBootstrap === undefined ||
-            !sameLegacyBootstrapPolicy(run.legacyBootstrap, policy) ||
-            run.status !== "failed" ||
-            run.startedAt !== null ||
-            run.legacyPreparationFailureKnown !== true ||
-            projection.runs.some((other) => other.id !== run.id) ||
-            projection.providerSessions.length !== 0 ||
-            Option.isNone(failure) ||
-            failure.value.commandType !== "prepared-run.fail" ||
-            failure.value.status !== "accepted" ||
-            !failedEvents.some(
-              (stored) =>
-                stored.event.type === "run.updated" &&
-                stored.event.payload.id === run.id &&
-                stored.event.payload.status === "failed" &&
-                stored.sequence === failure.value.resultSequence,
-            ) ||
-            Option.isSome(
-              yield* commandReceipts
-                .getByCommandId(policy.releaseCommandId)
-                .pipe(mapDispatchError(command)),
-            ) ||
-            Option.isSome(
-              yield* commandReceipts
-                .getProjectByCommandId(policy.releaseCommandId)
-                .pipe(mapDispatchError(command)),
-            ) ||
-            effects.some(
-              (effect) =>
-                effect.request.type === "provider-turn.start" && effect.request.runId === run.id,
-            )
-          )
-            return yield* new OrchestratorDispatchError({
-              commandId: command.commandId,
-              commandType: command.type,
-              cause:
-                "Legacy failure deletion requires a proven owned pre-release failure without newer or possibly started work.",
-            });
-        }
         return yield* mapDispatchError(command)(
           planThreadDeletion({
             command: {
@@ -10789,6 +11164,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const serialized = threadDispatch.withLock(
       commandThreadId(command),
       dispatchWithReceiptEffect(command).pipe(
+        Effect.tap(() =>
+          command.type === "legacy-bootstrap.failure-delete"
+            ? "legacyNoControl" in command && command.legacyNoControl !== undefined
+              ? readFailureDeletion(command)
+              : Effect.fail(
+                  new OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: "Failure D replay lacks closed owner variant.",
+                  }),
+                )
+            : Effect.void,
+        ),
         Effect.tap((result) =>
           command.type !== "legacy-bootstrap.guard-rejection-delete"
             ? Effect.void
@@ -10911,6 +11299,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       ),
     );
+    if (command.type === "legacy-bootstrap.failure-delete")
+      return Effect.gen(function* () {
+        if (!("legacyNoControl" in command) || command.legacyNoControl === undefined)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Failure D requires closed actual no-control owner provenance.",
+          });
+        const existing = yield* commandReceipts
+          .getByCommandId(command.commandId)
+          .pipe(mapDispatchError(command));
+        if (Option.isSome(existing)) return yield* serialized;
+        const owner = Option.isSome(terminalOwner) ? terminalOwner.value : undefined;
+        if (owner?.withLegacyNoControlGuard === undefined)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Actual no-control owner proof is unavailable for failure D.",
+          });
+        return yield* owner.withLegacyNoControlGuard(command.legacyNoControl, serialized).pipe(
+          mapDispatchError(command),
+          Effect.catch((cause) =>
+            commandReceipts.getByCommandId(command.commandId).pipe(
+              mapDispatchError(command),
+              Effect.flatMap((receipt) =>
+                Option.isSome(receipt) && receipt.value.status === "accepted"
+                  ? serialized
+                  : Effect.fail(cause),
+              ),
+            ),
+          ),
+        );
+      });
     if (command.type !== "legacy-bootstrap.guard-rejection-delete") return serialized;
     return Effect.gen(function* () {
       const existing = yield* commandReceipts
@@ -11142,6 +11563,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     delegatedTaskResultPending,
     dispatch: dispatchWithReceipt,
     dispatchLegacyGuardRejectionDelete: dispatchWithReceipt,
+    dispatchLegacyFailureDelete: dispatchWithReceipt,
     getTimelinePage: (threadId, options) =>
       projectionStore
         .getTimelinePage(threadId, options)

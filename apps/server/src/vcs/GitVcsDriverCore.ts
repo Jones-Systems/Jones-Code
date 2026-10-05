@@ -3526,6 +3526,20 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           });
         // Fallible journal callbacks stay outside native best-effort catches.
         yield* journal.beforeEffect(step).pipe(Effect.mapError(mapJournalError));
+        // These characters can never form a Git branch; refusal is an owner decision,
+        // not an inference from a subprocess error or missing material afterward.
+        if (kind === "worktree.add" && /[\x00-\x20\x7f~^:?*\[\\]/u.test(targetBranch)) {
+          if (journal.neverInvoked !== undefined)
+            yield* journal
+              .neverInvoked(step, "input_validation_failed")
+              .pipe(Effect.mapError(mapJournalError));
+          return yield* new GitCommandError({
+            ...gitCommandContext({ operation: "GitVcsDriver.createWorktree", cwd, args: stepArgs }),
+            detail: "Legacy worktree input validation refused before invocation.",
+          });
+        }
+        // Entry is conservative: every error or interruption from this point remains
+        // possibly executed, even if a later observation finds no material.
         const result = yield* effect.pipe(Effect.result);
         const material = yield* readMaterial.pipe(Effect.result);
         const claim = Result.isSuccess(material) ? material.success : undefined;

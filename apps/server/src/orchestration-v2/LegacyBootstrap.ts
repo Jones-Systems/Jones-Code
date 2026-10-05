@@ -439,3 +439,46 @@ export function legacyPreparationReleaseBlocker(input: {
     return "Legacy synchronous setup has no exact successful completion.";
   return undefined;
 }
+
+/** Candidate only; the receiving owner must authenticate receipts and executing control before D. */
+export function legacyNeverInvokedWorkspaceFailure(run: import("./RecordedTypes.ts").RecordedRun) {
+  const preparation = run.legacyPreparation;
+  const policy = run.legacyBootstrap;
+  if (
+    preparation === undefined ||
+    policy === undefined ||
+    !policy.ownsNewThread ||
+    !sameLegacyBootstrapPolicy(preparation.policy, policy) ||
+    run.id !== policy.runId ||
+    run.threadId !== policy.threadId ||
+    run.userMessageId !== policy.messageId ||
+    run.startedAt !== null ||
+    run.legacyReleaseDecision !== undefined ||
+    preparation.generation !==
+      legacyPreparationGeneration({
+        runId: run.id,
+        birthEventId: preparation.birthEventId,
+        birthSequence: preparation.birthSequence,
+      }) ||
+    !["opted_out", "no_script"].includes(preparation.setup.status) ||
+    preparation.steps.length !== 1
+  )
+    return undefined;
+  const step = preparation.steps[0]!;
+  if (
+    step.effect.kind !== "worktree.add" ||
+    step.effect.input.before === undefined ||
+    step.state !== "known_no_effect_failure" ||
+    step.evidence?.type !== "never_invoked" ||
+    step.evidence.owner !== "git" ||
+    step.evidence.reason !== "input_validation_failed" ||
+    step.outcomeCommandId === undefined ||
+    step.outcomeEventId === undefined ||
+    step.inputHash !== legacyPayloadHash(canonicalLegacyPayload(step.effect)) ||
+    step.effectId !==
+      legacyPreparationEffectId({ generation: preparation.generation, effect: step.effect }) ||
+    preparation.commonDirectory !== step.effect.input.commonDirectory
+  )
+    return undefined;
+  return { preparation, step, policy };
+}

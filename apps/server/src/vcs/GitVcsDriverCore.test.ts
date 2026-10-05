@@ -2779,6 +2779,94 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect(
+      "legacy worktree owner proves invalid-input refusal was never invoked only after accepted intent",
+      () =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree("9".repeat(40), "legacy/invalid?");
+          const trace: string[] = [];
+          const result = yield* fixture.driver
+            .createWorktree(
+              {
+                cwd: fixture.cwd,
+                refName: "main",
+                newRefName: "legacy/invalid?",
+                path: fixture.owned,
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: (step) =>
+                    Effect.sync(() => {
+                      assert.equal(step.targetRef, "refs/heads/legacy/invalid?");
+                      assert.isDefined(step.before);
+                      trace.push("accepted-intent-readback");
+                    }),
+                  neverInvoked: (step, reason) =>
+                    Effect.sync(() => {
+                      assert.equal(step.kind, "worktree.add");
+                      assert.equal(reason, "input_validation_failed");
+                      assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+                      trace.push("never-invoked-outcome-readback");
+                    }),
+                  afterEffect: () => Effect.die("No execution outcome when invocation was refused"),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(trace, ["accepted-intent-readback", "never-invoked-outcome-readback"]);
+          assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+          assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(fixture.owned));
+        }),
+    );
+
+    it.effect.each(["intent_lost", "outcome_lost"] as const)(
+      "legacy never-invoked refusal preserves unknown journal readback for $scenario",
+      (scenario) =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree("8".repeat(40), "legacy/invalid?");
+          const trace: string[] = [];
+          const unavailable = () =>
+            new GitCommandError({
+              operation: "fixture.readback",
+              command: "git",
+              cwd: fixture.cwd,
+              detail: "Exact journal readback unavailable",
+            });
+          const result = yield* fixture.driver
+            .createWorktree(
+              {
+                cwd: fixture.cwd,
+                refName: "main",
+                newRefName: "legacy/invalid?",
+                path: fixture.owned,
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: () =>
+                    Effect.sync(() => {
+                      trace.push("intent");
+                    }).pipe(
+                      Effect.andThen(
+                        scenario === "intent_lost" ? Effect.fail(unavailable()) : Effect.void,
+                      ),
+                    ),
+                  neverInvoked: () =>
+                    Effect.sync(() => {
+                      trace.push("outcome");
+                    }).pipe(Effect.andThen(Effect.fail(unavailable()))),
+                  afterEffect: () => Effect.die("Uninvoked mutation cannot report execution"),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(trace, scenario === "intent_lost" ? ["intent"] : ["intent", "outcome"]);
+          assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+          assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(fixture.owned));
+        }),
+    );
+
     it.effect("legacy worktree intent refusal prevents add and config writes", () =>
       Effect.gen(function* () {
         const { cwd, owned, commands, driver } = yield* syntheticLegacyWorktree(

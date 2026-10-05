@@ -2,6 +2,8 @@ import {
   LegacyOwnedTerminalControl,
   LegacyNoTerminalControl,
   LegacyDeletionProvenance,
+  LegacyFailureDeletionProvenance,
+  type LegacyFailureDeleteCommand,
   type LegacyGuardRejectionDeleteCommand,
   type LegacyPreparationUpdate,
   type LegacyPreparation,
@@ -470,6 +472,112 @@ const make = Effect.gen(function* () {
     return true;
   });
 
+  const deleteLegacyWorkspaceFailureShell = Effect.fn(
+    "ThreadLaunchService.deleteLegacyWorkspaceFailureShell",
+  )(function* (input: PreparationInput, threadId: ThreadId, runId: RunId) {
+    const policy = input.legacyBootstrap;
+    if (policy === undefined || !policy.ownsNewThread) return false;
+    const projection = yield* threads
+      .getThreadProjection(threadId)
+      .pipe(Effect.mapError(mapError(input, "fail-run", threadId)));
+    const run = projection.runs.find((entry) => entry.id === runId);
+    const decision = run?.legacyPreparationFailureDecision;
+    if (run === undefined || decision === undefined) return false;
+    const receivingPolicy = { ...policy, runId };
+    if (!sameLegacyBootstrapPolicy(decision.policy, receivingPolicy))
+      return yield* mapError(
+        input,
+        "fail-run",
+        threadId,
+      )("Workspace-failure policy changed; retain the shell.");
+    const control = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)({
+      version: 1,
+      type: "no_control",
+      policy: receivingPolicy,
+      threadId,
+      runId,
+      claimEventId: decision.claimEventId,
+      claimSequence: decision.claimSequence,
+      claimReceiptSequence: decision.claimReceiptSequence,
+      birthEventId: decision.birthEventId,
+      birthSequence: decision.birthSequence,
+      birthReceiptSequence: decision.birthReceiptSequence,
+      preparationGeneration: decision.preparationGeneration,
+      workspacePath: decision.workspacePath,
+      projectWorkspaceRoot: decision.projectWorkspaceRoot,
+    }).pipe(Effect.mapError(mapError(input, "fail-run", threadId)));
+    const command: LegacyFailureDeleteCommand = {
+      type: "legacy-bootstrap.failure-delete",
+      commandId: CommandId.make(`${policy.createCommandId}:failure-delete`),
+      threadId,
+      runId,
+      legacyBootstrap: receivingPolicy,
+      legacyNoControl: control,
+    };
+    const dispatch = threads.dispatchLegacyFailureDelete;
+    if (dispatch === undefined) return false;
+    const dispatched = yield* dispatch(command).pipe(Effect.result);
+    const receipt = yield* receipts
+      .getByCommandId(command.commandId)
+      .pipe(Effect.mapError(mapError(input, "fail-run", threadId)));
+    const events = Array.from(
+      yield* eventSink
+        .readByCommandId({ commandId: command.commandId })
+        .pipe(Stream.runCollect, Effect.mapError(mapError(input, "fail-run", threadId))),
+    );
+    if (Option.isNone(receipt)) return false;
+    const evidence = events[0];
+    const tombstone = events[1];
+    const recordedDecision =
+      evidence?.event.type === "run.updated"
+        ? evidence.event.payload.legacyPreparationFailureDecision
+        : undefined;
+    const deletion = recordedDecision?.deletion;
+    const validated =
+      deletion === undefined
+        ? undefined
+        : yield* Schema.decodeUnknownEffect(LegacyFailureDeletionProvenance)(deletion).pipe(
+            Effect.mapError(mapError(input, "fail-run", threadId)),
+          );
+    const { deletion: _oldDeletion, ...original } = decision;
+    const { deletion: _newDeletion, ...persisted } = recordedDecision ?? decision;
+    const effects = yield* outbox
+      .listByCommandId(command.commandId)
+      .pipe(Effect.mapError(mapError(input, "fail-run", threadId)));
+    if (
+      receipt.value.status !== "accepted" ||
+      receipt.value.commandType !== command.type ||
+      receipt.value.threadId !== threadId ||
+      (dispatched._tag === "Success" &&
+        receipt.value.resultSequence !== dispatched.success.sequence) ||
+      events.length !== 2 ||
+      evidence?.commandId !== command.commandId ||
+      evidence.event.type !== "run.updated" ||
+      evidence.event.id !== `${command.commandId}:event` ||
+      evidence.event.threadId !== threadId ||
+      evidence.event.runId !== runId ||
+      validated?.provenance.type !== "no_control" ||
+      validated.provenance.commandId !== command.commandId ||
+      !Schema.toEquivalence(LegacyNoTerminalControl)(validated.provenance.control, control) ||
+      validated.failureCommandId !== original.failureCommandId ||
+      validated.failureEvidenceEventId !== original.evidenceEventId ||
+      canonicalLegacyPayload(original) !== canonicalLegacyPayload(persisted) ||
+      tombstone?.commandId !== command.commandId ||
+      tombstone.event.type !== "thread.deleted" ||
+      tombstone.event.threadId !== threadId ||
+      tombstone.event.payload.deletedAt === null ||
+      tombstone.sequence !== receipt.value.resultSequence ||
+      evidence.sequence + 1 !== tombstone.sequence ||
+      effects.length !== 0
+    )
+      return yield* mapError(
+        input,
+        "fail-run",
+        threadId,
+      )("Workspace-failure D outcome is unresolved; preserve exact identity and original error.");
+    return true;
+  });
+
   const legacyPreparationJournal = Effect.fn("ThreadLaunchService.legacyPreparationJournal")(
     function* (input: PreparationInput, threadId: ThreadId, runId: RunId) {
       const current = yield* threads
@@ -667,6 +775,27 @@ const make = Effect.gen(function* () {
   ) {
     const journal = yield* legacyPreparationJournal(input, threadId, runId);
     const hooks: LegacyWorktreePreparationHooks = {
+      neverInvoked: (step, reason) =>
+        Effect.gen(function* () {
+          const { kind, ...effectInput } = step;
+          const intent = journal.preparation?.steps.find((entry) => entry.effect.kind === kind);
+          if (
+            kind !== "worktree.add" ||
+            intent?.state !== "intent" ||
+            canonicalLegacyPayload(intent.effect) !==
+              canonicalLegacyPayload({ kind, input: effectInput })
+          )
+            return yield* mapError(
+              input,
+              "read-receipt",
+              threadId,
+            )("Never-invoked owner refusal differs from its exact accepted intent.");
+          yield* journal.outcome(kind, "known_no_effect_failure", {
+            type: "never_invoked",
+            owner: "git",
+            reason,
+          });
+        }),
       beforeEffect: (step) =>
         Effect.gen(function* () {
           if (step.kind === "worktree.add" && step.before === undefined)
@@ -1614,6 +1743,7 @@ const make = Effect.gen(function* () {
     runId: RunId | null,
   ) {
     const completion = (yield* Ref.get(scheduledLaunches)).legacyResults.get(input.commandId);
+    let failureDeleted = false;
     const prepare = prepareInBackground(input, threadId, runId).pipe(
       Effect.onError((cause) => {
         const failure = Cause.squash(cause);
@@ -1621,15 +1751,45 @@ const make = Effect.gen(function* () {
           input.legacyBootstrap !== undefined &&
           isThreadLaunchError(failure) &&
           failure.operation === "release-run";
-        return releaseRejected
-          ? Effect.void
-          : failPreparedRun(
-              input,
-              threadId,
-              runId,
-              Cause.hasInterruptsOnly(cause) ? "Worktree setup cancelled." : failure,
-            );
+        if (releaseRejected) return Effect.void;
+        return failPreparedRun(
+          input,
+          threadId,
+          runId,
+          Cause.hasInterruptsOnly(cause) ? "Worktree setup cancelled." : failure,
+        ).pipe(
+          Effect.andThen(() =>
+            input.legacyBootstrap === undefined || runId === null
+              ? Effect.void
+              : deleteLegacyWorkspaceFailureShell(input, threadId, runId).pipe(
+                  Effect.tap((deleted) =>
+                    Effect.sync(() => {
+                      failureDeleted = deleted;
+                    }),
+                  ),
+                  Effect.catchCause((cleanupCause) =>
+                    Effect.logWarning("Workspace-failure D was not qualified", {
+                      commandId: input.commandId,
+                      threadId,
+                      cleanupCause,
+                    }),
+                  ),
+                ),
+          ),
+        );
       }),
+      Effect.mapError((failure) =>
+        failureDeleted
+          ? new ThreadLaunchError({
+              operation: failure.operation,
+              commandId: failure.commandId,
+              projectId: failure.projectId,
+              ...(failure.threadId === undefined ? {} : { threadId: failure.threadId }),
+              cause: failure.cause,
+              bootstrapThreadDisposition: "deleted",
+            })
+          : failure,
+      ),
     );
     yield* prepare.pipe(
       Effect.exit,

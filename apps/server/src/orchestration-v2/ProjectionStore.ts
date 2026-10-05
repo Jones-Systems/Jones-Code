@@ -7,6 +7,8 @@ import {
   RecordedAppThreadJson as OrchestrationV2AppThreadJsonSchema,
   RecordedRunJson as OrchestrationV2RunJsonSchema,
   LegacyDeletionProvenance,
+  LegacyPreparationFailureDecision,
+  LegacyFailureDeletionProvenance,
 } from "./RecordedTypes.ts";
 
 import {
@@ -71,6 +73,7 @@ import {
   sameLegacyBootstrapPolicy,
   legacyPreparationGeneration,
   legacyBootstrapCreateCommandId,
+  legacyNeverInvokedWorkspaceFailure,
 } from "./LegacyBootstrap.ts";
 import { isPublicOrchestrationEvent } from "./WireProjection.ts";
 import * as Context from "effect/Context";
@@ -715,12 +718,145 @@ function validateDeletionProvenance(
   return true;
 }
 
+function validateFailureDecision(
+  current: OrchestrationV2Run | undefined,
+  next: OrchestrationV2Run,
+  event: Extract<OrchestrationV2DomainEvent, { readonly type: "run.created" | "run.updated" }>,
+): boolean {
+  const incoming = next.legacyPreparationFailureDecision;
+  const accepted = current?.legacyPreparationFailureDecision;
+  const fail = () => {
+    throw new Error("Malformed or replaced legacy workspace-failure provenance.");
+  };
+  if (incoming === undefined) return false;
+  const decision = Schema.decodeUnknownSync(LegacyPreparationFailureDecision)(incoming);
+  const { deletion: _incomingDeletion, ...original } = decision;
+  const { deletion: _acceptedDeletion, ...previous } = accepted ?? decision;
+  if (
+    accepted !== undefined &&
+    canonicalLegacyPayload(original) !== canonicalLegacyPayload(previous)
+  )
+    return fail();
+  if (accepted !== undefined) {
+    if (
+      current === undefined ||
+      event.type !== "run.updated" ||
+      next.id !== current.id ||
+      next.threadId !== current.threadId ||
+      event.threadId !== current.threadId ||
+      event.runId !== current.id
+    )
+      return fail();
+    if (decision.deletion === undefined) return false;
+    if (accepted.deletion !== undefined) {
+      if (
+        !Schema.toEquivalence(LegacyFailureDeletionProvenance)(accepted.deletion, decision.deletion)
+      )
+        return fail();
+      return true;
+    }
+  }
+  const candidate = current === undefined ? undefined : legacyNeverInvokedWorkspaceFailure(current);
+  if (
+    current === undefined ||
+    candidate === undefined ||
+    event.type !== "run.updated" ||
+    next.id !== current.id ||
+    next.threadId !== current.threadId ||
+    event.threadId !== current.threadId ||
+    event.runId !== current.id ||
+    next.status !== "failed" ||
+    next.startedAt !== null ||
+    canonicalLegacyPayload(next.legacyPreparation) !==
+      canonicalLegacyPayload(current.legacyPreparation) ||
+    canonicalLegacyPayload(next.legacyBootstrap) !==
+      canonicalLegacyPayload(current.legacyBootstrap) ||
+    !sameLegacyBootstrapPolicy(decision.policy, candidate.policy) ||
+    decision.failureCommandId !== `${candidate.policy.createCommandId}:fail` ||
+    decision.preparationGeneration !== candidate.preparation.generation ||
+    decision.projectWorkspaceRoot !== candidate.preparation.projectWorkspaceRoot ||
+    decision.workspacePath !== candidate.preparation.projectWorkspaceRoot ||
+    decision.failedEffectId !== candidate.step.effectId ||
+    decision.failedInputHash !== candidate.step.inputHash ||
+    decision.outcomeCommandId !== candidate.step.outcomeCommandId ||
+    decision.outcomeEventId !== candidate.step.outcomeEventId ||
+    decision.outcomeEventSequence !== decision.outcomeReceiptSequence ||
+    decision.outcomeEventSequence <= decision.birthReceiptSequence ||
+    (
+      [
+        "claimEventId",
+        "claimSequence",
+        "claimReceiptSequence",
+        "birthEventId",
+        "birthSequence",
+        "birthReceiptSequence",
+      ] as const
+    ).some((field) => decision[field] !== candidate.preparation[field])
+  )
+    return fail();
+  if (accepted === undefined) {
+    if (
+      current.status !== "preparing" ||
+      event.id !== decision.evidenceEventId ||
+      decision.deletion !== undefined
+    )
+      return fail();
+    return true;
+  }
+  if (decision.deletion === undefined) return false;
+  if (accepted.deletion !== undefined) {
+    if (
+      !Schema.toEquivalence(LegacyFailureDeletionProvenance)(accepted.deletion, decision.deletion)
+    )
+      return fail();
+    return true;
+  }
+  const deletion = Schema.decodeUnknownSync(LegacyFailureDeletionProvenance)(decision.deletion);
+  const proof = deletion.provenance;
+  if (
+    current.status !== "failed" ||
+    proof.type !== "no_control" ||
+    event.id !== proof.evidenceEventId ||
+    proof.evidenceEventId !== `${proof.commandId}:event` ||
+    proof.commandId !== `${decision.policy.createCommandId}:failure-delete` ||
+    proof.threadId !== current.threadId ||
+    proof.runId !== current.id ||
+    !sameLegacyBootstrapPolicy(proof.policy, decision.policy) ||
+    !sameLegacyBootstrapPolicy(proof.control.policy, decision.policy) ||
+    proof.control.threadId !== current.threadId ||
+    proof.control.runId !== current.id ||
+    proof.preparationGeneration !== decision.preparationGeneration ||
+    proof.control.preparationGeneration !== decision.preparationGeneration ||
+    proof.workspacePath !== decision.workspacePath ||
+    proof.projectWorkspaceRoot !== decision.projectWorkspaceRoot ||
+    proof.control.workspacePath !== decision.workspacePath ||
+    proof.control.projectWorkspaceRoot !== decision.projectWorkspaceRoot ||
+    deletion.failureCommandId !== decision.failureCommandId ||
+    deletion.failureEvidenceEventId !== decision.evidenceEventId ||
+    deletion.failureEventSequence !== deletion.failureReceiptSequence ||
+    deletion.failureEventSequence <= decision.outcomeEventSequence ||
+    (
+      [
+        "claimEventId",
+        "claimSequence",
+        "claimReceiptSequence",
+        "birthEventId",
+        "birthSequence",
+        "birthReceiptSequence",
+      ] as const
+    ).some((field) => proof[field] !== decision[field] || proof.control[field] !== decision[field])
+  )
+    return fail();
+  return true;
+}
+
 function preserveRunRecordedFields(
   current: OrchestrationV2Run | undefined,
   next: OrchestrationV2Run,
   event: Extract<OrchestrationV2DomainEvent, { readonly type: "run.created" | "run.updated" }>,
 ): OrchestrationV2Run {
   const authoritativeDeletion = validateDeletionProvenance(current, next, event);
+  const authoritativeFailure = validateFailureDecision(current, next, event);
   const eventId = event.id;
   if (current === undefined) return next;
   return {
@@ -735,6 +871,9 @@ function preserveRunRecordedFields(
       : {}),
     ...(current.legacyPreparation !== undefined && !isPreparationJournalEvent(next, eventId)
       ? { legacyPreparation: current.legacyPreparation }
+      : {}),
+    ...(current.legacyPreparationFailureDecision !== undefined && !authoritativeFailure
+      ? { legacyPreparationFailureDecision: current.legacyPreparationFailureDecision }
       : {}),
     ...(current.legacyReleaseDecision !== undefined &&
     !authoritativeDeletion &&
@@ -1985,6 +2124,37 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   cause: "D evidence lacks exact durable command correlation.",
                 });
             }
+            const authoritativeFailure = yield* Effect.try({
+              try: () => validateFailureDecision(current, event.payload, event),
+              catch: (cause) =>
+                new ProjectionStoreApplyEventError({ eventType: event.type, cause }),
+            });
+            const failureDecision = event.payload.legacyPreparationFailureDecision;
+            if (
+              failureDecision !== undefined &&
+              (current?.legacyPreparationFailureDecision === undefined ||
+                (failureDecision.deletion !== undefined &&
+                  current.legacyPreparationFailureDecision.deletion === undefined))
+            ) {
+              const expectedCommandId =
+                failureDecision.deletion?.provenance.commandId ?? failureDecision.failureCommandId;
+              const recorded = yield* sql<{
+                command_id: string | null;
+                stream_id: string;
+                event_type: string;
+              }>`
+                SELECT command_id, stream_id, event_type FROM orchestration_events WHERE event_id = ${event.id}`;
+              if (
+                recorded.length !== 1 ||
+                recorded[0]?.command_id !== expectedCommandId ||
+                recorded[0].stream_id !== event.threadId ||
+                recorded[0].event_type !== "run.updated"
+              )
+                return yield* new ProjectionStoreApplyEventError({
+                  eventType: event.type,
+                  cause: "Workspace-failure evidence lacks exact durable command correlation.",
+                });
+            }
             const payloadJson = yield* encodeRunPayload(event.payload);
             const payload = parseEncodedPayload(payloadJson);
             let preservedPayload: Statement.Fragment = keepRecordedRunField(
@@ -1995,6 +2165,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ["$.legacyBootstrap", false],
               ["$.workspaceRunSetupScript", true],
               ["$.legacyPreparationFailureKnown", true],
+              ["$.legacyPreparationFailureDecision", authoritativeFailure],
               ["$.legacyPreparation", isPreparationJournalEvent(event.payload, event.id)],
               [
                 "$.legacyReleaseDecision",

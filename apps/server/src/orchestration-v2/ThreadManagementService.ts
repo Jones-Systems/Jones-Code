@@ -1,5 +1,6 @@
 import {
   type LegacyGuardRejectionDeleteCommand,
+  type LegacyFailureDeleteCommand,
   type RecordedServerCommand as OrchestrationV2ServerCommand,
   type RecordedRun as OrchestrationV2Run,
   type RecordedThreadProjection as OrchestrationV2ThreadProjection,
@@ -279,6 +280,9 @@ export interface ThreadManagementServiceShape {
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
+  readonly dispatchLegacyFailureDelete?: (
+    command: LegacyFailureDeleteCommand,
   ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
   readonly dispatchLegacyGuardRejectionDelete?: (
     command: LegacyGuardRejectionDeleteCommand,
@@ -730,6 +734,11 @@ const make = Effect.gen(function* () {
   return ThreadManagementService.of({
     ensureLegacyTranscript,
     dispatch,
+    ...(orchestrator.dispatchLegacyFailureDelete === undefined
+      ? {}
+      : {
+          dispatchLegacyFailureDelete: orchestrator.dispatchLegacyFailureDelete,
+        }),
     ...(orchestrator.dispatchLegacyGuardRejectionDelete === undefined
       ? {}
       : {

@@ -374,6 +374,59 @@ export const LegacyPreparationUpdate = Schema.declareConstructor<
 );
 export type LegacyPreparationUpdate = typeof LegacyPreparationUpdate.Type;
 
+const legacyFailureDeletionShape = Schema.Struct({
+  basis: Schema.Literal("workspace_failure"),
+  provenance: LegacyDeletionProvenance,
+  failureCommandId: CommandId,
+  failureEvidenceEventId: EventId,
+  failureEventSequence: NonNegativeInt,
+  failureReceiptSequence: NonNegativeInt,
+});
+export const LegacyFailureDeletionProvenance = Schema.declareConstructor<
+  typeof legacyFailureDeletionShape.Type,
+  typeof legacyFailureDeletionShape.Encoded
+>()(
+  [legacyFailureDeletionShape],
+  ([codec]) =>
+    (input, _ast, options) =>
+      SchemaParser.decodeUnknownEffect(codec)(input, { ...options, onExcessProperty: "error" }),
+);
+export type LegacyFailureDeletionProvenance = typeof LegacyFailureDeletionProvenance.Type;
+
+const legacyFailureDecisionShape = Schema.Struct({
+  version: Schema.Literal(1),
+  status: Schema.Literal("known_workspace_failure"),
+  policy: OrchestrationV2LegacyBootstrapPolicy,
+  claimEventId: EventId,
+  claimSequence: NonNegativeInt,
+  claimReceiptSequence: NonNegativeInt,
+  birthEventId: EventId,
+  birthSequence: NonNegativeInt,
+  birthReceiptSequence: NonNegativeInt,
+  preparationGeneration: Schema.String,
+  projectWorkspaceRoot: Schema.String,
+  workspacePath: Schema.String,
+  failedEffectId: Schema.String,
+  failedInputHash: Schema.String,
+  outcomeCommandId: CommandId,
+  outcomeEventId: EventId,
+  outcomeEventSequence: NonNegativeInt,
+  outcomeReceiptSequence: NonNegativeInt,
+  failureCommandId: CommandId,
+  evidenceEventId: EventId,
+  deletion: Schema.optional(LegacyFailureDeletionProvenance),
+});
+export const LegacyPreparationFailureDecision = Schema.declareConstructor<
+  typeof legacyFailureDecisionShape.Type,
+  typeof legacyFailureDecisionShape.Encoded
+>()(
+  [legacyFailureDecisionShape],
+  ([codec]) =>
+    (input, _ast, options) =>
+      SchemaParser.decodeUnknownEffect(codec)(input, { ...options, onExcessProperty: "error" }),
+);
+export type LegacyPreparationFailureDecision = typeof LegacyPreparationFailureDecision.Type;
+
 interface LegacyGuardRejectionDeleteIdentity {
   readonly type: "legacy-bootstrap.guard-rejection-delete";
   readonly commandId: CommandId;
@@ -387,6 +440,13 @@ export type LegacyGuardRejectionDeleteCommand = LegacyGuardRejectionDeleteIdenti
     | { readonly legacyNoControl: LegacyNoTerminalControl; readonly legacyOwnedControl?: never }
   );
 
+export type LegacyFailureDeleteCommand = Extract<
+  OrchestrationV2ServerCommand,
+  {
+    readonly type: "legacy-bootstrap.failure-delete";
+  }
+> & { readonly legacyNoControl: LegacyNoTerminalControl };
+
 export type RecordedServerCommand =
   | Exclude<OrchestrationV2ServerCommand, { readonly type: "prepared-run.progress" }>
   | (Extract<OrchestrationV2ServerCommand, { readonly type: "prepared-run.progress" }> & {
@@ -396,6 +456,7 @@ export type RecordedServerCommand =
 const recordedRunFields = {
   legacyPreparation: Schema.optional(LegacyPreparation),
   legacyReleaseDecision: Schema.optional(LegacyReleaseDecision),
+  legacyPreparationFailureDecision: Schema.optional(LegacyPreparationFailureDecision),
   workspaceRunSetupScript: Schema.optional(Schema.Boolean),
   legacyBootstrap: Schema.optional(OrchestrationV2LegacyBootstrapPolicy),
   legacyPreparationFailureKnown: Schema.optional(Schema.Boolean),

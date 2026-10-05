@@ -1,3 +1,6 @@
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import * as Sink from "effect/Sink";
+import { makeGitVcsDriverCore } from "../vcs/GitVcsDriverCore.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as EventStore from "./EventStore.ts";
 import { awaitThreadCreationCleanup } from "./ThreadDeletion.ts";
@@ -6358,6 +6361,16 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
       const deleted = outcome === "deleted";
       const name = `legacy-failure-${outcome}`;
       const f = yield* queueGuardFixture(name);
+      const owner = yield* LegacyGuardTerminalFixture;
+      const fs = yield* FileSystem.FileSystem;
+      const commonDirectory = `${owner.baseDir}/.git`;
+      const worktreePath = `${owner.baseDir}/owned-worktree`;
+      yield* fs.makeDirectory(commonDirectory);
+      yield* moveProject(
+        ProjectId.make(`guard:project:${name}`),
+        owner.baseDir,
+        "2026-10-05T00:00:00.000Z",
+      );
       const threadId = ThreadId.make(`bootstrap:${name}`);
       const createCommandId = legacyBootstrapCreateCommandId(threadId, f.command.commandId);
       const policy = {
@@ -6391,10 +6404,188 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
         threadId,
         commandId: policy.birthCommandId,
         dispatchGuard: undefined,
-        dispatchMode: { type: "defer_start", workspaceStrategy: { type: "root" } },
+        dispatchMode: {
+          type: "defer_start",
+          workspaceStrategy: { type: "worktree", baseRef: "main", startFromOrigin: false },
+          runSetupScript: false,
+        },
         legacyBootstrap: policy,
       });
       const run = (yield* f.engine.getThreadProjection(threadId)).runs[0]!;
+      const sink = yield* EventSink.EventSinkV2;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      const collect = (commandId: CommandId) =>
+        sink.readByCommandId({ commandId }).pipe(
+          Stream.runCollect,
+          Effect.map((events) => Array.from(events)),
+        );
+      const receivingPolicy = { ...policy, runId: run.id };
+      const proof = legacyBootstrapBirth({
+        policy: receivingPolicy,
+        claimEvents: yield* collect(createCommandId),
+        birthEvents: yield* collect(policy.birthCommandId),
+      });
+      const claim = yield* receipts.getByCommandId(createCommandId);
+      const ownedBirthReceipt = yield* receipts.getByCommandId(policy.birthCommandId);
+      if (proof.type !== "valid" || Option.isNone(claim) || Option.isNone(ownedBirthReceipt))
+        return yield* Effect.die("Actual registered claim/birth proof missing");
+      const generation = legacyPreparationGeneration({
+        runId: run.id,
+        birthEventId: proof.birthEventId,
+        birthSequence: proof.sequence,
+      });
+      let preparation: LegacyPreparation = {
+        version: 1,
+        policy: receivingPolicy,
+        claimEventId: proof.claimEventId,
+        claimSequence: proof.claimSequence,
+        claimReceiptSequence: claim.value.resultSequence,
+        birthEventId: proof.birthEventId,
+        birthSequence: proof.sequence,
+        birthReceiptSequence: ownedBirthReceipt.value.resultSequence,
+        generation,
+        projectWorkspaceRoot: owner.baseDir,
+        commonDirectory,
+        setup: { status: "opted_out" },
+        steps: [],
+      };
+      const progress = (commandId: CommandId, update: LegacyPreparationUpdate) =>
+        Effect.gen(function* () {
+          const result = yield* f.engine.dispatch({
+            type: "prepared-run.progress",
+            commandId,
+            threadId,
+            runId: run.id,
+            phase: "worktree",
+            legacyPreparationUpdate: update,
+          });
+          const recorded = (yield* collect(commandId))[0];
+          const receipt = yield* receipts.getByCommandId(commandId);
+          if (
+            recorded?.event.type !== "run.updated" ||
+            recorded.sequence !== result.sequence ||
+            Option.isNone(receipt) ||
+            receipt.value.status !== "accepted" ||
+            recorded.event.payload.legacyPreparation === undefined
+          )
+            return yield* Effect.die("Actual owner journal acceptance/readback missing");
+          preparation = recorded.event.payload.legacyPreparation;
+        });
+      yield* progress(CommandId.make(`${createCommandId}:preparation:${generation}:initialize`), {
+        type: "initialize",
+        preparation,
+      });
+      let intent: LegacyPreparation["steps"][number] | undefined;
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          if (!ChildProcess.isStandardCommand(command))
+            return yield* Effect.die("Unexpected synthetic pipeline");
+          const args = [...command.args];
+          if (args.includes("add")) {
+            yield* fs.makeDirectory(worktreePath);
+            yield* fs.writeFileString(`${worktreePath}/partial`, "unknown entered material");
+          }
+          const stdout = args.includes("--git-common-dir")
+            ? `${commonDirectory}\n`
+            : args.includes("rev-parse")
+              ? `${"9".repeat(40)}\n`
+              : "";
+          return ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(1),
+            exitCode: Effect.succeed(
+              ChildProcessSpawner.ExitCode(
+                args.includes("add") || args.includes("--get-regexp") ? 1 : 0,
+              ),
+            ),
+            isRunning: Effect.succeed(false),
+            kill: () => Effect.void,
+            unref: Effect.succeed(Effect.void),
+            stdin: Sink.drain,
+            stdout: Stream.encodeText(Stream.make(stdout)),
+            stderr: Stream.empty,
+            all: Stream.empty,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+          });
+        }),
+      );
+      const driver = yield* makeGitVcsDriverCore().pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provide(ServerConfigLayer),
+      );
+      yield* driver
+        .createWorktree(
+          {
+            cwd: owner.baseDir,
+            refName: "main",
+            newRefName: known ? "invalid?" : "valid",
+            path: worktreePath,
+          },
+          {
+            legacyPreparation: {
+              beforeEffect: (planned) =>
+                Effect.gen(function* () {
+                  const { kind, ...input } = planned;
+                  const effect = { kind, input };
+                  const effectId = legacyPreparationEffectId({ generation, effect });
+                  const commandId = CommandId.make(
+                    `${createCommandId}:preparation:${generation}:${effectId}:intent`,
+                  );
+                  intent = {
+                    effect,
+                    effectId,
+                    inputHash: legacyPayloadHash(canonicalLegacyPayload(effect)),
+                    intentCommandId: commandId,
+                    intentEventId: EventId.make(`${commandId}:event`),
+                    state: "intent",
+                  };
+                  yield* progress(commandId, { type: "intent", step: intent });
+                }),
+              neverInvoked: (planned, reason) =>
+                Effect.gen(function* () {
+                  if (intent === undefined) return yield* Effect.die("Missing actual owner intent");
+                  const { kind, ...input } = planned;
+                  if (
+                    canonicalLegacyPayload(intent.effect) !==
+                    canonicalLegacyPayload({ kind, input })
+                  )
+                    return yield* Effect.die("Owner effect input changed");
+                  const commandId = CommandId.make(
+                    `${createCommandId}:preparation:${generation}:${intent.effectId}:outcome`,
+                  );
+                  yield* progress(commandId, {
+                    type: "outcome",
+                    step: {
+                      ...intent,
+                      state: "known_no_effect_failure",
+                      outcomeCommandId: commandId,
+                      outcomeEventId: EventId.make(`${commandId}:event`),
+                      evidence: { type: "never_invoked", owner: "git", reason },
+                    },
+                  });
+                }),
+              afterEffect: () =>
+                Effect.gen(function* () {
+                  if (intent === undefined || known)
+                    return yield* Effect.die("Unexpected executing owner outcome");
+                  const commandId = CommandId.make(
+                    `${createCommandId}:preparation:${generation}:${intent.effectId}:outcome`,
+                  );
+                  yield* progress(commandId, {
+                    type: "outcome",
+                    step: {
+                      ...intent,
+                      state: "unknown",
+                      outcomeCommandId: commandId,
+                      outcomeEventId: EventId.make(`${commandId}:event`),
+                      evidence: { type: "unknown", reason: "partial_material" },
+                    },
+                  });
+                }),
+            },
+          },
+        )
+        .pipe(Effect.result);
       yield* f.engine.dispatch({
         type: "prepared-run.fail",
         commandId: CommandId.make(`${createCommandId}:fail`),
@@ -6414,8 +6605,23 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
         threadId,
         runId: run.id,
         legacyBootstrap: { ...policy, runId: run.id },
+        legacyNoControl: yield* Schema.decodeEffect(LegacyNoTerminalControl)({
+          version: 1,
+          type: "no_control",
+          policy: receivingPolicy,
+          threadId,
+          runId: run.id,
+          claimEventId: proof.claimEventId,
+          claimSequence: proof.claimSequence,
+          claimReceiptSequence: claim.value.resultSequence,
+          birthEventId: proof.birthEventId,
+          birthSequence: proof.sequence,
+          birthReceiptSequence: ownedBirthReceipt.value.resultSequence,
+          preparationGeneration: generation,
+          workspacePath: owner.baseDir,
+          projectWorkspaceRoot: owner.baseDir,
+        }),
       };
-      const sink = yield* EventSink.EventSinkV2;
       const commit = sink.commitCommand;
       const failedCommit =
         outcome === "delete-persistence-failed"
@@ -6432,18 +6638,19 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
             )
           : undefined;
       if (deleted) {
-        const deleted = yield* f.engine.dispatch(deletion);
+        const deleted = yield* f.engine.dispatchLegacyFailureDelete!(deletion);
         assert.isTrue(deleted.storedEvents.some(({ event }) => event.type === "thread.deleted"));
         const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
         const receipt = yield* receipts.getByCommandId(deletion.commandId);
         assert.isTrue(Option.isSome(receipt));
         if (Option.isSome(receipt)) assert.equal(receipt.value.resultSequence, deleted.sequence);
-        const replayed = yield* f.engine.dispatch(deletion);
+        const replayed = yield* f.engine.dispatchLegacyFailureDelete!(deletion);
         assert.equal(replayed.sequence, deleted.sequence);
       } else {
-        const rejected = yield* f.engine
-          .dispatch(deletion)
-          .pipe(Effect.flip, Effect.ensuring(Effect.sync(() => failedCommit?.mockRestore())));
+        const rejected = yield* f.engine.dispatchLegacyFailureDelete!(deletion).pipe(
+          Effect.flip,
+          Effect.ensuring(Effect.sync(() => failedCommit?.mockRestore())),
+        );
         assert.equal(rejected._tag, "OrchestratorDispatchError");
         assert.isNull((yield* f.engine.getThreadProjection(threadId)).thread.deletedAt);
       }
@@ -6467,7 +6674,11 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
           ({ request }) => request.type === "provider-turn.start",
         ),
       );
-    }),
+    }).pipe(
+      Effect.provide(
+        Layer.fresh(LegacyGuardOwnerTestLayer).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
   );
   it.effect("blocks durable attention flags and live background work", () =>
     Effect.gen(function* () {

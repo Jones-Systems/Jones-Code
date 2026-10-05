@@ -1,3 +1,72 @@
+import * as WsTraceDiagnostics from "../diagnostics/TraceDiagnostics.ts";
+import * as WsProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
+import * as WsEffectOutbox from "./EffectOutbox.ts";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as WsHttpClient from "effect/unstable/http/HttpClient";
+import * as WsWorkspacePaths from "../workspace/WorkspacePaths.ts";
+import * as WsVcsProcess from "../vcs/VcsProcess.ts";
+import * as WsCodexInstallation from "../provider/CodexInstallation.ts";
+import * as WsAntigravityInstallation from "../provider/AntigravityInstallation.ts";
+import * as WsApplicationEventStore from "../persistence/Services/OrchestrationEventStore.ts";
+import * as WsProjectService from "../project/ProjectService.ts";
+import * as WsManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as WsThreadSearch from "../orchestration-v2/ThreadSearch.ts";
+import * as WsProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
+import * as WsAnalyticsService from "../telemetry/AnalyticsService.ts";
+import * as WsThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
+import * as WsScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
+import * as WsPullRequestService from "../pullRequest/PullRequestService.ts";
+import * as WsPullRequestSyncReactor from "../orchestration-v2/PullRequestSyncReactor.ts";
+import * as WsDeviceService from "../device/DeviceService.ts";
+import * as WsOrchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as WsUsageService from "../usage/UsageService.ts";
+import * as WsUsageLimitSources from "../usage/UsageLimitSources.ts";
+import * as WsProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
+import * as WsWorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
+import * as WsProjectCloneTracker from "../project/ProjectCloneTracker.ts";
+import * as WsRepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as WsAgentSessionImporter from "../project/AgentSessionImporter.ts";
+import * as WsCheckpointDiffQuery from "../checkpointing/CheckpointDiffQuery.ts";
+import * as WsKeybindings from "../keybindings.ts";
+import * as WsEnvironmentTheme from "../environmentTheme.ts";
+import * as WsExternalLauncher from "../process/externalLauncher.ts";
+import * as WsRemoteOpenTargets from "../environment/RemoteOpenTargets.ts";
+import * as WsGitWorkflowService from "../git/GitWorkflowService.ts";
+import * as WsReviewService from "../review/ReviewService.ts";
+import * as WsVcsProvisioningService from "../vcs/VcsProvisioningService.ts";
+import * as WsVcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
+import * as WsTerminalManager from "../terminal/Manager.ts";
+import * as WsPreviewManager from "../preview/Manager.ts";
+import * as WsPortScanner from "../preview/PortScanner.ts";
+import * as WsProviderRegistry from "../provider/Services/ProviderRegistry.ts";
+import * as WsModelManifest from "../provider/ModelManifest.ts";
+import * as WsProviderMaintenance from "../provider/providerMaintenance.ts";
+import * as WsProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import * as WsAcpRegistrySupport from "../provider/acp/AcpRegistrySupport.ts";
+import * as WsAcpRegistryRuntimeCoordinator from "../provider/acp/AcpRegistryRuntimeCoordinator.ts";
+import * as WsProviderAuthService from "../provider/Services/ProviderAuthService.ts";
+import * as WsServerSelfUpdate from "../cloud/selfUpdate.ts";
+import * as WsServerConfig from "../config.ts";
+import * as WsServerLifecycleEvents from "../serverLifecycleEvents.ts";
+import * as WsServerSettings from "../serverSettings.ts";
+import * as WsServerRuntimeStartup from "../serverRuntimeStartup.ts";
+import * as WsWorkspaceEntries from "../workspace/WorkspaceEntries.ts";
+import * as WsWorkspaceFileSystem from "../workspace/WorkspaceFileSystem.ts";
+import * as WsServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as WsBackgroundPolicy from "../background/BackgroundPolicy.ts";
+import * as WsEnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as WsSourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
+import * as WsProcessDiagnostics from "../diagnostics/ProcessDiagnostics.ts";
+import * as WsHostResources from "../resourceTelemetry/HostResources.ts";
+import * as WsProcessResourceMonitor from "../diagnostics/ProcessResourceMonitor.ts";
+import * as WsResourceTelemetry from "../resourceTelemetry/ResourceTelemetry.ts";
+import * as WsRelayClient from "@t3tools/shared/relayClient";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { websocketRpcRouteLayer } from "../ws.ts";
+import { ORCHESTRATION_PROTOCOL_QUERY_PARAM } from "@t3tools/contracts";
+import * as WsPreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+
 import { expect, it } from "vite-plus/test";
 import {
   AuthSessionId,
@@ -265,6 +334,131 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
       expect(serialized).toContain("Ordinary recorded thread");
     }
     expect(snapshotReads).toBe(2);
+  } finally {
+    await http.dispose();
+  }
+});
+
+it("rejects unauthenticated and query-token WebSocket ingress at the actual production auth boundary with zero RPC work", async () => {
+  let rpcWork = 0;
+  const denyRpcWork = () =>
+    Effect.sync(() => {
+      rpcWork++;
+    }).pipe(Effect.andThen(Effect.die("Unauthenticated request reached an RPC owner.")));
+  const config = WsServerConfig.layerTest(process.cwd(), { prefix: "legacy-wire-ws-gate-" });
+  const auth = WsEnvironmentAuth.layer.pipe(
+    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(ServerSecretStore.layer),
+    Layer.provideMerge(WsServerEnvironment.identityLayer),
+    Layer.provide(config),
+    Layer.provide(NodeServices.layer),
+  );
+  // Unrelated owners are deliberately unavailable; rejection must precede any RPC layer construction.
+  const deniedRpcOwners = Layer.mergeAll(
+    Layer.mock(Threads.ThreadManagementService)({ getThreadSnapshot: denyRpcWork }),
+    Layer.mock(WsApplicationEventStore.OrchestrationEventStore)({}),
+    Layer.mock(ProjectStore.ProjectStoreV2)({}),
+    Layer.mock(WsProjectService.ProjectService)({}),
+    Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
+      namedProjectsRoot: "/synthetic-unused-projects",
+    }),
+    Layer.mock(WsThreadSearch.ThreadSearch)({}),
+    Layer.mock(WsProviderSessionManager.ProviderSessionManagerV2)({}),
+    Layer.mock(WsAnalyticsService.AnalyticsService)({}),
+    Layer.mock(WsThreadLaunchService.ThreadLaunchService)({ launch: denyRpcWork }),
+    Layer.mock(WsScheduledTasks.ScheduledTaskService)({}),
+    Layer.mock(WsPullRequestService.PullRequestService)({}),
+    Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
+    Layer.mock(WsDeviceService.DeviceService)({}),
+    Layer.mock(WsOrchestrator.OrchestratorV2)({ dispatch: denyRpcWork }),
+    Layer.mock(WsUsageService.UsageService)({}),
+    Layer.mock(WsUsageLimitSources.UsageLimitSources)({}),
+    Layer.mock(WsProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
+    Layer.mock(WsWorktreeSetupTracker.WorktreeSetupTracker)({}),
+    Layer.mock(WsProjectCloneTracker.ProjectCloneTracker)({}),
+    Layer.mock(WsRepositoryIdentityResolver.RepositoryIdentityResolver)({}),
+    Layer.mock(WsAgentSessionImporter.AgentSessionImporter)({}),
+    Layer.mock(WsCheckpointDiffQuery.CheckpointDiffQuery)({}),
+    Layer.mock(WsKeybindings.Keybindings)({}),
+    Layer.mock(WsEnvironmentTheme.EnvironmentThemeService)({}),
+    Layer.mock(WsExternalLauncher.ExternalLauncher)({}),
+    Layer.mock(WsRemoteOpenTargets.RemoteOpenTargets)({}),
+    Layer.mock(WsGitWorkflowService.GitWorkflowService)({}),
+    Layer.mock(WsReviewService.ReviewService)({}),
+    Layer.mock(WsVcsProvisioningService.VcsProvisioningService)({}),
+    Layer.mock(WsVcsStatusBroadcaster.VcsStatusBroadcaster)({}),
+    Layer.mock(WsTerminalManager.TerminalManager)({}),
+    Layer.mock(WsPreviewManager.PreviewManager)({}),
+    Layer.mock(WsPortScanner.PortDiscovery)({}),
+    Layer.mock(WsProviderRegistry.ProviderRegistry)({}),
+    Layer.mock(WsModelManifest.ModelManifest)({}),
+    Layer.succeed(WsProviderMaintenance.ProviderVersionCache, new Map()),
+    Layer.mock(WsProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+    Layer.mock(WsAcpRegistrySupport.AcpRegistryCatalog)({}),
+    Layer.mock(WsAcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
+    Layer.mock(WsProviderAuthService.ProviderAuthService)({}),
+    Layer.mock(WsServerSelfUpdate.ServerSelfUpdate)({}),
+    Layer.mock(WsServerLifecycleEvents.ServerLifecycleEvents)({}),
+    Layer.mock(WsServerSettings.ServerSettingsService)({}),
+    Layer.mock(WsServerRuntimeStartup.ServerRuntimeStartup)({}),
+    Layer.mock(WsWorkspaceEntries.WorkspaceEntries)({}),
+    Layer.mock(WsWorkspaceFileSystem.WorkspaceFileSystem)({}),
+    Layer.mock(WsBackgroundPolicy.BackgroundPolicy)({}),
+    Layer.mock(WsSourceControlRepositoryService.SourceControlRepositoryService)({}),
+    Layer.mock(WsProcessDiagnostics.ProcessDiagnostics)({}),
+    Layer.mock(WsHostResources.HostResources)({}),
+    Layer.mock(WsProcessResourceMonitor.ProcessResourceMonitor)({}),
+    Layer.mock(WsResourceTelemetry.ResourceTelemetry)({}),
+    Layer.mock(WsRelayClient.RelayClient)({}),
+    Layer.mock(WsPreviewAutomationBroker.PreviewAutomationBroker)({}),
+    Layer.mock(WsServerEnvironment.ServerEnvironment)({}),
+    Layer.mock(WsAntigravityInstallation.AntigravityInstallation)({
+      managedDirectory: "/synthetic-unused-antigravity",
+    }),
+    Layer.mock(WsCodexInstallation.CodexInstallation)({
+      managedDirectory: "/synthetic-unused-codex",
+    }),
+    Layer.mock(WsVcsProcess.VcsProcess)({}),
+    Layer.mock(WsWorkspacePaths.WorkspacePaths)({}),
+    Layer.succeed(
+      WsHttpClient.HttpClient,
+      WsHttpClient.make(() => Effect.die("Auth gate must not call HTTP client.")),
+    ),
+    Layer.mock(WsTraceDiagnostics.TraceDiagnostics)({}),
+    Layer.mock(WsProjectFaviconResolver.ProjectFaviconResolver)({}),
+    Layer.mock(EventSink.EventSinkV2)({}),
+    Layer.mock(WsEffectOutbox.EffectOutboxV2)({}),
+    Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
+    Layer.succeed(HostProcessEnvironment, {}),
+    Layer.succeed(HostProcessPlatform, "linux"),
+  );
+  const dependencies = Layer.mergeAll(auth, deniedRpcOwners).pipe(
+    Layer.provideMerge(config),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  const routes = websocketRpcRouteLayer.pipe(Layer.provideMerge(dependencies));
+  const http = HttpRouter.toWebHandler(routes, { disableLogger: true });
+  try {
+    const url = `http://test/ws?${ORCHESTRATION_PROTOCOL_QUERY_PARAM}=${ORCHESTRATION_PROTOCOL_VERSION_TEXT}`;
+    for (const resource of [
+      url,
+      `${url}&token=synthetic-query-token`,
+      `${url}&wsTicket=invalid-synthetic-ticket`,
+    ]) {
+      const response = await http.handler(new Request(resource), Context.empty());
+      expect(response.status).toBe(401);
+      const body = await response.text();
+      expect(JSON.parse(body)).toMatchObject({
+        _tag: "EnvironmentAuthInvalidError",
+        code: "auth_invalid",
+      });
+      expect(body).not.toContain("synthetic-query-token");
+      expect(body).not.toContain("legacyBootstrap");
+    }
+    expect(rpcWork).toBe(0);
+    const incompatible = await http.handler(new Request("http://test/ws"), Context.empty());
+    expect(incompatible.status).toBe(426);
+    expect(await incompatible.text()).toContain("orchestration_protocol_incompatible");
   } finally {
     await http.dispose();
   }

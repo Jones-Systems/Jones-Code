@@ -192,6 +192,11 @@ export interface LegacyWorktreePreparationStep {
 }
 
 export interface LegacyWorktreePreparationHooks {
+  /** Affirmative owner refusal after exact intent readback and before invocation. */
+  readonly neverInvoked?: (
+    step: LegacyWorktreePreparationStep,
+    reason: "input_validation_failed",
+  ) => Effect.Effect<void, Error>;
   readonly beforeEffect: (step: LegacyWorktreePreparationStep) => Effect.Effect<void, Error>;
   readonly afterEffect: (
     step: LegacyWorktreePreparationStep,
