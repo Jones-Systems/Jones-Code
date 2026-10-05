@@ -63,6 +63,20 @@ const PreviewAutomationTabTargetFields = {
 export const PreviewAutomationTabTargetInput = Schema.Struct(PreviewAutomationTabTargetFields);
 export type PreviewAutomationTabTargetInput = typeof PreviewAutomationTabTargetInput.Type;
 
+export const PreviewAutomationClientId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+export type PreviewAutomationClientId = typeof PreviewAutomationClientId.Type;
+export const PreviewAutomationConnectionId = TrimmedNonEmptyString.check(Schema.isMaxLength(64));
+export type PreviewAutomationConnectionId = typeof PreviewAutomationConnectionId.Type;
+
+export const PreviewAutomationRuntimeIdentity = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  runtimeKind: Schema.Literal("electron"),
+  runtimeInstanceId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  appVersion: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  buildCommit: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/))),
+});
+export type PreviewAutomationRuntimeIdentity = typeof PreviewAutomationRuntimeIdentity.Type;
+
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
   visible: Schema.Boolean,
@@ -74,6 +88,15 @@ export const PreviewAutomationStatus = Schema.Struct({
   viewportSetting: Schema.optional(PreviewViewportSetting),
   /** Measured guest-page viewport in CSS pixels when a webview is ready. */
   viewport: Schema.optional(PreviewRenderedViewportSize),
+  selectedClient: Schema.optional(
+    Schema.Struct({
+      clientId: PreviewAutomationClientId,
+      connectionId: PreviewAutomationConnectionId,
+      requestId: TrimmedNonEmptyString,
+      completedAt: Schema.String,
+      runtimeIdentity: Schema.NullOr(PreviewAutomationRuntimeIdentity),
+    }),
+  ),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
 
@@ -565,11 +588,6 @@ export const PreviewAutomationRecordingArtifact = Schema.Struct({
 });
 export type PreviewAutomationRecordingArtifact = typeof PreviewAutomationRecordingArtifact.Type;
 
-export const PreviewAutomationClientId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
-export type PreviewAutomationClientId = typeof PreviewAutomationClientId.Type;
-export const PreviewAutomationConnectionId = TrimmedNonEmptyString.check(Schema.isMaxLength(64));
-export type PreviewAutomationConnectionId = typeof PreviewAutomationConnectionId.Type;
-
 export const PreviewAutomationHostIdentity = Schema.Struct({
   clientId: PreviewAutomationClientId,
   environmentId: EnvironmentId,
@@ -583,6 +601,7 @@ export const PreviewAutomationHost = Schema.Struct({
    * a newer server safely coexist with an older desktop during rollout.
    */
   supportedOperations: Schema.optional(Schema.Array(PreviewAutomationOperation)),
+  runtimeIdentity: Schema.optional(PreviewAutomationRuntimeIdentity),
 });
 export type PreviewAutomationHost = typeof PreviewAutomationHost.Type;
 

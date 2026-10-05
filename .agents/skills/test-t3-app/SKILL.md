@@ -8,7 +8,10 @@ description: Test T3 Code's web and desktop UI through its built-in Browser pane
 Use T3's built-in Browser panel for verification. If its tools are absent or
 the panel reports unavailable, explain the blocker and stop verification.
 Do not install or switch to another automation system. For native mobile
-testing, use [test-t3-mobile](../test-t3-mobile/SKILL.md).
+testing, use [test-t3-mobile](../test-t3-mobile/SKILL.md). For separately
+qualified Linux Electron app-window evidence, see
+[capture-ui-evidence](../capture-ui-evidence/SKILL.md); it does not replace the
+Browser-panel route for shared-renderer work.
 
 ## Start the app
 
@@ -31,8 +34,14 @@ for a fresh one. Keep using the same tab.
 
 ## Verify and retain
 
-Exercise the affected flow and capture the state that proves it works. Keep
-the server, state, and panel available while the user inspects or iterates.
+Follow [capture-ui-evidence](../capture-ui-evidence/SKILL.md) for the common
+evidence format. Exercise the changed flow with snapshots and focused locators,
+assert its visible result, and check backend readback or reload persistence when
+relevant. Record the revision, served build/source correspondence, actual
+viewport/scale/theme, fixture, and coverage limits. Distinguish interaction
+states within one build from two separately built source revisions.
+
+Keep the server, state, and panel available while the user inspects or iterates.
 An assistant turn ending is not teardown. Stop only processes you started,
 using retained terminal sessions or captured PIDs.
 

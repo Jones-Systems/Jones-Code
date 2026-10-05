@@ -56,6 +56,7 @@ import {
   threadOutboxRetryDelayMs,
   type QueuedThreadCreation,
   type QueuedThreadMessage,
+  type ThreadSettingsSnapshot,
   type ThreadOutboxCommandStage,
   type ThreadOutboxFailureAction,
 } from "./thread-outbox-model";
@@ -203,6 +204,41 @@ function findCreationProject(
 
 function settingsCommandId(message: QueuedThreadMessage, setting: string): CommandId {
   return CommandId.make(`${message.commandId}:${setting}`);
+}
+
+export function buildQueuedThreadCreationStartTurnInput(input: {
+  readonly message: QueuedThreadMessage;
+  readonly creation: QueuedThreadCreation;
+  readonly projectCwd: string;
+  readonly attachments: PreparedTurnAttachments["attachments"];
+  readonly settings: ThreadSettingsSnapshot;
+  readonly serverResolvesWorktreeBase: boolean;
+  readonly inlineMessageContext?: boolean;
+}) {
+  const { message, creation, settings } = input;
+  return buildProjectThreadStartTurnInput({
+    projectId: creation.projectId,
+    projectCwd: input.projectCwd,
+    threadId: message.threadId,
+    commandId: message.commandId,
+    messageId: message.messageId,
+    createdAt: message.createdAt,
+    ...serializeComposerMessageForServer(
+      message.text.trim(),
+      uploadedComposerContext(message.context, message.attachments, input.attachments),
+      input.inlineMessageContext === true,
+    ),
+    uploadedAttachments: input.attachments,
+    modelSelection: settings.modelSelection,
+    runtimeMode: settings.runtimeMode,
+    interactionMode: settings.interactionMode,
+    workspaceMode: creation.workspaceMode,
+    branch: creation.branch,
+    worktreePath: creation.worktreePath,
+    startFromOrigin: creation.startFromOrigin ?? false,
+    serverResolvesWorktreeBase: input.serverResolvesWorktreeBase,
+    worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
+  });
 }
 
 /**
@@ -1005,31 +1041,16 @@ export function useThreadOutboxDrain(): void {
       );
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
-        input: buildProjectThreadStartTurnInput({
-          projectId: creation.projectId,
+        input: buildQueuedThreadCreationStartTurnInput({
+          message: queuedMessage,
+          creation,
           projectCwd,
-          threadId: queuedMessage.threadId,
-          commandId: queuedMessage.commandId,
-          messageId: queuedMessage.messageId,
-          createdAt: queuedMessage.createdAt,
-          ...serializeComposerMessageForServer(
-            queuedMessage.text.trim(),
-            uploadedComposerContext(
-              queuedMessage.context,
-              queuedMessage.attachments,
-              prepared.attachments,
-            ),
+          attachments: prepared.attachments,
+          settings: sendSettings,
+          serverResolvesWorktreeBase:
+            currentConfig.environment.capabilities.worktreeDefaultBase === true,
+          inlineMessageContext:
             currentConfig.environment.capabilities.inlineMessageContext === true,
-          ),
-          uploadedAttachments: prepared.attachments,
-          modelSelection: sendSettings.modelSelection,
-          runtimeMode: sendSettings.runtimeMode,
-          interactionMode: sendSettings.interactionMode,
-          workspaceMode: creation.workspaceMode,
-          branch: creation.branch,
-          worktreePath: creation.worktreePath,
-          startFromOrigin: creation.startFromOrigin ?? false,
-          worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
         }),
       });
       const { reportFailure } = makeDeliveryHelpers(queuedMessage);
@@ -1223,7 +1244,7 @@ export function useThreadOutboxDrain(): void {
             creation.projectCwd ??
             null)
           : null;
-      // An incomplete pending task (e.g. worktree mode without a branch) stays
+      // An incomplete pending task (e.g. an empty prompt) stays
       // queued until the user finishes it in the editor.
       if (deliveryAction === "send" && creation !== undefined) {
         if (!isQueuedThreadCreationSendable(nextQueuedMessage)) {

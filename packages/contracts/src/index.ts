@@ -57,6 +57,7 @@ export * from "./preview.ts";
 export * from "./previewAutomation.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
+export * from "./tokenAccounting.ts";
 export * from "./scheduledTask.ts";
 export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
@@ -74,3 +75,4 @@ export {
   OrchestrationThreadDetailWindow,
   OrchestrationThreadDetailSnapshot,
 } from "./legacyOrchestrationCompatibility.ts";
+export * from "./hostStatus.ts";

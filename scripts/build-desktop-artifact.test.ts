@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -60,6 +61,7 @@ import {
   resolveWindowsServerAsarIgnoreGlobs,
   resourceMonitorExecutableName,
   resolveGitHubPublishConfig,
+  resolveGitCommitHash,
   resolveMockUpdateServerPort,
   resolveMockUpdateServerUrl,
   resolvePackageManagerUserAgent,
@@ -265,20 +267,21 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
   });
 
-  it("switches desktop packaging product names to nightly for nightly builds", () => {
-    assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
-    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+  it("keeps the Jones Code app name across release channels", () => {
+    assert.equal(resolveDesktopProductName("0.0.17"), "Jones Code");
+    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "Jones Code");
+    assert.equal(resolveDesktopProductName("0.0.44-preview.20261002.36963972634"), "Jones Code");
   });
 
-  it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
+  it("keeps the JC Mac icon while selecting channel artwork for other platforms", () => {
     assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17"), {
-      macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
+      macIconPng: BRAND_ASSET_PATHS.jonesMacIconPng,
       linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
       windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
     });
 
     assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17-nightly.20260413.42"), {
-      macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
+      macIconPng: BRAND_ASSET_PATHS.jonesMacIconPng,
       linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
       windowsIconIco: BRAND_ASSET_PATHS.nightlyWindowsIconIco,
     });
@@ -690,7 +693,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "**/*.map",
       ]);
       assert.deepStrictEqual(mac.dmg, {
-        title: "T3 Code (Alpha) 1.2.3 Installer",
+        title: "Jones Code 1.2.3 Installer",
         background: "dmg/dmg-background-latest.png",
         window: { width: 640, height: 432 },
         contents: [
@@ -2483,3 +2486,57 @@ it("ignores trailing separators", () => {
     ancestorNodeModulesPaths("C:\\tmp\\probe\\app", "\\"),
   );
 });
+
+it.effect.each([
+  {
+    stdout: "  ABCDEF1234567890ABCDEF1234567890ABCDEF12\n",
+    exitCode: 0,
+    expected: "abcdef1234567890abcdef1234567890abcdef12",
+  },
+  { stdout: "abcdef123456", exitCode: 0, expected: "unknown" },
+  { stdout: "g".repeat(40), exitCode: 0, expected: "unknown" },
+  { stdout: "a".repeat(41), exitCode: 0, expected: "unknown" },
+  { stdout: "", exitCode: 0, expected: "unknown" },
+  { stdout: "a".repeat(40), exitCode: 1, expected: "unknown" },
+])("resolves only a successful full Git HEAD: %j", ({ stdout, exitCode, expected }) =>
+  Effect.gen(function* () {
+    const commands: ChildProcess.Command[] = [];
+    const hash = yield* resolveGitCommitHash("/synthetic/repository").pipe(
+      Effect.provide(
+        Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => {
+            commands.push(command);
+            return Effect.succeed(mockProcess(exitCode, stdout));
+          }),
+        ),
+      ),
+    );
+    assert.equal(hash, expected);
+    assert.deepEqual(commands, [
+      ChildProcess.make("git", ["rev-parse", "HEAD"], { cwd: "/synthetic/repository" }),
+    ]);
+  }),
+);
+
+it.effect("reports unknown when resolving Git HEAD cannot spawn", () =>
+  resolveGitCommitHash("/synthetic/repository").pipe(
+    Effect.provide(
+      Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.fail(
+            PlatformError.systemError({
+              _tag: "NotFound",
+              module: "ChildProcess",
+              method: "spawn",
+              pathOrDescriptor: "git",
+              description: "synthetic unavailable Git",
+            }),
+          ),
+        ),
+      ),
+    ),
+    Effect.tap((hash) => Effect.sync(() => assert.equal(hash, "unknown"))),
+  ),
+);
