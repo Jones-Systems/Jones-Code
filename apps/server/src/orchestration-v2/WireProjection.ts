@@ -196,13 +196,13 @@ export function projectContextHandoffForWire(
   return { ...projected, summaryText: "" };
 }
 
-export function projectRecordedThreadForWire(thread: RecordedAppThread): OrchestrationV2AppThread {
+function projectRecordedThreadForWire(thread: RecordedAppThread): OrchestrationV2AppThread {
   if (!("legacyBootstrapClaim" in thread)) return thread;
   const { legacyBootstrapClaim: _claim, ...publicThread } = thread;
   return publicThread;
 }
 
-export function projectRecordedRunForWire(run: RecordedRun): OrchestrationV2Run {
+function projectRecordedRunForWire(run: RecordedRun): OrchestrationV2Run {
   if (
     !("legacyBootstrap" in run) &&
     !("legacyPreparationFailureKnown" in run) &&
