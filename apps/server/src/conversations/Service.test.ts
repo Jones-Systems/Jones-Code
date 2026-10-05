@@ -12,18 +12,32 @@ const TestLayer = ConversationLibrary.layer.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
-it.effect("direct library service rejects writes before creating storage and remains readable", () =>
-  Effect.scoped(Effect.gen(function* () {
-    const library = yield* ConversationLibrary.ConversationLibrary;
-    const config = yield* ServerConfig.ServerConfig;
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const failure = yield* library.execute({
-      kind: "createAccount", label: "Synthetic", workspace: "Task fixture",
-    }, false).pipe(Effect.flip);
-    expect(failure.code).toBe("forbidden");
-    expect(yield* fs.exists(path.join(config.stateDir, "conversation-library"))).toBe(false);
-    expect(yield* library.execute({ kind: "accounts" }, false)).toEqual({ kind: "accounts", accounts: [] });
-    expect(yield* fs.exists(path.join(config.stateDir, "conversation-library"))).toBe(false);
-  }).pipe(Effect.provide(TestLayer))),
+it.effect(
+  "direct library service rejects writes before creating storage and remains readable",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const library = yield* ConversationLibrary.ConversationLibrary;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const failure = yield* library
+          .execute(
+            {
+              kind: "createAccount",
+              label: "Synthetic",
+              workspace: "Task fixture",
+            },
+            false,
+          )
+          .pipe(Effect.flip);
+        expect(failure.code).toBe("forbidden");
+        expect(yield* fs.exists(path.join(config.stateDir, "conversation-library"))).toBe(false);
+        expect(yield* library.execute({ kind: "accounts" }, false)).toEqual({
+          kind: "accounts",
+          accounts: [],
+        });
+        expect(yield* fs.exists(path.join(config.stateDir, "conversation-library"))).toBe(false);
+      }).pipe(Effect.provide(TestLayer)),
+    ),
 );
