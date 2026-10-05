@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./voice-review": {
+      "types": "./src/voice-review.ts",
+      "default": "./src/voice-review.ts"
+    },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"

@@ -1,3 +1,12 @@
+import {
+  VoiceReviewDraft,
+  VoiceReviewDraftList,
+  VoiceReviewMutationResult,
+  VoiceReviewErrors,
+  VoiceReviewRevisionPayload,
+  VoiceReviewEditSavePayload,
+  VoiceReviewEditCancelPayload,
+} from "./voiceReview.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
@@ -652,6 +661,99 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
+const VoiceReviewParams = Schema.Struct({
+  id: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
+});
+const VoiceReviewHeaders = OptionalBearerHeaders;
+class EnvironmentVoiceReviewHttpApi extends HttpApiGroup.make("voiceReview")
+  .add(
+    HttpApiEndpoint.get("list", "/api/voice-review/drafts", {
+      headers: VoiceReviewHeaders,
+      query: {
+        scope: Schema.optional(Schema.Literals(["pending", "recent"])),
+        limit: Schema.optional(
+          Schema.FiniteFromString.check(
+            Schema.isInt(),
+            Schema.isBetween({ minimum: 1, maximum: 200 }),
+          ),
+        ),
+      },
+      success: VoiceReviewDraftList,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("get", "/api/voice-review/drafts/:id", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      success: VoiceReviewDraft,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("pause", "/api/voice-review/drafts/:id/pause", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewRevisionPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("play", "/api/voice-review/drafts/:id/play", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewRevisionPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("editBegin", "/api/voice-review/drafts/:id/edit-begin", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewRevisionPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("editSave", "/api/voice-review/drafts/:id/edit-save", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewEditSavePayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("editCancel", "/api/voice-review/drafts/:id/edit-cancel", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewEditCancelPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("sendNow", "/api/voice-review/drafts/:id/send-now", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewRevisionPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("delete", "/api/voice-review/drafts/:id/delete", {
+      headers: VoiceReviewHeaders,
+      params: VoiceReviewParams,
+      payload: VoiceReviewRevisionPayload,
+      success: VoiceReviewMutationResult,
+      error: VoiceReviewErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 class EnvironmentHostStatusHttpApi extends HttpApiGroup.make("hostStatus").add(
   HttpApiEndpoint.get("snapshot", "/api/host-status", {
     headers: OptionalBearerHeaders,
@@ -661,6 +763,7 @@ class EnvironmentHostStatusHttpApi extends HttpApiGroup.make("hostStatus").add(
 ) {}
 
 export class EnvironmentHttpApi extends HttpApi.make("environment")
+  .add(EnvironmentVoiceReviewHttpApi)
   .add(EnvironmentHostStatusHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)

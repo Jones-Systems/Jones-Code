@@ -1,4 +1,4 @@
-import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import { ArrowLeftIcon, ChartNoAxesColumnIcon, MicIcon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -142,10 +142,12 @@ function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
 function SidebarUtilityItem({
   icon,
   label,
+  tooltip = label,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
+  tooltip?: string;
   onClick: () => void;
 }) {
   return (
@@ -158,7 +160,7 @@ function SidebarUtilityItem({
             </SidebarMenuButton>
           }
         />
-        <TooltipPopup side="top">{label}</TooltipPopup>
+        <TooltipPopup side="top">{tooltip}</TooltipPopup>
       </Tooltip>
     </SidebarMenuItem>
   );
@@ -183,6 +185,10 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       to: "/pull-requests",
       search: readPullRequestListPreferences(),
     });
+  }, [closeMobileSidebar, navigate]);
+  const handleVoiceReviewClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/voice-review" });
   }, [closeMobileSidebar, navigate]);
   const handleSettingsClick = useCallback(() => {
     closeMobileSidebar();
@@ -228,6 +234,12 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             icon={<ChartNoAxesColumnIcon />}
             label="Usage"
             onClick={handleUsageClick}
+          />
+          <SidebarUtilityItem
+            icon={<MicIcon />}
+            label="Voice review"
+            tooltip="Review, edit, and pause voice prompts"
+            onClick={handleVoiceReviewClick}
           />
         </>
       )}
