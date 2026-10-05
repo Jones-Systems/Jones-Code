@@ -32,6 +32,11 @@ import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/Services/ProviderAuthService.ts";
 import * as EventSink from "./EventSink.ts";
+import type { OrchestrationEffectV2 } from "./EffectOutbox.ts";
+import {
+  ordinaryCheckoutOutboxOperationIdV1,
+  type OrdinaryCheckoutExecutionRefV1,
+} from "./OrdinaryCheckoutOwnership.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
@@ -75,17 +80,25 @@ export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStart
 
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
 
+interface ProviderTurnStartInput {
+  readonly threadId: ThreadId;
+  readonly runId: RunId;
+  readonly willRetry?: boolean;
+  readonly nativeStartClaim?: {
+    readonly effect: OrchestrationEffectV2;
+    readonly onTransferred: NonNullable<
+      RunExecutionService.RunExecutionServiceV2StartRootRunInput["nativeStart"]
+    >["onTransferred"];
+  };
+}
+
 export interface ProviderTurnStartServiceV2Shape {
   /**
    * Starts the run's provider turn. When `willRetry` is true, a session open
    * failure is returned so the caller can retry. Otherwise the run is settled
    * as failed.
    */
-  readonly start: (input: {
-    readonly threadId: ThreadId;
-    readonly runId: RunId;
-    readonly willRetry?: boolean;
-  }) => Effect.Effect<void, ProviderTurnStartError>;
+  readonly start: (input: ProviderTurnStartInput) => Effect.Effect<void, ProviderTurnStartError>;
 }
 
 export class ProviderTurnStartServiceV2 extends Context.Service<
@@ -218,7 +231,7 @@ export const layer: Layer.Layer<
             }),
           ),
         );
-      return {
+      const delivery = {
         ...session,
         startTurn: (input: Parameters<typeof session.startTurn>[0]) => start(input),
         ...(session.compactThread === undefined
@@ -227,13 +240,19 @@ export const layer: Layer.Layer<
               compactThread: (input: Parameters<typeof session.startTurn>[0]) => start(input, true),
             }),
       };
+      const generation = Object.getOwnPropertyDescriptor(session, "runtimeGeneration");
+      if (generation !== undefined)
+        Object.defineProperty(delivery, "runtimeGeneration", generation);
+      return delivery;
     };
 
-    const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (input: {
-      readonly threadId: ThreadId;
-      readonly runId: RunId;
-      readonly willRetry?: boolean;
-    }) {
+    const nativeParticipants = new WeakMap<
+      ProviderTurnStartInput,
+      OrdinaryCheckoutExecutionRefV1
+    >();
+    const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (
+      input: ProviderTurnStartInput,
+    ) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
       const run = projection.runs.find((candidate) => candidate.id === runId);
@@ -241,6 +260,11 @@ export const layer: Layer.Layer<
         return yield* new ProviderTurnStartError({ runId, cause: `Run ${runId} was not found.` });
       }
       if (run.status !== "starting") {
+        if (input.nativeStartClaim !== undefined)
+          return yield* new ProviderTurnStartError({
+            runId,
+            cause: "The original native start no longer has its starting run.",
+          });
         // The effect is idempotent once the run has advanced or terminalized.
         return;
       }
@@ -294,6 +318,15 @@ export const layer: Layer.Layer<
           cause: `Run ${runId} is missing its execution projection state.`,
         });
       }
+      if (
+        input.nativeStartClaim !== undefined &&
+        message.attachments.length === 0 &&
+        message.text.trimStart().startsWith("/")
+      )
+        return yield* new ProviderTurnStartError({
+          runId,
+          cause: "Required native control prompts have no qualified whole-operation producer.",
+        });
       // Settles a run that never reached the provider: one signal turn item plus
       // terminal run, attempt and root node, written only while the run is still
       // the current starting attempt.
@@ -471,7 +504,7 @@ export const layer: Layer.Layer<
         }
       }
       const { worktreePath, branch } = projection.thread;
-      if (worktreePath !== null && branch !== null) {
+      if (input.nativeStartClaim === undefined && worktreePath !== null && branch !== null) {
         const exists = yield* fileSystem
           .exists(worktreePath)
           .pipe(Effect.orElseSucceed(() => true));
@@ -521,6 +554,58 @@ export const layer: Layer.Layer<
         .getRuntimeRecoveryProjection(projection.thread.id)
         .pipe(Effect.map(selectInheritedBackgroundItems));
       const providerSessionId = providerThread.providerSessionId;
+      let nativeStartExecution: OrdinaryCheckoutExecutionRefV1 | undefined;
+      const nativeEffect = input.nativeStartClaim?.effect;
+      if (nativeEffect !== undefined) {
+        const lifetime = eventSink.ordinaryCheckoutLifetime;
+        if (
+          lifetime === undefined ||
+          nativeEffect.request.type !== "provider-turn.start" ||
+          nativeEffect.request.runId !== runId ||
+          nativeEffect.threadId !== input.threadId ||
+          nativeEffect.status !== "running" ||
+          nativeEffect.leaseOwner === null ||
+          nativeEffect.leaseExpiresAt === null ||
+          nativeEffect.nativeCreationExecutionReference?.effectId !== nativeEffect.id ||
+          nativeEffect.nativeCreationExecutionReference.stageCommandId !== nativeEffect.commandId ||
+          providerThread.driver !== "codex" ||
+          nativeForkTransfer !== undefined ||
+          run.restartContinuationOfRunId !== undefined ||
+          (message.attachments.length === 0 && message.text.trim().toLowerCase() === "/compact")
+        )
+          return yield* new ProviderTurnStartError({
+            runId,
+            cause:
+              "The required original native start producer or exact claimed operation is unsupported.",
+          });
+        const linked = yield* lifetime.readEffectLink(nativeEffect);
+        if (linked === null)
+          return yield* new ProviderTurnStartError({
+            runId,
+            cause: "The original native start has no accepted checkout admission.",
+          });
+        const original = yield* lifetime.beginUse({
+          operationId: ordinaryCheckoutOutboxOperationIdV1(
+            nativeEffect.id,
+            nativeEffect.attemptCount,
+          ),
+          admission: linked.link.admission,
+          source: {
+            kind: "outbox",
+            link: linked.link,
+            workerId: nativeEffect.leaseOwner,
+            expectedAttempt: nativeEffect.attemptCount,
+            leaseExpiresAt: DateTime.makeUnsafe(nativeEffect.leaseExpiresAt),
+          },
+          targetSource: {
+            projectWorkspaceRoot: linked.admission.capture.canonicalProjectRoot,
+            worktreePath: projection.thread.worktreePath,
+          },
+        });
+        nativeStartExecution = yield* lifetime.bindOutboxExecution(original.record.subject.use);
+        nativeParticipants.set(input, nativeStartExecution);
+        yield* lifetime.revalidateExecution(nativeStartExecution);
+      }
       const runControls = makeRunControls({
         threadId: projection.thread.id,
         runId: run.id,
@@ -592,7 +677,8 @@ export const layer: Layer.Layer<
           });
         });
       if (sessionResult._tag === "Failure") {
-        if (input.willRetry === true) return yield* sessionResult.failure;
+        if (input.nativeStartClaim !== undefined || input.willRetry === true)
+          return yield* sessionResult.failure;
         yield* settleStartFailure({
           signal: "provider-session-open-failure",
           title: "Provider session failed to open",
@@ -609,7 +695,8 @@ export const layer: Layer.Layer<
         Effect.gen(function* () {
           const loaded = yield* Effect.result(load);
           if (loaded._tag === "Success") return loaded.success;
-          if (input.willRetry === true) return yield* loaded.failure;
+          if (input.nativeStartClaim !== undefined || input.willRetry === true)
+            return yield* loaded.failure;
           yield* settleStartFailure({
             signal: "provider-thread-load-failure",
             title: "Provider turn failed to start",
@@ -700,6 +787,7 @@ export const layer: Layer.Layer<
           return resumed.success;
         }
 
+        if (input.nativeStartClaim !== undefined) return yield* resumed.failure;
         if (hasUnknownRuntimeBinding(resumed.failure))
           return yield* loadFromProvider(Effect.fail(resumed.failure));
         yield* Effect.logWarning("Provider resume failed; attempting a fresh native session", {
@@ -1300,11 +1388,13 @@ export const layer: Layer.Layer<
           // The provider already accepted the turn. A stale pending marker
           // can force a fresh thread later, but must not stop live ingestion.
           yield* delivery.delivered.pipe(
-            Effect.catchCause(() =>
-              Effect.logWarning("Failed to record accepted context handoff delivery", {
-                runId: run.id,
-                deliveryStatus: "pending",
-              }),
+            Effect.catchCause((cause) =>
+              input.nativeStartClaim !== undefined
+                ? Effect.failCause(cause)
+                : Effect.logWarning("Failed to record accepted context handoff delivery", {
+                    runId: run.id,
+                    deliveryStatus: "pending",
+                  }),
             ),
           );
         }).pipe(
@@ -1328,7 +1418,28 @@ export const layer: Layer.Layer<
           ? makeDeliverySession(session, startWithConfiguredEffort)
           : makeDeliverySession(session, startWithHandoffs);
       yield* runExecution.startRootRun({
-        commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
+        commandId:
+          nativeEffect?.commandId ?? CommandId.make(`command:effect:provider-turn.start:${run.id}`),
+        ...(input.nativeStartClaim === undefined || nativeStartExecution === undefined
+          ? {}
+          : {
+              nativeStart: {
+                operation: {
+                  operationId: nativeEffect!.id,
+                  operation: "start_turn" as const,
+                  instanceId: run.providerInstanceId,
+                  threadId: projection.thread.id,
+                  providerSessionId,
+                  providerThreadId: providerThread.id,
+                  attemptId: attempt.id,
+                },
+                startExecution: nativeStartExecution,
+                onTransferred: (completion) => {
+                  nativeParticipants.set(input, completion.execution);
+                  input.nativeStartClaim!.onTransferred(completion);
+                },
+              },
+            }),
         appThread: projection.thread,
         providerSessionId,
         session: deliverySession,
@@ -1376,6 +1487,15 @@ export const layer: Layer.Layer<
     return ProviderTurnStartServiceV2.of({
       start: (input) =>
         start(input).pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              const participant = nativeParticipants.get(input);
+              const lifetime = eventSink.ordinaryCheckoutLifetime;
+              if (participant !== undefined && lifetime !== undefined)
+                yield* lifetime.retainExecutionUnknown(participant, Cause.pretty(cause));
+              return yield* Effect.failCause(cause);
+            }),
+          ),
           Effect.mapError((cause) =>
             isProviderTurnStartError(cause)
               ? cause

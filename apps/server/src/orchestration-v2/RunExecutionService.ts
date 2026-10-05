@@ -40,11 +40,18 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
+import type { OrdinaryCheckoutExecutionRefV1 } from "./OrdinaryCheckoutOwnership.ts";
+import type { NativeStartEnteredParticipantCaptureV1 } from "./OrdinaryCheckoutStore.ts";
+import type { NativeEffectConfirmationV1 } from "../nativeCreation/NativeCreationExecutionRepository.ts";
+import { readIssuedProviderNativeStartReturned } from "./ProviderSessionManager.ts";
 import type {
   ProviderAdapterV2Event,
   ProviderAdapterV2RuntimePolicy,
   ProviderAdapterV2SessionRuntime,
   ProviderAdapterV2TurnMessage,
+  ProviderNativeOperationContext,
+  ProviderNativeStartProducerCaptureV1,
+  ProviderNativeStartAcknowledgmentV1,
 } from "./ProviderAdapter.ts";
 import { ProviderAdapterTurnStartError } from "./ProviderAdapter.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
@@ -509,6 +516,14 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly attempt: OrchestrationV2RunAttempt;
   readonly attemptId: RunAttemptId;
   readonly providerTurnOrdinal: number;
+  readonly nativeStart?: {
+    readonly operation: ProviderNativeOperationContext;
+    readonly startExecution: OrdinaryCheckoutExecutionRefV1;
+    readonly onTransferred: (completion: {
+      readonly confirmation: NativeEffectConfirmationV1;
+      readonly execution: OrdinaryCheckoutExecutionRefV1;
+    }) => void;
+  };
   readonly loadInheritedBackgroundTurnItems?: () => Effect.Effect<
     ReadonlyArray<InheritedBackgroundTurnItemRoute>,
     unknown
@@ -806,6 +821,110 @@ export const layer: Layer.Layer<
     return RunExecutionServiceV2.of({
       startRootRun: (input) =>
         Effect.gen(function* () {
+          const native = input.nativeStart;
+          const lifetime = eventSink.ordinaryCheckoutLifetime;
+          const startError = (cause: unknown) =>
+            new RunExecutionStartError({
+              commandId: input.commandId,
+              runId: input.run.id,
+              cause,
+            });
+          const adapterStartError = (cause: unknown) =>
+            new ProviderAdapterTurnStartError({
+              driver: input.session.driver,
+              threadId: input.run.threadId,
+              providerThreadId: input.providerThread.id,
+              runId: input.run.id,
+              cause,
+            });
+          if (native !== undefined) {
+            if (
+              lifetime === undefined ||
+              input.session.driver !== "codex" ||
+              !input.session.nativeStartConfirmationOperations?.includes("start_turn") ||
+              native.operation.operation !== "start_turn" ||
+              native.startExecution.executor.kind !== "actual_outbox_claim" ||
+              native.startExecution.executor.source.link.commandId !== input.commandId ||
+              native.operation.operationId !==
+                native.startExecution.executor.source.link.effectId ||
+              (input.message.attachments.length === 0 &&
+                input.message.text.trim().toLowerCase() === "/compact")
+            )
+              return yield* startError(
+                "The original native start producer or claimed lifetime is unavailable.",
+              );
+            yield* lifetime
+              .revalidateExecution(native.startExecution)
+              .pipe(Effect.mapError(startError));
+          }
+          const nativeCaptures: ProviderNativeStartProducerCaptureV1[] = [];
+          const nativeEntered: NativeStartEnteredParticipantCaptureV1[] = [];
+          const nativeAcknowledgments: ProviderNativeStartAcknowledgmentV1[] = [];
+          let nativeManagedExecution: OrdinaryCheckoutExecutionRefV1 | undefined;
+          const completeNativeStart = Effect.gen(function* () {
+            if (native === undefined) return;
+            const capture = nativeCaptures[0];
+            const entered = nativeEntered[0];
+            const acknowledgment = nativeAcknowledgments[0];
+            const returned = readIssuedProviderNativeStartReturned(capture);
+            if (
+              lifetime === undefined ||
+              capture === undefined ||
+              entered === undefined ||
+              acknowledgment === undefined ||
+              returned === null ||
+              returned.acknowledgment !== acknowledgment ||
+              nativeCaptures.length !== 1 ||
+              nativeEntered.length !== 1 ||
+              nativeAcknowledgments.length !== 1
+            )
+              return yield* adapterStartError(
+                "The original native start returned without its authentic owner and ACK.",
+              );
+            const confirmation = yield* lifetime
+              .recordNativeStartAcknowledgment({
+                enteredCapture: entered,
+                acknowledgment,
+              })
+              .pipe(Effect.mapError(adapterStartError));
+            const managed = {
+              kind: "captured_managed_run" as const,
+              captureId: returned.attachment.captureId,
+              run: {
+                runId: input.run.id,
+                runAttemptId: input.attemptId,
+                nodeId: input.rootNode.id,
+                messageId: input.message.messageId,
+              },
+              checkpointScopeId: input.checkpointScope.id,
+              driver: input.session.driver,
+              binding: {
+                threadId: capture.binding.threadId,
+                providerThreadId: capture.binding.providerThreadId,
+                providerSessionId: capture.binding.providerSessionId,
+                instanceId: capture.binding.instanceId,
+              },
+              runtimeGeneration: capture.binding.runtimeGeneration,
+              nativeThreadId: capture.binding.nativeThreadId,
+              evidenceRevision: returned.attachment.evidenceRevision,
+            };
+            const execution = yield* lifetime
+              .activateNativeManagedRun({
+                enteredCapture: entered,
+                acknowledgment,
+                managedExecutor: managed,
+                actualStartObservation: {
+                  kind: "dispatch_returned",
+                  startExecution: native.startExecution,
+                  managedExecutor: managed,
+                  observedAt: returned.observedAt,
+                },
+                revalidateCaptured: returned.attachment.revalidateCaptured,
+              })
+              .pipe(Effect.mapError(adapterStartError));
+            nativeManagedExecution = execution;
+            yield* Effect.sync(() => native.onTransferred({ confirmation, execution }));
+          });
           // Startup failure and stream shutdown can report the same attempt.
           const refreshAfterTurn = yield* Effect.cached(
             finalizationObserver.refreshAfterTurn(input.appThread.projectId).pipe(
@@ -913,6 +1032,10 @@ export const layer: Layer.Layer<
             ),
           );
           if (responseStreamingMode === null) {
+            if (native !== undefined)
+              return yield* startError(
+                "Required native start lost its response streaming policy before entry.",
+              );
             return;
           }
           const terminalEvent = yield* Ref.make<ProviderTerminalEvent | null>(null);
@@ -1346,6 +1469,10 @@ export const layer: Layer.Layer<
               : yield* Effect.exit(input.shouldStartProviderTurn());
           if (Exit.isSuccess(shouldStart) && !shouldStart.value) {
             yield* Fiber.interrupt(providerEventFiber);
+            if (native !== undefined)
+              return yield* startError(
+                "The original native attempt was superseded before dispatch.",
+              );
             return;
           }
 
@@ -1370,6 +1497,42 @@ export const layer: Layer.Layer<
             message: input.message,
             modelSelection: input.modelSelection,
             runtimePolicy: input.runtimePolicy,
+            ...(native === undefined
+              ? {}
+              : {
+                  nativeOperation: native.operation,
+                  nativeStartConfirmation: {
+                    beforeDispatch: (capture: ProviderNativeStartProducerCaptureV1) =>
+                      Effect.gen(function* () {
+                        if (lifetime === undefined || nativeCaptures.length !== 0)
+                          return yield* adapterStartError(
+                            "The original native entered capture is unavailable or already issued.",
+                          );
+                        nativeCaptures.push(capture);
+                        const entered = yield* lifetime
+                          .captureNativeStartEnteredParticipant({
+                            startExecution: native.startExecution,
+                            producerCapture: capture,
+                          })
+                          .pipe(Effect.mapError(adapterStartError));
+                        nativeEntered.push(entered);
+                        return {
+                          evidenceRevision: entered.evidenceRevision,
+                          revalidate: lifetime
+                            .revalidateNativeEnteredBeforeAcknowledgment(entered)
+                            .pipe(Effect.mapError(adapterStartError)),
+                        };
+                      }),
+                    acknowledged: (acknowledgment: ProviderNativeStartAcknowledgmentV1) =>
+                      Effect.gen(function* () {
+                        if (nativeAcknowledgments.length !== 0)
+                          return yield* adapterStartError(
+                            "The original native ACK was already retained.",
+                          );
+                        nativeAcknowledgments.push(acknowledgment);
+                      }),
+                  },
+                }),
           };
           const compact =
             input.message.attachments.length === 0 &&
@@ -1387,12 +1550,23 @@ export const layer: Layer.Layer<
               ))
             : input.session.startTurn(turnInput);
           yield* Effect.andThen(shouldStart, startTurn).pipe(
+            Effect.andThen(completeNativeStart),
             Effect.catchCause((cause) =>
               Effect.logError("orchestration V2 provider turn start failed", {
                 runId: input.run.id,
                 cause,
               }).pipe(
                 Effect.andThen(Fiber.interrupt(providerEventFiber)),
+                Effect.andThen(
+                  native === undefined || lifetime === undefined
+                    ? Effect.void
+                    : lifetime
+                        .retainExecutionUnknown(
+                          nativeManagedExecution ?? native.startExecution,
+                          Cause.pretty(cause),
+                        )
+                        .pipe(Effect.mapError(startError)),
+                ),
                 Effect.andThen(Ref.get(latestProviderThread)),
                 Effect.flatMap((providerThread) =>
                   Ref.get(latestTurnItemOrdinal).pipe(
@@ -1436,6 +1610,7 @@ export const layer: Layer.Layer<
                       cause: { start: cause, write: writeCause },
                     }),
                 ),
+                Effect.andThen(native === undefined ? Effect.void : Effect.fail(startError(cause))),
               ),
             ),
           );

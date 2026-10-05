@@ -1,3 +1,4 @@
+import type { NativeProviderRuntimeBindingV1 } from "../nativeCreation/NativeCreationExecutionTypes.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   ChatAttachment,
@@ -560,7 +561,44 @@ export interface ProviderAdapterV2EnsureThreadInput {
   readonly existingProviderThread?: OrchestrationV2ProviderThread;
 }
 
+declare const nativeStartProducerCapture: unique symbol;
+declare const nativeStartAcknowledgment: unique symbol;
+
+/** Server-only provenance; decoded descriptions cannot issue either handle. */
+export interface ProviderNativeStartProducerCaptureV1 {
+  readonly [nativeStartProducerCapture]: true;
+  readonly nativeOperation: ProviderNativeOperationContext;
+  readonly driver: ProviderDriverKind;
+  readonly binding: NativeProviderRuntimeBindingV1 & { readonly nativeThreadId: string };
+  readonly runId: RunId;
+  readonly attemptId: RunAttemptId;
+  readonly rootNodeId: NodeId;
+  readonly messageId: MessageId;
+}
+export interface ProviderNativeStartAcknowledgmentV1 {
+  readonly [nativeStartAcknowledgment]: true;
+  readonly capture: ProviderNativeStartProducerCaptureV1;
+  readonly method: "turn/start" | "thread/compact/start";
+  readonly nativeTurnId: string;
+  readonly evidenceRevision: number;
+  readonly observedAt: string;
+}
+export interface ProviderNativeStartDispatchFenceV1 {
+  readonly evidenceRevision: number;
+  readonly revalidate: Effect.Effect<void, ProviderAdapterV2Error>;
+}
+export interface ProviderNativeStartConfirmationV1 {
+  readonly beforeDispatch: (
+    capture: ProviderNativeStartProducerCaptureV1,
+  ) => Effect.Effect<ProviderNativeStartDispatchFenceV1, ProviderAdapterV2Error>;
+  readonly acknowledged: (
+    acknowledgment: ProviderNativeStartAcknowledgmentV1,
+  ) => Effect.Effect<void, ProviderAdapterV2Error>;
+}
+
 export interface ProviderAdapterV2TurnInput {
+  readonly nativeOperation?: ProviderNativeOperationContext;
+  readonly nativeStartConfirmation?: ProviderNativeStartConfirmationV1;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -651,6 +689,8 @@ export interface ProviderAdapterV2HistoricalContext {
 }
 
 export interface ProviderAdapterV2SessionRuntime {
+  readonly runtimeGeneration?: string | undefined;
+  readonly nativeStartConfirmationOperations?: ReadonlyArray<"start_turn" | "compact_thread">;
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;

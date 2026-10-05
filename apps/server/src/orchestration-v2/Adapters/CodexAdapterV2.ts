@@ -1,3 +1,12 @@
+import { NativeProviderRuntimeBindingV1 } from "../../nativeCreation/NativeCreationExecutionTypes.ts";
+import type { ProviderAdapterV2Error } from "../ProviderAdapter.ts";
+import { canonicalJson as nativeStartPacketBytes } from "../CanonicalJson.ts";
+import {
+  ProviderNativeOperationContext,
+  type ProviderNativeStartProducerCaptureV1,
+  type ProviderNativeStartAcknowledgmentV1,
+  type ProviderNativeStartDispatchFenceV1,
+} from "../ProviderAdapter.ts";
 import type { ServerProviderModel } from "@t3tools/contracts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
@@ -1602,6 +1611,36 @@ class CodexInterruptAcknowledgementTimeout extends Schema.TaggedError<CodexInter
   override get message(): string {
     return `Codex did not acknowledge interruption of turn ${this.nativeTurnId} within three seconds; the turn may still be running.`;
   }
+}
+
+const issuedNativeStartCaptures = new WeakMap<
+  object,
+  {
+    readonly bytes: string;
+    readonly revalidate: Effect.Effect<void, ProviderAdapterV2Error>;
+  }
+>();
+const issuedNativeStartAcknowledgments = new WeakMap<
+  object,
+  {
+    readonly bytes: string;
+    readonly revalidate: Effect.Effect<void, ProviderAdapterV2Error>;
+  }
+>();
+
+export function readIssuedCodexNativeStartCapture(input: unknown) {
+  if (typeof input !== "object" || input === null) return null;
+  const issued = issuedNativeStartCaptures.get(input);
+  if (issued === undefined || issued.bytes !== nativeStartPacketBytes(input)) return null;
+  return { capture: input as ProviderNativeStartProducerCaptureV1, revalidate: issued.revalidate };
+}
+export function readIssuedCodexNativeStartAcknowledgment(input: unknown) {
+  if (typeof input !== "object" || input === null) return null;
+  const issued = issuedNativeStartAcknowledgments.get(input);
+  if (issued === undefined || issued.bytes !== nativeStartPacketBytes(input)) return null;
+  const packet = input as ProviderNativeStartAcknowledgmentV1;
+  if (readIssuedCodexNativeStartCapture(packet.capture) === null) return null;
+  return { acknowledgment: packet, revalidate: issued.revalidate };
 }
 
 interface CodexRuntimeProducer {
@@ -5985,8 +6024,124 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 "Codex continuation does not match the current session and native binding.",
               );
             }
+            const confirmation = request.input.nativeStartConfirmation;
+            const target = currentProducer;
+            const capturedClient = target.client;
+            const capturedScope = target.scope;
+            const capturedGeneration = target.generation;
+            let captured: ProviderNativeStartProducerCaptureV1 | undefined;
+            let dispatchFence: ProviderNativeStartDispatchFenceV1 | undefined;
+            if (confirmation !== undefined) {
+              if (retryOrdinal !== 0 || request.input.nativeOperation === undefined)
+                return yield* toProtocolError(
+                  "Required native confirmation has no original initial start operation.",
+                );
+              const originalOperation = yield* Schema.decodeUnknownEffect(
+                ProviderNativeOperationContext,
+              )(request.input.nativeOperation, { onExcessProperty: "error" });
+              const bound = target.bindings.get(request.state.binding.nativeThreadId);
+              if (
+                nativeStartPacketBytes(originalOperation) !==
+                  nativeStartPacketBytes(request.input.nativeOperation) ||
+                request.input.providerThread.driver !== CODEX_DRIVER_KIND ||
+                originalOperation.operation !== "start_turn" ||
+                originalOperation.threadId !== request.input.threadId ||
+                originalOperation.providerThreadId !== request.input.providerThread.id ||
+                originalOperation.providerSessionId !== input.providerSessionId ||
+                originalOperation.instanceId !== adapterOptions.instanceId ||
+                originalOperation.attemptId !== request.input.attemptId ||
+                (originalOperation.runtimeGeneration !== undefined &&
+                  originalOperation.runtimeGeneration !== target.generation) ||
+                bound?.id !== request.input.providerThread.id ||
+                bound.appThreadId !== request.input.threadId ||
+                bound.providerSessionId !== input.providerSessionId ||
+                bound.providerInstanceId !== adapterOptions.instanceId ||
+                bound.driver !== CODEX_DRIVER_KIND ||
+                bound.nativeThreadRef?.driver !== CODEX_DRIVER_KIND ||
+                bound.nativeThreadRef.nativeId !== request.state.binding.nativeThreadId ||
+                target.generation.trim().length === 0 ||
+                request.state.binding.nativeThreadId.trim().length === 0
+              )
+                return yield* toProtocolError(
+                  "Required native start lost its exact original subjects or actual producer binding.",
+                );
+              const actualBinding = {
+                threadId: request.input.threadId,
+                providerThreadId: bound.id,
+                providerSessionId: input.providerSessionId,
+                instanceId: adapterOptions.instanceId,
+                runtimeGeneration: target.generation,
+                nativeThreadId: request.state.binding.nativeThreadId,
+              };
+              const completeBinding = yield* Schema.decodeUnknownEffect(
+                NativeProviderRuntimeBindingV1,
+              )(actualBinding, { onExcessProperty: "error" });
+              if (nativeStartPacketBytes(actualBinding) !== nativeStartPacketBytes(completeBinding))
+                return yield* toProtocolError(
+                  "Actual native binding is not an exact complete identity.",
+                );
+              captured = Object.freeze({
+                nativeOperation: Object.freeze({ ...originalOperation }),
+                driver: CODEX_DRIVER_KIND,
+                binding: Object.freeze(actualBinding),
+                runId: request.input.runId,
+                attemptId: request.input.attemptId,
+                rootNodeId: request.input.rootNodeId,
+                messageId: request.input.message.messageId,
+              }) as unknown as ProviderNativeStartProducerCaptureV1;
+              const frozenRequest = request.input;
+              const revalidate = Effect.suspend(() => {
+                const currentBinding = target.bindings.get(request.state.binding.nativeThreadId);
+                return currentProducer === target &&
+                  target.active &&
+                  target.client === capturedClient &&
+                  target.scope === capturedScope &&
+                  target.generation === capturedGeneration &&
+                  !capacityScopeClosed &&
+                  !nativeStartUnknown &&
+                  request.input === frozenRequest &&
+                  request.input.threadId === captured!.binding.threadId &&
+                  request.input.providerThread.driver === captured!.driver &&
+                  nativeStartPacketBytes(request.input.nativeOperation) ===
+                    nativeStartPacketBytes(captured!.nativeOperation) &&
+                  request.state.retryOrdinal === 0 &&
+                  currentCapacityBinding(request) &&
+                  capacityByThread.get(request.state.binding.nativeThreadId) === request &&
+                  currentBinding === bound
+                  ? Effect.void
+                  : Effect.fail(
+                      new ProviderAdapterTurnStartError({
+                        driver: CODEX_DRIVER_KIND,
+                        threadId: frozenRequest.threadId,
+                        providerThreadId: frozenRequest.providerThread.id,
+                        runId: frozenRequest.runId,
+                        cause: "The original native producer or request was replaced or closed.",
+                      }),
+                    );
+              });
+              issuedNativeStartCaptures.set(captured, {
+                bytes: nativeStartPacketBytes(captured),
+                revalidate,
+              });
+              yield* revalidate;
+              const returnedFence = yield* confirmation.beforeDispatch(captured);
+              dispatchFence = Object.freeze({
+                evidenceRevision: returnedFence.evidenceRevision,
+                revalidate: returnedFence.revalidate,
+              });
+              if (
+                !Number.isSafeInteger(dispatchFence.evidenceRevision) ||
+                dispatchFence.evidenceRevision < 1
+              )
+                return yield* toProtocolError(
+                  "Native registration did not return an exact positive evidence revision.",
+                );
+              yield* revalidate;
+              yield* dispatchFence.revalidate;
+              request.recoveryEnabled = false;
+            }
             request.startDispatched = true;
-            const started = yield* client
+            const started = yield* (confirmation === undefined ? client : capturedClient)
               .request(
                 "turn/start",
                 retryOrdinal === 0 ? request.params : { ...request.params, input: [] },
@@ -5998,6 +6153,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               !currentCapacityBinding(request) ||
               nativeStartUnknown ||
               request.state.retiredNativeTurnIds.includes(started.turn.id) ||
+              (confirmation !== undefined &&
+                (started.turn.id.trim().length === 0 ||
+                  started.turn.id.trim() !== started.turn.id ||
+                  (yield* Ref.get(activeTurns)).has(started.turn.id) ||
+                  (yield* Ref.get(settledTurns)).has(started.turn.id))) ||
               (retryOrdinal > 0 &&
                 ((yield* Ref.get(activeTurns)).has(started.turn.id) ||
                   (yield* Ref.get(settledTurns)).has(started.turn.id)))
@@ -6035,6 +6195,30 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               retryOrdinal,
               nativeTurnId: started.turn.id,
             });
+            if (
+              confirmation !== undefined &&
+              captured !== undefined &&
+              dispatchFence !== undefined
+            ) {
+              const issued = readIssuedCodexNativeStartCapture(captured);
+              if (issued === null)
+                return yield* toProtocolError("Native start capture was copied or changed.");
+              yield* issued.revalidate;
+              yield* dispatchFence.revalidate;
+              const acknowledgment = Object.freeze({
+                capture: captured,
+                method: "turn/start",
+                nativeTurnId: started.turn.id,
+                evidenceRevision: dispatchFence.evidenceRevision,
+                observedAt: DateTime.formatIso(yield* DateTime.now),
+              }) as ProviderNativeStartAcknowledgmentV1;
+              issuedNativeStartAcknowledgments.set(acknowledgment, {
+                bytes: nativeStartPacketBytes(acknowledgment),
+                revalidate: issued.revalidate,
+              });
+              yield* confirmation.acknowledged(acknowledgment);
+              yield* issued.revalidate;
+            }
             const earlyStart = request.earlyStarts.get(started.turn.id);
             const earlyError = request.earlyErrors.get(started.turn.id);
             const earlyCompletion = request.earlyCompletions.get(started.turn.id);
@@ -7640,6 +7824,23 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           );
         return {
           ...runtime,
+          get runtimeGeneration() {
+            return currentProducer.generation;
+          },
+          nativeStartConfirmationOperations: ["start_turn"],
+          compactThread: (value) =>
+            value.nativeStartConfirmation === undefined
+              ? runtime.compactThread!(value)
+              : Effect.fail(
+                  new ProviderAdapterTurnStartError({
+                    driver: CODEX_DRIVER_KIND,
+                    threadId: value.threadId,
+                    providerThreadId: value.providerThread.id,
+                    runId: value.runId,
+                    cause:
+                      "Required native compact confirmation is held until the captured ACK/notification join is qualified.",
+                  }),
+                ),
           ensureThread: (value) =>
             lifecyclePermit.withPermits(1)(
               Effect.suspend(() =>

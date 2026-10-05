@@ -29,6 +29,30 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
+import * as EventSink from "./EventSink.ts";
+import type { RunExecutionServiceV2StartRootRunInput } from "./RunExecutionService.ts";
+import { nativeCreationCanonicalJson } from "../nativeCreation/NativeCreationPreparation.ts";
+
+type NativeStartTransferred = {
+  readonly kind: "native_start_transferred";
+  readonly completion: Parameters<
+    NonNullable<RunExecutionServiceV2StartRootRunInput["nativeStart"]>["onTransferred"]
+  >[0];
+};
+const issuedNativeStartCompletions = new WeakMap<
+  NativeStartTransferred,
+  {
+    readonly originalClaim: EffectOutbox.OrchestrationEffectV2;
+    readonly originalBytes: string;
+  }
+>();
+const issuedNativeStartByClaim = new WeakMap<
+  EffectOutbox.OrchestrationEffectV2,
+  NativeStartTransferred
+>();
+const requiresNativeStartConfirmation = (effect: EffectOutbox.OrchestrationEffectV2) =>
+  effect.request.type === "provider-turn.start" &&
+  effect.nativeCreationExecutionReference !== undefined;
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
@@ -71,7 +95,7 @@ export interface OrchestrationEffectExecutorV2Shape {
   readonly execute: (
     effect: EffectOutbox.OrchestrationEffectV2,
     options?: { readonly willRetry: boolean },
-  ) => Effect.Effect<void, OrchestrationEffectExecutionError>;
+  ) => Effect.Effect<void | NativeStartTransferred, OrchestrationEffectExecutionError>;
 }
 
 export class OrchestrationEffectExecutorV2 extends Context.Service<
@@ -174,10 +198,10 @@ export const executorLayer: Layer.Layer<
                     }),
                 ),
               );
-          case "provider-turn.start":
-            return providerTurnStart
-              .start({ threadId: effect.threadId, runId: effect.request.runId, willRetry })
-              .pipe(
+          case "provider-turn.start": {
+            const runId = effect.request.runId;
+            if (!requiresNativeStartConfirmation(effect))
+              return providerTurnStart.start({ threadId: effect.threadId, runId, willRetry }).pipe(
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
@@ -187,6 +211,49 @@ export const executorLayer: Layer.Layer<
                     }),
                 ),
               );
+            return Effect.gen(function* () {
+              const transferred: NativeStartTransferred[] = [];
+              yield* providerTurnStart.start({
+                threadId: effect.threadId,
+                runId,
+                willRetry: false,
+                nativeStartClaim: {
+                  effect,
+                  onTransferred: (completion) => {
+                    if (transferred.length !== 0)
+                      throw new Error("The original native start transfer was already published.");
+                    const result: NativeStartTransferred = Object.freeze({
+                      kind: "native_start_transferred",
+                      completion,
+                    });
+                    issuedNativeStartCompletions.set(result, {
+                      originalClaim: effect,
+                      originalBytes: nativeCreationCanonicalJson(result),
+                    });
+                    issuedNativeStartByClaim.set(effect, result);
+                    transferred.push(result);
+                  },
+                },
+              });
+              if (transferred.length !== 1)
+                return yield* new OrchestrationEffectExecutionError({
+                  effectId: effect.id,
+                  effectType: effect.request.type,
+                  cause:
+                    "The required native start returned without its authentic committed transfer.",
+                });
+              return transferred[0]!;
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
+          }
           case "provider-turn.interrupt":
             return providerTurnControl
               .interrupt({
@@ -535,6 +602,7 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const executor = yield* OrchestrationEffectExecutorV2;
+      const eventSink = yield* Effect.serviceOption(EventSink.EventSinkV2);
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const leaseDurationMs = Math.max(1, options.leaseDurationMs ?? 30_000);
       const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
@@ -547,39 +615,174 @@ export const layerWithOptions = (
             }),
           ),
         );
+      const holdNativeStart = (
+        effect: EffectOutbox.OrchestrationEffectV2,
+        cause: Cause.Cause<unknown>,
+      ) =>
+        Effect.gen(function* () {
+          const original = issuedNativeStartByClaim.get(effect);
+          const issued =
+            original === undefined ? undefined : issuedNativeStartCompletions.get(original);
+          const lifetime = Option.isSome(eventSink)
+            ? eventSink.value.ordinaryCheckoutLifetime
+            : undefined;
+          if (
+            original !== undefined &&
+            issued?.originalClaim === effect &&
+            issued.originalBytes === nativeCreationCanonicalJson(original) &&
+            lifetime !== undefined
+          )
+            yield* lifetime.retainExecutionUnknown(
+              original.completion.execution,
+              Cause.pretty(cause),
+            );
+          const held = yield* outbox.holdUnknown({
+            effectId: effect.id,
+            workerId,
+            expectedAttempt: effect.attemptCount,
+            operationId: effect.id,
+            evidence: {
+              operationId: effect.id,
+              operation: "start_turn",
+              threadId: effect.threadId,
+              outcome: "unknown",
+            },
+          });
+          return yield* new OrchestrationEffectWorkerError({
+            operation: "native-start-unresolved",
+            effectId: effect.id,
+            cause: `${held ? "Original running claim held without replay" : "Original claim cannot accept a running-lease hold; no terminal claim was changed"}: ${Cause.pretty(cause)}`,
+          });
+        });
+      const validateNativeStartCompletion = (
+        effect: EffectOutbox.OrchestrationEffectV2,
+        result: void | NativeStartTransferred,
+      ) =>
+        Effect.gen(function* () {
+          const issued =
+            result === undefined ? undefined : issuedNativeStartCompletions.get(result);
+          const lifetime = Option.isSome(eventSink)
+            ? eventSink.value.ordinaryCheckoutLifetime
+            : undefined;
+          if (
+            result === undefined ||
+            issued?.originalClaim !== effect ||
+            issued.originalBytes !== nativeCreationCanonicalJson(result) ||
+            lifetime === undefined
+          )
+            return yield* new OrchestrationEffectWorkerError({
+              operation: "native-start-readback",
+              effectId: effect.id,
+              cause: "The exact original native transfer issuer or lifetime reader is unavailable.",
+            });
+          const { confirmation, execution } = result.completion;
+          const current = Option.getOrNull(yield* outbox.get(effect.id));
+          if (
+            effect.request.type !== "provider-turn.start" ||
+            current === null ||
+            current.status !== "succeeded" ||
+            current.completedAt !== confirmation.confirmedAt ||
+            current.leaseOwner !== null ||
+            current.leaseExpiresAt !== null ||
+            current.commandId !== effect.commandId ||
+            current.threadId !== effect.threadId ||
+            current.attemptCount !== effect.attemptCount ||
+            nativeCreationCanonicalJson(current.request) !==
+              nativeCreationCanonicalJson(effect.request) ||
+            nativeCreationCanonicalJson(current.nativeCreationExecutionReference) !==
+              nativeCreationCanonicalJson(effect.nativeCreationExecutionReference) ||
+            confirmation.effectId !== effect.id ||
+            confirmation.commandId !== effect.commandId ||
+            confirmation.threadId !== effect.threadId ||
+            confirmation.workerId !== workerId ||
+            confirmation.expectedAttempt !== effect.attemptCount ||
+            confirmation.runId !== effect.request.runId ||
+            nativeCreationCanonicalJson(confirmation.nativeExecutionReference) !==
+              nativeCreationCanonicalJson(effect.nativeCreationExecutionReference) ||
+            execution.executor.kind !== "captured_managed_run" ||
+            execution.executor.run.runId !== effect.request.runId
+          )
+            return yield* new OrchestrationEffectWorkerError({
+              operation: "native-start-readback",
+              effectId: effect.id,
+              cause:
+                "The original ACK/claim/managed successor readback differs from the issued transfer.",
+            });
+          const history = yield* lifetime.readExecutionHistory(execution.originalUse);
+          const activation = history.facts.find(
+            (fact) =>
+              fact.eventKind === "activate" &&
+              nativeCreationCanonicalJson(fact.ref) === nativeCreationCanonicalJson(execution),
+          );
+          const receipt =
+            activation?.evidence.schema === "t3.ordinary-checkout-execution-activation/v1"
+              ? activation.evidence.nativeStartTransfer
+              : undefined;
+          const retirement =
+            activation === undefined ? undefined : history.facts[activation.ordinal + 1];
+          if (
+            receipt === undefined ||
+            receipt.effectId !== effect.id ||
+            receipt.commandId !== effect.commandId ||
+            receipt.workerId !== workerId ||
+            receipt.expectedAttempt !== effect.attemptCount ||
+            retirement?.eventKind !== "retire" ||
+            retirement.evidence.schema !== "t3.ordinary-checkout-execution-outcome/v1" ||
+            retirement.evidence.actualProducerOutcome.kind !== "start_activated" ||
+            nativeCreationCanonicalJson(
+              retirement.evidence.actualProducerOutcome.managedExecution,
+            ) !== nativeCreationCanonicalJson(execution)
+          )
+            return yield* new OrchestrationEffectWorkerError({
+              operation: "native-start-readback",
+              effectId: effect.id,
+              cause: "The exact authenticated activate/retire pair is unavailable.",
+            });
+          yield* lifetime.revalidateExecution(execution);
+          return true;
+        });
       const requeueClaim = (
         effect: EffectOutbox.OrchestrationEffectV2,
         cause: Cause.Cause<unknown>,
       ) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.void
-          : outbox
-              .retry({
-                effectId: effect.id,
-                workerId,
-                error: `Worker failed before settling the claimed effect: ${Cause.pretty(cause)}`,
-                delayMs: 0,
-              })
-              .pipe(
-                Effect.flatMap((requeued) =>
-                  requeued
-                    ? Effect.logWarning("Requeued effect after unexpected worker failure", {
-                        effectId: effect.id,
-                        effectType: effect.request.type,
-                      })
-                    : Effect.logWarning("Could not requeue effect after worker lost its lease", {
-                        effectId: effect.id,
-                        effectType: effect.request.type,
-                      }),
-                ),
-                Effect.catchCause((requeueCause) =>
-                  Effect.logError("Failed to requeue effect after unexpected worker failure", {
+          : requiresNativeStartConfirmation(effect)
+            ? holdNativeStart(effect, cause).pipe(
+                Effect.catchCause((holdCause) =>
+                  Effect.logError("Native start uncertainty retained without requeue", {
                     effectId: effect.id,
-                    effectType: effect.request.type,
-                    error: Cause.pretty(requeueCause),
+                    error: Cause.pretty(holdCause),
                   }),
                 ),
-              );
+              )
+            : outbox
+                .retry({
+                  effectId: effect.id,
+                  workerId,
+                  error: `Worker failed before settling the claimed effect: ${Cause.pretty(cause)}`,
+                  delayMs: 0,
+                })
+                .pipe(
+                  Effect.flatMap((requeued) =>
+                    requeued
+                      ? Effect.logWarning("Requeued effect after unexpected worker failure", {
+                          effectId: effect.id,
+                          effectType: effect.request.type,
+                        })
+                      : Effect.logWarning("Could not requeue effect after worker lost its lease", {
+                          effectId: effect.id,
+                          effectType: effect.request.type,
+                        }),
+                  ),
+                  Effect.catchCause((requeueCause) =>
+                    Effect.logError("Failed to requeue effect after unexpected worker failure", {
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      error: Cause.pretty(requeueCause),
+                    }),
+                  ),
+                );
       const terminalizeClaim = (
         effect: EffectOutbox.OrchestrationEffectV2,
         cause: Cause.Cause<unknown>,
@@ -680,14 +883,20 @@ export const layerWithOptions = (
 
           const execution = executor
             .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
-            .pipe(Effect.as("executed" as const));
+            .pipe(Effect.map((result) => ({ kind: "executed" as const, result })));
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );
           if (Exit.isSuccess(exit) && exit.value === "cancelled") {
             return true;
           }
-          if (Exit.isSuccess(exit)) {
+          if (Exit.isSuccess(exit) && exit.value !== "cancelled") {
+            if (requiresNativeStartConfirmation(effect)) {
+              const result = exit.value.result;
+              return yield* validateNativeStartCompletion(effect, result).pipe(
+                Effect.catchCause((cause) => holdNativeStart(effect, cause)),
+              );
+            }
             return yield* Effect.gen(function* () {
               const completed = yield* outbox.succeed({ effectId: effect.id, workerId });
               if (!completed) {
@@ -702,6 +911,14 @@ export const layerWithOptions = (
             }).pipe(Effect.onError((cause) => recoverPostSuccessSettlement(effect, cause)));
           }
 
+          if (!Exit.isFailure(exit))
+            return yield* new OrchestrationEffectWorkerError({
+              operation: "run",
+              effectId: effect.id,
+              cause: "Invalid execution/cancellation result.",
+            });
+          if (requiresNativeStartConfirmation(effect))
+            return yield* holdNativeStart(effect, exit.cause);
           const error = Cause.pretty(exit.cause);
           const nonRetryable = isNonRetryableProviderTurnControlFailure(effect.request.type, error);
           yield* Effect.logWarning("Orchestration effect execution failed", {

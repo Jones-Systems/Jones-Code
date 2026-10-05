@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   ModelSelection,
@@ -40,6 +41,9 @@ import { makeKeyedSerialExecutor } from "./KeyedSerialExecutor.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import {
   ProviderAdapterEventStreamError,
+  ProviderAdapterTurnStartError,
+  type ProviderNativeStartProducerCaptureV1,
+  type ProviderAdapterV2TurnInput,
   ProviderRuntimeBindingError,
   unobservedRuntimeIdentity,
   type ProviderRuntimeLifecycle,
@@ -50,6 +54,11 @@ import {
   type ProviderAdapterV2SessionRuntime,
 } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import { canonicalJson as nativeStartPacketBytes } from "./CanonicalJson.ts";
+import {
+  readIssuedCodexNativeStartCapture,
+  readIssuedCodexNativeStartAcknowledgment,
+} from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -145,6 +154,47 @@ export const ProviderSessionManagerV2Error = Schema.Union([
 ]);
 export type ProviderSessionManagerV2Error = typeof ProviderSessionManagerV2Error.Type;
 
+export interface ProviderNativeStartAttachmentV1 {
+  readonly captureId: string;
+  readonly capture: ProviderNativeStartProducerCaptureV1;
+  readonly evidenceRevision: number;
+  readonly revalidateCaptured: Effect.Effect<void, ProviderSessionActivityError>;
+}
+const issuedNativeAttachments = new WeakMap<
+  object,
+  {
+    readonly bytes: string;
+    readonly attachment: ProviderNativeStartAttachmentV1;
+  }
+>();
+export function readIssuedProviderNativeStartAttachment(
+  input: unknown,
+): ProviderNativeStartAttachmentV1 | null {
+  if (typeof input !== "object" || input === null) return null;
+  const issued = issuedNativeAttachments.get(input);
+  return issued !== undefined && issued.bytes === nativeStartPacketBytes(input)
+    ? issued.attachment
+    : null;
+}
+
+export interface ProviderNativeStartReturnedV1 {
+  readonly attachment: ProviderNativeStartAttachmentV1;
+  readonly acknowledgment: import("./ProviderAdapter.ts").ProviderNativeStartAcknowledgmentV1;
+  readonly observedAt: string;
+}
+const issuedNativeReturns = new WeakMap<object, ProviderNativeStartReturnedV1>();
+export function readIssuedProviderNativeStartReturned(
+  input: unknown,
+): ProviderNativeStartReturnedV1 | null {
+  const attachment = readIssuedProviderNativeStartAttachment(input);
+  if (attachment === null) return null;
+  const returned = issuedNativeReturns.get(attachment.capture);
+  return returned?.attachment === attachment &&
+    readIssuedCodexNativeStartAcknowledgment(returned.acknowledgment) !== null
+    ? returned
+    : null;
+}
+
 export interface ProviderSessionManagerV2Shape {
   readonly isMcpCallerAttached: (input: {
     readonly threadId: ThreadId;
@@ -198,6 +248,7 @@ export class ProviderSessionManagerV2 extends Context.Service<
 
 interface LiveSessionEntry {
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
+  readonly attachmentTokensByThread: ReadonlyMap<ThreadId, object>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /**
    * MCP credential session id issued for each attached thread. Revocation on
@@ -1360,6 +1411,10 @@ export const layerWithOptions = (
             updated.set(sessionKey(input.providerSessionId), {
               ...entry,
               attachedThreadIds: new Set([...entry.attachedThreadIds, input.threadId]),
+              attachmentTokensByThread: new Map([
+                ...entry.attachmentTokensByThread,
+                [input.threadId, {}],
+              ]),
             });
             return [true, updated] as const;
           }),
@@ -1377,12 +1432,15 @@ export const layerWithOptions = (
           }
           const attachedThreadIds = new Set(entry.attachedThreadIds);
           attachedThreadIds.delete(input.threadId);
+          const attachmentTokensByThread = new Map(entry.attachmentTokensByThread);
+          attachmentTokensByThread.delete(input.threadId);
           const loadedProviderThreadKeyByThread = new Map(entry.loadedProviderThreadKeyByThread);
           loadedProviderThreadKeyByThread.delete(input.threadId);
           const updated = new Map(current);
           updated.set(key, {
             ...entry,
             attachedThreadIds,
+            attachmentTokensByThread,
             loadedProviderThreadKeyByThread,
           });
           return updated;
@@ -1591,6 +1649,256 @@ export const layerWithOptions = (
           return { events, close } satisfies ProviderAdapterV2EventSubscription;
         });
 
+      const pendingNativeReturns = new WeakMap<
+        object,
+        {
+          attachment?: ProviderNativeStartAttachmentV1;
+          acknowledgment?: import("./ProviderAdapter.ts").ProviderNativeStartAcknowledgmentV1;
+        }
+      >();
+      const captureNativeStartAttachment = (
+        runtime: ProviderAdapterV2SessionRuntime,
+        input: ProviderAdapterV2TurnInput,
+        capture: ProviderNativeStartProducerCaptureV1,
+      ) =>
+        Effect.gen(function* () {
+          const reject = () =>
+            new ProviderSessionActivityError({
+              providerSessionId: runtime.providerSessionId,
+              cause: "Original native producer or managed attachment is unavailable.",
+            });
+          const source = readIssuedCodexNativeStartCapture(capture);
+          const key = sessionKey(runtime.providerSessionId);
+          const entry = (yield* Ref.get(sessions)).get(key);
+          const thread = input.providerThread;
+          if (
+            source === null ||
+            entry?.runtime !== runtime ||
+            !entry.attachedThreadIds.has(input.threadId) ||
+            capture.driver !== runtime.driver ||
+            runtime.driver !== "codex" ||
+            thread.driver !== runtime.driver ||
+            thread.nativeThreadRef?.driver !== runtime.driver ||
+            thread.nativeThreadRef.nativeId !== capture.binding.nativeThreadId ||
+            thread.id !== capture.binding.providerThreadId ||
+            thread.appThreadId !== input.threadId ||
+            thread.providerSessionId !== runtime.providerSessionId ||
+            thread.providerInstanceId !== runtime.instanceId ||
+            capture.binding.threadId !== input.threadId ||
+            capture.binding.providerSessionId !== runtime.providerSessionId ||
+            capture.binding.instanceId !== runtime.instanceId ||
+            capture.runId !== input.runId ||
+            capture.attemptId !== input.attemptId ||
+            capture.rootNodeId !== input.rootNodeId ||
+            capture.messageId !== input.message.messageId ||
+            capture.binding.runtimeGeneration !== runtime.runtimeGeneration ||
+            capture.binding.nativeThreadId === undefined ||
+            issuedNativeAttachments.has(capture) ||
+            eventSink.readProviderRuntimeEvidence === undefined ||
+            eventSink.readCurrentProviderRuntimeOwner === undefined ||
+            eventSink.registerProviderRuntime === undefined
+          )
+            return yield* reject();
+          const token = entry.attachmentTokensByThread.get(input.threadId);
+          const loadedKey = entry.loadedProviderThreadKeyByThread.get(input.threadId);
+          if (token === undefined || loadedKey === undefined) return yield* reject();
+          const matches = (current: LiveSessionEntry | undefined) =>
+            current !== undefined &&
+            current.runtime === runtime &&
+            current.exposedRuntime === entry.exposedRuntime &&
+            current.scope === entry.scope &&
+            current.attachedThreadIds.has(input.threadId) &&
+            current.attachmentTokensByThread.get(input.threadId) === token &&
+            current.loadedProviderThreadKeyByThread.get(input.threadId) === loadedKey &&
+            current.runtime.runtimeGeneration === capture.binding.runtimeGeneration;
+          let invalidated = false;
+          const currentFence = Effect.gen(function* () {
+            if (
+              invalidated ||
+              !matches((yield* Ref.get(sessions)).get(key)) ||
+              runtime.providerSession.status === "stopped" ||
+              runtime.providerSession.status === "error"
+            )
+              return yield* reject();
+            yield* source.revalidate;
+          }).pipe(
+            Effect.tapError(() =>
+              Effect.sync(() => {
+                invalidated = true;
+              }),
+            ),
+            Effect.mapError(
+              (cause) =>
+                new ProviderSessionActivityError({
+                  providerSessionId: runtime.providerSessionId,
+                  cause,
+                }),
+            ),
+          );
+          yield* currentFence;
+          const previous = yield* eventSink.readProviderRuntimeEvidence(input.threadId);
+          if (previous !== null && previous.binding.driver !== runtime.driver)
+            return yield* reject();
+          const registered = yield* eventSink.registerProviderRuntime({
+            expectedBinding: {
+              ...capture.binding,
+              nativeThreadId: capture.binding.nativeThreadId,
+              driver: runtime.driver,
+            },
+            expectedRegisteredBinding: previous?.binding ?? null,
+            expectedEvidenceRevision: previous?.evidenceRevision ?? 0,
+            actualBinding: capture.binding,
+            expectedRunId: input.runId,
+            expectedRunAttemptId: input.attemptId,
+          });
+          if (!registered.committed) return yield* reject();
+          const revalidateCaptured = Effect.gen(function* () {
+            yield* currentFence;
+            const owner = yield* eventSink.readCurrentProviderRuntimeOwner!(input.threadId);
+            if (
+              owner === null ||
+              owner.evidenceRevision !== registered.evidenceRevision ||
+              owner.binding.driver !== capture.driver ||
+              owner.binding.threadId !== capture.binding.threadId ||
+              owner.binding.providerThreadId !== capture.binding.providerThreadId ||
+              owner.binding.providerSessionId !== capture.binding.providerSessionId ||
+              owner.binding.instanceId !== capture.binding.instanceId ||
+              owner.binding.runtimeGeneration !== capture.binding.runtimeGeneration ||
+              owner.binding.nativeThreadId !== capture.binding.nativeThreadId
+            )
+              return yield* reject();
+            yield* currentFence;
+          }).pipe(
+            Effect.tapError(() =>
+              Effect.sync(() => {
+                invalidated = true;
+              }),
+            ),
+            Effect.mapError(
+              (cause) =>
+                new ProviderSessionActivityError({
+                  providerSessionId: runtime.providerSessionId,
+                  cause,
+                }),
+            ),
+          );
+          yield* revalidateCaptured;
+          const attachment = Object.freeze({
+            captureId: NodeCrypto.randomUUID(),
+            capture,
+            evidenceRevision: registered.evidenceRevision,
+            revalidateCaptured,
+          });
+          issuedNativeAttachments.set(capture, {
+            bytes: nativeStartPacketBytes(capture),
+            attachment,
+          });
+          return attachment;
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterTurnStartError({
+                driver: runtime.driver,
+                threadId: input.threadId,
+                providerThreadId: input.providerThread.id,
+                runId: input.runId,
+                cause,
+              }),
+          ),
+        );
+
+      const withNativeConfirmation = (
+        runtime: ProviderAdapterV2SessionRuntime,
+        input: ProviderAdapterV2TurnInput,
+      ): ProviderAdapterV2TurnInput => {
+        const confirmation = input.nativeStartConfirmation;
+        if (confirmation === undefined) return input;
+        const pending: {
+          attachment?: ProviderNativeStartAttachmentV1;
+          acknowledgment?: import("./ProviderAdapter.ts").ProviderNativeStartAcknowledgmentV1;
+        } = {};
+        const wrapped: ProviderAdapterV2TurnInput = {
+          ...input,
+          nativeStartConfirmation: {
+            beforeDispatch: (capture) =>
+              Effect.gen(function* () {
+                const attachment = yield* captureNativeStartAttachment(runtime, input, capture);
+                pending.attachment = attachment;
+                const fence = yield* confirmation.beforeDispatch(capture);
+                if (fence.evidenceRevision !== attachment.evidenceRevision)
+                  return yield* new ProviderAdapterTurnStartError({
+                    driver: runtime.driver,
+                    threadId: input.threadId,
+                    providerThreadId: input.providerThread.id,
+                    runId: input.runId,
+                    cause: "Native dispatch revision differs from actual registration.",
+                  });
+                return {
+                  evidenceRevision: attachment.evidenceRevision,
+                  revalidate: attachment.revalidateCaptured.pipe(
+                    Effect.andThen(fence.revalidate),
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderAdapterTurnStartError({
+                          driver: runtime.driver,
+                          threadId: input.threadId,
+                          providerThreadId: input.providerThread.id,
+                          runId: input.runId,
+                          cause,
+                        }),
+                    ),
+                  ),
+                };
+              }),
+            acknowledged: (acknowledgment) =>
+              Effect.gen(function* () {
+                const issued = readIssuedCodexNativeStartAcknowledgment(acknowledgment);
+                const attachment = readIssuedProviderNativeStartAttachment(acknowledgment.capture);
+                if (
+                  issued === null ||
+                  attachment === null ||
+                  acknowledgment.evidenceRevision !== attachment.evidenceRevision
+                )
+                  return yield* new ProviderAdapterTurnStartError({
+                    driver: runtime.driver,
+                    threadId: input.threadId,
+                    providerThreadId: input.providerThread.id,
+                    runId: input.runId,
+                    cause: "Native ACK lacks its original manager attachment.",
+                  });
+                yield* attachment.revalidateCaptured.pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterTurnStartError({
+                        driver: runtime.driver,
+                        threadId: input.threadId,
+                        providerThreadId: input.providerThread.id,
+                        runId: input.runId,
+                        cause,
+                      }),
+                  ),
+                );
+                yield* confirmation.acknowledged(acknowledgment);
+                yield* attachment.revalidateCaptured.pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterTurnStartError({
+                        driver: runtime.driver,
+                        threadId: input.threadId,
+                        providerThreadId: input.providerThread.id,
+                        runId: input.runId,
+                        cause,
+                      }),
+                  ),
+                );
+                pending.acknowledgment = acknowledgment;
+              }),
+          },
+        };
+        pendingNativeReturns.set(wrapped, pending);
+        return wrapped;
+      };
+
       const decorateRuntime = (
         runtime: ProviderAdapterV2SessionRuntime,
         eventSubscribers: Ref.Ref<
@@ -1601,6 +1909,9 @@ export const layerWithOptions = (
         const subscribeEvents = makeEventSubscription(eventSubscribers);
         return {
           ...runtime,
+          get runtimeGeneration() {
+            return runtime.runtimeGeneration;
+          },
           subscribeEvents,
           events: Stream.unwrap(
             subscribeEvents.pipe(Effect.map((subscription) => subscription.events)),
@@ -1697,22 +2008,87 @@ export const layerWithOptions = (
               ),
             ),
           startTurn: (input) =>
-            observeActivity(
-              providerSessionId,
-              ensureThreadAttached({
-                providerSessionId,
-                threadId: input.threadId,
-                providerInstanceId: runtime.instanceId,
-              }),
-            ).pipe(
-              Effect.andThen(observeActivity(providerSessionId, markBusy(providerSessionId))),
-              Effect.andThen(runtime.startTurn(input)),
-              Effect.catch((error) =>
-                observeActivity(providerSessionId, markIdle(providerSessionId)).pipe(
-                  Effect.andThen(Effect.fail(error)),
+            input.nativeStartConfirmation !== undefined &&
+            (runtime.driver !== "codex" ||
+              !runtime.nativeStartConfirmationOperations?.includes("start_turn"))
+              ? Effect.fail(
+                  new ProviderAdapterTurnStartError({
+                    driver: runtime.driver,
+                    threadId: input.threadId,
+                    providerThreadId: input.providerThread.id,
+                    runId: input.runId,
+                    cause: "Required native start producer is not connected.",
+                  }),
+                )
+              : observeActivity(
+                  providerSessionId,
+                  ensureThreadAttached({
+                    providerSessionId,
+                    threadId: input.threadId,
+                    providerInstanceId: runtime.instanceId,
+                  }),
+                ).pipe(
+                  Effect.andThen(observeActivity(providerSessionId, markBusy(providerSessionId))),
+                  Effect.andThen(
+                    Effect.gen(function* () {
+                      const wrapped = withNativeConfirmation(runtime, input);
+                      yield* runtime.startTurn(wrapped);
+                      if (input.nativeStartConfirmation === undefined) return;
+                      const pending = pendingNativeReturns.get(wrapped);
+                      if (pending?.attachment === undefined || pending.acknowledgment === undefined)
+                        return yield* new ProviderAdapterTurnStartError({
+                          driver: runtime.driver,
+                          threadId: input.threadId,
+                          providerThreadId: input.providerThread.id,
+                          runId: input.runId,
+                          cause:
+                            "Required native start returned without its original ACK and attachment.",
+                        });
+                      yield* pending.attachment.revalidateCaptured.pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new ProviderAdapterTurnStartError({
+                              driver: runtime.driver,
+                              threadId: input.threadId,
+                              providerThreadId: input.providerThread.id,
+                              runId: input.runId,
+                              cause,
+                            }),
+                        ),
+                      );
+                      issuedNativeReturns.set(
+                        pending.attachment.capture,
+                        Object.freeze({
+                          attachment: pending.attachment,
+                          acknowledgment: pending.acknowledgment,
+                          observedAt: DateTime.formatIso(yield* DateTime.now),
+                        }),
+                      );
+                    }),
+                  ),
+                  Effect.catch((error) =>
+                    observeActivity(providerSessionId, markIdle(providerSessionId)).pipe(
+                      Effect.andThen(Effect.fail(error)),
+                    ),
+                  ),
                 ),
-              ),
-            ),
+          ...(runtime.compactThread === undefined
+            ? {}
+            : {
+                compactThread: (input: ProviderAdapterV2TurnInput) =>
+                  input.nativeStartConfirmation === undefined
+                    ? runtime.compactThread!(input)
+                    : Effect.fail(
+                        new ProviderAdapterTurnStartError({
+                          driver: runtime.driver,
+                          threadId: input.threadId,
+                          providerThreadId: input.providerThread.id,
+                          runId: input.runId,
+                          cause:
+                            "Required native compaction remains held until the authentic ACK/notification join is connected.",
+                        }),
+                      ),
+              }),
           steerTurn: (input) =>
             observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
               Effect.andThen(runtime.steerTurn(input)),
@@ -2036,6 +2412,7 @@ export const layerWithOptions = (
               const now = yield* Clock.currentTimeMillis;
               const entry: LiveSessionEntry = {
                 attachedThreadIds: new Set([input.threadId]),
+                attachmentTokensByThread: new Map([[input.threadId, {}]]),
                 loadedProviderThreadKeyByThread: new Map(),
                 mcpCredentialIdByThread:
                   mcpCredentialId === undefined
@@ -2197,6 +2574,8 @@ export const layerWithOptions = (
               }
               const attachedThreadIds = new Set(entry.attachedThreadIds);
               attachedThreadIds.delete(input.threadId);
+              const attachmentTokensByThread = new Map(entry.attachmentTokensByThread);
+              attachmentTokensByThread.delete(input.threadId);
               const loadedProviderThreadKeyByThread = new Map(
                 entry.loadedProviderThreadKeyByThread,
               );
@@ -2217,6 +2596,7 @@ export const layerWithOptions = (
               const updatedEntry = {
                 ...entry,
                 attachedThreadIds,
+                attachmentTokensByThread,
                 loadedProviderThreadKeyByThread,
                 mcpCredentialIdByThread,
               };

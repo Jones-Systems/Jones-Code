@@ -1,3 +1,4 @@
+import { NativeCreationRepositoryError } from "../nativeCreation/NativeCreationRepository.ts";
 import {
   CommandId,
   OrchestrationV2Command,
@@ -17,6 +18,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  NativeStartTransferReceiptV1,
   OrdinaryCheckoutExecutionOutcomeFactV1,
   StartRetryBeforeOpenObservationV1,
   OrdinaryCheckoutExecutionEvidenceV1,
@@ -43,6 +45,16 @@ import { canonicalJson, sha256 } from "./CanonicalJson.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventStore from "./EventStore.ts";
+import { readIssuedCodexNativeStartAcknowledgment } from "./Adapters/CodexAdapterV2.ts";
+import {
+  readIssuedProviderNativeStartAttachment,
+  readIssuedProviderNativeStartReturned,
+  type ProviderNativeStartAttachmentV1,
+} from "./ProviderSessionManager.ts";
+import type {
+  ProviderNativeStartProducerCaptureV1,
+  ProviderNativeStartAcknowledgmentV1,
+} from "./ProviderAdapter.ts";
 import * as NativeExecutionRepository from "../nativeCreation/NativeCreationExecutionRepository.ts";
 import { makeNativeProviderRuntimeEvidence } from "./NativeProviderRuntimeEvidence.ts";
 import { makeCommitTransaction } from "./CommitTransaction.ts";
@@ -53,6 +65,12 @@ import {
   WorktreeOwnershipLease,
 } from "./WorktreeOwnershipLease.ts";
 
+declare const nativeStartEnteredParticipant: unique symbol;
+export interface NativeStartEnteredParticipantCaptureV1 {
+  readonly [nativeStartEnteredParticipant]: true;
+  readonly captureId: string;
+  readonly evidenceRevision: number;
+}
 export interface OrdinaryCheckoutCommitCapture {
   readonly capture: Ordinary.OrdinaryCheckoutCaptureV1;
   readonly source: {
@@ -189,6 +207,37 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
     string,
     Effect.Effect<void, OrdinaryCheckoutHistoryError>
   >();
+  interface NativeEnteredState {
+    readonly attachment: ProviderNativeStartAttachmentV1;
+    readonly checkpointScopeId: Extract<
+      Ordinary.OrdinaryCheckoutExecutionExecutorV1,
+      { kind: "captured_managed_run" }
+    >["checkpointScopeId"];
+    readonly start: Ordinary.OrdinaryCheckoutExecutionRefV1;
+    readonly admission: Ordinary.OrdinaryCheckoutAdmissionV1;
+    readonly historyTailOrdinal: number;
+    readonly historyTailSha256: string;
+    readonly participantOrdinal: number;
+    readonly claimLeaseExpiresAt: string;
+    readonly claimPayloadSha256: string;
+    readonly enteredAt: string;
+    readonly entryValidatedAt: string;
+    acknowledgment?: ProviderNativeStartAcknowledgmentV1;
+  }
+  const nativeEnteredCaptures = new WeakMap<object, NativeEnteredState>();
+  const nativeEnteredByProducer = new WeakMap<object, NativeStartEnteredParticipantCaptureV1>();
+  const historyFactsSha256 = (facts: OrdinaryCheckoutExecutionAssociationsV1["facts"]) =>
+    sha256(
+      canonicalJson(
+        facts.map((fact) => ({
+          ...fact,
+          ref: encodeExecution(fact.ref),
+          evidence: Schema.encodeSync(OrdinaryCheckoutExecutionEvidenceV1)(fact.evidence),
+        })),
+      ),
+    );
+  const historySha256 = (history: OrdinaryCheckoutExecutionAssociationsV1) =>
+    historyFactsSha256(history.facts);
   const readBirth = (threadId: ThreadId) =>
     readApplicationThreadBirth(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const failure = (
@@ -2150,6 +2199,94 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
     }
     for (const fact of facts) {
       if (
+        fact.evidence.schema !== "t3.ordinary-checkout-execution-activation/v1" ||
+        fact.evidence.nativeStartTransfer === undefined
+      )
+        continue;
+      const receipt = fact.evidence.nativeStartTransfer;
+      const start = fact.evidence.actualStartObservation.startExecution;
+      const managed = fact.ref.executor;
+      const entry = facts[receipt.participantOrdinal];
+      const proof = yield* nativeCreationRepository.readNativeEffectConfirmation(receipt.effectId);
+      const record = yield* exactUse(originalUse);
+      const claimed = yield* sql<{
+        payload_json: string;
+      }>`SELECT payload_json FROM orchestration_v2_effect_outbox WHERE effect_id=${receipt.effectId}
+        AND command_id=${receipt.commandId} AND status='succeeded' AND attempt_count=${receipt.expectedAttempt} AND completed_at=${proof?.confirmedAt ?? null}`;
+      if (
+        start.executor.kind !== "actual_outbox_claim" ||
+        managed.kind !== "captured_managed_run" ||
+        receipt.driver !== managed.driver ||
+        managed.captureId !== receipt.captureId ||
+        managed.checkpointScopeId !== receipt.checkpointScopeId ||
+        receipt.historyTailOrdinal !== fact.ordinal - 1 ||
+        receipt.participantOrdinal > receipt.historyTailOrdinal ||
+        entry === undefined ||
+        entry.ref.associationId !== start.associationId ||
+        entry.eventKind === "retire" ||
+        entry.eventKind === "unknown" ||
+        entry.evidence.expiresAt !== receipt.claimLeaseExpiresAt ||
+        historyFactsSha256(facts.slice(0, receipt.historyTailOrdinal + 1)) !==
+          receipt.historyTailSha256 ||
+        receipt.originalUseSha256 !== sha256(ordinaryUseBytes(originalUse)) ||
+        receipt.startExecutionSha256 !== sha256(ordinaryExecutionBytes(start)) ||
+        receipt.successorSha256 !== sha256(ordinaryExecutionBytes(fact.ref)) ||
+        canonicalJson(Ordinary.ordinaryCheckoutAdmissionRefV1(receipt.originalAdmission)) !==
+          canonicalJson(originalUse.admission) ||
+        receipt.enteredAt !== record.startedAt ||
+        receipt.entryValidatedAt < receipt.enteredAt ||
+        receipt.nativeAcknowledgment.observedAt < receipt.entryValidatedAt ||
+        receipt.returnedAt < receipt.nativeAcknowledgment.observedAt ||
+        receipt.returnedAt !== fact.evidence.actualStartObservation.observedAt ||
+        proof === null ||
+        sha256(canonicalJson(proof)) !== receipt.confirmationSha256 ||
+        proof.effectId !== receipt.effectId ||
+        proof.commandId !== receipt.commandId ||
+        proof.workerId !== receipt.workerId ||
+        proof.expectedAttempt !== receipt.expectedAttempt ||
+        proof.runId !== managed.run.runId ||
+        proof.attemptId !== managed.run.runAttemptId ||
+        proof.threadId !== receipt.binding.threadId ||
+        proof.evidenceRevision !== receipt.evidenceRevision ||
+        managed.evidenceRevision !== receipt.evidenceRevision ||
+        canonicalJson(proof.binding) !== canonicalJson(receipt.binding) ||
+        canonicalJson({
+          ...managed.binding,
+          runtimeGeneration: managed.runtimeGeneration,
+          nativeThreadId: managed.nativeThreadId,
+        }) !== canonicalJson(receipt.binding) ||
+        start.executor.source.link.effectId !== receipt.effectId ||
+        start.executor.source.link.commandId !== receipt.commandId ||
+        start.executor.source.workerId !== receipt.workerId ||
+        start.executor.source.expectedAttempt !== receipt.expectedAttempt ||
+        proof.confirmedAt < receipt.nativeAcknowledgment.observedAt ||
+        receipt.returnedAt < proof.confirmedAt ||
+        receipt.returnedAt >= receipt.claimLeaseExpiresAt ||
+        claimed.length !== 1 ||
+        sha256(claimed[0]!.payload_json) !== receipt.claimPayloadSha256
+      )
+        return yield* new OrdinaryCheckoutHistoryError({
+          message:
+            "Native managed transfer receipt lost its exact original entered/ACK/history lineage",
+        });
+      const originalAdmission = yield* resolveAdmission(originalUse.admission);
+      if (
+        canonicalJson(
+          yield* Schema.encodeEffect(Ordinary.OrdinaryCheckoutAdmissionV1)(originalAdmission),
+        ) !==
+        canonicalJson(
+          yield* Schema.encodeEffect(Ordinary.OrdinaryCheckoutAdmissionV1)(
+            receipt.originalAdmission,
+          ),
+        )
+      )
+        return yield* new OrdinaryCheckoutHistoryError({
+          message:
+            "Native transfer's historical admission differs from its original accepted bytes",
+        });
+    }
+    for (const fact of facts) {
+      if (
         fact.evidence.schema !== "t3.ordinary-checkout-execution-liveness/v1" ||
         fact.evidence.completionBasis === undefined
       )
@@ -2294,6 +2431,7 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
     previousExpiry?: string,
     actualProducerOutcome?: OrdinaryCheckoutExecutorOutcomeV1,
     actualStartObservation?: typeof OrdinaryManagedStartObservationV1.Type,
+    nativeStartTransfer?: NativeStartTransferReceiptV1,
   ) {
     const history = yield* readOrdinaryCheckoutExecutionAssociationsEffect(ref.originalUse);
     const ordinal = history.latestOrdinal + 1;
@@ -2308,6 +2446,7 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
             kind,
             expiresAt,
             actualStartObservation,
+            ...(nativeStartTransfer === undefined ? {} : { nativeStartTransfer }),
           }
         : kind === "retire" || kind === "unknown"
           ? {
@@ -3918,6 +4057,610 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
     } satisfies OrdinaryCheckoutCommitCapture;
   });
 
+  const enteredState = (capture: NativeStartEnteredParticipantCaptureV1) =>
+    Effect.suspend(() => {
+      const state =
+        typeof capture === "object" && capture !== null
+          ? nativeEnteredCaptures.get(capture)
+          : undefined;
+      return state === undefined
+        ? Effect.fail(
+            new OrdinaryCheckoutHistoryError({
+              message: "Native transfer requires its original issued entered participant",
+            }),
+          )
+        : Effect.succeed(state);
+    });
+  const revalidateNativeEnteredBeforeAcknowledgment = Effect.fnUntraced(function* (
+    capture: NativeStartEnteredParticipantCaptureV1,
+  ) {
+    const state = yield* enteredState(capture);
+    yield* state.attachment.revalidateCaptured;
+    const current = yield* validateOrdinaryCheckoutExecutionEffect(state.start);
+    const record = yield* exactUse(state.start.originalUse);
+    if (
+      current.history.latestOrdinal !== state.historyTailOrdinal ||
+      historySha256(current.history) !== state.historyTailSha256 ||
+      current.participant.latestOrdinal !== state.participantOrdinal ||
+      current.participant.expiresAt !== state.claimLeaseExpiresAt ||
+      record.state !== "started" ||
+      record.startedAt !== state.enteredAt
+    )
+      return yield* failure(
+        state.admission.capture,
+        "unknown_use",
+        "Original entered native participant or final claim deadline changed",
+      );
+    yield* state.attachment.revalidateCaptured;
+  });
+  const captureNativeStartEnteredParticipant = Effect.fnUntraced(function* (input: {
+    readonly startExecution: Ordinary.OrdinaryCheckoutExecutionRefV1;
+    readonly producerCapture: ProviderNativeStartProducerCaptureV1;
+  }) {
+    const attachment = readIssuedProviderNativeStartAttachment(input.producerCapture);
+    if (
+      attachment === null ||
+      input.producerCapture.driver !== "codex" ||
+      nativeEnteredByProducer.has(input.producerCapture)
+    )
+      return yield* new OrdinaryCheckoutHistoryError({
+        message: "Native entry requires a once-issued actual manager/producer attachment",
+      });
+    yield* attachment.revalidateCaptured;
+    return yield* transactions.withTransaction(
+      Effect.gen(function* () {
+        const current = yield* validateOrdinaryCheckoutExecutionEffect(input.startExecution, true);
+        const start = current.ref;
+        const record = yield* exactUse(start.originalUse);
+        const source = input.producerCapture;
+        if (
+          start.executor.kind !== "actual_outbox_claim" ||
+          record.state !== "started" ||
+          record.startedAt === null ||
+          current.admission.run === null ||
+          source.nativeOperation.operation !== "start_turn" ||
+          source.nativeOperation.operationId !== start.executor.source.link.effectId ||
+          source.runId !== current.admission.run.runId ||
+          source.attemptId !== current.admission.run.runAttemptId ||
+          source.rootNodeId !== current.admission.run.nodeId ||
+          source.messageId !== current.admission.run.messageId ||
+          source.binding.threadId !== current.admission.capture.threadId
+        )
+          return yield* failure(
+            current.admission.capture,
+            "unknown_use",
+            "Native dispatch lacks its exact entered original run/claim",
+          );
+        const rows = yield* sql<{
+          command_id: CommandId;
+          payload_json: string;
+          lease_expires_at: string;
+        }>`SELECT command_id,payload_json,lease_expires_at FROM orchestration_v2_effect_outbox
+        WHERE effect_id=${start.executor.source.link.effectId} AND status='running' AND lease_owner=${start.executor.source.workerId}
+        AND attempt_count=${start.executor.source.expectedAttempt} AND lease_expires_at=${current.participant.expiresAt}`;
+        if (rows.length !== 1)
+          return yield* failure(
+            current.admission.capture,
+            "claim_mismatch",
+            "Native entry lacks the original final running claim",
+          );
+        const effect = Option.getOrNull(yield* outbox.get(start.executor.source.link.effectId));
+        if (
+          effect === null ||
+          effect.request.type !== "provider-turn.start" ||
+          effect.commandId !== rows[0]!.command_id ||
+          effect.request.runId !== source.runId ||
+          effect.id !== `effect:${effect.commandId}:provider-turn.start:${source.runId}`
+        )
+          return yield* failure(
+            current.admission.capture,
+            "claim_mismatch",
+            "Native entry changed its accepted command/effect",
+          );
+        if (effect.nativeCreationExecutionReference !== undefined) {
+          const resolved = yield* nativeCreationRepository.readExecutionReference(
+            effect.nativeCreationExecutionReference,
+          );
+          if (
+            !resolved.history.effectsV2.some(
+              (fact) => fact.phase === "started" && fact.effectId === effect.id,
+            ) ||
+            resolved.history.effectsV2.some(
+              (fact) => fact.phase === "completed" && fact.effectId === effect.id,
+            )
+          )
+            return yield* failure(
+              current.admission.capture,
+              "unknown_use",
+              "Native entry lacks the original authorized started external fact",
+            );
+        } else {
+          const imported =
+            yield* sql`SELECT choice.command_id FROM orchestration_v2_imported_history_start_choices choice
+          JOIN orchestration_v2_imported_history_start_outcomes outcome ON outcome.command_id=choice.command_id
+          JOIN orchestration_v2_queued_start_reservations reservation ON reservation.command_id=choice.command_id
+          WHERE choice.command_id=${effect.commandId} AND choice.thread_id=${effect.threadId} AND outcome.intent_status='accepted'
+          AND outcome.run_id=${source.runId} AND reservation.effect_id=${effect.id} AND reservation.run_attempt_id=${source.attemptId}
+          AND json_extract(reservation.execution_intent_json,'$.kind')='imported_history_choice'
+          AND json_extract(reservation.basis_json,'$.sourceMode')='new_context'`;
+          if (imported.length !== 1)
+            return yield* failure(
+              current.admission.capture,
+              "unknown_use",
+              "Native entry lacks an accepted explicit fresh imported intent",
+            );
+        }
+        yield* attachment.revalidateCaptured;
+        const originalRecords = yield* projectionStore.getThreadRecords(
+          current.admission.capture.threadId,
+          ["nodes", "checkpointScopes"],
+        );
+        const originalNode = originalRecords.nodes.find(
+          (node) => node.id === source.rootNodeId && node.runId === source.runId,
+        );
+        const originalScope = originalRecords.checkpointScopes.find(
+          (scope) =>
+            scope.id === originalNode?.checkpointScopeId &&
+            scope.nodeId === source.rootNodeId &&
+            scope.runId === source.runId &&
+            scope.providerThreadId === source.binding.providerThreadId,
+        );
+        if (originalScope === undefined)
+          return yield* failure(
+            current.admission.capture,
+            "unknown_use",
+            "Native entry lacks its exact original node/message/checkpoint scope",
+          );
+        const state: NativeEnteredState = {
+          attachment,
+          checkpointScopeId: originalScope.id,
+          start,
+          admission: current.admission,
+          historyTailOrdinal: current.history.latestOrdinal,
+          historyTailSha256: historySha256(current.history),
+          participantOrdinal: current.participant.latestOrdinal,
+          claimLeaseExpiresAt: rows[0]!.lease_expires_at,
+          claimPayloadSha256: sha256(rows[0]!.payload_json),
+          enteredAt: record.startedAt,
+          entryValidatedAt: DateTime.formatIso(yield* DateTime.now),
+        };
+        const capture = Object.freeze({
+          captureId: attachment.captureId,
+          evidenceRevision: attachment.evidenceRevision,
+        }) as NativeStartEnteredParticipantCaptureV1;
+        yield* transactions.afterCommit(
+          Effect.sync(() => {
+            nativeEnteredCaptures.set(capture, state);
+            nativeEnteredByProducer.set(source, capture);
+          }),
+        );
+        return capture;
+      }),
+    );
+  });
+  const acknowledgmentMatches = (
+    state: NativeEnteredState,
+    ack: ProviderNativeStartAcknowledgmentV1,
+  ) =>
+    readIssuedCodexNativeStartAcknowledgment(ack) !== null &&
+    ack.capture === state.attachment.capture &&
+    ack.method === "turn/start" &&
+    ack.evidenceRevision === state.attachment.evidenceRevision &&
+    ack.observedAt >= state.entryValidatedAt;
+  const proofMatches = (
+    state: NativeEnteredState,
+    ack: ProviderNativeStartAcknowledgmentV1,
+    proof: NativeExecutionRepository.NativeEffectConfirmationV1,
+  ) => {
+    const start = state.start;
+    return (
+      start.executor.kind === "actual_outbox_claim" &&
+      proof.effectId === start.executor.source.link.effectId &&
+      proof.commandId === start.executor.source.link.commandId &&
+      proof.threadId === state.admission.capture.threadId &&
+      proof.workerId === start.executor.source.workerId &&
+      proof.expectedAttempt === start.executor.source.expectedAttempt &&
+      proof.runId === ack.capture.runId &&
+      proof.attemptId === ack.capture.attemptId &&
+      proof.evidenceRevision === ack.evidenceRevision &&
+      canonicalJson(proof.binding) === canonicalJson(ack.capture.binding) &&
+      canonicalJson(proof.evidence) ===
+        canonicalJson({
+          ...ack.capture.nativeOperation,
+          runtimeGeneration: ack.capture.binding.runtimeGeneration,
+          outcome: "confirmed_success",
+        }) &&
+      proof.confirmedAt >= ack.observedAt
+    );
+  };
+  const recordNativeStartAcknowledgment = Effect.fnUntraced(function* (input: {
+    readonly enteredCapture: NativeStartEnteredParticipantCaptureV1;
+    readonly acknowledgment: ProviderNativeStartAcknowledgmentV1;
+  }) {
+    const state = yield* enteredState(input.enteredCapture);
+    const ack = input.acknowledgment;
+    if (
+      !acknowledgmentMatches(state, ack) ||
+      state.start.executor.kind !== "actual_outbox_claim" ||
+      (state.acknowledgment !== undefined && state.acknowledgment !== ack)
+    )
+      return yield* failure(
+        state.admission.capture,
+        "unknown_use",
+        "Native ACK lacks its original issued entry/producer",
+      );
+    yield* state.attachment.revalidateCaptured;
+    const existing = yield* nativeCreationRepository.readNativeEffectConfirmation(
+      state.start.executor.source.link.effectId,
+    );
+    const proof =
+      existing ??
+      (yield* nativeCreationRepository.recordNativeEffectConfirmation({
+        effectId: state.start.executor.source.link.effectId,
+        workerId: state.start.executor.source.workerId,
+        expectedAttempt: state.start.executor.source.expectedAttempt,
+        runId: ack.capture.runId,
+        attemptId: ack.capture.attemptId,
+        binding: ack.capture.binding,
+        expectedEvidenceRevision: ack.evidenceRevision,
+        expectedLeaseExpiresAt: state.claimLeaseExpiresAt,
+        preCompletionFence: revalidateNativeEnteredBeforeAcknowledgment(input.enteredCapture).pipe(
+          Effect.mapError(
+            (cause) =>
+              new NativeCreationRepositoryError({
+                code: "unresolved_claim",
+                message: String(cause),
+              }),
+          ),
+        ),
+        evidence: {
+          ...ack.capture.nativeOperation,
+          runtimeGeneration: ack.capture.binding.runtimeGeneration,
+          outcome: "confirmed_success",
+        },
+      }));
+    if (!proofMatches(state, ack, proof))
+      return yield* failure(
+        state.admission.capture,
+        "unknown_use",
+        "Committed native ACK differs from the original captured lineage",
+      );
+    yield* state.attachment.revalidateCaptured;
+    state.acknowledgment = ack;
+    return proof;
+  });
+  const activateNativeManagedRun = Effect.fnUntraced(function* <E>(input: {
+    readonly enteredCapture: NativeStartEnteredParticipantCaptureV1;
+    readonly acknowledgment: ProviderNativeStartAcknowledgmentV1;
+    readonly managedExecutor: Extract<
+      Ordinary.OrdinaryCheckoutExecutionExecutorV1,
+      { kind: "captured_managed_run" }
+    >;
+    readonly actualStartObservation: typeof OrdinaryManagedStartObservationV1.Type;
+    readonly revalidateCaptured: Effect.Effect<void, E>;
+  }) {
+    const state = yield* enteredState(input.enteredCapture);
+    const ack = input.acknowledgment;
+    const returned = readIssuedProviderNativeStartReturned(state.attachment.capture);
+    if (
+      !acknowledgmentMatches(state, ack) ||
+      returned === null ||
+      returned.acknowledgment !== ack ||
+      returned.attachment !== state.attachment ||
+      state.acknowledgment !== ack ||
+      state.start.executor.kind !== "actual_outbox_claim"
+    )
+      return yield* failure(
+        state.admission.capture,
+        "unknown_use",
+        "Native transfer lacks the original returned managed start and committed ACK",
+      );
+    const callback = input.revalidateCaptured.pipe(
+      Effect.andThen(state.attachment.revalidateCaptured),
+      Effect.mapError(
+        (cause) =>
+          new OrdinaryCheckoutHistoryError({
+            message: "Original captured native managed owner lost",
+            cause,
+          }),
+      ),
+    );
+    return yield* transactions.withTransaction(
+      Effect.gen(function* () {
+        yield* callback;
+        const managed = yield* Schema.decodeUnknownEffect(
+          Schema.toType(Ordinary.OrdinaryCheckoutExecutionExecutorV1),
+        )(input.managedExecutor, { onExcessProperty: "error" });
+        const observation = yield* Schema.decodeUnknownEffect(
+          Schema.toType(OrdinaryManagedStartObservationV1),
+        )(input.actualStartObservation, { onExcessProperty: "error" });
+        if (
+          canonicalJson(input.managedExecutor) !==
+          canonicalJson(
+            yield* Schema.encodeEffect(Ordinary.OrdinaryCheckoutExecutionExecutorV1)(managed),
+          )
+        )
+          return yield* failure(
+            state.admission.capture,
+            "unknown_use",
+            "Native successor identity must retain its exact validated source values",
+          );
+        const start = state.start;
+        if (
+          managed.kind !== "captured_managed_run" ||
+          start.executor.kind !== "actual_outbox_claim" ||
+          managed.captureId !== state.attachment.captureId ||
+          managed.checkpointScopeId !== state.checkpointScopeId ||
+          managed.driver !== "codex" ||
+          observation.observedAt !== returned.observedAt ||
+          ordinaryExecutionBytes(observation.startExecution) !== ordinaryExecutionBytes(start) ||
+          canonicalJson(
+            yield* Schema.encodeEffect(Ordinary.OrdinaryCheckoutExecutionExecutorV1)(
+              observation.managedExecutor,
+            ),
+          ) !==
+            canonicalJson(
+              yield* Schema.encodeEffect(Ordinary.OrdinaryCheckoutExecutionExecutorV1)(managed),
+            )
+        )
+          return yield* failure(
+            state.admission.capture,
+            "unknown_use",
+            "Native transfer changed its actual returned start or successor capture",
+          );
+        const completeManaged = {
+          ...managed.binding,
+          runtimeGeneration: managed.runtimeGeneration,
+          nativeThreadId: managed.nativeThreadId,
+        };
+        const owner = yield* readCurrentProviderRuntimeOwnerEffect(
+          state.admission.capture.threadId,
+        );
+        if (
+          owner === null ||
+          owner.binding.driver !== "codex" ||
+          owner.binding.runtimeGeneration === null ||
+          owner.binding.nativeThreadId === null ||
+          owner.evidenceRevision !== state.attachment.evidenceRevision ||
+          managed.evidenceRevision !== owner.evidenceRevision ||
+          canonicalJson(completeManaged) !== canonicalJson(state.attachment.capture.binding) ||
+          canonicalJson({
+            threadId: owner.binding.threadId,
+            providerThreadId: owner.binding.providerThreadId,
+            providerSessionId: owner.binding.providerSessionId,
+            instanceId: owner.binding.instanceId,
+            runtimeGeneration: owner.binding.runtimeGeneration,
+            nativeThreadId: owner.binding.nativeThreadId,
+          }) !== canonicalJson(state.attachment.capture.binding)
+        )
+          return yield* failure(
+            state.admission.capture,
+            "unknown_use",
+            "Native transfer lost a complete exact six-field current managed owner",
+          );
+        const actualProvider =
+          yield* sql`SELECT provider.provider_thread_id FROM orchestration_v2_projection_provider_threads provider
+        JOIN orchestration_v2_projection_provider_sessions session ON session.provider_session_id=provider.provider_session_id
+        WHERE provider.provider_thread_id=${managed.binding.providerThreadId} AND provider.driver='codex' AND session.driver='codex'
+        AND session.status NOT IN ('stopped','error') AND json_extract(provider.payload_json,'$.nativeThreadRef.driver')='codex'
+        AND json_extract(provider.payload_json,'$.nativeThreadRef.nativeId')=${managed.nativeThreadId ?? null}`;
+        if (actualProvider.length !== 1)
+          return yield* failure(
+            state.admission.capture,
+            "unknown_use",
+            "Native transfer's actual provider/session/native reference driver changed",
+          );
+        const admission = yield* resolveAdmission(start.originalUse.admission);
+        const record = yield* exactUse(start.originalUse);
+        if (
+          canonicalJson(
+            yield* Schema.encodeEffect(Ordinary.OrdinaryCheckoutAdmissionV1)(admission),
+          ) !==
+            canonicalJson(
+              yield* Schema.encodeEffect(Ordinary.OrdinaryCheckoutAdmissionV1)(state.admission),
+            ) ||
+          record.state !== "started" ||
+          record.startedAt !== state.enteredAt
+        )
+          return yield* failure(
+            admission.capture,
+            "unknown_use",
+            "Native transfer lost its original entered admission/birth/use",
+          );
+        const lease = yield* validateCapture(admission.capture, record.subject.source, {
+          operationId: start.originalUse.operationId,
+          requireLiveLease: true,
+        });
+        const now = yield* DateTime.now;
+        if (
+          DateTime.formatIso(now) >= state.claimLeaseExpiresAt ||
+          returned.observedAt > DateTime.formatIso(now)
+        )
+          return yield* failure(
+            admission.capture,
+            "unknown_use",
+            "Native transfer's original entered deadline or owner expired",
+          );
+        yield* validateOrdinaryManagedExecutor(managed, admission);
+        const proof = yield* nativeCreationRepository.readNativeEffectConfirmation(
+          start.executor.source.link.effectId,
+        );
+        if (proof === null || !proofMatches(state, ack, proof))
+          return yield* failure(
+            admission.capture,
+            "unknown_use",
+            "Native transfer lacks the authentic committed original ACK",
+          );
+        const terminal = yield* sql<{
+          payload_json: string;
+        }>`SELECT payload_json FROM orchestration_v2_effect_outbox WHERE effect_id=${proof.effectId}
+        AND command_id=${proof.commandId} AND thread_id=${proof.threadId} AND status='succeeded' AND attempt_count=${proof.expectedAttempt}
+        AND lease_owner IS NULL AND lease_expires_at IS NULL AND completed_at=${proof.confirmedAt}`;
+        if (terminal.length !== 1 || sha256(terminal[0]!.payload_json) !== state.claimPayloadSha256)
+          return yield* failure(
+            admission.capture,
+            "claim_mismatch",
+            "Native transfer changed its succeeded original claim or payload",
+          );
+        const ref = Ordinary.makeOrdinaryCheckoutExecutionRefV1({
+          originalUse: start.originalUse,
+          executor: managed,
+        });
+        const receipt = yield* Schema.decodeUnknownEffect(
+          Schema.toType(NativeStartTransferReceiptV1),
+        )(
+          {
+            schema: "t3.native-start-managed-transfer/v1",
+            version: 1,
+            captureId: state.attachment.captureId,
+            checkpointScopeId: state.checkpointScopeId,
+            originalAdmission: admission,
+            originalUseSha256: sha256(ordinaryUseBytes(start.originalUse)),
+            startExecutionSha256: sha256(ordinaryExecutionBytes(start)),
+            claimPayloadSha256: state.claimPayloadSha256,
+            participantOrdinal: state.participantOrdinal,
+            historyTailOrdinal: state.historyTailOrdinal,
+            historyTailSha256: state.historyTailSha256,
+            claimLeaseExpiresAt: state.claimLeaseExpiresAt,
+            enteredAt: state.enteredAt,
+            entryValidatedAt: state.entryValidatedAt,
+            effectId: proof.effectId,
+            commandId: proof.commandId,
+            workerId: proof.workerId,
+            expectedAttempt: proof.expectedAttempt,
+            driver: "codex",
+            binding: ack.capture.binding,
+            evidenceRevision: ack.evidenceRevision,
+            nativeAcknowledgment: {
+              method: ack.method,
+              nativeTurnId: ack.nativeTurnId,
+              observedAt: ack.observedAt,
+            },
+            confirmationSha256: sha256(canonicalJson(proof)),
+            successorSha256: sha256(ordinaryExecutionBytes(ref)),
+            returnedAt: returned.observedAt,
+          },
+          { onExcessProperty: "error" },
+        );
+        const history = yield* readOrdinaryCheckoutExecutionAssociationsEffect(start.originalUse);
+        const existing = history.participants.find(
+          (item) => item.ref.associationId === ref.associationId,
+        );
+        if (existing !== undefined) {
+          const fact = history.facts.find(
+            (item) =>
+              item.ref.associationId === ref.associationId &&
+              item.evidence.schema === "t3.ordinary-checkout-execution-activation/v1",
+          );
+          if (
+            existing.state !== "active" ||
+            fact?.evidence.schema !== "t3.ordinary-checkout-execution-activation/v1" ||
+            canonicalJson(yield* Schema.encodeEffect(NativeStartTransferReceiptV1)(receipt)) !==
+              canonicalJson(
+                fact.evidence.nativeStartTransfer === undefined
+                  ? null
+                  : yield* Schema.encodeEffect(NativeStartTransferReceiptV1)(
+                      fact.evidence.nativeStartTransfer,
+                    ),
+              )
+          )
+            return yield* failure(
+              admission.capture,
+              "unknown_use",
+              "Native successor is changed, unknown, retired or lacks the original one-time receipt",
+            );
+          yield* validateOrdinaryCheckoutExecutionEffect(ref);
+          yield* callback;
+          return ref;
+        }
+        const participant = history.participants.find(
+          (item) => item.ref.associationId === start.associationId,
+        );
+        if (
+          history.latestOrdinal !== state.historyTailOrdinal ||
+          historySha256(history) !== state.historyTailSha256 ||
+          participant?.state !== "active" ||
+          participant.latestOrdinal !== state.participantOrdinal ||
+          participant.expiresAt !== state.claimLeaseExpiresAt ||
+          history.participants.some((item) => item.state === "unknown")
+        )
+          return yield* failure(
+            admission.capture,
+            "unknown_use",
+            "Native original entered participant was consumed, changed or made unknown",
+          );
+        yield* callback;
+        const expiry = DateTime.formatIso(
+          DateTime.makeUnsafe(
+            Math.min(DateTime.toEpochMillis(DateTime.add(now, { minutes: 5 })), lease.expiresAtMs),
+          ),
+        );
+        const ordinal = history.latestOrdinal + 1;
+        const activation = {
+          version: 1 as const,
+          schema: "t3.ordinary-checkout-execution-activation/v1" as const,
+          kind: "activate" as const,
+          expiresAt: expiry,
+          actualStartObservation: observation,
+          nativeStartTransfer: receipt,
+        };
+        const inserted =
+          yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_execution_associations
+        (operation_id,ordinal,predecessor_ordinal,association_id,admission_id,executor_kind,effect_id,event_kind,association_json,evidence_json,recorded_at)
+        SELECT ${start.originalUse.operationId},${ordinal},${history.latestOrdinal},${ref.associationId},${start.originalUse.admission.admissionId},'captured_managed_run',NULL,'activate',${ordinaryExecutionBytes(ref)},${canonicalJson(yield* Schema.encodeEffect(OrdinaryCheckoutExecutionEvidenceV1)(activation))},${DateTime.formatIso(now)}
+        WHERE (SELECT MAX(ordinal) FROM orchestration_v2_ordinary_checkout_execution_associations WHERE operation_id=${start.originalUse.operationId})=${state.historyTailOrdinal}
+        AND NOT EXISTS(SELECT 1 FROM orchestration_v2_ordinary_checkout_execution_associations WHERE operation_id=${start.originalUse.operationId} AND association_id=${start.associationId} AND event_kind IN ('retire','unknown')) RETURNING ordinal`;
+        if (inserted.length !== 1)
+          return yield* failure(
+            admission.capture,
+            "unknown_use",
+            "Native transfer history tail changed before its one-time consumption",
+          );
+        const retirement = {
+          version: 1 as const,
+          schema: "t3.ordinary-checkout-execution-outcome/v1" as const,
+          kind: "retire" as const,
+          expiresAt: state.claimLeaseExpiresAt,
+          actualProducerOutcome: {
+            kind: "start_activated" as const,
+            managedExecution: ref,
+            actualStartObservation: observation,
+          },
+        };
+        yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_execution_associations
+        (operation_id,ordinal,predecessor_ordinal,association_id,admission_id,executor_kind,effect_id,event_kind,association_json,evidence_json,recorded_at)
+        VALUES(${start.originalUse.operationId},${ordinal + 1},${ordinal},${start.associationId},${start.originalUse.admission.admissionId},'actual_outbox_claim',${proof.effectId},'retire',${ordinaryExecutionBytes(start)},${canonicalJson(yield* Schema.encodeEffect(OrdinaryCheckoutExecutionEvidenceV1)(retirement))},${DateTime.formatIso(now)})`;
+        const after = yield* readOrdinaryCheckoutExecutionAssociationsEffect(start.originalUse);
+        if (
+          after.latestOrdinal !== ordinal + 1 ||
+          after.participants.find((item) => item.ref.associationId === start.associationId)
+            ?.state !== "retired" ||
+          after.participants.find((item) => item.ref.associationId === ref.associationId)?.state !==
+            "active"
+        )
+          return yield* failure(
+            admission.capture,
+            "unknown_use",
+            "Native transfer's atomic pair readback is missing",
+          );
+        const proofAfter = yield* nativeCreationRepository.readNativeEffectConfirmation(
+          proof.effectId,
+        );
+        if (proofAfter === null || canonicalJson(proofAfter) !== canonicalJson(proof))
+          return yield* failure(
+            admission.capture,
+            "unknown_use",
+            "Native ACK changed during transfer readback",
+          );
+        yield* callback;
+        yield* transactions.afterCommit(
+          Effect.sync(() => ordinaryExecutionCallbacks.set(ref.associationId, callback)),
+        );
+        return ref;
+      }),
+    );
+  });
+
   const activateOrdinaryCheckoutManagedRun = Effect.fnUntraced(function* <E>(input: {
     readonly startExecution: Ordinary.OrdinaryCheckoutExecutionRefV1;
     readonly managedExecutor: Extract<
@@ -4534,6 +5277,10 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
     readFinalCheckpointCandidates: readOrdinaryFinalCheckpointCandidates,
     claimFinalCheckpoint: claimOrdinaryFinalCheckpoint,
     revalidateFinalCheckpointBasis: revalidateOrdinaryFinalCheckpointBasisEffect,
+    captureNativeStartEnteredParticipant,
+    revalidateNativeEnteredBeforeAcknowledgment,
+    recordNativeStartAcknowledgment,
+    activateNativeManagedRun,
     activateManagedRun: activateOrdinaryCheckoutManagedRun,
     capture,
     acquireBeforeRead,
@@ -4581,6 +5328,7 @@ export type OrdinaryCheckoutLifetime = Pick<
   | "readEffectLink"
   | "beginUse"
   | "bindExecution"
+  | "bindOutboxExecution"
   | "revalidateExecution"
   | "readExecutionHistory"
   | "renewExecution"
@@ -4589,6 +5337,10 @@ export type OrdinaryCheckoutLifetime = Pick<
   | "joinClaim"
   | "captureJoinedCommand"
   | "transitionPreparedBranch"
+  | "captureNativeStartEnteredParticipant"
+  | "revalidateNativeEnteredBeforeAcknowledgment"
+  | "recordNativeStartAcknowledgment"
+  | "activateNativeManagedRun"
   | "activateManagedRun"
   | "readFinalCheckpointCandidates"
   | "claimFinalCheckpoint"

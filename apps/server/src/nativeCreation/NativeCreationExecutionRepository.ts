@@ -117,6 +117,8 @@ export class NativeCreationExecutionRepository extends Context.Service<
       readonly attemptId: RunAttemptId;
       readonly binding: ProviderRuntimeBinding;
       readonly expectedEvidenceRevision: number;
+      readonly expectedLeaseExpiresAt?: string;
+      readonly preCompletionFence?: Effect.Effect<void, NativeCreationRepositoryError>;
       readonly evidence: ProviderNativeEffectEvidence;
     }) => Effect.Effect<NativeEffectConfirmationV1, NativeCreationRepositoryError>;
     readonly readNativeEffectConfirmation: (
@@ -1083,6 +1085,15 @@ export const make = Effect.gen(function* () {
               return yield* unresolved(
                 "Native confirmation lost its exact owned unexpired effect claim",
               );
+            if (input.expectedLeaseExpiresAt !== undefined) {
+              const exactLease =
+                yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_id=${input.effectId} AND lease_expires_at=${input.expectedLeaseExpiresAt}`;
+              if (exactLease.length !== 1)
+                return yield* unresolved(
+                  "Native confirmation lost its captured original final claim deadline",
+                );
+            }
+            if (input.preCompletionFence !== undefined) yield* input.preCompletionFence;
             const effect = effects[0]!;
             const payload = yield* decodeOrchestrationEffectPayloadV2(effect.payload_json);
             if (
@@ -1149,6 +1160,7 @@ export const make = Effect.gen(function* () {
           AND provider.thread_id = thread.thread_id AND provider.provider_instance_id = ${binding.instanceId}
           AND provider.provider_session_id = ${binding.providerSessionId} AND provider.driver = registered.driver
           AND json_extract(provider.payload_json, '$.nativeThreadRef.nativeId') = ${binding.nativeThreadId}
+          AND json_extract(provider.payload_json, '$.nativeThreadRef.driver') = provider.driver
           AND session.provider_instance_id = ${binding.instanceId} AND session.driver = provider.driver
           AND session.status NOT IN ('stopped', 'error')
           AND registered.provider_thread_id = ${binding.providerThreadId} AND registered.provider_session_id = ${binding.providerSessionId}
@@ -1184,6 +1196,7 @@ export const make = Effect.gen(function* () {
               return yield* unresolved(
                 "Native confirmation lacks accepted exact command attribution",
               );
+            if (input.preCompletionFence !== undefined) yield* input.preCompletionFence;
             const commandEvent = attributed[0]!;
             yield* sql`INSERT INTO orchestration_v2_native_effect_confirmations
         (effect_id, command_id, thread_id, worker_id, operation_id, run_id, run_attempt_id, expected_attempt,
@@ -1203,6 +1216,7 @@ export const make = Effect.gen(function* () {
         lease_expires_at = NULL, completed_at = ${now}, updated_at = ${now}, last_error = NULL
         WHERE effect_id = ${input.effectId} AND status = 'running' AND lease_owner = ${input.workerId}
           AND attempt_count = ${input.expectedAttempt} AND lease_expires_at > ${now}
+          AND (${input.expectedLeaseExpiresAt ?? null} IS NULL OR lease_expires_at = ${input.expectedLeaseExpiresAt ?? null})
           AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = ${input.effectId}) RETURNING effect_id`;
             if (terminal.length !== 1)
               return yield* unresolved(

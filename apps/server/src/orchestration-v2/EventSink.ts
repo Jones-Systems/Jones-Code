@@ -125,6 +125,7 @@ function runtimeEvidenceMatches(
  */
 export interface EventSinkV2Shape {
   readonly readProviderRuntimeEvidence?: NativeProviderRuntimeEvidenceShape["readProviderRuntimeEvidence"];
+  readonly readCurrentProviderRuntimeOwner?: NativeProviderRuntimeEvidenceShape["readCurrentProviderRuntimeOwner"];
   readonly registerProviderRuntime?: NativeProviderRuntimeEvidenceShape["registerProviderRuntime"];
   readonly ordinaryCheckoutLifetime?: import("./OrdinaryCheckoutStore.ts").OrdinaryCheckoutLifetime;
   readonly captureOrdinaryCheckout?: (

@@ -12,6 +12,7 @@ import {
   OrchestrationV2StoredEventJson,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import { NativeProviderRuntimeBindingV1 } from "../nativeCreation/NativeCreationExecutionTypes.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
@@ -76,7 +77,7 @@ export type OrdinaryFinalCheckpointClaimResultV1 =
       readonly execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
       readonly completionBasis: OrdinaryFinalCheckpointCompletionBasisV1;
     };
-export const OrdinaryPreparedPhysicalFieldsV1 = {
+const OrdinaryPreparedPhysicalFieldsV1 = {
   version: Schema.Literal(1),
   producerId: Schema.NonEmptyString,
   execution: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1,
@@ -116,12 +117,49 @@ export const OrdinaryManagedStartObservationV1 = Schema.Struct({
   managedExecutor: OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1,
   observedAt: Schema.NonEmptyString,
 });
+const transferSha256 = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
+export const NativeStartTransferReceiptV1 = Schema.Struct({
+  schema: Schema.Literal("t3.native-start-managed-transfer/v1"),
+  version: Schema.Literal(1),
+  captureId: Schema.NonEmptyString,
+  checkpointScopeId: CheckpointScopeId,
+  originalAdmission: OrdinaryCheckout.OrdinaryCheckoutAdmissionV1,
+  originalUseSha256: transferSha256,
+  startExecutionSha256: transferSha256,
+  claimPayloadSha256: transferSha256,
+  participantOrdinal: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  historyTailOrdinal: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  historyTailSha256: transferSha256,
+  claimLeaseExpiresAt: Schema.NonEmptyString,
+  enteredAt: Schema.NonEmptyString,
+  entryValidatedAt: Schema.NonEmptyString,
+  effectId: Schema.NonEmptyString,
+  commandId: CommandId,
+  workerId: Schema.NonEmptyString,
+  expectedAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+  driver: Schema.Literal("codex"),
+  binding: Schema.Struct({
+    ...NativeProviderRuntimeBindingV1.fields,
+    nativeThreadId: Schema.NonEmptyString,
+  }),
+  evidenceRevision: Schema.Int.check(Schema.isGreaterThan(0)),
+  nativeAcknowledgment: Schema.Struct({
+    method: Schema.Literal("turn/start"),
+    nativeTurnId: Schema.NonEmptyString,
+    observedAt: Schema.NonEmptyString,
+  }),
+  confirmationSha256: transferSha256,
+  successorSha256: transferSha256,
+  returnedAt: Schema.NonEmptyString,
+});
+export type NativeStartTransferReceiptV1 = typeof NativeStartTransferReceiptV1.Type;
 export const OrdinaryCheckoutExecutionActivationV1 = Schema.Struct({
   version: Schema.Literal(1),
   schema: Schema.Literal("t3.ordinary-checkout-execution-activation/v1"),
   kind: Schema.Literal("activate"),
   expiresAt: Schema.NonEmptyString,
   actualStartObservation: OrdinaryManagedStartObservationV1,
+  nativeStartTransfer: Schema.optionalKey(NativeStartTransferReceiptV1),
 });
 export const OrdinaryCheckpointProducerObservationV1 = Schema.Struct({
   version: Schema.Literal(1),
