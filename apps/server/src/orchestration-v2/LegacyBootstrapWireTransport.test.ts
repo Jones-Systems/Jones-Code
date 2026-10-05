@@ -643,6 +643,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
       "actual_worktree_started_cancel_reply_lost",
       "actual_worktree_sync_card",
       "actual_worktree_sync_disconnect_card",
+      "actual_required_non_repository",
+      "actual_required_missing_base",
+      "actual_required_fetch_failed",
+      "actual_required_fetch_unknown",
       "actual_worktree_async_card",
       "actual_worktree_cancel_pending",
       "actual_worktree_cancel_partial",
@@ -724,6 +728,14 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           updatedAt: timestamp,
         });
         const actualReceiving = scenario.startsWith("actual_");
+        const requiredPreflight = scenario.startsWith("actual_required_");
+        const failedFetch =
+          scenario === "actual_required_fetch_failed" ||
+          scenario === "actual_required_fetch_unknown";
+        let fetchCalls = 0;
+        let worktreeCreateCalls = 0;
+        let preflightStore: EventStore.EventStoreV2["Service"] | undefined;
+        let preflightReceipts: Receipts.CommandReceiptStoreV2["Service"] | undefined;
         const cancelledWorktree = scenario.startsWith("actual_worktree_cancel_");
         const startedCancellation = scenario.startsWith("actual_worktree_started_cancel");
         const failurePersistenceLost =
@@ -987,10 +999,54 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                   get: () => Effect.succeed(null),
                 }),
                 Layer.mock(WsGitWorkflowService.GitWorkflowService)({
-                  isRepository: () => Effect.succeed(true),
-                  hasCommit: () => Effect.succeed(true),
-                  createWorktree: (input, options) =>
-                    successfulCheckout !== undefined
+                  isRepository: () => Effect.succeed(scenario !== "actual_required_non_repository"),
+                  hasCommit: () => Effect.succeed(scenario !== "actual_required_missing_base"),
+                  remoteExists: () => Effect.succeed(true),
+                  fetchRemote: () =>
+                    Effect.gen(function* () {
+                      if (
+                        !failedFetch ||
+                        preflightStore === undefined ||
+                        preflightReceipts === undefined
+                      )
+                        return yield* Effect.die("Unexpected fetch in receiving preflight fixture");
+                      const b = legacyBootstrapCreateCommandId(threadId, commandId);
+                      const intentId = CommandId.make(`${b}:preflight-intent`);
+                      const raw = Array.from(
+                        yield* preflightStore
+                          .readByCommandId({ commandId: intentId })
+                          .pipe(Stream.runCollect),
+                      );
+                      const accepted = yield* preflightReceipts.getByCommandId(intentId);
+                      expect(raw).toHaveLength(1);
+                      expect(raw[0]?.event.type).toBe("legacy-bootstrap.preflight-intent");
+                      expect(Option.isSome(accepted)).toBe(true);
+                      if (Option.isSome(accepted)) {
+                        expect(accepted.value.status).toBe("accepted");
+                        expect(raw[0]?.sequence).toBe(accepted.value.resultSequence);
+                      }
+                      expect(Option.isNone(yield* preflightReceipts.getByCommandId(b))).toBe(true);
+                      expect(
+                        Option.isNone(yield* preflightReceipts.getByCommandId(commandId)),
+                      ).toBe(true);
+                      fetchCalls++;
+                    }).pipe(
+                      Effect.orDie,
+                      Effect.andThen(
+                        Effect.fail(
+                          new GitCommandError({
+                            operation: "GitWorkflowService.fetchRemote",
+                            command: "git fetch origin main",
+                            cwd,
+                            detail: "Synthetic preflight fetch failed",
+                            ...(scenario === "actual_required_fetch_failed" ? { exitCode: 1 } : {}),
+                          }),
+                        ),
+                      ),
+                    ),
+                  createWorktree: (input, options) => {
+                    worktreeCreateCalls++;
+                    return successfulCheckout !== undefined
                       ? successfulCheckout.createWorktree({ ...input, path: worktreePath }, options)
                       : Effect.gen(function* () {
                           if (!cancelledWorktree || options?.legacyPreparation === undefined)
@@ -1047,7 +1103,8 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                                 cause,
                               }),
                           ),
-                        ),
+                        );
+                  },
                   removeWorktree: () => Effect.die("No Git cleanup in receiving RPC fixture"),
                   renameBranch: () => Effect.die("No Git rename in receiving RPC fixture"),
                 }),
@@ -1287,6 +1344,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           });
           if (actualReceiving) {
             const sink = yield* EventSink.EventSinkV2;
+            if (requiredPreflight) {
+              preflightStore = yield* EventStore.EventStoreV2;
+              preflightReceipts = yield* Receipts.CommandReceiptStoreV2;
+            }
             const projectCommandId = CommandId.make("wire-forward:project-create");
             yield* sink.commitProjectCommand({
               commandId: projectCommandId,
@@ -1338,14 +1399,14 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 worktreePath: null,
                 createdAt: timestamp,
               },
-              ...(actualReceiving && !cancelledWorktree && !successfulWorktree
+              ...(actualReceiving && !cancelledWorktree && !successfulWorktree && !requiredPreflight
                 ? {}
                 : {
                     prepareWorktree: {
                       projectCwd: cwd,
                       baseBranch: "main",
                       branch: "owned/forwarding",
-                      startFromOrigin: false,
+                      startFromOrigin: failedFetch,
                       requireWorktree: true,
                     },
                   }),
@@ -1408,6 +1469,98 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               headers: [],
             }),
           );
+          if (requiredPreflight) {
+            const rawFrame = yield* Effect.race(
+              WsQueue.take(outgoing),
+              WsFiber.join(serving).pipe(
+                Effect.andThen(Effect.die("Socket ended before preflight failure")),
+              ),
+            ).pipe(Effect.timeout("5 seconds"));
+            const frame = yield* decodeSocketRpcResponse(
+              typeof rawFrame === "string" ? rawFrame : new TextDecoder().decode(rawFrame),
+            );
+            expect(frame.requestId).toBe("1");
+            expect(frame.exit._tag).toBe("Failure");
+            if (frame.exit._tag !== "Failure")
+              return yield* Effect.die("Preflight failure required");
+            const failures = yield* Schema.decodeUnknownEffect(
+              Schema.Array(
+                Schema.Struct({
+                  _tag: Schema.Literal("Fail"),
+                  error: OrchestrationDispatchCommandError,
+                }),
+              ),
+            )(frame.exit.cause);
+            expect(failures).toHaveLength(1);
+            expect(failures[0]?.error.bootstrapThreadDisposition).toBe(
+              scenario === "actual_required_fetch_unknown" ? undefined : "not-created",
+            );
+            expect(failures[0]?.error.message).toContain(
+              failedFetch ? "fetch failed" : "separate worktree requires",
+            );
+            const threads = yield* Threads.ThreadManagementService;
+            const receipts = yield* Receipts.CommandReceiptStoreV2;
+            const store = yield* EventStore.EventStoreV2;
+            const b = legacyBootstrapCreateCommandId(threadId, commandId);
+            expect(yield* threads.getThreadShell(threadId)).toBeNull();
+            for (const id of [b, CommandId.make(`${b}:initial-message`), commandId]) {
+              expect(Option.isNone(yield* receipts.getByCommandId(id))).toBe(true);
+              expect(Option.isNone(yield* receipts.getProjectByCommandId(id))).toBe(true);
+              expect(
+                Array.from(yield* store.readByCommandId({ commandId: id }).pipe(Stream.runCollect)),
+              ).toHaveLength(0);
+            }
+            const recorded = Array.from(yield* store.read({ threadId }).pipe(Stream.runCollect));
+            expect(recorded.map((entry) => entry.event.type)).toEqual([
+              "legacy-bootstrap.preflight-intent",
+              "legacy-bootstrap.preflight-outcome",
+            ]);
+            const intent = recorded[0];
+            const outcome = recorded[1];
+            if (
+              intent?.event.type !== "legacy-bootstrap.preflight-intent" ||
+              outcome?.event.type !== "legacy-bootstrap.preflight-outcome"
+            )
+              return yield* Effect.die("Authentic private preflight records required");
+            expect(outcome.event.payload.status).toBe(
+              scenario === "actual_required_fetch_unknown" ? "unknown" : "known_failed",
+            );
+            expect(outcome.event.payload.binding).toEqual(intent.event.payload);
+            expect(outcome.event.payload.intentSequence).toBe(intent.sequence);
+            expect(intent.event.payload.policy.createCommandId).toBe(b);
+            expect(intent.event.payload.policy.releaseCommandId).toBe(commandId);
+            expect(intent.event.payload.policy.messageId).toBe(messageId);
+            expect(intent.event.payload.policy.threadId).toBe(threadId);
+            expect(intent.event.payload.policy.projectId).toBe(projectId);
+            expect(intent.event.payload.fetch.cwd).toBe(cwd);
+            expect(intent.event.payload.fetch.startFromOrigin).toBe(failedFetch);
+            for (const entry of recorded) {
+              const recordedCommandId = entry.commandId;
+              expect(recordedCommandId).not.toBeNull();
+              if (recordedCommandId === null)
+                return yield* Effect.die("Private preflight command binding required");
+              const receipt = yield* receipts.getByCommandId(recordedCommandId);
+              expect(Option.isSome(receipt)).toBe(true);
+              if (Option.isSome(receipt)) {
+                expect(receipt.value.status).toBe("accepted");
+                expect(receipt.value.resultSequence).toBe(entry.sequence);
+              }
+            }
+            const observation = yield* makeCommandObservationQuery();
+            const observed = yield* observation.observe({ threadId, commandId, messageId });
+            expect(observed.commandStatus).toBe("not_found");
+            expect(observed.turn).toBeNull();
+            const outbox = yield* WsEffectOutbox.EffectOutboxV2;
+            expect(yield* outbox.listByThreadId(threadId)).toEqual([]);
+            expect(yield* fs.exists(worktreePath)).toBe(false);
+            expect(fetchCalls).toBe(failedFetch ? 1 : 0);
+            expect(worktreeCreateCalls).toBe(0);
+            expect(spawnCalls).toBe(0);
+            expect(written).toBe("");
+            expect(kills).toHaveLength(0);
+            yield* WsFiber.interrupt(serving);
+            return;
+          }
           if (successfulWorktree) {
             yield* Deferred.await(setupWritten).pipe(Effect.timeout("5 seconds"));
             const sink = yield* EventSink.EventSinkV2;
