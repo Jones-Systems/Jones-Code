@@ -70,6 +70,11 @@ Choose the other account from the thread's model picker. T3 Code offers compatib
 Codex instances that share the thread's **CODEX_HOME path**. Changing accounts does
 not move the conversation into a separate Codex home.
 
+If the saved conversation cannot be reopened after switching accounts, T3 Code
+reports the resume error instead of starting an empty conversation. Check that
+both accounts can access the shared Codex sessions, or switch back to the
+original account to continue.
+
 If the account is missing from the picker, compare the home paths in provider
 settings. If two instances show the same unexpected account or models, check their
 reported accounts, refresh provider status, and confirm the second instance has

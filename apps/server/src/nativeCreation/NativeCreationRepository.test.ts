@@ -168,7 +168,7 @@ it.effect("missing native membership table is unknown rather than an absent mark
       (yield* repository.hasAutomationEnrollment(enrolledSessionId).pipe(Effect.flip)).code,
       "unresolved_claim",
     );
-  }).pipe(Effect.provide(layer.pipe(Layer.provide(memory)))),
+  }).pipe(Effect.provide(RepositorySqlite.layer.pipe(Layer.provide(memory)))),
 );
 
 it.effect(
@@ -215,7 +215,10 @@ it.effect("authority denial creates no claim or started effect", () =>
     const sql = yield* SqlClient.SqlClient;
     const value = yield* fixture();
     const denied = Effect.fail(
-      new Authority.NativeCreationAuthorityError({ code: "stale_grant", message: "Synthetic revoked grant" }),
+      new Authority.NativeCreationAuthorityError({
+        code: "stale_grant",
+        message: "Synthetic revoked grant",
+      }),
     );
     assert.strictEqual(
       (yield* repository.claim(value.input, denied).pipe(Effect.flip)).code,
@@ -522,7 +525,6 @@ it.effect("assigns distinct fact ordinals when asynchronous completions arrive c
   }).pipe(Effect.provide(repositoryLayer)),
 );
 
-
 it.effect("reads historical reservations without translating their canonical receipt bytes", () =>
   Effect.gen(function* () {
     const repository = yield* Repository.NativeCreationRepository;
@@ -559,7 +561,8 @@ it.effect("fails closed on unimplemented V2 execution facts without appending hi
       commandDigest: value.preparation.commandDigest,
     } as unknown as Parameters<Repository.NativeCreationRepository["Service"]["startEffect"]>[1];
     assert.strictEqual(
-      (yield* repository.startEffect(value.input.claimId, fact, value.authorize).pipe(Effect.flip)).code,
+      (yield* repository.startEffect(value.input.claimId, fact, value.authorize).pipe(Effect.flip))
+        .code,
       "conflict",
     );
     assert.deepEqual(

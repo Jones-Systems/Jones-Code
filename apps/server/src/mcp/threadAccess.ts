@@ -101,6 +101,22 @@ export const readWritableThread = Effect.fn("mcp.readWritableThread")(function* 
   return context;
 });
 
+export const readMessageWritableThread = Effect.fn("mcp.readMessageWritableThread")(function* <
+  K extends ProjectionRecordField = never,
+>(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
+  const context = yield* readWritableThread(threadId, fields);
+  if (
+    context.caller.id !== context.projection.thread.id &&
+    context.projection.thread.threadMessagesBlocked === true
+  ) {
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: `Thread ${context.projection.thread.id} is blocking messages from other threads.`,
+    });
+  }
+  return context;
+});
+
 export const newCommandId = Effect.fn("mcp.newCommandId")(function* () {
   const crypto = yield* Crypto.Crypto;
   return CommandId.make(`mcp:${yield* crypto.randomUUIDv4.pipe(Effect.orDie)}`);

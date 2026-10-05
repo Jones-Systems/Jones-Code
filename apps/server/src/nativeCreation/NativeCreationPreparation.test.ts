@@ -52,8 +52,9 @@ const pythonVectors = [
   },
 ] as const;
 
-for (const [index, vector] of pythonVectors.entries()) {
-  it.effect(`matches actual Python canonical vector ${index}`, () =>
+it.effect.each([...pythonVectors.entries()])(
+  "matches actual Python canonical vector %i",
+  ([_index, vector]) =>
     Effect.gen(function* () {
       const preparation = yield* validateNativeCreationPreparation(
         new TextEncoder().encode(vector.preparation),
@@ -62,8 +63,7 @@ for (const [index, vector] of pythonVectors.entries()) {
       assert.strictEqual(preparation.preparationSha256, vector.sha256);
       assert.strictEqual(nativeCreationSha256(preparation.canonicalText), vector.sha256);
     }),
-  );
-}
+);
 
 it.effect("rejects original-byte, shape, digest, identity and binding disagreement", () =>
   Effect.gen(function* () {
