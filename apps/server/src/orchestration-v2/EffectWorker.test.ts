@@ -100,6 +100,7 @@ function makeExecutorLayer(input: {
     Layer.succeed(
       ProviderSessionManager.ProviderSessionManagerV2,
       ProviderSessionManager.ProviderSessionManagerV2.of({
+        isMcpCallerAttached: () => Effect.succeed(false),
         shutdown: Effect.void,
         open: () => Effect.die("unused open"),
         get: () => Effect.succeed(Option.none()),

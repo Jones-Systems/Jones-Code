@@ -2227,6 +2227,75 @@ describe("OpenCode2 adapter", () => {
     );
   });
 
+  it.effect.each(["text", "reasoning"] as const)(
+    "finalizes buffered %s before a lost OpenCode 2 stream ends the session",
+    (kind) =>
+      Effect.gen(function* () {
+        const { runtime, thread } = yield* resumed([
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event(`session.${kind}.started`, {
+            sessionID: SESSION,
+            assistantMessageID: "msg_buffered_exit",
+            ordinal: 0,
+            ...(kind === "reasoning" ? { state: { reasoningField: "reasoning_content" } } : {}),
+          }),
+          event(`session.${kind}.delta`, {
+            sessionID: SESSION,
+            assistantMessageID: "msg_buffered_exit",
+            ordinal: 0,
+            delta: "Answer preserved across provider exit.",
+          }),
+          { type: "runtime_exit", status: "success" },
+        ]);
+        const events = yield* runtime.events.pipe(Stream.runCollect, Effect.forkScoped);
+        yield* runtime.startTurn(turnInput(thread));
+        yield* TestClock.adjust("1 minute");
+        const collected = Array.from(yield* Fiber.join(events));
+        const itemType = kind === "text" ? "assistant_message" : "reasoning";
+        const items = collected.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === itemType
+            ? [event.turnItem]
+            : [],
+        );
+        const first = items[0]!;
+        const last = items.at(-1)!;
+        assert.equal(first.status, "running");
+        assert.equal(last.status, "completed");
+        if (last.type !== "assistant_message" && last.type !== "reasoning") {
+          return assert.fail("Expected buffered text or reasoning item");
+        }
+        assert.equal(last.text, "Answer preserved across provider exit.");
+        assert.isFalse(last.streaming);
+        assert.equal(last.id, first.id);
+        assert.equal(last.providerTurnId, first.providerTurnId);
+        assert.lengthOf(
+          items.filter((item) => item.status === "completed"),
+          1,
+        );
+        const completionIndex = collected.findIndex(
+          (event) => event.type === "turn_item.updated" && event.turnItem === last,
+        );
+        const terminalIndex = collected.findIndex((event) => event.type === "turn.terminal");
+        assert.isTrue(completionIndex < terminalIndex);
+        assert.deepInclude(collected[terminalIndex], {
+          status: "failed",
+          threadDisposition: "broken",
+        });
+        if (kind === "text") {
+          const message = collected.findLast((event) => event.type === "message.updated");
+          assert.equal(
+            message?.type === "message.updated" ? message.message.text : undefined,
+            last.text,
+          );
+          assert.equal(
+            message?.type === "message.updated" ? message.message.streaming : undefined,
+            false,
+          );
+        }
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.effect("fails the session once reconnecting to a lost event stream has given up", () =>
     Effect.gen(function* () {
       const { runtime, thread } = yield* resumed([
