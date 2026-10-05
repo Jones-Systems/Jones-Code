@@ -88,9 +88,31 @@ export const ServerSelfUpdateCapability = Schema.Literals([
 ]);
 export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
 
+const nativeBootstrapCapabilityStruct = <Fields extends Schema.Struct.Fields>(fields: Fields) => {
+  const schema = Schema.Struct(fields);
+  // Flipped checks validate original wire keys that ordinary struct decoding would strip.
+  return Schema.flip(
+    Schema.flip(schema).check(
+      Schema.makeFilter((value) =>
+        Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
+      ),
+    ),
+  );
+};
+
+export const NativeBootstrapCreationCapability = nativeBootstrapCapabilityStruct({
+  submissionSchema: Schema.Literal("t3.native-bootstrap-submission/v1"),
+  preparationSchema: Schema.Literal("voice.t3-bootstrap-preparation/v1"),
+  observationSchema: Schema.Literal("t3.native-creation-observation/v1"),
+  guardRequired: Schema.Literal(true),
+});
+export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCapability.Type;
+
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  nativeBootstrapCreation: Schema.optionalKey(NativeBootstrapCreationCapability),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
+  worktreeDefaultBase: Schema.optionalKey(Schema.Boolean),
   /** Missing on older servers, which still accept inline image attachments. */
   attachmentUploads: Schema.optionalKey(Schema.Boolean),
   /** Uploaded files may accompany question answers. */

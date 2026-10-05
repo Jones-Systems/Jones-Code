@@ -3,6 +3,7 @@ import {
   type ProjectId,
   ScheduledTaskId,
   type ScheduledTask,
+  type OrchestrationV2ThreadLaunchWorkspaceStrategy,
   type ModelSelection,
   type RuntimeMode,
   type ProviderInteractionMode,
@@ -92,7 +93,8 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     projectId: task.projectId,
     threadId: task.threadId ?? "",
     workspaceMode: task.workspaceStrategy.type,
-    baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
+    baseRef:
+      task.workspaceStrategy.type === "worktree" ? (task.workspaceStrategy.baseRef ?? "") : "main",
     startFromOrigin:
       task.workspaceStrategy.type === "worktree"
         ? (task.workspaceStrategy.startFromOrigin ?? false)
@@ -105,6 +107,17 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
     baseModelSelection: task.modelSelection,
+  };
+}
+
+export function worktreeStrategyFromDraft(
+  draft: Pick<DraftState, "baseRef" | "startFromOrigin">,
+): Extract<OrchestrationV2ThreadLaunchWorkspaceStrategy, { type: "worktree" }> {
+  const baseRef = draft.baseRef.trim();
+  return {
+    type: "worktree",
+    ...(baseRef ? { baseRef } : {}),
+    startFromOrigin: draft.startFromOrigin,
   };
 }
 
