@@ -74,6 +74,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
+import { randomUuidV4 } from "./RandomUuid.ts";
 import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
@@ -9716,6 +9717,53 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.thread_id": commandThreadId(command),
     });
 
+    const checkoutCommand =
+      command.type === "message.dispatch" ||
+      command.type === "checkpoint.rollback" ||
+      command.type === "runtime-request.respond" ||
+      command.type === "thread.user-input.dismiss" ||
+      command.type === "prepared-run.release"
+        ? command
+        : undefined;
+    const ordinaryCheckout =
+      checkoutCommand === undefined
+        ? undefined
+        : yield* Effect.gen(function* () {
+            const thread = yield* projectionStore
+              .getThread(checkoutCommand.threadId)
+              .pipe(mapDispatchError(command));
+            const project = Option.getOrNull(
+              yield* projects.get(thread.projectId).pipe(mapDispatchError(command)),
+            );
+            if (project === null || eventSink.captureOrdinaryCheckout === undefined)
+              return yield* new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause: "Checkout admission is unavailable.",
+              });
+            const canonicalProjectRoot = yield* fileSystem
+              .realPath(path.resolve(project.workspaceRoot))
+              .pipe(mapDispatchError(command));
+            const canonicalCheckoutPath = yield* fileSystem
+              .realPath(path.resolve(thread.worktreePath ?? project.workspaceRoot))
+              .pipe(mapDispatchError(command));
+            return yield* eventSink
+              .captureOrdinaryCheckout({
+                command: checkoutCommand,
+                threadId: thread.id,
+                projectId: thread.projectId,
+                branch: thread.branch,
+                canonicalProjectRoot,
+                canonicalCheckoutPath,
+                source: {
+                  projectWorkspaceRoot: project.workspaceRoot,
+                  worktreePath: thread.worktreePath,
+                },
+                leaseId: yield* randomUuidV4,
+              })
+              .pipe(mapDispatchError(command));
+          });
+
     const existingReceipt = yield* commandReceipts.getByCommandId(command.commandId).pipe(
       Effect.mapError(
         (cause) =>
@@ -9728,6 +9776,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
     if (Option.isSome(existingReceipt)) {
+      if (ordinaryCheckout !== undefined) {
+        if (eventSink.validateOrdinaryCheckoutReplay === undefined)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Checkout replay validation is unavailable.",
+          });
+        yield* eventSink
+          .validateOrdinaryCheckoutReplay(ordinaryCheckout)
+          .pipe(mapDispatchError(command));
+      }
       const receipt = existingReceipt.value;
       if (receipt.status === "rejected") {
         return yield* new OrchestratorCommandPreviouslyRejectedError({
@@ -9910,6 +9969,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         threadId: commandThreadId(command),
         commandType: command.type,
         acceptedAt,
+        ...(ordinaryCheckout === undefined ? {} : { ordinaryCheckout }),
         events: plan.events,
         effects: plan.effects,
         ...(plan.cancelUnsettledEffects === undefined

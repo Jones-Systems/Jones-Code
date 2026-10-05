@@ -202,14 +202,22 @@ export const makeWorktreeOwnershipLeaseStore = Effect.fn("makeWorktreeOwnershipL
 
     return {
       getOrdinaryThreadIncarnation: (threadId: ThreadId) =>
-        sql.withTransaction(readApplicationThreadBirth(threadId)).pipe(
-          Effect.map((birth) =>
-            birth === null ? Option.none() : Option.some(ordinaryApplicationIncarnationV1(birth)),
+        sql
+          .withTransaction(
+            readApplicationThreadBirth(threadId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
+          )
+          .pipe(
+            Effect.map((birth) =>
+              birth === null ? Option.none() : Option.some(ordinaryApplicationIncarnationV1(birth)),
+            ),
+            Effect.mapError(
+              toPersistenceSqlError(
+                "WorktreeOwnershipLeaseStore.getOrdinaryThreadIncarnation:query",
+              ),
+            ),
           ),
-          Effect.mapError(
-            toPersistenceSqlError("WorktreeOwnershipLeaseStore.getOrdinaryThreadIncarnation:query"),
-          ),
-        ),
       getThreadIncarnation: (threadId: ThreadId) =>
         findThreadIncarnation({ threadId }).pipe(
           Effect.map(Option.map((row) => row.ownerIncarnation)),

@@ -36,6 +36,11 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import {
+  makeOrdinaryCheckoutStore,
+  type OrdinaryCheckoutCaptureInput,
+  type OrdinaryCheckoutCommitCapture,
+} from "./OrdinaryCheckoutStore.ts";
 
 /**
  * ERRORS
@@ -110,6 +115,12 @@ export function runtimeEvidenceMatches(
  * SERVICE DEFINITION
  */
 export interface EventSinkV2Shape {
+  readonly captureOrdinaryCheckout?: (
+    input: OrdinaryCheckoutCaptureInput,
+  ) => Effect.Effect<OrdinaryCheckoutCommitCapture, EventSinkWriteError>;
+  readonly validateOrdinaryCheckoutReplay?: (
+    capture: OrdinaryCheckoutCommitCapture,
+  ) => Effect.Effect<void, EventSinkWriteError>;
   readonly write: (input: {
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
@@ -178,6 +189,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly ordinaryCheckout?: OrdinaryCheckoutCommitCapture;
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
@@ -269,6 +281,7 @@ const baseLayer: Layer.Layer<
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const projectStore = yield* ProjectStore.ProjectStoreV2;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
+    const checkoutStore = yield* makeOrdinaryCheckoutStore();
     const liveEvents = yield* PubSub.unbounded<OrchestrationV2StoredEvent>();
     const liveEventsByType = new Map<
       OrchestrationV2DomainEvent["type"],
@@ -698,6 +711,10 @@ const baseLayer: Layer.Layer<
     ) {
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
+          const checkoutCapture =
+            input.ordinaryCheckout === undefined
+              ? undefined
+              : yield* checkoutStore.acquireBeforeRead(input.ordinaryCheckout, input.acceptedAt);
           const reserved = yield* commandReceipts.insertIfAbsent({
             commandId: input.commandId,
             threadId: input.threadId,
@@ -709,6 +726,21 @@ const baseLayer: Layer.Layer<
           });
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
+            if (checkoutCapture !== undefined) {
+              const admission = yield* checkoutStore.readAdmission(
+                input.commandId,
+                checkoutCapture.capture.threadId,
+              );
+              if (
+                admission === null ||
+                admission.capture.commandDigest !== checkoutCapture.capture.commandDigest
+              )
+                return yield* new EventSinkWriteError({
+                  commandId: input.commandId,
+                  eventCount: input.events.length,
+                  cause: "The replay does not match its permanent checkout admission.",
+                });
+            }
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
@@ -735,6 +767,13 @@ const baseLayer: Layer.Layer<
             error: null,
           };
           yield* commandReceipts.upsert(receipt);
+          if (checkoutCapture !== undefined)
+            yield* checkoutStore.recordAcceptance({
+              captured: checkoutCapture,
+              receipt,
+              events: storedEvents,
+              effects: input.effects,
+            });
           const cancelledEffectIds =
             input.cancelUnsettledEffects === undefined
               ? []
@@ -929,6 +968,40 @@ const baseLayer: Layer.Layer<
     };
 
     return EventSinkV2.of({
+      validateOrdinaryCheckoutReplay: (input) =>
+        Effect.gen(function* () {
+          const admission = yield* checkoutStore.readAdmission(
+            input.capture.commandId,
+            input.capture.threadId,
+          );
+          if (admission === null || admission.capture.commandDigest !== input.capture.commandDigest)
+            return yield* new EventSinkWriteError({
+              commandId: input.capture.commandId,
+              eventCount: 0,
+              cause: "Replay has no matching permanent checkout command.",
+            });
+          yield* checkoutStore.current(input);
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EventSinkWriteError({
+                commandId: input.capture.commandId,
+                eventCount: 0,
+                cause,
+              }),
+          ),
+        ),
+      captureOrdinaryCheckout: (input) =>
+        checkoutStore.capture(input).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EventSinkWriteError({
+                commandId: input.command.commandId,
+                eventCount: 0,
+                cause,
+              }),
+          ),
+        ),
       write: (input) =>
         writeEffect({ ...input, effects: [] }).pipe(
           Effect.mapError(

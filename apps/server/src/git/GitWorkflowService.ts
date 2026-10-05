@@ -67,6 +67,9 @@ export class GitWorkflowService extends Context.Service<
     readonly listRefs: (
       input: VcsListRefsInput,
     ) => Effect.Effect<VcsListRefsResult, GitCommandError>;
+    readonly resolveCommit: (
+      input: GitVcsDriver.GitResolveCommitInput,
+    ) => Effect.Effect<GitVcsDriver.GitResolveCommitResult, GitCommandError>;
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,
       options?: GitVcsDriver.CreateWorktreeOptions,
@@ -347,6 +350,10 @@ export const make = Effect.gen(function* () {
         Effect.flatMap((isGitRepository) =>
           isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
         ),
+      ),
+    resolveCommit: (input) =>
+      ensureGitCommand("GitWorkflowService.resolveCommit", input.cwd).pipe(
+        Effect.andThen(git.resolveCommit(input)),
       ),
     createWorktree: (input, options) =>
       ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
