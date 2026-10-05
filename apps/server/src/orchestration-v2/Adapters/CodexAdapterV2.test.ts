@@ -6717,7 +6717,19 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 transcript: localTranscript,
                 driver: replayDriver,
               }),
-              { runEffectWorker: false },
+              {
+                runEffectWorker: false,
+                checkoutFixture: {
+                  projects: [
+                    {
+                      projectId: ProjectId.make("project:background-stop"),
+                      title: "Background stop",
+                      workspaceRoot: cwd,
+                    },
+                  ],
+                  resolvePath: () => undefined,
+                },
+              },
             ),
           ),
         );
@@ -6837,7 +6849,19 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             makeOrchestratorV2ReplayLayerWithRegistry(
               { name: "codex-background-stop-untracked", runtimePolicyOverride: { cwd } },
               makeCodexProviderAdapterRegistryReplayLayer({ transcript: localTranscript }),
-              { runEffectWorker: false },
+              {
+                runEffectWorker: false,
+                checkoutFixture: {
+                  projects: [
+                    {
+                      projectId: ProjectId.make("project:background-stop-untracked"),
+                      title: "Background stop untracked",
+                      workspaceRoot: cwd,
+                    },
+                  ],
+                  resolvePath: () => undefined,
+                },
+              },
             ),
           ),
         );
