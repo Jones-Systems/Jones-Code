@@ -175,13 +175,18 @@ describe("DesktopAppIdentity", () => {
       }),
       {
         legacyPathProbeError: PlatformError.systemError({
-          _tag: "PermissionDenied", module: "FileSystem", method: "exists",
-          pathOrDescriptor: "/legacy", description: "must not read legacy profile",
+          _tag: "PermissionDenied",
+          module: "FileSystem",
+          method: "exists",
+          pathOrDescriptor: "/legacy",
+          description: "must not read legacy profile",
         }),
-        environment: { env: {
-          VITE_DEV_SERVER_URL: "http://localhost:5173",
-          T3CODE_DESKTOP_USER_DATA_DIR: "/isolated/client-profile",
-        } },
+        environment: {
+          env: {
+            VITE_DEV_SERVER_URL: "http://localhost:5173",
+            T3CODE_DESKTOP_USER_DATA_DIR: "/isolated/client-profile",
+          },
+        },
       },
     ),
   );

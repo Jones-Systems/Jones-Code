@@ -154,27 +154,41 @@ describe("DesktopClerk", () => {
     },
   );
 
-  it.effect("binds an explicit profile before Clerk without inspecting or copying default Windows state", () => {
-    const events: string[] = [];
-    storageMock.mockReturnValue(storageAdapter);
-    createClerkBridgeMock.mockImplementation(() => {
-      events.push("createClerkBridge");
-      return { cleanup: vi.fn(), isPrimaryInstance: true };
-    });
-    const noProfileAccess = FileSystem.layerNoop({
-      exists: () => Effect.die("must not inspect a default profile"),
-      readFileString: () => Effect.die("must not copy Windows Local State"),
-      makeDirectory: () => Effect.die("boot owns profile directory creation"),
-      writeFileString: () => Effect.die("must not migrate default profile state"),
-    });
-    return Effect.gen(function* () {
-      yield* Effect.scoped(Layer.build(makeDesktopClerkLayer(
-        false, events, "win32", noProfileAccess, undefined,
-        Option.some("/isolated/client-profile"),
-      )));
-      assert.deepEqual(events, ["setPath:userData:/isolated/client-profile", "createClerkBridge"]);
-    });
-  });
+  it.effect(
+    "binds an explicit profile before Clerk without inspecting or copying default Windows state",
+    () => {
+      const events: string[] = [];
+      storageMock.mockReturnValue(storageAdapter);
+      createClerkBridgeMock.mockImplementation(() => {
+        events.push("createClerkBridge");
+        return { cleanup: vi.fn(), isPrimaryInstance: true };
+      });
+      const noProfileAccess = FileSystem.layerNoop({
+        exists: () => Effect.die("must not inspect a default profile"),
+        readFileString: () => Effect.die("must not copy Windows Local State"),
+        makeDirectory: () => Effect.die("boot owns profile directory creation"),
+        writeFileString: () => Effect.die("must not migrate default profile state"),
+      });
+      return Effect.gen(function* () {
+        yield* Effect.scoped(
+          Layer.build(
+            makeDesktopClerkLayer(
+              false,
+              events,
+              "win32",
+              noProfileAccess,
+              undefined,
+              Option.some("/isolated/client-profile"),
+            ),
+          ),
+        );
+        assert.deepEqual(events, [
+          "setPath:userData:/isolated/client-profile",
+          "createClerkBridge",
+        ]);
+      });
+    },
+  );
 
   it.effect("preserves bridge initialization failures", () => {
     const cause = new Error("bridge initialization failed");
