@@ -8,6 +8,7 @@ import {
   CheckpointScopeId,
   MessageId,
   type ModelSelection,
+  type OrchestrationV2ProviderThread,
   NodeId,
   ProjectId,
   ProviderDriverKind,
@@ -24,6 +25,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
@@ -2813,6 +2815,158 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
       }),
   );
 
+  it.effect(
+    "aggregates independent pending request kinds within the active shell census and watermark",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const sql = yield* SqlClient.SqlClient;
+        yield* Effect.acquireRelease(Effect.void, () =>
+          sql`DELETE FROM orchestration_events WHERE event_id IN
+          ('event:intake-counts:watermark', 'event:intake-counts:resolved-watermark')`.pipe(
+            Effect.orDie,
+          ),
+        );
+        const now = DateTime.makeUnsafe("2026-08-01T00:00:00.000Z");
+        const ids = ["active", "settled", "snoozed", "archived", "deleted"].map((suffix) =>
+          ThreadId.make(`thread:intake-counts:${suffix}`),
+        );
+        const threadId = ids[0]!;
+        for (const id of ids) {
+          yield* store.apply({
+            id: EventId.make(`event:intake-counts:create:${id}`),
+            type: "thread.created",
+            threadId: id,
+            occurredAt: now,
+            payload: {
+              createdBy: "user",
+              creationSource: "web",
+              id,
+              projectId: ProjectId.make("project:intake-counts"),
+              title: "Intake aggregate fixture",
+              providerInstanceId,
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              activeProviderThreadId: null,
+              lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: id === ids[3] ? now : null,
+              settledOverride: id === ids[1] ? "settled" : null,
+              settledAt: id === ids[1] ? now : null,
+              snoozedUntil: id === ids[2] ? DateTime.makeUnsafe("2099-01-01T00:00:00Z") : null,
+              lastVisitedAt: null,
+              deletedAt: id === ids[4] ? now : null,
+            },
+          });
+        }
+        const requests = [
+          { suffix: "approval-command", kind: "command", status: "pending" },
+          { suffix: "approval-file-read", kind: "file-read", status: "pending" },
+          { suffix: "approval-file-change", kind: "file-change", status: "pending" },
+          { suffix: "approval-elicitation", kind: "mcp-elicitation", status: "pending" },
+          { suffix: "approval-permission", kind: "permission", status: "pending" },
+          { suffix: "input-1", kind: "user_input", status: "pending" },
+          { suffix: "input-2", kind: "user_input", status: "pending" },
+          { suffix: "dynamic", kind: "dynamic_tool_call", status: "pending" },
+          { suffix: "z-auth", kind: "auth_refresh", status: "pending" },
+          { suffix: "resolved-approval", kind: "permission", status: "resolved" },
+          { suffix: "cancelled-input", kind: "user_input", status: "cancelled" },
+          { suffix: "expired-approval", kind: "command", status: "expired" },
+        ] as const;
+        for (const request of requests) {
+          yield* store.apply({
+            id: EventId.make(`event:intake-counts:${request.suffix}`),
+            type: "runtime-request.updated",
+            threadId,
+            nodeId: NodeId.make("node:intake-counts"),
+            driver,
+            occurredAt: now,
+            payload: {
+              id: RuntimeRequestId.make(`request:intake-counts:${request.suffix}`),
+              nodeId: NodeId.make("node:intake-counts"),
+              providerTurnId: null,
+              nativeRequestRef: null,
+              kind: request.kind,
+              status: request.status,
+              responseCapability: { type: "message" },
+              createdAt: now,
+              resolvedAt: request.status === "pending" ? null : now,
+            },
+          });
+        }
+        // The store reads the persisted thread event watermark; applying a projection alone does not advance it.
+        yield* sql`INSERT INTO orchestration_events
+        (sequence, event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+         actor_kind, payload_json, metadata_json, application_event_version)
+        VALUES (51, 'event:intake-counts:watermark', 'thread', ${threadId}, 1, 'thread.created',
+          ${DateTime.formatIso(now)}, 'system', '{}', '{}', 2)`;
+        const first = yield* store.getShellSnapshot();
+        assert.equal(first.snapshotSequence, 51);
+        assert.deepEqual(
+          first.threads
+            .filter((row) => ids.includes(row.id))
+            .map((row) => row.id)
+            .toSorted(),
+          ids.slice(0, 3).toSorted(),
+        );
+        assert.deepEqual(
+          first.archivedThreads.filter((row) => ids.includes(row.id)).map((row) => row.id),
+          [ids[3]],
+        );
+        const shell = first.threads.find((row) => row.id === threadId)!;
+        assert.deepEqual(shell.pendingRequestCounts, { approval: 5, userInput: 2 });
+        assert.equal(shell.pendingRuntimeRequest?.kind, "auth_refresh");
+        const empty = first.threads.find((row) => row.id === ids[1])!;
+        assert.deepEqual(empty.pendingRequestCounts, { approval: 0, userInput: 0 });
+        const projection = yield* store.getThreadProjection(threadId);
+        assert.deepEqual(
+          ProjectionStore.threadShellFromProjection(projection).pendingRequestCounts,
+          shell.pendingRequestCounts,
+        );
+        const perThread = yield* store.getThreadShell(threadId);
+        assert.deepEqual(perThread?.pendingRequestCounts, shell.pendingRequestCounts);
+        yield* store.apply({
+          id: EventId.make("event:intake-counts:approval-resolved"),
+          type: "runtime-request.updated",
+          threadId,
+          nodeId: NodeId.make("node:intake-counts"),
+          driver,
+          occurredAt: now,
+          payload: {
+            id: RuntimeRequestId.make("request:intake-counts:approval-command"),
+            nodeId: NodeId.make("node:intake-counts"),
+            providerTurnId: null,
+            nativeRequestRef: null,
+            kind: "command",
+            status: "resolved",
+            responseCapability: { type: "message" },
+            createdAt: now,
+            resolvedAt: now,
+          },
+        });
+        yield* sql`INSERT INTO orchestration_events
+        (sequence, event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+         actor_kind, payload_json, metadata_json, application_event_version)
+        VALUES (52, 'event:intake-counts:resolved-watermark', 'thread', ${threadId}, 2, 'runtime-request.updated',
+          ${DateTime.formatIso(now)}, 'system', '{}', '{}', 2)`;
+        const second = yield* store.getShellSnapshot();
+        assert.equal(second.snapshotSequence, 52);
+        assert.deepEqual(second.threads.find((row) => row.id === threadId)?.pendingRequestCounts, {
+          approval: 4,
+          userInput: 2,
+        });
+        assert.deepEqual(
+          second.threads.filter((row) => ids.includes(row.id)).map((row) => row.id),
+          first.threads.filter((row) => ids.includes(row.id)).map((row) => row.id),
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("builds shell snapshots without decoding full turn item payloads", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
@@ -4511,3 +4665,157 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
     }),
   );
 });
+
+it.effect.each([
+  { backend: "SQL", recorded: false },
+  { backend: "SQL", recorded: true },
+  { backend: "memory", recorded: false },
+  { backend: "memory", recorded: true },
+])(
+  "preserves selected runtime identity and historical absence across $backend full/detail/shell projections: $recorded",
+  ({ backend, recorded }) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate(`identity-${backend}-${recorded}`);
+      const now = yield* DateTime.now;
+      const sessionId = ProviderSessionId.make("shared-codex-session");
+      const makeOwner = (suffix: string, model: string): OrchestrationV2ProviderThread => ({
+        id: ProviderThreadId.make(`identity-owner-${suffix}`),
+        driver,
+        providerInstanceId,
+        providerSessionId: sessionId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: { driver, nativeId: `native-${suffix}`, strength: "strong" },
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        ...(recorded
+          ? {
+              runtimeIdentity: {
+                runtimeGeneration: "shared-process",
+                evidenceRevision: 2,
+                requested: {
+                  providerInstanceId,
+                  providerDriver: driver,
+                  model: `requested-${model}`,
+                  serviceTier: null,
+                },
+                observed: {
+                  backend: {
+                    status: "observed",
+                    value: "native-backend",
+                    sourceEvent: "codex.thread/open",
+                  },
+                  model: { status: "observed", value: model, sourceEvent: "codex.thread/open" },
+                  account: { status: "unavailable", reason: "Not bound." },
+                  serviceTier: { status: "unavailable", reason: "Not reported." },
+                },
+              },
+            }
+          : {}),
+      });
+      const selected = makeOwner("selected", "native-selected");
+      const sibling = makeOwner("sibling", "native-sibling");
+      yield* store.apply({
+        id: EventId.make("identity-sibling"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: sibling,
+      });
+      yield* store.apply({
+        id: EventId.make("identity-selected"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: selected,
+      });
+      const full = yield* store.getThreadProjection(threadId);
+      const detail = yield* store.getThreadSnapshotWindow(threadId, { rowLimit: 50 });
+      assert.deepEqual(
+        full.providerThreads.find((row) => row.id === selected.id)?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        detail.projection.providerThreads.find((row) => row.id === selected.id)?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        (yield* store.getThreadProviderContext(threadId, providerInstanceId)).providerThreads.find(
+          (row) => row.id === selected.id,
+        )?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        (yield* store.getRuntimeRecoveryProjection(threadId)).providerThreads.find(
+          (row) => row.id === selected.id,
+        )?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        (yield* store.getThreadShell(threadId))?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        (yield* store.getShellSnapshot()).threads.find((row) => row.id === threadId)
+          ?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        (yield* store.getShellSnapshot({ unsettledOnly: true })).threads.find(
+          (row) => row.id === threadId,
+        )?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      if (backend === "SQL") {
+        const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+        if (Option.isNone(sql))
+          return yield* Effect.die(new Error("SQL fixture requires SqlClient"));
+        const reopened = yield* Effect.service(ProjectionStore.ProjectionStoreV2).pipe(
+          Effect.provide(Layer.fresh(ProjectionStore.layer)),
+          Effect.provideService(SqlClient.SqlClient, sql.value),
+        );
+        assert.deepEqual(
+          (yield* reopened.getThreadRecords(threadId, ["providerThreads"])).providerThreads.find(
+            (row) => row.id === selected.id,
+          )?.runtimeIdentity,
+          selected.runtimeIdentity,
+        );
+        assert.deepEqual(
+          (yield* reopened.getThreadShell(threadId))?.runtimeIdentity,
+          selected.runtimeIdentity,
+        );
+      }
+      const app = yield* store.getThread(threadId);
+      yield* store.apply({
+        id: EventId.make("identity-archive"),
+        type: "thread.archived",
+        threadId,
+        occurredAt: now,
+        payload: { ...app, archivedAt: now },
+      });
+      assert.deepEqual(
+        (yield* store.getShellSnapshot({ location: "archive" })).archivedThreads.find(
+          (row) => row.id === threadId,
+        )?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      yield* store.apply({
+        id: EventId.make("identity-foreign-owner"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...selected, appThreadId: ThreadId.make("foreign-app") },
+      });
+      assert.isUndefined(
+        (yield* store.getThreadShell(threadId))?.runtimeIdentity,
+        "a foreign row must not supply the app thread's identity",
+      );
+    }).pipe(Effect.provide(backend === "SQL" ? TestLayer : ProjectionStore.layerMemory)),
+);

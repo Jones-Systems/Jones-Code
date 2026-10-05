@@ -4,8 +4,13 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { useAtomValue } from "@effect/atom-react";
+import { useNavigate } from "@tanstack/react-router";
+import { Atom } from "effect/unstable/reactivity";
+import { jonesUpdates } from "~/state/jonesUpdates";
+import { JonesUpdateControls } from "./JonesUpdateControls";
 import { CircleArrowUpIcon } from "lucide-react";
-import { type ComponentProps, useRef, useState } from "react";
+import { type ComponentProps, useMemo, useRef, useState } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
@@ -104,7 +109,14 @@ export function ServerUpdatesAction({
   const update = useServerUpdate();
   const pending = useRef(false);
   const [isPending, setIsPending] = useState(false);
-  const eligible = targets.filter(
+  const releaseTargets = useMemo(
+    () =>
+      Atom.make((get) =>
+        targets.filter((target) => get(jonesUpdates.value(target.environmentId)) === null),
+      ),
+    [targets],
+  );
+  const eligible = useAtomValue(releaseTargets).filter(
     (target) =>
       target.selfUpdate !== null &&
       (target.selfUpdate !== "desktop-managed" || target.desktopAppUpdate),
@@ -197,6 +209,8 @@ export function ServerUpdateAction({
   className,
   appearance = "button",
 }: Omit<ServerUpdateTarget, "continueThreadsAfterServerUpdate"> & UpdateButtonProps) {
+  const jones = useAtomValue(jonesUpdates.value(environmentId));
+  const navigate = useNavigate();
   const isDesktopAppUpdate = selfUpdate === "desktop-managed";
   const continueThreadsAfterServerUpdate = useEnvironmentSettings(
     environmentId,
@@ -247,6 +261,28 @@ export function ServerUpdateAction({
       continueThreadsAfterServerUpdate,
     });
   };
+
+  if (jones !== null) {
+    if (appearance === "icon")
+      return (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                size="icon-xs"
+                variant="ghost-muted"
+                aria-label={`Jones builds for ${serverLabel}`}
+                onClick={() => void navigate({ to: "/settings/connections" })}
+              />
+            }
+          >
+            <CircleArrowUpIcon className="size-3.5" />
+          </TooltipTrigger>
+          <TooltipPopup>Download and Install separately in Connections.</TooltipPopup>
+        </Tooltip>
+      );
+    return <JonesUpdateControls environmentId={environmentId} />;
+  }
 
   if (selfUpdate === "desktop-managed" && !desktopAppUpdate) {
     return (

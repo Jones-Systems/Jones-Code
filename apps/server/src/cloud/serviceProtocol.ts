@@ -1,8 +1,10 @@
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
+import { decodeStagedQualifiedRuntime, type StagedQualifiedRuntime } from "./qualifiedRuntime.ts";
 
-// Protocol 3 requires the standalone executable layout. Bump when runtimePaths
-// or the installed runtime tree changes incompatibly; launchers survive self-updates.
-export const SERVICE_LAUNCHER_PROTOCOL = 3 as const;
+// Protocol 4 retains standalone executables and durably phases trials with
+// native authority fencing before rollback; launchers survive self-updates.
+export const SERVICE_LAUNCHER_PROTOCOL = 4 as const;
+export const LEGACY_SERVICE_LAUNCHER_PROTOCOL = 3 as const;
 export const SERVICE_LAUNCHER_CONTEXT_ENV = "T3_SERVICE_LAUNCHER_CONTEXT";
 export const SERVICE_STATE_FILE = "service-state.json";
 /** Written by the launcher just before an explicit stop kills its child, so
@@ -21,9 +23,15 @@ export interface PendingServiceUpdate {
   readonly targetVersion: string;
   readonly dbPath: string;
   readonly status: "pending";
+  readonly phase: "accepted" | "trial-ready";
+  readonly qualified?: StagedQualifiedRuntime;
 }
 
-export type ServiceUpdateRecord = PendingServiceUpdate | ServerSelfUpdateOutcome;
+interface LegacyPendingServiceUpdate extends Omit<PendingServiceUpdate, "phase"> {}
+
+export type ServiceUpdateRecord =
+  | PendingServiceUpdate
+  | (ServerSelfUpdateOutcome & { readonly qualified?: StagedQualifiedRuntime });
 
 export interface ServiceState {
   readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL;
@@ -33,9 +41,10 @@ export interface ServiceState {
 
 /** Context is copied from launcher-owned state when a child is spawned. */
 export interface ServiceLauncherContext {
-  readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL;
+  readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL | typeof LEGACY_SERVICE_LAUNCHER_PROTOCOL;
   readonly childVersion: string;
-  readonly update?: ServiceUpdateRecord;
+  readonly qualifiedUpdatesProtocol?: 1;
+  readonly update?: ServiceUpdateRecord | LegacyPendingServiceUpdate;
 }
 
 export type ServiceLauncherChildMessage =
@@ -43,6 +52,7 @@ export type ServiceLauncherChildMessage =
       readonly type: "request-update";
       readonly targetVersion: string;
       readonly dbPath: string;
+      readonly stagedHandle?: string;
     }
   | {
       readonly type: "prepared";
@@ -79,6 +89,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   if (!isRecord(value)) return undefined;
   const { id, fromVersion, targetVersion, status } = value;
+  const qualified =
+    value.qualified === undefined ? undefined : decodeStagedQualifiedRuntime(value.qualified);
+  if (
+    value.qualified !== undefined &&
+    (qualified === undefined ||
+      qualified.binding.activeVersion !== fromVersion ||
+      qualified.receipt.version !== targetVersion ||
+      qualified.receipt.installedSourceSha !== qualified.binding.activeSourceSha)
+  )
+    return undefined;
   if (
     typeof id !== "string" ||
     id.trim() === "" ||
@@ -90,8 +110,18 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
     return undefined;
   }
   if (status === "pending") {
-    return typeof value.dbPath === "string" && value.dbPath.trim() !== ""
-      ? { id, fromVersion, targetVersion, dbPath: value.dbPath, status }
+    return typeof value.dbPath === "string" &&
+      value.dbPath.trim() !== "" &&
+      (value.phase === "accepted" || value.phase === "trial-ready")
+      ? {
+          id,
+          fromVersion,
+          targetVersion,
+          dbPath: value.dbPath,
+          status,
+          phase: value.phase,
+          ...(qualified === undefined ? {} : { qualified }),
+        }
       : undefined;
   }
   if (
@@ -103,6 +133,7 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
       fromVersion,
       targetVersion,
       status,
+      ...(qualified === undefined ? {} : { qualified }),
       ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
     };
   }
@@ -156,6 +187,7 @@ export function decodeServiceState(value: unknown): ServiceState | undefined {
     !isExactServiceVersion(value.activeVersion) ||
     (value.update !== undefined && update === undefined) ||
     (update !== undefined &&
+      update.qualified === undefined &&
       compareExactServiceVersions(update.targetVersion, update.fromVersion) <= 0) ||
     (update?.status === "pending" && update.fromVersion !== value.activeVersion) ||
     (update?.status === "committed" && update.targetVersion !== value.activeVersion) ||
@@ -212,14 +244,27 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
   }
   if (
     !isRecord(parsed) ||
-    parsed.protocol !== SERVICE_LAUNCHER_PROTOCOL ||
+    (parsed.protocol !== SERVICE_LAUNCHER_PROTOCOL &&
+      parsed.protocol !== LEGACY_SERVICE_LAUNCHER_PROTOCOL) ||
     typeof parsed.childVersion !== "string" ||
     !isExactServiceVersion(parsed.childVersion)
   ) {
     return undefined;
   }
-  const update = parsed.update === undefined ? undefined : decodeServiceUpdate(parsed.update);
+  const update =
+    parsed.update === undefined
+      ? undefined
+      : parsed.protocol === SERVICE_LAUNCHER_PROTOCOL
+        ? decodeServiceUpdate(parsed.update)
+        : decodeLegacyServiceUpdate(parsed.update);
   if (parsed.update !== undefined && update === undefined) return undefined;
+  if (
+    parsed.protocol === SERVICE_LAUNCHER_PROTOCOL &&
+    update?.status === "pending" &&
+    "phase" in update &&
+    update.phase !== "trial-ready"
+  )
+    return undefined;
   const selectedVersion =
     update?.status === "pending" || update?.status === "committed"
       ? update.targetVersion
@@ -230,10 +275,29 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
     return undefined;
   }
   return {
-    protocol: SERVICE_LAUNCHER_PROTOCOL,
+    protocol: parsed.protocol,
     childVersion: parsed.childVersion,
+    ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
     ...(update === undefined ? {} : { update }),
   };
+}
+
+function decodeLegacyServiceUpdate(
+  value: unknown,
+): ServiceUpdateRecord | LegacyPendingServiceUpdate | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.status !== "pending") return decodeServiceUpdate(value);
+  const { id, fromVersion, targetVersion, dbPath, status } = value;
+  return typeof id === "string" &&
+    id.trim() !== "" &&
+    typeof fromVersion === "string" &&
+    isExactServiceVersion(fromVersion) &&
+    typeof targetVersion === "string" &&
+    isExactServiceVersion(targetVersion) &&
+    typeof dbPath === "string" &&
+    dbPath.trim() !== ""
+    ? { id, fromVersion, targetVersion, dbPath, status }
+    : undefined;
 }
 
 export function decodeServiceLauncherChildMessage(
@@ -245,7 +309,14 @@ export function decodeServiceLauncherChildMessage(
     typeof value.targetVersion === "string" &&
     typeof value.dbPath === "string"
   ) {
-    return { type: value.type, targetVersion: value.targetVersion, dbPath: value.dbPath };
+    if (value.stagedHandle !== undefined && typeof value.stagedHandle !== "string")
+      return undefined;
+    return {
+      type: value.type,
+      targetVersion: value.targetVersion,
+      dbPath: value.dbPath,
+      ...(typeof value.stagedHandle === "string" ? { stagedHandle: value.stagedHandle } : {}),
+    };
   }
   return value.type === "prepared" && typeof value.updateId === "string"
     ? { type: value.type, updateId: value.updateId }

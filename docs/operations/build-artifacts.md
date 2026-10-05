@@ -62,14 +62,73 @@ or real user state into this first smoke trial.
 
 Versions use `BASE-preview.YYYYMMDD.RUN_ID.RUN_ATTEMPT`, where `BASE` is the
 checked-in server package version. Both the CLI channel parser and desktop build
-recognize that preview form. The archive retains T3 branding. These Actions
+recognize that preview form. Desktop builds use the Jones Code app name and JC
+Mac icon while retaining `T3-Code` artifact filenames. CLI discovery, archive
+downloads and the tracked installers default to `Jones-Systems/Jones-Code`;
+desktop release feeds use the same repository unless
+`T3CODE_DESKTOP_UPDATE_REPOSITORY` explicitly overrides it.
+`T3CODE_RELEASE_BASE_URL` remains an explicit archive-mirror override. A missing
+Jones release fails explicitly and never falls back to upstream. These Actions
 outputs do not create GitHub Releases or populate a release channel: download
-another successful workflow artifact for subsequent trials. Upstream installers
-and release discovery remain separate from these Jones trial workflows.
+another successful workflow artifact for subsequent trials. Use a distinct Jones
+preview version; server runtime caches still require separate provenance
+qualification before an installed transition. Shell, PowerShell and SSH
+installers reject existing caches with missing or different `.install-source`
+origin instead of replacing them.
 
 Publishing this workflow does not authorize a VPS service restart, installation,
 replacement of an active binary, or use of the real T3 home. Those steps need a
 separate decision covering the target, state backup, rollback, and verification.
+
+## Qualified main updates
+
+Both artifact workflows run on canonical main pushes. The Jones updater accepts
+successful completed main push builds only after CI succeeds on the same source
+SHA and canonical ancestry is verified. PR and fork builds remain useful for
+manual trials but cannot become updater candidates. Build receipts bind source
+and tree, workflow, run attempt, artifact ID, outer artifact digest and inner
+payload hash. Artifacts remain subject to their seven-day retention window.
+
+Download stages a verified immutable candidate; Install uses its fixed handle.
+Existing version-only caches and older launchers require a local, source-qualified
+bootstrap. The unsigned Mac desktop uses the detached Jones activation helper;
+the Darwin arm64 headless service derives an Electron server runtime from the
+same qualified DMG and uses the service launcher. Neither route publishes a
+Release or supplies a Squirrel feed. Native Mac acceptance and initial host
+bootstrap must be performed on each host with its original state.
+
+### State continuity across updates
+
+Keep one fixed absolute T3 home per host, outside the versioned app/runtime tree.
+For example, retain `T3CODE_HOME=/absolute/path/to/jones-home` in its launcher.
+The server resolves `--base-dir` before `T3CODE_HOME`, then the desktop bootstrap
+home, then `~/.t3`. Normal state lives in `<home>/userdata`: `statev2.sqlite`, settings,
+keybindings, themes, attachments and `environment-id`. Desktop preferences, saved
+connections and the encrypted connection catalog use that same state directory.
+An implicit home with a development URL uses `dev` instead; use an explicit home
+for an existing installation. A missing or empty environment identity is regenerated.
+
+The Electron browser profile is separate. Retain an absolute
+`T3CODE_DESKTOP_USER_DATA_DIR=/absolute/path/to/desktop-profile`; without it,
+Electron uses its fixed platform default, including supported legacy-folder reuse.
+Enroll the qualified launcher/helper with the existing home and profile, and use
+that launcher for every version. Opening an app copy without custom overrides can
+select different state. Keep provider stores on their original host; do not copy
+provider credentials to enroll another host.
+
+Check and Download may write runtime caches, staging and selection receipts under
+`<home>/runtime`; those updater operations do not change userdata, the profile or
+the active-install pointer. Install relaunches with the same home/profile and
+checks the environment binding. Before Install, require writer quiescence and a
+retained compatible binary/state recovery pair.
+
+Pre-commit recovery restores its covered pair at the same paths and retains the
+advanced state. The desktop pair covers the database, `settings.json`,
+`desktop-settings.json`, `client-settings.json`, `saved-environments.json` and the
+profile. The headless pair covers the database, `settings.json`, `keybindings.json`,
+`server-runtime.json`, `environment-id` and `anonymous-id`. Other local state stays
+in place but is not snapshot-restored by those pairs. Migrations are forward-only;
+after commit, changing only the binary is not a supported compatible rollback.
 
 ## Mac desktop artifact
 
