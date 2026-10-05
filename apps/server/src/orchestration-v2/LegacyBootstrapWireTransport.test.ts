@@ -1,3 +1,20 @@
+import { makeCommandObservationQuery } from "./CommandObservation.ts";
+import * as Deferred from "effect/Deferred";
+import type * as PtyAdapter from "../terminal/PtyAdapter.ts";
+import type { ProjectScript } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
+import * as ProcessRunner from "../processRunner.ts";
+import { ProviderDriverKind } from "@t3tools/contracts";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
+import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import * as IdAllocator from "./IdAllocator.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
+import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
+import { legacyBootstrapCreateCommandId } from "./LegacyBootstrap.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as WsFileSystem from "effect/FileSystem";
 import { it as effectIt } from "@effect/vitest";
@@ -588,6 +605,11 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
       "private_field",
       "deleted_error",
       "survivor_error",
+      "actual_release",
+      "actual_guard_rejected",
+      "actual_sync",
+      "actual_async",
+      "actual_disconnect",
     ] as const)("preserves closed dispatch and authorization for %s", (scenario) =>
       Effect.gen(function* () {
         const fs = yield* WsFileSystem.FileSystem;
@@ -660,6 +682,184 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           visibleTurnItems: [],
           updatedAt: timestamp,
         });
+        const actualReceiving = scenario.startsWith("actual_");
+        const startedSetup =
+          scenario === "actual_sync" ||
+          scenario === "actual_async" ||
+          scenario === "actual_disconnect";
+        const scripts: ReadonlyArray<ProjectScript> = startedSetup
+          ? [
+              {
+                id: "setup",
+                name: "Captured setup",
+                command: "synthetic-no-execution",
+                icon: "configure",
+                runOnWorktreeCreate: true,
+                async: scenario === "actual_async",
+              },
+            ]
+          : [];
+        const setupWritten = yield* Deferred.make<string>();
+        let written = "";
+        const outputListeners = new Set<(chunk: string) => void>();
+        const exitListeners = new Set<(event: PtyAdapter.PtyExitEvent) => void>();
+        const kills: Array<string | undefined> = [];
+        const process: PtyAdapter.PtyProcess = {
+          pid: 92003,
+          write: (data) => {
+            written = data;
+            Deferred.doneUnsafe(setupWritten, Effect.succeed(data));
+          },
+          resize: () => {},
+          kill: (signal) => {
+            kills.push(signal);
+            for (const exit of exitListeners) exit({ exitCode: 0, signal: 15 });
+          },
+          onData: (callback) => {
+            outputListeners.add(callback);
+            return () => {
+              outputListeners.delete(callback);
+            };
+          },
+          onExit: (callback) => {
+            exitListeners.add(callback);
+            return () => {
+              exitListeners.delete(callback);
+            };
+          },
+        };
+        const completeSetup = Effect.sync(() => {
+          const sentinel = written.match(/__T3_SETUP_DONE___[a-f0-9]+:/u)?.[0];
+          if (sentinel !== undefined)
+            for (const output of outputListeners) output(`${sentinel}0\r\n`);
+        });
+        yield* Effect.addFinalizer(() => completeSetup);
+
+        const receivingOwners = actualReceiving
+          ? yield* Effect.gen(function* () {
+              const manager = yield* WsTerminalManager.makeWithOptions({
+                logsDir: `${cwd}/terminal-logs`,
+                env: {},
+                shellResolver: () => "/bin/sh",
+                processTable: Effect.succeed([]),
+                subprocessInspector: () =>
+                  Effect.succeed({
+                    hasRunningSubprocess: false,
+                    childCommand: null,
+                    processIds: [],
+                  }),
+                ptyAdapter: {
+                  spawn: () =>
+                    startedSetup
+                      ? Effect.succeed(process)
+                      : Effect.die("No setup/provider PTY in receiving RPC fixture"),
+                },
+              }).pipe(Effect.provide(ProcessRunner.layer));
+              const terminal = Layer.succeed(WsTerminalManager.TerminalManager, manager);
+              const projectOwner = Layer.mock(WsProjectService.ProjectService)({
+                getById: (id) =>
+                  Effect.succeed(
+                    id === projectId
+                      ? Option.some({
+                          id: projectId,
+                          title: "Fixture",
+                          workspaceRoot: cwd,
+                          repositoryIdentity: null,
+                          faviconPath: null,
+                          defaultModelSelection: modelSelection,
+                          defaultThreadEnvMode: null,
+                          scripts,
+                          createdAt: timestamp,
+                          updatedAt: timestamp,
+                          deletedAt: null,
+                        })
+                      : Option.none(),
+                  ),
+              });
+              const runner = WsProjectSetupScriptRunner.layer.pipe(
+                Layer.provide(
+                  Layer.mergeAll(
+                    projectOwner,
+                    terminal,
+                    WsServerSettings.layerTest(),
+                    Layer.succeed(HostProcessEnvironment, {}),
+                    Layer.succeed(HostProcessPlatform, "linux"),
+                  ),
+                ),
+              );
+              const registry = ProviderAdapterRegistry.makeLayer([
+                {
+                  instanceId: modelSelection.instanceId,
+                  driver: ProviderDriverKind.make("codex"),
+                  getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+                  planSelectionTransition: () =>
+                    Effect.succeed({ type: "apply_on_next_turn" as const }),
+                  openSession: () => Effect.die("No provider entry in receiving RPC fixture"),
+                } as ProviderAdapterV2Shape,
+              ]);
+              const orchestrator = makeOrchestratorV2ReplayLayerWithRegistry(
+                { name: "legacy-authenticated-receiving" },
+                registry,
+                { databaseLayer: SqlitePersistenceMemory, runEffectWorker: false },
+              ).pipe(Layer.provide(terminal));
+              const threads = Threads.layer.pipe(Layer.provide(orchestrator));
+              const receipts = Receipts.layer.pipe(Layer.provide(SqlitePersistenceMemory));
+              const outbox = WsEffectOutbox.layer.pipe(Layer.provide(SqlitePersistenceMemory));
+              const store = EventStore.layer.pipe(Layer.provide(SqlitePersistenceMemory));
+              const external = Layer.mergeAll(
+                terminal,
+                projectOwner,
+                runner,
+                WsWorktreeSetupTracker.layer,
+                Layer.mock(WsProjectCloneTracker.ProjectCloneTracker)({
+                  get: () => Effect.succeed(null),
+                }),
+                Layer.mock(WsGitWorkflowService.GitWorkflowService)({
+                  createWorktree: () => Effect.die("No Git create in receiving RPC fixture"),
+                  removeWorktree: () => Effect.die("No Git cleanup in receiving RPC fixture"),
+                  renameBranch: () => Effect.die("No Git rename in receiving RPC fixture"),
+                }),
+                Layer.mock(TextGeneration.TextGeneration)({
+                  generateThreadTitle: () => Effect.succeed({ title: "Forwarding fixture" }),
+                  generateBranchName: () =>
+                    Effect.die("No generated branch in receiving RPC fixture"),
+                }),
+                WsServerSettings.layerTest(),
+                makeProviderRegistryLayer(),
+                Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
+                  namedProjectsRoot: `${cwd}/unused-projects`,
+                  folderForThread: () => Effect.succeed(Option.none()),
+                }),
+              );
+              const launch = WsThreadLaunchService.layer.pipe(
+                Layer.provide(
+                  Layer.mergeAll(
+                    external,
+                    threads,
+                    receipts,
+                    IdAllocator.layer,
+                    outbox,
+                    orchestrator,
+                    store,
+                  ),
+                ),
+              );
+              return Layer.mergeAll(
+                launch,
+                threads,
+                receipts,
+                outbox,
+                store,
+                orchestrator,
+                external,
+                ProjectStore.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
+                ProjectionStore.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
+                ApplicationEvents.OrchestrationEventStoreLive.pipe(
+                  Layer.provide(SqlitePersistenceMemory),
+                ),
+              );
+            })
+          : Layer.empty;
         const forwarded: WsThreadLaunchService.ThreadLaunchInput[] = [];
         const preflight: Parameters<
           WsThreadLaunchService.ThreadLaunchService["Service"]["preflightLegacyBootstrap"]
@@ -815,7 +1015,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.succeed(HostProcessPlatform, "linux"),
         );
 
-        const dependencies = Layer.mergeAll(auth, rpcOwners).pipe(
+        const dependencies = Layer.mergeAll(auth, rpcOwners, receivingOwners).pipe(
           Layer.provideMerge(config),
           Layer.provideMerge(NodeServices.layer),
         );
@@ -824,6 +1024,36 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           const issued = yield* owner.issueSession({
             scopes: [scenario === "read_only" ? "orchestration:read" : "orchestration:operate"],
           });
+          if (actualReceiving) {
+            const sink = yield* EventSink.EventSinkV2;
+            const projectCommandId = CommandId.make("wire-forward:project-create");
+            yield* sink.commitProjectCommand({
+              commandId: projectCommandId,
+              projectId,
+              commandType: "project.create",
+              acceptedAt: yield* DateTime.now,
+              event: {
+                eventId: EventId.make(`${projectCommandId}:event`),
+                aggregateKind: "project",
+                aggregateId: projectId,
+                occurredAt: timestamp,
+                commandId: projectCommandId,
+                causationEventId: null,
+                correlationId: null,
+                metadata: {},
+                type: "project.created",
+                payload: {
+                  projectId,
+                  title: "Fixture",
+                  workspaceRoot: cwd,
+                  defaultModelSelection: modelSelection,
+                  scripts,
+                  createdAt: timestamp,
+                  updatedAt: timestamp,
+                },
+              },
+            });
+          }
           const input = {
             type: "thread.turn.start",
             commandId,
@@ -833,7 +1063,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             interactionMode: "default",
             modelSelection,
             message: { messageId, role: "user", text: "Forward only", attachments: [] },
-            dispatchGuard: guard,
+            ...(actualReceiving && scenario !== "actual_guard_rejected"
+              ? {}
+              : { dispatchGuard: guard }),
             bootstrap: {
               createThread: {
                 projectId,
@@ -845,14 +1077,18 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 worktreePath: null,
                 createdAt: timestamp,
               },
-              prepareWorktree: {
-                projectCwd: cwd,
-                baseBranch: "main",
-                branch: "owned/forwarding",
-                startFromOrigin: false,
-                requireWorktree: true,
-              },
-              runSetupScript: false,
+              ...(actualReceiving
+                ? {}
+                : {
+                    prepareWorktree: {
+                      projectCwd: cwd,
+                      baseBranch: "main",
+                      branch: "owned/forwarding",
+                      startFromOrigin: false,
+                      requireWorktree: true,
+                    },
+                  }),
+              runSetupScript: actualReceiving,
             },
             ...(scenario === "private_field" ? { legacyBootstrap: { ownsNewThread: true } } : {}),
           };
@@ -893,9 +1129,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               ),
             ),
           );
-          const handler = yield* HttpRouter.toHttpEffect(
-            websocketRpcRouteLayer.pipe(Layer.provide(dependencies)),
-          );
+          const handler = yield* HttpRouter.toHttpEffect(websocketRpcRouteLayer);
           const serving = yield* handler.pipe(
             Effect.provideService(WsHttpServerRequest.HttpServerRequest, request),
             Effect.scoped,
@@ -912,6 +1146,69 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               headers: [],
             }),
           );
+          if (startedSetup) {
+            yield* Deferred.await(setupWritten).pipe(Effect.timeout("5 seconds"));
+            const sink = yield* EventSink.EventSinkV2;
+            yield* sink.stream({ threadId, eventType: "run.updated" }).pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "run.updated" &&
+                  stored.event.payload.legacyPreparation?.steps.some(
+                    (step) => step.effect.kind === "setup.write" && step.state === "known_started",
+                  ) === true,
+              ),
+              Stream.runHead,
+              Effect.timeout("5 seconds"),
+            );
+            const receipts = yield* Receipts.CommandReceiptStoreV2;
+            const threads = yield* Threads.ThreadManagementService;
+            expect(written).toContain("synthetic-no-execution");
+            if (scenario !== "actual_async") {
+              const preparing = yield* threads.getThreadProjection(threadId);
+              expect(preparing.runs[0]?.status).toBe("preparing");
+              expect(Option.isNone(yield* receipts.getByCommandId(commandId))).toBe(true);
+              expect(
+                preparing.runs[0]?.legacyPreparation?.steps.map((step) => [
+                  step.effect.kind,
+                  step.state,
+                ]),
+              ).toEqual([
+                ["setup.open", "known_succeeded"],
+                ["setup.write", "known_started"],
+              ]);
+              if (scenario === "actual_disconnect") {
+                yield* WsFiber.interrupt(serving);
+                expect(Option.isNone(yield* receipts.getByCommandId(commandId))).toBe(true);
+              }
+              yield* completeSetup;
+            }
+            if (scenario === "actual_disconnect") {
+              const sink = yield* EventSink.EventSinkV2;
+              yield* sink.stream({ threadId, eventType: "run.updated" }).pipe(
+                Stream.filter((stored) => stored.commandId === commandId),
+                Stream.runHead,
+                Effect.timeout("5 seconds"),
+              );
+              const c = yield* receipts.getByCommandId(commandId);
+              expect(Option.isSome(c)).toBe(true);
+              if (Option.isSome(c)) expect(c.value.status).toBe("accepted");
+              const received = yield* threads.getThreadProjection(threadId);
+              expect(received.runs[0]?.status).toBe("starting");
+              expect(
+                received.runs[0]?.legacyPreparation?.steps.map((step) => [
+                  step.effect.kind,
+                  step.state,
+                ]),
+              ).toEqual([
+                ["setup.open", "known_succeeded"],
+                ["setup.write", "known_started"],
+                ["setup.completion", "known_succeeded"],
+              ]);
+              expect(received.thread.deletedAt).toBeNull();
+              expect(kills).toHaveLength(0);
+              return;
+            }
+          }
           const raw = yield* Effect.race(
             WsQueue.take(outgoing),
             WsFiber.join(serving).pipe(Effect.andThen(Effect.die("Socket ended before response"))),
@@ -921,7 +1218,139 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           );
           expect(frame._tag).toBe("Exit");
           expect(frame.requestId).toBe("1");
-          if (scenario === "operate") {
+          if (actualReceiving) {
+            const receipts = yield* Receipts.CommandReceiptStoreV2;
+            const threads = yield* Threads.ThreadManagementService;
+            const store = yield* EventStore.EventStoreV2;
+            const outbox = yield* WsEffectOutbox.EffectOutboxV2;
+            const c = yield* receipts.getByCommandId(commandId);
+            expect(Option.isSome(c)).toBe(true);
+            if (Option.isNone(c)) return yield* Effect.die("Actual C receipt required");
+            expect(c.value.commandType).toBe("prepared-run.release");
+            const observation = yield* makeCommandObservationQuery();
+            const observed = yield* observation.observe({ threadId, commandId, messageId });
+            expect(observed.commandStatus).toBe(c.value.status);
+            expect(observed.acceptedSequence).toBe(
+              c.value.status === "accepted" ? c.value.resultSequence : null,
+            );
+            if (scenario === "actual_guard_rejected") expect(observed.turn).toBeNull();
+            else {
+              expect(observed.correlation).toBe("pending");
+              expect(observed.turn?.turnId).toBeNull();
+              expect(observed.turn?.state).toBe("pending");
+            }
+            const bId = legacyBootstrapCreateCommandId(threadId, commandId);
+            const b = yield* receipts.getByCommandId(bId);
+            const birth = yield* receipts.getByCommandId(CommandId.make(`${bId}:initial-message`));
+            expect(Option.isSome(b)).toBe(true);
+            expect(Option.isSome(birth)).toBe(true);
+            if (Option.isSome(birth))
+              expect(birth.value.resultSequence).toBeLessThanOrEqual(c.value.resultSequence);
+            const received = yield* threads.getThreadProjection(threadId);
+            expect(received.thread.projectId).toBe(projectId);
+            expect(received.thread.modelSelection).toEqual(modelSelection);
+            expect(received.messages[0]?.id).toBe(messageId);
+            expect(received.messages[0]?.text).toBe("Forward only");
+            expect(received.runs[0]?.legacyBootstrap?.releaseCommandId).toBe(commandId);
+            expect(received.runs[0]?.legacyPreparation?.setup.status).toBe(
+              startedSetup ? "resolved" : "no_script",
+            );
+            expect(order).toEqual([]);
+            expect(forwarded).toHaveLength(0);
+            const dId = CommandId.make(`${bId}:guard-rejection-delete`);
+            const d = yield* receipts.getByCommandId(dId);
+            const effects = yield* outbox.listByThreadId(threadId);
+            if (scenario !== "actual_guard_rejected") {
+              expect(frame.exit).toMatchObject({
+                _tag: "Success",
+                value: { sequence: c.value.resultSequence },
+              });
+              expect(c.value.status).toBe("accepted");
+              expect(received.thread.deletedAt).toBeNull();
+              expect(Option.isNone(d)).toBe(true);
+              expect(received.runs[0]?.status).toBe("starting");
+              expect(
+                effects.filter(
+                  (entry) =>
+                    entry.commandId === commandId && entry.request.type === "provider-turn.start",
+                ),
+              ).toHaveLength(1);
+              if (scenario === "actual_async") {
+                expect(
+                  received.runs[0]?.legacyPreparation?.steps.map((step) => [
+                    step.effect.kind,
+                    step.state,
+                  ]),
+                ).toEqual([
+                  ["setup.open", "known_succeeded"],
+                  ["setup.write", "known_started"],
+                ]);
+                yield* completeSetup;
+                const sink = yield* EventSink.EventSinkV2;
+                yield* sink
+                  .stream({
+                    threadId,
+                    eventType: "run.updated",
+                    afterSequence: c.value.resultSequence,
+                  })
+                  .pipe(
+                    Stream.filter(
+                      (stored) =>
+                        stored.event.type === "run.updated" &&
+                        stored.event.payload.legacyPreparation?.steps.some(
+                          (step) =>
+                            step.effect.kind === "setup.completion" &&
+                            step.state === "known_succeeded",
+                        ) === true,
+                    ),
+                    Stream.runHead,
+                    Effect.timeout("5 seconds"),
+                  );
+                const completed = yield* threads.getThreadProjection(threadId);
+                expect(completed.runs[0]?.legacyPreparation?.steps.at(-1)?.state).toBe(
+                  "known_succeeded",
+                );
+                expect(yield* receipts.getByCommandId(commandId)).toEqual(c);
+              }
+              expect(kills).toHaveLength(0);
+            } else {
+              expect(frame.exit._tag).toBe("Failure");
+              const failures = yield* decodeLegacyRpcFailureCause(frame.exit.cause);
+              expect(failures[0]?.error.bootstrapThreadDisposition).toBe("deleted");
+              expect(c.value.status).toBe("rejected");
+              expect(received.thread.deletedAt).not.toBeNull();
+              expect(received.runs[0]?.legacyReleaseDecision?.deletion?.type).toBe("no_control");
+              expect(Option.isSome(d)).toBe(true);
+              if (Option.isSome(d)) expect(d.value.status).toBe("accepted");
+              const deletionEvents = Array.from(
+                yield* store.readByCommandId({ commandId: dId }).pipe(Stream.runCollect),
+              );
+              expect(deletionEvents.map((entry) => entry.event.type)).toEqual([
+                "run.updated",
+                "thread.deleted",
+              ]);
+              expect(
+                effects.filter(
+                  (entry) => entry.commandId === dId && entry.request.type === "terminal.cleanup",
+                ),
+              ).toHaveLength(0);
+              expect(
+                effects.filter((entry) => entry.request.type === "provider-turn.start"),
+              ).toHaveLength(0);
+            }
+            expect(
+              effects.filter((entry) => entry.request.type === "attachment.cleanup"),
+            ).toHaveLength(0);
+            expect(typeof raw === "string" ? raw : new TextDecoder().decode(raw)).not.toContain(
+              "legacyBootstrap",
+            );
+            expect(typeof raw === "string" ? raw : new TextDecoder().decode(raw)).not.toContain(
+              "legacyPreparation",
+            );
+            expect(typeof raw === "string" ? raw : new TextDecoder().decode(raw)).not.toContain(
+              "legacyReleaseDecision",
+            );
+          } else if (scenario === "operate") {
             // The mocked sequence is forwarding evidence only; live strict guards remain independently tested rejections.
             expect(frame.exit).toMatchObject({ _tag: "Success", value: { sequence: 3 } });
             expect(order).toEqual(["preflight", "launch"]);
@@ -953,7 +1382,11 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             expect(preflight).toHaveLength(0);
             expect(forwarded).toHaveLength(0);
           }
-        }).pipe(Effect.provide(dependencies), Effect.timeout("10 seconds"));
+        }).pipe(
+          Effect.ensuring(completeSetup),
+          Effect.provide(dependencies),
+          Effect.timeout("10 seconds"),
+        );
       }),
     );
   },
