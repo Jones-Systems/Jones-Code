@@ -62,3 +62,15 @@ export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
+export * from "./workstreams.ts";
+export * from "./workstreamPlacements.ts";
+export * from "./threadRegistry.ts";
+export * from "./queueProtocol.ts";
+export * from "./threadCorpusProtocol.ts";
+export {
+  ThreadTurnDispatchGuard,
+  OrchestrationCommandObservation,
+  OrchestrationShellSnapshot,
+  OrchestrationThreadDetailWindow,
+  OrchestrationThreadDetailSnapshot,
+} from "./legacyOrchestrationCompatibility.ts";
