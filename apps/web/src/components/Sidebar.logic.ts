@@ -1,4 +1,7 @@
-import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import {
+  threadRuntimeIsActive,
+  resolveThreadWorkingStartedAt,
+} from "@t3tools/client-runtime/state/models";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
@@ -26,6 +29,41 @@ import type { SidebarThreadSummary, Thread } from "../types";
 import { cn } from "../lib/utils";
 import { isLatestRunSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
+
+export function filterSidebarOperatingThreads<T>(
+  threads: ReadonlyArray<T>,
+  activeOnly: boolean,
+  isOperating: (thread: T) => boolean,
+): ReadonlyArray<T> {
+  return activeOnly ? threads.filter(isOperating) : threads;
+}
+
+export function isSidebarThreadOperating(
+  thread: Pick<
+    SidebarThreadSummary,
+    | "archivedAt"
+    | "runtime"
+    | "latestRun"
+    | "interactionMode"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "hasActionableProposedPlan"
+    | "pendingBackgroundTasks"
+  >,
+): boolean {
+  if (thread.archivedAt !== null) return false;
+  // The projected roster is independent activity, even while the foreground waits.
+  if (thread.pendingBackgroundTasks.length > 0) return true;
+  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
+  if (
+    thread.interactionMode === "plan" &&
+    thread.hasActionableProposedPlan &&
+    isLatestRunSettled(thread.latestRun, thread.runtime)
+  ) {
+    return false;
+  }
+  return threadRuntimeIsActive(thread.runtime);
+}
 
 export function shouldNavigateAfterThreadPark(input: {
   readonly threadKey: string;
@@ -174,16 +212,16 @@ export function sidebarListItemId(item: SidebarListItem): string {
   return item.kind === "thread" ? item.key : sidebarMarkerId(item.marker);
 }
 
-/** The section a slot belongs to, read off the markers around it: from
-    the top down, everything before the pinned divider is pinned, then the
-    inbox until the first shelf header, each shelf until the next header,
-    then settled. */
+/** Read boundaries in rendered order, including Workstreams before Pinned;
+ * Working and snoozed shelves retain their separate boundaries. */
 function sectionAtSidebarSlot(items: readonly SidebarListItem[], index: number): SidebarSection {
   let section: SidebarSection = "pinned";
   for (let i = 0; i < index && i < items.length; i += 1) {
     const item = items[i]!;
     if (item.kind !== "marker") continue;
-    if (item.marker === "pinned-divider") section = "active";
+    if (item.marker === "pinned-header") section = "pinned";
+    else if (item.marker === "pinned-divider" || item.marker === "active-placeholder")
+      section = "active";
     else if (item.marker === "working-header") section = "working";
     else if (item.marker === "snoozed-header") section = "snoozed";
     else if (item.marker === "settled-header") section = "settled";
@@ -216,7 +254,9 @@ export function resolveSidebarDropTarget(
   let currentSection: SidebarSection = "pinned";
   for (const item of moved) {
     if (item.kind === "marker") {
-      if (item.marker === "pinned-divider") currentSection = "active";
+      if (item.marker === "pinned-header") currentSection = "pinned";
+      else if (item.marker === "pinned-divider" || item.marker === "active-placeholder")
+        currentSection = "active";
       else if (
         item.marker === "working-header" ||
         item.marker === "snoozed-header" ||
@@ -355,6 +395,7 @@ export function planSidebarThreadDrop(input: {
       const order = target.activeOrder;
       if (
         activeSection === "active" &&
+        !activePinned &&
         order.length === activeOrder.length &&
         order.every((key, index) => key === activeOrder[index])
       ) {
@@ -397,7 +438,7 @@ export function planSidebarThreadDrop(input: {
       if (reorderableKeys && assignments.some(({ id }) => !reorderableKeys.has(id))) {
         return { kind: "none" };
       }
-      if (activeSection === "pinned") {
+      if (activePinned && !activeSettled && activeSection !== "snoozed") {
         return assignments.length === 0
           ? { kind: "none" }
           : { kind: "reorder-pinned", order, assignments };

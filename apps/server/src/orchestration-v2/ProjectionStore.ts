@@ -49,6 +49,7 @@ import {
   OrchestrationV2SubagentJson as OrchestrationV2SubagentJsonSchema,
   OrchestrationV2TurnItemJson as OrchestrationV2TurnItemJsonSchema,
   orchestrationV2RunWorkStartedAt,
+  ProviderRequestKind,
   RunId,
   CheckpointScopeId,
   ThreadId,
@@ -921,6 +922,8 @@ type ShellThreadRow = {
   readonly blocking_run_completed_at: string | null;
   readonly blocking_failure_payload_json: string | null;
   readonly pending_request_payload_json: string | null;
+  readonly pending_approval_count: number;
+  readonly pending_user_input_count: number;
   readonly latest_user_message_at: string | null;
   readonly latest_user_authored_message_at: string | null;
   readonly has_actionable_proposed_plan: number;
@@ -1305,6 +1308,18 @@ function buildVisibleTurnItems(input: {
   ]);
 }
 
+function runtimeIdentityForShell(
+  thread: OrchestrationV2ThreadProjection["thread"],
+  providerThreads: ReadonlyArray<OrchestrationV2ProviderThread>,
+) {
+  return providerThreads.find(
+    (provider) =>
+      provider.id === thread.activeProviderThreadId &&
+      provider.appThreadId === thread.id &&
+      provider.providerInstanceId === thread.providerInstanceId,
+  )?.runtimeIdentity;
+}
+
 export function threadShellFromProjection(
   projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadShell {
@@ -1329,6 +1344,14 @@ export function threadShellFromProjection(
     projection.runs
       .filter(isActivityRunForShell)
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null;
+  const pendingRequests = projection.runtimeRequests.filter(
+    (request) => request.status === "pending",
+  );
+  const isApprovalKind = Schema.is(ProviderRequestKind);
+  const pendingRequestCounts = {
+    approval: pendingRequests.filter((request) => isApprovalKind(request.kind)).length,
+    userInput: pendingRequests.filter((request) => request.kind === "user_input").length,
+  };
   const pendingRuntimeRequest =
     projection.runtimeRequests
       .filter((request) => request.status === "pending")
@@ -1375,6 +1398,11 @@ export function threadShellFromProjection(
     lineage: projection.thread.lineage,
     forkedFrom: projection.thread.forkedFrom,
     activeProviderThreadId: projection.thread.activeProviderThreadId,
+    ...(runtimeIdentityForShell(projection.thread, projection.providerThreads) === undefined
+      ? {}
+      : {
+          runtimeIdentity: runtimeIdentityForShell(projection.thread, projection.providerThreads),
+        }),
     ...(projection.thread.historyOrigin === undefined
       ? {}
       : { historyOrigin: projection.thread.historyOrigin }),
@@ -1399,6 +1427,7 @@ export function threadShellFromProjection(
             kind: pendingRuntimeRequest.kind,
             createdAt: pendingRuntimeRequest.createdAt,
           },
+    pendingRequestCounts,
     // Thread detail owns message bodies. Keeping them out of shell rows makes
     // initial hydration and streaming updates independent of transcript size.
     latestVisibleMessage: null,
@@ -1489,11 +1518,13 @@ type ShellThreadState = {
   readonly lastErrorClass: OrchestrationV2ThreadShell["lastErrorClass"];
   readonly usageLimitResetAt: OrchestrationV2ThreadShell["usageLimitResetAt"];
   readonly pendingRuntimeRequest: OrchestrationV2ThreadProjection["runtimeRequests"][number] | null;
+  readonly pendingRequestCounts: NonNullable<OrchestrationV2ThreadShell["pendingRequestCounts"]>;
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
   readonly hasActionableProposedPlan: boolean;
   readonly pendingBackgroundTasks: OrchestrationV2ThreadShell["pendingBackgroundTasks"];
   readonly providerInstanceHistory: OrchestrationV2ThreadShell["providerInstanceHistory"];
+  readonly runtimeIdentity: OrchestrationV2ThreadShell["runtimeIdentity"];
   readonly itemCount: number;
   readonly runlessItemCount: number;
   readonly updatedAt: OrchestrationV2ThreadProjection["updatedAt"];
@@ -1612,6 +1643,9 @@ function shellFromState(input: {
     lineage: input.state.thread.lineage,
     forkedFrom: input.state.thread.forkedFrom,
     activeProviderThreadId: input.state.thread.activeProviderThreadId,
+    ...(input.state.runtimeIdentity === undefined
+      ? {}
+      : { runtimeIdentity: input.state.runtimeIdentity }),
     ...(input.state.thread.historyOrigin === undefined
       ? {}
       : { historyOrigin: input.state.thread.historyOrigin }),
@@ -1634,6 +1668,7 @@ function shellFromState(input: {
             kind: input.state.pendingRuntimeRequest.kind,
             createdAt: input.state.pendingRuntimeRequest.createdAt,
           },
+    pendingRequestCounts: input.state.pendingRequestCounts,
     latestVisibleMessage: null,
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
@@ -2915,7 +2950,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           `
               : sql<PayloadRow>`
             SELECT payload_json FROM orchestration_v2_projection_provider_threads
-            WHERE (thread_id = ${threadId} AND status = 'active')
+            WHERE (thread_id = ${threadId} AND (status = 'active'
+              OR provider_thread_id = json_extract(${threadRow.payload_json}, '$.activeProviderThreadId')))
               OR provider_thread_id IN (SELECT value FROM json_each(${cohortProviderThreadIds}))
               OR owner_node_id IN (SELECT value FROM json_each(${cohortNodeIds}))
             ORDER BY COALESCE(first_run_ordinal, 0), provider_thread_id ASC
@@ -3958,6 +3994,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 )
                 AND (
                   provider_thread.status = 'active'
+                  OR (provider_thread.thread_id = ${threadId}
+                    AND provider_thread.provider_thread_id = json_extract(${threadRows[0].payload_json}, '$.activeProviderThreadId'))
                   OR CASE WHEN json_valid(provider_thread.payload_json)
                     THEN json_array_length(provider_thread.payload_json, '$.pendingBackgroundTasks') > 0
                     ELSE 0 END
@@ -4909,6 +4947,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 LIMIT 1
               ) AS pending_request_payload_json,
               (
+                SELECT COUNT(*) FROM orchestration_v2_projection_runtime_requests request
+                WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+                  AND request.kind IN ('command', 'file-read', 'file-change', 'mcp-elicitation', 'permission')
+              ) AS pending_approval_count,
+              (
+                SELECT COUNT(*) FROM orchestration_v2_projection_runtime_requests request
+                WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+                  AND request.kind = 'user_input'
+              ) AS pending_user_input_count,
+              (
                 SELECT message.updated_at
                 FROM orchestration_v2_projection_messages message
                 WHERE message.thread_id = t.thread_id
@@ -5359,6 +5407,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             row.last_error,
           ),
           pendingRuntimeRequest,
+          pendingRequestCounts: {
+            approval: row.pending_approval_count,
+            userInput: row.pending_user_input_count,
+          },
           latestUserMessageAt:
             row.latest_user_message_at === null
               ? null
@@ -5369,6 +5421,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : DateTime.makeUnsafe(row.latest_user_authored_message_at),
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
           pendingBackgroundTasks,
+          runtimeIdentity: runtimeIdentityForShell(
+            thread,
+            providerThreadsByThreadId.get(thread.id) ?? [],
+          ),
           providerInstanceHistory: providerInstanceHistoryForShell({
             threadId: thread.id,
             providerThreads: providerThreadsByThreadId.get(thread.id) ?? [],

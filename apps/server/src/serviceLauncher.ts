@@ -9,6 +9,20 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
+import {
+  verifyStagedQualifiedRuntime,
+  readQualifiedRuntimeReceipt,
+  withQualifiedRuntimeLock,
+  QUALIFIED_UPDATES_PROTOCOL,
+  type StagedQualifiedRuntime,
+} from "./cloud/qualifiedRuntime.ts";
+
+import {
+  proveQualifiedStateQuiescence,
+  QUALIFIED_STARTUP_STATE_FILES,
+  type QualifiedQuiescenceAdapter,
+} from "./cloud/qualifiedQuiescence.ts";
 
 import type {
   PendingServiceUpdate,
@@ -29,6 +43,11 @@ import {
   SERVICE_RESTART_PENDING_FILE,
   SERVICE_STOP_MARKER_FILE,
 } from "./cloud/serviceProtocol.ts";
+
+import {
+  advanceNativeStoreAuthorityForBaseDir,
+  fenceNativeStoreAuthorityForBaseDir,
+} from "./environment/nativeStoreAuthorityPersistence.ts";
 
 const HANDOFF_DELAY_MS = 2_000;
 const PREPARED_TIMEOUT_MS = 120_000;
@@ -65,12 +84,24 @@ const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>) => ({
 /** SQLite persists across the main file plus its WAL and shared-memory sidecars. */
 const DB_FILE_SUFFIXES = ["", "-wal", "-shm"] as const;
 const RESTORE_MARKER = ".restore-pending";
+const PAIRED_SETTINGS = QUALIFIED_STARTUP_STATE_FILES;
 
 const databaseBackupDir = (baseDir: string, updateId: string) =>
   NodePath.join(baseDir, "runtime", "db-backup", updateId);
 
 const databaseBackupFile = (backupDir: string, suffix: (typeof DB_FILE_SUFFIXES)[number]) =>
   NodePath.join(backupDir, suffix === "" ? "database" : `database${suffix}`);
+
+export const configuredDatabasePathForBaseDir = (baseDir: string): string =>
+  NodePath.resolve(baseDir, "userdata", "statev2.sqlite");
+
+export const validateDatabasePathForBaseDir = (baseDir: string, databasePath: string): string => {
+  const configuredPath = configuredDatabasePathForBaseDir(baseDir);
+  if (NodePath.resolve(databasePath) !== configuredPath) {
+    throw new Error("Service update database path must be the configured userdata/statev2.sqlite.");
+  }
+  return configuredPath;
+};
 
 async function pathExists(target: string): Promise<boolean> {
   try {
@@ -112,14 +143,41 @@ async function syncDirectory(directory: string): Promise<void> {
  * database writes from an earlier attempt by the same trial.
  */
 async function backupDatabaseOnce(baseDir: string, pending: PendingServiceUpdate): Promise<void> {
+  validateDatabasePathForBaseDir(baseDir, pending.dbPath);
   const backupDir = databaseBackupDir(baseDir, pending.id);
-  if (await pathExists(backupDir)) return;
+  if (await pathExists(backupDir)) {
+    if (!(await databaseBackupAvailable(baseDir, pending.id))) {
+      throw new Error("Cannot use an incomplete database backup.");
+    }
+    if (pending.qualified !== undefined) await validatePairedBackup(baseDir, pending, backupDir);
+    return;
+  }
 
   const stagingDir = `${backupDir}.staging`;
-  await NodeFSP.rm(stagingDir, { recursive: true, force: true });
+  if (pending.qualified !== undefined && (await pathExists(stagingDir)))
+    throw new Error("An occupied paired snapshot staging path was preserved for reconciliation.");
+  if (pending.qualified === undefined)
+    await NodeFSP.rm(stagingDir, { recursive: true, force: true });
   await NodeFSP.mkdir(stagingDir, { recursive: true, mode: 0o700 });
   try {
-    for (const suffix of DB_FILE_SUFFIXES) {
+    if (pending.qualified !== undefined) {
+      const database = new NodeSqlite.DatabaseSync(pending.dbPath, { readOnly: true });
+      try {
+        await NodeSqlite.backup(database, databaseBackupFile(stagingDir, ""));
+      } finally {
+        database.close();
+      }
+      await syncFile(databaseBackupFile(stagingDir, ""));
+      await backupPairedSettings(baseDir, stagingDir);
+      const bindingPath = NodePath.join(stagingDir, "paired-binding.json");
+      await NodeFSP.writeFile(
+        bindingPath,
+        JSON.stringify({ transactionId: pending.id, qualified: pending.qualified }),
+        { flag: "wx", mode: 0o600 },
+      );
+      await syncFile(bindingPath);
+    }
+    for (const suffix of pending.qualified === undefined ? DB_FILE_SUFFIXES : []) {
       const source = `${pending.dbPath}${suffix}`;
       if (suffix !== "" && !(await pathExists(source))) continue;
       const destination = databaseBackupFile(stagingDir, suffix);
@@ -133,6 +191,100 @@ async function backupDatabaseOnce(baseDir: string, pending: PendingServiceUpdate
     throw cause;
   }
 }
+
+async function backupPairedSettings(baseDir: string, destination: string): Promise<void> {
+  const present: string[] = [];
+  for (const name of PAIRED_SETTINGS) {
+    const source = NodePath.join(baseDir, "userdata", name);
+    if (!(await pathExists(source))) continue;
+    const stat = await NodeFSP.lstat(source);
+    if (!stat.isFile() || stat.isSymbolicLink())
+      throw new Error("Startup settings must be regular files.");
+    const target = NodePath.join(destination, name);
+    await NodeFSP.copyFile(source, target);
+    await syncFile(target);
+    present.push(name);
+  }
+  const manifest = NodePath.join(destination, "paired-settings.json");
+  await NodeFSP.writeFile(manifest, JSON.stringify(present), { flag: "wx", mode: 0o600 });
+  await syncFile(manifest);
+}
+
+async function restorePairedSettings(baseDir: string, backupDir: string): Promise<void> {
+  const manifest: unknown = JSON.parse(
+    await NodeFSP.readFile(NodePath.join(backupDir, "paired-settings.json"), "utf8"),
+  );
+  if (
+    !Array.isArray(manifest) ||
+    manifest.some(
+      (name) => typeof name !== "string" || !PAIRED_SETTINGS.some((allowed) => name === allowed),
+    )
+  )
+    throw new Error("Paired settings receipt is invalid.");
+  for (const name of PAIRED_SETTINGS) {
+    const target = NodePath.join(baseDir, "userdata", name);
+    if (manifest.includes(name)) {
+      await NodeFSP.copyFile(NodePath.join(backupDir, name), target);
+      await syncFile(target);
+    } else await NodeFSP.rm(target, { force: true });
+  }
+  await syncDirectory(NodePath.join(baseDir, "userdata"));
+}
+
+async function validatePairedBackup(
+  baseDir: string,
+  pending: PendingServiceUpdate,
+  directory: string,
+): Promise<void> {
+  const bindingPath = NodePath.join(directory, "paired-binding.json");
+  const stat = await NodeFSP.lstat(bindingPath);
+  if (!stat.isFile() || stat.isSymbolicLink())
+    throw new Error("Paired backup binding is not a regular file.");
+  const binding: unknown = JSON.parse(await NodeFSP.readFile(bindingPath, "utf8"));
+  if (
+    JSON.stringify(binding) !==
+      JSON.stringify({ transactionId: pending.id, qualified: pending.qualified }) ||
+    pending.qualified?.binding.baseDir !== (await NodeFSP.realpath(baseDir))
+  )
+    throw new Error("Paired backup belongs to a different transaction or native home.");
+  const settings = await NodeFSP.lstat(NodePath.join(directory, "paired-settings.json"));
+  if (!settings.isFile() || settings.isSymbolicLink())
+    throw new Error("Paired backup settings receipt is incomplete.");
+}
+
+async function retainAdvancedState(baseDir: string, pending: PendingServiceUpdate): Promise<void> {
+  const directory = NodePath.join(databaseBackupDir(baseDir, pending.id), "advanced-state");
+  if (await pathExists(directory)) {
+    if (
+      !(await pathExists(NodePath.join(directory, "database"))) ||
+      !(await pathExists(NodePath.join(directory, "paired-settings.json")))
+    )
+      throw new Error(
+        "Advanced state snapshot is incomplete; it was preserved for reconciliation.",
+      );
+    return;
+  }
+  await NodeFSP.mkdir(directory, { mode: 0o700 });
+  const database = new NodeSqlite.DatabaseSync(pending.dbPath, { readOnly: true });
+  try {
+    await NodeSqlite.backup(database, NodePath.join(directory, "database"));
+  } finally {
+    database.close();
+  }
+  await syncFile(NodePath.join(directory, "database"));
+  await backupPairedSettings(baseDir, directory);
+  await syncDirectory(directory);
+}
+
+const databaseBackupAvailable = async (baseDir: string, updateId: string): Promise<boolean> => {
+  try {
+    const stat = await NodeFSP.lstat(databaseBackupFile(databaseBackupDir(baseDir, updateId), ""));
+    return stat.isFile();
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw cause;
+  }
+};
 
 const restoreMarkerPath = (baseDir: string, updateId: string) =>
   NodePath.join(databaseBackupDir(baseDir, updateId), RESTORE_MARKER);
@@ -154,15 +306,26 @@ async function markDatabaseRestorePending(backupDir: string): Promise<void> {
   }
 }
 
-/** Restore is retryable after any process crash while the backup directory remains. */
+/** Resume durable restore intent; missing backups or unproved writer ownership stop recovery. */
 async function restoreDatabaseBackup(
   baseDir: string,
   pending: PendingServiceUpdate,
 ): Promise<void> {
+  validateDatabasePathForBaseDir(baseDir, pending.dbPath);
   const backupDir = databaseBackupDir(baseDir, pending.id);
-  if (!(await pathExists(backupDir))) return;
-
+  if (!(await databaseBackupAvailable(baseDir, pending.id))) {
+    fenceNativeStoreAuthorityForBaseDir(baseDir);
+    throw new Error("Cannot rollback while the native database backup is missing.");
+  }
+  // Persist restore intent before fencing so recovery cannot restart or commit
+  // a trial while the native authority remains fenced.
+  if (pending.qualified !== undefined) {
+    await validatePairedBackup(baseDir, pending, backupDir);
+    if (!(await databaseRestorePending(baseDir, pending)))
+      await retainAdvancedState(baseDir, pending);
+  }
   await markDatabaseRestorePending(backupDir);
+  fenceNativeStoreAuthorityForBaseDir(baseDir);
   for (const suffix of DB_FILE_SUFFIXES) {
     const target = `${pending.dbPath}${suffix}`;
     const source = databaseBackupFile(backupDir, suffix);
@@ -174,6 +337,8 @@ async function restoreDatabaseBackup(
     }
   }
   await syncDirectory(NodePath.dirname(pending.dbPath));
+  if (pending.qualified !== undefined) await restorePairedSettings(baseDir, backupDir);
+  advanceNativeStoreAuthorityForBaseDir(baseDir, pending.dbPath);
 }
 
 async function discardDatabaseBackup(baseDir: string, updateId: string): Promise<void> {
@@ -236,6 +401,7 @@ function terminalUpdate<S extends TerminalStatus>(input: {
     fromVersion: input.pending.fromVersion,
     targetVersion: input.pending.targetVersion,
     status: input.status,
+    ...(input.pending.qualified === undefined ? {} : { qualified: input.pending.qualified }),
     ...(input.reason === undefined ? {} : { reason: input.reason }),
   };
 }
@@ -280,6 +446,7 @@ const restartPendingPath = (baseDir: string) =>
 export class Launcher {
   readonly #baseDir: string;
   readonly #statePath: string;
+  readonly #quiescenceAdapter: QualifiedQuiescenceAdapter | undefined;
   #state: ServiceState;
   #child: ManagedChild | null = null;
   #timer: NodeJS.Timeout | undefined;
@@ -289,19 +456,47 @@ export class Launcher {
   #done = false;
   readonly #completion = Promise.withResolvers<void>();
 
-  constructor(baseDir: string, state: ServiceState) {
+  constructor(
+    baseDir: string,
+    state: ServiceState,
+    options: { readonly quiescenceAdapter?: QualifiedQuiescenceAdapter } = {},
+  ) {
     this.#baseDir = baseDir;
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
+    this.#quiescenceAdapter = options.quiescenceAdapter;
   }
 
   async run(): Promise<void> {
+    const ownership = Promise.withResolvers<void>();
+    // Queue recovery before stop() can enqueue shutdown, even while acquiring
+    // the cross-process lock. Signal receipt still writes its marker promptly.
+    this.#enqueue(async () => {
+      await ownership.promise;
+      await this.#recover();
+    });
+    try {
+      await withQualifiedRuntimeLock(this.#baseDir, "service-launcher-lock", async () => {
+        // Read the selected pointer after acquiring ownership, never trust the
+        // snapshot supplied before a competing launcher/CLI transition.
+        this.#state = await readServiceState(this.#statePath);
+        ownership.resolve();
+        return this.#runOwned();
+      });
+    } catch (cause) {
+      ownership.reject(cause);
+      await this.#transitions;
+      await this.#completion.promise.catch(() => undefined);
+      throw cause;
+    }
+  }
+
+  async #runOwned(): Promise<void> {
     const onSigterm = () => void this.stop("SIGTERM");
     const onSigint = () => void this.stop("SIGINT");
     process.once("SIGTERM", onSigterm);
     process.once("SIGINT", onSigint);
     try {
-      this.#enqueue(() => this.#recover());
       await this.#completion.promise;
     } finally {
       process.off("SIGTERM", onSigterm);
@@ -381,15 +576,32 @@ export class Launcher {
     }
     const update = this.#state.update;
     if (update?.status !== "pending") {
-      if (update !== undefined) {
+      if (update !== undefined && update.qualified === undefined) {
         await discardDatabaseBackup(this.#baseDir, update.id).catch(() => undefined);
       }
       await this.#startChild(this.#state.activeVersion, "active", update);
       return;
     }
+    if (update.qualified !== undefined) {
+      throw new Error(
+        "Qualified update recovery requires reconciliation of prior writer ownership; state and paired backups were retained.",
+      );
+    }
+    if (update.phase === "accepted") {
+      if (!(await runtimeExists(this.#baseDir, update.targetVersion))) {
+        await this.#finishWithoutTrial(update, "target-runtime-missing");
+        return;
+      }
+      await this.#startTrial(update);
+      return;
+    }
     if (await databaseRestorePending(this.#baseDir, update)) {
       await this.#returnToPrevious(update, "failed", "rollback-interrupted");
       return;
+    }
+    if (!(await databaseBackupAvailable(this.#baseDir, update.id))) {
+      fenceNativeStoreAuthorityForBaseDir(this.#baseDir);
+      throw new Error("Cannot recover a trial-ready update without its database backup.");
     }
     if (!(await runtimeExists(this.#baseDir, update.targetVersion))) {
       await this.#returnToPrevious(update, "failed", "target-runtime-missing");
@@ -398,19 +610,65 @@ export class Launcher {
     await this.#startTrial(update);
   }
 
+  async #proveQuiescence(allowedProcessIds: readonly number[] = []): Promise<void> {
+    await proveQualifiedStateQuiescence({
+      baseDir: this.#baseDir,
+      allowedProcessIds,
+      ...(this.#quiescenceAdapter === undefined ? {} : { adapter: this.#quiescenceAdapter }),
+    });
+  }
+
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
-    // The previous child is dead here, so all three SQLite files are quiescent.
-    try {
-      await backupDatabaseOnce(this.#baseDir, pending);
-    } catch {
-      await this.#returnToPrevious(pending, "failed", "db-backup-failed");
-      return;
+    if (pending.qualified !== undefined) {
+      const staged = await verifyStagedQualifiedRuntime(
+        this.#baseDir,
+        pending.fromVersion,
+        pending.qualified.stagedHandle,
+      );
+      if (JSON.stringify(staged) !== JSON.stringify(pending.qualified))
+        throw new Error("The qualified trial binding changed after handoff.");
+    }
+    // Owned child exit alone does not prove another same-home writer stopped.
+    // Keep this proof outside backup failure recovery: uncertainty must retain
+    // pending state rather than restart a potentially competing old writer.
+    if (pending.qualified !== undefined) await this.#proveQuiescence();
+    if (pending.phase === "accepted") {
+      try {
+        await backupDatabaseOnce(this.#baseDir, pending);
+      } catch {
+        await this.#finishWithoutTrial(pending, "db-backup-failed");
+        return;
+      }
+    } else if (!(await databaseBackupAvailable(this.#baseDir, pending.id))) {
+      fenceNativeStoreAuthorityForBaseDir(this.#baseDir);
+      throw new Error("Cannot start a trial-ready update without its database backup.");
+    }
+    let trialReady = pending;
+    if (pending.phase === "accepted") {
+      trialReady = { ...pending, phase: "trial-ready" };
+      const next: ServiceState = { ...this.#state, update: trialReady };
+      await writeServiceState(this.#statePath, next);
+      this.#state = next;
     }
     try {
-      await this.#startChild(pending.targetVersion, "trial", pending);
+      await this.#startChild(trialReady.targetVersion, "trial", trialReady);
     } catch {
-      await this.#returnToPrevious(pending, "failed", "candidate-start-failed");
+      await this.#returnToPrevious(trialReady, "failed", "candidate-start-failed");
     }
+  }
+
+  async #finishWithoutTrial(pending: PendingServiceUpdate, reason: string): Promise<void> {
+    const outcome = terminalUpdate({ pending, status: "failed", reason });
+    const next: ServiceState = {
+      ...this.#state,
+      activeVersion: pending.fromVersion,
+      update: outcome,
+    };
+    await writeServiceState(this.#statePath, next);
+    this.#state = next;
+    if (pending.qualified === undefined)
+      await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
+    await this.#startChild(next.activeVersion, "active", outcome);
   }
 
   async #startChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
@@ -419,15 +677,31 @@ export class Launcher {
       throw new Error(`Selected t3@${version} runtime is missing or incomplete.`);
     }
     if (this.#stopping) return;
+    if (update?.qualified !== undefined) {
+      const receipt = await readQualifiedRuntimeReceipt(this.#baseDir, version);
+      const expectedSource =
+        version === update.qualified.receipt.version
+          ? update.qualified.receipt.sourceSha
+          : update.qualified.binding.activeSourceSha;
+      if (receipt.sourceSha !== expectedSource)
+        throw new Error(
+          "Selected runtime source no longer matches its native installation transaction.",
+        );
+    }
     const paths = runtimePaths(this.#baseDir, version);
     const context: ServiceLauncherContext = {
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
+      qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
       ...(update === undefined ? {} : { update }),
     };
     const spawnArguments = runtimeSpawnArguments(paths);
     const child = NodeChildProcess.spawn(spawnArguments.command, spawnArguments.args, {
-      env: { ...process.env, [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context) },
+      env: {
+        ...process.env,
+        T3CODE_HOME: this.#baseDir,
+        [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context),
+      },
       stdio: ["inherit", "inherit", "inherit", "ipc"],
     });
     await new Promise<void>((resolve, reject) => {
@@ -497,7 +771,17 @@ export class Launcher {
       await reject("The requested target is not an exact version.");
       return;
     }
-    if (compareExactServiceVersions(message.targetVersion, child.version) <= 0) {
+    if (
+      (message.targetVersion.includes("-preview.") || child.version.includes("-preview.")) &&
+      message.stagedHandle === undefined
+    ) {
+      await reject("Jones previews require a qualified staged handle and explicit Install.");
+      return;
+    }
+    if (
+      message.stagedHandle === undefined &&
+      compareExactServiceVersions(message.targetVersion, child.version) <= 0
+    ) {
       await reject("Remote updates must select a newer server version.");
       return;
     }
@@ -505,17 +789,45 @@ export class Launcher {
       await reject("The requested database path is not absolute.");
       return;
     }
+    try {
+      validateDatabasePathForBaseDir(this.#baseDir, message.dbPath);
+    } catch {
+      await reject("The requested database path is not the configured userdata/statev2.sqlite.");
+      return;
+    }
     if (!(await runtimeExists(this.#baseDir, message.targetVersion))) {
       await reject("The requested target runtime is missing or incomplete.");
       return;
     }
 
+    let qualified: StagedQualifiedRuntime | undefined;
+    if (message.stagedHandle !== undefined) {
+      try {
+        qualified = await verifyStagedQualifiedRuntime(
+          this.#baseDir,
+          child.version,
+          message.stagedHandle,
+        );
+        if (
+          qualified.receipt.version !== message.targetVersion ||
+          qualified.binding.dbPath !== message.dbPath
+        )
+          throw new Error("Install target differs from its staged handle.");
+      } catch {
+        await reject(
+          "Qualified staged runtime, active source or native environment binding is invalid.",
+        );
+        return;
+      }
+    }
     const pending: PendingServiceUpdate = {
       id: NodeCrypto.randomUUID(),
       fromVersion: child.version,
       targetVersion: message.targetVersion,
       dbPath: message.dbPath,
       status: "pending",
+      phase: "accepted",
+      ...(qualified === undefined ? {} : { qualified }),
     };
     const next: ServiceState = { ...this.#state, update: pending };
     await writeServiceState(this.#statePath, next);
@@ -549,6 +861,24 @@ export class Launcher {
       }
       throw new Error("Trial child reported prepared for an unexpected update.");
     }
+    if (pending.qualified !== undefined) {
+      const receipt = await readQualifiedRuntimeReceipt(this.#baseDir, pending.targetVersion);
+      const environment = (
+        await NodeFSP.readFile(NodePath.join(this.#baseDir, "userdata", "environment-id"), "utf8")
+      ).trim();
+      if (
+        JSON.stringify(receipt) !== JSON.stringify(pending.qualified.receipt) ||
+        environment !== pending.qualified.binding.environmentId
+      ) {
+        await this.#returnToPrevious(pending, "rolled-back", "candidate-identity-mismatch", child);
+        return;
+      }
+    }
+    if (pending.qualified !== undefined) {
+      if (child.process.pid === undefined) throw new Error("Trial writer identity is unavailable.");
+      // Only the captured trial may own writable state at the pointer commit.
+      await this.#proveQuiescence([child.process.pid]);
+    }
     this.#clearTimer();
     const committed = terminalUpdate({ pending, status: "committed" });
     const next: ServiceState = {
@@ -559,7 +889,8 @@ export class Launcher {
     await writeServiceState(this.#statePath, next);
     this.#state = next;
     child.role = "active";
-    await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
+    if (pending.qualified === undefined)
+      await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
     await sendMessage(child.process, { type: "committed", updateId: committed.id });
   }
 
@@ -612,6 +943,7 @@ export class Launcher {
       this.#child = null;
       await terminateChild(child.process);
     }
+    if (pending.qualified !== undefined) await this.#proveQuiescence();
     await restoreDatabaseBackup(this.#baseDir, pending);
     const outcome = terminalUpdate({ pending, status, reason });
     const next: ServiceState = {
@@ -621,7 +953,8 @@ export class Launcher {
     };
     await writeServiceState(this.#statePath, next);
     this.#state = next;
-    await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
+    if (pending.qualified === undefined)
+      await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
     await this.#startChild(next.activeVersion, "active", outcome);
   }
 }

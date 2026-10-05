@@ -319,6 +319,7 @@ import {
   getComposerPromptLengthValidationMessage,
   getComposerSubmissionValidationMessage,
   submitComposerDraft,
+  handleComposerEnter,
 } from "./composerSubmission";
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
 import { PierreEntryIcon } from "./PierreEntryIcon";
@@ -1634,6 +1635,7 @@ export interface ChatComposerProps {
 
   // Callbacks
   onCompactContext: () => void;
+  onSteerNextQueuedMessage: () => boolean;
   onSend: (
     e?: { preventDefault: () => void },
     dispatchMode?: ComposerDispatchMode,
@@ -1758,6 +1760,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPageScrollKeyUp,
     onPageScrollRelease,
     onCompactContext,
+    onSteerNextQueuedMessage,
     onSend,
     onResume,
     onInterrupt,
@@ -4368,6 +4371,54 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     if ((key === "ArrowUp" || key === "ArrowDown") && submissionIntent === null) {
       return navigatePromptHistory(key === "ArrowUp" ? "backward" : "forward", event);
+    }
+    if (
+      key === "Enter" &&
+      handleComposerEnter({
+        event,
+        intent: {
+          keybindings,
+          isMobileViewport,
+          isDraftThread: routeKind === "draft",
+          isRunning: phase === "running",
+          sendShortcut: settings.sendShortcut,
+          prompt: promptRef.current,
+        },
+        hasDraftContext:
+          composerImagesRef.current.length > 0 ||
+          composerFilesRef.current.length > 0 ||
+          composerTerminalContextsRef.current.length > 0 ||
+          composerPreviewAnnotations.length > 0 ||
+          composerReviewComments.length > 0 ||
+          composerThreadContexts.length > 0 ||
+          (pendingImageCompressionsRef.current.get(attachmentTargetKey) ?? 0) > 0 ||
+          pendingDraftWork.has(attachmentTargetKey),
+        queueActionDisabled:
+          noProviderAvailable ||
+          isSendDisabled ||
+          isSendBusy ||
+          isConnecting ||
+          isRevertingCheckpoint === true ||
+          projectSelectionRequired ||
+          environmentUnavailable !== null ||
+          isEditingQueuedMessage ||
+          activePendingApproval !== null ||
+          pendingUserInputs.length > 0 ||
+          showPlanFollowUpPrompt,
+        onSteerNextQueuedMessage,
+        onSubmit: (intent) =>
+          submitComposer(
+            undefined,
+            resolveComposerDispatchMode({
+              running: phase === "running",
+              alternateModifier: intent === "alternate",
+              activeTurnDefault: settings.followUpBehavior,
+            }),
+            intent,
+          ),
+      })
+    ) {
+      return true;
     }
     if (submissionIntent) {
       submitComposer(

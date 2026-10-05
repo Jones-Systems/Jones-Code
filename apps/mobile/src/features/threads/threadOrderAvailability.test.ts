@@ -263,3 +263,35 @@ describe("computeThreadMoveAvailability matches the reference planner", () => {
     expect(Object.fromEntries(batch)).toEqual(Object.fromEntries(reference));
   });
 });
+
+it("uses active slots for mixed-pin groups and reserves hidden native active keys", () => {
+  const rows = [
+    makeRow("a", "env", "zz", true),
+    makeRow("b", "env", null, false),
+    makeRow("c", "env", "bb", true),
+  ].map((row, index) => ({ ...row, activeOrderKey: ["aa", "ab", "bb"][index]! }));
+  const hidden = {
+    ...makeRow("hidden", "env", "mm", true),
+    activeOrderKey: pinOrderKeyBetween("aa", "bb"),
+  };
+  const input = {
+    ordered: rows,
+    allThreads: [...rows, hidden],
+    section: "active" as const,
+    reorderableEnvironmentIds: new Set(rows.map((row) => row.environmentId)),
+  };
+  const availability = computeThreadMoveAvailability(input);
+  const planner = createThreadMovePlanner(input);
+  for (const row of rows) {
+    const id = `${row.environmentId}:${row.id}`;
+    expect(availability.get(id)).toEqual({
+      canMoveUp: planner(id, "up") !== null,
+      canMoveDown: planner(id, "down") !== null,
+    });
+  }
+  const assignments = planner("env:a", "down")!;
+  expect(assignments.every((assignment) => assignment.orderKey !== hidden.activeOrderKey)).toBe(
+    true,
+  );
+  expect(rows[0]?.pinOrderKey).toBe("zz");
+});

@@ -4,9 +4,13 @@ import * as Schema from "effect/Schema";
 import {
   EnvironmentId,
   ForwardCompatibleOptional,
+  IsoDateTime,
+  NonNegativeInt,
   ProjectId,
+  RunId,
   ThreadId,
   TrimmedNonEmptyString,
+  TurnId,
 } from "./baseSchemas.ts";
 
 /** Wire version for orchestration snapshots, streams, commands, and RPC payloads. */
@@ -210,6 +214,97 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   capabilities: ExecutionEnvironmentCapabilities,
 });
 export type ExecutionEnvironmentDescriptor = typeof ExecutionEnvironmentDescriptor.Type;
+
+export const NativeInvocationContext = Schema.Struct({
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  effectiveBaseDir: TrimmedNonEmptyString,
+  loopbackOrigin: Schema.NullOr(TrimmedNonEmptyString),
+  serverVersion: TrimmedNonEmptyString,
+  serverGeneration: Schema.Null,
+});
+export type NativeInvocationContext = typeof NativeInvocationContext.Type;
+
+export const OrganizationThreadMetadata = Schema.Struct({
+  threadId: ThreadId,
+  title: Schema.String,
+  projectId: ProjectId,
+  pinnedAt: Schema.NullOr(IsoDateTime),
+  pinOrderKey: Schema.NullOr(Schema.String),
+  activeOrderKey: Schema.NullOr(Schema.String),
+  snoozedUntil: Schema.NullOr(IsoDateTime),
+  settledOverride: Schema.NullOr(Schema.Literals(["active", "settled"])),
+  settledAt: Schema.NullOr(IsoDateTime),
+  archivedAt: Schema.NullOr(IsoDateTime),
+  createdAt: IsoDateTime,
+  projectionUpdatedAt: IsoDateTime,
+  latestUserMessageAt: Schema.NullOr(IsoDateTime),
+  latestTurn: Schema.NullOr(
+    Schema.Struct({
+      turnId: TurnId,
+      state: Schema.Literals(["running", "interrupted", "completed", "error"]),
+      requestedAt: IsoDateTime,
+      startedAt: Schema.NullOr(IsoDateTime),
+      completedAt: Schema.NullOr(IsoDateTime),
+    }),
+  ),
+  session: Schema.NullOr(
+    Schema.Struct({
+      status: Schema.Literals([
+        "idle",
+        "starting",
+        "running",
+        "ready",
+        "interrupted",
+        "stopped",
+        "error",
+      ]),
+      activeTurnId: Schema.NullOr(TurnId),
+      updatedAt: IsoDateTime,
+    }),
+  ),
+  hasPendingApprovals: Schema.Boolean,
+  hasPendingUserInput: Schema.Boolean,
+  hasActionableProposedPlan: Schema.Boolean,
+  backgroundLiveness: Schema.NullOr(Schema.Literals(["working", "monitoring", "unknown"])),
+  // V2 run facts retain their own IDs and timestamps, independently of legacy turn/session facts.
+  v2Activity: Schema.optional(
+    Schema.Struct({
+      latestRunId: Schema.NullOr(RunId),
+      status: Schema.Literals([
+        "idle",
+        "preparing",
+        "queued",
+        "starting",
+        "running",
+        "waiting",
+        "completed",
+        "interrupted",
+        "failed",
+        "cancelled",
+        "rolled_back",
+      ]),
+      latestRunRequestedAt: Schema.NullOr(IsoDateTime),
+      latestRunStartedAt: Schema.NullOr(IsoDateTime),
+      latestRunCompletedAt: Schema.NullOr(IsoDateTime),
+      activeRunId: Schema.NullOr(RunId),
+      activityRunStatus: Schema.NullOr(
+        Schema.Literals(["preparing", "starting", "running", "waiting"]),
+      ),
+      activityRunStartedAt: Schema.NullOr(IsoDateTime),
+    }),
+  ),
+});
+export type OrganizationThreadMetadata = typeof OrganizationThreadMetadata.Type;
+
+export const OrganizationThreadMetadataPage = Schema.Struct({
+  environmentId: EnvironmentId,
+  snapshotSequence: NonNegativeInt,
+  observedAt: IsoDateTime,
+  threads: Schema.Array(OrganizationThreadMetadata),
+  nextOffset: Schema.NullOr(NonNegativeInt),
+});
+export type OrganizationThreadMetadataPage = typeof OrganizationThreadMetadataPage.Type;
 
 export const RepositoryIdentityLocator = Schema.Struct({
   source: Schema.Literal("git-remote"),
