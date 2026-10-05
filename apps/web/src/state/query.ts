@@ -11,6 +11,7 @@ export interface EnvironmentQueryView<A> {
   readonly data: A | null;
   readonly dataUpdatedAt: number | null;
   readonly error: string | null;
+  readonly errorCause?: unknown;
   readonly isPending: boolean;
   readonly isSuccess: boolean;
   readonly refresh: () => void;
@@ -33,6 +34,7 @@ export function useEnvironmentQuery<A, E>(
     data: Option.getOrNull(AsyncResult.value(result)),
     dataUpdatedAt: result._tag === "Success" ? result.timestamp : null,
     error: result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null,
+    errorCause: result._tag === "Failure" ? Cause.squash(result.cause) : null,
     isPending: atom !== null && result.waiting,
     isSuccess: result._tag === "Success",
     refresh,

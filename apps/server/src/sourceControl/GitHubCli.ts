@@ -26,6 +26,7 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitHubGraphQlBudget from "./githubGraphQlBudget.ts";
 import * as SourceControlRateLimit from "./SourceControlRateLimit.ts";
 import {
+  decodeGitHubRestPullRequestPage,
   decodeGitHubPullRequestEntries,
   decodeGitHubPullRequestJson,
   decodeGitHubPullRequestListJson,
@@ -308,8 +309,8 @@ export class GitHubCli extends Context.Service<
 
     /**
      * Pull requests whose head is `headSelector`, in the repository `gh pr list` would read in
-     * `cwd`. Lookups on one repository that arrive together share one GraphQL document; a
-     * checkout whose repository gh could pick another way is asked through `gh pr list`.
+     * `cwd`. Qualified owner:branch heads use REST; bare heads arriving together share a
+     * GraphQL document. A checkout whose repository gh could pick another way uses `gh pr list`.
      */
     readonly listPullRequestsByHead: (input: {
       readonly cwd: string;
@@ -879,20 +880,117 @@ export const make = Effect.gen(function* () {
     RequestResolver.batchN(HEAD_LOOKUPS_PER_DOCUMENT),
   );
 
+  const qualifiedHead = (head: string) => /^[A-Za-z0-9][A-Za-z0-9-]*:[^\s:]+$/u.test(head);
+  const safeRestRepository = (repository: { owner: string; name: string }) =>
+    /^[A-Za-z0-9][A-Za-z0-9-]*$/u.test(repository.owner) &&
+    /^[A-Za-z0-9_.-]+$/u.test(repository.name) &&
+    repository.name !== "." &&
+    repository.name !== "..";
+
+  const listPullRequestsWithRest = (input: {
+    readonly cwd: string;
+    readonly host: string;
+    readonly owner: string;
+    readonly name: string;
+    readonly headSelector: string;
+    readonly state: PullRequestListState;
+    readonly limit: number;
+  }) =>
+    Effect.gen(function* () {
+      const credential = yield* PinnedGitHubCredential;
+      const key = { provider: "github" as const, host: input.host };
+      const read = Effect.gen(function* () {
+        const rows: NormalizedGitHubPullRequestRecord[] = [];
+        const limit = Math.max(1, Math.trunc(input.limit));
+        // Bound provider work even when every closed row is merged or malformed. Fail rather
+        // than return a partial list that callers could mistake for exhaustive discovery.
+        for (let page = 1; page <= 10; page++) {
+          const lease = yield* limits.check(key);
+          const query = new URLSearchParams({
+            head: input.headSelector,
+            state: input.state === "merged" ? "closed" : input.state,
+            sort: "created",
+            direction: "desc",
+            per_page: "100",
+            page: String(page),
+          });
+          const result = yield* executeRaw({
+            cwd: input.cwd,
+            args: [
+              "api",
+              `repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.name)}/pulls?${query}`,
+              "--hostname",
+              input.host,
+              "--method",
+              "GET",
+            ],
+            maxOutputBytes: HEAD_LOOKUP_MAX_OUTPUT_BYTES,
+          }).pipe(
+            Effect.tap(() => limits.recordSuccess({ ...key, lease })),
+            Effect.tapError((error) =>
+              error._tag === "GitHubCliRateLimitError"
+                ? limits.recordRateLimit({ ...key, lease })
+                : Effect.void,
+            ),
+          );
+          const decoded = decodeGitHubRestPullRequestPage(result.stdout);
+          if (Result.isFailure(decoded))
+            return yield* new GitHubChangeRequestListDecodeError({
+              command: "gh",
+              cwd: input.cwd,
+              cause: decoded.failure,
+            });
+          rows.push(
+            ...decoded.success.pullRequests.filter(
+              (row) => input.state === "all" || row.state === input.state,
+            ),
+          );
+          if (rows.length >= limit || decoded.success.rawCount < 100) return rows.slice(0, limit);
+        }
+        return yield* new GitHubCliCommandError({
+          command: "gh",
+          cwd: input.cwd,
+          cause: new Error("Qualified pull request discovery exceeded ten REST pages."),
+        });
+      });
+      return yield* read.pipe(
+        Effect.provideService(
+          SourceControlRateLimit.CredentialScope,
+          credential?.credentialFingerprint ?? (yield* SourceControlRateLimit.CredentialScope),
+        ),
+        Effect.catchTags({
+          SourceControlRateLimitPausedError: (cause) =>
+            Effect.fail(
+              new GitHubCliRateLimitError({
+                command: "gh",
+                cwd: input.cwd,
+                retryAt: cause.retryAt,
+                cause,
+              }),
+            ),
+        }),
+      );
+    });
+
   const listPullRequestsByHead: GitHubCli["Service"]["listPullRequestsByHead"] = Effect.fn(
     "GitHubCli.listPullRequestsByHead",
   )(function* (input) {
     const host = input.rateLimitHost?.toLowerCase();
     const credential = yield* PinnedGitHubCredential;
-    // `owner:branch` selectors and other hosts keep gh's own handling.
+    // Resolve qualified heads only when their owner and repository are unambiguous.
     const repository =
       host === undefined ||
-      input.headSelector.includes(":") ||
+      (input.headSelector.includes(":") && !qualifiedHead(input.headSelector)) ||
       (credential !== null && credential.host !== host)
         ? null
         : yield* resolveBaseRepository(input.cwd, host);
     if (host === undefined || repository === null) {
       return yield* listPullRequestsWithCli(input);
+    }
+    if (qualifiedHead(input.headSelector)) {
+      return yield* safeRestRepository(repository)
+        ? listPullRequestsWithRest({ ...input, ...repository, host })
+        : listPullRequestsWithCli(input);
     }
     return yield* Effect.request(
       new PullRequestsByHeadRead({
@@ -912,44 +1010,65 @@ export const make = Effect.gen(function* () {
     execute,
     listPullRequestsByHead,
     listOpenPullRequests: (input) =>
-      execute({
-        cwd: input.cwd,
-        ...(input.rateLimitHost === undefined ? {} : { rateLimitHost: input.rateLimitHost }),
-        allowReserve: true,
-        args: [
-          "pr",
-          "list",
-          "--head",
-          input.headSelector,
-          "--state",
-          "open",
-          "--limit",
-          String(input.limit ?? 1),
-          "--json",
-          "number,title,url,baseRefName,headRefName,state,isDraft,mergedAt,closedAt,isCrossRepository,headRepository,headRepositoryOwner",
-        ],
-      }).pipe(
-        Effect.map((result) => result.stdout.trim()),
-        Effect.flatMap((raw) =>
-          raw.length === 0
-            ? Effect.succeed([])
-            : Effect.sync(() => decodeGitHubPullRequestListJson(raw)).pipe(
-                Effect.flatMap((decoded) => {
-                  if (!Result.isSuccess(decoded)) {
-                    return Effect.fail(
-                      new GitHubPullRequestListDecodeError({
-                        command: "gh",
-                        cwd: input.cwd,
-                        cause: decoded.failure,
-                      }),
-                    );
-                  }
+      Effect.gen(function* () {
+        const host = input.rateLimitHost?.toLowerCase();
+        const credential = yield* PinnedGitHubCredential;
+        if (
+          qualifiedHead(input.headSelector) &&
+          host !== undefined &&
+          (credential === null || credential.host === host)
+        ) {
+          const repository = yield* resolveBaseRepository(input.cwd, host);
+          if (repository !== null && safeRestRepository(repository)) {
+            // REST has no GraphQL reserve to spend; provider cooldowns still apply.
+            return yield* listPullRequestsWithRest({
+              ...input,
+              ...repository,
+              host,
+              state: "open",
+              limit: input.limit ?? 1,
+            }).pipe(Effect.map((rows) => rows.map(pullRequestSummary)));
+          }
+        }
+        return yield* execute({
+          cwd: input.cwd,
+          ...(input.rateLimitHost === undefined ? {} : { rateLimitHost: input.rateLimitHost }),
+          allowReserve: true,
+          args: [
+            "pr",
+            "list",
+            "--head",
+            input.headSelector,
+            "--state",
+            "open",
+            "--limit",
+            String(input.limit ?? 1),
+            "--json",
+            "number,title,url,baseRefName,headRefName,state,isDraft,mergedAt,closedAt,isCrossRepository,headRepository,headRepositoryOwner",
+          ],
+        }).pipe(
+          Effect.map((result) => result.stdout.trim()),
+          Effect.flatMap((raw) =>
+            raw.length === 0
+              ? Effect.succeed([])
+              : Effect.sync(() => decodeGitHubPullRequestListJson(raw)).pipe(
+                  Effect.flatMap((decoded) => {
+                    if (!Result.isSuccess(decoded)) {
+                      return Effect.fail(
+                        new GitHubPullRequestListDecodeError({
+                          command: "gh",
+                          cwd: input.cwd,
+                          cause: decoded.failure,
+                        }),
+                      );
+                    }
 
-                  return Effect.succeed(decoded.success.map(pullRequestSummary));
-                }),
-              ),
-        ),
-      ),
+                    return Effect.succeed(decoded.success.map(pullRequestSummary));
+                  }),
+                ),
+          ),
+        );
+      }),
     getPullRequest: (input) =>
       execute({
         cwd: input.cwd,

@@ -1397,6 +1397,8 @@ export class PullRequestOperationError extends Schema.TaggedError<PullRequestOpe
   {
     operation: Schema.String,
     detail: TrimmedNonEmptyString,
+    reason: Schema.optional(Schema.Literal("rate-limited")),
+    retryAt: Schema.optional(Schema.Number.check(Schema.isFinite())),
     cause: Schema.optional(Schema.Defect()),
   },
   { httpApiStatus: 502 },

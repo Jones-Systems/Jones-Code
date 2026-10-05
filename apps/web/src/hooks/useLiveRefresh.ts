@@ -40,8 +40,12 @@ export function shouldLiveRefresh(input: {
   readonly visible: boolean;
   readonly now: number;
   readonly lastRefreshedAt: number;
+  readonly minimumIntervalMs?: number;
 }): boolean {
-  return input.visible && input.now - input.lastRefreshedAt >= LIVE_REFRESH_MIN_INTERVAL_MS;
+  return (
+    input.visible &&
+    input.now - input.lastRefreshedAt >= (input.minimumIntervalMs ?? LIVE_REFRESH_MIN_INTERVAL_MS)
+  );
 }
 
 /**
@@ -53,6 +57,7 @@ export function shouldRefreshOnArrival(input: {
   readonly visible: boolean;
   readonly now: number;
   readonly lastRefreshedAt: number | undefined;
+  readonly minimumIntervalMs?: number;
 }): boolean {
   return (
     input.lastRefreshedAt !== undefined &&
@@ -68,6 +73,7 @@ export function shouldRefreshOnInterval(input: {
   readonly visible: boolean;
   readonly now: number;
   readonly lastRefreshedAt: number;
+  readonly minimumIntervalMs?: number;
   readonly lastInteractedAt: number;
 }): boolean {
   return (
@@ -117,9 +123,13 @@ function watchInteraction(): () => void {
 
 export function useLiveRefresh(
   refresh: (() => void) | null,
-  options: { readonly enabled?: boolean; readonly key?: string } = {},
+  options: {
+    readonly enabled?: boolean;
+    readonly key?: string;
+    readonly minimumIntervalMs?: number;
+  } = {},
 ): void {
-  const { enabled = true, key } = options;
+  const { enabled = true, key, minimumIntervalMs = LIVE_REFRESH_MIN_INTERVAL_MS } = options;
   // Held in a ref so a caller can pass a fresh closure every render without re-arming the
   // listeners, which would otherwise refresh on every render that changed anything at all.
   const latest = useRef(refresh);
@@ -145,12 +155,22 @@ export function useLiveRefresh(
         lastRefreshedAtByView.set(viewId, now);
         return;
       }
-      if (shouldRefreshOnArrival({ visible: visible(), now, lastRefreshedAt })) read(now);
+      if (shouldRefreshOnArrival({ visible: visible(), now, lastRefreshedAt, minimumIntervalMs })) {
+        read(now);
+      }
     };
     const onInterval = () => {
       const now = Date.now();
       const lastRefreshedAt = lastRefreshedAtByView.get(viewId) ?? now;
-      if (shouldRefreshOnInterval({ visible: visible(), now, lastRefreshedAt, lastInteractedAt })) {
+      if (
+        shouldRefreshOnInterval({
+          visible: visible(),
+          now,
+          lastRefreshedAt,
+          lastInteractedAt,
+          minimumIntervalMs,
+        })
+      ) {
         read(now);
       }
     };
@@ -179,5 +199,5 @@ export function useLiveRefresh(
       document.removeEventListener("visibilitychange", onVisibilityChange);
       stopWatchingInteraction();
     };
-  }, [enabled, viewId]);
+  }, [enabled, viewId, minimumIntervalMs]);
 }

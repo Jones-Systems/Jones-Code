@@ -1,6 +1,7 @@
 import {
   WS_METHODS,
   PullRequestRef,
+  PullRequestOperationError,
   PullRequestInvalidateInput,
   type EnvironmentId,
 } from "@t3tools/contracts";
@@ -70,6 +71,10 @@ interface RoutedRead {
 }
 const routedReads = new WeakMap<EnvironmentRegistry["Service"], Map<string, RoutedRead>>();
 const isUnregistered = Schema.is(EnvironmentNotRegisteredError);
+const isOperationError = Schema.is(PullRequestOperationError);
+function isRateLimited(error: unknown): error is PullRequestOperationError {
+  return isOperationError(error) && error.reason === "rate-limited";
+}
 const encodeKey = Schema.encodeSync(
   Schema.fromJsonString(Schema.Array(Schema.NullOr(Schema.String))),
 );
@@ -208,7 +213,12 @@ export function createPullRequestRouter() {
       ref.repository.toLowerCase(),
       String(ref.number),
     ]);
-    const finish = (operation: ReturnType<typeof request<T>>) =>
+    type RoutedOperation = Effect.Effect<
+      Effect.Success<ReturnType<typeof request<T>>>,
+      Effect.Error<ReturnType<typeof request<T>>> | PullRequestOperationError,
+      Effect.Services<ReturnType<typeof request<T>>>
+    >;
+    const finish = (operation: RoutedOperation) =>
       operation.pipe(
         Effect.tap(() => {
           if (!writes.has(tag) || used.size === 0) return Effect.void;
@@ -258,9 +268,11 @@ export function createPullRequestRouter() {
 
     const identity = yield* request(WS_METHODS.pullRequestsRouting, ref).pipe(
       Effect.timeout("2 seconds"),
-      Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(null),
-      ),
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+        const error = Cause.squash(cause);
+        return isRateLimited(error) ? Effect.fail(error) : Effect.succeed(null);
+      }),
     );
     // Old servers and unknown accounts retain the existing path.
     if (identity === null || identity.provider !== "github") return yield* finish(source);
@@ -310,7 +322,7 @@ export function createPullRequestRouter() {
             : error,
         ),
       );
-    const visit = (index: number): ReturnType<typeof request<T>> => {
+    const visit = (index: number): RoutedOperation => {
       const id = candidates[index];
       if (id === undefined) return guardedSource;
       return Effect.gen(function* () {
@@ -322,9 +334,11 @@ export function createPullRequestRouter() {
             .run(id, request(WS_METHODS.pullRequestsRoutingIdentity, { host: identity.host }))
             .pipe(
               Effect.timeout("2 seconds"),
-              Effect.catchCause((cause) =>
-                Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(null),
-              ),
+              Effect.catchCause((cause) => {
+                if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+                const error = Cause.squash(cause);
+                return isRateLimited(error) ? Effect.fail(error) : Effect.succeed(null);
+              }),
             );
           if (
             alternate === null ||
@@ -341,7 +355,9 @@ export function createPullRequestRouter() {
         return yield* (reads.has(tag) ? operation.pipe(readTimeout(id)) : operation).pipe(
           Effect.catchIf(
             (error) =>
-              (reads.has(tag) || rejectedBeforeDispatch(error)) && index + 1 < candidates.length,
+              !isRateLimited(error) &&
+              (reads.has(tag) || rejectedBeforeDispatch(error)) &&
+              index + 1 < candidates.length,
             () => visit(index + 1),
           ),
           Effect.map((result) =>
@@ -389,10 +405,16 @@ export function createPullRequestRouter() {
     const routed = routedRequest(tag, strictInput, source);
     return yield* (
       sourceEntry !== undefined && isLocal(sourceEntry)
-        ? source.pipe(Effect.catch(() => routed))
+        ? source.pipe(
+            Effect.catchIf(
+              (error) => !isRateLimited(error),
+              () => routed,
+            ),
+          )
         : routed
     ).pipe(
       Effect.catch((error) =>
+        !isRateLimited(error) &&
         input.allowStale !== false &&
         (tag === WS_METHODS.pullRequestsSummary || tag === WS_METHODS.pullRequestsDetail)
           ? request(tag, input)

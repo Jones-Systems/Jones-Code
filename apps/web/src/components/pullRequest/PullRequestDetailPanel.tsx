@@ -201,6 +201,25 @@ const ACTION_SUCCESS_LABELS: Record<PullRequestAction, string> = {
   "approve-workflows": "Workflows approved",
 };
 
+function pullRequestReadPause(error: unknown): { retryAt: number | null } | null {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("_tag" in error) ||
+    error._tag !== "PullRequestOperationError" ||
+    !("reason" in error) ||
+    error.reason !== "rate-limited"
+  ) {
+    return null;
+  }
+  return {
+    retryAt:
+      "retryAt" in error && typeof error.retryAt === "number" && Number.isFinite(error.retryAt)
+        ? error.retryAt
+        : null,
+  };
+}
+
 /** Said as the thing that did not happen, rather than as the operation that returned an error. */
 const ACTION_FAILURE_LABELS: Record<PullRequestAction, string> = {
   merge: "Could not merge this pull request",
@@ -812,6 +831,8 @@ export function PullRequestDetailPanel({
   });
   const activityPending = activityQuery.isPending && activity === null;
   const activityError = activity === null ? activityQuery.error : null;
+  const readPause =
+    pullRequestReadPause(detailQuery.errorCause) ?? pullRequestReadPause(activityQuery.errorCause);
   const refreshDetail = useCallback(() => {
     detailQuery.refresh();
     activityQuery.refresh();
@@ -841,7 +862,7 @@ export function PullRequestDetailPanel({
     () => {
       detailQuery.refresh();
     },
-    { key: `pull-request:${environmentId}:${pullRequestKey}` },
+    { key: `pull-request:${environmentId}:${pullRequestKey}`, minimumIntervalMs: 60_000 },
   );
   // The button, on the other hand, goes around the server's cache rather than through it: it is
   // the answer for a reader who can see that what they are looking at is behind. The
@@ -2689,6 +2710,34 @@ export function PullRequestDetailPanel({
           </nav>
         ) : null}
       </div>
+
+      {readPause ? (
+        <div role="status" className="shrink-0 border-b px-3 py-2 text-xs text-muted-foreground">
+          Pull request reads are paused by the provider.
+          {readPause.retryAt !== null ? (
+            <>
+              {" Retry after "}
+              <time dateTime={new Date(readPause.retryAt).toISOString()}>
+                {new Date(readPause.retryAt).toLocaleString()}
+              </time>
+              .
+            </>
+          ) : null}
+          {detail ? (
+            resolvedCoreDetail?.observedAt !== undefined ? (
+              <>
+                {" Showing details last observed "}
+                <time dateTime={new Date(resolvedCoreDetail.observedAt).toISOString()}>
+                  {new Date(resolvedCoreDetail.observedAt).toLocaleString()}
+                </time>
+                .
+              </>
+            ) : (
+              " Showing previously loaded details; observation time is unavailable."
+            )
+          ) : null}
+        </div>
+      ) : null}
 
       <div
         className="relative flex min-h-0 flex-1 flex-col overflow-hidden"

@@ -149,3 +149,64 @@ export function decodeGitHubPullRequestJson(
   }
   return Result.fail(result.failure);
 }
+
+const RestRepository = Schema.NullOr(
+  Schema.Struct({
+    full_name: Schema.String,
+    owner: Schema.Struct({ login: Schema.String }),
+  }),
+);
+const decodeRestEntry = Schema.decodeUnknownExit(
+  Schema.Struct({
+    number: PositiveInt,
+    title: TrimmedNonEmptyString,
+    html_url: TrimmedNonEmptyString,
+    state: Schema.Literals(["open", "closed"]),
+    draft: Schema.Boolean,
+    closed_at: Schema.NullOr(Schema.String),
+    merged_at: Schema.NullOr(Schema.String),
+    updated_at: Schema.DateTimeUtcFromString,
+    base: Schema.Struct({ ref: TrimmedNonEmptyString, repo: RestRepository }),
+    head: Schema.Struct({
+      ref: TrimmedNonEmptyString,
+      repo: RestRepository,
+      user: Schema.NullOr(Schema.Struct({ login: Schema.String })),
+    }),
+  }),
+);
+
+/** Raw row count owns pagination: skipped malformed rows must not end a full page. */
+export function decodeGitHubRestPullRequestPage(raw: string) {
+  return Result.map(decodeGitHubPullRequestList(raw), (entries) => ({
+    rawCount: entries.length,
+    pullRequests: entries.flatMap((entry): NormalizedGitHubPullRequestRecord[] => {
+      const decoded = decodeRestEntry(entry);
+      if (!Exit.isSuccess(decoded)) return [];
+      const row = decoded.value;
+      const headRepositoryNameWithOwner = row.head.repo?.full_name;
+      const headRepositoryOwnerLogin = row.head.repo?.owner.login ?? row.head.user?.login;
+      return [
+        {
+          number: row.number,
+          title: row.title,
+          url: row.html_url,
+          baseRefName: row.base.ref,
+          headRefName: row.head.ref,
+          state: normalizeGitHubPullRequestState({ state: row.state, mergedAt: row.merged_at }),
+          ...(row.draft ? { isDraft: true } : {}),
+          closedAt: row.closed_at,
+          mergedAt: row.merged_at,
+          updatedAt: Option.some(row.updated_at),
+          ...(row.head.repo && row.base.repo
+            ? {
+                isCrossRepository:
+                  row.head.repo.full_name.toLowerCase() !== row.base.repo.full_name.toLowerCase(),
+              }
+            : {}),
+          ...(headRepositoryNameWithOwner ? { headRepositoryNameWithOwner } : {}),
+          ...(headRepositoryOwnerLogin ? { headRepositoryOwnerLogin } : {}),
+        },
+      ];
+    }),
+  }));
+}

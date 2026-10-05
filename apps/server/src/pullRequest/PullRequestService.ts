@@ -128,7 +128,7 @@ const REPOSITORY_SEARCH_CHUNK = 100;
  * `invalidate` rather than a flag on the read, so an ordinary read can never opt out.
  */
 const LIST_CACHE_TTL = Duration.seconds(30);
-const DETAIL_CACHE_TTL = Duration.seconds(15);
+const DETAIL_CACHE_TTL = Duration.seconds(60);
 const DIFF_CACHE_TTL = Duration.seconds(60);
 /** A commit is content-addressed, so its own diff cannot change under its key. */
 const COMMIT_DIFF_CACHE_TTL = Duration.minutes(10);
@@ -472,7 +472,19 @@ function toPullRequestError(
   return (error) =>
     isProviderUnusable(error)
       ? toUnavailableError(error)
-      : new PullRequestOperationError({ operation, detail: error.detail, cause: error });
+      : new PullRequestOperationError({
+          operation,
+          detail: error.detail,
+          ...(error.reason === "rate-limited"
+            ? {
+                reason: "rate-limited" as const,
+                ...(error.retryAt !== undefined && Number.isFinite(error.retryAt)
+                  ? { retryAt: error.retryAt }
+                  : {}),
+              }
+            : {}),
+          cause: error,
+        });
 }
 
 function withRateLimitBackoff(

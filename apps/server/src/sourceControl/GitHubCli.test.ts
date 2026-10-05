@@ -6,6 +6,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
@@ -396,6 +397,365 @@ describe("GitHubCli.listPullRequestsByHead", () => {
       );
       assert.strictEqual(ghCalls, 1);
     }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("qualified REST discovery", () => {
+  const encodeRestFixture = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.Unknown)));
+  const row = (number: number, state: "open" | "closed" | "merged" = "open") => ({
+    number,
+    title: `PR ${number}`,
+    html_url: `https://enterprise.test/acme/web/pull/${number}`,
+    state: state === "merged" ? "closed" : state,
+    draft: true,
+    closed_at: state === "open" ? null : "2026-01-02T00:00:00Z",
+    merged_at: state === "merged" ? "2026-01-02T00:00:00Z" : null,
+    updated_at: "2026-01-03T00:00:00Z",
+    base: { ref: "main", repo: { full_name: "acme/web", owner: { login: "acme" } } },
+    head: {
+      ref: "feature/a&b",
+      repo: { full_name: "fork/web", owner: { login: "fork" } },
+      user: { login: "fork" },
+    },
+  });
+  const input = {
+    cwd: "/repo",
+    headSelector: "fork:feature/a&b",
+    state: "all" as const,
+    limit: 100,
+    rateLimitHost: "enterprise.test",
+  };
+  const credential = {
+    host: "enterprise.test",
+    token: Redacted.make("synthetic-token"),
+    credentialFingerprint: "synthetic-account",
+  };
+  const localGit = (command: VcsProcess.VcsProcessInput) =>
+    processOutput(
+      command.args[0] === "remote" ? "origin\tgit@enterprise.test:acme/web.git (fetch)\n" : "",
+    );
+  const services = Layer.merge(GitHubGraphQlBudget.layer, SourceControlRateLimit.layer);
+
+  for (const state of ["open", "closed", "merged", "all"] as const) {
+    it.effect(
+      `uses encoded REST selectors and normalizes ${state} rows without GraphQL reads`,
+      () =>
+        Effect.gen(function* () {
+          const commands: VcsProcess.VcsProcessInput[] = [];
+          const gh = yield* GitHubCli.make.pipe(
+            Effect.provideService(VcsProcess.VcsProcess, {
+              run: (command) =>
+                Effect.sync(() => {
+                  if (command.command === "git") return localGit(command);
+                  commands.push(command);
+                  return processOutput(
+                    encodeRestFixture([row(3, "open"), row(2, "merged"), row(1, "closed")]),
+                  );
+                }),
+            }),
+          );
+          const rows = yield* gh
+            .listPullRequestsByHead({ ...input, state })
+            .pipe(Effect.provideService(GitHubCli.PinnedGitHubCredential, credential));
+          assert.deepStrictEqual(
+            rows.map((pr) => pr.number),
+            state === "all" ? [3, 2, 1] : state === "open" ? [3] : state === "merged" ? [2] : [1],
+          );
+          assert.strictEqual(commands.length, 1);
+          assert.deepStrictEqual(commands[0]!.args, [
+            "api",
+            `repos/acme/web/pulls?head=fork%3Afeature%2Fa%26b&state=${state === "merged" ? "closed" : state}&sort=created&direction=desc&per_page=100&page=1`,
+            "--hostname",
+            "enterprise.test",
+            "--method",
+            "GET",
+          ]);
+          assert.strictEqual(commands[0]!.env?.GH_TOKEN, "synthetic-token");
+          assert.strictEqual(rows[0]!.headRepositoryNameWithOwner, "fork/web");
+          assert.strictEqual(rows[0]!.headRepositoryOwnerLogin, "fork");
+          assert.strictEqual(rows[0]!.isCrossRepository, true);
+          assert.strictEqual(rows[0]!.isDraft, true);
+          assert.strictEqual(
+            DateTime.formatIso(Option.getOrThrow(rows[0]!.updatedAt)),
+            "2026-01-03T00:00:00.000Z",
+          );
+        }).pipe(Effect.provide(services)),
+    );
+  }
+
+  it.effect(
+    "retains deleted-fork owner and same-repository identity and fails malformed responses",
+    () =>
+      Effect.gen(function* () {
+        let calls = 0;
+        const deleted = row(2);
+        const same = row(1);
+        const gh = yield* GitHubCli.make.pipe(
+          Effect.provideService(VcsProcess.VcsProcess, {
+            run: (command) =>
+              Effect.sync(() => {
+                if (command.command === "git") return localGit(command);
+                calls++;
+                return processOutput(
+                  calls === 1
+                    ? encodeRestFixture([
+                        { ...deleted, head: { ...deleted.head, repo: null } },
+                        { ...same, draft: false, head: { ...same.head, repo: same.base.repo } },
+                      ])
+                    : "{}",
+                );
+              }),
+          }),
+        );
+        const rows = yield* gh.listPullRequestsByHead(input);
+        assert.strictEqual(rows[0]!.headRepositoryOwnerLogin, "fork");
+        assert.strictEqual(rows[0]!.headRepositoryNameWithOwner, undefined);
+        assert.strictEqual(rows[0]!.isCrossRepository, undefined);
+        assert.strictEqual(rows[1]!.isCrossRepository, false);
+        assert.strictEqual(rows[1]!.isDraft, undefined);
+        assert.strictEqual(
+          (yield* gh.listPullRequestsByHead(input).pipe(Effect.flip))._tag,
+          "GitHubChangeRequestListDecodeError",
+        );
+        assert.strictEqual(calls, 2);
+      }).pipe(Effect.provide(services)),
+  );
+
+  it.effect("continues full raw pages past malformed and merged rows and keeps the limit", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const gh = yield* GitHubCli.make.pipe(
+        Effect.provideService(VcsProcess.VcsProcess, {
+          run: (command) =>
+            Effect.sync(() => {
+              if (command.command === "git") return localGit(command);
+              calls++;
+              assert.include(command.args[1]!, `page=${calls}`);
+              return processOutput(
+                encodeRestFixture(
+                  calls === 1
+                    ? Array.from({ length: 100 }, (_, n) =>
+                        n % 2 ? row(n + 1, "merged") : { malformed: true },
+                      )
+                    : [row(101, "closed"), row(102, "closed")],
+                ),
+              );
+            }),
+        }),
+      );
+      const rows = yield* gh.listPullRequestsByHead({ ...input, state: "closed", limit: 1 });
+      assert.deepStrictEqual(
+        rows.map((pr) => pr.number),
+        [101],
+      );
+      assert.strictEqual(calls, 2);
+    }).pipe(Effect.provide(services)),
+  );
+
+  it.effect("returns an empty success without fallback and preserves the open default limit", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const gh = yield* GitHubCli.make.pipe(
+        Effect.provideService(VcsProcess.VcsProcess, {
+          run: (command) =>
+            Effect.sync(() => {
+              if (command.command === "git") return localGit(command);
+              calls++;
+              assert.strictEqual(command.args[0], "api");
+              return processOutput(encodeRestFixture(calls === 1 ? [] : [row(1), row(2)]));
+            }),
+        }),
+      );
+      assert.deepStrictEqual(yield* gh.listPullRequestsByHead(input), []);
+      const rows = yield* gh.listOpenPullRequests({
+        cwd: input.cwd,
+        headSelector: input.headSelector,
+        rateLimitHost: input.rateLimitHost,
+      });
+      assert.deepStrictEqual(
+        rows.map((pr) => pr.number),
+        [1],
+      );
+      assert.strictEqual(calls, 2);
+    }).pipe(Effect.provide(services)),
+  );
+
+  for (const failureKind of ["rate-limited", "authentication"] as const) {
+    it.effect(`does not fall back after REST ${failureKind}`, () =>
+      Effect.gen(function* () {
+        let calls = 0;
+        const gh = yield* GitHubCli.make.pipe(
+          Effect.provideService(VcsProcess.VcsProcess, {
+            run: (command) => {
+              if (command.command === "git") return Effect.succeed(localGit(command));
+              calls++;
+              return Effect.fail(
+                new VcsProcessExitError({
+                  operation: "GitHubCli.execute",
+                  command: "gh",
+                  cwd: "/repo",
+                  exitCode: 1,
+                  failureKind,
+                  detail: "synthetic failure",
+                  stderrLength: 0,
+                  stderrTruncated: false,
+                }),
+              );
+            },
+          }),
+        );
+        const error = yield* gh.listPullRequestsByHead(input).pipe(Effect.flip);
+        assert.strictEqual(
+          error._tag,
+          failureKind === "rate-limited"
+            ? "GitHubCliRateLimitError"
+            : "GitHubCliAuthenticationError",
+        );
+        if (failureKind === "rate-limited") {
+          const paused = yield* gh.listOpenPullRequests(input).pipe(Effect.flip);
+          assert.strictEqual(paused._tag, "GitHubCliRateLimitError");
+        }
+        assert.strictEqual(calls, 1);
+      }).pipe(Effect.provide(services)),
+    );
+  }
+
+  it.effect("stops at the page bound without returning a misleading partial success", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const gh = yield* GitHubCli.make.pipe(
+        Effect.provideService(VcsProcess.VcsProcess, {
+          run: (command) =>
+            Effect.sync(() => {
+              if (command.command === "git") return localGit(command);
+              calls++;
+              return processOutput(
+                encodeRestFixture(Array.from({ length: 100 }, () => row(1, "merged"))),
+              );
+            }),
+        }),
+      );
+      const error = yield* gh
+        .listPullRequestsByHead({ ...input, state: "closed", limit: 1 })
+        .pipe(Effect.flip);
+      assert.strictEqual(error._tag, "GitHubCliCommandError");
+      assert.strictEqual(calls, 10);
+    }).pipe(Effect.provide(services)),
+  );
+
+  it.effect("leaves ambiguous repositories to gh and rejects mismatched pinned hosts", () =>
+    Effect.gen(function* () {
+      const commands: ReadonlyArray<string>[] = [];
+      const gh = yield* GitHubCli.make.pipe(
+        Effect.provideService(VcsProcess.VcsProcess, {
+          run: (command) =>
+            Effect.sync(() => {
+              if (command.command === "git")
+                return processOutput(
+                  command.args[0] === "remote"
+                    ? "a\tgit@enterprise.test:acme/web.git (fetch)\nb\tgit@enterprise.test:fork/web.git (fetch)\n"
+                    : "",
+                );
+              commands.push(command.args);
+              return isBudgetReading(command) ? quotaOutput() : processOutput("[]");
+            }),
+        }),
+      );
+      assert.deepStrictEqual(yield* gh.listPullRequestsByHead(input), []);
+      assert.strictEqual(commands.length, 2);
+      assert.deepStrictEqual(commands[1]!.slice(0, 4), [
+        "pr",
+        "list",
+        "--head",
+        input.headSelector,
+      ]);
+      const error = yield* gh.listPullRequestsByHead(input).pipe(
+        Effect.provideService(GitHubCli.PinnedGitHubCredential, {
+          ...credential,
+          host: "other.test",
+        }),
+        Effect.flip,
+      );
+      assert.strictEqual(error._tag, "GitHubCliCommandError");
+      assert.strictEqual(commands.length, 2);
+    }).pipe(Effect.provide(services)),
+  );
+
+  it.effect(
+    "preserves the open-list GraphQL reserve when qualified REST resolution is ambiguous",
+    () =>
+      Effect.gen(function* () {
+        const commands: ReadonlyArray<string>[] = [];
+        const gh = yield* GitHubCli.make.pipe(
+          Effect.provideService(VcsProcess.VcsProcess, {
+            run: (command) =>
+              Effect.sync(() => {
+                if (command.command === "git")
+                  return processOutput(
+                    command.args[0] === "remote"
+                      ? "a\tgit@enterprise.test:acme/web.git (fetch)\nb\tgit@enterprise.test:fork/web.git (fetch)\n"
+                      : "",
+                  );
+                commands.push(command.args);
+                return isBudgetReading(command) ? quotaOutput(1) : processOutput("[]");
+              }),
+          }),
+        );
+        assert.deepStrictEqual(yield* gh.listOpenPullRequests(input), []);
+        assert.strictEqual(commands.length, 2);
+        assert.deepStrictEqual(commands[1]!.slice(0, 4), [
+          "pr",
+          "list",
+          "--head",
+          input.headSelector,
+        ]);
+      }).pipe(Effect.provide(services)),
+  );
+
+  it.effect(
+    "honors credential pauses without using the GraphQL budget or bypassing the pause",
+    () =>
+      Effect.gen(function* () {
+        let calls = 0;
+        const limits = yield* SourceControlRateLimit.SourceControlRateLimit;
+        yield* limits
+          .recordRateLimit({ provider: "github", host: input.rateLimitHost, lease: 0 })
+          .pipe(
+            Effect.provideService(
+              SourceControlRateLimit.CredentialScope,
+              credential.credentialFingerprint,
+            ),
+          );
+        const gh = yield* GitHubCli.make.pipe(
+          Effect.provideService(VcsProcess.VcsProcess, {
+            run: (command) =>
+              Effect.sync(() => {
+                if (command.command === "git") return localGit(command);
+                calls++;
+                return processOutput("[]");
+              }),
+          }),
+        );
+        const read = gh
+          .listPullRequestsByHead(input)
+          .pipe(Effect.provideService(GitHubCli.PinnedGitHubCredential, credential));
+        const paused = yield* read.pipe(
+          Effect.provideService(GitHubCli.AllowGitHubReserve, true),
+          Effect.flip,
+        );
+        assert.strictEqual(paused._tag, "GitHubCliRateLimitError");
+        assert.strictEqual(calls, 0);
+        yield* gh.listPullRequestsByHead(input).pipe(
+          Effect.provideService(GitHubCli.PinnedGitHubCredential, {
+            ...credential,
+            credentialFingerprint: "other-account",
+          }),
+        );
+        assert.strictEqual(calls, 1);
+        yield* TestClock.adjust("30 seconds");
+        yield* read;
+        assert.strictEqual(calls, 2);
+      }).pipe(Effect.provide(services)),
   );
 });
 

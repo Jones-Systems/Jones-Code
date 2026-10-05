@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   ProjectId,
+  PullRequestOperationError,
   ThreadId,
   type ScopedThreadRef,
   type PullRequestDetailView,
@@ -12,10 +13,11 @@ import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
 
-const { newThread, prepareThread, refresh, Wrapper, Trigger } = vi.hoisted(() => ({
+const { newThread, prepareThread, refresh, invalidate, Wrapper, Trigger } = vi.hoisted(() => ({
   newThread: vi.fn(),
   prepareThread: vi.fn(),
   refresh: vi.fn(),
+  invalidate: vi.fn(),
   Wrapper: ({ children }: { children?: ReactNode }) => children,
   Trigger: ({ children, render }: { children?: ReactNode; render?: ReactElement }) => (
     <>
@@ -40,7 +42,7 @@ vi.mock("~/hooks/useHandleNewThread", () => ({ useNewThreadHandler: () => newThr
 vi.mock("~/lib/sourceControlActions", () => ({
   usePreparePullRequestThreadAction: () => ({ run: prepareThread }),
 }));
-vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
+vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => invalidate }));
 vi.mock("~/state/pullRequests", async (importOriginal) => ({
   ...(await importOriginal<typeof import("~/state/pullRequests")>()),
   pullRequestEnvironment: { detail: () => "detail", activity: () => "activity" },
@@ -51,9 +53,10 @@ vi.mock("~/state/vcs", () => ({ vcsEnvironment: { listRefs: () => null } }));
 vi.mock("~/state/query", () => ({
   useEnvironmentQuery: (query: string) => ({
     data: query === "detail" ? detail : null,
+    errorCause: query === "detail" ? detailError : null,
     isPending: false,
     isSuccess: true,
-    error: null,
+    error: query === "detail" ? (detailError?.message ?? null) : null,
     refresh,
   }),
 }));
@@ -144,7 +147,10 @@ vi.mock("./PullRequestCodeTab", () => ({
 import { PullRequestDetailPanel } from "./PullRequestDetailPanel";
 import { pullRequestPanelContext } from "./pullRequestDetail.logic";
 
+let detailError: PullRequestOperationError | null = null;
+
 const detail: PullRequestDetailView = {
+  observedAt: Date.parse("2026-09-01T12:00:00Z"),
   provider: "github",
   projectId: ProjectId.make("project"),
   projectTitle: "Project",
@@ -208,6 +214,9 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   useComposerDraftStore.setState({ draftsByThreadKey: {} });
+  detailError = null;
+  refresh.mockReset();
+  invalidate.mockReset().mockResolvedValue(undefined);
   newThread
     .mockReset()
     .mockResolvedValue({ draftId: newDraftId, threadId: ThreadId.make("new-thread") });
@@ -334,5 +343,74 @@ describe.each([
     } else {
       expect(newThread).toHaveBeenCalled();
     }
+  });
+});
+
+describe("held pull request during a provider pause", () => {
+  async function renderPaused(reason?: "rate-limited") {
+    detailError = new PullRequestOperationError({
+      operation: "detail",
+      detail: "Provider reads are paused.",
+      ...(reason ? { reason, retryAt: Date.parse("2026-09-01T13:00:00Z") } : {}),
+    });
+    await act(async () => {
+      renderer = create(
+        <PullRequestDetailPanel
+          environmentId={threadRef.environmentId}
+          reference={detail}
+          shortcutsEnabled={false}
+          getShortcutContext={() => ({
+            terminalFocus: false,
+            terminalOpen: false,
+            previewFocus: false,
+            previewOpen: false,
+            isWeb: true,
+            isDesktop: false,
+          })}
+        />,
+      );
+    });
+  }
+
+  it("shows a typed pause beside held detail with its original observation time", async () => {
+    await renderPaused("rate-limited");
+    const status = renderer.root.findByProps({ role: "status" });
+    expect(
+      status.findAll((node) =>
+        node.children.some((child) => typeof child === "string" && child.includes("paused")),
+      ).length,
+    ).toBeGreaterThan(0);
+    const times = status.findAllByType("time");
+    expect(times.map((time) => time.props.dateTime)).toEqual([
+      "2026-09-01T13:00:00.000Z",
+      "2026-09-01T12:00:00.000Z",
+    ]);
+    expect(
+      renderer.root.findAllByType("h1").some((node) => node.children.includes(detail.title)),
+    ).toBe(true);
+  });
+
+  it("does not infer a typed pause from a legacy error message", async () => {
+    await renderPaused();
+    expect(renderer.root.findAllByProps({ role: "status" })).toHaveLength(0);
+  });
+
+  it("keeps manual refresh immediate and invalidates before refreshing", async () => {
+    await renderPaused("rate-limited");
+    refresh.mockClear();
+    await click("Refresh");
+    expect(invalidate).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalled();
+    expect(invalidate.mock.invocationCallOrder[0]).toBeLessThan(
+      refresh.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("keeps title editing available during a read pause", async () => {
+    await renderPaused("rate-limited");
+    await click("Edit title");
+    const input = renderer.root.findByProps({ "aria-label": "Pull request title" });
+    expect(input.props.value).toBe(detail.title);
+    expect(input.props.disabled).toBe(false);
   });
 });
