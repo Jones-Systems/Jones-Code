@@ -3721,6 +3721,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                   detail: `OpenCode session ${sessionId} already has an active turn`,
                 });
               }
+              // Orchestration can rebind a native fork to its own thread ID.
+              // Adopt it before setup can emit updates, retaining native session state.
+              state.providerThread = { ...state.providerThread, id: turnInput.providerThread.id };
               // OpenCode already ran this turn on its own; it prompts nothing.
               if (isContinuation(turnInput)) return yield* runWake(state, turnInput);
               // After a timed-out Stop the server says whether that run is gone. A
