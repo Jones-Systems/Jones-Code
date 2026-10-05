@@ -1610,7 +1610,9 @@ it.effect("never transfers a pending runtime receipt to a replacement connection
         (request) => Deferred.succeed(oldRequestReady, request),
       ).pipe(Effect.forkScoped);
       const pending = yield* broker
-        .invoke({ scope, operation: "status", input: {} })
+        .invoke<{
+          selectedClient: { runtimeIdentity: typeof oldIdentity };
+        }>({ scope, operation: "status", input: {} })
         .pipe(Effect.flip, Effect.forkScoped);
       const oldRequest = yield* Deferred.await(oldRequestReady);
       const newRequestReady = yield* Deferred.make<RoutedRequest>();
