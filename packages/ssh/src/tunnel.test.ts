@@ -804,7 +804,10 @@ describe("archive runner script", () => {
         }
 
         for (const state of ["missing-version", "wrong-version", "not-executable"]) {
-          yield* fs.writeFileString(`${runtime}/.install-source`, `${releaseBaseUrl}/v${archiveVersion}\n`);
+          yield* fs.writeFileString(
+            `${runtime}/.install-source`,
+            `${releaseBaseUrl}/v${archiveVersion}\n`,
+          );
           yield* fs.remove(`${runtime}/.install-complete`, { force: true });
           if (state !== "missing-version") {
             yield* fs.writeFileString(
@@ -816,7 +819,10 @@ describe("archive runner script", () => {
           const result = yield* runRunner(home, runner);
           assert.notEqual(result.exitCode, 0);
           assert.include(result.stderr, "release source");
-          assert.equal(yield* fs.readFileString(`${runtime}/t3`), "#!/bin/sh\necho upstream-cache\n");
+          assert.equal(
+            yield* fs.readFileString(`${runtime}/t3`),
+            "#!/bin/sh\necho upstream-cache\n",
+          );
           assert.equal(
             yield* fs.readFileString(`${runtime}/.install-source`),
             `${releaseBaseUrl}/v${archiveVersion}\n`,
@@ -842,7 +848,10 @@ describe("archive runner script", () => {
         yield* fs.remove(`${root}/mirror`, { recursive: true });
         yield* fs.writeFileString(
           runner,
-          SshTunnel.buildRemoteT3RunnerScript({ archiveVersion, releaseBaseUrl: `${releaseBaseUrl}/` }),
+          SshTunnel.buildRemoteT3RunnerScript({
+            archiveVersion,
+            releaseBaseUrl: `${releaseBaseUrl}/`,
+          }),
         );
         const cached = yield* runRunner(home, runner);
         assert.equal(cached.exitCode, 0, cached.stderr);
