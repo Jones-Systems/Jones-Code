@@ -181,6 +181,11 @@ export function runOrchestratorV2ProviderReplayScenario<
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
     >;
+    readonly checkoutFixture?: NonNullable<
+      NonNullable<
+        Parameters<typeof makeOrchestratorV2ReplayLayerWithRegistry>[2]
+      >["checkoutFixture"]
+    >;
     readonly runEffectWorker?: boolean;
     // Start continuation runs for provider wake turns, as the live runtime does.
     // Off by default: most fixtures record no wake turn.
@@ -225,6 +230,11 @@ export function makeOrchestratorV2ProviderReplayLayer<
     readonly databaseLayer?: Layer.Layer<
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: NonNullable<
+      NonNullable<
+        Parameters<typeof makeOrchestratorV2ReplayLayerWithRegistry>[2]
+      >["checkoutFixture"]
     >;
     readonly runEffectWorker?: boolean;
     // Start continuation runs for provider wake turns, as the live runtime does.
