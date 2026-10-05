@@ -211,7 +211,8 @@ export async function runtimeExternalDependencies(source, app, dependencies) {
   const select = desktop
     ? policy.selectDesktopRuntimeExternalDependencies
     : policy.selectCliRuntimeExternalDependencies;
-  if (typeof select !== "function") throw new Error("Cannot resolve canonical runtime external policy");
+  if (typeof select !== "function")
+    throw new Error("Cannot resolve canonical runtime external policy");
   return Object.keys(select(dependencies));
 }
 export async function dependencyClosure(source) {

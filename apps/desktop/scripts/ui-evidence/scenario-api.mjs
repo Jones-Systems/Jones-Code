@@ -47,26 +47,55 @@ export async function requestLocalBackend(
   { endpoint, method, payload },
   { desktopBridge, fetch, WebSocket, setTimeout, clearTimeout } = globalThis,
 ) {
-  if (method !== "snapshot" &&
-      (method !== "dispatch" || !["project.create", "thread.create", "thread.metadata.update"].includes(payload?.type)))
+  if (
+    method !== "snapshot" &&
+    (method !== "dispatch" ||
+      !["project.create", "thread.create", "thread.metadata.update"].includes(payload?.type))
+  )
     throw new Error("Scenario fixture dispatch is limited to project/thread metadata");
-  for (const [key, protocol] of [["httpBaseUrl", "http:"], ["wsBaseUrl", "ws:"]]) {
+  for (const [key, protocol] of [
+    ["httpBaseUrl", "http:"],
+    ["wsBaseUrl", "ws:"],
+  ]) {
     const url = new URL(endpoint[key]);
-    if (url.protocol !== protocol || !["127.0.0.1", "[::1]", "localhost"].includes(url.hostname) ||
-        url.username || url.password || url.search || url.hash)
+    if (
+      url.protocol !== protocol ||
+      !["127.0.0.1", "[::1]", "localhost"].includes(url.hostname) ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    )
       throw new Error("Backend endpoint must be private loopback without credentials");
   }
   if (method === "dispatch") {
     const fields = {
       "project.create": ["type", "commandId", "projectId", "title", "workspaceRoot"],
-      "thread.create": ["type", "commandId", "createdBy", "creationSource", "threadId", "projectId", "title", "modelSelection", "runtimeMode", "interactionMode", "branch", "worktreePath"],
+      "thread.create": [
+        "type",
+        "commandId",
+        "createdBy",
+        "creationSource",
+        "threadId",
+        "projectId",
+        "title",
+        "modelSelection",
+        "runtimeMode",
+        "interactionMode",
+        "branch",
+        "worktreePath",
+      ],
       "thread.metadata.update": ["type", "commandId", "threadId", "title"],
     }[payload.type];
     if (Object.keys(payload).some((key) => !fields.includes(key)))
       throw new Error("Fixture command contains fields outside metadata scope");
-    if (payload.type === "thread.create" &&
-        (payload.createdBy !== "user" || payload.creationSource !== "web" ||
-         payload.branch !== null || payload.worktreePath !== null))
+    if (
+      payload.type === "thread.create" &&
+      (payload.createdBy !== "user" ||
+        payload.creationSource !== "web" ||
+        payload.branch !== null ||
+        payload.worktreePath !== null)
+    )
       throw new Error("Fixture thread must use the private project without a worktree");
   }
   const token = await desktopBridge.getLocalEnvironmentBearerToken();
@@ -99,7 +128,8 @@ export async function requestLocalBackend(
   });
   if (!response.ok) throw new Error(`WebSocket authorization HTTP status ${response.status}`);
   const { ticket } = await response.json();
-  if (typeof ticket !== "string" || !ticket) throw new Error("WebSocket authorization missing ticket");
+  if (typeof ticket !== "string" || !ticket)
+    throw new Error("WebSocket authorization missing ticket");
   const url = new URL(endpoint.wsBaseUrl);
   url.searchParams.set("wsTicket", ticket);
   url.searchParams.set("orchestrationProtocol", "2");
@@ -118,20 +148,33 @@ export async function requestLocalBackend(
     socket.addEventListener("open", () => {
       if (settled) return;
       try {
-        socket.send(JSON.stringify({
-          _tag: "Request", id: "0", tag: "orchestration.dispatchCommand", payload, headers: [],
-        }));
-      } catch { finish(new Error("Fixture RPC send failed")); }
+        socket.send(
+          JSON.stringify({
+            _tag: "Request",
+            id: "0",
+            tag: "orchestration.dispatchCommand",
+            payload,
+            headers: [],
+          }),
+        );
+      } catch {
+        finish(new Error("Fixture RPC send failed"));
+      }
     });
     socket.addEventListener("message", ({ data }) => {
       if (settled) return;
       try {
         const message = JSON.parse(data);
-        if (message._tag === "Ping") { socket.send(JSON.stringify({ _tag: "Pong" })); return; }
+        if (message._tag === "Ping") {
+          socket.send(JSON.stringify({ _tag: "Pong" }));
+          return;
+        }
         if (message._tag !== "Exit" || String(message.requestId) !== "0") return;
         if (message.exit?._tag === "Success") finish(null, message.exit.value);
         else finish(new Error("Fixture RPC rejected metadata command"));
-      } catch { finish(new Error("Invalid fixture RPC response")); }
+      } catch {
+        finish(new Error("Invalid fixture RPC response"));
+      }
     });
     socket.addEventListener("error", () => finish(new Error("Fixture RPC connection failed")));
     socket.addEventListener("close", () => finish(new Error("Fixture RPC closed before result")));
