@@ -910,65 +910,75 @@ export function UsagePage() {
                             );
                             return (
                               <Fragment key={key}>
-                              <tr
-                                className="relative border-b border-border/50 text-right whitespace-nowrap text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50"
-                              >
-                                <td className="py-2.5 pr-3 text-left text-xs">{index + 1}</td>
-                                <td className="py-2.5 text-left whitespace-normal">
-                                  {/* The overlay opens the model except at the token-details toggle.
+                                <tr className="relative border-b border-border/50 text-right whitespace-nowrap text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50">
+                                  <td className="py-2.5 pr-3 text-left text-xs">{index + 1}</td>
+                                  <td className="py-2.5 text-left whitespace-normal">
+                                    {/* The overlay opens the model except at the token-details toggle.
                                       Focus shows as the row's hover fill, not a ring. */}
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedModelKey(key)}
-                                    className="flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0"
-                                  >
-                                    <ProviderMark provider={model.provider} className="size-3.5" />
-                                    {model.model}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    aria-label={`${model.model} token details`}
-                                    aria-expanded={expanded}
-                                    aria-controls={expanded ? detailId : undefined}
-                                    onClick={() => setExpandedModelKey(expanded ? null : key)}
-                                    className="relative z-10 ml-2 rounded-sm text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                  >
-                                    <ChevronDownIcon className={cn("size-3", expanded && "rotate-180")} aria-hidden />
-                                  </button>
-                                  <div aria-hidden className="mt-1.5 h-0.5 max-w-48">
-                                    <div
-                                      className="h-full rounded-full"
-                                      style={{
-                                        // A short minimum keeps tiny shares a dash, not a dot.
-                                        width:
-                                          value > 0 && breakdownPeak > 0
-                                            ? `max(0.5rem, ${(value / breakdownPeak) * 100}%)`
-                                            : 0,
-                                        backgroundColor:
-                                          PROVIDER_PRESENTATION[model.provider].color,
-                                      }}
-                                    />
-                                  </div>
-                                </td>
-                                <td className="py-2.5 pl-6 text-foreground">
-                                  {isModelCostUnknown(model) ? (
-                                    <span className="text-muted-foreground">Unpriced</span>
-                                  ) : (
-                                    formatUsd(model.costUsd)
-                                  )}
-                                </td>
-                                <td className="hidden py-2.5 pl-6 sm:table-cell">
-                                  {share === null ? "" : formatPercent(share)}
-                                </td>
-                                <td className="py-2.5 pl-6">{formatTokens(model.totalTokens)}</td>
-                              </tr>
-                              {expanded ? (
-                                <tr><td colSpan={5} className="border-b border-border/50 py-4">
-                                  <div id={detailId} role="region" aria-label={`${model.model} token details`}>
-                                    <UsageTokenDetails detail={model} />
-                                  </div>
-                                </td></tr>
-                              ) : null}
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedModelKey(key)}
+                                      className="flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0"
+                                    >
+                                      <ProviderMark
+                                        provider={model.provider}
+                                        className="size-3.5"
+                                      />
+                                      {model.model}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-label={`${model.model} token details`}
+                                      aria-expanded={expanded}
+                                      aria-controls={expanded ? detailId : undefined}
+                                      onClick={() => setExpandedModelKey(expanded ? null : key)}
+                                      className="relative z-10 ml-2 rounded-sm text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                    >
+                                      <ChevronDownIcon
+                                        className={cn("size-3", expanded && "rotate-180")}
+                                        aria-hidden
+                                      />
+                                    </button>
+                                    <div aria-hidden className="mt-1.5 h-0.5 max-w-48">
+                                      <div
+                                        className="h-full rounded-full"
+                                        style={{
+                                          // A short minimum keeps tiny shares a dash, not a dot.
+                                          width:
+                                            value > 0 && breakdownPeak > 0
+                                              ? `max(0.5rem, ${(value / breakdownPeak) * 100}%)`
+                                              : 0,
+                                          backgroundColor:
+                                            PROVIDER_PRESENTATION[model.provider].color,
+                                        }}
+                                      />
+                                    </div>
+                                  </td>
+                                  <td className="py-2.5 pl-6 text-foreground">
+                                    {isModelCostUnknown(model) ? (
+                                      <span className="text-muted-foreground">Unpriced</span>
+                                    ) : (
+                                      formatUsd(model.costUsd)
+                                    )}
+                                  </td>
+                                  <td className="hidden py-2.5 pl-6 sm:table-cell">
+                                    {share === null ? "" : formatPercent(share)}
+                                  </td>
+                                  <td className="py-2.5 pl-6">{formatTokens(model.totalTokens)}</td>
+                                </tr>
+                                {expanded ? (
+                                  <tr>
+                                    <td colSpan={5} className="border-b border-border/50 py-4">
+                                      <div
+                                        id={detailId}
+                                        role="region"
+                                        aria-label={`${model.model} token details`}
+                                      >
+                                        <UsageTokenDetails detail={model} />
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ) : null}
                               </Fragment>
                             );
                           })
@@ -1053,7 +1063,7 @@ export function UsagePage() {
           chartWindow={{
             days,
             hours,
-            resolution: isPast24Hours ? "hour" : "day",
+            resolution: isHourly ? "hour" : "day",
             timeZone: window.timeZone,
             referenceTime: window.untilTime,
           }}

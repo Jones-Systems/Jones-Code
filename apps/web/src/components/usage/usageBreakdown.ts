@@ -118,7 +118,8 @@ export function selectUsageBreakdown(merged: MergedUsage, provider: UsageProvide
       .map((model) => ({
         ...model,
         costShare: providerTotals.costUsd === 0 ? 0 : model.costUsd / providerTotals.costUsd,
-        tokenShare: providerTotals.totalTokens === 0 ? 0 : model.totalTokens / providerTotals.totalTokens,
+        tokenShare:
+          providerTotals.totalTokens === 0 ? 0 : model.totalTokens / providerTotals.totalTokens,
       })),
     daily: providerPeriods(merged.daily, providerTotals.provider),
     hourly: providerPeriods(merged.hourly, providerTotals.provider),

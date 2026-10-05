@@ -20,7 +20,9 @@ import {
 
 describe("RPC authorization scopes", () => {
   it("reads saved accounting under orchestration read permission", () => {
-    expect(requiredScopeForRpcMethod(WS_METHODS.serverReadTokenAccounting)).toBe(AuthOrchestrationReadScope);
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverReadTokenAccounting)).toBe(
+      AuthOrchestrationReadScope,
+    );
   });
 
   it("declares exactly one scope for every RPC in the server group", () => {

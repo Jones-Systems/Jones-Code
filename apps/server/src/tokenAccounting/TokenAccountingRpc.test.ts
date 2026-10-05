@@ -28,7 +28,9 @@ describe("saved accounting RPC", () => {
       const service = yield* TokenAccountingService.TokenAccountingService;
       expect(yield* service.isAvailable).toBe(false);
       const client = yield* RpcTest.makeClient(group).pipe(
-        Effect.provide(Layer.mergeAll(handler, rpcScopeAuthorizationLayer([AuthOrchestrationReadScope]))),
+        Effect.provide(
+          Layer.mergeAll(handler, rpcScopeAuthorizationLayer([AuthOrchestrationReadScope])),
+        ),
       );
       expect(yield* client[method]({})).toMatchObject({
         state: "unavailable",
@@ -59,7 +61,11 @@ describe("saved accounting RPC", () => {
         }),
       );
       const client = yield* RpcTest.makeClient(group).pipe(
-        Effect.provide(Layer.mergeAll(handler, rpcScopeAuthorizationLayer([AuthAccessWriteScope])).pipe(Layer.provide(service))),
+        Effect.provide(
+          Layer.mergeAll(handler, rpcScopeAuthorizationLayer([AuthAccessWriteScope])).pipe(
+            Layer.provide(service),
+          ),
+        ),
       );
       expect(yield* client[method]({}).pipe(Effect.flip)).toMatchObject({
         _tag: "EnvironmentAuthorizationError",

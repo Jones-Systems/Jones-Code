@@ -2,6 +2,8 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import {
+  OrchestratorMcpThreadSettleInput,
+  OrchestratorMcpThreadSettleResult,
   OrchestratorMcpCreateThreadsInput,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
@@ -162,5 +164,32 @@ describe("orchestrator MCP contracts", () => {
         reason: "Loop converged.",
       }).reason,
     ).toBe("Loop converged.");
+  });
+});
+
+describe("self settlement contracts", () => {
+  it("requires a stable request key and has no other-thread selector", () => {
+    const decode = Schema.decodeUnknownSync(OrchestratorMcpThreadSettleInput, {
+      onExcessProperty: "error",
+    });
+    expect(decode({ clientRequestId: "finish-1" })).toEqual({ clientRequestId: "finish-1" });
+    for (const input of [
+      {},
+      { clientRequestId: "" },
+      { clientRequestId: "finish-1", threadId: "other" },
+    ]) {
+      expect(() => decode(input)).toThrow();
+    }
+  });
+  it("reports accepted intent bound to the original run rather than completed settlement", () => {
+    const decode = Schema.decodeUnknownSync(OrchestratorMcpThreadSettleResult);
+    const receipt = {
+      status: "accepted",
+      threadId: "thread-1",
+      runId: "run-1",
+      clientRequestId: "finish-1",
+    };
+    expect(decode(receipt)).toEqual(receipt);
+    expect(() => decode({ ...receipt, status: "settled" })).toThrow();
   });
 });
