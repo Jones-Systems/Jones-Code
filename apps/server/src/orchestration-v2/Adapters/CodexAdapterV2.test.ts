@@ -79,6 +79,7 @@ import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
 import {
   makeReplayServerConfig,
   makeCodexProviderAdapterRegistryReplayLayer,
+  makeCodexReplayClientFactory,
   withCodexReplayChildMetadata,
 } from "./CodexAdapterV2.testkit.ts";
 
@@ -1718,6 +1719,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: (threadId: string) => Effect.Effect<unknown>,
     options: Pick<CodexAdapterV2.CodexAdapterV2Options, "resolveRuntime"> & {
+      readonly replayClientFactory?: CodexAdapterV2.CodexAppServerClientFactoryShape;
       readonly modelSelection?: ModelSelection;
       readonly replacementTranscripts?: ReadonlyArray<CodexReplay.CodexAppServerReplayTranscript>;
       readonly onOpen?: (
@@ -1743,61 +1745,64 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       );
       const continuationRequests: Array<ProviderContinuationRequest> = [];
       let openCount = 0;
-      const clientFactory: CodexAdapterV2.CodexAppServerClientFactoryShape = {
-        open: (openInput) =>
-          Effect.suspend(() => {
-            const ordinal = openCount++;
-            const actualTranscript =
-              ordinal === 0 ? transcript : options.replacementTranscripts?.[ordinal - 1];
-            if (actualTranscript === undefined)
-              return Effect.die("Unexpected synthetic Codex client replacement");
-            return (options.onOpen?.(openInput, ordinal) ?? Effect.void).pipe(
-              Effect.andThen(Effect.addFinalizer(() => options.onClose?.(ordinal) ?? Effect.void)),
-              Effect.andThen(Layer.build(CodexReplay.layerReplay(actualTranscript))),
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterOpenSessionError({
-                    driver: CodexAdapterV2.CODEX_DRIVER_KIND,
-                    providerSessionId: openInput.providerSessionId,
-                    cause,
-                  }),
-              ),
-              Effect.flatMap((context) =>
-                Effect.service(CodexClient.CodexAppServerClient).pipe(
-                  Effect.map((client) =>
-                    withCodexReplayChildMetadata(client, actualTranscript, readChildMetadata),
-                  ),
-                  Effect.map(
-                    (client) =>
-                      ({
-                        ...client,
-                        handleServerNotification: (method, handler) => {
-                          options.onNotification?.(
-                            method,
-                            (payload) => Reflect.apply(handler, undefined, [payload]),
-                            ordinal,
-                          );
-                          return client.handleServerNotification(method, handler);
-                        },
-                        raw: {
-                          ...client.raw,
-                          request: (method, params) =>
-                            method === "thread/goal/get" || method === "thread/goal/set"
-                              ? goalRequest(method, params)
-                              : client.raw.request(method, params),
-                        },
-                        request: (method, params) =>
-                          onRequest(method, params).pipe(
-                            Effect.andThen(client.request(method, params)),
-                          ),
-                      }) satisfies CodexClient.CodexAppServerClient["Service"],
-                  ),
-                  Effect.provide(context),
+      const clientFactory: CodexAdapterV2.CodexAppServerClientFactoryShape =
+        options.replayClientFactory ?? {
+          open: (openInput) =>
+            Effect.suspend(() => {
+              const ordinal = openCount++;
+              const actualTranscript =
+                ordinal === 0 ? transcript : options.replacementTranscripts?.[ordinal - 1];
+              if (actualTranscript === undefined)
+                return Effect.die("Unexpected synthetic Codex client replacement");
+              return (options.onOpen?.(openInput, ordinal) ?? Effect.void).pipe(
+                Effect.andThen(
+                  Effect.addFinalizer(() => options.onClose?.(ordinal) ?? Effect.void),
                 ),
-              ),
-            );
-          }),
-      };
+                Effect.andThen(Layer.build(CodexReplay.layerReplay(actualTranscript))),
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterOpenSessionError({
+                      driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                      providerSessionId: openInput.providerSessionId,
+                      cause,
+                    }),
+                ),
+                Effect.flatMap((context) =>
+                  Effect.service(CodexClient.CodexAppServerClient).pipe(
+                    Effect.map((client) =>
+                      withCodexReplayChildMetadata(client, actualTranscript, readChildMetadata),
+                    ),
+                    Effect.map(
+                      (client) =>
+                        ({
+                          ...client,
+                          handleServerNotification: (method, handler) => {
+                            options.onNotification?.(
+                              method,
+                              (payload) => Reflect.apply(handler, undefined, [payload]),
+                              ordinal,
+                            );
+                            return client.handleServerNotification(method, handler);
+                          },
+                          raw: {
+                            ...client.raw,
+                            request: (method, params) =>
+                              method === "thread/goal/get" || method === "thread/goal/set"
+                                ? goalRequest(method, params)
+                                : client.raw.request(method, params),
+                          },
+                          request: (method, params) =>
+                            onRequest(method, params).pipe(
+                              Effect.andThen(client.request(method, params)),
+                            ),
+                        }) satisfies CodexClient.CodexAppServerClient["Service"],
+                    ),
+                    Effect.provide(context),
+                  ),
+                ),
+              );
+            }),
+        };
       const adapter = CodexAdapterV2.makeCodexAdapterV2({
         instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
         settings: DEFAULT_CODEX_SETTINGS,
@@ -1923,6 +1928,151 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       yield* Scope.close(sessionScope, Exit.void);
       assert.equal((yield* readGoal!(harness.providerThread)).reasonCode, "session_stopped");
       assert.lengthOf(requests, 1);
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect.each(["legacy", "recorded"] as const)(
+    "shared replay factory preserves interruption and terminal delivery with %s goal capability",
+    (capability) =>
+      Effect.gen(function* () {
+        const nativeThreadId = `shared-goal-${capability}`;
+        const nativeTurnId = `shared-turn-${capability}`;
+        const goal = {
+          createdAt: 1,
+          objective: "Keep working",
+          status: "active",
+          threadId: nativeThreadId,
+          timeUsedSeconds: 0,
+          tokenBudget: null,
+          tokensUsed: 0,
+          updatedAt: 1,
+        };
+        const interruptId = capability === "recorded" ? 6 : 4;
+        const transcript = makeCodexReplayTranscript({
+          scenario: nativeThreadId,
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Keep working" }),
+            ...(capability === "recorded"
+              ? [
+                  {
+                    type: "expect_outbound" as const,
+                    frame: {
+                      id: 4,
+                      method: "thread/goal/get",
+                      params: { threadId: nativeThreadId },
+                    },
+                  },
+                  { type: "emit_inbound" as const, frame: { id: 4, result: { goal } } },
+                  {
+                    type: "expect_outbound" as const,
+                    frame: {
+                      id: 5,
+                      method: "thread/goal/set",
+                      params: { threadId: nativeThreadId, status: "paused" },
+                    },
+                  },
+                  {
+                    type: "emit_inbound" as const,
+                    frame: { id: 5, result: { goal: { ...goal, status: "paused" } } },
+                  },
+                ]
+              : []),
+            {
+              type: "expect_outbound",
+              frame: {
+                id: interruptId,
+                method: "turn/interrupt",
+                params: { threadId: nativeThreadId, turnId: nativeTurnId },
+              },
+            },
+            { type: "emit_inbound", frame: { id: interruptId, result: {} } },
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "interrupted" }),
+                },
+              },
+            },
+          ],
+        });
+        const driver = yield* CodexReplay.makeReplayDriver(transcript);
+        const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
+          replayClientFactory: makeCodexReplayClientFactory({ transcript, driver }),
+        });
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`shared-goal-${capability}`),
+            text: "Keep working",
+          }),
+        );
+        const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+          driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+          nativeTurnId,
+        });
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId,
+        });
+        yield* harness.firstTerminal;
+        assert.equal(harness.terminalEvents()[0]?.status, "interrupted");
+        assert.equal(harness.terminalEvents()[0]?.providerTurnId, providerTurnId);
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+        assert.isFalse(
+          harness.events.some(
+            (event) => event.type === "turn_item.updated" && event.turnItem.type === "error",
+          ),
+        );
+        assert.deepEqual(yield* Ref.get(driver.state), {
+          cursor: transcript.entries.length,
+          failure: null,
+        });
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect("shared legacy replay factory rejects an unrecorded goal mutation", () =>
+    Effect.gen(function* () {
+      const transcript = makeCodexReplayTranscript({
+        scenario: "shared-unrecorded-goal-write",
+        entries: codexReplayPreamble({
+          nativeThreadId: "shared-unrecorded-goal-write",
+          nativeTurnId: "shared-unrecorded-goal-turn",
+          prompt: "Keep working",
+        }),
+      });
+      const driver = yield* CodexReplay.makeReplayDriver(transcript);
+      const factory = makeCodexReplayClientFactory({ transcript, driver });
+      const clientReady = yield* Deferred.make<CodexClient.CodexAppServerClient["Service"]>();
+      yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
+        replayClientFactory: {
+          open: (input) =>
+            factory.open(input).pipe(Effect.tap((client) => Deferred.succeed(clientReady, client))),
+        },
+      });
+      const client = yield* Deferred.await(clientReady);
+      const result = yield* client.raw
+        .request("thread/goal/set", {
+          threadId: "shared-unrecorded-goal-write",
+          status: "paused",
+        })
+        .pipe(Effect.exit);
+      assert.equal(result._tag, "Failure");
+      const state = yield* Ref.get(driver.state);
+      assert.equal(state.failure?._tag, "CodexAppServerReplayFrameMismatchError");
+      assert.equal(
+        state.cursor,
+        transcript.entries.findIndex(
+          (entry) =>
+            entry.type === "expect_outbound" &&
+            Predicate.isObject(entry.frame) &&
+            entry.frame.method === "turn/start",
+        ),
+      );
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 
