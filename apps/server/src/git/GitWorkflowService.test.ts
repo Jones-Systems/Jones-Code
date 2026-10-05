@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
-import { VcsRepositoryDetectionError } from "@t3tools/contracts";
+import { VcsRepositoryDetectionError, VcsUnsupportedOperationError } from "@t3tools/contracts";
 
 import * as GitManager from "./GitManager.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
@@ -54,6 +54,49 @@ describe("GitWorkflowService", () => {
       ),
     ),
   );
+
+  it.effect("keeps remote worktree lookup failures typed when repository resolution fails", () => {
+    const lookup = vi.fn(() => null);
+    return Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const error = yield* workflow
+        .resolveRemoteTrackingCommitIfExists({
+          cwd: "/not-a-repo",
+          remoteName: "origin",
+          branchName: "develop",
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "GitCommandError",
+        operation: "GitWorkflowService.resolveRemoteTrackingCommitIfExists",
+        cwd: "/not-a-repo",
+      });
+      expect(lookup).not.toHaveBeenCalled();
+    }).pipe(
+      Effect.provide(
+        GitWorkflowService.layer.pipe(
+          Layer.provide(
+            Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+              resolve: () =>
+                Effect.fail(
+                  new VcsUnsupportedOperationError({
+                    operation: "VcsDriverRegistry.resolve",
+                    kind: "unknown",
+                    detail: "No Git repository is available.",
+                  }),
+                ),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(GitVcsDriver.GitVcsDriver)({
+              resolveRemoteTrackingCommitIfExists: () => Effect.sync(lookup),
+            }),
+          ),
+          Layer.provide(Layer.mock(GitManager.GitManager)({})),
+        ),
+      ),
+    );
+  });
 
   it.effect("returns an empty local status when no VCS repository is detected", () =>
     Effect.gen(function* () {

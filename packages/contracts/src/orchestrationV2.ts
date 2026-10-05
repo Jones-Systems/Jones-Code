@@ -1,3 +1,4 @@
+import { NativeCreationObservation, NativeCreationRejectionCode } from "./nativeCreation.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -363,6 +364,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  threadMessagesBlocked: Schema.optional(Schema.Boolean),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   /** Pull request the user linked to this thread (#8160); optional so
@@ -388,6 +390,17 @@ export const OrchestrationV2AppThread = Schema.Struct({
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,
   archivedAt: Schema.NullOr(Schema.DateTimeUtc),
+  selfSettlement: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        mcpCredentialId: TrimmedNonEmptyString,
+        commandId: CommandId,
+        runId: RunId,
+        providerSessionId: ProviderSessionId,
+        providerInstanceId: ProviderInstanceId,
+      }),
+    ),
+  ),
   settledOverride: Schema.NullOr(Schema.Literals(["settled", "active"])).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -520,7 +533,7 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("worktree"),
-    baseRef: TrimmedNonEmptyString,
+    baseRef: Schema.optional(TrimmedNonEmptyString),
     branch: Schema.optional(TrimmedNonEmptyString),
     startFromOrigin: Schema.optional(Schema.Boolean),
   }),
@@ -1720,6 +1733,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  threadMessagesBlocked: Schema.optional(Schema.Boolean),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   /** Pull request the user linked to this thread (#8160). */
@@ -2606,6 +2620,7 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("thread.metadata.update"),
     commandId: CommandId,
     threadId: ThreadId,
+    threadMessagesBlocked: Schema.optional(Schema.Boolean),
     title: Schema.optional(TrimmedNonEmptyString),
     /** Kick off (true) or abandon (false) an async title regeneration. */
     regenerateTitle: Schema.optional(Schema.Boolean),
@@ -2812,6 +2827,7 @@ export const OrchestrationV2Command = Schema.Union([
     context: Schema.optional(OrchestrationMessageContext),
     commandId: CommandId,
     threadId: ThreadId,
+    senderThreadId: Schema.optional(ThreadId),
     runId: RunId,
     text: Schema.String,
     // Full replacement list. Absent = leave the message's attachments as-is,
@@ -2822,6 +2838,7 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("runtime-request.respond"),
     commandId: CommandId,
     threadId: ThreadId,
+    senderThreadId: Schema.optional(ThreadId),
     requestId: RuntimeRequestId,
     decision: Schema.optional(ProviderApprovalDecision),
     answers: Schema.optional(ProviderUserInputAnswers),
@@ -3035,6 +3052,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
 export type OrchestrationV2ThreadLaunchInput = typeof OrchestrationV2ThreadLaunchInput.Type;
 
 export const OrchestrationV2ThreadLaunchResult = Schema.Struct({
+  creation: Schema.optionalKey(NativeCreationObservation),
   threadId: ThreadId,
   projection: OrchestrationV2ThreadProjection,
   resumed: Schema.Boolean,
@@ -3204,6 +3222,7 @@ export type OrchestrationV2ThreadStreamItem = typeof OrchestrationV2ThreadStream
 export class OrchestrationV2DispatchCommandError extends Schema.TaggedError<OrchestrationV2DispatchCommandError>()(
   "OrchestrationV2DispatchCommandError",
   {
+    creationRejectionCode: Schema.optionalKey(NativeCreationRejectionCode),
     commandId: CommandId,
     commandType: Schema.String,
     message: Schema.String,
