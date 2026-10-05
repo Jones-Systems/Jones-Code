@@ -29,8 +29,15 @@ import {
   OrdinaryPreparedBranchObservationV1,
   type OrdinaryCheckoutExecutionAssociationFactV1,
   type OrdinaryCheckoutExecutionAssociationsV1,
+  type OrdinaryFinalCheckpointCandidateV1,
+  type OrdinaryFinalCheckpointClaimResultV1,
 } from "./OrdinaryCheckoutExecution.ts";
-import { ProviderManagedActorClosureV1 } from "./ProviderManagedActorCompletion.ts";
+import {
+  ProviderManagedActorClosureV1,
+  validateIssuedProviderManagedActorClosure,
+  type ProviderManagedActorClosureObservationV1,
+  type ProviderManagedActorCompletionError,
+} from "./ProviderManagedActorCompletion.ts";
 import { readApplicationThreadBirth } from "./ApplicationThreadBirth.ts";
 import { canonicalJson, sha256 } from "./CanonicalJson.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
@@ -4128,7 +4135,405 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
     );
   });
 
+  const readOrdinaryFinalCheckpointCandidates = Effect.fnUntraced(function* (
+    input: { readonly limit?: number } = {},
+  ) {
+    const limit = Math.min(
+      100,
+      Math.max(1, Number.isFinite(input.limit ?? 16) ? Math.floor(input.limit ?? 16) : 16),
+    );
+    const now = DateTime.formatIso(yield* DateTime.now);
+    const rows = yield* sql<{
+      readonly effect_id: string;
+      readonly operation_id: string;
+      readonly association_json: string;
+    }>`
+        SELECT effect.effect_id, association.operation_id, association.association_json
+        FROM orchestration_v2_effect_outbox effect JOIN orchestration_v2_ordinary_checkout_effect_links link ON link.effect_id = effect.effect_id
+        JOIN orchestration_v2_ordinary_checkout_execution_associations association ON association.admission_id = link.admission_id
+        JOIN orchestration_v2_worktree_path_admissions path ON path.operation_id = association.operation_id
+        WHERE effect.effect_type = 'checkpoint.capture' AND effect.status = 'pending' AND effect.available_at <= ${now}
+          AND effect.lease_owner IS NULL AND effect.lease_expires_at IS NULL AND path.state = 'started'
+          AND association.executor_kind = 'captured_managed_run'
+          AND json_extract(association.association_json, '$.executor.run.runId') = COALESCE(json_extract(effect.payload_json, '$.runId'), json_extract(effect.payload_json, '$.request.runId'))
+          AND json_extract(association.association_json, '$.executor.checkpointScopeId') = COALESCE(json_extract(effect.payload_json, '$.scopeId'), json_extract(effect.payload_json, '$.request.scopeId'))
+        GROUP BY effect.effect_id, association.operation_id ORDER BY effect.available_at, effect.created_at, effect.effect_id LIMIT ${limit}`;
+    const candidates: Array<OrdinaryFinalCheckpointCandidateV1> = [];
+    for (const row of rows) {
+      const ref = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(Ordinary.OrdinaryCheckoutExecutionRefV1),
+      )(row.association_json, { onExcessProperty: "error" });
+      const effect = Option.getOrNull(yield* outbox.get(row.effect_id));
+      const link = yield* readOrdinaryCheckoutEffectLinkEffect(row.effect_id);
+      const history = yield* readOrdinaryCheckoutExecutionAssociationsEffect(ref.originalUse);
+      const admission = yield* resolveAdmission(ref.originalUse.admission);
+      if (
+        effect?.request.type !== "checkpoint.capture" ||
+        effect.status !== "pending" ||
+        effect.leaseOwner !== null ||
+        effect.leaseExpiresAt !== null ||
+        row.operation_id !== ref.originalUse.operationId ||
+        link?.admission.admissionId !== admission.admissionId ||
+        admission.run?.runId !== effect.request.runId ||
+        effect.threadId !== admission.capture.threadId ||
+        link === null
+      )
+        continue;
+      candidates.push({
+        effectId: effect.id,
+        commandId: effect.commandId,
+        threadId: effect.threadId,
+        runId: effect.request.runId,
+        scopeId: effect.request.scopeId,
+        originalUse: ref.originalUse,
+        expectedAssociationOrdinal: history.latestOrdinal,
+        expectedAttemptCount: effect.attemptCount,
+        managedExecutions: history.participants
+          .filter(
+            (item) => item.state !== "retired" && item.ref.executor.kind === "captured_managed_run",
+          )
+          .map((item) => item.ref),
+      });
+    }
+    return candidates;
+  });
+
+  const claimOrdinaryFinalCheckpoint = Effect.fnUntraced(function* (input: {
+    readonly candidate: OrdinaryFinalCheckpointCandidateV1;
+    readonly workerId: string;
+    readonly leaseDurationMs: number;
+    readonly managedCompletions: ReadonlyArray<{
+      readonly managedExecution: Ordinary.OrdinaryCheckoutExecutionRefV1;
+      readonly observation: ProviderManagedActorClosureObservationV1;
+    }>;
+  }) {
+    const suppliedProofs = input.managedCompletions.map((completion) => ({
+      ...completion,
+      issued: validateIssuedProviderManagedActorClosure(
+        completion.observation,
+        completion.managedExecution,
+      ),
+    }));
+    return yield* transactions.withTransaction(
+      Effect.gen(function* () {
+        const notReady = (reason: string): OrdinaryFinalCheckpointClaimResultV1 => ({
+          status: "not_ready",
+          reason,
+        });
+        const candidate = input.candidate;
+        const record = yield* exactUse(candidate.originalUse);
+        const history = yield* readOrdinaryCheckoutExecutionAssociationsEffect(
+          candidate.originalUse,
+        );
+        const admission = yield* resolveAdmission(candidate.originalUse.admission);
+        const effect = Option.getOrNull(yield* outbox.get(candidate.effectId));
+        const link = yield* readOrdinaryCheckoutEffectLinkEffect(candidate.effectId);
+        if (
+          link === null ||
+          effect?.request.type !== "checkpoint.capture" ||
+          effect.commandId !== candidate.commandId ||
+          effect.threadId !== candidate.threadId ||
+          effect.request.runId !== candidate.runId ||
+          effect.request.scopeId !== candidate.scopeId ||
+          admission.run?.runId !== candidate.runId ||
+          admission.capture.threadId !== candidate.threadId ||
+          link?.admission.admissionId !== admission.admissionId
+        )
+          return notReady("checkpoint_association_changed");
+        const priorJoin = history.facts.find(
+          (fact) =>
+            fact.evidence.schema === "t3.ordinary-checkout-execution-liveness/v1" &&
+            fact.evidence.completionBasis?.effectId === candidate.effectId,
+        );
+        if (
+          priorJoin?.evidence.schema === "t3.ordinary-checkout-execution-liveness/v1" &&
+          priorJoin.evidence.completionBasis !== undefined
+        ) {
+          const basis = priorJoin.evidence.completionBasis;
+          const actor = basis.checkpointExecution.executor;
+          if (
+            actor.kind !== "actual_outbox_claim" ||
+            input.leaseDurationMs !== 300_000 ||
+            basis.joinOrdinal !== candidate.expectedAssociationOrdinal + 1 ||
+            actor.source.expectedAttempt !== candidate.expectedAttemptCount + 1 ||
+            actor.source.workerId !== input.workerId ||
+            effect.attemptCount !== actor.source.expectedAttempt ||
+            basis.runId !== candidate.runId ||
+            basis.scopeId !== candidate.scopeId ||
+            canonicalJson(
+              basis.managedRetirements
+                .map((item) => ordinaryExecutionBytes(item.managedExecution))
+                .sort(),
+            ) !== canonicalJson(candidate.managedExecutions.map(ordinaryExecutionBytes).sort())
+          )
+            return notReady("committed_handoff_differs");
+          return {
+            status: "already_committed" as const,
+            effect,
+            execution: basis.checkpointExecution,
+            completionBasis: basis,
+          };
+        }
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const managed = history.participants.filter(
+          (item) => item.state === "active" && item.ref.executor.kind === "captured_managed_run",
+        );
+        if (
+          Option.isSome(
+            yield* commandReceipts.getByCommandId(
+              CommandId.make(`command:effect:checkpoint.capture:${candidate.runId}`),
+            ),
+          )
+        )
+          return notReady("prior_capture_command_settled_before_handoff");
+        if (
+          record.state !== "started" ||
+          history.latestOrdinal !== candidate.expectedAssociationOrdinal ||
+          effect.status !== "pending" ||
+          effect.attemptCount !== candidate.expectedAttemptCount ||
+          effect.leaseOwner !== null ||
+          effect.leaseExpiresAt !== null ||
+          effect.availableAt > now ||
+          input.workerId.length === 0 ||
+          input.leaseDurationMs !== 300_000 ||
+          managed.length === 0 ||
+          history.participants.some(
+            (item) =>
+              item.state === "unknown" ||
+              (item.state === "active" && item.ref.executor.kind !== "captured_managed_run"),
+          ) ||
+          managed.some((item) => item.expiresAt <= now) ||
+          suppliedProofs.length !== managed.length ||
+          new Set(suppliedProofs.map((item) => item.managedExecution.associationId)).size !==
+            managed.length ||
+          canonicalJson(candidate.managedExecutions.map(ordinaryExecutionBytes).sort()) !==
+            canonicalJson(managed.map((item) => ordinaryExecutionBytes(item.ref)).sort())
+        )
+          return notReady("managed_cohort_not_ready");
+        const closures: Array<{
+          readonly participant: (typeof managed)[number];
+          readonly observation: ProviderManagedActorClosureV1;
+          readonly revalidate: Effect.Effect<void, ProviderManagedActorCompletionError>;
+        }> = [];
+        for (const participant of managed) {
+          const proof = suppliedProofs.find(
+            (item) =>
+              ordinaryExecutionBytes(item.managedExecution) ===
+              ordinaryExecutionBytes(participant.ref),
+          );
+          if (proof?.issued == null) return notReady("managed_closure_not_issued");
+          yield* proof.issued.revalidateIssued;
+          const observation = yield* Schema.decodeUnknownEffect(
+            Schema.toType(ProviderManagedActorClosureV1),
+          )(proof.issued.descriptor, { onExcessProperty: "error" });
+          const closedAt = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+            observation.closedAt,
+          );
+          const actor = participant.ref.executor;
+          if (
+            actor.kind !== "captured_managed_run" ||
+            actor.run.runId !== candidate.runId ||
+            actor.checkpointScopeId !== candidate.scopeId ||
+            ordinaryExecutionBytes(observation.managedExecution) !==
+              ordinaryExecutionBytes(participant.ref) ||
+            DateTime.formatIso(closedAt) !== observation.closedAt ||
+            observation.closedAt > now ||
+            observation.closedAt > participant.expiresAt
+          )
+            return notReady("managed_closure_changed");
+          const local = yield* projectionStore.getThreadRecords(candidate.threadId, [
+            "runs",
+            "providerThreads",
+            "checkpointScopes",
+          ]);
+          const run = local.runs.find((item) => item.id === actor.run.runId);
+          const provider = local.providerThreads.find(
+            (item) => item.id === actor.binding.providerThreadId,
+          );
+          const scope = local.checkpointScopes.find((item) => item.id === actor.checkpointScopeId);
+          if (
+            run?.activeAttemptId !== actor.run.runAttemptId ||
+            run.rootNodeId !== actor.run.nodeId ||
+            run.userMessageId !== actor.run.messageId ||
+            provider?.appThreadId !== actor.binding.threadId ||
+            provider.providerSessionId !== actor.binding.providerSessionId ||
+            provider.providerInstanceId !== actor.binding.instanceId ||
+            provider.driver !== actor.driver ||
+            scope?.runId !== run.id ||
+            scope.nodeId !== actor.run.nodeId ||
+            scope.threadId !== candidate.threadId ||
+            !history.facts.some(
+              (fact) =>
+                (fact.eventKind === "activate" || fact.eventKind === "bind") &&
+                ordinaryExecutionBytes(fact.ref) === ordinaryExecutionBytes(participant.ref),
+            )
+          )
+            return notReady("original_managed_attachment_changed");
+          closures.push({ participant, observation, revalidate: proof.issued.revalidateIssued });
+        }
+        yield* validateCapture(admission.capture, record.subject.source, {
+          operationId: candidate.originalUse.operationId,
+          requireLiveLease: true,
+        });
+        if ((yield* outbox.listHeldByThreadId(candidate.threadId)).length !== 0)
+          return notReady("unresolved_effect_hold");
+        const unfinished =
+          yield* sql`SELECT effect.effect_id FROM orchestration_v2_ordinary_checkout_effect_links original_link
+          JOIN orchestration_v2_effect_outbox effect ON effect.effect_id = original_link.effect_id
+          WHERE original_link.admission_id = ${admission.admissionId} AND effect.effect_id <> ${candidate.effectId} AND effect.status IN ('pending', 'running') LIMIT 1`;
+        if (unfinished.length !== 0) return notReady("linked_mutation_unfinished");
+        if (outbox.claimOrdinaryFinalCheckpointRow === undefined)
+          return notReady("checkpoint_owner_unavailable");
+        const claimed = yield* outbox.claimOrdinaryFinalCheckpointRow({
+          effectId: candidate.effectId,
+          workerId: input.workerId,
+          expectedAttemptCount: candidate.expectedAttemptCount,
+          leaseDurationMs: input.leaseDurationMs,
+        });
+        if (claimed === null) return notReady("checkpoint_claim_changed");
+        if (claimed.leaseExpiresAt === null)
+          return yield* failure(
+            admission.capture,
+            "claim_mismatch",
+            "Claimed checkpoint lost its actual deadline",
+          );
+        const claim = {
+          kind: "outbox" as const,
+          link,
+          workerId: input.workerId,
+          expectedAttempt: claimed.attemptCount,
+          leaseExpiresAt: yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+            claimed.leaseExpiresAt,
+          ),
+        };
+        const execution = Ordinary.makeOrdinaryCheckoutExecutionRefV1({
+          originalUse: candidate.originalUse,
+          executor: { kind: "actual_outbox_claim", source: claim },
+        });
+        const joinOrdinal = history.latestOrdinal + 1;
+        const completionBasis: OrdinaryFinalCheckpointCompletionBasisV1 = {
+          version: 1,
+          schema: "t3.ordinary-final-checkpoint-basis/v1",
+          checkpointExecution: execution,
+          effectId: claimed.id,
+          runId: candidate.runId,
+          scopeId: candidate.scopeId,
+          joinOrdinal,
+          managedRetirements: closures.map((closure, index) => ({
+            managedExecution: closure.participant.ref,
+            retirementOrdinal: joinOrdinal + index + 1,
+            closureSha256: sha256(
+              canonicalJson(Schema.encodeSync(ProviderManagedActorClosureV1)(closure.observation)),
+            ),
+          })),
+        };
+        const insert = Effect.fnUntraced(function* (
+          ref: Ordinary.OrdinaryCheckoutExecutionRefV1,
+          ordinal: number,
+          evidence: typeof OrdinaryCheckoutExecutionEvidenceV1.Type,
+        ) {
+          yield* sql`INSERT INTO orchestration_v2_ordinary_checkout_execution_associations
+            (operation_id, ordinal, predecessor_ordinal, association_id, admission_id, executor_kind, effect_id, event_kind, association_json, evidence_json, recorded_at)
+            VALUES (${candidate.originalUse.operationId}, ${ordinal}, ${ordinal - 1}, ${ref.associationId}, ${admission.admissionId}, ${ref.executor.kind},
+              ${ref.executor.kind === "actual_outbox_claim" ? ref.executor.source.link.effectId : null}, ${evidence.kind}, ${ordinaryExecutionBytes(ref)},
+              ${canonicalJson(yield* Schema.encodeEffect(OrdinaryCheckoutExecutionEvidenceV1)(evidence).pipe(Effect.orDie))}, ${now})`;
+        });
+        yield* insert(execution, joinOrdinal, {
+          version: 1,
+          schema: "t3.ordinary-checkout-execution-liveness/v1",
+          kind: "join",
+          expiresAt: claimed.leaseExpiresAt,
+          completionBasis,
+        });
+        for (const [index, closure] of closures.entries()) {
+          yield* closure.revalidate;
+          yield* insert(closure.participant.ref, joinOrdinal + index + 1, {
+            version: 1,
+            schema: "t3.ordinary-checkout-execution-outcome/v1",
+            kind: "retire",
+            expiresAt: closure.participant.expiresAt,
+            actualProducerOutcome: {
+              kind: "managed_mutations_finished",
+              observation: closure.observation,
+            },
+          });
+        }
+        yield* readOrdinaryCheckoutExecutionAssociationsEffect(candidate.originalUse);
+        yield* transactions.afterCommit(outbox.notifyAvailable());
+        return { status: "claimed" as const, effect: claimed, execution, completionBasis };
+      }),
+    );
+  });
+
+  const revalidateOrdinaryFinalCheckpointBasisEffect = Effect.fnUntraced(function* (
+    input: OrdinaryFinalCheckpointCompletionBasisV1,
+  ) {
+    const basis = yield* Schema.decodeUnknownEffect(
+      Schema.toType(OrdinaryFinalCheckpointCompletionBasisV1),
+    )(input, { onExcessProperty: "error" });
+    const current = yield* validateOrdinaryCheckoutExecutionEffect(basis.checkpointExecution);
+    const join = current.history.facts[basis.joinOrdinal];
+    if (
+      join?.evidence.schema !== "t3.ordinary-checkout-execution-liveness/v1" ||
+      join.eventKind !== "join" ||
+      join.evidence.completionBasis === undefined ||
+      canonicalJson(
+        yield* Schema.encodeEffect(OrdinaryFinalCheckpointCompletionBasisV1)(
+          join.evidence.completionBasis,
+        ).pipe(Effect.orDie),
+      ) !==
+        canonicalJson(
+          yield* Schema.encodeEffect(OrdinaryFinalCheckpointCompletionBasisV1)(basis).pipe(
+            Effect.orDie,
+          ),
+        ) ||
+      current.ref.executor.kind !== "actual_outbox_claim" ||
+      current.ref.executor.source.link.effectId !== basis.effectId ||
+      current.history.participants.some(
+        (item) => item.ref.associationId !== current.ref.associationId && item.state !== "retired",
+      ) ||
+      current.history.facts
+        .slice(basis.joinOrdinal + basis.managedRetirements.length + 1)
+        .some(
+          (fact) =>
+            fact.eventKind !== "renew" ||
+            ordinaryExecutionBytes(fact.ref) !== ordinaryExecutionBytes(current.ref),
+        )
+    )
+      return yield* failure(
+        current.admission.capture,
+        "unknown_use",
+        "Final capture lost the original joined managed-completion ordering",
+      );
+    const effect = Option.getOrNull(yield* outbox.get(basis.effectId));
+    if (
+      effect?.request.type !== "checkpoint.capture" ||
+      effect.request.runId !== basis.runId ||
+      effect.request.scopeId !== basis.scopeId ||
+      (yield* outbox.listHeldByThreadId(current.admission.capture.threadId)).length !== 0
+    )
+      return yield* failure(
+        current.admission.capture,
+        "unknown_use",
+        "Final capture lost its exact real checkpoint or unresolved-effect fence",
+      );
+    const unfinished =
+      yield* sql`SELECT effect.effect_id FROM orchestration_v2_ordinary_checkout_effect_links link
+        JOIN orchestration_v2_effect_outbox effect ON effect.effect_id = link.effect_id WHERE link.admission_id = ${current.admission.admissionId}
+          AND effect.effect_id <> ${basis.effectId} AND effect.status IN ('pending', 'running') LIMIT 1`;
+    if (unfinished.length !== 0)
+      return yield* failure(
+        current.admission.capture,
+        "unknown_use",
+        "Another accepted mutation follows the native cohort",
+      );
+    return basis;
+  });
+
   return {
+    readFinalCheckpointCandidates: readOrdinaryFinalCheckpointCandidates,
+    claimFinalCheckpoint: claimOrdinaryFinalCheckpoint,
+    revalidateFinalCheckpointBasis: revalidateOrdinaryFinalCheckpointBasisEffect,
     activateManagedRun: activateOrdinaryCheckoutManagedRun,
     capture,
     acquireBeforeRead,
@@ -4185,4 +4590,7 @@ export type OrdinaryCheckoutLifetime = Pick<
   | "captureJoinedCommand"
   | "transitionPreparedBranch"
   | "activateManagedRun"
+  | "readFinalCheckpointCandidates"
+  | "claimFinalCheckpoint"
+  | "revalidateFinalCheckpointBasis"
 >;

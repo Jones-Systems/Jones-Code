@@ -231,6 +231,12 @@ const isEffectOutboxError = Schema.is(EffectOutboxError);
 export interface EffectOutboxV2Shape {
   readonly awaitAvailable: Effect.Effect<void>;
   readonly notifyAvailable: (count?: number) => Effect.Effect<void>;
+  readonly claimOrdinaryFinalCheckpointRow?: (input: {
+    readonly effectId: string;
+    readonly workerId: string;
+    readonly expectedAttemptCount: number;
+    readonly leaseDurationMs: number;
+  }) => Effect.Effect<OrchestrationEffectV2 | null, EffectOutboxError>;
   readonly settleOrdinaryCheckoutStartClaim?: (input: {
     readonly effectId: string;
     readonly workerId: string;
@@ -425,9 +431,22 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     // that skips restart continuations is not blocked by them either.
     // Title generation is correlated metadata work, so it has its own
     // per-thread lane and cannot delay provider lifecycle effects.
+    const ordinaryFinalCheckpointPredicate =
+      () => sql`candidate.effect_type = 'checkpoint.capture' AND EXISTS (
+      SELECT 1 FROM orchestration_v2_ordinary_checkout_effect_links link
+      JOIN orchestration_v2_ordinary_checkout_execution_associations association ON association.admission_id = link.admission_id
+      WHERE link.effect_id = candidate.effect_id AND association.executor_kind = 'captured_managed_run'
+        AND json_extract(association.association_json, '$.executor.run.runId') = COALESCE(json_extract(candidate.payload_json, '$.runId'), json_extract(candidate.payload_json, '$.request.runId'))
+        AND json_extract(association.association_json, '$.executor.checkpointScopeId') = COALESCE(json_extract(candidate.payload_json, '$.scopeId'), json_extract(candidate.payload_json, '$.request.scopeId'))
+        AND NOT EXISTS (SELECT 1 FROM orchestration_v2_ordinary_checkout_execution_associations activation
+          WHERE activation.operation_id = association.operation_id AND activation.association_id = association.association_id
+            AND activation.event_kind = 'activate'
+            AND json_extract(activation.evidence_json, '$.actualStartObservation.settlementMode') = 'primary_terminal_checkpoint')) `;
+
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
+      includeOrdinaryFinalCheckpoint = false,
     ) =>
       sql`
         ${
@@ -436,6 +455,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : sql`candidate.available_at <= ${availableBefore}`
         }
         AND candidate.status = 'pending'
+        AND ${includeOrdinaryFinalCheckpoint ? sql`1 = 1` : sql`NOT (${ordinaryFinalCheckpointPredicate()})`}
         AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold
           WHERE hold.effect_id = candidate.effect_id)
         AND NOT EXISTS (
@@ -482,6 +502,41 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       );
 
     const service: EffectOutboxV2Shape = {
+      claimOrdinaryFinalCheckpointRow: (input) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              if (
+                input.workerId.length === 0 ||
+                !Number.isSafeInteger(input.expectedAttemptCount) ||
+                input.expectedAttemptCount < 0 ||
+                input.leaseDurationMs !== 300_000
+              )
+                return null;
+              const current = yield* DateTime.now;
+              const now = DateTime.formatIso(current);
+              const expiry = DateTime.formatIso(DateTime.add(current, { minutes: 5 }));
+              const rows =
+                yield* sql<EffectRow>`UPDATE orchestration_v2_effect_outbox SET status = 'running', attempt_count = attempt_count + 1,
+          lease_owner = ${input.workerId}, lease_expires_at = ${expiry}, updated_at = ${now}, last_error = NULL
+          WHERE effect_id IN (SELECT candidate.effect_id FROM orchestration_v2_effect_outbox candidate
+            WHERE candidate.effect_id = ${input.effectId} AND candidate.attempt_count = ${input.expectedAttemptCount}
+              AND candidate.lease_owner IS NULL AND candidate.lease_expires_at IS NULL AND ${ordinaryFinalCheckpointPredicate()}
+              AND ${claimableCandidatePredicate(now, false, true)}) RETURNING *`;
+              if (rows.length !== 1) return null;
+              return yield* rowToEffect(rows[0]!);
+            }),
+          )
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new EffectOutboxError({
+                  operation: "claim-ordinary-final-checkpoint",
+                  effectId: input.effectId,
+                  cause,
+                }),
+            ),
+          ),
       settleOrdinaryCheckoutStartClaim: (input) =>
         sql
           .withTransaction(

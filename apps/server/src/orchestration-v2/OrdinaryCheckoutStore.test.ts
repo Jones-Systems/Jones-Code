@@ -2,6 +2,7 @@ import { planDelegatedCheckout } from "./DelegatedCheckoutPolicy.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  CheckpointScopeId,
   EventId,
   MessageId,
   NodeId,
@@ -37,6 +38,13 @@ import * as Ordinary from "./OrdinaryCheckoutOwnership.ts";
 import { makeWorktreeOwnershipLeaseStore } from "./WorktreeOwnershipLease.ts";
 import { canonicalJson } from "./CanonicalJson.ts";
 import { makeOrdinaryCheckoutStore } from "./OrdinaryCheckoutStore.ts";
+import {
+  registerProviderManagedActorProducer,
+  prepareProviderManagedActorRun,
+  type ProviderManagedActorIssuerV1,
+  ProviderManagedActorCompletionError,
+} from "./ProviderManagedActorCompletion.ts";
+import type { ProviderAdapterV2SessionRuntime } from "./ProviderAdapter.ts";
 
 const database = SqlitePersistenceMemory;
 const infrastructure = Layer.mergeAll(
@@ -304,7 +312,290 @@ const claimFixture = Effect.fn("claimCheckoutFixture")(function* (id: string) {
   return { owner, fixture, store, input, outbox, effect, run };
 });
 
+const finalCheckpointFixture = Effect.fnUntraced(function* (
+  id: string,
+  settlementMode:
+    | "managed_actor_completion"
+    | "primary_terminal_checkpoint" = "managed_actor_completion",
+) {
+  yield* TestClock.setTime(DateTime.toEpochMillis(now));
+  const fixture = yield* claimFixture(id);
+  const sink = yield* EventSink.EventSinkV2;
+  const sql = yield* SqlClient.SqlClient;
+  const use = (yield* fixture.store.beginUse(fixture.input)).record.subject.use;
+  const start = yield* fixture.store.bindOutboxExecution(use);
+  yield* fixture.store.validateExecution(start, true);
+  const admission = yield* fixture.store.resolveAdmission(use.admission);
+  if (admission.run === null) return yield* Effect.die("Original run admission missing");
+  const scopeId = CheckpointScopeId.make(`scope:${id}`);
+  const driver = ProviderDriverKind.make("codex");
+  const projection = yield* ProjectionStore.ProjectionStoreV2;
+  const originalNode = (yield* projection.getThreadRecords(fixture.owner.id, ["nodes"])).nodes.find(
+    (item) => item.id === fixture.run.rootNodeId,
+  );
+  if (originalNode === undefined) return yield* Effect.die("Original fixture root node missing");
+  yield* sink.write({
+    events: [
+      {
+        id: EventId.make(`event:${id}:node-scope`),
+        type: "node.updated",
+        threadId: fixture.owner.id,
+        runId: fixture.run.id,
+        nodeId: originalNode.id,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { ...originalNode, checkpointScopeId: scopeId },
+      },
+      {
+        id: EventId.make(`event:${id}:scope`),
+        type: "checkpoint-scope.created",
+        threadId: fixture.owner.id,
+        occurredAt: now,
+        payload: {
+          id: scopeId,
+          threadId: fixture.owner.id,
+          runId: fixture.run.id,
+          nodeId: fixture.run.rootNodeId,
+          parentScopeId: null,
+          providerThreadId: fixture.run.providerThreadId,
+          kind: "root_run",
+          ordinalWithinParent: 0,
+          advancesAppRunCount: true,
+          cwd: "/fixture/worktree",
+          createdAt: now,
+        },
+      },
+    ],
+  });
+  const managed = yield* Schema.decodeUnknownEffect(
+    Schema.toType(Ordinary.OrdinaryCheckoutExecutionExecutorV1),
+  )({
+    kind: "captured_managed_run",
+    captureId: `capture:${id}`,
+    run: admission.run,
+    checkpointScopeId: scopeId,
+    driver,
+    binding: {
+      threadId: fixture.owner.id,
+      providerThreadId: fixture.run.providerThreadId,
+      providerSessionId: ProviderSessionId.make(`provider-session:${id}`),
+      instanceId: providerInstanceId,
+    },
+  });
+  if (managed.kind !== "captured_managed_run") return yield* Effect.die("Managed fixture changed");
+  const runtime = {
+    driver,
+    instanceId: providerInstanceId,
+    providerSessionId: managed.binding.providerSessionId,
+  } as ProviderAdapterV2SessionRuntime;
+  let issuer: ProviderManagedActorIssuerV1 | undefined;
+  let currentOwner = true;
+  const revalidate = Effect.suspend(() =>
+    currentOwner
+      ? Effect.void
+      : Effect.fail(new ProviderManagedActorCompletionError("original_fixture_owner_lost")),
+  );
+  registerProviderManagedActorProducer(runtime, (input) =>
+    Effect.sync(() => {
+      issuer = input.issuer;
+      return { revalidateMutation: revalidate, revalidateCompletion: revalidate };
+    }),
+  );
+  const reader = yield* prepareProviderManagedActorRun(runtime, {
+    startExecution: start,
+    admission,
+    checkpointScopeId: scopeId,
+    providerThreadId: managed.binding.providerThreadId,
+  });
+  yield* Effect.addFinalizer(() => reader.release);
+  if (issuer === undefined) return yield* Effect.die("Actual registered fixture issuer missing");
+  if (sink.ordinaryCheckoutLifetime === undefined)
+    return yield* Effect.die("Actual EventSink lifetime owner unavailable");
+  const managedRef = yield* sink.ordinaryCheckoutLifetime.activateManagedRun({
+    startExecution: start,
+    managedExecutor: managed,
+    actualStartObservation: {
+      kind: "dispatch_returned",
+      settlementMode,
+      startExecution: start,
+      managedExecutor: managed,
+      observedAt: DateTime.formatIso(now),
+    },
+    revalidateCaptured: revalidate,
+  });
+  yield* reader.bindManagedExecution(managedRef);
+  const actor = yield* issuer.admitActor({
+    kind: "foreground",
+    completionMode: "native_endpoint",
+    actualSource: {
+      sourceId: `source:${id}`,
+      driver,
+      instanceId: providerInstanceId,
+      providerSessionId: managed.binding.providerSessionId,
+      providerThreadId: managed.binding.providerThreadId,
+      threadId: fixture.owner.id,
+      nativeThreadId: `fixture-native:${id}`,
+    },
+  });
+  yield* issuer.markActorEntered(actor);
+  yield* issuer.recordNativeEndpoint(actor, {
+    kind: "native_endpoint",
+    endpoint: "turn/completed",
+    nativeThreadId: `fixture-native:${id}`,
+    outcome: "completed",
+    observedAt: DateTime.formatIso(now),
+  });
+  yield* issuer.seal;
+  const closed = yield* reader.readClosure;
+  if (closed.status !== "closed")
+    return yield* Effect.die("Actual fixture actor cohort did not close");
+  const effectId = `effect:${id}:checkpoint`;
+  yield* sink.writeWithEffects({
+    events: [],
+    effects: [
+      {
+        id: effectId,
+        commandId: CommandId.make(`command:${id}:checkpoint`),
+        threadId: fixture.owner.id,
+        request: { type: "checkpoint.capture", runId: fixture.run.id, scopeId },
+      },
+    ],
+    ordinaryCheckoutEffects: [
+      {
+        runId: fixture.run.id,
+        admission: use.admission,
+        source: fixture.input.targetSource,
+        joinedUse: use,
+        ordinaryCheckoutExecution: managedRef,
+      },
+    ],
+  });
+  const candidate = (yield* fixture.store.readFinalCheckpointCandidates()).find(
+    (item) => item.effectId === effectId,
+  );
+  if (candidate === undefined)
+    return yield* Effect.die("Actual linked checkpoint candidate missing");
+  const input = {
+    candidate,
+    workerId: `worker:${id}:checkpoint`,
+    leaseDurationMs: 300_000,
+    managedCompletions: [{ managedExecution: managedRef, observation: closed.observation }],
+  };
+  return {
+    ...fixture,
+    sql,
+    use,
+    start,
+    managedRef,
+    effectId,
+    input,
+    revokeOwner: () => {
+      currentOwner = false;
+    },
+  };
+});
+
 describe("Ordinary checkout physical use", () => {
+  it.effect(
+    "final checkpoint atomically consumes only the issued original closed cohort once",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* finalCheckpointFixture("final-once");
+        assert.isTrue(
+          Option.isNone(
+            yield* f.outbox.claimNext({ workerId: "generic-worker", leaseDurationMs: 300_000 }),
+          ),
+        );
+        assert.isTrue(Option.isNone(yield* f.outbox.nextClaimableAt));
+        const copied = {
+          ...f.input,
+          managedCompletions: f.input.managedCompletions.map((item) => ({
+            ...item,
+            observation: { ...item.observation },
+          })),
+        };
+        assert.deepEqual(yield* f.store.claimFinalCheckpoint(copied), {
+          status: "not_ready",
+          reason: "managed_closure_not_issued",
+        });
+        const claimed = yield* f.store.claimFinalCheckpoint(f.input);
+        assert.strictEqual(claimed.status, "claimed");
+        if (claimed.status === "not_ready") return yield* Effect.die(claimed.reason);
+        assert.strictEqual(claimed.effect.attemptCount, 1);
+        assert.strictEqual(claimed.effect.status, "running");
+        assert.deepEqual(
+          yield* f.store.revalidateFinalCheckpointBasis(claimed.completionBasis),
+          claimed.completionBasis,
+        );
+        const history = yield* f.store.readExecutionHistory(f.use);
+        assert.strictEqual(
+          history.participants.find((item) => item.ref.associationId === f.managedRef.associationId)
+            ?.state,
+          "retired",
+        );
+        assert.strictEqual(
+          history.participants.filter((item) => item.state === "active").length,
+          1,
+        );
+        assert.strictEqual(Option.getOrThrow(yield* f.outbox.get(f.effect.id)).status, "succeeded");
+        const repeated = yield* f.store.claimFinalCheckpoint(f.input);
+        assert.strictEqual(repeated.status, "already_committed");
+        if (repeated.status === "not_ready") return yield* Effect.die(repeated.reason);
+        assert.deepEqual(repeated.execution, claimed.execution);
+        assert.deepEqual(yield* f.store.readExecutionHistory(f.use), history);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "final checkpoint rolls the real row claim and entire cohort handoff back together",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* finalCheckpointFixture("final-rollback");
+        const before = yield* f.store.readExecutionHistory(f.use);
+        const original = Option.getOrThrow(yield* f.outbox.get(f.effectId));
+        yield* f.sql`CREATE TRIGGER fixture_fail_managed_retirement BEFORE INSERT ON orchestration_v2_ordinary_checkout_execution_associations
+        WHEN NEW.event_kind = 'retire' AND NEW.executor_kind = 'captured_managed_run' BEGIN SELECT RAISE(ABORT, 'injected retirement failure'); END`;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(f.store.claimFinalCheckpoint(f.input))));
+        assert.deepEqual(yield* f.store.readExecutionHistory(f.use), before);
+        assert.deepEqual(Option.getOrThrow(yield* f.outbox.get(f.effectId)), original);
+        yield* f.sql`DROP TRIGGER fixture_fail_managed_retirement`;
+        assert.strictEqual((yield* f.store.claimFinalCheckpoint(f.input)).status, "claimed");
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "final checkpoint refuses a lost original cohort owner without granting another claim",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* finalCheckpointFixture("final-owner");
+        const before = yield* f.store.readExecutionHistory(f.use);
+        const original = Option.getOrThrow(yield* f.outbox.get(f.effectId));
+        f.revokeOwner();
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(f.store.claimFinalCheckpoint(f.input))));
+        assert.deepEqual(yield* f.store.readExecutionHistory(f.use), before);
+        assert.deepEqual(Option.getOrThrow(yield* f.outbox.get(f.effectId)), original);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("ordinary primary terminal checkpoint retains its existing generic claim mode", () =>
+    Effect.gen(function* () {
+      const f = yield* finalCheckpointFixture("final-primary", "primary_terminal_checkpoint");
+      assert.isNull(
+        yield* f.outbox.claimOrdinaryFinalCheckpointRow!({
+          effectId: f.effectId,
+          workerId: "specialized-worker",
+          expectedAttemptCount: 0,
+          leaseDurationMs: 300_000,
+        }),
+      );
+      const claimed = Option.getOrThrow(
+        yield* f.outbox.claimNext({ workerId: "generic-worker", leaseDurationMs: 300_000 }),
+      );
+      assert.strictEqual(claimed.id, f.effectId);
+      assert.strictEqual(claimed.attemptCount, 1);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("binds actual system restart effects to their immutable original admission", () =>
     Effect.gen(function* () {
       const fixture = yield* claimFixture("system-restart");
