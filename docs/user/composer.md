@@ -35,8 +35,8 @@ See [images and videos](#images-and-videos-in-messages) for previewing and savin
 ## Send while the agent is working
 
 On web and desktop, choose **Settings → General → Follow-up behavior** to queue
-new messages for a later turn or steer the running turn immediately. The setting
-applies to this client; already queued messages keep their place. Queued messages
+new messages for the next safe tool boundary or steer the running turn immediately.
+The setting applies to this client; already queued messages keep their place. Queued messages
 are saved on the server and can be edited, reordered, or removed above the composer.
 `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux uses the opposite action:
 it steers when your default is Queue and queues when your default is Steer.
@@ -156,7 +156,16 @@ On web and desktop, the composer shows **Interrupt** while the agent is working 
 empty. Adding text or attachments replaces it with a steer arrow. Click it to send a message into
 the active turn, or press `Enter` on desktop. Hold `Cmd` on macOS or `Ctrl` on Windows and Linux to
 switch the button to a queue icon. Click while holding that key, or press `Cmd+Enter` or
-`Ctrl+Enter` on desktop, to queue the message for after the active turn.
+`Ctrl+Enter` on desktop, to queue the message for the next safe tool boundary.
+
+Queue sends compatible messages after the current foreground tool calls finish,
+even when you switch threads or disconnect the client. It waits while the agent needs an
+approval or answer. Providers that cannot accept input without restarting, commands such as
+`/compact`, and messages that change the provider, model, or modes wait for a later turn instead.
+At a tool boundary, messages follow their selected queue order. Later messages wait for earlier
+delivery to succeed, including any retries.
+Failed or interrupted tools do not release the queue on their own; it waits for the next
+qualifying tool completion or the end of the turn. Stopping the thread keeps its queue held.
 
 Queued messages appear above the composer. Rows show a thumbnail of any attached image alongside
 the text. Drag a row by its handle to reorder it, use the handle's arrow keys, promote the message
