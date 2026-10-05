@@ -1,3 +1,4 @@
+import * as ServerUpdateContinuation from "./orchestration-v2/ServerUpdateContinuation.ts";
 import {
   CommandId,
   DEFAULT_MODEL,
@@ -71,6 +72,17 @@ export class ServerRuntimeStartupError extends Schema.TaggedError<ServerRuntimeS
 export class ServerRuntimeStartup extends Context.Service<
   ServerRuntimeStartup,
   {
+    readonly markRunningProviderSessionsForContinuation: Effect.Effect<
+      ReadonlyArray<ThreadId>,
+      ServerRuntimeStartupError
+    >;
+    readonly markOptedInProviderSessionsForContinuation: Effect.Effect<
+      ReadonlyArray<ThreadId>,
+      ServerRuntimeStartupError
+    >;
+    readonly clearProviderSessionContinuationMarkers: (
+      threadIds: ReadonlyArray<ThreadId>,
+    ) => Effect.Effect<void, ServerRuntimeStartupError>;
     readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
     readonly markHttpListening: Effect.Effect<void>;
     readonly enqueueCommand: <A, E>(
@@ -428,6 +440,20 @@ const make = (options?: StartupOptions) =>
     const crypto = yield* Crypto.Crypto;
     const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
 
+    const continuationContext = yield* Effect.context<
+      | Effect.Services<typeof ServerUpdateContinuation.markRunningProviderSessionsForContinuation>
+      | Effect.Services<typeof ServerUpdateContinuation.markOptedInProviderSessionsForContinuation>
+      | Effect.Services<
+          ReturnType<typeof ServerUpdateContinuation.clearProviderSessionContinuationMarkers>
+        >
+    >();
+    const continuationError = (cause: unknown) =>
+      new ServerRuntimeStartupError({
+        mode: serverConfig.mode,
+        host: serverConfig.host ?? null,
+        port: serverConfig.port,
+        cause,
+      });
     const commandGate = yield* makeCommandGate;
     const httpListening = yield* Deferred.make<void>();
     const effectWorkerFiber = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
@@ -675,6 +701,21 @@ const make = (options?: StartupOptions) =>
     );
 
     return {
+      markRunningProviderSessionsForContinuation:
+        ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+          Effect.provide(continuationContext),
+          Effect.mapError(continuationError),
+        ),
+      markOptedInProviderSessionsForContinuation:
+        ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
+          Effect.provide(continuationContext),
+          Effect.mapError(continuationError),
+        ),
+      clearProviderSessionContinuationMarkers: (ids) =>
+        ServerUpdateContinuation.clearProviderSessionContinuationMarkers(ids).pipe(
+          Effect.provide(continuationContext),
+          Effect.mapError(continuationError),
+        ),
       awaitCommandReady: commandGate.awaitCommandReady,
       markHttpListening: Deferred.succeed(httpListening, undefined),
       enqueueCommand: commandGate.enqueueCommand,
