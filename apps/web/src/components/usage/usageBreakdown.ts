@@ -1,7 +1,10 @@
-import type { UsageTokenTotals } from "@t3tools/contracts";
+import type { UsageProviderKind, UsageTokenTotals } from "@t3tools/contracts";
 import {
   isModelCostUnknown,
   type CategoryCost,
+  type DailyTotals,
+  type HourlyTotals,
+  type MergedUsage,
   type ModelTotals,
   type SpeedCost,
 } from "@t3tools/shared/usageMerge";
@@ -83,4 +86,41 @@ export function speedCostSegments(cost: SpeedCost): readonly ShareSegment[] {
     { label: "Fast", value: cost.fast, color: ink(66) },
     { label: "Ultrafast", value: cost.ultrafast, color: ink(100) },
   ];
+}
+
+function providerPeriods<T extends DailyTotals | HourlyTotals>(
+  periods: readonly T[],
+  provider: UsageProviderKind,
+): readonly T[] {
+  return periods.flatMap((period) => {
+    const totals = period.byProvider.get(provider);
+    return totals === undefined
+      ? []
+      : [{ ...period, ...totals, byProvider: new Map([[provider, totals]]) }];
+  });
+}
+
+/** Projects accepted merged totals; provider focus never reclaims or remerges sources. */
+export function selectUsageBreakdown(merged: MergedUsage, provider: UsageProviderKind | null) {
+  const providerTotals = merged.providers.find((totals) => totals.provider === provider) ?? null;
+  if (providerTotals === null) {
+    return {
+      providerTotals,
+      models: merged.models,
+      daily: merged.daily,
+      hourly: merged.hourly,
+    };
+  }
+  return {
+    providerTotals,
+    models: merged.models
+      .filter((model) => model.provider === providerTotals.provider)
+      .map((model) => ({
+        ...model,
+        costShare: providerTotals.costUsd === 0 ? 0 : model.costUsd / providerTotals.costUsd,
+        tokenShare: providerTotals.totalTokens === 0 ? 0 : model.totalTokens / providerTotals.totalTokens,
+      })),
+    daily: providerPeriods(merged.daily, providerTotals.provider),
+    hourly: providerPeriods(merged.hourly, providerTotals.provider),
+  };
 }

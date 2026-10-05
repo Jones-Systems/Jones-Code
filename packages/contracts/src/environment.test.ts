@@ -14,6 +14,16 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("omits saved accounting on older servers and preserves explicit support", () => {
+    expect(decodeDescriptor(descriptor).capabilities.savedTokenAccounting).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, savedTokenAccounting: true },
+      }).capabilities.savedTokenAccounting,
+    ).toBe(true);
+  });
+
   it("requires an advertised required-worktree bootstrap capability", () => {
     expect(decodeDescriptor(descriptor).capabilities.requiredWorktreeBootstrap).toBeUndefined();
     expect(
