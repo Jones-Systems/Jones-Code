@@ -153,7 +153,7 @@ function CiStatus({ environmentId }: { environmentId: EnvironmentId }) {
   );
 }
 
-export function CiStatusPresentation({
+function CiStatusPresentation({
   data,
   now,
   stale,
