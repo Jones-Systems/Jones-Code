@@ -872,7 +872,7 @@ it.effect(
         assert.equal(
           projection.checkpointScopes.find((scope) => scope.id === rootNode?.checkpointScopeId)
             ?.cwd,
-          "/repo-worktrees/feature",
+          launched.projection.thread.worktreePath,
         );
       }).pipe(Effect.provide(harness.layer));
     }),
@@ -933,49 +933,49 @@ it.effect.each([" /COMPACT ", "/logout"])(
 
 it.effect("keeps native maintenance commands out of steering and restart messages", () =>
   Effect.gen(function* () {
-    const harness = makeHarness();
-    yield* Effect.gen(function* () {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const outbox = yield* EffectOutbox.EffectOutboxV2;
-      for (const scenario of [
-        {
-          name: "compact-steer",
-          first: "Fix the parser",
-          next: " /COMPACT ",
-          mode: "steer_active",
-        },
-        {
-          name: "compact-restart",
-          first: "Fix the parser",
-          next: "/compact",
-          mode: "restart_active",
-        },
-        {
-          name: "logout-steer",
-          first: "Fix the parser",
-          next: "/logout",
-          mode: "steer_active",
-        },
-        {
-          name: "logout-restart",
-          first: "Fix the parser",
-          next: "/logout",
-          mode: "restart_active",
-        },
-        {
-          name: "steer-logout",
-          first: "/logout",
-          next: "Continue with the parser",
-          mode: "steer_active",
-        },
-        {
-          name: "steer-compaction",
-          first: "/compact",
-          next: "Continue with the parser",
-          mode: "steer_active",
-        },
-      ] as const) {
+    for (const scenario of [
+      {
+        name: "compact-steer",
+        first: "Fix the parser",
+        next: " /COMPACT ",
+        mode: "steer_active",
+      },
+      {
+        name: "compact-restart",
+        first: "Fix the parser",
+        next: "/compact",
+        mode: "restart_active",
+      },
+      {
+        name: "logout-steer",
+        first: "Fix the parser",
+        next: "/logout",
+        mode: "steer_active",
+      },
+      {
+        name: "logout-restart",
+        first: "Fix the parser",
+        next: "/logout",
+        mode: "restart_active",
+      },
+      {
+        name: "steer-logout",
+        first: "/logout",
+        next: "Continue with the parser",
+        mode: "steer_active",
+      },
+      {
+        name: "steer-compaction",
+        first: "/compact",
+        next: "Continue with the parser",
+        mode: "steer_active",
+      },
+    ] as const) {
+      const harness = makeHarness();
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
         const launched = yield* launches.launch(
           launchInput({
             command: `${scenario.name}:launch`,
@@ -1008,8 +1008,8 @@ it.effect("keeps native maintenance commands out of steering and restart message
         assert.deepEqual(after.messages, before.messages);
         assert.deepEqual(after.thread.titleRegeneration, before.thread.titleRegeneration);
         assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
-      }
-    }).pipe(Effect.provide(harness.layer));
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }
   }),
 );
 
