@@ -21,15 +21,18 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
+  ProviderTurnId,
   RunAttemptId,
   RunId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -45,6 +48,7 @@ import { LIVE_STREAM_MAX_ITEMS, LiveStreamBufferError } from "./LiveStreamBudget
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import { makeCommitTransaction } from "./CommitTransaction.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
@@ -129,6 +133,148 @@ function threadCreatedEvent(input: {
     payload: input.thread,
   };
 }
+
+function makeContinuationMarkerProjection(
+  threadId: ThreadId,
+  now: DateTime.Utc,
+): ProjectionStore.ProjectionRuntimeRecoveryState {
+  const runId = RunId.make(`run:${threadId}`);
+  const providerThreadId = ProviderThreadId.make(`provider-thread:${threadId}`);
+  const sessionId = ProviderSessionId.make(`session:${threadId}`);
+  const attemptId = RunAttemptId.make(`attempt:${threadId}`);
+  const nodeId = NodeId.make(`node:${threadId}`);
+  return {
+    thread: makeThread(threadId, now),
+    runs: [
+      {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId,
+        userMessageId: MessageId.make(`message:${threadId}`),
+        rootNodeId: nodeId,
+        activeAttemptId: attemptId,
+        status: "running",
+        queuePosition: null,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      },
+    ],
+    providerThreads: [
+      {
+        id: providerThreadId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        providerInstanceId,
+        providerSessionId: sessionId,
+        driver: providerDriver,
+        nativeThreadRef: {
+          driver: providerDriver,
+          nativeId: `native:${threadId}`,
+          strength: "strong",
+        },
+        nativeConversationHeadRef: null,
+        status: "active",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    providerSessions: [
+      {
+        id: sessionId,
+        driver: providerDriver,
+        providerInstanceId,
+        status: "running",
+        cwd: "/fixture/update-markers",
+        model: modelSelection.model,
+        capabilities: CodexProviderCapabilitiesV2,
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+      },
+    ],
+    providerTurns: [
+      {
+        id: ProviderTurnId.make(`turn:${threadId}`),
+        providerThreadId,
+        nodeId,
+        runAttemptId: attemptId,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      },
+    ],
+    attempts: [],
+    nodes: [],
+    subagents: [],
+    runtimeRequests: [],
+    messages: [],
+    turnItems: [],
+  };
+}
+
+const continuationMarkerTestContext = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const eventStore = yield* EventStore.EventStoreV2;
+  const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+  const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+  const now = yield* DateTime.now;
+  const publications: Array<Array<string>> = [];
+  const observedOutbox = Layer.succeed(EffectOutbox.EffectOutboxV2, {
+    ...outbox,
+    notifyAvailable: (count) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<{ thread_id: string }>`SELECT thread_id
+        FROM orchestration_v2_effect_outbox
+        WHERE command_id GLOB 'command:server-update-prepare:*'
+        ORDER BY rowid`.pipe(Effect.orDie);
+        publications.push(rows.map((row) => row.thread_id));
+        yield* outbox.notifyAvailable(count);
+      }),
+  });
+  const sinkLayer = Layer.fresh(
+    EventSink.layerFromStores.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(SqlClient.SqlClient, sql),
+          Layer.succeed(EventStore.EventStoreV2, eventStore),
+          Layer.succeed(ProjectionStore.ProjectionStoreV2, projectionStore),
+          Layer.succeed(CommandReceiptStore.CommandReceiptStoreV2, receipts),
+          observedOutbox,
+          ProjectStore.layer.pipe(Layer.provide(Layer.succeed(SqlClient.SqlClient, sql))),
+          TurnItemPositionStore.layer.pipe(Layer.provide(Layer.succeed(SqlClient.SqlClient, sql))),
+        ),
+      ),
+    ),
+  );
+  const mark = (threadIds: ReadonlyArray<ThreadId>) =>
+    ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed(threadIds),
+            getRuntimeRecoveryProjection: (threadId) =>
+              Effect.succeed(makeContinuationMarkerProjection(threadId, now)),
+          }),
+          ServerSettings.layerTest(),
+          sinkLayer,
+        ),
+      ),
+    );
+  return { sql, mark, publications };
+});
 
 it.effect("rebuilds event history one bounded page at a time", () =>
   Effect.gen(function* () {
@@ -2195,6 +2341,89 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
       assert.include(forcedRows[0]!.payload_json, '"continueWithoutPreference":true');
       yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([threadId]);
     }),
+  );
+
+  it.effect("rolls back every update marker and publication when a later marker insert fails", () =>
+    Effect.gen(function* () {
+      const { sql, mark, publications } = yield* continuationMarkerTestContext;
+      const first = ThreadId.make("thread:update-marker-atomic:first");
+      const second = ThreadId.make("thread:update-marker-atomic:second");
+      yield* Effect.acquireRelease(
+        sql`CREATE TEMP TRIGGER fail_second_update_marker BEFORE INSERT ON orchestration_v2_effect_outbox
+          WHEN NEW.thread_id = 'thread:update-marker-atomic:second'
+          BEGIN SELECT RAISE(ABORT, 'retained second-marker failure'); END`,
+        () => sql`DROP TRIGGER fail_second_update_marker`.pipe(Effect.orDie),
+      );
+      const result = yield* Effect.exit(mark([first, second]));
+      assert.isTrue(Exit.isFailure(result));
+      if (Exit.isFailure(result))
+        assert.include(Cause.pretty(result.cause), "retained second-marker failure");
+      assert.deepEqual(
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox
+          WHERE thread_id IN ${sql.in([first, second])}`,
+        [],
+      );
+      assert.deepEqual(publications, []);
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
+  );
+
+  it.effect(
+    "publishes update markers only after the same-SQL outer owner commits and refuses raw parents",
+    () =>
+      Effect.gen(function* () {
+        const { sql, mark, publications } = yield* continuationMarkerTestContext;
+        const commit = yield* makeCommitTransaction();
+        const first = ThreadId.make("thread:update-marker-owned:first");
+        const second = ThreadId.make("thread:update-marker-owned:second");
+        yield* commit.withTransaction(
+          Effect.gen(function* () {
+            assert.deepEqual(yield* mark([first, second]), [first, second]);
+            assert.equal(
+              (yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox
+          WHERE thread_id IN ${sql.in([first, second])}`).length,
+              2,
+            );
+            assert.deepEqual(publications, []);
+          }),
+        );
+        assert.equal(publications.length, 2);
+        for (const publication of publications) {
+          assert.includeMembers(publication, [first, second]);
+        }
+        const rolledBack = ThreadId.make("thread:update-marker-owned:rollback");
+        const rollback = yield* Effect.exit(
+          commit.withTransaction(
+            Effect.gen(function* () {
+              yield* mark([rolledBack]);
+              assert.equal(
+                (yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox
+          WHERE thread_id = ${rolledBack}`).length,
+                1,
+              );
+              assert.equal(publications.length, 2);
+              return yield* Effect.fail("retained outer-owner failure");
+            }),
+          ),
+        );
+        assert.isTrue(Exit.isFailure(rollback));
+        assert.deepEqual(
+          yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox
+        WHERE thread_id = ${rolledBack}`,
+          [],
+        );
+        assert.equal(publications.length, 2);
+        const unowned = ThreadId.make("thread:update-marker-owned:raw-parent");
+        const raw = yield* Effect.exit(sql.withTransaction(mark([unowned])));
+        assert.isTrue(Exit.isFailure(raw));
+        if (Exit.isFailure(raw))
+          assert.include(Cause.pretty(raw.cause), "UnownedCommitTransactionError");
+        assert.deepEqual(
+          yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox
+        WHERE thread_id = ${unowned}`,
+          [],
+        );
+        assert.equal(publications.length, 2);
+      }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("keeps prepared restart continuations passive until process loss", () =>
