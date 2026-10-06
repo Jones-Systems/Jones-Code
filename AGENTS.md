@@ -42,8 +42,10 @@ separately.
 - Never start a development server against live `~/.t3/userdata`, open that
   state read-write, or clean it up. Reading or copying private state requires
   exact authorization; its presence on this machine is not permission.
-- Browser and computer use require the user's authorization for that
-  verification. Existing authorization carries forward within its scope.
+- M Jones grants standing browser and computer-use permission for behavioral
+  testing of owner-built local apps, including Jones Code and T3 Code. Do not
+  ask again per task; follow [local app testing permission](docs/operations/contributor-guidance.md#local-app-testing-permission)
+  for isolated test state and protected-effect boundaries.
 - Keep `VITE_HTTP_URL` and `VITE_WS_URL` unset for browser development.
   The dev runner owns desktop's loopback configuration.
 - Do not commit implementation plans, research notes, or agent scratch.
