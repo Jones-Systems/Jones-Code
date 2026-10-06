@@ -5,9 +5,7 @@
   "hookPaths": [
     "apps/web/src/components/usage/UsagePage.tsx",
     "apps/web/src/components/usage/UsagePage.test.tsx",
-    "apps/web/src/components/usage/UsagePage.refresh.test.tsx",
-    "apps/web/src/components/usage/SavedTokenAccounting.test.tsx",
-    "apps/web/src/components/usage/usageDateRange.test.ts"
+    "apps/web/src/components/usage/UsagePage.refresh.test.tsx"
   ],
   "tombstones": [
     "apps/web/src/components/usage/SavedTokenAccounting.tsx",
@@ -42,14 +40,6 @@
     {
       "from": "apps/web/src/components/usage/UsagePage.refresh.test.tsx",
       "to": "apps/web/src/jones/usage/SavedTokenAccounting.tsx"
-    },
-    {
-      "from": "apps/web/src/components/usage/SavedTokenAccounting.test.tsx",
-      "to": "apps/web/src/jones/usage/SavedTokenAccounting.tsx"
-    },
-    {
-      "from": "apps/web/src/components/usage/usageDateRange.test.ts",
-      "to": "apps/web/src/jones/usage/usageDateRange.ts"
     }
   ]
 }
