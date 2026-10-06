@@ -121,6 +121,7 @@ export function WorkstreamColorDialog(props: {
             Hex color
             <Input
               aria-label="Hex color"
+              style={{ backgroundColor: "transparent" }}
               value={draft}
               disabled={busy || retry !== null}
               onChange={(event) => {
