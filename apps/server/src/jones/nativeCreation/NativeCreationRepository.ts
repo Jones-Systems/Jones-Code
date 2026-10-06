@@ -121,4 +121,5 @@ export class NativeCreationRepository extends Context.Service<
       fact: WithoutOrdinal<NativeCreationCompletedFact>,
     ) => Effect.Effect<NativeCreationCompletedFact, NativeCreationRepositoryError>;
   }
+  // @effect-diagnostics-next-line deterministicKeys:off - Preserve the pre-extraction service key for compatibility.
 >()("t3/nativeCreation/NativeCreationRepository") {}

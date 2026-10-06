@@ -13,7 +13,7 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import migration from "../persistence/Migrations/003_JonesNativeCreationIntents.ts";
 import * as RepositorySqlite from "./NativeCreationRepositorySqlite.ts";
 

@@ -11,7 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as Repository from "./NativeCreationRepository.ts";
 import {
   nativeCreationCanonicalJson,
@@ -91,6 +91,7 @@ export class NativeCreationGrantResolver extends Context.Service<
       NativeCreationAuthorityError
     >;
   }
+  // @effect-diagnostics-next-line deterministicKeys:off - Preserve the pre-extraction service key for compatibility.
 >()("t3/nativeCreation/NativeCreationAuthority/NativeCreationGrantResolver") {}
 
 // This port must read current native environment, project, enabled provider and qualified account mapping.
@@ -101,6 +102,7 @@ export class NativeCreationBindingResolver extends Context.Service<
       preparation: ValidatedNativeCreationPreparation,
     ) => Effect.Effect<NativeCreationHistoricalBinding, NativeCreationAuthorityError>;
   }
+  // @effect-diagnostics-next-line deterministicKeys:off - Preserve the pre-extraction service key for compatibility.
 >()("t3/nativeCreation/NativeCreationAuthority/NativeCreationBindingResolver") {}
 
 const unavailable = () =>
@@ -128,6 +130,7 @@ export class NativeCreationAuthority extends Context.Service<
       actorSessionId: AuthSessionId,
     ) => Effect.Effect<boolean, NativeCreationAuthorityError>;
   }
+  // @effect-diagnostics-next-line deterministicKeys:off - Preserve the pre-extraction service key for compatibility.
 >()("t3/nativeCreation/NativeCreationAuthority") {}
 
 const makeNativeCreationAuthority = Effect.gen(function* () {
