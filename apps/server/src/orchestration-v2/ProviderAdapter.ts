@@ -530,6 +530,8 @@ export interface ProviderAdapterV2TurnInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly message: ProviderAdapterV2TurnMessage;
   readonly modelSelection: ModelSelection;
+  /** Dispatch-only default; never changes durable requested model options. */
+  readonly configuredReasoningEffort?: string;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
 }
 

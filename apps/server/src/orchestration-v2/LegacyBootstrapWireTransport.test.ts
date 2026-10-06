@@ -60,6 +60,7 @@ import * as WsPullRequestSyncReactor from "../orchestration-v2/PullRequestSyncRe
 import * as WsDeviceService from "../device/DeviceService.ts";
 import * as WsOrchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as WsUsageService from "../usage/UsageService.ts";
+import * as WsTokenAccountingService from "../tokenAccounting/TokenAccountingService.ts";
 import * as WsUsageLimitSources from "../usage/UsageLimitSources.ts";
 import * as WsProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as WsWorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -503,6 +504,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
   );
   // Unrelated owners are deliberately unavailable; rejection must precede any RPC layer construction.
   const deniedRpcOwners = Layer.mergeAll(
+    WsTokenAccountingService.layer,
     Layer.mock(Threads.ThreadManagementService)({ getThreadSnapshot: denyRpcWork }),
     Layer.mock(WsApplicationEventStore.OrchestrationEventStore)({}),
     Layer.mock(ProjectStore.ProjectStoreV2)({}),
@@ -1181,6 +1183,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         >[0][] = [];
         const order: string[] = [];
         const rpcOwners = Layer.mergeAll(
+          WsTokenAccountingService.layer,
           Layer.mock(Threads.ThreadManagementService)({
             getThreadShell: () => Effect.succeed(null),
             dispatch: () => Effect.die("No ordinary dispatch fallback"),

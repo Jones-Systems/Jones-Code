@@ -296,6 +296,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     // that skips restart continuations is not blocked by them either.
     // Title generation is correlated metadata work, so it has its own
     // per-thread lane and cannot delay provider lifecycle effects.
+    // Automatic boundary steers follow receipt order; only successful predecessors release them.
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
@@ -309,6 +310,45 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         AND candidate.status = 'pending'
         AND NOT (candidate.effect_type = 'provider-runtime.continue'
           AND COALESCE(json_extract(candidate.payload_json, '$.preparedForRestart'), 0) = 1)
+        AND (
+          candidate.effect_type != 'provider-turn.steer'
+          OR candidate.command_id NOT GLOB 'command:queue-tool-boundary:*'
+          OR EXISTS (
+            SELECT 1 FROM orchestration_command_receipts AS candidate_receipt
+            WHERE candidate_receipt.command_id = candidate.command_id
+              AND candidate_receipt.aggregate_kind = 'thread'
+              AND candidate_receipt.aggregate_id = candidate.thread_id
+              AND candidate_receipt.status = 'accepted'
+              AND candidate_receipt.command_type = 'queued-message.promote-to-steer'
+              AND typeof(candidate_receipt.result_sequence) = 'integer'
+              AND candidate_receipt.result_sequence > 0
+              AND NOT EXISTS (
+                SELECT 1 FROM orchestration_v2_effect_outbox AS predecessor
+                LEFT JOIN orchestration_command_receipts AS predecessor_receipt
+                  ON predecessor_receipt.command_id = predecessor.command_id
+                WHERE predecessor.thread_id = candidate.thread_id
+                  AND predecessor.status IN ('pending', 'running', 'failed', 'cancelled')
+                  AND predecessor.effect_type = 'provider-turn.steer'
+                  AND predecessor.command_id GLOB 'command:queue-tool-boundary:*'
+                  AND predecessor.effect_id != candidate.effect_id
+                  AND json_extract(predecessor.payload_json, '$.providerSessionId') = json_extract(candidate.payload_json, '$.providerSessionId')
+                  AND json_extract(predecessor.payload_json, '$.providerThreadId') = json_extract(candidate.payload_json, '$.providerThreadId')
+                  AND json_extract(predecessor.payload_json, '$.providerTurnId') = json_extract(candidate.payload_json, '$.providerTurnId')
+                  AND (
+                    predecessor_receipt.command_id IS NULL
+                    OR predecessor_receipt.aggregate_kind IS NOT 'thread'
+                    OR predecessor_receipt.aggregate_id IS NOT predecessor.thread_id
+                    OR predecessor_receipt.status IS NOT 'accepted'
+                    OR predecessor_receipt.command_type IS NOT 'queued-message.promote-to-steer'
+                    OR typeof(predecessor_receipt.result_sequence) != 'integer'
+                    OR predecessor_receipt.result_sequence <= 0
+                    OR predecessor_receipt.result_sequence < candidate_receipt.result_sequence
+                    OR (predecessor_receipt.result_sequence = candidate_receipt.result_sequence
+                      AND predecessor.command_id != candidate.command_id)
+                  )
+              )
+          )
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM orchestration_v2_effect_outbox AS active
@@ -320,6 +360,8 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 AND active.rowid < candidate.rowid
                 AND NOT (active.effect_type = 'provider-runtime.continue'
                   AND COALESCE(json_extract(active.payload_json, '$.preparedForRestart'), 0) = 1)
+                AND NOT (active.effect_type = 'provider-turn.steer'
+                  AND active.command_id GLOB 'command:queue-tool-boundary:*')
                 AND ${
                   excludeRestartContinuations
                     ? sql`active.effect_type != 'provider-runtime.continue'`

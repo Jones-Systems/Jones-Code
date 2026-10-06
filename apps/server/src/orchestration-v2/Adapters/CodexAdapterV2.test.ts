@@ -1718,7 +1718,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     onEvent: (event: ProviderAdapterV2Event) => Effect.Effect<unknown> = () => Effect.void,
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: (threadId: string) => Effect.Effect<unknown>,
-    options: Pick<CodexAdapterV2.CodexAdapterV2Options, "resolveRuntime"> & {
+    options: Pick<CodexAdapterV2.CodexAdapterV2Options, "resolveRuntime" | "getModelCatalog"> & {
       readonly replayClientFactory?: CodexAdapterV2.CodexAppServerClientFactoryShape;
       readonly modelSelection?: ModelSelection;
       readonly replacementTranscripts?: ReadonlyArray<CodexReplay.CodexAppServerReplayTranscript>;
@@ -1812,6 +1812,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         idAllocator,
         serverConfig,
         ...(options.resolveRuntime === undefined ? {} : { resolveRuntime: options.resolveRuntime }),
+        ...(options.getModelCatalog === undefined
+          ? {}
+          : { getModelCatalog: options.getModelCatalog }),
         continuationRequests: {
           offer: (request) =>
             Effect.sync(() => {
@@ -1928,6 +1931,215 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       yield* Scope.close(sessionScope, Exit.void);
       assert.equal((yield* readGoal!(harness.providerThread)).reasonCode, "session_stopped");
       assert.lengthOf(requests, 1);
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect.each([
+    {
+      label: "catalog",
+      configured: undefined,
+      explicit: undefined,
+      expected: "high",
+      reads: 1,
+      foreign: false,
+    },
+    {
+      label: "foreign",
+      configured: undefined,
+      explicit: undefined,
+      expected: undefined,
+      reads: 0,
+      foreign: true,
+    },
+    { label: "configured", configured: "xhigh", explicit: undefined, expected: "xhigh", reads: 0 },
+    { label: "explicit", configured: "xhigh", explicit: "medium", expected: "medium", reads: 0 },
+  ])("uses $label effort only at native dispatch without changing requested options", (row) =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const nativeThreadId = `effort-${row.label}`;
+      const nativeTurnId = `turn-${row.label}`;
+      const entries = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue" });
+      const turn = entries.find(
+        (entry) => entry.type === "expect_outbound" && entry.label === "turn/start",
+      );
+      assert.isDefined(turn);
+      if (turn?.type === "expect_outbound") {
+        const frame = turn.frame as { params: Record<string, unknown> };
+        if (row.expected !== undefined) frame.params.effort = row.expected;
+      }
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({ scenario: nativeThreadId, entries }),
+        undefined,
+        undefined,
+        undefined,
+        {
+          getModelCatalog: Effect.sync(() => {
+            reads += 1;
+            return [
+              {
+                slug: "gpt-5.4",
+                name: "GPT",
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "reasoningEffort",
+                      label: "Reasoning",
+                      type: "select" as const,
+                      currentValue: "high",
+                      options: ["medium", "high", "xhigh"].map((id) => ({ id, label: id })),
+                    },
+                  ],
+                },
+              },
+            ];
+          }),
+        },
+      );
+      const input = {
+        ...makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make(`attempt-${row.label}`),
+          text: "Continue",
+        }),
+        ...(row.configured === undefined ? {} : { configuredReasoningEffort: row.configured }),
+      };
+      if (row.explicit !== undefined)
+        input.modelSelection = {
+          ...input.modelSelection,
+          options: [{ id: "reasoningEffort", value: row.explicit }],
+        };
+      if (row.foreign)
+        input.modelSelection = {
+          ...input.modelSelection,
+          instanceId: ProviderInstanceId.make("codex-foreign"),
+        };
+      const originalSelection = input.modelSelection;
+      yield* harness.runtime.startTurn(input);
+      assert.equal(reads, row.reads);
+      assert.strictEqual(input.modelSelection, originalSelection);
+      assert.deepEqual(
+        input.modelSelection.options,
+        row.explicit === undefined ? undefined : [{ id: "reasoningEffort", value: row.explicit }],
+      );
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect("reads changed catalog defaults on each logical turn, including a model switch", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "current-effort-per-turn";
+      const entries = codexReplayPreamble({
+        nativeThreadId,
+        nativeTurnId: "first",
+        prompt: "First",
+      });
+      const first = entries.find(
+        (entry) => entry.type === "expect_outbound" && entry.label === "turn/start",
+      );
+      if (first?.type === "expect_outbound")
+        (first.frame as { params: Record<string, unknown> }).params.effort = "high";
+      entries.push(
+        {
+          type: "emit_inbound",
+          frame: {
+            method: "turn/completed",
+            params: {
+              threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id: "first", status: "completed" }),
+            },
+          },
+        },
+        {
+          type: "expect_outbound",
+          frame: {
+            id: 4,
+            method: "turn/start",
+            params: {
+              threadId: nativeThreadId,
+              input: [{ type: "text", text: "Second" }],
+              cwd: "/workspace",
+              model: "gpt-6",
+              effort: "xhigh",
+              approvalPolicy: "never",
+              approvalsReviewer: "user",
+              sandboxPolicy: { type: "dangerFullAccess" },
+              summary: "detailed",
+            },
+          },
+        },
+        {
+          type: "emit_inbound",
+          frame: {
+            id: 4,
+            result: { turn: makeCodexReplayTurn({ id: "second", status: "inProgress" }) },
+          },
+        },
+        {
+          type: "emit_inbound",
+          frame: {
+            method: "turn/started",
+            params: {
+              threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id: "second", status: "inProgress" }),
+            },
+          },
+        },
+      );
+      let effort = "high";
+      let reads = 0;
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({ scenario: nativeThreadId, entries }),
+        undefined,
+        undefined,
+        undefined,
+        {
+          getModelCatalog: Effect.sync(() => {
+            reads += 1;
+            return ["gpt-5.4", "gpt-6"].map((slug) => ({
+              slug,
+              name: slug,
+              isCustom: false,
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    id: "reasoningEffort",
+                    label: "Reasoning",
+                    type: "select" as const,
+                    currentValue: effort,
+                    options: ["high", "xhigh"].map((id) => ({ id, label: id })),
+                  },
+                ],
+              },
+            }));
+          }),
+        },
+      );
+      const firstInput = makeCodexTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("first-effort"),
+        text: "First",
+      });
+      yield* harness.runtime.startTurn(firstInput);
+      yield* harness.firstTerminal;
+      effort = "xhigh";
+      const secondInput: ProviderAdapterV2TurnInput = {
+        ...makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("second-effort"),
+          text: "Second",
+        }),
+        modelSelection: { ...CODEX_TEST_MODEL_SELECTION, model: "gpt-6" },
+      };
+      yield* harness.runtime.startTurn(secondInput);
+      assert.equal(reads, 2);
+      assert.isUndefined(firstInput.modelSelection.options);
+      assert.isUndefined(secondInput.modelSelection.options);
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 
