@@ -1390,7 +1390,7 @@ describe("thread outbox", () => {
     ).toBe("remove");
   });
 
-  it("round-trips queued creations and gates incomplete ones from sending", () => {
+  it("round-trips queued creations and accepts an automatic worktree base", () => {
     const base = queuedMessage({
       messageId: "message-1",
       createdAt: "2026-06-08T10:00:01.000Z",
@@ -1414,12 +1414,14 @@ describe("thread outbox", () => {
       creationMessage,
     );
     expect(isQueuedThreadCreationSendable(creationMessage)).toBe(true);
-    expect(
-      isQueuedThreadCreationSendable({
-        ...creationMessage,
-        creation: { ...creationMessage.creation, branch: null },
-      }),
-    ).toBe(false);
+    const automaticCreation = {
+      ...creationMessage,
+      creation: { ...creationMessage.creation, branch: null },
+    };
+    expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(automaticCreation))).toEqual(
+      automaticCreation,
+    );
+    expect(isQueuedThreadCreationSendable(automaticCreation)).toBe(true);
     expect(
       isQueuedThreadCreationSendable({
         ...creationMessage,

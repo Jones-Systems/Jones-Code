@@ -1,11 +1,14 @@
 import { EnvironmentId } from "@t3tools/contracts";
-import { act, type ReactNode } from "react";
+import { act, useEffect, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { AttachmentFilePreview } from "./AttachmentFilePreview";
 
-const { refresh } = vi.hoisted(() => ({ refresh: vi.fn<() => Promise<string | null>>() }));
+const { refresh, pdfLoads } = vi.hoisted(() => ({
+  refresh: vi.fn<() => Promise<string | null>>(),
+  pdfLoads: vi.fn(),
+}));
 
 vi.mock("~/assets/assetUrls", () => ({ useAssetUrlRefresh: () => refresh }));
 vi.mock("~/hooks/useCopyToClipboard", () => ({
@@ -15,6 +18,19 @@ vi.mock("~/components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
 vi.mock("~/components/ChatMarkdown", () => ({ default: () => null }));
 vi.mock("~/components/ui/scroll-area", () => ({
   ScrollArea: ({ children }: { children: ReactNode }) => children,
+}));
+vi.mock("./PdfPreview", () => ({
+  default: ({ src, onRetry }: { src: string; onRetry: () => void }) => {
+    useEffect(() => {
+      pdfLoads(src);
+    }, [src]);
+    return (
+      <div role="region" aria-label="PDF preview">
+        <a href={src}>Open PDF</a>
+        <button onClick={onRetry}>Retry PDF</button>
+      </div>
+    );
+  },
 }));
 vi.mock("./ReadOnlySourcePreview", () => ({
   default: ({ text }: { text: string }) => <pre>{text}</pre>,
@@ -29,7 +45,7 @@ vi.mock("./fileSurfaceChrome", () => ({
   FileSurfaceNotice: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
-describe("attachment HTML preview recovery", () => {
+describe("attachment HTML and PDF preview recovery", () => {
   const originalUrl = "https://environment.test/original.html";
   const renewedUrl = "https://environment.test/renewed.html";
   let now = 0;
@@ -40,6 +56,7 @@ describe("attachment HTML preview recovery", () => {
     now = 0;
     vi.spyOn(Date, "now").mockImplementation(() => now);
     refresh.mockReset().mockResolvedValueOnce(originalUrl).mockResolvedValue(renewedUrl);
+    pdfLoads.mockClear();
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("<p>Captured HTML</p>")),
@@ -65,6 +82,28 @@ describe("attachment HTML preview recovery", () => {
     });
   };
 
+  const openRemotePdf = async () => {
+    await act(async () => {
+      renderer = create(
+        <AttachmentFilePreview
+          name="document.pdf"
+          mimeType="application/pdf"
+          sizeBytes={100}
+          asset={{ environmentId: EnvironmentId.make("test-environment"), attachmentId: "pdf" }}
+        />,
+      );
+    });
+  };
+
+  const retryPdf = async () => {
+    await act(async () => {
+      renderer.root
+        .findAllByType("button")
+        .find((button) => button.children[0] === "Retry PDF")!
+        .props.onClick();
+    });
+  };
+
   const toggleMode = async (label: string) => {
     await act(async () => {
       renderer.root.findByProps({ "aria-label": label }).props.onClick();
@@ -79,6 +118,9 @@ describe("attachment HTML preview recovery", () => {
 
     await toggleMode("Show rendered page");
     expect(renderer.root.findByType("iframe").props.src).toBe(renewedUrl);
+    expect(renderer.root.findByType("iframe").props.sandbox).toBe(
+      "allow-scripts allow-forms allow-popups allow-modals",
+    );
     await toggleMode("Show HTML source");
     expect(refresh).toHaveBeenCalledTimes(2);
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -99,6 +141,29 @@ describe("attachment HTML preview recovery", () => {
     await toggleMode("Show HTML source");
     expect(refresh).toHaveBeenCalledTimes(3);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reauthorizes a remote PDF before retrying its viewer", async () => {
+    await openRemotePdf();
+    expect(renderer.root.findByType("a").props.href).toBe(originalUrl);
+    now = 61 * 60_000;
+    await retryPdf();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(renderer.root.findByType("a").props.href).toBe(renewedUrl);
+    expect(pdfLoads.mock.calls.map(([src]) => src)).toEqual([originalUrl, renewedUrl]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not remount a PDF with an expired URL when reauthorization is unavailable", async () => {
+    await openRemotePdf();
+    refresh.mockResolvedValue(null);
+    await retryPdf();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(renderer.root.findAllByProps({ "aria-label": "PDF preview" })).toHaveLength(0);
+    expect(pdfLoads.mock.calls.map(([src]) => src)).toEqual([originalUrl]);
+    expect(renderer.root.findByProps({ role: "alert" }).children).toEqual([
+      "Reconnect to the environment and try again.",
+    ]);
   });
 
   it("can return to rendered HTML after local source decoding fails", async () => {

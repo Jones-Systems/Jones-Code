@@ -1293,8 +1293,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // from TimelineRowCtx, which propagates through LegendList's memo.
   const renderItem = useCallback(
     ({ item }: { item: MessagesTimelineRow }) => (
-      <div className="messages-timeline-row-frame">
-        <div className="chat-content-lane overflow-x-clip" data-timeline-root="true">
+      <div
+        className="messages-timeline-row-frame w-full min-w-0 [container-type:inline-size]"
+        data-timeline-root="true"
+      >
+        <div className="chat-content-lane">
           <TimelineRowContent row={item} />
         </div>
       </div>
@@ -2343,7 +2346,7 @@ function UserMessageIntentMarker({
       </TooltipTrigger>
       <TooltipPopup side="top">
         {intent === "queued_turn"
-          ? "Queued behind the active turn"
+          ? "Queued for a safe tool boundary or the next turn"
           : intent === "promoted_queued_to_steer"
             ? "Originally queued, then promoted to steer the active turn"
             : "Steered the active turn"}

@@ -40,6 +40,8 @@ import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
+import { hostStatusHttpApiLayer } from "./hostStatus/http.ts";
+import * as HostStatus from "./hostStatus/HostStatus.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as SqlitePersistence from "./persistence/Layers/Sqlite.ts";
@@ -150,6 +152,8 @@ import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
+import { makeRuntimeReader } from "./tokenAccounting/RuntimeReader.ts";
 import {
   OrchestrationEventInfrastructureLayerLive,
   OrchestrationV2ProductionLayerLive,
@@ -170,6 +174,8 @@ import {
 } from "./serverRuntimeState.ts";
 import { orchestrationHttpApiLayer } from "./orchestration-v2/http.ts";
 import { conversationLibraryHttpApiLayer } from "./conversations/http.ts";
+import * as VoiceReview from "./voiceReview/bridge.ts";
+import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./voiceReview/http.ts";
 import { projectHttpApiLayer } from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -617,6 +623,9 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
   Layer.provideMerge(UsageLayerLive),
+  Layer.provideMerge(
+    Layer.suspend(() => TokenAccountingService.layerWithReader(makeRuntimeReader(process.env))),
+  ),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
   Layer.provideMerge(ExternalLauncher.layer),
@@ -640,7 +649,13 @@ const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(connectHttpApiLayer),
       Layer.provide(orchestrationHttpApiLayer),
       Layer.provide(conversationLibraryHttpApiLayer),
+      Layer.provide(
+        voiceReviewHttpApiLayer.pipe(
+          Layer.provide(VoiceReview.layer.pipe(Layer.provide(VoiceReview.dependenciesLayer))),
+        ),
+      ),
       Layer.provide(pullRequestHttpApiLayer),
+      Layer.provide(hostStatusHttpApiLayer.pipe(Layer.provide(HostStatus.layer))),
       Layer.provide(projectHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),
@@ -669,6 +684,7 @@ const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),
+  Layer.provide(voiceReviewResponseHeadersLayer),
   Layer.provide(browserApiCorsLayer),
   Layer.provide(httpCompressionLayer),
 );
