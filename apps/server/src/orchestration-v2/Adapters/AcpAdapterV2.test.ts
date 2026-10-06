@@ -678,6 +678,14 @@ describe("AcpAdapterV2", () => {
         const terminal = events.find((event) => event.type === "turn.terminal");
         assert.isDefined(terminal);
         if (terminal?.type !== "turn.terminal") return yield* Effect.die("Missing terminal");
+        assert.equal(terminal.providerTurn?.id, terminal.providerTurnId);
+        assert.equal(terminal.providerTurn?.providerThreadId, terminal.providerThreadId);
+        assert.equal(terminal.providerTurn?.status, terminal.status);
+        assert.isNotNull(terminal.providerTurn?.completedAt);
+        assert.equal(
+          terminal.evidenceKind,
+          outcome === "failed" ? "local_failure" : "provider_result",
+        );
         if (outcome === "failed") {
           assert.equal(terminal.status, "failed");
           assert.equal(terminal.failure?.class, "usage_limit");

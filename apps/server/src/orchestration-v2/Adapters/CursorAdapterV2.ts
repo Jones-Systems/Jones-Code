@@ -1948,6 +1948,7 @@ export function makeCursorAdapterV2(
             OrchestrationV2ProviderTurn["status"],
             "completed" | "interrupted" | "failed" | "cancelled"
           >;
+          readonly evidenceKind?: "provider_result" | "attributed_abort" | "local_failure";
           readonly failure?: OrchestrationV2ProviderFailure;
           readonly threadDisposition?: "reusable" | "broken";
         }) {
@@ -2009,6 +2010,12 @@ export function makeCursorAdapterV2(
             input.status === "failed"
               ? {
                   type: "turn.terminal",
+                  providerTurn: providerTurnPayload({
+                    context: input.context,
+                    status: input.status,
+                    completedAt,
+                  }),
+                  evidenceKind: input.evidenceKind ?? "local_failure",
                   driver: CursorAgentSdk.CURSOR_PROVIDER,
                   providerThreadId: input.context.input.providerThread.id,
                   providerTurnId: input.context.providerTurnId,
@@ -2023,6 +2030,12 @@ export function makeCursorAdapterV2(
                 }
               : {
                   type: "turn.terminal",
+                  providerTurn: providerTurnPayload({
+                    context: input.context,
+                    status: input.status,
+                    completedAt,
+                  }),
+                  evidenceKind: input.evidenceKind ?? "local_failure",
                   driver: CursorAgentSdk.CURSOR_PROVIDER,
                   providerThreadId: input.context.input.providerThread.id,
                   providerTurnId: input.context.providerTurnId,
@@ -2289,6 +2302,12 @@ export function makeCursorAdapterV2(
                     yield* finalizeTurn({
                       context,
                       status,
+                      evidenceKind:
+                        transportFailure !== undefined
+                          ? "local_failure"
+                          : status === "interrupted"
+                            ? "attributed_abort"
+                            : "provider_result",
                       ...(status === "failed"
                         ? {
                             failure: makeProviderFailure({
@@ -2311,6 +2330,7 @@ export function makeCursorAdapterV2(
                     yield* finalizeTurn({
                       context,
                       status: context.interrupted ? "interrupted" : "failed",
+                      evidenceKind: context.interrupted ? "attributed_abort" : "local_failure",
                       ...(context.interrupted
                         ? {}
                         : {

@@ -3462,6 +3462,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             assert.equal(terminal.providerTurnId, original);
             assert.equal(terminal.status, "failed");
             if (terminal.status !== "failed") return assert.fail("Expected unknown native start");
+            assert.equal(terminal.evidenceKind, "local_failure");
+            assert.isUndefined(terminal.providerTurn);
             assert.equal(terminal.failure.class, "unknown");
             assert.equal(terminal.threadDisposition, "broken");
           }
@@ -6199,6 +6201,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           yield* harness.firstTerminal;
           const terminal = harness.terminalEvents()[0]!;
           assert.equal(terminal.status, "completed");
+          assert.equal(terminal.evidenceKind, "provider_result");
+          assert.equal(
+            terminal.providerTurn?.runAttemptId,
+            RunAttemptId.make("attempt-codex-bg-stop"),
+          );
+          assert.equal(terminal.providerTurn?.id, terminal.providerTurnId);
+          assert.equal(terminal.providerTurn?.status, "completed");
+          assert.isNotNull(terminal.providerTurn?.completedAt);
           assert.isTrue(yield* harness.hasPendingBackgroundWork);
           assert.isFalse(
             yield* harness.runtime.hasPendingBackgroundWorkForThread!({

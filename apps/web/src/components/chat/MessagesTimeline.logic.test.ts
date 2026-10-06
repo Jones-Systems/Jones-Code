@@ -14,7 +14,25 @@ import {
   workEntryDisplayIndicatesToolFailure,
   type TimelineEntry,
 } from "../../session-logic";
-import { makeStreamingTimelineFixture } from "../../test-fixtures";
+import { makeStreamingTimelineFixture, makeThreadProjectionFixture } from "../../test-fixtures";
+import {
+  EnvironmentId,
+  EventId,
+  ProviderInstanceId,
+  ProviderThreadId,
+  ProviderTurnId,
+  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2DomainEvent,
+} from "@t3tools/contracts";
+import { applyOrchestrationV2ProjectionEvent } from "@t3tools/client-runtime/state/orchestration-v2-projection";
+import { deriveThreadActivityRun } from "@t3tools/client-runtime/state/thread-execution";
+import {
+  createEnvironmentThreadDetailAtoms,
+  EMPTY_ENVIRONMENT_THREAD_STATE,
+  type EnvironmentThreadState,
+} from "@t3tools/client-runtime/state/threads";
+import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
+import * as Option from "effect/Option";
 import type { TurnDiffSummary } from "../../types";
 import { describe, expect, it } from "vite-plus/test";
 import { MessageId, RunId } from "@t3tools/contracts";
@@ -4103,6 +4121,254 @@ describe("streaming v2 row projection", () => {
       }
     },
   );
+
+  it("reuses long-thread rows through detail events, selectors, and attachment previews", () => {
+    const initial = fixture("Partial");
+    const attemptId = RunAttemptId.make("attempt:timeline-settlement");
+    const providerTurnId = ProviderTurnId.make("provider-turn:timeline-settlement");
+    const providerThreadId = ProviderThreadId.make("provider-thread:timeline-settlement");
+    const rootNodeId = NodeId.make("node:timeline-settlement");
+    const image = {
+      type: "image" as const,
+      id: "settlement-image",
+      name: "image.png",
+      mimeType: "image/png",
+      sizeBytes: 42,
+    };
+    const history = Array.from({ length: 120 }, (_, index) =>
+      initial.visibleTurnItems.slice(0, 3).map((row) => ({
+        ...row,
+        sourceItemId: TurnItemId.make(`${row.sourceItemId}:${index}`),
+        item: {
+          ...row.item,
+          id: TurnItemId.make(`${row.item.id}:${index}`),
+          ...(row.item.type === "user_message" || row.item.type === "assistant_message"
+            ? { messageId: MessageId.make(`${row.item.messageId}:${index}`), attachments: [image] }
+            : {}),
+        },
+      })),
+    );
+    const visibleTurnItems = [...history.flat(), ...initial.visibleTurnItems.slice(3)].map(
+      (row, position) => ({
+        ...row,
+        position,
+        item: { ...row.item, ordinal: position + 1 },
+      }),
+    );
+    const now = DateTime.makeUnsafe(initial.time(5));
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const modelSelection = { instanceId: providerInstanceId, model: "test-model" };
+    const activeRun = {
+      id: initial.runId,
+      threadId: initial.threadId,
+      ordinal: 2,
+      providerInstanceId,
+      modelSelection,
+      providerThreadId,
+      userMessageId: MessageId.make("live-user"),
+      rootNodeId,
+      activeAttemptId: attemptId,
+      status: "running" as const,
+      requestedAt: now,
+      startedAt: now,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+    const attempt = {
+      id: attemptId,
+      runId: activeRun.id,
+      attemptOrdinal: 1,
+      rootNodeId,
+      providerInstanceId,
+      providerThreadId,
+      providerTurnId,
+      reason: "initial" as const,
+      status: "running" as const,
+      startedAt: now,
+      completedAt: null,
+      providerSettlement: null,
+    };
+    const base = makeThreadProjectionFixture();
+    let projection: OrchestrationV2ThreadProjection = {
+      ...base,
+      thread: { ...base.thread, id: initial.threadId },
+      runs: [
+        {
+          ...activeRun,
+          id: initial.historyRunId,
+          ordinal: 1,
+          activeAttemptId: null,
+          status: "completed",
+          completedAt: now,
+        },
+        activeRun,
+      ],
+      attempts: [attempt],
+      turnItems: visibleTurnItems.map((row) => row.item),
+      visibleTurnItems,
+    };
+    const state = (value: OrchestrationV2ThreadProjection): EnvironmentThreadState => ({
+      ...EMPTY_ENVIRONMENT_THREAD_STATE,
+      status: "live",
+      data: Option.some(value),
+    });
+    const source = Atom.make(AsyncResult.success(state(projection)));
+    const details = createEnvironmentThreadDetailAtoms(() => source);
+    const registry = AtomRegistry.make();
+    const ref = {
+      environmentId: EnvironmentId.make("environment:timeline-settlement"),
+      threadId: initial.threadId,
+    };
+    const releaseThread = registry.mount(details.threadAtom(ref));
+    const releaseItems = registry.mount(details.visibleTurnItemsAtom(ref));
+    try {
+      let previous: ReturnType<typeof deriveMessagesTimelineRowsWithState> | undefined;
+      let timelineState:
+        | ReturnType<typeof deriveTimelineEntriesFromVisibleTurnItemsWithState>
+        | undefined;
+      const attachmentUrlById = new Map([[image.id, "https://synthetic.test/image"]]);
+      const render = () => {
+        const detail = registry.get(details.threadAtom(ref))!.projection;
+        timelineState = deriveTimelineEntriesFromVisibleTurnItemsWithState(
+          {
+            visibleTurnItems: registry.get(details.visibleTurnItemsAtom(ref)),
+            optimisticMessages: [],
+            attachmentUrlById,
+          },
+          timelineState,
+        );
+        const timeline = timelineState.entries;
+        const latestRun = deriveThreadActivityRun(detail);
+        const input = {
+          ...initial.input,
+          timelineEntries: timeline,
+          latestRun,
+          runningRunId: latestRun?.status === "running" ? initial.runId : null,
+          isWorking: latestRun?.status === "running",
+        };
+        const next = deriveMessagesTimelineRowsWithState(input, previous);
+        expect(next.rows).toEqual(deriveMessagesTimelineRows(input));
+        if (previous !== undefined)
+          expect(previous.rows).toEqual(deriveMessagesTimelineRows(previous.input));
+        previous = next;
+        return next;
+      };
+      const apply = (event: OrchestrationV2DomainEvent) => {
+        const next = applyOrchestrationV2ProjectionEvent(projection, event);
+        expect(next).not.toBeNull();
+        projection = next!;
+        registry.set(source, AsyncResult.success(state(projection)));
+      };
+      const event = {
+        id: EventId.make("event:timeline-settlement"),
+        threadId: initial.threadId,
+        occurredAt: now,
+      };
+      const before = render();
+      const finalItem = projection.turnItems.find(
+        (item) => item.type === "assistant_message" && item.messageId === "live-assistant",
+      )!;
+      if (finalItem.type !== "assistant_message") return expect.fail("Missing assistant fixture");
+      apply({
+        ...event,
+        type: "turn-item.updated",
+        payload: {
+          ...finalItem,
+          text: "More partial",
+          updatedAt: DateTime.makeUnsafe(initial.time(8)),
+        },
+      });
+      const streaming = render();
+      expect(streaming.rows.find((row) => row.id === "history-user:0")).toBe(
+        before.rows.find((row) => row.id === "history-user:0"),
+      );
+      expect(streaming.rows.find((row) => row.id === "live-assistant")).toMatchObject({
+        assistantCopyStreaming: true,
+        message: { text: "More partial" },
+      });
+      apply({
+        ...event,
+        type: "turn-item.updated",
+        payload: {
+          ...finalItem,
+          text: "Complete",
+          streaming: false,
+          status: "completed",
+          updatedAt: DateTime.makeUnsafe(initial.time(9)),
+        },
+      });
+      const finalizedText = render();
+      expect(finalizedText.rows.find((row) => row.id === "live-assistant")).toMatchObject({
+        assistantCopyStreaming: true,
+      });
+      expect(before.rows.find((row) => row.id === "live-assistant")).toMatchObject({
+        message: { text: "Partial" },
+      });
+      const completedAt = DateTime.makeUnsafe(initial.time(9));
+      apply({
+        ...event,
+        type: "run-attempt.updated",
+        payload: {
+          ...attempt,
+          status: "completed",
+          completedAt,
+          providerSettlement: {
+            runAttemptId: attemptId,
+            providerTurnId,
+            status: "completed",
+            completedAt,
+          },
+        },
+      });
+      apply({ ...event, type: "run.updated", payload: { ...activeRun, status: "waiting" } });
+      const settled = render();
+      expect(settled.rows.find((row) => row.id === "live-assistant")).toMatchObject({
+        assistantCopyStreaming: false,
+      });
+      expect(settled.rows.find((row) => row.id === "history-user:0")).toMatchObject({
+        message: { attachments: [{ ...image, previewUrl: "https://synthetic.test/image" }] },
+      });
+      const providerFolds = settled.rows.filter(
+        (row) => row.kind === "turn-fold" && row.runId === activeRun.id,
+      );
+      expect(providerFolds.length).toBeGreaterThan(0);
+      expect(providerFolds[0]).toMatchObject({ label: "Worked for 4.0s" });
+      apply({
+        ...event,
+        type: "run.updated",
+        payload: {
+          ...activeRun,
+          status: "completed",
+          completedAt: DateTime.makeUnsafe(initial.time(59)),
+        },
+      });
+      const captured = render();
+      expect(captured.rows.find((row) => row.id === "live-assistant")).toMatchObject({
+        assistantCopyStreaming: false,
+      });
+      expect(
+        captured.rows.find((row) => row.kind === "turn-fold" && row.runId === activeRun.id),
+      ).toMatchObject({ label: "Worked for 4.0s" });
+      expect(finalizedText.rows.find((row) => row.id === "live-assistant")).toMatchObject({
+        assistantCopyStreaming: true,
+      });
+      apply({
+        ...event,
+        type: "run-attempt.updated",
+        payload: { ...attempt, status: "completed", completedAt, providerSettlement: null },
+      });
+      const restored = render();
+      expect(restored.rows.find((row) => row.id === "live-assistant")).toMatchObject({
+        assistantCopyStreaming: true,
+      });
+      expect(projection.runs.at(-1)?.status).toBe("completed");
+    } finally {
+      releaseItems();
+      releaseThread();
+      registry.dispose();
+    }
+  });
 
   it("leaves emitted rows immutable when a projection branches", () => {
     const initial = fixture("Initial");
