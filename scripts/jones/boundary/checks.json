@@ -1,0 +1,14 @@
+{
+  "schema": "jones.boundary-checks/v1",
+  "groups": [
+    {
+      "id": "jones-boundary",
+      "tests": ["scripts/jones/check-boundary.test.ts"],
+      "commands": [
+        "vp test run scripts/jones/check-boundary.test.ts",
+        "node scripts/jones/check-boundary.ts --strict --json",
+        "vp run --filter @t3tools/scripts typecheck"
+      ]
+    }
+  ]
+}

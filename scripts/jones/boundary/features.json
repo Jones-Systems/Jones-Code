@@ -1,0 +1,37 @@
+{
+  "schema": "jones.boundary-features/v1",
+  "scopeReference": "docs/operations/upstream-sync.md",
+  "baseline": "612e95df23c30e9cb08f20475d501f76393e5457",
+  "features": [
+    {
+      "id": "conversation-library",
+      "tests": [
+        "apps/server/src/conversations/Service.test.ts",
+        "packages/client-runtime/src/conversations/model.test.ts"
+      ]
+    },
+    {
+      "id": "token-accounting",
+      "tests": [
+        "apps/server/src/tokenAccounting/TokenAccountingService.test.ts",
+        "apps/web/src/state/tokenAccounting.test.ts"
+      ]
+    },
+    {
+      "id": "voice-review",
+      "tests": [
+        "apps/server/src/voiceReview/http.test.ts",
+        "apps/web/src/components/voiceReview/voiceReviewActions.test.ts"
+      ]
+    },
+    {
+      "id": "work-queue-preview",
+      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
+      "scope": "Mock submitted-work preview. Rebuild #113 real queue metadata is absent; #113 and #114 remain outside automatic scope adoption pending owner disposition."
+    },
+    {
+      "id": "boundary-inventory",
+      "tests": ["scripts/jones/check-boundary.test.ts"]
+    }
+  ]
+}
