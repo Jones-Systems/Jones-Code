@@ -1,4 +1,17 @@
 import {
+  type RecordedEvent as OrchestrationV2RecordedEvent,
+  type RecordedAppThread as OrchestrationV2AppThread,
+  type RecordedLifecycleEvent as OrchestrationV2DomainEvent,
+  type RecordedRun as OrchestrationV2Run,
+  type RecordedThreadProjection as OrchestrationV2ThreadProjection,
+  RecordedAppThreadJson as OrchestrationV2AppThreadJsonSchema,
+  RecordedRunJson as OrchestrationV2RunJsonSchema,
+  LegacyDeletionProvenance,
+  LegacyPreparationFailureDecision,
+  LegacyFailureDeletionProvenance,
+} from "./RecordedTypes.ts";
+
+import {
   latestRootProviderFailure,
   latestUnheldRun,
   threadErrorSummary,
@@ -6,22 +19,18 @@ import {
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import type {
-  OrchestrationV2AppThread,
   OrchestrationV2CheckpointScope,
   OrchestrationV2ExecutionNode,
   OrchestrationV2PlanArtifact,
   PlanId,
   OrchestrationV2ConversationMessage,
-  OrchestrationV2DomainEvent,
   OrchestrationV2ProjectedTurnItem,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderTurn,
-  OrchestrationV2Run,
   OrchestrationV2Subagent,
   OrchestrationV2ThreadShellSnapshot,
   OrchestrationV2ShellThreadStatus,
   OrchestrationV2ThreadShell,
-  OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
   ProviderInstanceId,
   ProviderSessionId,
@@ -32,7 +41,6 @@ import type {
   MessageId,
 } from "@t3tools/contracts";
 import {
-  OrchestrationV2AppThreadJson as OrchestrationV2AppThreadJsonSchema,
   OrchestrationV2CheckpointJson as OrchestrationV2CheckpointJsonSchema,
   OrchestrationV2CheckpointScopeJson as OrchestrationV2CheckpointScopeJsonSchema,
   OrchestrationV2ContextHandoffJson as OrchestrationV2ContextHandoffJsonSchema,
@@ -44,7 +52,6 @@ import {
   OrchestrationV2ProviderThreadJson as OrchestrationV2ProviderThreadJsonSchema,
   OrchestrationV2ProviderTurnJson as OrchestrationV2ProviderTurnJsonSchema,
   OrchestrationV2RunAttemptJson as OrchestrationV2RunAttemptJsonSchema,
-  OrchestrationV2RunJson as OrchestrationV2RunJsonSchema,
   OrchestrationV2RuntimeRequestJson as OrchestrationV2RuntimeRequestJsonSchema,
   OrchestrationV2SubagentJson as OrchestrationV2SubagentJsonSchema,
   OrchestrationV2TurnItemJson as OrchestrationV2TurnItemJsonSchema,
@@ -61,6 +68,14 @@ import {
   isOrchestrationV2TurnItemVisible,
 } from "@t3tools/shared/orchestrationV2Timeline";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  canonicalLegacyPayload,
+  sameLegacyBootstrapPolicy,
+  legacyPreparationGeneration,
+  legacyBootstrapCreateCommandId,
+  legacyNeverInvokedWorkspaceFailure,
+} from "./LegacyBootstrap.ts";
+import { isPublicOrchestrationEvent } from "./WireProjection.ts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -331,7 +346,7 @@ export interface ProjectionStoreV2Shape {
   ) => Effect.Effect<ProjectionRecords<K>, ProjectionStoreV2Error>;
 
   readonly apply: (
-    event: OrchestrationV2DomainEvent,
+    event: OrchestrationV2RecordedEvent,
   ) => Effect.Effect<void, ProjectionStoreV2Error>;
   /**
    * `unsettledOnly` is for background sweeps, not clients: it skips settled
@@ -583,13 +598,300 @@ export function upsertProviderTurn(
 }
 
 /** A stale run snapshot must not erase fields that other events recorded on the run. */
+function isPreparationJournalEvent(run: OrchestrationV2Run, eventId: string): boolean {
+  const preparation = run.legacyPreparation;
+  return (
+    preparation !== undefined &&
+    (eventId ===
+      `${preparation.policy.createCommandId}:preparation:${preparation.generation}:initialize:event` ||
+      eventId ===
+        `${preparation.policy.createCommandId}:preparation:${preparation.generation}:setup-policy:event` ||
+      preparation.steps.some(
+        (step) => step.intentEventId === eventId || step.outcomeEventId === eventId,
+      ))
+  );
+}
+
+function validateDeletionProvenance(
+  current: OrchestrationV2Run | undefined,
+  next: OrchestrationV2Run,
+  event: Extract<OrchestrationV2DomainEvent, { readonly type: "run.created" | "run.updated" }>,
+): boolean {
+  const incoming = next.legacyReleaseDecision?.deletion;
+  const accepted = current?.legacyReleaseDecision?.deletion;
+  const fail = () => {
+    throw new Error("Malformed or replaced legacy D provenance.");
+  };
+  if (incoming === undefined) {
+    if (accepted !== undefined && next.legacyReleaseDecision !== undefined) {
+      const { deletion: _old, ...oldDecision } = current!.legacyReleaseDecision!;
+      if (
+        canonicalLegacyPayload(oldDecision) !== canonicalLegacyPayload(next.legacyReleaseDecision)
+      )
+        return fail();
+    }
+    return false;
+  }
+  if (
+    current !== undefined &&
+    (event.type !== "run.updated" ||
+      event.threadId !== current.threadId ||
+      event.runId !== current.id ||
+      next.threadId !== current.threadId ||
+      next.id !== current.id)
+  )
+    return fail();
+  if (accepted !== undefined) {
+    if (!Schema.toEquivalence(LegacyDeletionProvenance)(accepted, incoming)) return fail();
+    const { deletion: _old, ...oldDecision } = current!.legacyReleaseDecision!;
+    const { deletion: _next, ...nextDecision } = next.legacyReleaseDecision!;
+    if (canonicalLegacyPayload(oldDecision) !== canonicalLegacyPayload(nextDecision)) return fail();
+    return true;
+  }
+  const decision = current?.legacyReleaseDecision;
+  const preparation = current?.legacyPreparation;
+  if (
+    current === undefined ||
+    decision === undefined ||
+    preparation === undefined ||
+    event.type !== "run.updated"
+  )
+    return fail();
+  const proof = Schema.decodeUnknownSync(LegacyDeletionProvenance)(incoming);
+  const { deletion: _deletion, ...original } = next.legacyReleaseDecision!;
+  const control = proof.control;
+  if (
+    event.threadId !== current.threadId ||
+    event.runId !== current.id ||
+    next.id !== current.id ||
+    next.threadId !== current.threadId ||
+    event.id !== proof.evidenceEventId ||
+    proof.evidenceEventId !== `${proof.commandId}:event` ||
+    proof.commandId !== `${proof.policy.createCommandId}:guard-rejection-delete` ||
+    proof.policy.createCommandId !==
+      legacyBootstrapCreateCommandId(proof.threadId, proof.policy.releaseCommandId) ||
+    proof.threadId !== current.threadId ||
+    proof.runId !== current.id ||
+    proof.policy.runId !== current.id ||
+    !proof.policy.ownsNewThread ||
+    current.status !== "failed" ||
+    current.startedAt !== null ||
+    next.status !== "failed" ||
+    next.startedAt !== null ||
+    canonicalLegacyPayload(original) !== canonicalLegacyPayload(decision) ||
+    canonicalLegacyPayload(next.legacyPreparation) !== canonicalLegacyPayload(preparation) ||
+    next.legacyBootstrap === undefined ||
+    current.legacyBootstrap === undefined ||
+    !sameLegacyBootstrapPolicy(proof.policy, decision.policy) ||
+    !sameLegacyBootstrapPolicy(proof.policy, preparation.policy) ||
+    !sameLegacyBootstrapPolicy(proof.policy, current.legacyBootstrap) ||
+    !sameLegacyBootstrapPolicy(proof.policy, next.legacyBootstrap) ||
+    !sameLegacyBootstrapPolicy(proof.policy, control.policy) ||
+    control.threadId !== proof.threadId ||
+    control.runId !== proof.runId ||
+    proof.projectWorkspaceRoot !== preparation.projectWorkspaceRoot ||
+    proof.preparationGeneration !== preparation.generation ||
+    control.preparationGeneration !== preparation.generation ||
+    preparation.generation !==
+      legacyPreparationGeneration({
+        runId: current.id,
+        birthEventId: decision.birthEventId,
+        birthSequence: decision.birthSequence,
+      }) ||
+    (
+      [
+        "claimEventId",
+        "claimSequence",
+        "claimReceiptSequence",
+        "birthEventId",
+        "birthSequence",
+        "birthReceiptSequence",
+      ] as const
+    ).some(
+      (field) =>
+        proof[field] !== decision[field] ||
+        proof[field] !== preparation[field] ||
+        proof[field] !== control[field],
+    ) ||
+    (proof.type === "no_control"
+      ? !["no_script", "opted_out"].includes(preparation.setup.status) ||
+        proof.workspacePath !== proof.control.workspacePath ||
+        proof.projectWorkspaceRoot !== proof.control.projectWorkspaceRoot ||
+        preparation.steps.some(
+          (step) => step.effect.kind.startsWith("setup.") || step.effect.kind === "terminal.close",
+        )
+      : preparation.setup.status !== "resolved" ||
+        proof.workspacePath !== preparation.setup.definition.cwd ||
+        proof.control.terminalId !== preparation.setup.definition.terminalId ||
+        proof.control.generation !== preparation.setup.definition.generation)
+  )
+    return fail();
+  return true;
+}
+
+function validateFailureDecision(
+  current: OrchestrationV2Run | undefined,
+  next: OrchestrationV2Run,
+  event: Extract<OrchestrationV2DomainEvent, { readonly type: "run.created" | "run.updated" }>,
+): boolean {
+  const incoming = next.legacyPreparationFailureDecision;
+  const accepted = current?.legacyPreparationFailureDecision;
+  const fail = () => {
+    throw new Error("Malformed or replaced legacy workspace-failure provenance.");
+  };
+  if (incoming === undefined) return false;
+  const decision = Schema.decodeUnknownSync(LegacyPreparationFailureDecision)(incoming);
+  const { deletion: _incomingDeletion, ...original } = decision;
+  const { deletion: _acceptedDeletion, ...previous } = accepted ?? decision;
+  if (
+    accepted !== undefined &&
+    canonicalLegacyPayload(original) !== canonicalLegacyPayload(previous)
+  )
+    return fail();
+  if (accepted !== undefined) {
+    if (
+      current === undefined ||
+      event.type !== "run.updated" ||
+      next.id !== current.id ||
+      next.threadId !== current.threadId ||
+      event.threadId !== current.threadId ||
+      event.runId !== current.id
+    )
+      return fail();
+    if (decision.deletion === undefined) return false;
+    if (accepted.deletion !== undefined) {
+      if (
+        !Schema.toEquivalence(LegacyFailureDeletionProvenance)(accepted.deletion, decision.deletion)
+      )
+        return fail();
+      return true;
+    }
+  }
+  const candidate = current === undefined ? undefined : legacyNeverInvokedWorkspaceFailure(current);
+  if (
+    current === undefined ||
+    candidate === undefined ||
+    event.type !== "run.updated" ||
+    next.id !== current.id ||
+    next.threadId !== current.threadId ||
+    event.threadId !== current.threadId ||
+    event.runId !== current.id ||
+    next.status !== "failed" ||
+    next.startedAt !== null ||
+    canonicalLegacyPayload(next.legacyPreparation) !==
+      canonicalLegacyPayload(current.legacyPreparation) ||
+    canonicalLegacyPayload(next.legacyBootstrap) !==
+      canonicalLegacyPayload(current.legacyBootstrap) ||
+    !sameLegacyBootstrapPolicy(decision.policy, candidate.policy) ||
+    decision.failureCommandId !== `${candidate.policy.createCommandId}:fail` ||
+    decision.preparationGeneration !== candidate.preparation.generation ||
+    decision.projectWorkspaceRoot !== candidate.preparation.projectWorkspaceRoot ||
+    decision.workspacePath !== candidate.preparation.projectWorkspaceRoot ||
+    decision.failedEffectId !== candidate.step.effectId ||
+    decision.failedInputHash !== candidate.step.inputHash ||
+    decision.outcomeCommandId !== candidate.step.outcomeCommandId ||
+    decision.outcomeEventId !== candidate.step.outcomeEventId ||
+    decision.outcomeEventSequence !== decision.outcomeReceiptSequence ||
+    decision.outcomeEventSequence <= decision.birthReceiptSequence ||
+    (
+      [
+        "claimEventId",
+        "claimSequence",
+        "claimReceiptSequence",
+        "birthEventId",
+        "birthSequence",
+        "birthReceiptSequence",
+      ] as const
+    ).some((field) => decision[field] !== candidate.preparation[field])
+  )
+    return fail();
+  if (accepted === undefined) {
+    if (
+      current.status !== "preparing" ||
+      event.id !== decision.evidenceEventId ||
+      decision.deletion !== undefined
+    )
+      return fail();
+    return true;
+  }
+  if (decision.deletion === undefined) return false;
+  if (accepted.deletion !== undefined) {
+    if (
+      !Schema.toEquivalence(LegacyFailureDeletionProvenance)(accepted.deletion, decision.deletion)
+    )
+      return fail();
+    return true;
+  }
+  const deletion = Schema.decodeUnknownSync(LegacyFailureDeletionProvenance)(decision.deletion);
+  const proof = deletion.provenance;
+  if (
+    current.status !== "failed" ||
+    proof.type !== "no_control" ||
+    event.id !== proof.evidenceEventId ||
+    proof.evidenceEventId !== `${proof.commandId}:event` ||
+    proof.commandId !== `${decision.policy.createCommandId}:failure-delete` ||
+    proof.threadId !== current.threadId ||
+    proof.runId !== current.id ||
+    !sameLegacyBootstrapPolicy(proof.policy, decision.policy) ||
+    !sameLegacyBootstrapPolicy(proof.control.policy, decision.policy) ||
+    proof.control.threadId !== current.threadId ||
+    proof.control.runId !== current.id ||
+    proof.preparationGeneration !== decision.preparationGeneration ||
+    proof.control.preparationGeneration !== decision.preparationGeneration ||
+    proof.workspacePath !== decision.workspacePath ||
+    proof.projectWorkspaceRoot !== decision.projectWorkspaceRoot ||
+    proof.control.workspacePath !== decision.workspacePath ||
+    proof.control.projectWorkspaceRoot !== decision.projectWorkspaceRoot ||
+    deletion.failureCommandId !== decision.failureCommandId ||
+    deletion.failureEvidenceEventId !== decision.evidenceEventId ||
+    deletion.failureEventSequence !== deletion.failureReceiptSequence ||
+    deletion.failureEventSequence <= decision.outcomeEventSequence ||
+    (
+      [
+        "claimEventId",
+        "claimSequence",
+        "claimReceiptSequence",
+        "birthEventId",
+        "birthSequence",
+        "birthReceiptSequence",
+      ] as const
+    ).some((field) => proof[field] !== decision[field] || proof.control[field] !== decision[field])
+  )
+    return fail();
+  return true;
+}
+
 function preserveRunRecordedFields(
   current: OrchestrationV2Run | undefined,
   next: OrchestrationV2Run,
+  event: Extract<OrchestrationV2DomainEvent, { readonly type: "run.created" | "run.updated" }>,
 ): OrchestrationV2Run {
+  const authoritativeDeletion = validateDeletionProvenance(current, next, event);
+  const authoritativeFailure = validateFailureDecision(current, next, event);
+  const eventId = event.id;
   if (current === undefined) return next;
   return {
     ...next,
+    ...(current.legacyBootstrap === undefined ? {} : { legacyBootstrap: current.legacyBootstrap }),
+    ...(next.workspaceRunSetupScript === undefined && current.workspaceRunSetupScript !== undefined
+      ? { workspaceRunSetupScript: current.workspaceRunSetupScript }
+      : {}),
+    ...(next.legacyPreparationFailureKnown === undefined &&
+    current.legacyPreparationFailureKnown !== undefined
+      ? { legacyPreparationFailureKnown: current.legacyPreparationFailureKnown }
+      : {}),
+    ...(current.legacyPreparation !== undefined && !isPreparationJournalEvent(next, eventId)
+      ? { legacyPreparation: current.legacyPreparation }
+      : {}),
+    ...(current.legacyPreparationFailureDecision !== undefined && !authoritativeFailure
+      ? { legacyPreparationFailureDecision: current.legacyPreparationFailureDecision }
+      : {}),
+    ...(current.legacyReleaseDecision !== undefined &&
+    !authoritativeDeletion &&
+    (current.legacyReleaseDecision.deletion !== undefined ||
+      next.legacyReleaseDecision?.evidenceEventId !== eventId)
+      ? { legacyReleaseDecision: current.legacyReleaseDecision }
+      : {}),
     ...(next.queuedToolBoundaryEligible === undefined &&
     current.queuedToolBoundaryEligible !== undefined
       ? { queuedToolBoundaryEligible: current.queuedToolBoundaryEligible }
@@ -651,8 +953,9 @@ function isQueuedProviderThreadPlaceholder(providerThread: OrchestrationV2Provid
 
 export function applyToProjection(
   projection: OrchestrationV2ThreadProjection,
-  event: OrchestrationV2DomainEvent,
+  event: OrchestrationV2RecordedEvent,
 ): OrchestrationV2ThreadProjection {
+  if (!isPublicOrchestrationEvent(event)) return projection;
   const base = {
     ...projection,
     thread: {
@@ -703,6 +1006,7 @@ export function applyToProjection(
           preserveRunRecordedFields(
             base.runs.find((run) => run.id === event.payload.id),
             event.payload,
+            event,
           ),
         ),
       });
@@ -840,8 +1144,9 @@ function makeProjectionReplayState(): ProjectionReplayState {
 
 function applyToProjectionReplayState(
   state: ProjectionReplayState,
-  event: OrchestrationV2DomainEvent,
+  event: OrchestrationV2RecordedEvent,
 ): boolean {
+  if (!isPublicOrchestrationEvent(event)) return true;
   if (event.type === "thread.created" && !state.projections.has(event.threadId)) {
     state.projections.set(event.threadId, emptyProjection(event));
     return true;
@@ -1701,6 +2006,19 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     const sql = yield* SqlClient.SqlClient;
 
     // For run upserts: a snapshot without `path` keeps the value another event recorded there.
+    const preservePrivateRunField = (
+      payload: Statement.Fragment,
+      fieldPath: string,
+      authoritative: boolean,
+    ) => sql`
+      CASE WHEN json_type(orchestration_v2_projection_runs.payload_json, ${fieldPath}) IS NOT NULL
+        AND (${!authoritative} OR json_type(excluded.payload_json, ${fieldPath}) IS NULL)
+      THEN json_set(${payload}, ${fieldPath},
+        CASE json_type(orchestration_v2_projection_runs.payload_json, ${fieldPath})
+          WHEN 'true' THEN json('true') WHEN 'false' THEN json('false')
+          ELSE json_extract(orchestration_v2_projection_runs.payload_json, ${fieldPath}) END)
+      ELSE ${payload} END
+    `;
     const keepRecordedRunField = (payload: Statement.Fragment, path: string) => sql`
       CASE
         WHEN json_type(excluded.payload_json, ${path}) IS NULL
@@ -1724,6 +2042,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
 
     const apply: ProjectionStoreV2Shape["apply"] = (event) =>
       Effect.gen(function* () {
+        if (!isPublicOrchestrationEvent(event)) return;
         switch (event.type) {
           case "thread.created":
           case "thread.archived":
@@ -1798,8 +2117,93 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           }
           case "run.created":
           case "run.updated": {
+            const rows = yield* sql<{
+              payload_json: string;
+            }>`SELECT payload_json FROM orchestration_v2_projection_runs WHERE run_id = ${event.payload.id}`;
+            const current =
+              rows[0] === undefined ? undefined : yield* decodeRunPayload(rows[0].payload_json);
+            const authoritativeDeletion = yield* Effect.try({
+              try: () => validateDeletionProvenance(current, event.payload, event),
+              catch: (cause) =>
+                new ProjectionStoreApplyEventError({ eventType: event.type, cause }),
+            });
+            if (
+              event.payload.legacyReleaseDecision?.deletion !== undefined &&
+              current?.legacyReleaseDecision?.deletion === undefined
+            ) {
+              const proof = event.payload.legacyReleaseDecision.deletion;
+              const recorded = yield* sql<{
+                command_id: string | null;
+                stream_id: string;
+                event_type: string;
+              }>`
+                SELECT command_id, stream_id, event_type FROM orchestration_events WHERE event_id = ${event.id}`;
+              if (
+                recorded.length !== 1 ||
+                recorded[0]?.command_id !== proof.commandId ||
+                recorded[0].stream_id !== proof.threadId ||
+                recorded[0].event_type !== "run.updated"
+              )
+                return yield* new ProjectionStoreApplyEventError({
+                  eventType: event.type,
+                  cause: "D evidence lacks exact durable command correlation.",
+                });
+            }
+            const authoritativeFailure = yield* Effect.try({
+              try: () => validateFailureDecision(current, event.payload, event),
+              catch: (cause) =>
+                new ProjectionStoreApplyEventError({ eventType: event.type, cause }),
+            });
+            const failureDecision = event.payload.legacyPreparationFailureDecision;
+            if (
+              failureDecision !== undefined &&
+              (current?.legacyPreparationFailureDecision === undefined ||
+                (failureDecision.deletion !== undefined &&
+                  current.legacyPreparationFailureDecision.deletion === undefined))
+            ) {
+              const expectedCommandId =
+                failureDecision.deletion?.provenance.commandId ?? failureDecision.failureCommandId;
+              const recorded = yield* sql<{
+                command_id: string | null;
+                stream_id: string;
+                event_type: string;
+              }>`
+                SELECT command_id, stream_id, event_type FROM orchestration_events WHERE event_id = ${event.id}`;
+              if (
+                recorded.length !== 1 ||
+                recorded[0]?.command_id !== expectedCommandId ||
+                recorded[0].stream_id !== event.threadId ||
+                recorded[0].event_type !== "run.updated"
+              )
+                return yield* new ProjectionStoreApplyEventError({
+                  eventType: event.type,
+                  cause: "Workspace-failure evidence lacks exact durable command correlation.",
+                });
+            }
             const payloadJson = yield* encodeRunPayload(event.payload);
             const payload = parseEncodedPayload(payloadJson);
+            let preservedPayload: Statement.Fragment = keepRecordedRunField(
+              keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
+              "$.restartCancelledBackgroundWork",
+            );
+            for (const [fieldPath, authoritative] of [
+              ["$.legacyBootstrap", false],
+              ["$.workspaceRunSetupScript", true],
+              ["$.legacyPreparationFailureKnown", true],
+              ["$.legacyPreparationFailureDecision", authoritativeFailure],
+              ["$.legacyPreparation", isPreparationJournalEvent(event.payload, event.id)],
+              [
+                "$.legacyReleaseDecision",
+                authoritativeDeletion ||
+                  (current?.legacyReleaseDecision?.deletion === undefined &&
+                    event.payload.legacyReleaseDecision?.evidenceEventId === event.id),
+              ],
+            ] as const)
+              preservedPayload = preservePrivateRunField(
+                preservedPayload,
+                fieldPath,
+                authoritative,
+              );
             yield* sql`
               INSERT INTO orchestration_v2_projection_runs (
                 run_id,
@@ -1835,12 +2239,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 status = excluded.status,
                 requested_at = excluded.requested_at,
                 completed_at = excluded.completed_at,
-                payload_json = ${keepRecordedQueueEligibility(
-                  keepRecordedRunField(
-                    keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
-                    "$.restartCancelledBackgroundWork",
-                  ),
-                )}
+                payload_json = ${keepRecordedQueueEligibility(preservedPayload)}
             `;
             break;
           }
@@ -5742,19 +6141,34 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
     const service: ProjectionStoreV2Shape = {
       apply: (event) =>
         Effect.gen(function* () {
-          const result = yield* Ref.modify(replayState, (existing) => {
-            const next: ProjectionReplayState = {
-              projections: new Map(existing.projections),
-              providerSessionThreadIds: new Map(existing.providerSessionThreadIds),
-            };
-            if (!applyToProjectionReplayState(next, event)) {
-              return [
-                new ProjectionStoreThreadNotFoundError({ threadId: event.threadId }),
-                existing,
-              ] as const;
-            }
-            return [undefined, next] as const;
-          });
+          const result = yield* Ref.modify(
+            replayState,
+            (
+              existing,
+            ): readonly [
+              ProjectionStoreApplyEventError | ProjectionStoreThreadNotFoundError | undefined,
+              ProjectionReplayState,
+            ] => {
+              const next: ProjectionReplayState = {
+                projections: new Map(existing.projections),
+                providerSessionThreadIds: new Map(existing.providerSessionThreadIds),
+              };
+              try {
+                if (!applyToProjectionReplayState(next, event)) {
+                  return [
+                    new ProjectionStoreThreadNotFoundError({ threadId: event.threadId }),
+                    existing,
+                  ] as const;
+                }
+              } catch (cause) {
+                return [
+                  new ProjectionStoreApplyEventError({ eventType: event.type, cause }),
+                  existing,
+                ] as const;
+              }
+              return [undefined, next] as const;
+            },
+          );
 
           if (result) {
             return yield* result;

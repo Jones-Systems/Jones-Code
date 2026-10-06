@@ -1,6 +1,17 @@
+import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
+import * as CodexErrors from "effect-codex-app-server/errors";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
 import { assert, it } from "@effect/vitest";
 
-import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
+import {
+  applyPreferredCodexDefaultModel,
+  mapCodexModelCapabilities,
+  checkCodexProviderStatus,
+} from "./CodexProvider.ts";
 
 it("uses medium instead of low for newly discovered Codex models when supported", () => {
   const capabilities = mapCodexModelCapabilities({
@@ -209,3 +220,194 @@ it("ignores custom models that shadow a preferred slug", () => {
 
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
 });
+
+it.effect(
+  "publishes qualified full-map quota with receipt provenance and fresh model capabilities",
+  () =>
+    Effect.gen(function* () {
+      const receipt = "2026-09-30T12:00:01.000Z";
+      const map = {
+        codex: { primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: 1791000000 } },
+        other: { secondary: { usedPercent: 10, windowDurationMins: 10080, resetsAt: 1792000000 } },
+      };
+      const settings = yield* Schema.decodeEffect(CodexSettings)({});
+      const status = yield* checkCodexProviderStatus(
+        settings,
+        () =>
+          Effect.succeed({
+            account: {
+              account: { type: "chatgpt", email: "private@example.com", planType: "pro" },
+              requiresOpenaiAuth: true,
+            },
+            version: "1.0",
+            skills: [],
+            models: [
+              {
+                slug: "gpt-6.1-sol",
+                name: "Sol",
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "reasoningEffort",
+                      label: "Reasoning",
+                      type: "select",
+                      options: [{ id: "medium", label: "Medium" }],
+                    },
+                  ],
+                },
+              },
+              { slug: "custom", name: "Custom", isCustom: true, capabilities: null },
+            ],
+            rateLimits: {
+              snapshot: map.codex,
+              rateLimitsByLimitId: map,
+              quotaReceivedAt: receipt,
+              resetCredits: null,
+              ordinaryUsageAllowed: true,
+              accountId: "private-quota-account-sentinel",
+            },
+          }),
+        {},
+        undefined,
+        ProviderInstanceId.make("named-codex-instance"),
+      );
+      assert.strictEqual(status.qualifiedQuota?.instanceId, "named-codex-instance");
+      assert.strictEqual(status.qualifiedQuota?.status, "qualified");
+      assert.strictEqual(status.qualifiedQuota?.quotaReceivedAt, receipt);
+      assert.deepStrictEqual(status.qualifiedQuota?.rateLimitsByLimitId, map);
+      assert.deepStrictEqual(
+        status.qualifiedQuota?.capabilityRefs.map((ref) => [ref.modelId, ref.reasoningEfforts]),
+        [["gpt-6.1-sol", ["medium"]]],
+      );
+      const serializedQuota = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+        status.qualifiedQuota ?? null,
+      );
+      assert.strictEqual(serializedQuota.includes("private@example.com"), false);
+      assert.strictEqual(serializedQuota.includes("private-quota-account-sentinel"), false);
+      assert.strictEqual(serializedQuota.includes("ordinaryUsageAllowed"), false);
+      assert.strictEqual(serializedQuota.includes("bindingGeneration"), false);
+    }).pipe(
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => Effect.die("unexpected spawn")),
+      ),
+    ),
+);
+
+it.effect(
+  "a failed full probe publishes failed quota rather than an eligible last-good value",
+  () =>
+    Effect.gen(function* () {
+      const settings = yield* Schema.decodeEffect(CodexSettings)({});
+      const status = yield* checkCodexProviderStatus(settings, () =>
+        Effect.fail(
+          new CodexErrors.CodexAppServerSpawnError({
+            command: "fixture",
+            cause: new Error("private fixture error"),
+          }),
+        ),
+      );
+      assert.strictEqual(status.qualifiedQuota?.status, "failed");
+      assert.strictEqual(status.qualifiedQuota?.complete, false);
+      assert.strictEqual(status.qualifiedQuota?.quotaReceivedAt, null);
+      assert.strictEqual(status.qualifiedQuota?.rateLimitsByLimitId, null);
+      const serializedQuota = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+        status.qualifiedQuota ?? null,
+      );
+      assert.strictEqual(serializedQuota.includes("private fixture error"), false);
+    }).pipe(
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => Effect.die("unexpected spawn")),
+      ),
+    ),
+);
+
+it.effect(
+  "preserves managedAuth as argument four and never qualifies its skipped native usage",
+  () =>
+    Effect.gen(function* () {
+      const settings = yield* Schema.decodeEffect(CodexSettings)({});
+      const managedAuth = {
+        status: "authenticated" as const,
+        type: "chatgpt",
+        subscriptionSharing: true,
+        label: "Managed",
+        email: "private-managed-email",
+      };
+      const result = yield* checkCodexProviderStatus(
+        settings,
+        (input) => {
+          assert.strictEqual(input.skipNativeUsage, true);
+          return Effect.succeed({
+            account: {
+              account: {
+                type: "chatgpt" as const,
+                email: "native-sentinel",
+                planType: "pro" as const,
+              },
+              requiresOpenaiAuth: true,
+            },
+            models: [],
+            skills: [],
+            version: "1.0",
+            rateLimits: {
+              ordinaryUsageAllowed: true,
+              accountId: "private-native-account",
+              quotaReceivedAt: "2026-09-30T12:00:01.000Z",
+              resetCredits: null,
+              snapshot: {
+                primary: { usedPercent: 0, resetsAt: 1791000000, windowDurationMins: 300 },
+              },
+              rateLimitsByLimitId: {
+                codex: {
+                  primary: { usedPercent: 0, resetsAt: 1791000000, windowDurationMins: 300 },
+                },
+              },
+            },
+          });
+        },
+        {},
+        managedAuth,
+        ProviderInstanceId.make("managed-codex"),
+      );
+      assert.deepStrictEqual(result.auth, managedAuth);
+      assert.strictEqual(result.usageLimits, undefined);
+      assert.strictEqual(result.qualifiedQuota?.instanceId, "managed-codex");
+      assert.strictEqual(result.qualifiedQuota?.status, "unsupported");
+      assert.strictEqual(result.qualifiedQuota?.failureCode, "unsupported_account");
+      assert.strictEqual(result.qualifiedQuota?.rateLimitsByLimitId, null);
+      const json = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+        result.qualifiedQuota,
+      );
+      assert.strictEqual(json.includes("private-native-account"), false);
+      assert.strictEqual(json.includes("private-managed-email"), false);
+      assert.strictEqual(json.includes("native-sentinel"), false);
+    }).pipe(
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => Effect.die("unexpected spawn")),
+      ),
+    ),
+);
+
+it.effect("a bounded whole-probe timeout cannot qualify a partial quota response", () =>
+  Effect.gen(function* () {
+    const settings = yield* Schema.decodeEffect(CodexSettings)({});
+    const fiber = yield* checkCodexProviderStatus(settings, () => Effect.never).pipe(
+      Effect.forkChild,
+    );
+    yield* TestClock.adjust("11 seconds");
+    const result = yield* Fiber.join(fiber);
+    assert.strictEqual(result.qualifiedQuota?.status, "failed");
+    assert.strictEqual(result.qualifiedQuota?.failureCode, "probe_timeout");
+    assert.strictEqual(result.qualifiedQuota?.quotaReceivedAt, null);
+    assert.strictEqual(result.qualifiedQuota?.rateLimitsByLimitId, null);
+  }).pipe(
+    Effect.provideService(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make(() => Effect.die("unexpected spawn")),
+    ),
+  ),
+);

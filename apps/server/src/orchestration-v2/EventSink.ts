@@ -1,12 +1,27 @@
+import { DispatchGuardRejected } from "./DispatchGuard.ts";
 import {
+  type RecordedRun as OrchestrationV2Run,
+  RecordedLifecycleEvent as OrchestrationV2DomainEvent,
+  type RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
+  RecordedStoredLifecycleEvent as OrchestrationV2StoredEvent,
+} from "./RecordedTypes.ts";
+import {
+  canonicalLegacyPayload,
+  legacyPayloadHash,
+  legacyBootstrapCreateCommandId,
+  legacyBootstrapBirth,
+  sameLegacyBootstrapPolicy,
+} from "./LegacyBootstrap.ts";
+import {
+  type OrchestrationV2StoredEvent as PublicStoredEvent,
   CommandId,
   type OrchestrationV2ProviderThread,
   type ProviderRuntimeEvidenceCapture,
   type RequestedRuntimeIdentity,
+  type OrchestrationV2PrivateEvent,
+  OrchestrationV2LegacyPreflightBinding,
+  QueueDispatchCommand,
   type MessageId,
-  type OrchestrationV2Run,
-  OrchestrationV2DomainEvent,
-  OrchestrationV2StoredEvent,
   ProviderThreadId,
   RunAttemptId,
   RunId,
@@ -29,7 +44,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { identityForRequest } from "./ProviderAdapter.ts";
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/Services/OrchestrationEventStore.ts";
-import { projectDomainEventForWire } from "./WireProjection.ts";
+import { isPublicStoredOrchestrationEvent, projectDomainEventForWire } from "./WireProjection.ts";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -110,7 +125,24 @@ function runtimeEvidenceMatches(
 /**
  * SERVICE DEFINITION
  */
+interface EventSinkStreamInput {
+  readonly threadId?: ThreadId;
+  readonly afterSequence?: number;
+  /** Filter before queuing so workers retain only the events they handle. */
+  readonly eventType?: OrchestrationV2DomainEvent["type"];
+  /** Bounded subscribers receive projected public events. Workers retain recorded values. */
+  readonly bounded?: boolean;
+}
+
 export interface EventSinkV2Shape {
+  readonly commitLegacyPreflight: (input: {
+    readonly commandId: CommandId;
+    readonly event: OrchestrationV2PrivateEvent;
+  }) => Effect.Effect<
+    { readonly receipt: CommandReceiptStore.CommandReceiptV2; readonly committed: boolean },
+    EventSinkV2Error
+  >;
+
   readonly write: (input: {
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
@@ -204,6 +236,10 @@ export interface EventSinkV2Shape {
     readonly commandType: string;
     readonly rejectedAt: DateTime.Utc;
     readonly error: string;
+    readonly legacyGuardRejection?: {
+      readonly rejection: DispatchGuardRejected;
+      readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
+    };
   }) => Effect.Effect<CommandReceiptStore.CommandReceiptV2, EventSinkV2Error>;
   /**
    * Append a project event, fold it into its row and record the receipt in one
@@ -227,14 +263,17 @@ export interface EventSinkV2Shape {
     readonly rejectedAt: DateTime.Utc;
     readonly error: string;
   }) => Effect.Effect<CommandReceiptStore.ProjectCommandReceiptV2, EventSinkV2Error>;
-  readonly stream: (input?: {
-    readonly threadId?: ThreadId;
-    readonly afterSequence?: number;
-    /** Filter before queuing live events so a busy worker retains only the events it handles. */
-    readonly eventType?: OrchestrationV2DomainEvent["type"];
-    /** Bound RPC subscribers; internal workers must not drop their subscription under load. */
-    readonly bounded?: boolean;
-  }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
+  readonly stream: {
+    (
+      input: EventSinkStreamInput & { readonly bounded: true },
+    ): Stream.Stream<PublicStoredEvent, EventSinkV2Error>;
+    (
+      input?: EventSinkStreamInput & { readonly bounded?: false },
+    ): Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
+    (
+      input?: EventSinkStreamInput,
+    ): Stream.Stream<PublicStoredEvent | OrchestrationV2StoredEvent, EventSinkV2Error>;
+  };
   readonly latestSequence: (input?: {
     readonly threadId?: ThreadId;
   }) => Effect.Effect<number, EventSinkV2Error>;
@@ -268,6 +307,9 @@ export class EventSinkV2 extends Context.Service<EventSinkV2, EventSinkV2Shape>(
 /**
  * IMPLEMENTATIONS
  */
+const isDispatchGuardRejected = (value: unknown): value is DispatchGuardRejected =>
+  Schema.is(DispatchGuardRejected)(value);
+
 const baseLayer: Layer.Layer<
   EventSinkV2,
   never,
@@ -303,8 +345,10 @@ const baseLayer: Layer.Layer<
           );
         }
       });
-    const publishStoredEvents = (events: ReadonlyArray<OrchestrationV2StoredEvent>) =>
-      eventStore.publishCommitted(events).pipe(Effect.andThen(publishLiveEvents(events)));
+    const publishStoredEvents = (events: ReadonlyArray<OrchestrationV2RecordedStoredEvent>) =>
+      eventStore
+        .publishCommitted(events)
+        .pipe(Effect.andThen(publishLiveEvents(events.filter(isPublicStoredOrchestrationEvent))));
 
     // Transactions commit one at a time, but each writer publishes after its
     // commit. If a writer is descheduled in between, a later commit reaches
@@ -511,7 +555,7 @@ const baseLayer: Layer.Layer<
       );
     };
 
-    const applyStoredEvents = (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) =>
+    const applyStoredEvents = (storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>) =>
       Effect.gen(function* () {
         yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
           concurrency: 1,
@@ -559,10 +603,12 @@ const baseLayer: Layer.Layer<
               ? yield* guardUserInputCancellations(identityEvents)
               : identityEvents,
           );
-          const committed = yield* eventStore.append({
-            ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-            events: normalized,
-          });
+          const committed = yield* eventStore
+            .append({
+              ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+              events: normalized,
+            })
+            .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           yield* applyStoredEvents(committed);
           yield* effectOutbox.enqueue(input.effects);
           return committed;
@@ -623,10 +669,12 @@ const baseLayer: Layer.Layer<
                 ? yield* guardUserInputCancellations(identityEvents)
                 : identityEvents,
             );
-            const storedEvents = yield* eventStore.append({
-              ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-              events: normalized,
-            });
+            const storedEvents = yield* eventStore
+              .append({
+                ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+                events: normalized,
+              })
+              .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
             yield* applyStoredEvents(storedEvents);
             return { committed: true as const, storedEvents };
           }),
@@ -686,10 +734,12 @@ const baseLayer: Layer.Layer<
               ? yield* guardUserInputCancellations(identityEvents)
               : identityEvents,
           );
-          const storedEvents = yield* eventStore.append({
-            ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-            events: normalized,
-          });
+          const storedEvents = yield* eventStore
+            .append({
+              ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+              events: normalized,
+            })
+            .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           yield* applyStoredEvents(storedEvents);
           return { committed: true as const, storedEvents };
         }),
@@ -706,6 +756,7 @@ const baseLayer: Layer.Layer<
           );
         }
         const storedEvents = yield* eventStore.readByCommandId({ commandId }).pipe(
+          Stream.filter(isPublicStoredOrchestrationEvent),
           Stream.runCollect,
           Effect.map((events): ReadonlyArray<OrchestrationV2StoredEvent> => Array.from(events)),
         );
@@ -732,10 +783,12 @@ const baseLayer: Layer.Layer<
           }
 
           const normalized = yield* normalizeEvents(input.events);
-          const storedEvents = yield* eventStore.append({
-            commandId: input.commandId,
-            events: normalized,
-          });
+          const storedEvents = yield* eventStore
+            .append({
+              commandId: input.commandId,
+              events: normalized,
+            })
+            .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           const sequence = storedEvents.at(-1)?.sequence;
           if (sequence === undefined) {
             return yield* Effect.die(
@@ -780,29 +833,402 @@ const baseLayer: Layer.Layer<
       };
     });
 
+    const samePreflightBinding = Schema.toEquivalence(OrchestrationV2LegacyPreflightBinding);
+    const readPreflight = (commandId: CommandId) =>
+      eventStore.readByCommandId({ commandId }).pipe(
+        Stream.runCollect,
+        Effect.map((events) => Array.from(events)),
+      );
+    const commitLegacyPreflight = Effect.fn("orchestrationV2.EventSink.commitLegacyPreflight")(
+      function* (input: Parameters<EventSinkV2Shape["commitLegacyPreflight"]>[0]) {
+        const event = input.event;
+        const binding =
+          event.type === "legacy-bootstrap.preflight-intent"
+            ? event.payload
+            : event.payload.binding;
+        const policy = binding.policy;
+        const intentId = CommandId.make(`${policy.createCommandId}:preflight-intent`);
+        const outcomeId = CommandId.make(`${policy.createCommandId}:preflight-outcome`);
+        const reject = (detail: string) => new Error(detail);
+        const payload = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(QueueDispatchCommand),
+        )(binding.canonicalPayload);
+        if (
+          payload.type !== "thread.turn.start" ||
+          payload.bootstrap === undefined ||
+          policy.runId !== undefined ||
+          policy.createCommandId !==
+            legacyBootstrapCreateCommandId(policy.threadId, policy.releaseCommandId) ||
+          policy.birthCommandId !== `${policy.createCommandId}:initial-message` ||
+          event.threadId !== policy.threadId ||
+          binding.fetch.remote !== (binding.fetch.startFromOrigin ? "origin" : null) ||
+          canonicalLegacyPayload(policy.dispatchGuard ?? null) !==
+            canonicalLegacyPayload(payload.dispatchGuard ?? null) ||
+          policy.payloadHash !== legacyPayloadHash(binding.canonicalPayload) ||
+          binding.canonicalPayload !== canonicalLegacyPayload(payload) ||
+          payload.threadId !== policy.threadId ||
+          payload.commandId !== policy.releaseCommandId ||
+          payload.message.messageId !== policy.messageId ||
+          (payload.bootstrap.createThread !== undefined &&
+            payload.bootstrap.createThread.projectId !== policy.projectId) ||
+          payload.bootstrap.prepareWorktree?.projectCwd !== binding.fetch.cwd ||
+          payload.bootstrap.prepareWorktree.baseBranch !== binding.fetch.baseRef ||
+          (payload.bootstrap.prepareWorktree.startFromOrigin === true) !==
+            binding.fetch.startFromOrigin ||
+          (payload.bootstrap.prepareWorktree.requireWorktree === true) !==
+            binding.fetch.requireWorktree ||
+          input.commandId !==
+            (event.type === "legacy-bootstrap.preflight-intent" ? intentId : outcomeId)
+        )
+          return yield* Effect.fail(
+            reject("Preflight does not match its canonical immutable queue binding."),
+          );
+        const verify = (
+          stored: ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
+          type: OrchestrationV2PrivateEvent["type"],
+        ) => {
+          if (
+            stored.length !== 1 ||
+            stored[0]?.commandId !== input.commandId ||
+            stored[0].event.type !== type ||
+            stored[0].event.threadId !== policy.threadId
+          )
+            return false;
+          const recorded = stored[0].event;
+          if (recorded.type === "legacy-bootstrap.preflight-intent")
+            return samePreflightBinding(recorded.payload, binding);
+          if (
+            recorded.type !== "legacy-bootstrap.preflight-outcome" ||
+            event.type !== recorded.type
+          )
+            return false;
+          return (
+            samePreflightBinding(recorded.payload.binding, binding) &&
+            canonicalLegacyPayload(recorded.payload) === canonicalLegacyPayload(event.payload)
+          );
+        };
+        const result = yield* commitThenPublish(
+          Effect.gen(function* () {
+            if (Option.isSome(yield* commandReceipts.getProjectByCommandId(input.commandId)))
+              return yield* Effect.fail(
+                reject("Preflight command ID belongs to a project command."),
+              );
+            const existing = yield* commandReceipts.getByCommandId(input.commandId);
+            if (Option.isSome(existing)) {
+              const stored = yield* readPreflight(input.commandId);
+              if (
+                existing.value.status !== "accepted" ||
+                existing.value.commandType !== event.type ||
+                existing.value.threadId !== policy.threadId ||
+                !verify(stored, event.type) ||
+                stored[0]?.sequence !== existing.value.resultSequence
+              )
+                return yield* Effect.fail(
+                  reject("Preflight command ID belongs to another immutable effect binding."),
+                );
+              return {
+                receipt: existing.value,
+                committed: false,
+                storedEvents: [] as ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
+              };
+            }
+            if (
+              Option.isSome(yield* commandReceipts.getByCommandId(policy.releaseCommandId)) ||
+              Option.isSome(
+                yield* commandReceipts.getProjectByCommandId(policy.releaseCommandId),
+              ) ||
+              Option.isSome(yield* commandReceipts.getByCommandId(policy.createCommandId)) ||
+              Option.isSome(yield* commandReceipts.getProjectByCommandId(policy.createCommandId))
+            )
+              return yield* Effect.fail(
+                reject("Preflight cannot claim an already born or released bootstrap."),
+              );
+            if (event.type === "legacy-bootstrap.preflight-intent") {
+              const history = Array.from(
+                yield* eventStore.read({ threadId: policy.threadId }).pipe(Stream.runCollect),
+              );
+              for (const previous of history) {
+                if (previous.event.type !== "legacy-bootstrap.preflight-intent") continue;
+                const previousOutcomes = history.filter(
+                  (stored) =>
+                    stored.event.type === "legacy-bootstrap.preflight-outcome" &&
+                    stored.event.payload.intentCommandId === previous.commandId &&
+                    stored.event.payload.intentSequence === previous.sequence,
+                );
+                if (
+                  previousOutcomes.length !== 1 ||
+                  previousOutcomes[0]?.event.type !== "legacy-bootstrap.preflight-outcome" ||
+                  previousOutcomes[0].event.payload.status === "unknown"
+                )
+                  return yield* Effect.fail(
+                    reject(
+                      "Target has an unresolved preflight effect; another command cannot repeat or replace it.",
+                    ),
+                  );
+              }
+            }
+            if (event.type === "legacy-bootstrap.preflight-outcome") {
+              const receipt = yield* commandReceipts.getByCommandId(intentId);
+              const intents = yield* readPreflight(intentId);
+              const intent = intents[0];
+              if (
+                Option.isNone(receipt) ||
+                receipt.value.status !== "accepted" ||
+                receipt.value.commandType !== "legacy-bootstrap.preflight-intent" ||
+                receipt.value.threadId !== policy.threadId ||
+                intents.length !== 1 ||
+                intent?.event.type !== "legacy-bootstrap.preflight-intent" ||
+                !samePreflightBinding(intent.event.payload, binding) ||
+                event.payload.intentCommandId !== intentId ||
+                event.payload.intentSequence !== intent.sequence ||
+                receipt.value.resultSequence !== intent.sequence
+              )
+                return yield* Effect.fail(
+                  reject("Preflight outcome has no exact accepted intent."),
+                );
+            }
+            const reserved = yield* commandReceipts.insertIfAbsent({
+              commandId: input.commandId,
+              threadId: policy.threadId,
+              commandType: event.type,
+              acceptedAt: event.occurredAt,
+              resultSequence: 0,
+              status: "accepted",
+              error: null,
+            });
+            if (!reserved)
+              return yield* Effect.fail(
+                reject("Preflight reservation changed inside its serialized transaction."),
+              );
+            const storedEvents = yield* eventStore.append({
+              commandId: input.commandId,
+              events: [event],
+            });
+            const sequence = storedEvents[0]?.sequence;
+            if (sequence === undefined || !verify(storedEvents, event.type))
+              return yield* Effect.fail(
+                reject("Preflight journal binding was not committed exactly."),
+              );
+            yield* applyStoredEvents(storedEvents);
+            const receipt: CommandReceiptStore.CommandReceiptV2 = {
+              commandId: input.commandId,
+              threadId: policy.threadId,
+              commandType: event.type,
+              acceptedAt: event.occurredAt,
+              resultSequence: sequence,
+              status: "accepted",
+              error: null,
+            };
+            yield* commandReceipts.upsert(receipt);
+            return { receipt, committed: true, storedEvents };
+          }),
+          (result) => (result.committed ? publishStoredEvents(result.storedEvents) : Effect.void),
+        );
+        const readback = yield* readPreflight(input.commandId);
+        if (
+          !verify(readback, event.type) ||
+          readback[0]?.sequence !== result.receipt.resultSequence
+        )
+          return yield* Effect.fail(reject("Preflight readback is unknown."));
+        return { receipt: result.receipt, committed: result.committed };
+      },
+      Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 1, cause })),
+    );
+
     const commitRejectedCommandEffect = Effect.fn(
       "orchestrationV2.EventSink.commitRejectedCommand",
     )(function* (input: Parameters<EventSinkV2Shape["commitRejectedCommand"]>[0]) {
-      return yield* sql.withTransaction(
+      const result = yield* commitThenPublish(
         Effect.gen(function* () {
-          const sequence = yield* eventStore.latestSequence({ threadId: input.threadId });
-          const receipt: CommandReceiptStore.CommandReceiptV2 = {
+          const existing = yield* commandReceipts.getByCommandId(input.commandId);
+          if (Option.isSome(existing))
+            return {
+              receipt: existing.value,
+              storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+            };
+          const legacy = input.legacyGuardRejection;
+          let events: ReadonlyArray<OrchestrationV2DomainEvent> = [];
+          if (legacy !== undefined) {
+            const last = legacy.events.at(-1);
+            const decision =
+              last?.type === "run.updated" ? last.payload.legacyReleaseDecision : undefined;
+            const policy = decision?.policy;
+            const invalid = () =>
+              new EventSinkWriteError({
+                commandId: input.commandId,
+                eventCount: legacy.events.length,
+                cause: "Legacy guard rejection has no exact authenticated birth and current run.",
+              });
+            if (
+              !isDispatchGuardRejected(legacy.rejection) ||
+              legacy.rejection.observed === undefined ||
+              input.commandType !== "prepared-run.release" ||
+              last?.type !== "run.updated" ||
+              decision === undefined ||
+              policy === undefined ||
+              input.commandId !== policy.releaseCommandId ||
+              input.threadId !== policy.threadId ||
+              last.threadId !== input.threadId ||
+              last.runId !== policy.runId ||
+              last.payload.id !== policy.runId ||
+              last.payload.userMessageId !== policy.messageId ||
+              last.id !== decision.evidenceEventId ||
+              decision.reason !== legacy.rejection.reason ||
+              canonicalLegacyPayload(decision.observed) !==
+                canonicalLegacyPayload(legacy.rejection.observed) ||
+              canonicalLegacyPayload(decision.guard) !==
+                canonicalLegacyPayload(policy.dispatchGuard)
+            )
+              return yield* invalid();
+            const collect = (commandId: CommandId) =>
+              eventStore.readByCommandId({ commandId }).pipe(
+                Stream.filter(isPublicStoredOrchestrationEvent),
+                Stream.runCollect,
+                Effect.map((stored) => Array.from(stored)),
+              );
+            const proof = legacyBootstrapBirth({
+              policy,
+              claimEvents: yield* collect(policy.createCommandId),
+              birthEvents: yield* collect(policy.birthCommandId),
+            });
+            const claim = yield* commandReceipts.getByCommandId(policy.createCommandId);
+            const birth = yield* commandReceipts.getByCommandId(policy.birthCommandId);
+            const projection = yield* projectionStore.getThreadRecords(input.threadId, [
+              "runs",
+              "attempts",
+              "nodes",
+              "turnItems",
+            ]);
+            const current = projection.runs.find((run) => run.id === policy.runId);
+            if (
+              proof.type !== "valid" ||
+              proof.claimEventId !== decision.claimEventId ||
+              proof.claimSequence !== decision.claimSequence ||
+              proof.birthEventId !== decision.birthEventId ||
+              proof.sequence !== decision.birthSequence ||
+              Option.isNone(claim) ||
+              Option.isNone(birth) ||
+              claim.value.status !== "accepted" ||
+              birth.value.status !== "accepted" ||
+              claim.value.threadId !== policy.threadId ||
+              birth.value.threadId !== policy.threadId ||
+              claim.value.commandType !==
+                (policy.ownsNewThread ? "thread.create" : "thread.metadata.update") ||
+              birth.value.commandType !== "message.dispatch" ||
+              claim.value.resultSequence !== decision.claimReceiptSequence ||
+              birth.value.resultSequence !== decision.birthReceiptSequence ||
+              current?.status !== "preparing" ||
+              current.legacyBootstrap === undefined ||
+              !sameLegacyBootstrapPolicy(current.legacyBootstrap, policy) ||
+              canonicalLegacyPayload(current) !==
+                canonicalLegacyPayload({
+                  ...last.payload,
+                  legacyReleaseDecision: current.legacyReleaseDecision,
+                  ...(policy.ownsNewThread
+                    ? { status: current.status, completedAt: current.completedAt }
+                    : {}),
+                })
+            )
+              return yield* invalid();
+            if (policy.ownsNewThread) {
+              const [attemptEvent, nodeEvent, itemEvent] = legacy.events;
+              const attempt = projection.attempts.find(
+                (record) => record.id === current.activeAttemptId,
+              );
+              const node = projection.nodes.find((record) => record.id === current.rootNodeId);
+              const item =
+                itemEvent?.type === "turn-item.updated"
+                  ? projection.turnItems.find(
+                      (record) =>
+                        record.id === itemEvent.payload.id &&
+                        record.type === "command_execution" &&
+                        record.input === "Preparing workspace" &&
+                        record.runId === current.id,
+                    )
+                  : undefined;
+              if (
+                legacy.events.length !== 4 ||
+                new Set(legacy.events.map((event) => event.id)).size !== 4 ||
+                attemptEvent?.type !== "run-attempt.updated" ||
+                nodeEvent?.type !== "node.updated" ||
+                itemEvent?.type !== "turn-item.updated" ||
+                itemEvent.payload.type !== "command_execution" ||
+                attempt === undefined ||
+                node === undefined ||
+                item === undefined ||
+                last.payload.status !== "failed" ||
+                canonicalLegacyPayload(last.payload.completedAt) !==
+                  canonicalLegacyPayload(input.rejectedAt) ||
+                canonicalLegacyPayload(attemptEvent.payload) !==
+                  canonicalLegacyPayload({
+                    ...attempt,
+                    status: "failed",
+                    completedAt: input.rejectedAt,
+                  }) ||
+                canonicalLegacyPayload(nodeEvent.payload) !==
+                  canonicalLegacyPayload({
+                    ...node,
+                    status: "failed",
+                    completedAt: input.rejectedAt,
+                  }) ||
+                canonicalLegacyPayload(itemEvent.payload) !==
+                  canonicalLegacyPayload({
+                    ...item,
+                    status: "failed",
+                    title: "Dispatch guard rejected",
+                    output: legacy.rejection.reason,
+                    exitCode: undefined,
+                    completedAt: input.rejectedAt,
+                    updatedAt: input.rejectedAt,
+                  }) ||
+                legacy.events.some(
+                  (event) =>
+                    event.threadId !== policy.threadId ||
+                    event.runId !== policy.runId ||
+                    event.providerInstanceId !== current.providerInstanceId ||
+                    canonicalLegacyPayload(event.occurredAt) !==
+                      canonicalLegacyPayload(input.rejectedAt),
+                )
+              )
+                return yield* invalid();
+            } else if (legacy.events.length !== 1) return yield* invalid();
+            events = legacy.events;
+          }
+          const reserved: CommandReceiptStore.CommandReceiptV2 = {
             commandId: input.commandId,
             threadId: input.threadId,
             commandType: input.commandType,
             acceptedAt: input.rejectedAt,
-            resultSequence: sequence,
+            resultSequence: 0,
             status: "rejected",
             error: input.error,
           };
-          const inserted = yield* commandReceipts.insertIfAbsent(receipt);
-          if (inserted) {
-            return receipt;
+          if (!(yield* commandReceipts.insertIfAbsent(reserved))) {
+            return {
+              receipt: (yield* existingCommandResult(input.commandId)).receipt,
+              storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+            };
           }
-          const existing = yield* commandReceipts.getByCommandId(input.commandId);
-          return Option.getOrElse(existing, () => receipt);
+          const storedEvents =
+            events.length === 0
+              ? []
+              : (yield* eventStore.append({
+                  commandId: input.commandId,
+                  events,
+                })).filter(isPublicStoredOrchestrationEvent);
+          yield* applyStoredEvents(storedEvents);
+          const receipt = {
+            ...reserved,
+            resultSequence:
+              storedEvents.at(-1)?.sequence ??
+              (yield* eventStore.latestSequence({ threadId: input.threadId })),
+          };
+          yield* commandReceipts.upsert(receipt);
+          return { receipt, storedEvents };
         }),
+        (committed) => publishStoredEvents(committed.storedEvents),
       );
+      return result.receipt;
     });
 
     const existingProjectReceipt = (commandId: CommandId) =>
@@ -890,7 +1316,9 @@ const baseLayer: Layer.Layer<
                 if (events.length === 0) {
                   return Stream.empty;
                 }
-                const current = Stream.fromIterable(events);
+                const current = Stream.fromIterable(
+                  events.filter(isPublicStoredOrchestrationEvent),
+                );
                 const last = events.at(-1)?.sequence ?? input.throughSequence;
                 return events.length < pageSize || last >= input.throughSequence
                   ? current
@@ -901,7 +1329,7 @@ const baseLayer: Layer.Layer<
       return loop(input.afterSequence);
     };
 
-    const stream = (input?: Parameters<EventSinkV2Shape["stream"]>[0]) => {
+    const streamEffect = (input?: EventSinkStreamInput) => {
       const afterSequence = input?.afterSequence ?? 0;
       const matches = (stored: OrchestrationV2StoredEvent) =>
         (input?.threadId === undefined || stored.event.threadId === input.threadId) &&
@@ -947,7 +1375,32 @@ const baseLayer: Layer.Layer<
       );
     };
 
+    function stream(
+      input: EventSinkStreamInput & { readonly bounded: true },
+    ): Stream.Stream<PublicStoredEvent, EventSinkV2Error>;
+    function stream(
+      input?: EventSinkStreamInput & { readonly bounded?: false },
+    ): Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
+    function stream(
+      input?: EventSinkStreamInput,
+    ): Stream.Stream<PublicStoredEvent | OrchestrationV2StoredEvent, EventSinkV2Error>;
+    function stream(
+      input?: EventSinkStreamInput,
+    ): Stream.Stream<PublicStoredEvent | OrchestrationV2StoredEvent, EventSinkV2Error> {
+      return streamEffect(input).pipe(
+        Stream.mapError(
+          (cause) =>
+            new EventSinkStreamError({
+              ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
+              ...(input?.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
+              cause,
+            }),
+        ),
+      );
+    }
+
     return EventSinkV2.of({
+      commitLegacyPreflight,
       write: (input) =>
         writeEffect({ ...input, effects: [] }).pipe(
           Effect.mapError(
@@ -1028,19 +1481,7 @@ const baseLayer: Layer.Layer<
               new EventSinkWriteError({ commandId: input.commandId, eventCount: 0, cause }),
           ),
         ),
-      stream: (input) =>
-        stream(input).pipe(
-          Stream.mapError(
-            (cause) =>
-              new EventSinkStreamError({
-                ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
-                ...(input?.afterSequence === undefined
-                  ? {}
-                  : { afterSequence: input.afterSequence }),
-                cause,
-              }),
-          ),
-        ),
+      stream,
       latestSequence: (input) =>
         eventStore.latestSequence(input).pipe(
           Effect.mapError(
@@ -1118,6 +1559,7 @@ const baseLayer: Layer.Layer<
         }).pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       readByCommandId: (input) =>
         eventStore.readByCommandId(input).pipe(
+          Stream.filter(isPublicStoredOrchestrationEvent),
           Stream.mapError(
             (cause) =>
               new EventSinkStreamError({

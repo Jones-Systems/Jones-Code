@@ -1459,6 +1459,71 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
+  it.effect(
+    "fences exact cleanup effects through durable success and fails closed on missing or failed outcomes",
+    () =>
+      Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threadId = ThreadId.make("thread:legacy-cleanup-fence");
+        const commandId = CommandId.make("command:legacy-cleanup-fence");
+        const terminalId = `effect:${commandId}:terminal.cleanup`;
+        const attachmentId = `effect:${commandId}:attachment.cleanup`;
+        yield* outbox.enqueue([
+          { id: terminalId, commandId, threadId, request: { type: "terminal.cleanup" } },
+          {
+            id: attachmentId,
+            commandId,
+            threadId,
+            request: { type: "attachment.cleanup", attachmentIds: ["owned-copy"] },
+          },
+        ]);
+        const fence = yield* outbox
+          .awaitCompletion([terminalId, attachmentId])
+          .pipe(Effect.forkChild);
+        const first = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(first));
+        if (Option.isSome(first))
+          assert.isTrue(
+            yield* outbox.succeed({ effectId: first.value.id, workerId: "cleanup-test" }),
+          );
+        assert.isUndefined(fence.pollUnsafe());
+        const second = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(second));
+        if (Option.isSome(second))
+          assert.isTrue(
+            yield* outbox.succeed({ effectId: second.value.id, workerId: "cleanup-test" }),
+          );
+        yield* Fiber.join(fence);
+        yield* outbox.awaitCompletion([terminalId, attachmentId]);
+        const missing = yield* outbox.awaitCompletion(["unknown-effect"]).pipe(Effect.flip);
+        assert.equal(missing._tag, "EffectOutboxError");
+        const failedId = `effect:${commandId}:failed-cleanup`;
+        yield* outbox.enqueue([
+          { id: failedId, commandId, threadId, request: { type: "terminal.cleanup" } },
+        ]);
+        const failedFence = yield* outbox.awaitCompletion([failedId]).pipe(Effect.forkChild);
+        const failed = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(failed));
+        assert.isTrue(
+          yield* outbox.fail({
+            effectId: failedId,
+            workerId: "cleanup-test",
+            error: "cleanup failed",
+          }),
+        );
+        const error = yield* Fiber.join(failedFence).pipe(Effect.flip);
+        assert.equal(error.effectId, failedId);
+      }),
+  );
   it.effect("keeps one durable effect across command retries and executes it after recovery", () =>
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;

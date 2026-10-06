@@ -1,3 +1,10 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ResourceCleanupService from "./ResourceCleanupService.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
+import * as ServerConfig from "../config.ts";
+import { LegacyOwnedTerminalControl } from "./RecordedTypes.ts";
+import { legacyBootstrapCreateCommandId } from "./LegacyBootstrap.ts";
+import * as Schema from "effect/Schema";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -159,6 +166,106 @@ function makeExecutorLayer(input: {
     ),
   );
 }
+
+function ownedCleanupBinding() {
+  const createCommandId = legacyBootstrapCreateCommandId(
+    threadId,
+    CommandId.make("owned-cleanup:C"),
+  );
+  return Schema.decodeUnknownSync(LegacyOwnedTerminalControl)({
+    version: 1,
+    threadId,
+    runId,
+    terminalId: "legacy-owned-setup",
+    generation: "owned-cleanup:terminal-generation",
+    preparationGeneration: "owned-cleanup:birth-generation",
+    claimEventId: "owned-cleanup:claim",
+    claimSequence: 1,
+    claimReceiptSequence: 1,
+    birthEventId: "owned-cleanup:birth",
+    birthSequence: 2,
+    birthReceiptSequence: 2,
+    policy: {
+      version: 1,
+      createCommandId,
+      birthCommandId: `${createCommandId}:initial-message`,
+      releaseCommandId: "owned-cleanup:C",
+      projectId: "owned-cleanup:project",
+      threadId,
+      messageId: "owned-cleanup:M",
+      runId,
+      payloadHash: "owned-cleanup:hash",
+      ownsNewThread: true,
+    },
+  });
+}
+it.effect(
+  "routes legacy owned terminal cleanup unchanged through the actual executor and cleanup owner",
+  () =>
+    Effect.gen(function* () {
+      const calls: Array<{
+        input: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[0];
+        binding: LegacyOwnedTerminalControl | undefined;
+      }> = [];
+      const binding = ownedCleanupBinding();
+      const terminals = Layer.mock(TerminalManager.TerminalManager)({
+        close: (
+          input,
+          options: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[1] = {},
+        ) =>
+          Effect.sync(() => {
+            calls.push({ input, binding: options?.legacyOwnedControl });
+          }),
+      });
+      const cleanup = ResourceCleanupService.live.pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            terminals,
+            ServerConfig.layerTest(process.cwd(), { prefix: "legacy-owned-cleanup-route-" }),
+          ),
+        ),
+      );
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const layer = makeExecutorLayer({ events }).pipe(Layer.provide(cleanup));
+      const now = yield* DateTime.now;
+      const template = restartEffect(now, { type: "detach" });
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        yield* executor.execute({
+          ...template,
+          request: { type: "terminal.cleanup", legacyOwnedControl: binding },
+        });
+        assert.deepEqual(calls, [{ input: { threadId, deleteHistory: true }, binding }]);
+        yield* executor.execute({ ...template, request: { type: "terminal.cleanup" } });
+        assert.deepEqual(calls[1], {
+          input: { threadId, deleteHistory: true },
+          binding: undefined,
+        });
+        assert.deepEqual(yield* Ref.get(events), []);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+it.effect("bound legacy terminal cleanup refuses a default no-op owner", () =>
+  Effect.gen(function* () {
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = makeExecutorLayer({ events });
+    const template = restartEffect(yield* DateTime.now, { type: "detach" });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      const bound = yield* executor
+        .execute({
+          ...template,
+          request: { type: "terminal.cleanup", legacyOwnedControl: ownedCleanupBinding() },
+        })
+        .pipe(Effect.result);
+      assert.equal(bound._tag, "Failure");
+      const native = yield* executor
+        .execute({ ...template, request: { type: "terminal.cleanup" } })
+        .pipe(Effect.result);
+      assert.equal(native._tag, "Success");
+    }).pipe(Effect.provide(layer));
+  }),
+);
 
 it("does not retry pure interrupt races where the turn is already gone", () => {
   assert.isTrue(

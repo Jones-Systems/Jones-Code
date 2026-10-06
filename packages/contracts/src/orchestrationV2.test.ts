@@ -23,6 +23,8 @@ import {
   TurnItemId,
 } from "./index.ts";
 import {
+  OrchestrationV2AppThread,
+  OrchestrationV2Run,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   OrchestrationV2Checkpoint,
   OrchestrationV2CheckpointScope,
@@ -92,6 +94,20 @@ const decodeOrchestrationV2SubscribeThreadInput = Schema.decodeUnknownSync(
 );
 
 describe("orchestration V2 contracts", () => {
+  it("keeps legacy receiving correlation out of public thread and run schemas", () => {
+    expect(Object.keys(OrchestrationV2AppThread.fields)).not.toContain("legacyBootstrapClaim");
+    for (const privateField of [
+      "legacyBootstrap",
+      "legacyPreparationFailureKnown",
+      "legacyPreparation",
+      "legacyReleaseDecision",
+      "workspaceRunSetupScript",
+    ]) {
+      expect(Object.keys(OrchestrationV2Run.fields)).not.toContain(privateField);
+    }
+    expect(OrchestrationV2Run.fields.workspacePreparation).toBeDefined();
+  });
+
   it("carries command failure metadata through runtime and JSON schemas without output text", () => {
     const base = {
       id: "command-item",
