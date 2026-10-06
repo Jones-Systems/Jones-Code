@@ -38,15 +38,25 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/unstable/ai";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import * as ServerConfig from "../config.ts";
+import * as GitManager from "../git/GitManager.ts";
+import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as ApplicationThreadBirth from "../orchestration-v2/ApplicationThreadBirth.ts";
+import * as DelegatedCheckoutPlanner from "../orchestration-v2/DelegatedCheckoutPlanner.ts";
+import * as OrdinaryCheckoutOwnership from "../orchestration-v2/OrdinaryCheckoutOwnership.ts";
 import { ClaudeProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { CodexOrchestratorReplayHarness } from "../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
@@ -71,10 +81,124 @@ import {
   materializeReplayTranscriptWorkspace,
 } from "../orchestration-v2/testkit/ReplayTranscriptNdjson.ts";
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
+
+const makeDelegatedPlannerFixture = Effect.fn(function* (cwd: string) {
+  const fs = yield* FileSystem.FileSystem.pipe(Effect.provide(NodeServices.layer));
+  const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mcp-planner-" });
+  const config = yield* ServerConfig.ServerConfig.pipe(
+    Effect.provide(ServerConfig.layerTest(cwd, baseDir).pipe(Layer.provide(NodeServices.layer))),
+  );
+  const configLayer = Layer.succeed(ServerConfig.ServerConfig, config);
+  const processLayer = VcsProcess.layer.pipe(Layer.provide(NodeServices.layer));
+  const driversLayer = Layer.merge(GitVcsDriver.layer, VcsDriverRegistry.layer).pipe(
+    Layer.provide(processLayer),
+    Layer.provide(configLayer),
+    Layer.provide(NodeServices.layer),
+  );
+  const workflowLayer = GitWorkflow.layer.pipe(
+    Layer.provide(driversLayer),
+    Layer.provide(Layer.mock(GitManager.GitManager)({})),
+  );
+  const layer = DelegatedCheckoutPlanner.layer.pipe(
+    Layer.provide(workflowLayer),
+    Layer.provide(configLayer),
+    Layer.provide(NodeServices.layer),
+  );
+  return { config, layer, processLayer };
+});
+
+function registeredPlannerLayer(
+  cwd: string,
+  fixture: Effect.Success<ReturnType<typeof makeDelegatedPlannerFixture>>,
+) {
+  return Layer.unwrap(
+    Effect.gen(function* () {
+      const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+      const adapter = makeDeterministicAdapter({
+        instanceId: codexInstanceId,
+        driver: ProviderDriverKind.make("codex"),
+        capabilities: CodexProviderCapabilitiesV2,
+        capturedTurns,
+        shouldComplete: () => true,
+        response: () => delegatedResult,
+      });
+      return makeOrchestratorV2ReplayLayerWithRegistry(
+        { name: "mcp-real-planner-capture", runtimePolicyOverride: { cwd } },
+        ProviderAdapterRegistry.makeLayer([adapter]),
+        {
+          databaseLayer: SqlitePersistenceMemory,
+          runEffectWorker: false,
+          checkoutFixture: {
+            projects: [{ projectId, workspaceRoot: cwd, title: "MCP planner capture fixture" }],
+            resolvePath: () => undefined,
+            worktreesDir: fixture.config.worktreesDir,
+          },
+        },
+      ).pipe(Layer.provideMerge(SqlitePersistenceMemory), Layer.provideMerge(fixture.layer));
+    }),
+  );
+}
+
+const acceptPlannerParent = Effect.fn(function* (cwd: string) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const createCommandId = CommandId.make("command:mcp-planner-parent:create");
+  const startCommandId = CommandId.make("command:mcp-planner-parent:start");
+  yield* orchestrator.dispatch({
+    type: "thread.create",
+    createdBy: "user",
+    creationSource: "web",
+    commandId: createCommandId,
+    threadId: parentThreadId,
+    projectId,
+    title: "MCP planner parent",
+    modelSelection: codexSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: cwd,
+  });
+  const receipt = yield* orchestrator.dispatch({
+    type: "message.dispatch",
+    createdBy: "user",
+    creationSource: "web",
+    commandId: startCommandId,
+    threadId: parentThreadId,
+    messageId: MessageId.make("message:mcp-planner-parent:start"),
+    text: "Capture the committed parent checkout without entering a child.",
+    attachments: [],
+    modelSelection: codexSelection,
+    dispatchMode: { type: "start_immediately" },
+  });
+  return {
+    parent: (yield* orchestrator.getThreadProjection(parentThreadId)).thread,
+    receipt,
+    startCommandId,
+  };
+});
+
+function plannerFixtureGit(
+  fixture: Effect.Success<ReturnType<typeof makeDelegatedPlannerFixture>>,
+  cwd: string,
+  args: ReadonlyArray<string>,
+) {
+  return Effect.gen(function* () {
+    const process = yield* VcsProcess.VcsProcess;
+    return (yield* process.run({
+      operation: "MCP.plannerFixture",
+      command: "git",
+      args,
+      cwd,
+    })).stdout.trim();
+  }).pipe(Effect.provide(fixture.processLayer));
+}
 
 const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
 const projectId = ProjectId.make("project:mcp-orchestrator");
@@ -473,6 +597,7 @@ describe("orchestrator MCP toolkit", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const cwd = yield* checkpointWorkspace("orchestrator-mcp-toolkit");
+          const plannerFixture = yield* makeDelegatedPlannerFixture(cwd);
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const parentTerminalGates = new Map<ThreadId, Deferred.Deferred<void>>();
           const deliveryTerminalGates = new Map<ThreadId, Deferred.Deferred<void>>();
@@ -566,6 +691,7 @@ describe("orchestrator MCP toolkit", () => {
               checkoutFixture: {
                 projects: [{ projectId, workspaceRoot: cwd, title: "MCP orchestrator fixture" }],
                 resolvePath: () => undefined,
+                worktreesDir: plannerFixture.config.worktreesDir,
               },
             },
           ).pipe(Layer.provide(continuationProbeLayer));
@@ -634,6 +760,7 @@ describe("orchestrator MCP toolkit", () => {
           ).pipe(
             Layer.provideMerge(McpServer.McpServer.layer),
             Layer.provideMerge(orchestrationLayer),
+            Layer.provideMerge(plannerFixture.layer),
             Layer.provide(registryLayer),
             Layer.provide(providerRegistryLayer),
             Layer.provide(scheduledTaskStubLayer),
@@ -3534,6 +3661,7 @@ describe("orchestrator MCP toolkit", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("delegated-task-status");
+        const plannerFixture = yield* makeDelegatedPlannerFixture(cwd);
         const rawTranscript = yield* readDelegatedTaskStatusTranscript();
         const transcript = yield* CodexOrchestratorReplayHarness.decodeTranscript(
           materializeReplayTranscriptWorkspace(rawTranscript, cwd),
@@ -3550,6 +3678,7 @@ describe("orchestrator MCP toolkit", () => {
             checkoutFixture: {
               projects: [{ projectId, workspaceRoot: cwd, title: "MCP orchestrator fixture" }],
               resolvePath: () => undefined,
+              worktreesDir: plannerFixture.config.worktreesDir,
             },
           },
         );
@@ -3567,6 +3696,7 @@ describe("orchestrator MCP toolkit", () => {
         const testLayer = McpHttpServer.OrchestratorToolkitRegistrationLive.pipe(
           Layer.provideMerge(McpServer.McpServer.layer),
           Layer.provideMerge(orchestrationLayer),
+          Layer.provideMerge(plannerFixture.layer),
           Layer.provide(
             CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript),
           ),
@@ -3843,6 +3973,261 @@ describe("orchestrator MCP toolkit", () => {
           });
         }).pipe(Effect.provide(testLayer));
       }),
+    ),
+  );
+});
+
+class PlannerFixtureFailure extends Schema.TaggedError<PlannerFixtureFailure>()(
+  "PlannerFixtureFailure",
+  { message: Schema.String },
+) {}
+
+const decodePlannerAdmission = Schema.decodeEffect(
+  Schema.fromJsonString(OrdinaryCheckoutOwnership.OrdinaryCheckoutAdmissionV1),
+);
+
+describe("MCP genuine delegated checkout capture", () => {
+  it.live(
+    "captures the current committed HEAD of the accepted SQL parent without entering a child",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* checkpointWorkspace("mcp-planner-capture");
+          const fixture = yield* makeDelegatedPlannerFixture(cwd);
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const { parent, receipt, startCommandId } = yield* acceptPlannerParent(cwd);
+            const birth = yield* ApplicationThreadBirth.readApplicationThreadBirth(parent.id);
+            expect(birth).not.toBeNull();
+            const projects = yield* sql<{ readonly workspace_root: string }>`
+            SELECT workspace_root FROM projection_projects WHERE project_id = ${projectId}`;
+            expect(projects).toEqual([{ workspace_root: cwd }]);
+            const rows = yield* sql<{ readonly admission_json: string }>`
+            SELECT admission_json FROM orchestration_v2_ordinary_checkout_admissions
+            WHERE command_id = ${startCommandId} AND thread_id = ${parent.id}`;
+            expect(rows).toHaveLength(1);
+            const admission = yield* decodePlannerAdmission(rows[0]!.admission_json);
+            expect(admission.capture.applicationBirth).toEqual(birth);
+            expect(admission.capture.commandId).toBe(startCommandId);
+            expect(admission.capture.threadId).toBe(parent.id);
+            expect(admission.capture.projectId).toBe(projectId);
+            expect(admission.capture.canonicalCheckoutPath).toBe(yield* fs.realPath(cwd));
+            expect(admission.receipt.resultSequence).toBe(receipt.sequence);
+            const acceptedEvents = yield* sql<{ readonly event_id: string }>`
+            SELECT event_id FROM orchestration_events WHERE command_id = ${startCommandId}
+            AND stream_id = ${parent.id} ORDER BY sequence`;
+            expect(admission.eventBasis.map((event) => event.eventId)).toEqual(
+              acceptedEvents.map((event) => event.event_id),
+            );
+            const before = yield* sql`SELECT total_changes() AS changes`;
+            const planner = yield* DelegatedCheckoutPlanner.DelegatedCheckoutPlanner;
+            const input = {
+              commandId: CommandId.make("command:mcp-planner:capture"),
+              parent,
+              projectWorkspaceRoot: cwd,
+              childThreadId: ThreadId.make("thread:mcp-planner:child"),
+            };
+            const originalHead = yield* plannerFixtureGit(fixture, cwd, [
+              "rev-parse",
+              "--verify",
+              "HEAD",
+            ]);
+            const captured = yield* planner.capture(input);
+            expect(captured.parentCommit).toBe(originalHead);
+            expect(captured.parentThreadId).toBe(parent.id);
+            expect(captured.childThreadId).toBe(input.childThreadId);
+            expect(captured.canonicalProjectRoot).toBe(yield* fs.realPath(cwd));
+            expect(captured.parentCheckoutPath).toBe(yield* fs.realPath(cwd));
+            expect(captured.branch).toMatch(/^t3code\/delegated-[0-9a-f]{64}$/);
+            expect(captured.worktreePath.startsWith(fixture.config.worktreesDir + path.sep)).toBe(
+              true,
+            );
+            expect(captured.worktreePath).not.toBe(cwd);
+            expect(captured.workspaceStrategy).toEqual({
+              type: "worktree",
+              baseRef: originalHead,
+              branch: captured.branch,
+              startFromOrigin: false,
+            });
+            expect(yield* fs.exists(captured.worktreePath)).toBe(false);
+            yield* fs.writeFileString(path.join(cwd, "README.md"), "# Changed local parent\n");
+            const dirtyCapture = yield* planner.capture(input);
+            expect(dirtyCapture.parentCommit).toBe(originalHead);
+            yield* plannerFixtureGit(fixture, cwd, ["add", "README.md"]);
+            yield* plannerFixtureGit(fixture, cwd, [
+              "-c",
+              "commit.gpgsign=false",
+              "commit",
+              "-m",
+              "change the fixture parent",
+            ]);
+            const changedHead = yield* plannerFixtureGit(fixture, cwd, [
+              "rev-parse",
+              "--verify",
+              "HEAD",
+            ]);
+            expect(changedHead).not.toBe(originalHead);
+            const changedCapture = yield* planner.capture(input);
+            expect(changedCapture.parentCommit).toBe(changedHead);
+            expect(changedCapture.workspaceStrategy).toMatchObject({
+              type: "worktree",
+              baseRef: changedHead,
+            });
+            expect(changedCapture.worktreePath).toBe(captured.worktreePath);
+            expect(yield* fs.exists(changedCapture.worktreePath)).toBe(false);
+            expect(yield* sql`SELECT total_changes() AS changes`).toEqual(before);
+            expect(yield* ApplicationThreadBirth.readApplicationThreadBirth(parent.id)).toEqual(
+              birth,
+            );
+          }).pipe(Effect.provide(registeredPlannerLayer(cwd, fixture)));
+        }).pipe(Effect.provide(NodeServices.layer)),
+      ),
+  );
+
+  it.live("keeps the genuine planner in invocation context only when its output is retained", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cwd = yield* checkpointWorkspace("mcp-planner-context");
+        const fixture = yield* makeDelegatedPlannerFixture(cwd);
+        const hidden = yield* Effect.serviceOption(
+          DelegatedCheckoutPlanner.DelegatedCheckoutPlanner,
+        ).pipe(Effect.provide(Layer.empty.pipe(Layer.provide(fixture.layer))));
+        expect(Option.isNone(hidden)).toBe(true);
+        const retained = yield* Effect.serviceOption(
+          DelegatedCheckoutPlanner.DelegatedCheckoutPlanner,
+        ).pipe(Effect.provide(Layer.empty.pipe(Layer.provideMerge(fixture.layer))));
+        expect(Option.isSome(retained)).toBe(true);
+      }),
+    ),
+  );
+
+  it.live.each(["project root", "parent checkout", "worktrees container"] as const)(
+    "refuses a genuine missing %s without writing SQL or entering a child",
+    (missing) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* checkpointWorkspace("mcp-planner-missing");
+          const fixture = yield* makeDelegatedPlannerFixture(cwd);
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const { parent } = yield* acceptPlannerParent(cwd);
+            const absent = path.join(fixture.config.baseDir, "missing");
+            expect(yield* fs.exists(absent)).toBe(false);
+            if (missing === "worktrees container") {
+              expect(yield* fs.readDirectory(fixture.config.worktreesDir)).toEqual([]);
+              yield* fs.remove(fixture.config.worktreesDir, { recursive: true });
+            }
+            const before = yield* sql`SELECT total_changes() AS changes`;
+            const planner = yield* DelegatedCheckoutPlanner.DelegatedCheckoutPlanner;
+            const error = yield* planner
+              .capture({
+                commandId: CommandId.make("command:mcp-planner:missing"),
+                parent:
+                  missing === "parent checkout" ? { ...parent, worktreePath: absent } : parent,
+                projectWorkspaceRoot: missing === "project root" ? absent : cwd,
+                childThreadId: ThreadId.make("thread:mcp-planner:missing-child"),
+              })
+              .pipe(Effect.flip);
+            expect(error._tag).toBe("DelegatedCheckoutPlanError");
+            expect(error.message).toContain("could not be captured");
+            expect(yield* sql`SELECT total_changes() AS changes`).toEqual(before);
+          }).pipe(Effect.provide(registeredPlannerLayer(cwd, fixture)));
+        }).pipe(Effect.provide(NodeServices.layer)),
+      ),
+  );
+
+  it.live.each(["unborn", "missing HEAD"] as const)(
+    "refuses a genuine %s repository without manufacturing a commit",
+    (invalidHead) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd =
+            invalidHead === "unborn"
+              ? yield* fs.makeTempDirectoryScoped({ prefix: "t3-mcp-planner-unborn-" })
+              : yield* checkpointWorkspace("mcp-planner-invalid-head");
+          const fixture = yield* makeDelegatedPlannerFixture(cwd);
+          if (invalidHead === "unborn") yield* plannerFixtureGit(fixture, cwd, ["init"]);
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const { parent } = yield* acceptPlannerParent(cwd);
+            if (invalidHead === "missing HEAD") {
+              const gitDir = yield* plannerFixtureGit(fixture, cwd, [
+                "rev-parse",
+                "--absolute-git-dir",
+              ]);
+              expect(
+                (yield* fs.realPath(gitDir)).startsWith((yield* fs.realPath(cwd)) + path.sep),
+              ).toBe(true);
+              yield* fs.remove(path.join(gitDir, "HEAD"));
+            }
+            const before = yield* sql`SELECT total_changes() AS changes`;
+            const planner = yield* DelegatedCheckoutPlanner.DelegatedCheckoutPlanner;
+            const error = yield* planner
+              .capture({
+                commandId: CommandId.make("command:mcp-planner:invalid-head"),
+                parent,
+                projectWorkspaceRoot: cwd,
+                childThreadId: ThreadId.make("thread:mcp-planner:invalid-head-child"),
+              })
+              .pipe(Effect.flip);
+            expect(error._tag).toBe("DelegatedCheckoutPlanError");
+            expect(error.message).toContain("could not be captured");
+            expect(yield* sql`SELECT total_changes() AS changes`).toEqual(before);
+          }).pipe(Effect.provide(registeredPlannerLayer(cwd, fixture)));
+        }).pipe(Effect.provide(NodeServices.layer)),
+      ),
+  );
+
+  it.live.each(["success", "failure"] as const)(
+    "removes only its scoped planner container after %s",
+    (outcome) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        let baseDir: string | undefined;
+        const exit = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const cwd = yield* checkpointWorkspace("mcp-planner-lifetime");
+            const fixture = yield* makeDelegatedPlannerFixture(cwd);
+            baseDir = fixture.config.baseDir;
+            expect(yield* fs.exists(fixture.config.worktreesDir)).toBe(true);
+            if (outcome === "failure") {
+              return yield* new PlannerFixtureFailure({ message: "fixture failure" });
+            }
+          }),
+        ).pipe(Effect.exit);
+        expect(Exit.isSuccess(exit)).toBe(outcome === "success");
+        expect(baseDir).toBeDefined();
+        expect(yield* fs.exists(baseDir!)).toBe(false);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("finalizes its own container on interruption and retains a concurrent sibling", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* checkpointWorkspace("mcp-planner-interruption");
+        const sibling = yield* makeDelegatedPlannerFixture(cwd);
+        const ready = yield* Deferred.make<string>();
+        const fiber = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fixture = yield* makeDelegatedPlannerFixture(cwd);
+            yield* Deferred.succeed(ready, fixture.config.baseDir);
+            return yield* Effect.never;
+          }),
+        ).pipe(Effect.forkScoped);
+        const interruptedRoot = yield* Deferred.await(ready);
+        expect(interruptedRoot).not.toBe(sibling.config.baseDir);
+        yield* Fiber.interrupt(fiber);
+        expect(Exit.isFailure(yield* Fiber.await(fiber))).toBe(true);
+        expect(yield* fs.exists(interruptedRoot)).toBe(false);
+        expect(yield* fs.exists(sibling.config.worktreesDir)).toBe(true);
+      }).pipe(Effect.provide(NodeServices.layer)),
     ),
   );
 });
