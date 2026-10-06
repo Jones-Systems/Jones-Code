@@ -16,6 +16,61 @@
       "commands": [
         "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
       ]
+    },
+    {
+      "id": "jones-workstreams-native-stack",
+      "tests": [
+        "apps/mobile/src/features/workstreams/actions.test.ts",
+        "apps/mobile/src/features/workstreams/commands.test.ts",
+        "apps/mobile/src/features/workstreams/loaders.test.ts",
+        "apps/mobile/src/features/workstreams/projection.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/workstreams/WorkstreamPlacements.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
+        "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
+        "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
+        "apps/web/src/components/workstreams/workstreamPresentation.test.ts",
+        "apps/web/src/state/workstreams.test.ts",
+        "packages/client-runtime/src/state/workstreams/colors.test.ts",
+        "packages/client-runtime/src/state/workstreams/lifecycle.test.ts",
+        "packages/client-runtime/src/state/workstreams/live.test.ts",
+        "packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts",
+        "packages/client-runtime/src/state/workstreams/placements.test.ts",
+        "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
+        "packages/contracts/src/queueProtocol.test.ts",
+        "packages/contracts/src/threadCorpusProtocol.test.ts",
+        "packages/contracts/src/workstreams.conformance.test.ts",
+        "packages/contracts/src/workstreams.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/mobile/src/features/workstreams/actions.test.ts apps/mobile/src/features/workstreams/commands.test.ts apps/mobile/src/features/workstreams/loaders.test.ts apps/mobile/src/features/workstreams/projection.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/http.test.ts apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/workstreamPresentation.test.ts apps/web/src/state/workstreams.test.ts packages/client-runtime/src/state/workstreams/colors.test.ts packages/client-runtime/src/state/workstreams/lifecycle.test.ts packages/client-runtime/src/state/workstreams/live.test.ts packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts packages/client-runtime/src/state/workstreams/workstreams.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/workstreams.test.ts"
+      ]
+    },
+    {
+      "id": "jones-native-store-authority",
+      "tests": [
+        "apps/server/src/environment/NativeStoreAuthority.test.ts",
+        "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/environment/NativeStoreAuthority.test.ts apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts"
+      ]
+    },
+    {
+      "id": "jones-voice-review-native",
+      "tests": [
+        "apps/server/src/voiceReview/composition.test.ts",
+        "apps/server/src/voiceReview/config.test.ts",
+        "apps/server/src/voiceReview/native.test.ts",
+        "apps/web/src/components/voiceReview/RecentVoicePrompts.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/server/src/voiceReview/composition.test.ts apps/server/src/voiceReview/config.test.ts apps/server/src/voiceReview/native.test.ts apps/web/src/components/voiceReview/RecentVoicePrompts.test.tsx"
+      ]
     }
   ]
 }

@@ -1,5 +1,9 @@
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import * as DateTime from "effect/DateTime";
+import {
+  projectMobileWorkstreamList,
+  mobileWorkstreamMoveDestination,
+} from "../workstreams/listProjection";
 import { planPinnedMove } from "@t3tools/client-runtime/state/thread-sort";
 import {
   createPendingThreadOrder,
@@ -2156,6 +2160,197 @@ describe("buildThreadListV2ListItems row-state stamps", () => {
     expect(shelfLoading.type === "v2-settled-shelf" && shelfLoading.disabled).toBe(true);
     expect(shelfLoaded.type === "v2-settled-shelf" && shelfLoaded.disabled).toBe(false);
     expect(threadListV2ListItemsAreEqual(shelfLoading, shelfLoaded)).toBe(false);
+  });
+});
+
+describe("mobile Workstream projection", () => {
+  const first = makeThread({
+    id: ThreadId.make("shared-id"),
+    title: "First",
+    createdAt: "2026-06-01T01:00:00.000Z",
+  });
+  const second = makeThread({
+    id: ThreadId.make("second"),
+    title: "Second",
+    projectId: ProjectId.make("other-project"),
+  });
+  const otherEnvironment = makeThread({
+    id: first.id,
+    title: "Other environment",
+    environmentId: EnvironmentId.make("environment-2"),
+  });
+  const key = (thread: EnvironmentThreadShell) => JSON.stringify([thread.environmentId, thread.id]);
+  const group = {
+    key: '["registry","workstream"]',
+    name: "Delivery",
+    color: "#123456",
+    threadKeys: new Set([key(first), key(second)]),
+  };
+  const rows = (threads: readonly EnvironmentThreadShell[]) => {
+    const layout = buildThreadListV2Items({
+      threads,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+    });
+    return buildThreadListV2ListItems({ ...layout, pendingTasks: [] });
+  };
+  const projection = {
+    enabled: true,
+    groups: [group],
+    collapsedKeys: new Set<string>(),
+    secondaryLabelsByKey: new Map([[key(first), ["Related"]]]),
+  };
+
+  it("groups across projects without aliasing equal native IDs across environments", () => {
+    const result = projectMobileWorkstreamList(rows([first, otherEnvironment, second]), projection);
+    expect(
+      result.filter((item) => item.type === "v2-workstream").map((item) => [item.name, item.count]),
+    ).toEqual([
+      ["Delivery", 2],
+      ["Unassigned", 1],
+    ]);
+    expect(
+      result.filter((item) => item.type === "v2-thread").map((item) => key(item.item.thread)),
+    ).toEqual([key(first), key(second), key(otherEnvironment)]);
+    expect(threadJumpTarget(result, "thread.jump.2")).toBe(second);
+    expect(
+      result.find((item) => item.type === "v2-thread" && item.item.thread === first),
+    ).toMatchObject({ secondaryWorkstreamLabel: "Related" });
+  });
+
+  it("collapses only group members, preserves selected navigation, and expands search matches", () => {
+    const collapsed = { ...projection, collapsedKeys: new Set([group.key]) };
+    expect(
+      projectMobileWorkstreamList(rows([first, second, otherEnvironment]), collapsed)
+        .filter((item) => item.type === "v2-thread")
+        .map((item) => item.item.thread),
+    ).toEqual([otherEnvironment]);
+    const selected = projectMobileWorkstreamList(rows([first, second]), {
+      ...collapsed,
+      selectedThreadKey: `${first.environmentId}:${first.id}`,
+    });
+    expect(
+      selected.filter((item) => item.type === "v2-thread").map((item) => item.item.thread),
+    ).toEqual([first]);
+    const searching = projectMobileWorkstreamList(rows([second]), {
+      ...collapsed,
+      searching: true,
+    });
+    expect(searching[0]).toMatchObject({ count: 1, expanded: true });
+    expect(searching.filter((item) => item.type === "v2-thread")).toHaveLength(1);
+  });
+
+  it("keeps conflicting membership unassigned and preserves native shelves", () => {
+    const pinned = makeThread({ id: ThreadId.make("pinned"), title: "Pinned", pinnedAt: NOW });
+    const settled = makeThread({
+      id: ThreadId.make("settled"),
+      title: "Settled",
+      settledOverride: "settled",
+      settledAt: NOW,
+    });
+    const input = rows([pinned, first, settled]);
+    const result = projectMobileWorkstreamList(input, {
+      ...projection,
+      groups: [group, { ...group, key: "other-registry" }],
+    });
+    expect(result[0]).toMatchObject({ type: "v2-thread", item: { thread: pinned } });
+    expect(result.find((item) => item.type === "v2-workstream")).toMatchObject({
+      name: "Unassigned",
+      count: 1,
+    });
+    expect(
+      result.filter(
+        (item) =>
+          item.type === "v2-settled-shelf" ||
+          (item.type === "v2-thread" && item.item.variant === "slim"),
+      ),
+    ).toEqual(
+      input
+        .filter(
+          (item) =>
+            item.type === "v2-settled-shelf" ||
+            (item.type === "v2-thread" && item.item.variant === "slim"),
+        )
+        .map((item) =>
+          item.type === "v2-thread" ? { ...item, secondaryWorkstreamLabel: "" } : item,
+        ),
+    );
+  });
+
+  it("keeps the current Working shelf and its card rows out of Workstream grouping", () => {
+    const inbox = rows([first]);
+    const working = rows([second]).find((item) => item.type === "v2-thread")!;
+    const shelf: ThreadListV2ListItem = {
+      type: "v2-working-shelf",
+      key: "v2-working-shelf",
+      count: 1,
+      expanded: true,
+      disabled: false,
+    };
+    const result = projectMobileWorkstreamList([...inbox, shelf, working], projection);
+    expect(result.filter((item) => item.type === "v2-workstream")).toMatchObject([
+      { name: "Delivery", count: 1 },
+    ]);
+    expect(result.findIndex((item) => item.type === "v2-working-shelf")).toBe(2);
+    expect(result[3]).toMatchObject({ type: "v2-thread", item: { thread: second } });
+  });
+
+  it("retains native order when grouping is off and keeps the pending and parked tail intact", () => {
+    const snoozed = makeThread({
+      id: ThreadId.make("snoozed-member"),
+      title: "Snoozed",
+      snoozedUntil: "2026-06-03T00:00:00.000Z",
+    });
+    const layout = buildThreadListV2Items({
+      threads: [first, snoozed],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      snoozedShelfExpanded: true,
+    });
+    const input = buildThreadListV2ListItems({
+      ...layout,
+      pendingTasks: [makePendingTask("queued-workstream")],
+      snoozedShelfExpanded: true,
+    });
+    expect(projectMobileWorkstreamList(input, { ...projection, enabled: false })).toEqual(input);
+    const result = projectMobileWorkstreamList(input, {
+      ...projection,
+      collapsedKeys: new Set([group.key]),
+    });
+    expect(result.find((item) => item.type === "v2-snoozed-shelf")).toMatchObject({
+      count: 1,
+      expanded: true,
+    });
+    expect(result.map((item) => item.type)).toEqual([
+      "v2-workstream",
+      "v2-pending",
+      "v2-snoozed-shelf",
+      "v2-thread",
+    ]);
+    expect(
+      result.filter((item) => item.type === "v2-thread").map((item) => item.item.thread),
+    ).toEqual([snoozed]);
+  });
+
+  it("uses group neighbors for native movement and invalidates recycled headers and linked labels", () => {
+    const result = projectMobileWorkstreamList(rows([first, second, otherEnvironment]), projection);
+    expect(mobileWorkstreamMoveDestination(result, first, "up")).toBeNull();
+    expect(mobileWorkstreamMoveDestination(result, second, "down")).toBeNull();
+    expect(mobileWorkstreamMoveDestination(result, first, "down")).toEqual({
+      targetId: `${second.environmentId}:${second.id}`,
+      placement: "after",
+    });
+    const header = result[0]!;
+    expect(threadListV2ListItemsAreEqual(header, { ...header } as ThreadListV2ListItem)).toBe(true);
+    if (header.type !== "v2-workstream") throw new Error("Missing header");
+    expect(threadListV2ListItemsAreEqual(header, { ...header, expanded: false })).toBe(false);
+    const row = result.find((item) => item.type === "v2-thread")!;
+    if (row.type !== "v2-thread") throw new Error("Missing row");
+    expect(
+      threadListV2ListItemsAreEqual(row, { ...row, secondaryWorkstreamLabel: "Changed" }),
+    ).toBe(false);
   });
 });
 
