@@ -31,6 +31,9 @@ import { AttachmentHandlersLive } from "./toolkits/attachment/handlers.ts";
 import { ThreadToolkit } from "./toolkits/thread/tools.ts";
 import { ThreadToolkitHandlersLive } from "./toolkits/thread/handlers.ts";
 import * as ThreadMetadataMcpService from "./ThreadMetadataMcpService.ts";
+import { OrganizationToolkit } from "./toolkits/organization/tools.ts";
+import { OrganizationToolkitHandlersLive } from "./toolkits/organization/handlers.ts";
+
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { OrchestratorToolkitHandlersLive } from "./toolkits/orchestrator/handlers.ts";
@@ -708,6 +711,10 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
   DeviceScreenshotRegistrationLive,
 );
 
+const OrganizationToolkitRegistrationLive = McpServer.toolkit(OrganizationToolkit).pipe(
+  Layer.provide(OrganizationToolkitHandlersLive),
+);
+
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -726,4 +733,5 @@ export const layer = Layer.mergeAll(
   WorktreeToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
+  OrganizationToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

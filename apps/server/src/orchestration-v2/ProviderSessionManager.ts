@@ -463,7 +463,7 @@ export const layerWithOptions = (
                   yield* agentAccessSettings(threadId);
                 const capabilities = new Set<
                   import("../mcp/McpInvocationContext.ts").McpCapability
-                >(["orchestration", "worktree", "pull-requests"]);
+                >(["orchestration", "worktree", "pull-requests", "organization"]);
                 if (browserToolsAvailable) capabilities.add("preview");
                 if (deviceToolsAvailable) capabilities.add("device");
                 const existing = McpProviderSession.readMcpProviderSession(threadId);
@@ -477,6 +477,9 @@ export const layerWithOptions = (
                     resolved !== undefined &&
                     resolved.threadId === threadId &&
                     resolved.providerInstanceId === providerInstanceId &&
+                    // Credentials issued before organization support must rotate
+                    // once so the baseline grant is available at point of use.
+                    resolved.capabilities.has("organization") &&
                     // A flipped browser-access setting must not survive through
                     // credential reuse: rotate so the new scope reflects it.
                     resolved.capabilities.has("preview") === browserToolsAvailable &&

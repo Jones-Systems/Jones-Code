@@ -49,6 +49,7 @@ import {
   sortLogicalProjectsForSidebar,
   sortInboxThreadsByReturn,
   resolveSidebarDropTarget,
+  sidebarMarkerId,
   planSidebarThreadDrop,
   sortPinnedThreadsForSidebar,
   sortProjectsForSidebar,
@@ -2366,6 +2367,32 @@ describe("Working shelf (beta)", () => {
       marker("settled-header"),
       row("s1", "settled"),
     ];
+
+    it("plans shelf drops from the active-first Workstream projection", () => {
+      const list = [
+        marker("active-placeholder"),
+        row("group-pin", "active"),
+        row("group-active", "active"),
+        marker("pinned-header"),
+        row("unassigned-pin", "pinned"),
+        marker("pinned-divider"),
+        marker("settled-header"),
+      ];
+      expect(resolveSidebarDropTarget(list, "group-pin", sidebarMarkerId("pinned-header"))).toEqual(
+        {
+          section: "pinned",
+          pinnedOrder: ["group-pin", "unassigned-pin"],
+          activeOrder: ["group-active"],
+        },
+      );
+      expect(
+        resolveSidebarDropTarget(list, "group-pin", sidebarMarkerId("pinned-divider")),
+      ).toEqual({
+        section: "active",
+        pinnedOrder: ["unassigned-pin"],
+        activeOrder: ["group-active", "group-pin"],
+      });
+    });
 
     it("never drops into the Working shelf, and keeps it out of the inbox order", () => {
       expect(resolveSidebarDropTarget(items, "a1", "w1")).toBeNull();

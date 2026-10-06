@@ -1,3 +1,4 @@
+import { mobilePrimaryGroupMap } from "../../lib/threadOrderScope";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import {
   groupNativeThreadsByWorkstream,
@@ -110,11 +111,13 @@ export function projectMobileWorkstreams(
     for (const [key, labels] of grouped.secondaryWorkstreamLabelsByKey)
       secondaryLabelsByKey.set(key, labels);
   }
+  const orderedGroups = [...groups.values()].sort(
+    (a, b) => a.workstream.sortOrder - b.workstream.sortOrder || a.key.localeCompare(b.key),
+  );
   return {
-    groups: [...groups.values()].sort(
-      (a, b) => a.workstream.sortOrder - b.workstream.sortOrder || a.key.localeCompare(b.key),
-    ),
+    groups: orderedGroups,
     secondaryLabelsByKey,
+    primaryGroupByThreadKey: mobilePrimaryGroupMap(orderedGroups),
   };
 }
 

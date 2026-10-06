@@ -49,6 +49,7 @@ import {
   OrchestrationV2SubagentJson as OrchestrationV2SubagentJsonSchema,
   OrchestrationV2TurnItemJson as OrchestrationV2TurnItemJsonSchema,
   orchestrationV2RunWorkStartedAt,
+  ProviderRequestKind,
   RunId,
   CheckpointScopeId,
   ThreadId,
@@ -933,6 +934,8 @@ type ShellThreadRow = {
   readonly blocking_run_completed_at: string | null;
   readonly blocking_failure_payload_json: string | null;
   readonly pending_request_payload_json: string | null;
+  readonly pending_approval_count: number;
+  readonly pending_user_input_count: number;
   readonly latest_user_message_at: string | null;
   readonly latest_user_authored_message_at: string | null;
   readonly has_actionable_proposed_plan: number;
@@ -1341,6 +1344,14 @@ export function threadShellFromProjection(
     projection.runs
       .filter(isActivityRunForShell)
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null;
+  const pendingRequests = projection.runtimeRequests.filter(
+    (request) => request.status === "pending",
+  );
+  const isApprovalKind = Schema.is(ProviderRequestKind);
+  const pendingRequestCounts = {
+    approval: pendingRequests.filter((request) => isApprovalKind(request.kind)).length,
+    userInput: pendingRequests.filter((request) => request.kind === "user_input").length,
+  };
   const pendingRuntimeRequest =
     projection.runtimeRequests
       .filter((request) => request.status === "pending")
@@ -1411,6 +1422,7 @@ export function threadShellFromProjection(
             kind: pendingRuntimeRequest.kind,
             createdAt: pendingRuntimeRequest.createdAt,
           },
+    pendingRequestCounts,
     // Thread detail owns message bodies. Keeping them out of shell rows makes
     // initial hydration and streaming updates independent of transcript size.
     latestVisibleMessage: null,
@@ -1501,6 +1513,7 @@ type ShellThreadState = {
   readonly lastErrorClass: OrchestrationV2ThreadShell["lastErrorClass"];
   readonly usageLimitResetAt: OrchestrationV2ThreadShell["usageLimitResetAt"];
   readonly pendingRuntimeRequest: OrchestrationV2ThreadProjection["runtimeRequests"][number] | null;
+  readonly pendingRequestCounts: NonNullable<OrchestrationV2ThreadShell["pendingRequestCounts"]>;
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
   readonly hasActionableProposedPlan: boolean;
@@ -1646,6 +1659,7 @@ function shellFromState(input: {
             kind: input.state.pendingRuntimeRequest.kind,
             createdAt: input.state.pendingRuntimeRequest.createdAt,
           },
+    pendingRequestCounts: input.state.pendingRequestCounts,
     latestVisibleMessage: null,
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
@@ -5031,6 +5045,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 LIMIT 1
               ) AS pending_request_payload_json,
               (
+                SELECT COUNT(*) FROM orchestration_v2_projection_runtime_requests request
+                WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+                  AND request.kind IN ('command', 'file-read', 'file-change', 'mcp-elicitation', 'permission')
+              ) AS pending_approval_count,
+              (
+                SELECT COUNT(*) FROM orchestration_v2_projection_runtime_requests request
+                WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+                  AND request.kind = 'user_input'
+              ) AS pending_user_input_count,
+              (
                 SELECT message.updated_at
                 FROM orchestration_v2_projection_messages message
                 WHERE message.thread_id = t.thread_id
@@ -5481,6 +5505,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             row.last_error,
           ),
           pendingRuntimeRequest,
+          pendingRequestCounts: {
+            approval: row.pending_approval_count,
+            userInput: row.pending_user_input_count,
+          },
           latestUserMessageAt:
             row.latest_user_message_at === null
               ? null
