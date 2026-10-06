@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { ThreadRegistryAssociation } from "./threadRegistry.ts";
 import { NonNegativeInt, PositiveInt, IsoDateTime } from "./baseSchemas.ts";
 
 export const VoiceReviewState = Schema.Literals([
@@ -16,6 +17,9 @@ export const VoiceReviewReason = Schema.Literals([
   "grant_denied",
   "backend_unavailable",
   "capacity",
+  "route_required",
+  "awaiting_dependency",
+  "owner_required",
 ]);
 export const VoiceReviewText = Schema.String.check(
   Schema.isMaxLength(100_000),
@@ -39,6 +43,19 @@ export const VoiceReviewDraft = Schema.Struct({
   command_status: Schema.NullOr(Schema.String),
   reason: Schema.NullOr(VoiceReviewReason),
   server_now: IsoDateTime,
+  routing_state: Schema.optional(
+    Schema.Literals([
+      "unclassified",
+      "classifying",
+      "proposed",
+      "owner_required",
+      "awaiting_dependency",
+      "frozen",
+    ]),
+  ),
+  routing_ref: Schema.optional(Schema.NullOr(Schema.String)),
+  routing_target: Schema.optional(Schema.NullOr(Schema.String)),
+  dependencies: Schema.optional(Schema.Array(Schema.String)),
 });
 export type VoiceReviewDraft = typeof VoiceReviewDraft.Type;
 export const VoiceReviewDraftList = Schema.Struct({
@@ -137,3 +154,48 @@ export const VoiceReviewErrors = [
 ] as const;
 export const VoiceReviewError = Schema.Union(VoiceReviewErrors);
 export type VoiceReviewError = typeof VoiceReviewError.Type;
+
+export const VoiceReviewRecentEntry = Schema.Struct({
+  draft: VoiceReviewDraft,
+  thread_key: Schema.optional(Schema.NullOr(Schema.String)),
+  text: Schema.NullOr(VoiceReviewText),
+  text_state: Schema.Literals(["available", "deleted", "expired", "unavailable"]),
+  text_origin: Schema.NullOr(Schema.Literals(["draft", "retained_command"])),
+  original_source_text: Schema.NullOr(VoiceReviewText),
+  command_id: Schema.NullOr(Schema.String),
+  associations: Schema.optional(Schema.Array(ThreadRegistryAssociation)),
+  workstream_refs: Schema.Array(Schema.String.check(Schema.isPattern(/^(native|inferred):.+$/))),
+});
+export type VoiceReviewRecentEntry = typeof VoiceReviewRecentEntry.Type;
+export const VoiceReviewRecentList = Schema.Struct({
+  schema: Schema.Literal("voice.recent-prompts/v1"),
+  server_now: IsoDateTime,
+  partial: Schema.Boolean,
+  unavailable: Schema.Array(Schema.String),
+  entries: Schema.Array(VoiceReviewRecentEntry).check(Schema.isMaxLength(200)),
+});
+export type VoiceReviewRecentList = typeof VoiceReviewRecentList.Type;
+export const VoiceReviewDiagnostics = Schema.Struct({
+  schema: Schema.Literal("voice.routing-diagnostics/v1"),
+  draft_id: Schema.String,
+  source_id: Schema.String,
+  draft_revision: PositiveInt,
+  routing_state: Schema.String,
+  jobs: Schema.Array(
+    Schema.Struct({
+      job_id: Schema.String,
+      state: Schema.String,
+      input_digest: Schema.String,
+      manifest: Schema.Record(Schema.String, Schema.Unknown),
+      requested_model: Schema.NullOr(Schema.String),
+      observed_model: Schema.NullOr(Schema.String),
+      requested_effort: Schema.NullOr(Schema.String),
+      observed_effort: Schema.NullOr(Schema.String),
+      validation_outcome: Schema.NullOr(Schema.String),
+      void_reason: Schema.NullOr(Schema.String),
+      usage: Schema.Record(Schema.String, Schema.Unknown),
+    }),
+  ),
+  unavailable: Schema.Array(Schema.String),
+});
+export type VoiceReviewDiagnostics = typeof VoiceReviewDiagnostics.Type;

@@ -14,6 +14,7 @@ describe("Jones environment HTTP registration", () => {
       "auth",
       "orchestration",
       "pullRequests",
+      "workstreams",
       "projects",
       "connect",
       "conversationLibrary",
@@ -28,6 +29,13 @@ describe("Jones environment HTTP registration", () => {
       ...Object.values(groups.conversationLibrary.endpoints),
     ];
     expect(routes.map(({ identifier, method, path }) => [identifier, method, path])).toEqual([
+      ["recent", "GET", "/api/voice-review/recent"],
+      ["registrySnapshot", "GET", "/api/voice-review/registry/snapshot"],
+      ["registryWorkstreams", "GET", "/api/voice-review/registry/workstreams"],
+      ["registryEvents", "GET", "/api/voice-review/registry/events"],
+      ["correctAssociation", "POST", "/api/voice-review/registry/associations"],
+      ["correctLabel", "POST", "/api/voice-review/registry/labels"],
+      ["diagnostics", "GET", "/api/voice-review/drafts/:id/diagnostics"],
       ["list", "GET", "/api/voice-review/drafts"],
       ["get", "GET", "/api/voice-review/drafts/:id"],
       ["pause", "POST", "/api/voice-review/drafts/:id/pause"],

@@ -1,18 +1,33 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeChildProcess from "node:child_process";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
-import { Launcher, readServiceState, writeServiceState } from "./serviceLauncher.ts";
+import {
+  configuredDatabasePathForBaseDir,
+  Launcher,
+  readServiceState,
+  validateDatabasePathForBaseDir,
+  writeServiceState,
+} from "./serviceLauncher.ts";
 import {
   compareExactServiceVersions,
+  decodeServiceLauncherContext,
+  LEGACY_SERVICE_LAUNCHER_PROTOCOL,
   decodeServiceState,
   isExactServiceVersion,
   SERVICE_LAUNCHER_PROTOCOL,
   SERVICE_RESTART_PENDING_FILE,
   SERVICE_STOP_MARKER_FILE,
 } from "./cloud/serviceProtocol.ts";
+import {
+  initializeNativeStoreAuthority,
+  readNativeStoreAuthorityState,
+} from "./environment/nativeStoreAuthorityPersistence.ts";
 
 it("accepts only exact semantic versions", () => {
   for (const version of ["0.0.0", "1.2.3", "1.2.3-alpha.1", "1.2.3-0", "1.2.3+001"]) {
@@ -44,6 +59,7 @@ it("rejects contradictory service state", () => {
         targetVersion: "0.0.32",
         dbPath: "/tmp/state.sqlite",
         status: "pending",
+        phase: "trial-ready",
       },
     }),
   );
@@ -57,6 +73,7 @@ it("rejects contradictory service state", () => {
         fromVersion: "1.0.0",
         targetVersion: "1.1.0",
         status: "pending",
+        phase: "trial-ready",
       },
     }),
   );
@@ -71,8 +88,77 @@ it("rejects contradictory service state", () => {
         targetVersion: "0.9.0",
         dbPath: "/tmp/state.sqlite",
         status: "pending",
+        phase: "trial-ready",
       },
     }),
+  );
+});
+
+it("requires durable phases and never upgrades legacy pending state", () => {
+  const update = {
+    id: "phase-test",
+    fromVersion: "1.0.0",
+    targetVersion: "1.1.0",
+    dbPath: "/fixture/userdata/statev2.sqlite",
+    status: "pending",
+  };
+  for (const phase of [undefined, "unknown"]) {
+    assert.isUndefined(
+      decodeServiceState({
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        activeVersion: "1.0.0",
+        update: { ...update, phase },
+      }),
+    );
+  }
+  for (const phase of ["accepted", "trial-ready"]) {
+    assert.isDefined(
+      decodeServiceState({
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        activeVersion: "1.0.0",
+        update: { ...update, phase },
+      }),
+    );
+  }
+  assert.isUndefined(
+    decodeServiceState({
+      protocol: LEGACY_SERVICE_LAUNCHER_PROTOCOL,
+      activeVersion: "1.0.0",
+      update,
+    }),
+  );
+  const legacy = decodeServiceLauncherContext(
+    JSON.stringify({ protocol: LEGACY_SERVICE_LAUNCHER_PROTOCOL, childVersion: "1.1.0", update }),
+  );
+  assert.equal(legacy?.protocol, LEGACY_SERVICE_LAUNCHER_PROTOCOL);
+  assert.isFalse(legacy?.update !== undefined && "phase" in legacy.update);
+  assert.isUndefined(
+    decodeServiceLauncherContext(
+      JSON.stringify({
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.1.0",
+        update: { ...update, phase: "accepted" },
+      }),
+    ),
+  );
+});
+
+it("binds service updates to the configured database path", () => {
+  const baseDir = "/fixture/t3-service-path-test";
+  const configuredPath = configuredDatabasePathForBaseDir(baseDir);
+  assert.equal(validateDatabasePathForBaseDir(baseDir, configuredPath), configuredPath);
+  assert.equal(configuredPath, "/fixture/t3-service-path-test/userdata/statev2.sqlite");
+  assert.throws(
+    () =>
+      validateDatabasePathForBaseDir(
+        baseDir,
+        "/fixture/t3-service-path-test/userdata/state.sqlite",
+      ),
+    /configured userdata\/statev2.sqlite/,
+  );
+  assert.throws(
+    () => validateDatabasePathForBaseDir(baseDir, "/fixture/alternate.sqlite"),
+    /configured userdata\/statev2.sqlite/,
   );
 });
 
@@ -195,7 +281,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-flow-" });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, "before trial");
       // @effect-diagnostics-next-line preferSchemaOverJson:off - embeds a path in fake child source.
@@ -249,7 +335,7 @@ if (context.update?.status === "pending") {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-rollback-" });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, "before trial");
       // @effect-diagnostics-next-line preferSchemaOverJson:off - embeds a path in fake child source.
@@ -304,10 +390,16 @@ if (context.update?.status === "pending") {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-db-" });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
-      const original = "database before migration";
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
+      const authorityStateDir = path.join(root, "native-store-authority");
+      const original = "SQLite format 3\0database before migration";
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, original);
+      yield* fs.writeFileString(
+        path.join(root, "userdata", "environment-id"),
+        "environment-launcher\n",
+      );
+      initializeNativeStoreAuthority(authorityStateDir, "environment-launcher");
       // @effect-diagnostics-next-line preferSchemaOverJson:off - embeds a path in fake child source.
       const encodedDatabasePath = JSON.stringify(databasePath);
       const childSource = `
@@ -352,11 +444,234 @@ if (context.update?.status === "pending") {
       assert.equal(state.activeVersion, "1.0.0");
       assert.equal(state.update?.status, "rolled-back");
       assert.equal(yield* fs.readFileString(databasePath), original);
+      const authority = readNativeStoreAuthorityState(authorityStateDir);
+      assert.equal(authority.state, "active");
+      assert.equal(authority.store_generation, 2);
       assert.isFalse(yield* fs.exists(`${databasePath}-wal`));
       assert.isFalse(yield* fs.exists(`${databasePath}-shm`));
       const updateId = state.update?.id;
       assert.isDefined(updateId);
       assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup", updateId)));
+    }),
+  );
+
+  it.effect("returns to the previous executable when the pretrial backup fails", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-backup-failed-" });
+      for (const version of ["1.0.0", "1.1.0"]) {
+        yield* writeFakeRuntime(
+          fs,
+          path,
+          path.join(root, "runtime", "versions", version),
+          "process.exit(0);\n",
+        );
+      }
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
+      const statePath = path.join(root, "runtime", "service-state.json");
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+          update: {
+            id: "backup-failure",
+            fromVersion: "1.0.0",
+            targetVersion: "1.1.0",
+            dbPath: databasePath,
+            status: "pending",
+            phase: "accepted",
+          },
+        }),
+      );
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+      const state = yield* Effect.promise(() => readServiceState(statePath));
+      assert.equal(state.activeVersion, "1.0.0");
+      assert.equal(state.update?.status, "failed");
+      assert.equal(
+        state.update?.status === "failed" ? state.update.reason : undefined,
+        "db-backup-failed",
+      );
+      assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup", "backup-failure")));
+    }),
+  );
+
+  it.effect("fences authority without replacing a missing rollback baseline", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-service-launcher-missing-backup-",
+      });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
+      yield* fs.makeDirectory(path.join(root, "userdata"), { recursive: true });
+      yield* fs.writeFileString(databasePath, "SQLite format 3\0trial-modified database");
+      yield* fs.writeFileString(
+        path.join(root, "userdata", "environment-id"),
+        "environment-missing-backup\n",
+      );
+      initializeNativeStoreAuthority(
+        path.join(root, "native-store-authority"),
+        "environment-missing-backup",
+      );
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        path.join(root, "runtime", "versions", "1.1.0"),
+        "process.exit(0);\n",
+      );
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+          update: {
+            id: "missing-backup-update",
+            fromVersion: "1.0.0",
+            targetVersion: "1.1.0",
+            dbPath: databasePath,
+            status: "pending",
+            phase: "trial-ready",
+          },
+        }),
+      );
+
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+
+      const authority = readNativeStoreAuthorityState(path.join(root, "native-store-authority"));
+      assert.equal(authority.state, "fenced");
+      assert.equal(
+        yield* fs.readFileString(databasePath),
+        "SQLite format 3\0trial-modified database",
+      );
+      assert.equal(
+        (yield* Effect.promise(() => readServiceState(statePath))).update?.status,
+        "pending",
+      );
+      assert.isFalse(
+        yield* fs.exists(path.join(root, "runtime", "db-backup", "missing-backup-update")),
+      );
+    }),
+  );
+
+  it.effect("resumes a marked restore after abrupt authority writer death", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-service-launcher-restore-resume-",
+      });
+      const updateId = "restore-resume-update";
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
+      const backupDir = path.join(root, "runtime", "db-backup", updateId);
+      yield* fs.makeDirectory(path.join(root, "userdata"), { recursive: true });
+      yield* fs.makeDirectory(backupDir, { recursive: true });
+      yield* fs.writeFileString(databasePath, "SQLite format 3\0trial-modified database");
+      yield* fs.writeFileString(
+        path.join(root, "userdata", "environment-id"),
+        "environment-restore-resume\n",
+      );
+      yield* fs.writeFileString(path.join(backupDir, "database"), "SQLite format 3\0original");
+      yield* fs.writeFileString(path.join(backupDir, ".restore-pending"), "");
+      initializeNativeStoreAuthority(
+        path.join(root, "native-store-authority"),
+        "environment-restore-resume",
+      );
+
+      const authorityStateDir = path.join(root, "native-store-authority");
+      const crash = NodeChildProcess.spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `
+          import fs from "node:fs";
+          import { syncBuiltinESMExports } from "node:module";
+          const authority = await import(process.argv[1]);
+          const statePath = authority.nativeStoreAuthorityPaths(process.argv[2]).statePath;
+          const rename = fs.renameSync;
+          fs.renameSync = (...args) => {
+            rename(...args);
+            if (args[1] === statePath) process.kill(process.pid, "SIGKILL");
+          };
+          syncBuiltinESMExports();
+          authority.fenceNativeStoreAuthority(process.argv[2], "environment-restore-resume");
+          throw new Error("writer unexpectedly survived");
+        `,
+          new URL("./environment/nativeStoreAuthorityPersistence.ts", import.meta.url).href,
+          authorityStateDir,
+        ],
+        { timeout: 10_000, encoding: "utf8" },
+      );
+      assert.isUndefined(crash.error);
+      assert.equal(crash.signal, "SIGKILL");
+      assert.equal(readNativeStoreAuthorityState(authorityStateDir).state, "fenced");
+      assert.equal(readNativeStoreAuthorityState(authorityStateDir).store_generation, 1);
+      assert.equal(
+        yield* fs.readFileString(databasePath),
+        "SQLite format 3\0trial-modified database",
+      );
+
+      const versionDir = path.join(root, "runtime", "versions", "1.0.0");
+      const previousStarted = path.join(root, "previous-runtime-started");
+      // @effect-diagnostics-next-line preferSchemaOverJson:off - path embedded in a fixture executable.
+      const previousStartedLiteral = JSON.stringify(previousStarted);
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        versionDir,
+        `require("node:fs").writeFileSync(${previousStartedLiteral}, "started"); process.exit(0);\n`,
+      );
+
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+          update: {
+            id: updateId,
+            fromVersion: "1.0.0",
+            targetVersion: "1.1.0",
+            dbPath: databasePath,
+            status: "pending",
+            phase: "trial-ready",
+          },
+        }),
+      );
+
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+
+      const state = yield* Effect.promise(() => readServiceState(statePath));
+      assert.equal(state.update?.status, "failed");
+      assert.equal(
+        state.update?.status === "failed" ? state.update.reason : undefined,
+        "rollback-interrupted",
+      );
+      assert.equal(yield* fs.readFileString(databasePath), "SQLite format 3\0original");
+      assert.equal(
+        readNativeStoreAuthorityState(path.join(root, "native-store-authority")).store_generation,
+        2,
+      );
+      assert.isFalse(yield* fs.exists(backupDir));
+      assert.equal(yield* fs.readFileString(previousStarted), "started");
     }),
   );
 });
