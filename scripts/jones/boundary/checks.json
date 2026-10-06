@@ -9,6 +9,15 @@
         "node scripts/jones/check-boundary.ts --strict --json",
         "vp run --filter @t3tools/scripts typecheck"
       ]
+    },
+    {
+      "id": "jones-provider-settlement",
+      "tests": [
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
+      ]
     }
   ]
 }
