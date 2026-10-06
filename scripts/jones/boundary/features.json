@@ -1,7 +1,7 @@
 {
   "schema": "jones.boundary-features/v1",
   "scopeReference": "docs/operations/upstream-sync.md",
-  "baseline": "612e95df23c30e9cb08f20475d501f76393e5457",
+  "baseline": "5bad9c13246dcc46a4bc06a341152f8183e55a4b",
   "features": [
     {
       "id": "conversation-library",
@@ -32,6 +32,16 @@
     {
       "id": "boundary-inventory",
       "tests": ["scripts/jones/check-boundary.test.ts"]
+    },
+    {
+      "id": "provider-settlement",
+      "tests": [
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "packages/client-runtime/src/state/threadExecution.test.ts",
+        "apps/web/src/components/chat/MessagesTimeline.logic.test.ts"
+      ],
+      "scope": "Landed rebuild #111 distinguishes attributed provider response settlement from checkpoint completion."
     }
   ]
 }
