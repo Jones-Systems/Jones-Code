@@ -83,7 +83,7 @@ vi.mock("./UsageProviderChart", async () => {
   };
 });
 vi.mock("./UsagePriceOverrides", () => ({ UsagePriceOverrides: () => null }));
-vi.mock("./SavedTokenAccounting", () => ({ SavedTokenAccounting: () => null }));
+vi.mock("../../jones/usage/SavedTokenAccounting", () => ({ SavedTokenAccounting: () => null }));
 vi.mock("./usageProviders", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./usageProviders")>();
   return {
