@@ -14,22 +14,7 @@ export class ProjectThreadTaskRequiredError extends Schema.TaggedError<ProjectTh
   }
 }
 
-export class ProjectThreadBaseBranchRequiredError extends Schema.TaggedError<ProjectThreadBaseBranchRequiredError>()(
-  "ProjectThreadBaseBranchRequiredError",
-  {
-    environmentId: EnvironmentId,
-    projectId: ProjectId,
-  },
-) {
-  override get message(): string {
-    return "Select a base branch before creating a worktree.";
-  }
-}
-
-export const ProjectThreadCreationValidationError = Schema.Union([
-  ProjectThreadTaskRequiredError,
-  ProjectThreadBaseBranchRequiredError,
-]);
+export const ProjectThreadCreationValidationError = ProjectThreadTaskRequiredError;
 export type ProjectThreadCreationValidationError = typeof ProjectThreadCreationValidationError.Type;
 
 /**
@@ -64,12 +49,6 @@ export function validateProjectThreadCreation(input: {
       environmentId: input.environmentId,
       projectId: input.projectId,
       environmentMode: input.environmentMode,
-    });
-  }
-  if (input.environmentMode === "worktree" && !input.branch) {
-    return new ProjectThreadBaseBranchRequiredError({
-      environmentId: input.environmentId,
-      projectId: input.projectId,
     });
   }
   return null;

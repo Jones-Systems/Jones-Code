@@ -80,6 +80,7 @@ import {
   resolveEffectiveInteractionMode,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
+  resolveFirstSendWorktreePreparation,
   startNewThreadForProject,
   shouldShowBranchMismatchBanner,
   shouldShowPlanFollowUpPrompt,
@@ -2189,5 +2190,45 @@ describe("composer picker effort inheritance", () => {
         }).options,
       ).toEqual([{ id: "serviceTier", value: "fast" }, ...(options ?? [])]);
     }
+  });
+});
+
+describe("resolveFirstSendWorktreePreparation", () => {
+  const automaticInput = {
+    isFirstMessage: true,
+    sendEnvMode: "worktree" as const,
+    worktreePath: null,
+    projectCwd: "/repo",
+    baseBranch: null,
+    startFromOrigin: true,
+  };
+
+  it("prepares the first worktree send while base selection is still loading", () => {
+    expect(resolveFirstSendWorktreePreparation(automaticInput)).toEqual({
+      projectCwd: "/repo",
+      startFromOrigin: true,
+    });
+  });
+
+  it("preserves the captured explicit base and independent origin preference", () => {
+    expect(
+      resolveFirstSendWorktreePreparation({
+        ...automaticInput,
+        baseBranch: "upstream/release",
+        startFromOrigin: false,
+      }),
+    ).toEqual({ projectCwd: "/repo", baseBranch: "upstream/release" });
+  });
+
+  it("does not prepare local, subsequent, or existing-worktree sends", () => {
+    expect(
+      resolveFirstSendWorktreePreparation({ ...automaticInput, sendEnvMode: "local" }),
+    ).toBeUndefined();
+    expect(
+      resolveFirstSendWorktreePreparation({ ...automaticInput, isFirstMessage: false }),
+    ).toBeUndefined();
+    expect(
+      resolveFirstSendWorktreePreparation({ ...automaticInput, worktreePath: "/repo/worktree" }),
+    ).toBeUndefined();
   });
 });

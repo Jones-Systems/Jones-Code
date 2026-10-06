@@ -3,6 +3,7 @@ import {
   type OrchestrationV2ProviderThread,
   type ProviderRuntimeEvidenceCapture,
   type RequestedRuntimeIdentity,
+  type MessageId,
   type OrchestrationV2Run,
   OrchestrationV2DomainEvent,
   OrchestrationV2StoredEvent,
@@ -237,6 +238,24 @@ export interface EventSinkV2Shape {
   readonly latestSequence: (input?: {
     readonly threadId?: ThreadId;
   }) => Effect.Effect<number, EventSinkV2Error>;
+  readonly canPromoteQueuedAtToolBoundary: (input: {
+    readonly threadId: ThreadId;
+    readonly queuedRunId: RunId;
+    readonly activeRunId: RunId;
+    readonly messageId: MessageId;
+    readonly boundary: OrchestrationV2StoredEvent;
+    readonly runtimeMode: string;
+    readonly interactionMode: string;
+    readonly births?: Map<
+      RunId,
+      {
+        readonly sequence: number;
+        readonly runtimeMode: string;
+        readonly interactionMode: string;
+        readonly queuedToolBoundaryEligible: boolean;
+      } | null
+    >;
+  }) => Effect.Effect<boolean, EventSinkV2Error>;
   readonly readByCommandId: (input: {
     readonly commandId: CommandId;
   }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
@@ -1032,6 +1051,71 @@ const baseLayer: Layer.Layer<
               }),
           ),
         ),
+      canPromoteQueuedAtToolBoundary: (input) =>
+        Effect.gen(function* () {
+          if (input.boundary.event.type !== "node.updated") return false;
+          const node = input.boundary.event.payload;
+          const births = input.births ?? new Map();
+          for (const runId of [input.activeRunId, input.queuedRunId]) {
+            if (births.has(runId)) continue;
+            const rows = yield* sql<{ sequence: number; eligible: number }>`SELECT sequence,
+              CASE WHEN json_type(payload_json, '$.queuedToolBoundaryEligible') = 'true' THEN 1 ELSE 0 END AS eligible FROM orchestration_events
+            WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
+              AND event_type = 'run.created' AND json_extract(payload_json, '$.id') = ${runId}
+            ORDER BY sequence DESC LIMIT 1`;
+            if (rows[0] === undefined) {
+              births.set(runId, null);
+              continue;
+            }
+            const settings = yield* sql<{ runtime_mode: string; interaction_mode: string }>`SELECT
+            json_extract(payload_json, '$.runtimeMode') AS runtime_mode, json_extract(payload_json, '$.interactionMode') AS interaction_mode
+            FROM orchestration_events WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
+              AND event_type LIKE 'thread.%' AND sequence < ${rows[0].sequence} AND json_type(payload_json, '$.runtimeMode') = 'text'
+            ORDER BY sequence DESC LIMIT 1`;
+            births.set(
+              runId,
+              settings[0] === undefined
+                ? null
+                : {
+                    sequence: rows[0].sequence,
+                    queuedToolBoundaryEligible: rows[0].eligible === 1,
+                    runtimeMode: settings[0].runtime_mode,
+                    interactionMode: settings[0].interaction_mode,
+                  },
+            );
+          }
+          const queued = births.get(input.queuedRunId);
+          const active = births.get(input.activeRunId);
+          if (
+            queued == null ||
+            queued.queuedToolBoundaryEligible !== true ||
+            active == null ||
+            queued.sequence >= input.boundary.sequence ||
+            queued.runtimeMode !== input.runtimeMode ||
+            queued.interactionMode !== input.interactionMode ||
+            active.runtimeMode !== input.runtimeMode ||
+            active.interactionMode !== input.interactionMode
+          )
+            return false;
+          const updates = yield* sql<{ sequence: number }>`SELECT sequence FROM orchestration_events
+          WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
+            AND sequence > ${active.sequence} AND event_type IN ('message.created', 'message.updated') AND json_extract(payload_json, '$.id') = ${input.messageId}
+          ORDER BY sequence DESC LIMIT 1`;
+          if (updates[0] === undefined || updates[0].sequence >= input.boundary.sequence)
+            return false;
+          const completions = yield* sql<{
+            sequence: number;
+          }>`SELECT sequence FROM orchestration_events
+          WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
+            AND sequence > ${active.sequence} AND event_type = 'node.updated' AND json_extract(payload_json, '$.id') = ${node.id}
+            AND json_extract(payload_json, '$.providerTurnId') = ${node.providerTurnId}
+            AND json_extract(payload_json, '$.status') = 'completed' ORDER BY sequence ASC LIMIT 1`;
+          if (completions[0]?.sequence !== input.boundary.sequence) return false;
+          const fences = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
+          WHERE thread_id = ${input.threadId} AND run_id = ${input.queuedRunId}
+            AND json_extract(payload_json, '$.queueHeld') = 1 LIMIT 1`;
+          return fences.length === 0;
+        }).pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       readByCommandId: (input) =>
         eventStore.readByCommandId(input).pipe(
           Stream.mapError(

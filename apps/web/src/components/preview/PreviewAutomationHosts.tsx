@@ -15,6 +15,7 @@ import {
   type PreviewAutomationSetColorSchemeResult,
   type PreviewAutomationHost as PreviewAutomationHostState,
   type PreviewAutomationRequest,
+  type PreviewAutomationRuntimeIdentity,
   type PreviewAutomationStatus,
   type PreviewRenderedViewportSize,
   type PreviewViewportSetting,
@@ -276,7 +277,26 @@ const raisePreviewAutomationHostError = (
 
 export function PreviewAutomationHosts() {
   const { environments } = useEnvironments();
+  const [runtimeIdentity, setRuntimeIdentity] = useState<
+    PreviewAutomationRuntimeIdentity | null | undefined
+  >(() => (window.desktopBridge?.getPreviewAutomationRuntimeIdentity ? undefined : null));
+  useEffect(() => {
+    let active = true;
+    const getter = window.desktopBridge?.getPreviewAutomationRuntimeIdentity;
+    if (!getter) return;
+    void getter()
+      .then((identity) => {
+        if (active) setRuntimeIdentity(identity);
+      })
+      .catch(() => {
+        if (active) setRuntimeIdentity(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   if (!isElectron || !previewBridge?.automation) return null;
+  if (runtimeIdentity === undefined) return null;
   return (
     <>
       {/*
@@ -288,14 +308,18 @@ export function PreviewAutomationHosts() {
         <PreviewAutomationHost
           key={environment.environmentId}
           environmentId={environment.environmentId}
+          runtimeIdentity={runtimeIdentity}
         />
       ))}
     </>
   );
 }
 
-function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId }) {
-  const { environmentId } = props;
+function PreviewAutomationHost(props: {
+  readonly environmentId: EnvironmentId;
+  readonly runtimeIdentity: PreviewAutomationRuntimeIdentity | null;
+}) {
+  const { environmentId, runtimeIdentity } = props;
   const previewSessions = useActivePreviewSessions();
   const visibleRuntimeTabIds = useBrowserSurfaceStore(
     useShallow((state) =>
@@ -327,8 +351,9 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
       clientId: automationClientId,
       environmentId,
       supportedOperations: [...PREVIEW_AUTOMATION_OPERATIONS],
+      ...(runtimeIdentity === null ? {} : { runtimeIdentity }),
     }),
-    [automationClientId, environmentId],
+    [automationClientId, environmentId, runtimeIdentity],
   );
   const automationRequestsAtom = previewEnvironment.automationRequests({
     environmentId,
