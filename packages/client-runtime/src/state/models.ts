@@ -6,6 +6,7 @@ import type {
   MessageId,
   OrchestrationProjectShell,
   OrchestrationV2RunStatus,
+  OrchestrationV2ProviderSettlement,
   OrchestrationV2ProviderFailureClass,
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadShell,
@@ -41,6 +42,9 @@ export interface ThreadRunSummary {
   readonly requestedAt: string | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+  readonly providerSettlement?:
+    | (Omit<OrchestrationV2ProviderSettlement, "completedAt"> & { readonly completedAt: string })
+    | null;
   readonly assistantMessageId: MessageId | null;
   readonly sourcePlanRef?: {
     readonly threadId: ThreadId;
@@ -218,6 +222,17 @@ export function presentThreadShell(
                 ? updatedAt
                 : null
               : nullableIso(thread.latestRunCompletedAt),
+          ...(thread.latestRunProviderSettlement === undefined
+            ? {}
+            : {
+                providerSettlement:
+                  thread.latestRunProviderSettlement === null
+                    ? null
+                    : {
+                        ...thread.latestRunProviderSettlement,
+                        completedAt: iso(thread.latestRunProviderSettlement.completedAt),
+                      },
+              }),
           assistantMessageId: null,
         } satisfies ThreadRunSummary);
   return {

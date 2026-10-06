@@ -2010,6 +2010,7 @@ export function makeOpenCodeAdapterV2(
           turn: ActiveOpenCodeTurn,
           status: TerminalTurnStatus,
           terminal?: {
+            readonly evidenceKind?: "provider_result" | "attributed_abort" | "local_failure";
             readonly failure?: OrchestrationV2ProviderFailure;
             readonly threadDisposition?: "reusable" | "broken";
           },
@@ -2017,7 +2018,11 @@ export function makeOpenCodeAdapterV2(
           if (turn.finalized) return;
           if (nativeStreamFailure !== null) {
             status = "failed";
-            terminal = { failure: nativeStreamFailure, threadDisposition: "broken" };
+            terminal = {
+              failure: nativeStreamFailure,
+              threadDisposition: "broken",
+              evidenceKind: "local_failure",
+            };
           }
           turn.finalized = true;
           const completedAt = yield* DateTime.now;
@@ -2075,10 +2080,19 @@ export function makeOpenCodeAdapterV2(
             anotherTurnIsActive ? "running" : status === "failed" ? "error" : "ready",
             status === "failed" ? sessionEntity.lastError : null,
           );
+          const terminalEvidenceKind =
+            terminal?.evidenceKind ??
+            (status === "completed"
+              ? "provider_result"
+              : status === "interrupted"
+                ? "attributed_abort"
+                : "local_failure");
           yield* emitProviderEvent(
             status === "failed"
               ? {
                   type: "turn.terminal",
+                  providerTurn: turn.providerTurn,
+                  evidenceKind: terminalEvidenceKind,
                   driver: OPENCODE_PROVIDER,
                   providerThreadId: state.providerThread.id,
                   providerTurnId: turn.providerTurnId,
@@ -2095,6 +2109,8 @@ export function makeOpenCodeAdapterV2(
                 }
               : {
                   type: "turn.terminal",
+                  providerTurn: turn.providerTurn,
+                  evidenceKind: terminalEvidenceKind,
                   driver: OPENCODE_PROVIDER,
                   providerThreadId: state.providerThread.id,
                   providerTurnId: turn.providerTurnId,
@@ -2658,6 +2674,12 @@ export function makeOpenCodeAdapterV2(
                     state.activeTurn,
                     terminalStatusForError(event, state.activeTurn),
                     {
+                      evidenceKind:
+                        event.properties.sessionID === undefined
+                          ? "local_failure"
+                          : isMessageAbortedError(event)
+                            ? "attributed_abort"
+                            : "provider_result",
                       failure: makeProviderFailure({
                         message,
                         code: event.properties.error?.name ?? null,
