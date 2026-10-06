@@ -1,4 +1,10 @@
 import {
+  cancelsSelfSettlement,
+  selfSettlementRun,
+  selfSettlementTerminalDisposition,
+  type SelfSettlementIntent,
+} from "./SelfSettlement.ts";
+import {
   latestExecutedRun,
   latestRootProviderFailure,
   runRanAfter,
@@ -106,6 +112,7 @@ import { makeProviderFailure } from "./ProviderFailure.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
 import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
+import { queuedToolBoundaryTarget } from "./QueuedToolBoundary.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import {
   makeSubagentChildThread,
@@ -178,6 +185,15 @@ export class OrchestratorProviderAdapterError extends Schema.TaggedError<Orchest
   }
 }
 
+export class OrchestratorThreadMessagesBlockedError extends Schema.TaggedError<OrchestratorThreadMessagesBlockedError>()(
+  "OrchestratorThreadMessagesBlockedError",
+  { commandId: CommandId, threadId: ThreadId },
+) {
+  override get message(): string {
+    return `Thread ${this.threadId} is blocking messages from other threads.`;
+  }
+}
+
 export class OrchestratorSubagentThreadReadOnlyError extends Schema.TaggedError<OrchestratorSubagentThreadReadOnlyError>()(
   "OrchestratorSubagentThreadReadOnlyError",
   { commandId: CommandId, threadId: ThreadId },
@@ -236,6 +252,7 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorCommandIdConflictError,
   OrchestratorSubagentThreadReadOnlyError,
+  OrchestratorThreadMessagesBlockedError,
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
@@ -245,6 +262,12 @@ export interface OrchestratorV2DispatchResult {
 }
 
 export interface OrchestratorV2Shape {
+  readonly requestSelfSettlement: (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+    readonly mcpCredentialId: string;
+    readonly providerInstanceId: ProviderInstanceId;
+  }) => Effect.Effect<SelfSettlementIntent, OrchestratorV2Error>;
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   /** Startup pass that settles delegated-task results and deliveries runs left behind. */
   readonly recoverDelegatedTasks: Effect.Effect<void>;
@@ -737,6 +760,18 @@ function lastDeliveredRunForProviderThread(
         projection.providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId)),
   );
 }
+
+const AutomaticQueuedToolBoundary = Context.Reference<
+  | {
+      readonly stored: OrchestrationV2StoredEvent;
+      readonly births: NonNullable<
+        Parameters<EventSinkV2["Service"]["canPromoteQueuedAtToolBoundary"]>[0]["births"]
+      >;
+    }
+  | undefined
+>("t3/orchestration-v2/Orchestrator/AutomaticQueuedToolBoundary", {
+  defaultValue: () => undefined,
+});
 
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
   const checkpointService = yield* CheckpointServiceV2;
@@ -2809,6 +2844,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return {
             ...thread,
             ...(command.title === undefined ? {} : { title: command.title }),
+            ...(command.threadMessagesBlocked === undefined
+              ? {}
+              : { threadMessagesBlocked: command.threadMessagesBlocked }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&
@@ -3705,6 +3743,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const session = sessionOption.value;
+      const automaticBoundary = yield* AutomaticQueuedToolBoundary;
+      if (
+        automaticBoundary !== undefined &&
+        (session.providerSession.capabilities.turns.supportsActiveSteering !== true ||
+          !modelSelectionsEqual(targetRun.modelSelection, input.modelSelection))
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: input.command.commandId,
+          commandType: input.command.type,
+          cause: "Automatic queue delivery requires unchanged active steering.",
+        });
+      }
       const now = yield* DateTime.now;
       const emitEvent = emit(input.events, input.command);
       const selectionChanged = !modelSelectionsEqual(
@@ -3926,7 +3976,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       let restartTransfer: OrchestrationV2ContextTransfer | null = null;
       const canResumeAcrossInstances =
         providerInstanceChanged &&
-        providerThread.nativeThreadRef !== null &&
         (yield* providerSwitchService
           .plan({
             projection: {
@@ -3935,7 +3984,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             },
             targetModelSelection: input.modelSelection,
           })
-          .pipe(mapDispatchError(input.command))).transition.type === "restart_and_resume";
+          .pipe(mapDispatchError(input.command))).transition.type === "restart_and_resume" &&
+        providerThread.nativeThreadRef !== null;
       const requiresProviderThreadHandoff =
         (providerInstanceChanged && !canResumeAcrossInstances) ||
         selectionTransition?.type === "create_with_handoff";
@@ -4805,6 +4855,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           rootNodeId,
           activeAttemptId: attemptId,
           status: "queued",
+          ...(command.queuedToolBoundaryEligible === undefined
+            ? {}
+            : { queuedToolBoundaryEligible: command.queuedToolBoundaryEligible }),
           ...(projection.runs.some(
             (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
           )
@@ -5024,8 +5077,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // Account overlays share native history. Selection commands may already
       // have updated the app thread, so classify against the native thread's owner.
       const canResumeAcrossInstances =
-        isProviderSwitch &&
-        activeProviderThread.nativeThreadRef !== null &&
+        (isProviderSwitch ||
+          projection.thread.modelSelection.instanceId !== modelSelection.instanceId) &&
         (yield* providerSwitchService
           .plan({
             projection: {
@@ -5034,13 +5087,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ...projection.thread,
                 modelSelection: {
                   ...projection.thread.modelSelection,
-                  instanceId: activeProviderThread.providerInstanceId,
+                  instanceId:
+                    activeProviderThread?.providerInstanceId ??
+                    projection.thread.modelSelection.instanceId,
                 },
               },
             },
             targetModelSelection: modelSelection,
           })
-          .pipe(mapDispatchError(command))).transition.type === "restart_and_resume";
+          .pipe(mapDispatchError(command))).transition.type === "restart_and_resume" &&
+        activeProviderThread !== undefined &&
+        activeProviderThread.nativeThreadRef !== null;
 
       if (
         pendingForkTransfer === undefined &&
@@ -7080,26 +7137,59 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) =>
     Effect.gen(function* () {
-      const projection = yield* projectionStore
-        .getThreadRecords(
-          command.threadId,
-          [
-            "runs",
-            "nodes",
-            "attempts",
-            "messages",
-            "providerThreads",
-            "providerTurns",
-            "providerSessions",
-            "turnItems",
-            "runtimeRequests",
-            "subagents",
-          ],
-          { turnItemTypes: [], messageRoles: ["user"] },
-        )
-        .pipe(
-          Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
-        );
+      const automatic = yield* AutomaticQueuedToolBoundary;
+      const boundary = automatic?.stored;
+      const projection = yield* (
+        boundary?.event.type === "node.updated"
+          ? projectionStore.getQueuedToolBoundaryContext(command.threadId, boundary.event.payload)
+          : projectionStore.getThreadRecords(
+              command.threadId,
+              [
+                "runs",
+                "nodes",
+                "attempts",
+                "messages",
+                "providerThreads",
+                "providerTurns",
+                "providerSessions",
+                "turnItems",
+                "runtimeRequests",
+                "subagents",
+              ],
+              { turnItemTypes: [], messageRoles: ["user"] },
+            )
+      ).pipe(
+        Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
+      );
+      if (boundary !== undefined) {
+        const target =
+          boundary.event.type === "node.updated"
+            ? queuedToolBoundaryTarget(projection, boundary.event.payload)
+            : null;
+        if (
+          target === null ||
+          target.queuedRun.id !== command.queuedRunId ||
+          target.activeRun.id !== command.targetRunId ||
+          !(yield* eventSink
+            .canPromoteQueuedAtToolBoundary({
+              threadId: command.threadId,
+              queuedRunId: target.queuedRun.id,
+              activeRunId: target.activeRun.id,
+              messageId: target.queuedRun.userMessageId,
+              boundary,
+              ...(automatic === undefined ? {} : { births: automatic.births }),
+              runtimeMode: projection.thread.runtimeMode,
+              interactionMode: projection.thread.interactionMode,
+            })
+            .pipe(mapDispatchError(command)))
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Queued message no longer belongs to this safe tool boundary.",
+          });
+        }
+      }
       if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -9740,7 +9830,63 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       } satisfies OrchestratorV2DispatchResult;
     }
 
+    const incomingTarget =
+      ((command.type === "message.dispatch" && command.createdBy !== "user") ||
+        command.type === "queued-run.edit" ||
+        command.type === "runtime-request.respond") &&
+      command.senderThreadId !== undefined &&
+      command.senderThreadId !== command.threadId
+        ? command.threadId
+        : command.type === "thread.merge_back" &&
+            command.createdBy !== "user" &&
+            command.sourceThreadId !== command.targetThreadId
+          ? command.targetThreadId
+          : undefined;
+    if (incomingTarget !== undefined) {
+      const target = yield* projectionStore
+        .getThread(incomingTarget)
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: incomingTarget, cause }),
+          ),
+        );
+      if (target.threadMessagesBlocked === true) {
+        return yield* new OrchestratorThreadMessagesBlockedError({
+          commandId: command.commandId,
+          threadId: incomingTarget,
+        });
+      }
+    }
+
     const plan = yield* dispatchOnce(command).pipe(
+      Effect.flatMap((planned) =>
+        Effect.gen(function* () {
+          if (!cancelsSelfSettlement(command)) return planned;
+          const threadId = commandThreadId(command);
+          const current = yield* projectionStore
+            .getThread(threadId)
+            .pipe(mapDispatchError(command));
+          if (current.selfSettlement == null) return planned;
+          const lastThreadEvent = planned.events.findLast(
+            (event) => event.threadId === threadId && "settledOverride" in event.payload,
+          );
+          const thread =
+            lastThreadEvent !== undefined && "settledOverride" in lastThreadEvent.payload
+              ? lastThreadEvent.payload
+              : current;
+          const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([...planned.events]);
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.metadata-updated",
+            threadId,
+            occurredAt: yield* DateTime.now,
+            payload: { ...thread, selfSettlement: null },
+          });
+          return { ...planned, events: yield* Ref.get(events) };
+        }),
+      ),
       Effect.flatMap((planned) =>
         // A settle that finds the provider already ended everything has
         // nothing to record, which is its expected outcome, not a failure.
@@ -9868,6 +10014,178 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) =>
     threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
 
+  const requestSelfSettlement: OrchestratorV2Shape["requestSelfSettlement"] = (input) =>
+    threadDispatch.withLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const command = {
+          type: "thread.metadata.update" as const,
+          threadId: input.threadId,
+          commandId: input.commandId,
+        };
+        const reject = (cause: string) =>
+          new OrchestratorDispatchError({ ...command, commandType: command.type, cause });
+        // Read the original durable acceptance before looking for a current run: credentials span turns.
+        const existingReceipt = yield* commandReceipts
+          .getByCommandId(input.commandId)
+          .pipe(mapDispatchError(command));
+        if (Option.isSome(existingReceipt)) {
+          const receipt = existingReceipt.value;
+          if (receipt.threadId !== input.threadId || receipt.status === "rejected")
+            return yield* reject("Self-settlement request identity conflicts.");
+          const stored = yield* eventSink
+            .readByCommandId({ commandId: input.commandId })
+            .pipe(Stream.runCollect, mapDispatchError(command));
+          for (const entry of stored) {
+            if (entry.event.type !== "thread.metadata-updated") continue;
+            const intent = entry.event.payload.selfSettlement;
+            if (
+              intent?.commandId === input.commandId &&
+              intent.mcpCredentialId === input.mcpCredentialId &&
+              intent.providerInstanceId === input.providerInstanceId
+            )
+              return intent;
+          }
+          return yield* reject("The original command is not this self-settlement request.");
+        }
+        const projection = yield* projectionStore
+          .getThreadRecords(input.threadId, [
+            "runs",
+            "messages",
+            "runtimeRequests",
+            "attempts",
+            "providerThreads",
+          ])
+          .pipe(mapDispatchError(command));
+        const providerThread = projection.providerThreads.find(
+          (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+        );
+        const owner =
+          providerThread?.providerSessionId == null
+            ? null
+            : {
+                binding: {
+                  providerSessionId: providerThread.providerSessionId,
+                  instanceId: providerThread.providerInstanceId,
+                  providerThreadId: providerThread.id,
+                },
+              };
+        const attached =
+          owner !== null &&
+          (yield* providerSessions.isMcpCallerAttached({
+            threadId: input.threadId,
+            providerSessionId: owner.binding.providerSessionId,
+            providerInstanceId: input.providerInstanceId,
+            mcpCredentialId: input.mcpCredentialId,
+          }));
+        const run = attached
+          ? selfSettlementRun(
+              projection,
+              {
+                providerSessionId: owner!.binding.providerSessionId,
+                providerInstanceId: input.providerInstanceId,
+              },
+              owner!.binding,
+            )
+          : undefined;
+        if (run === undefined)
+          return yield* reject(
+            "Self-settlement requires the calling provider's active run without queued or blocked user work.",
+          );
+        if (projection.thread.selfSettlement != null)
+          return yield* reject(
+            "This turn already has an accepted self-settlement request; retry its original clientRequestId.",
+          );
+        const intent: SelfSettlementIntent = {
+          commandId: input.commandId,
+          runId: run.id,
+          mcpCredentialId: input.mcpCredentialId,
+          providerSessionId: owner!.binding.providerSessionId,
+          providerInstanceId: input.providerInstanceId,
+        };
+        const now = yield* DateTime.now;
+        const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: input.threadId,
+          occurredAt: now,
+          payload: { ...projection.thread, selfSettlement: intent },
+        });
+        yield* eventSink
+          .commitCommand({
+            ...command,
+            commandType: command.type,
+            acceptedAt: now,
+            events: yield* Ref.get(events),
+            effects: [],
+          })
+          .pipe(mapDispatchError(command));
+        return intent;
+      }),
+    );
+
+  const cancelSelfSettlement = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const thread = yield* projectionStore
+        .getThread(threadId)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      if (thread.selfSettlement == null) return;
+      const command = {
+        type: "thread.metadata.update" as const,
+        threadId,
+        commandId: CommandId.make(`${thread.selfSettlement.commandId}:cancel`),
+      };
+      const now = yield* DateTime.now;
+      const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...thread, selfSettlement: null },
+      });
+      yield* eventSink
+        .commitCommand({
+          ...command,
+          commandType: command.type,
+          acceptedAt: now,
+          events: yield* Ref.get(events),
+          effects: [],
+        })
+        .pipe(mapDispatchError(command));
+    });
+
+  const consumeSelfSettlement = (threadId: ThreadId, runId: RunId) =>
+    Effect.gen(function* () {
+      const projection = yield* projectionStore
+        .getThreadRecords(threadId, ["runs", "messages", "runtimeRequests", "attempts"])
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      const disposition = selfSettlementTerminalDisposition(projection, runId);
+      if (disposition === "ignore") return;
+      if (disposition === "cancel") return yield* cancelSelfSettlement(threadId);
+      yield* dispatchWithReceiptEffect({
+        type: "thread.settle",
+        threadId,
+        commandId: CommandId.make(`${projection.thread.selfSettlement!.commandId}:settle`),
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.gen(function* () {
+            yield* cancelSelfSettlement(threadId);
+            yield* Effect.logWarning("Self-settlement was cancelled at completion", {
+              threadId,
+              runId,
+              cause,
+            });
+          }),
+        ),
+      );
+    });
+
   const handleTerminalRun = (stored: OrchestrationV2StoredEvent) =>
     Effect.gen(function* () {
       const threadId = stored.event.threadId;
@@ -9889,12 +10207,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       yield* threadDispatch.withLock(
         threadId,
-        startNextQueuedRun(
-          threadId,
-          stored.event.type === "run.updated" && stored.event.payload.status === "failed"
-            ? { failedRunId: stored.event.payload.id }
-            : undefined,
-        ),
+        Effect.gen(function* () {
+          if (stored.event.type === "run.updated")
+            yield* consumeSelfSettlement(threadId, stored.event.payload.id);
+          yield* startNextQueuedRun(
+            threadId,
+            stored.event.type === "run.updated" && stored.event.payload.status === "failed"
+              ? { failedRunId: stored.event.payload.id }
+              : undefined,
+          );
+        }),
       );
     }).pipe(
       Effect.catchCause((cause) =>
@@ -9906,10 +10228,89 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+  const handleQueuedToolBoundary = (stored: OrchestrationV2StoredEvent) =>
+    Effect.gen(function* () {
+      if (stored.event.type !== "node.updated" || stored.event.payload.runId === null) return;
+      const boundaryNode = stored.event.payload;
+      const threadId = stored.event.threadId;
+      const births: NonNullable<
+        Parameters<EventSinkV2["Service"]["canPromoteQueuedAtToolBoundary"]>[0]["births"]
+      > = new Map();
+      if (!(yield* projectionStore.hasQueuedToolBoundaryWork(threadId, boundaryNode.runId!)))
+        return;
+      yield* threadDispatch.withLock(
+        threadId,
+        Effect.gen(function* () {
+          while (true) {
+            if (!(yield* projectionStore.hasQueuedToolBoundaryWork(threadId, boundaryNode.runId!)))
+              return;
+            const projection = yield* projectionStore.getQueuedToolBoundaryContext(
+              threadId,
+              boundaryNode,
+            );
+            const target = queuedToolBoundaryTarget(projection, boundaryNode);
+            if (
+              target === null ||
+              !(yield* eventSink.canPromoteQueuedAtToolBoundary({
+                threadId,
+                queuedRunId: target.queuedRun.id,
+                activeRunId: target.activeRun.id,
+                messageId: target.queuedRun.userMessageId,
+                boundary: stored,
+                births,
+                runtimeMode: projection.thread.runtimeMode,
+                interactionMode: projection.thread.interactionMode,
+              }))
+            )
+              return;
+            yield* dispatchWithReceiptEffect({
+              type: "queued-message.promote-to-steer",
+              threadId,
+              commandId: CommandId.make(
+                `command:queue-tool-boundary:${target.queuedRun.id}:${target.providerTurn.id}:${stored.sequence}`,
+              ),
+              queuedRunId: target.queuedRun.id,
+              targetRunId: target.activeRun.id,
+            }).pipe(Effect.provideService(AutomaticQueuedToolBoundary, { stored, births }));
+          }
+        }),
+      );
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to deliver queue at tool boundary", {
+          threadId: stored.event.threadId,
+          sequence: stored.sequence,
+          cause,
+        }),
+      ),
+    );
+
+  // A restart cannot establish that a retained request's original provider turn succeeded.
+  for (const threadId of yield* projectionStore
+    .getRecoveryThreadIds("self-settlement")
+    .pipe(Effect.orDie)) {
+    yield* threadDispatch.withLock(threadId, cancelSelfSettlement(threadId)).pipe(Effect.orDie);
+  }
+
   // Historical terminal events are already represented by the projections
   // below. Replaying the full event table on every server start delays live
   // queue promotion in proportion to the lifetime size of the database.
   const terminalEventsAfterSequence = yield* eventSink.latestSequence().pipe(Effect.orDie);
+  // Completed native tools establish observed foreground quiescence, not a provider pause.
+  yield* eventSink
+    .stream({ afterSequence: terminalEventsAfterSequence, eventType: "node.updated" })
+    .pipe(
+      Stream.filter(
+        (stored) =>
+          stored.event.type === "node.updated" &&
+          stored.event.payload.kind === "tool_call" &&
+          stored.event.payload.status === "completed" &&
+          stored.event.payload.nativeItemRef?.nativeId != null &&
+          !String(stored.commandId).startsWith("command:runtime-reconcile:"),
+      ),
+      Stream.runForEach(handleQueuedToolBoundary),
+      Effect.forkDetach,
+    );
   // Queue promotion can wait on a provider or a thread lock. Subscribe to run
   // updates before buffering so that wait never retains unrelated tool bodies.
   yield* eventSink
@@ -10059,6 +10460,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   return OrchestratorV2.of({
+    requestSelfSettlement,
     resumeQueuedRuns,
     recoverDelegatedTasks,
     recoverDelegatedTask,
@@ -10181,6 +10583,14 @@ export const layer: Layer.Layer<
 const layerUnavailable: Layer.Layer<OrchestratorV2> = Layer.succeed(
   OrchestratorV2,
   OrchestratorV2.of({
+    requestSelfSettlement: (input) =>
+      Effect.fail(
+        new OrchestratorDispatchError({
+          commandId: input.commandId,
+          commandType: "thread.metadata.update",
+          cause: "Orchestration V2 live runtime is not configured.",
+        }),
+      ),
     resumeQueuedRuns: Effect.fail(
       new OrchestratorDispatchError({
         commandId: CommandId.make("command:system:resume-queued-runs"),

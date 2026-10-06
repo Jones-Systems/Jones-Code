@@ -34,6 +34,7 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import {
+  EnvironmentRpcUnavailableError,
   EnvironmentRpcRequestObserver,
   request,
   runStream,
@@ -307,6 +308,122 @@ describe("environment RPC", () => {
         `finish:${TARGET.environmentId}:${WS_METHODS.cloudGetRelayClientStatus}`,
       ]);
     }),
+  );
+
+  it.effect.each(["validation failure", "disconnected"] as const)(
+    "keeps %s local without observing, dispatching, or retrying a request",
+    (reason) =>
+      Effect.gen(function* () {
+        let validations = 0;
+        let requests = 0;
+        let observations = 0;
+        const client = {
+          [WS_METHODS.cloudGetRelayClientStatus]: () =>
+            Effect.sync(() => {
+              requests += 1;
+              return { status: "available", version: "2026.6.0" };
+            }),
+        } as unknown as WsRpcProtocolClient;
+        const { activeSession, retryCount, supervisor } = yield* makeHarness();
+        if (reason === "validation failure") {
+          yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+        }
+
+        const failure = yield* request(
+          WS_METHODS.cloudGetRelayClientStatus,
+          {},
+          {
+            validateSession: () =>
+              Effect.sync(() => {
+                validations += 1;
+              }).pipe(Effect.andThen(Effect.fail("validation failed"))),
+          },
+        ).pipe(
+          Effect.flip,
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.provideService(
+            EnvironmentRpcRequestObserver,
+            EnvironmentRpcRequestObserver.of({
+              observe: () =>
+                Effect.sync(() => {
+                  observations += 1;
+                  return Effect.void;
+                }),
+            }),
+          ),
+        );
+
+        if (reason === "validation failure") {
+          expect(failure).toBe("validation failed");
+          expect(validations).toBe(1);
+        } else {
+          expect(failure).toBeInstanceOf(EnvironmentRpcUnavailableError);
+          expect(validations).toBe(0);
+        }
+        expect(requests).toBe(0);
+        expect(observations).toBe(0);
+        expect(yield* Ref.get(retryCount)).toBe(0);
+      }),
+  );
+
+  it.effect.each(["failure", "interruption"] as const)(
+    "finalizes a validated unary request observation after %s without retrying",
+    (reason) =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const finish = yield* Deferred.make<void>();
+        const observations: string[] = [];
+        const client = {
+          [WS_METHODS.cloudGetRelayClientStatus]: () =>
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(finish)),
+              Effect.andThen(
+                Effect.fail(
+                  new RpcClientError.RpcClientError({
+                    reason: new RpcClientError.RpcClientDefect({
+                      message: "socket closed",
+                      cause: new Error("socket closed"),
+                    }),
+                  }),
+                ),
+              ),
+            ),
+        } as unknown as WsRpcProtocolClient;
+        const { activeSession, retryCount, supervisor } = yield* makeHarness();
+        yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+        const requestFiber = yield* request(
+          WS_METHODS.cloudGetRelayClientStatus,
+          {},
+          {
+            validateSession: () => Effect.void,
+          },
+        ).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.provideService(
+            EnvironmentRpcRequestObserver,
+            EnvironmentRpcRequestObserver.of({
+              observe: () =>
+                Effect.sync(() => {
+                  observations.push("start");
+                  return Effect.sync(() => {
+                    observations.push("finish");
+                  });
+                }),
+            }),
+          ),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(started);
+        expect(observations).toEqual(["start"]);
+        if (reason === "failure") {
+          yield* Deferred.succeed(finish, undefined);
+          expect(Exit.isFailure(yield* Fiber.await(requestFiber))).toBe(true);
+        } else {
+          yield* Fiber.interrupt(requestFiber);
+        }
+        expect(observations).toEqual(["start", "finish"]);
+        expect(yield* Ref.get(retryCount)).toBe(0);
+      }),
   );
 
   it.effect("binds finite streaming commands to one active session", () =>

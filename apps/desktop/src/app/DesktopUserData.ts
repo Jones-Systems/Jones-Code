@@ -1,6 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Option from "effect/Option";
+import { resolveDesktopUserDataOverride } from "./DesktopUserDataOverride.ts";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
@@ -37,9 +39,15 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
     readonly appDataDirectory: string;
     readonly isDevelopment: boolean;
     readonly platform: NodeJS.Platform;
+    readonly userDataDirectoryOverride?: Option.Option<string>;
   }) {
-    const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const override = resolveDesktopUserDataOverride(
+      Option.getOrUndefined(input.userDataDirectoryOverride ?? Option.none()),
+      path,
+    );
+    if (override !== null) return override;
+    const fs = yield* FileSystem.FileSystem;
     const names = input.isDevelopment
       ? { current: "t3code-dev", legacy: "T3 Code (Dev)" }
       : { current: "t3code-v2", legacy: "T3 Code (Alpha)" };

@@ -114,9 +114,10 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
   const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-desktop-boot-"));
   try {
     const entries = ["src/boot.ts", "src/compileCache.ts"];
-    await NodeFSP.mkdir(NodePath.join(directory, "src"));
+    const sources = [...entries, "src/app/DesktopUserDataOverride.ts"];
+    await NodeFSP.mkdir(NodePath.join(directory, "src/app"), { recursive: true });
     await Promise.all(
-      entries.map((entry) =>
+      sources.map((entry) =>
         NodeFSP.copyFile(new URL(`../${entry}`, import.meta.url), NodePath.join(directory, entry)),
       ),
     );
@@ -135,6 +136,72 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
       });
     }
     const outputDirectory = NodePath.join(directory, "dist-electron");
+    const emittedSources = new Map(
+      await Promise.all(
+        (await NodeFSP.readdir(outputDirectory))
+          .filter((name) => name.endsWith(".cjs"))
+          .map(async (name) => [
+            name,
+            await NodeFSP.readFile(NodePath.join(outputDirectory, name), "utf8"),
+          ]),
+      ),
+    );
+    const runBoot = (override) => {
+      const operations = [];
+      const modules = new Map();
+      const load = (name) => {
+        if (modules.has(name)) return modules.get(name).exports;
+        const module = { exports: {} };
+        modules.set(name, module);
+        const source = emittedSources.get(name);
+        assert.ok(source, `Missing packaged bootstrap dependency: ${name}`);
+        NodeVM.runInNewContext(source, {
+          module,
+          exports: module.exports,
+          process: { env: { T3CODE_DESKTOP_USER_DATA_DIR: override } },
+          require: (specifier) => {
+            if (specifier === "node:path") return NodePath.posix;
+            if (specifier === "node:fs")
+              return {
+                mkdirSync: (path, options) => {
+                  assert.equal(options.recursive, true);
+                  operations.push(`mkdir:${path}`);
+                },
+              };
+            if (specifier === "electron")
+              return {
+                app: { setPath: (role, path) => operations.push(`${role}:${path}`) },
+              };
+            if (specifier === "./compileCache.cjs") {
+              operations.push("cache");
+              return {};
+            }
+            if (specifier === "./main.cjs") {
+              operations.push("startup");
+              return {};
+            }
+            return load(NodePath.posix.basename(specifier));
+          },
+        });
+        return module.exports;
+      };
+      return { operations, load: () => load("boot.cjs") };
+    };
+    const isolated = runBoot(" /isolated/other/../profile ");
+    isolated.load();
+    assert.deepEqual(isolated.operations, [
+      "mkdir:/isolated/profile",
+      "userData:/isolated/profile",
+      "sessionData:/isolated/profile",
+      "cache",
+      "startup",
+    ]);
+    const defaults = runBoot(undefined);
+    defaults.load();
+    assert.deepEqual(defaults.operations, ["cache", "startup"]);
+    const invalid = runBoot("relative/profile");
+    assert.throws(invalid.load, /must be an absolute path/);
+    assert.deepEqual(invalid.operations, []);
     const fixture = `console.log(require('node:module').getCompileCacheDir() ? 'cached' : 'uncached');`;
     await NodeFSP.writeFile(NodePath.join(outputDirectory, "main.cjs"), fixture);
     await NodeFSP.writeFile(
@@ -154,6 +221,7 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
           encoding: "utf8",
           env: {
             ...process.env,
+            T3CODE_DESKTOP_USER_DATA_DIR: undefined,
             APPIMAGE: "",
             NODE_COMPILE_CACHE: undefined,
             NODE_DISABLE_COMPILE_CACHE: disabled ? "1" : undefined,
