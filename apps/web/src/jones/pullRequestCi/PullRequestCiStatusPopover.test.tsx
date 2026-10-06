@@ -17,7 +17,7 @@ vi.mock("~/state/query", () => ({
     refresh: host.refresh,
   }),
 }));
-vi.mock("../ui/popover", () => ({
+vi.mock("~/components/ui/popover", () => ({
   Popover: ({ children, ...props }: { children: ReactNode }) => (
     <div data-popover-root {...props}>
       {children}
@@ -27,7 +27,7 @@ vi.mock("../ui/popover", () => ({
   PopoverTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
   PopoverTrigger: ({ children }: { children: ReactNode }) => <button>{children}</button>,
 }));
-vi.mock("../ui/tooltip", () => ({
+vi.mock("~/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => children,
   TooltipTrigger: ({ render }: { render: ReactNode }) => render,
   TooltipPopup: () => null,

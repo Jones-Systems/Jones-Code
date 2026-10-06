@@ -1,0 +1,33 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "persistence-native",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/persistence/",
+    "apps/server/src/jones/nativeCreation/"
+  ],
+  "hookPaths": ["apps/server/src/persistence/Migrations.ts"],
+  "tombstones": [
+    "apps/server/src/persistence/JonesMigrationGuard.ts",
+    "apps/server/src/persistence/Migrations.test.ts",
+    "apps/server/src/persistence/Migrations/001_JonesWorktreeOwnershipLeases.ts",
+    "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.ts",
+    "apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.ts",
+    "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.ts",
+    "apps/server/src/persistence/Migrations/005_JonesWorkstreamsNativeAttempts.ts",
+    "apps/server/src/persistence/Migrations/006_JonesWorkstreamsProviderEnrollments.ts",
+    "apps/server/src/nativeCreation/NativeCreationAuthority.test.ts",
+    "apps/server/src/nativeCreation/NativeCreationAuthority.ts",
+    "apps/server/src/nativeCreation/NativeCreationPreparation.test.ts",
+    "apps/server/src/nativeCreation/NativeCreationPreparation.ts",
+    "apps/server/src/nativeCreation/NativeCreationRepository.test.ts",
+    "apps/server/src/nativeCreation/NativeCreationRepository.ts",
+    "apps/server/src/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+    "apps/server/src/nativeCreation/NativeCreationRepositorySqlite.ts"
+  ],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/persistence/Migrations.ts",
+      "to": "apps/server/src/jones/persistence/JonesMigrations.ts"
+    }
+  ]
+}

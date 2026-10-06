@@ -1,0 +1,47 @@
+{
+  "schema": "jones.boundary-features/v1",
+  "scopeReference": "docs/operations/upstream-sync.md",
+  "baseline": "5bad9c13246dcc46a4bc06a341152f8183e55a4b",
+  "features": [
+    {
+      "id": "conversation-library",
+      "tests": [
+        "apps/server/src/conversations/Service.test.ts",
+        "packages/client-runtime/src/conversations/model.test.ts"
+      ]
+    },
+    {
+      "id": "token-accounting",
+      "tests": [
+        "apps/server/src/tokenAccounting/TokenAccountingService.test.ts",
+        "apps/web/src/state/tokenAccounting.test.ts"
+      ]
+    },
+    {
+      "id": "voice-review",
+      "tests": [
+        "apps/server/src/voiceReview/http.test.ts",
+        "apps/web/src/components/voiceReview/voiceReviewActions.test.ts"
+      ]
+    },
+    {
+      "id": "work-queue-preview",
+      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
+      "scope": "Mock submitted-work preview. Rebuild #113 real queue metadata is absent; #113 and #114 remain outside automatic scope adoption pending owner disposition."
+    },
+    {
+      "id": "boundary-inventory",
+      "tests": ["scripts/jones/check-boundary.test.ts"]
+    },
+    {
+      "id": "provider-settlement",
+      "tests": [
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "packages/client-runtime/src/state/threadExecution.test.ts",
+        "apps/web/src/components/chat/MessagesTimeline.logic.test.ts"
+      ],
+      "scope": "Landed rebuild #111 distinguishes attributed provider response settlement from checkpoint completion."
+    }
+  ]
+}

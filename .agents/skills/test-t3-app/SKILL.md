@@ -5,6 +5,11 @@ description: Test T3 Code's web and desktop UI through its built-in Browser pane
 
 # Test T3 web and desktop
 
+M Jones grants [standing local app testing permission](../../../docs/operations/contributor-guidance.md#local-app-testing-permission)
+for browser and computer use with isolated synthetic state. Do not ask for
+per-task reconfirmation; protected data, credentials, and shared routes retain
+their exact authorization gates.
+
 Use T3's built-in Browser panel for verification. If its tools are absent or
 the panel reports unavailable, explain the blocker and stop verification.
 Do not install or switch to another automation system. For native mobile

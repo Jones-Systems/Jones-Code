@@ -7,27 +7,27 @@ import * as Redacted from "effect/Redacted";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import type { OrchestrationProjectShell, ProjectId } from "@t3tools/contracts";
-import * as GitHubCli from "../sourceControl/GitHubCli.ts";
-import * as SourceControlRateLimit from "../sourceControl/SourceControlRateLimit.ts";
-import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
-import * as ProjectService from "../project/ProjectService.ts";
-import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
-import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
-import * as GitHubPullRequestCli from "./GitHubPullRequestCli.ts";
-import * as GitHubPullRequestProvider from "./GitHubPullRequestProvider.ts";
-import * as PullRequestProviderRegistry from "./PullRequestProviderRegistry.ts";
-import * as PullRequestReadCache from "./PullRequestReadCache.ts";
-import * as PullRequestService from "./PullRequestService.ts";
+import * as GitHubCli from "../../sourceControl/GitHubCli.ts";
+import * as SourceControlRateLimit from "../../sourceControl/SourceControlRateLimit.ts";
+import * as SourceControlProviderRegistry from "../../sourceControl/SourceControlProviderRegistry.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import * as PullRequestFilesViewed from "../../persistence/PullRequestFilesViewed.ts";
+import * as GitHubPullRequestCli from "../../pullRequest/GitHubPullRequestCli.ts";
+import * as GitHubPullRequestProvider from "../../pullRequest/GitHubPullRequestProvider.ts";
+import * as PullRequestProviderRegistry from "../../pullRequest/PullRequestProviderRegistry.ts";
+import * as PullRequestReadCache from "../../pullRequest/PullRequestReadCache.ts";
+import * as PullRequestService from "../../pullRequest/PullRequestService.ts";
 
 // The fixture supplies project reads; its write-side boot dependencies are outside this service test.
-vi.mock("../project/ProjectService.ts", async () => {
+vi.mock("../../project/ProjectService.ts", async () => {
   const Context = await import("effect/Context");
   class ProjectService extends Context.Service<
     ProjectService,
     {
       readonly listShells: () => Effect.Effect<ReadonlyArray<OrchestrationProjectShell>>;
     }
-  >()("t3/pullRequest/PullRequestCiStatus.test/ProjectService") {}
+  >()("t3/jones/pullRequestCi/PullRequestCiStatus.test/ProjectService") {}
   return { ProjectService };
 });
 

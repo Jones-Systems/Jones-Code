@@ -1,5 +1,5 @@
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
-import { SavedTokenAccounting } from "./SavedTokenAccounting";
+import { SavedTokenAccounting } from "../../jones/usage/SavedTokenAccounting";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
@@ -7,14 +7,12 @@ import {
   ProviderDriverKind,
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
-  type UsageSummaryInput,
   type UsageProviderKind,
 } from "@t3tools/contracts";
 import {
   CircleAlertIcon,
   ChevronDownIcon,
   CircleDashedIcon,
-  EllipsisIcon,
   InfoIcon,
   SlidersHorizontalIcon,
 } from "lucide-react";
@@ -52,10 +50,8 @@ import {
   formatTokens,
   formatUsageContractMismatch,
   formatUsd,
-  makeWindow,
 } from "@t3tools/shared/usageFormat";
 import { Button, InlineButton } from "../ui/button";
-import { Input } from "../ui/input";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import {
   Menu,
@@ -88,12 +84,11 @@ import {
   UsageProviderDetails,
   UsageTokenDetails,
   USAGE_PROVIDER_DETAILS_ID,
-} from "./UsageProviderDetails";
+} from "../../jones/usage/UsageProviderDetails";
 import {
   costTypeSegments,
   modelShare,
   sortModelsByTokens,
-  selectUsageBreakdown,
   speedCostSegments,
   tokenTypeSegments,
 } from "./usageBreakdown";
@@ -104,40 +99,33 @@ import {
   type UsageMetric,
 } from "./usageShortcuts";
 import { useEscapeToGoBack } from "../../hooks/useNavigateBack";
-import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
-import {
-  readUsagePagePreferences,
-  saveUsagePagePreferences,
-  type UsagePagePreferences,
-} from "./usagePagePreferences";
-import {
-  makeRollingUsageWindow,
-  toLocalDateTimeValue,
-  validateCustomUsageWindow,
-  type CustomUsageWindowValidation,
-} from "./usageDateRange";
-
-type UsageWindowSelection =
-  | {
-      readonly kind: "day";
-      readonly days: UsagePagePreferences["windowDays"];
-      readonly window: UsageSummaryInput;
-    }
-  | { readonly kind: "hours"; readonly hours: number; readonly window: UsageSummaryInput }
-  | { readonly kind: "custom"; readonly window: UsageSummaryInput };
-
-const QUICK_USAGE_HOUR_OPTIONS = [1, 3, 6, 12] as const;
+import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
+import { UsageRangePicker } from "../../jones/usage/UsageRangePicker";
+import { useUsageProviderDetails } from "../../jones/usage/useUsageProviderDetails";
+import { useUsageWindow } from "../../jones/usage/useUsageWindow";
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
   return METRIC_OPTIONS.some((option) => option.value === value);
 }
 
-function isUsageWindowDays(value: number): value is UsagePagePreferences["windowDays"] {
-  return WINDOW_OPTIONS.some((option) => option.days === value);
-}
-
 export function UsagePage() {
-  const [preferences, setPreferences] = useState(readUsagePagePreferences);
+  const {
+    metric,
+    windowDays,
+    window,
+    windowSelection,
+    customSinceValue,
+    customUntilValue,
+    customWindowValidation,
+    setCustomSinceValue,
+    setCustomUntilValue,
+    selectWindow,
+    selectHourWindow,
+    applyCustomWindow,
+    clearCustomWindow,
+    selectMetric: selectWindowMetric,
+    refreshUsageWindow,
+  } = useUsageWindow();
   useEscapeToGoBack();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const shortcutTitle = (
@@ -148,36 +136,13 @@ export function UsagePage() {
     });
     return shortcut ? `${option.label} (${shortcut})` : option.label;
   };
-  const [windowSelection, setWindowSelection] = useState<UsageWindowSelection>(() => ({
-    kind: "day",
-    days: preferences.windowDays,
-    window: makeWindow(
-      preferences.windowDays,
-      undefined,
-      preferences.windowDays === 1 ? "hour" : "day",
-    ),
-  }));
-  const metric = preferences.metric;
   const showingLimits = metric === "limits";
-  const windowDays = windowSelection.kind === "day" ? windowSelection.days : preferences.windowDays;
-  const { window } = windowSelection;
   const isHourly = window.resolution === "hour";
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const refreshingRef = useRef(false);
   const [breakdown, setBreakdown] = useState<"model" | "time">("model");
-  const [selectedProvider, setSelectedProvider] = useState<UsageProviderKind | null>(null);
-  const [expandedModelKey, setExpandedModelKey] = useState<string | null>(null);
   const providerTriggers = useRef(new Map<UsageProviderKind, HTMLButtonElement>());
-  const [customSinceValue, setCustomSinceValue] = useState("");
-  const [customUntilValue, setCustomUntilValue] = useState("");
-  const [customOriginalWindow, setCustomOriginalWindow] = useState<UsageSummaryInput>();
-  const customWindowValidation = validateCustomUsageWindow(
-    customSinceValue,
-    customUntilValue,
-    undefined,
-    customOriginalWindow,
-  );
   const [priceDialog, setPriceDialog] = useState<{ readonly model?: string } | null>(null);
   const [selectedModelKey, setSelectedModelKey] = useState<string | null>(null);
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
@@ -219,11 +184,14 @@ export function UsagePage() {
         : enumerateHourStarts(window.sinceTime, window.untilTime),
     [isHourly, window.sinceTime, window.untilTime],
   );
-  const detailBreakdown = useMemo(
-    () => selectUsageBreakdown(merged, selectedProvider),
-    [merged, selectedProvider],
-  );
-  const focusedProvider = detailBreakdown.providerTotals?.provider ?? null;
+  const {
+    detailBreakdown,
+    focusedProvider,
+    activeProviders,
+    expandedModelKey,
+    setExpandedModelKey,
+    selectProvider,
+  } = useUsageProviderDetails(merged, isPending);
   // Newest first: the window can run 90 days, so the interesting end
   // belongs at the top of the table.
   const breakdownPeriods = useMemo<readonly (DailyTotals | HourlyTotals)[]>(
@@ -237,18 +205,7 @@ export function UsagePage() {
         : detailBreakdown.models,
     [breakdown, detailBreakdown.models, metric],
   );
-  const activeProviders = useMemo(() => providersWithUsage(merged.providers), [merged.providers]);
   const breakdownProviders = focusedProvider === null ? activeProviders : [focusedProvider];
-  useEffect(() => {
-    if (!isPending && selectedProvider !== null && !activeProviders.includes(selectedProvider)) {
-      setSelectedProvider(null);
-      setExpandedModelKey(null);
-    }
-  }, [activeProviders, isPending, selectedProvider]);
-  const selectProvider = (provider: UsageProviderKind | null) => {
-    setSelectedProvider(provider);
-    setExpandedModelKey(null);
-  };
   const selectedModel =
     selectedModelKey === null
       ? undefined
@@ -270,50 +227,9 @@ export function UsagePage() {
   );
   const timeValueColumnWidth = `${60 / (breakdownProviders.length + 2)}%`;
 
-  const selectWindow = (days: number) => {
-    if (!isUsageWindowDays(days)) return;
-    const nextPreferences = { metric, windowDays: days };
-    setPreferences(nextPreferences);
-    saveUsagePagePreferences(nextPreferences);
-    setCustomSinceValue("");
-    setCustomUntilValue("");
-    setCustomOriginalWindow(undefined);
-    setWindowSelection({
-      kind: "day",
-      days,
-      window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
-    });
-  };
-  const selectHourWindow = (hours: (typeof QUICK_USAGE_HOUR_OPTIONS)[number]) => {
-    const nextWindow = makeRollingUsageWindow(hours);
-    setWindowSelection({ kind: "hours", hours, window: nextWindow });
-    if (nextWindow.sinceTime !== undefined && nextWindow.untilTime !== undefined) {
-      setCustomOriginalWindow(nextWindow);
-      setCustomSinceValue(toLocalDateTimeValue(new Date(nextWindow.sinceTime)));
-      setCustomUntilValue(toLocalDateTimeValue(new Date(nextWindow.untilTime)));
-    }
-  };
-  const applyCustomWindow = () => {
-    const validation = validateCustomUsageWindow(
-      customSinceValue,
-      customUntilValue,
-      undefined,
-      customOriginalWindow,
-    );
-    if (!validation.ok) return;
-    setCustomOriginalWindow(validation.window);
-    setWindowSelection({ kind: "custom", window: validation.window });
-  };
-  const clearCustomWindow = () => {
-    setCustomSinceValue("");
-    setCustomUntilValue("");
-    selectWindow(preferences.windowDays);
-  };
   const selectMetric = (nextMetric: UsageMetric) => {
     if (nextMetric === "limits") setLimitsNow(Date.now());
-    const nextPreferences = { metric: nextMetric, windowDays };
-    setPreferences(nextPreferences);
-    saveUsagePagePreferences(nextPreferences);
+    selectWindowMetric(nextMetric);
   };
   const refreshLimits = async (automatic = false, afterPending = false) => {
     try {
@@ -372,20 +288,7 @@ export function UsagePage() {
       });
       return;
     }
-    const nextWindow =
-      windowSelection.kind === "day"
-        ? makeWindow(windowDays, undefined, windowDays === 1 ? "hour" : "day")
-        : windowSelection.kind === "hours"
-          ? makeRollingUsageWindow(windowSelection.hours)
-          : windowSelection.window;
-    const windowChanged =
-      nextWindow.sinceDay !== window.sinceDay ||
-      nextWindow.untilDay !== window.untilDay ||
-      nextWindow.sinceTime !== window.sinceTime ||
-      nextWindow.untilTime !== window.untilTime;
-    if (windowChanged && windowSelection.kind !== "custom") {
-      setWindowSelection({ ...windowSelection, window: nextWindow });
-    }
+    const nextWindow = refreshUsageWindow();
     refreshingRef.current = true;
     setIsRefreshing(true);
     void refresh(nextWindow).finally(() => {
@@ -1085,148 +988,6 @@ export function UsagePage() {
         />
       ) : null}
     </SidebarInset>
-  );
-}
-
-function UsageRangePicker({
-  selection,
-  timeZone,
-  sinceValue,
-  untilValue,
-  validation,
-  disabled,
-  onSinceValueChange,
-  onUntilValueChange,
-  onSelectHours,
-  onApplyCustom,
-  onClear,
-}: {
-  readonly selection: UsageWindowSelection;
-  readonly timeZone: string;
-  readonly sinceValue: string;
-  readonly untilValue: string;
-  readonly validation: CustomUsageWindowValidation;
-  readonly disabled: boolean;
-  readonly onSinceValueChange: (value: string) => void;
-  readonly onUntilValueChange: (value: string) => void;
-  readonly onSelectHours: (hours: (typeof QUICK_USAGE_HOUR_OPTIONS)[number]) => void;
-  readonly onApplyCustom: () => void;
-  readonly onClear: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const hasAlternateSelection = selection.kind !== "day";
-  const hasRangeDraft = sinceValue !== "" || untilValue !== "";
-  const validationMessage =
-    sinceValue !== "" && untilValue !== "" && !validation.ok ? validation.error : null;
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        render={
-          <Button
-            aria-label="Additional usage ranges"
-            title="Additional usage ranges"
-            disabled={disabled}
-            size="icon-sm"
-            variant={hasAlternateSelection ? "secondary" : "ghost"}
-          >
-            <EllipsisIcon aria-hidden />
-          </Button>
-        }
-      />
-      <PopoverPopup align="end" width="lg" aria-label="Additional usage ranges">
-        <div className="flex w-full flex-col gap-4 p-4">
-          <section className="flex flex-col gap-2">
-            <h2 className="text-xs font-medium text-muted-foreground">Short ranges</h2>
-            <ToggleGroup
-              aria-label="Hourly usage range"
-              variant="segmented"
-              value={selection.kind === "hours" ? [String(selection.hours)] : []}
-              onValueChange={(next) => {
-                const selectedHours = Number(next[0]);
-                if (
-                  QUICK_USAGE_HOUR_OPTIONS.includes(
-                    selectedHours as (typeof QUICK_USAGE_HOUR_OPTIONS)[number],
-                  )
-                ) {
-                  onSelectHours(selectedHours as (typeof QUICK_USAGE_HOUR_OPTIONS)[number]);
-                  setOpen(false);
-                }
-              }}
-            >
-              {QUICK_USAGE_HOUR_OPTIONS.map((hours) => (
-                <Toggle key={hours} value={String(hours)}>
-                  {hours}h
-                </Toggle>
-              ))}
-            </ToggleGroup>
-          </section>
-
-          <div className="border-t border-border/60" />
-
-          <section className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1">
-              <h2 className="text-xs font-medium text-muted-foreground">Custom range</h2>
-              <p className="text-xs text-muted-foreground">
-                Times use {timeZone}. The end is exclusive.
-              </p>
-            </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
-                Start (inclusive)
-                <Input
-                  aria-label="Custom range start"
-                  nativeInput
-                  type="datetime-local"
-                  step={60}
-                  value={sinceValue}
-                  onChange={(event) => onSinceValueChange(event.target.value)}
-                />
-              </label>
-              <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
-                End (exclusive)
-                <Input
-                  aria-label="Custom range end"
-                  nativeInput
-                  type="datetime-local"
-                  step={60}
-                  value={untilValue}
-                  onChange={(event) => onUntilValueChange(event.target.value)}
-                />
-              </label>
-            </div>
-            {validationMessage ? (
-              <p role="alert" className="text-xs text-destructive">
-                {validationMessage}
-              </p>
-            ) : null}
-            <div className="flex items-center justify-between gap-2">
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={!hasAlternateSelection && !hasRangeDraft}
-                onClick={() => {
-                  onClear();
-                  setOpen(false);
-                }}
-              >
-                Clear custom selection
-              </Button>
-              <Button
-                size="sm"
-                disabled={!validation.ok}
-                onClick={() => {
-                  onApplyCustom();
-                  setOpen(false);
-                }}
-              >
-                Apply range
-              </Button>
-            </div>
-          </section>
-        </div>
-      </PopoverPopup>
-    </Popover>
   );
 }
 

@@ -7,7 +7,7 @@ import * as Logger from "effect/Logger";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runJonesMigrations } from "./JonesMigrationGuard.ts";
-import { migrationManifest, runMigrations } from "./Migrations.ts";
+import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import Jones001 from "./Migrations/001_JonesWorktreeOwnershipLeases.ts";
 import Jones002 from "./Migrations/002_JonesProjectionThreadRuntimeIdentity.ts";
 import Jones003 from "./Migrations/003_JonesNativeCreationIntents.ts";
