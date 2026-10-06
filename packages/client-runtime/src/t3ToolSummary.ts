@@ -168,6 +168,13 @@ export function summarizeT3ToolCalls(
         quantity(countEntities(threadIds), "thread"),
       );
       break;
+    case "thread-settle":
+      label = phrase(
+        "Requested settlement for",
+        "request settlement for",
+        quantity(countEntities(threadIds), "thread"),
+      );
+      break;
     case "task-status":
       label = phrase("Checked", "check", `task status ${times}`);
       break;

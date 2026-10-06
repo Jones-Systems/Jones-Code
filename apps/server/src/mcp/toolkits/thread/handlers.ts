@@ -14,6 +14,7 @@ import {
   newCommandId,
   readCaller,
   readMutationCaller,
+  readMessageWritableThread,
   readThread,
   readWritableThread,
   unavailable,
@@ -41,10 +42,18 @@ function queueEntry(
 const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (
   threadId: ThreadId | undefined,
   command: (common: { commandId: CommandId; threadId: ThreadId }) => OrchestrationV2Command,
+  contentMutation = false,
 ) {
-  const { threads, projection } = yield* readWritableThread(threadId);
+  const { threads, projection, caller } = yield* contentMutation
+    ? readMessageWritableThread(threadId)
+    : readWritableThread(threadId);
+  const requested = command({ commandId: yield* newCommandId(), threadId: projection.thread.id });
   const result = yield* threads
-    .dispatch(command({ commandId: yield* newCommandId(), threadId: projection.thread.id }))
+    .dispatch(
+      requested.type === "queued-run.edit"
+        ? { ...requested, senderThreadId: caller.id }
+        : requested,
+    )
     .pipe(Effect.mapError(unavailable));
   return { sequence: result.sequence };
 });
@@ -57,7 +66,7 @@ const readQuestion = Effect.fn("mcp.readQuestion")(function* (
   writable = false,
 ) {
   const context = yield* writable
-    ? readWritableThread(input.threadId, ["runtimeRequests", "turnItems"])
+    ? readMessageWritableThread(input.threadId, ["runtimeRequests", "turnItems"])
     : readThread(input.threadId, ["runtimeRequests", "turnItems"]);
   const request = context.projection.runtimeRequests.find(
     (request) =>
@@ -172,6 +181,7 @@ export const ThreadToolkitHandlersLive = ThreadToolkit.toLayer({
         modelSelection: thread.modelSelection,
         runtimeMode: thread.runtimeMode,
         interactionMode: thread.interactionMode,
+        threadMessagesBlocked: thread.threadMessagesBlocked ?? false,
       };
     }),
   t3_thread_configure: (input) =>
@@ -207,7 +217,7 @@ export const ThreadToolkitHandlersLive = ThreadToolkit.toLayer({
     }),
   t3_pending_request_respond: (input) =>
     Effect.gen(function* () {
-      const { threads, projection } = yield* readQuestion(input, true);
+      const { threads, projection, caller } = yield* readQuestion(input, true);
       const result = yield* threads
         .dispatch({
           type: "runtime-request.respond",
@@ -215,6 +225,7 @@ export const ThreadToolkitHandlersLive = ThreadToolkit.toLayer({
           commandId: yield* newCommandId(),
           requestId: input.requestId,
           answers: input.answers,
+          senderThreadId: caller.id,
         })
         .pipe(Effect.mapError(unavailable));
       return { sequence: result.sequence };
@@ -246,12 +257,16 @@ export const ThreadToolkitHandlersLive = ThreadToolkit.toLayer({
       );
     }),
   t3_queue_edit: (input) =>
-    dispatch(input.threadId, (common) => ({
-      ...common,
-      type: "queued-run.edit",
-      runId: input.queuedRunId,
-      text: input.text,
-    })),
+    dispatch(
+      input.threadId,
+      (common) => ({
+        ...common,
+        type: "queued-run.edit",
+        runId: input.queuedRunId,
+        text: input.text,
+      }),
+      true,
+    ),
   t3_queue_cancel: (input) =>
     dispatch(input.threadId, (common) => ({
       ...common,

@@ -30,6 +30,8 @@ import {
   type OrchestratorMcpTaskCancelResult,
   type OrchestratorMcpUpdateScheduledTaskInput,
   type OrchestratorMcpThreadDetail,
+  type OrchestratorMcpThreadSettleInput,
+  type OrchestratorMcpThreadSettleResult,
   type OrchestratorMcpThreadInterruptInput,
   type OrchestratorMcpThreadInterruptResult,
   type OrchestratorMcpThreadListInput,
@@ -90,6 +92,10 @@ type TerminalTaskStatus = Extract<
 >;
 
 export interface OrchestratorMcpServiceShape {
+  readonly settleThread: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpThreadSettleInput,
+  ) => Effect.Effect<OrchestratorMcpThreadSettleResult, OrchestratorMcpFailure>;
   readonly capabilities: (
     scope: McpInvocationScope,
   ) => Effect.Effect<OrchestratorMcpCapabilitiesResult, OrchestratorMcpFailure>;
@@ -581,6 +587,7 @@ function listItemFromShell(shell: OrchestrationV2ThreadShell): OrchestratorMcpTh
     model: shell.modelSelection.model,
     runtimeMode: shell.runtimeMode,
     interactionMode: shell.interactionMode,
+    threadMessagesBlocked: shell.threadMessagesBlocked ?? false,
     linkedPullRequest: shell.linkedPullRequest ?? null,
     ...threadSettlement(shell),
     parentThreadId: shell.lineage.parentThreadId,
@@ -610,6 +617,7 @@ function threadDetail(
     model: projection.thread.modelSelection.model,
     runtimeMode: projection.thread.runtimeMode,
     interactionMode: projection.thread.interactionMode,
+    threadMessagesBlocked: projection.thread.threadMessagesBlocked ?? false,
     linkedPullRequest: projection.thread.linkedPullRequest ?? null,
     titleRegeneration:
       projection.thread.titleRegeneration === undefined ||
@@ -1198,6 +1206,28 @@ const make = Effect.gen(function* () {
     });
 
   return OrchestratorMcpService.of({
+    settleThread: (scope, input) =>
+      Effect.gen(function* () {
+        yield* requireCapability(scope);
+        const intent = yield* threadManagement
+          .requestSelfSettlement({
+            threadId: scope.threadId,
+            mcpCredentialId: scope.providerSessionId,
+            providerInstanceId: scope.providerInstanceId,
+            commandId: stableCommandId({
+              scope,
+              requestKey: input.clientRequestId,
+              operation: `self-settle:${scope.threadId}`,
+            }),
+          })
+          .pipe(Effect.mapError(threadManagementFailure));
+        return {
+          status: "accepted",
+          threadId: scope.threadId,
+          runId: intent.runId,
+          clientRequestId: input.clientRequestId,
+        };
+      }),
     scheduleTask: (scope, input) =>
       Effect.gen(function* () {
         yield* requireCapability(scope);
