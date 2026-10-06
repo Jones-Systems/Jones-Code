@@ -2,6 +2,7 @@ import {
   ArrowLeftIcon,
   BookOpenIcon,
   ChartNoAxesColumnIcon,
+  ListTodoIcon,
   MicIcon,
   SettingsIcon,
 } from "lucide-react";
@@ -210,6 +211,10 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     closeMobileSidebar();
     void navigate({ to: "/conversations" });
   }, [closeMobileSidebar, navigate]);
+  const handleWorkQueueClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/work-queue" });
+  }, [closeMobileSidebar, navigate]);
   const handleVoiceReviewClick = useCallback(() => {
     closeMobileSidebar();
     void navigate({ to: "/voice-review" });
@@ -263,6 +268,11 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             icon={<ChartNoAxesColumnIcon />}
             label="Usage"
             onClick={handleUsageClick}
+          />
+          <SidebarUtilityItem
+            icon={<ListTodoIcon />}
+            label="Submitted work"
+            onClick={handleWorkQueueClick}
           />
           <SidebarUtilityItem
             icon={<MicIcon />}
