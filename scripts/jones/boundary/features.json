@@ -1,7 +1,7 @@
 {
   "schema": "jones.boundary-features/v1",
   "scopeReference": "docs/operations/upstream-sync.md",
-  "baseline": "5bad9c13246dcc46a4bc06a341152f8183e55a4b",
+  "baseline": "f6876f9bac082f0314e6e01b6b7db98c1a3b0246",
   "features": [
     {
       "id": "conversation-library",
@@ -21,7 +21,10 @@
       "id": "voice-review",
       "tests": [
         "apps/server/src/voiceReview/http.test.ts",
-        "apps/web/src/components/voiceReview/voiceReviewActions.test.ts"
+        "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
+        "apps/server/src/voiceReview/composition.test.ts",
+        "apps/server/src/voiceReview/native.test.ts",
+        "apps/web/src/components/voiceReview/RecentVoicePrompts.test.tsx"
       ]
     },
     {
@@ -42,6 +45,30 @@
         "apps/web/src/components/chat/MessagesTimeline.logic.test.ts"
       ],
       "scope": "Landed rebuild #111 distinguishes attributed provider response settlement from checkpoint completion."
+    },
+    {
+      "id": "workstreams",
+      "tests": [
+        "packages/contracts/src/workstreams.conformance.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/mobile/src/features/workstreams/projection.test.ts"
+      ]
+    },
+    {
+      "id": "native-store-authority",
+      "tests": [
+        "apps/server/src/environment/NativeStoreAuthority.test.ts",
+        "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts"
+      ]
+    },
+    {
+      "id": "legacy-compatibility-contracts",
+      "tests": [
+        "packages/contracts/src/queueProtocol.test.ts",
+        "packages/contracts/src/threadCorpusProtocol.test.ts"
+      ]
     }
   ]
 }

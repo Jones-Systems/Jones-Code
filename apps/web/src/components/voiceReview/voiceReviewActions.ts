@@ -3,7 +3,51 @@ import type {
   VoiceReviewDraft,
   VoiceReviewMutationPayload,
   VoiceReviewMutationResult,
+  ThreadRegistryAssociationPayload,
+  ThreadRegistryMutationReceipt,
 } from "@t3tools/contracts";
+
+export interface RegistryCorrectionTransport {
+  correctAssociation(
+    payload: ThreadRegistryAssociationPayload,
+  ): Promise<ThreadRegistryMutationReceipt>;
+}
+
+export class RegistryCorrectionActions {
+  busy = false;
+  uncertain = false;
+  error: string | null = null;
+  constructor(private transport: RegistryCorrectionTransport) {}
+  async correct(payload: ThreadRegistryAssociationPayload) {
+    if (this.busy || this.uncertain || !payload.workstream_ref.startsWith("inferred:")) return null;
+    this.busy = true;
+    this.error = null;
+    try {
+      const receipt = await this.transport.correctAssociation(payload);
+      if (
+        receipt.request_id !== payload.request_id ||
+        !("subject" in receipt.record) ||
+        receipt.record.subject !== payload.subject ||
+        receipt.record.workstream_ref !== payload.workstream_ref ||
+        receipt.record.state !== payload.state ||
+        receipt.record.revision <= payload.expected_revision
+      )
+        throw new Error("Unmatched correction receipt");
+      return receipt;
+    } catch {
+      this.uncertain = true;
+      this.error =
+        "Correction is unconfirmed. Refresh the workstreams to review current metadata before another change.";
+      return null;
+    } finally {
+      this.busy = false;
+    }
+  }
+  reconciled() {
+    this.uncertain = false;
+    this.error = null;
+  }
+}
 
 export interface VoiceReviewTransport {
   mutate(
