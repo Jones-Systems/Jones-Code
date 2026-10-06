@@ -130,6 +130,10 @@ export const ProviderAdapterV2Event = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("turn.terminal"),
+    providerTurn: Schema.optional(OrchestrationV2ProviderTurn),
+    evidenceKind: Schema.optional(
+      Schema.Literals(["provider_result", "attributed_abort", "local_failure"]),
+    ),
     driver: ProviderDriverKind,
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
@@ -140,6 +144,10 @@ export const ProviderAdapterV2Event = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("turn.terminal"),
+    providerTurn: Schema.optional(OrchestrationV2ProviderTurn),
+    evidenceKind: Schema.optional(
+      Schema.Literals(["provider_result", "attributed_abort", "local_failure"]),
+    ),
     driver: ProviderDriverKind,
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,

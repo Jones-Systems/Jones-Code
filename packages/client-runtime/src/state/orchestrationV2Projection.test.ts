@@ -5,6 +5,13 @@ import {
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   MessageId,
+  EventId,
+  RunAttemptId,
+  ProviderSessionId,
+  ProviderDriverKind,
+  CheckpointId,
+  CheckpointRef,
+  CheckpointScopeId,
   ProjectId,
   ProviderInstanceId,
   NodeId,
@@ -348,4 +355,149 @@ it("does not scan every row against every run for a streaming item update", () =
   expect(next?.visibleTurnItems.at(-1)?.item).toBe(payload);
   expect(next?.visibleTurnItems[0]).toBe(projection.visibleTurnItems[0]);
   expect(runReads).toBeLessThanOrEqual(100);
+});
+
+it("replays explicit provider settlement without inferring it from availability, text, intent or checkpoints", () => {
+  const attemptId = RunAttemptId.make("attempt:explicit-settlement");
+  const nodeId = NodeId.make("node:explicit-settlement");
+  const providerThreadId = ProviderThreadId.make("provider-thread:explicit-settlement");
+  const providerTurnId = ProviderTurnId.make("provider-turn:explicit-settlement");
+  const attempt = {
+    id: attemptId,
+    runId,
+    attemptOrdinal: 1,
+    rootNodeId: nodeId,
+    providerInstanceId: run.providerInstanceId,
+    providerThreadId,
+    providerTurnId,
+    reason: "initial" as const,
+    status: "running" as const,
+    startedAt: now,
+    completedAt: null,
+    providerSettlement: null,
+  };
+  let projection = {
+    ...emptyProjection,
+    runs: [{ ...run, status: "running" as const, activeAttemptId: attemptId, completedAt: null }],
+    attempts: [attempt],
+  } as OrchestrationV2ThreadProjection;
+  const apply = (event: OrchestrationV2DomainEvent) => {
+    const next = applyOrchestrationV2ProjectionEvent(projection, event);
+    expect(next).not.toBeNull();
+    projection = next!;
+  };
+  const base = { id: EventId.make("event:explicit-settlement"), threadId, occurredAt: now };
+  for (const status of ["starting", "ready", "stopped", "error"] as const) {
+    apply({
+      ...base,
+      type: "provider-session.updated",
+      payload: {
+        id: ProviderSessionId.make("session:explicit-settlement"),
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: run.providerInstanceId,
+        status,
+        cwd: "/synthetic",
+        model: null,
+        capabilities: {} as never,
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+      },
+    });
+    expect(projection.runs[0]?.status).toBe("running");
+    expect(projection.attempts[0]?.providerSettlement).toBeNull();
+  }
+  apply({
+    ...base,
+    type: "message.updated",
+    payload: {
+      id: MessageId.make("assistant:explicit-settlement"),
+      threadId,
+      runId,
+      nodeId,
+      role: "assistant",
+      createdBy: "agent",
+      creationSource: "provider",
+      text: "Final text",
+      attachments: [],
+      streaming: false,
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+  const interruptIntent = {
+    id: TurnItemId.make("interrupt-intent"),
+    threadId,
+    runId,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 1,
+    status: "completed",
+    title: null,
+    startedAt: now,
+    completedAt: now,
+    updatedAt: now,
+    type: "run_interrupt_request",
+    message: "Stopping",
+  } satisfies OrchestrationV2TurnItem;
+  apply({ ...base, type: "turn-item.updated", payload: interruptIntent });
+  for (const status of ["ready", "error", "missing"] as const) {
+    apply({
+      ...base,
+      type: "checkpoint.captured",
+      payload: {
+        id: CheckpointId.make(`checkpoint:${status}`),
+        threadId,
+        runId,
+        nodeId,
+        scopeId: CheckpointScopeId.make("scope:explicit"),
+        parentCheckpointId: null,
+        ordinalWithinScope: 1,
+        appRunOrdinal: 1,
+        ref: CheckpointRef.make(`checkpoint-ref:${status}`),
+        files: [],
+        status,
+        capturedAt: now,
+      },
+    });
+  }
+  expect(projection.runs[0]?.completedAt).toBeNull();
+  expect(projection.attempts[0]?.providerSettlement).toBeNull();
+  const completedAt = DateTime.add(now, { seconds: 5 });
+  const settlement = {
+    runAttemptId: attemptId,
+    providerTurnId,
+    status: "interrupted" as const,
+    completedAt,
+  };
+  const prior = projection;
+  apply({
+    ...base,
+    type: "run-attempt.updated",
+    payload: { ...attempt, providerSettlement: settlement, status: "interrupted", completedAt },
+  });
+  expect(projection.attempts[0]?.providerSettlement).toEqual(settlement);
+  expect(prior.attempts[0]?.providerSettlement).toBeNull();
+  apply({
+    ...base,
+    type: "checkpoint.captured",
+    payload: {
+      ...projection.checkpoints[0]!,
+      capturedAt: DateTime.add(completedAt, { minutes: 1 }),
+    },
+  });
+  expect(projection.attempts[0]?.providerSettlement).toEqual(settlement);
+  const withoutEvidence = { ...attempt };
+  delete (withoutEvidence as { providerSettlement?: unknown }).providerSettlement;
+  apply({ ...base, type: "run-attempt.updated", payload: withoutEvidence });
+  expect(Object.hasOwn(projection.attempts[0]!, "providerSettlement")).toBe(false);
+  apply({
+    ...base,
+    type: "run-attempt.updated",
+    payload: { ...attempt, providerSettlement: null },
+  });
+  expect(projection.attempts[0]?.providerSettlement).toBeNull();
 });

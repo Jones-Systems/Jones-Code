@@ -4420,7 +4420,12 @@ export function makeAcpAdapterV2(
               yield* Ref.update(wakeBuffer, (current) => [...current, notification]);
               return;
             }
-            yield* finalizeTurn(context, context.promptSettledStatus ?? "completed");
+            yield* finalizeTurn(
+              context,
+              context.promptSettledStatus ?? "completed",
+              undefined,
+              "provider_result",
+            );
             const wake = yield* bufferPostSettleWake(notification);
             if (wake.offerContinuation) {
               yield* offerContinuationRun(notification.sessionId);
@@ -6474,6 +6479,7 @@ export function makeAcpAdapterV2(
           context: ActiveAcpTurn,
           status: "completed" | "interrupted" | "failed" | "cancelled",
           failure?: OrchestrationV2ProviderFailure,
+          evidenceKind: "provider_result" | "attributed_abort" | "local_failure" = "local_failure",
         ) {
           if (context.finalized) return;
           const settledStatus = context.interrupted ? "interrupted" : status;
@@ -6569,10 +6575,16 @@ export function makeAcpAdapterV2(
             driver,
             providerThread: updatedProviderThread,
           });
+          const terminalEvidenceKind =
+            settledStatus === "interrupted" && evidenceKind === "provider_result"
+              ? "attributed_abort"
+              : evidenceKind;
           yield* emitProviderEvent(
             settledStatus === "failed"
               ? {
                   type: "turn.terminal",
+                  providerTurn: turn,
+                  evidenceKind: terminalEvidenceKind,
                   driver,
                   providerThreadId: context.input.providerThread.id,
                   providerTurnId: context.providerTurnId,
@@ -6593,6 +6605,8 @@ export function makeAcpAdapterV2(
                 }
               : {
                   type: "turn.terminal",
+                  providerTurn: turn,
+                  evidenceKind: terminalEvidenceKind,
                   driver,
                   providerThreadId: context.input.providerThread.id,
                   providerTurnId: context.providerTurnId,
@@ -6669,7 +6683,7 @@ export function makeAcpAdapterV2(
               }
               if (hasDeferredBackgroundWork(context)) return;
               const status = context.promptSettledStatus ?? "completed";
-              yield* finalizeTurn(context, status);
+              yield* finalizeTurn(context, status, undefined, "provider_result");
             }).pipe(Effect.forkIn(sessionScope), Effect.asVoid);
             yield* (
               options.testHooks?.onDeferredFinalizeScheduled?.(ACP_DEFERRED_FINALIZE_DEBOUNCE) ??
@@ -7044,7 +7058,7 @@ export function makeAcpAdapterV2(
                     yield* scheduleDeferredFinalize(context);
                   }
                 } else {
-                  yield* finalizeTurn(context, "completed");
+                  yield* finalizeTurn(context, "completed", undefined, "provider_result");
                 }
                 return;
               }
@@ -7102,7 +7116,7 @@ export function makeAcpAdapterV2(
                       );
                       return;
                     }
-                    yield* finalizeTurn(context, status);
+                    yield* finalizeTurn(context, status, undefined, "provider_result");
                   }),
                 ).pipe(Effect.asVoid),
               ),
