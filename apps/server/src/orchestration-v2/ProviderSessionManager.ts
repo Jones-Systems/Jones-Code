@@ -33,6 +33,7 @@ import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSession from "../mcp/McpProviderSession.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as WorkModeRetention from "../jones/workMode/Retention.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
@@ -827,6 +828,7 @@ export const layerWithOptions = (
       const removeLiveEntry = (input: {
         readonly providerSessionId: ProviderSessionId;
         readonly onlyIfIdleGeneration?: number;
+        readonly onlyIfRuntime?: ProviderAdapterV2SessionRuntime;
       }): Effect.Effect<readonly [Option.Option<LiveSessionEntry>, DateTime.Utc]> =>
         Effect.gen(function* () {
           const key = sessionKey(input.providerSessionId);
@@ -841,8 +843,10 @@ export const layerWithOptions = (
                 return [existing === undefined ? "gone" : "changed", current] as const;
               }
               if (
-                input.onlyIfIdleGeneration !== undefined &&
-                (existing.busyCount > 0 || existing.idleGeneration !== input.onlyIfIdleGeneration)
+                (input.onlyIfIdleGeneration !== undefined &&
+                  (existing.busyCount > 0 ||
+                    existing.idleGeneration !== input.onlyIfIdleGeneration)) ||
+                (input.onlyIfRuntime !== undefined && existing.runtime !== input.onlyIfRuntime)
               ) {
                 return ["kept", current] as const;
               }
@@ -867,6 +871,7 @@ export const layerWithOptions = (
         readonly detail?: string;
         readonly cancelIdleFiber?: boolean;
         readonly onlyIfIdleGeneration?: number;
+        readonly onlyIfRuntime?: ProviderAdapterV2SessionRuntime;
         readonly gracefulSubscribers?: boolean;
       }) =>
         Effect.acquireUseRelease(
@@ -1027,6 +1032,35 @@ export const layerWithOptions = (
               : yield* probedRuntime.hasPendingBackgroundWork.pipe(
                   Effect.catchCause(() => Effect.succeed(false)),
                 );
+          const retainForWorkMode = Option.isNone(serverSettings)
+            ? false
+            : yield* Effect.gen(function* () {
+                const settings = yield* serverSettings.value.getSettings;
+                if (!settings.workModeEnabled) return false;
+                for (const threadId of entry.attachedThreadIds) {
+                  const eligible = yield* Effect.gen(function* () {
+                    const thread = yield* projectionStore.getThread(threadId);
+                    if (
+                      thread.archivedAt !== null ||
+                      thread.deletedAt !== null ||
+                      thread.settledAt !== null ||
+                      thread.settledOverride === "settled" ||
+                      thread.lineage.parentThreadId !== null ||
+                      thread.lineage.relationshipToParent !== null ||
+                      thread.activeProviderThreadId === null
+                    )
+                      return false;
+                    return WorkModeRetention.workModeRetainsSession({
+                      projection: yield* projectionStore.getThreadProjection(threadId),
+                      providerSessionId: input.providerSessionId,
+                      providerInstanceId: probedRuntime.instanceId,
+                      nowMs: yield* Clock.currentTimeMillis,
+                    });
+                  }).pipe(Effect.catchCause(() => Effect.succeed(false)));
+                  if (eligible) return true;
+                }
+                return false;
+              }).pipe(Effect.catchCause(() => Effect.succeed(false)));
           if (hasPendingWork) {
             const now = yield* Clock.currentTimeMillis;
             const pinnedSinceMs = entry.pinnedSinceMs ?? now;
@@ -1054,10 +1088,16 @@ export const layerWithOptions = (
                 providerSessionId: input.providerSessionId,
                 pinnedForMs: now - pinnedSinceMs,
               });
-              // Re-check on this fiber after another idle window. Do not call
+              // Re-check on this fiber. Do not call
               // scheduleIdleReleaseInternal: that cancels entry.idleFiber, which
               // is this fiber, and can self-deadlock on Fiber.interrupt.
-              yield* Effect.sleep(Duration.millis(idleTimeoutMs));
+              yield* Effect.sleep(
+                Duration.millis(
+                  retainForWorkMode
+                    ? WorkModeRetention.WORK_MODE_RETENTION_RECHECK_MS
+                    : idleTimeoutMs,
+                ),
+              );
               return yield* releaseIfStillIdle(input);
             }
             yield* Effect.logWarning("orchestration-v2.driver-session.idle-release-pin-expired", {
@@ -1065,15 +1105,29 @@ export const layerWithOptions = (
               pinnedForMs: now - pinnedSinceMs,
             });
           }
-          // hasPendingBackgroundWork yields to the adapter, so the idle
-          // decision above can go stale; the generation guard revalidates
-          // busyCount and idleGeneration inside releaseEntry's atomic
-          // entry removal.
+          if (retainForWorkMode) {
+            const latestEntry = (yield* Ref.get(sessions)).get(key);
+            if (
+              latestEntry === undefined ||
+              latestEntry.busyCount > 0 ||
+              latestEntry.idleGeneration !== input.generation ||
+              latestEntry.runtime !== probedRuntime
+            )
+              return;
+            // Keep the same fiber: re-arming through scheduleIdleReleaseInternal
+            // would interrupt itself. Work-mode residency has no background-pin cap.
+            yield* Effect.sleep(Duration.millis(WorkModeRetention.WORK_MODE_RETENTION_RECHECK_MS));
+            return yield* releaseIfStillIdle(input);
+          }
+          // Pending-work and Work-mode probes yield, so the idle decision can
+          // go stale. Revalidate busyCount, generation and runtime identity
+          // inside releaseEntry's atomic entry removal.
           yield* releaseEntry({
             providerSessionId: input.providerSessionId,
             reason: "idle_timeout",
             cancelIdleFiber: false,
             onlyIfIdleGeneration: input.generation,
+            onlyIfRuntime: probedRuntime,
           }).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.driver-session.idle-release-failed", {

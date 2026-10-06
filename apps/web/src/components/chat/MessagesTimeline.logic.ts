@@ -1,3 +1,4 @@
+import { isWorkModeSentinelMessage } from "@t3tools/shared/jones/workMode";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 export { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import * as Equal from "effect/Equal";
@@ -1196,7 +1197,7 @@ function settleSupersededReasoning(entries: ReadonlyArray<TimelineEntry>) {
   });
 }
 
-export function deriveMessagesTimelineRows(input: {
+export function deriveMessagesTimelineRows(originalInput: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   latestRun?: TimelineLatestRun | null;
   runningRunId?: RunId | null;
@@ -1217,8 +1218,17 @@ export function deriveMessagesTimelineRows(input: {
   /** Live bootstrap progress. Renders a stage card under the first user message. */
   worktreeSetup?: WorktreeSetupSnapshot | null;
 }): MessagesTimelineRow[] {
+  const sentinelEntry = (entry: TimelineEntry) =>
+    entry.kind === "message" &&
+    isWorkModeSentinelMessage({ ...entry.message, status: entry.projectedItem?.item.status });
+  const lastUserIndex = originalInput.timelineEntries.findLastIndex(
+    (entry) => entry.kind === "message" && entry.message.role === "user",
+  );
+  const quietTurn =
+    lastUserIndex >= 0 && originalInput.timelineEntries.slice(lastUserIndex).every(sentinelEntry);
+  const input = quietTurn ? { ...originalInput, isWorking: false } : originalInput;
   const timelineEntries = withoutSubagentDelegationRows(
-    settleSupersededReasoning(input.timelineEntries),
+    settleSupersededReasoning(input.timelineEntries.filter((entry) => !sentinelEntry(entry))),
   );
   const turnDiffSummaryByAssistantMessageId = new Map<MessageId, TurnDiffSummary>();
   for (const summary of input.turnDiffSummaries) {
@@ -1228,7 +1238,7 @@ export function deriveMessagesTimelineRows(input: {
   }
   const revertTurnCountByUserMessageId = input.supportsConversationRollback
     ? deriveRevertTurnCountByUserMessageId({
-        timelineEntries: timelineEntries,
+        timelineEntries: originalInput.timelineEntries,
         checkpoints: input.turnDiffSummaries,
       })
     : new Map<MessageId, number>();
@@ -1941,6 +1951,10 @@ function replaceStreamingMessageRows(
       entry.projectedItem === previousEntry.projectedItem
     )
       continue;
+    if (
+      isWorkModeSentinelMessage(previousEntry.message) !== isWorkModeSentinelMessage(entry.message)
+    )
+      return null;
     if (!isStreamingMessageTextUpdate(previousEntry.message, entry.message)) return null;
     replacements.set(previousEntry.message, entry);
   }

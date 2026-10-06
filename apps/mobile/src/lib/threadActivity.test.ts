@@ -1,4 +1,5 @@
 import {
+  ChatAttachmentId,
   ContextHandoffId,
   MessageId,
   CheckpointId,
@@ -2375,3 +2376,86 @@ it.each(["provider_error", "usage_limit"] as const)(
     });
   },
 );
+
+describe("work mode history", () => {
+  function present(items: OrchestrationV2TurnItem[], active = false) {
+    const feed = buildThreadFeed(items.map((item, index) => projected(item, index)));
+    return deriveThreadFeedPresentation(
+      feed,
+      null,
+      new Set(),
+      new Set(),
+      active ? "2026-06-20T00:00:01.000Z" : null,
+    );
+  }
+  it("hides persisted sentinel rows and orphan live noise", () => {
+    const items = [
+      { ...userMessage(), text: "@@@@@" },
+      { ...assistantMessage(), text: "@@@@@" },
+    ];
+    expect(present(items, true)).toEqual([]);
+    expect(items[0]?.text).toBe("@@@@@");
+  });
+  it("keeps unexpected and failed replies and other content in the same turn", () => {
+    for (const text of ["@@@@", "@@@@@ extra", " @@@@@", "@@@@@\n", "Failed to respond"]) {
+      const rows = present([
+        { ...userMessage(), text: "@@@@@" },
+        { ...assistantMessage(), text },
+      ]);
+      expect(rows.filter((row) => row.type === "message").map((row) => row.message.text)).toEqual([
+        text,
+      ]);
+    }
+    expect(
+      present([{ ...assistantMessage(), text: "@@@@@", status: "failed" }]).some(
+        (row) => row.type === "message",
+      ),
+    ).toBe(true);
+    expect(
+      present([
+        { ...userMessage(), text: "@@@@@" },
+        command(),
+        { ...assistantMessage(), text: "@@@@@" },
+      ]).some(
+        (row) =>
+          row.type === "activity-group" || row.type === "work-toggle" || row.type === "run-fold",
+      ),
+    ).toBe(true);
+    const mixed = [
+      { ...userMessage(), text: "@@@@@" },
+      { ...assistantMessage(), text: "Real content" },
+      {
+        ...assistantMessage(),
+        id: TurnItemId.make("sentinel"),
+        messageId: MessageId.make("sentinel"),
+        text: "@@@@@",
+      },
+    ];
+    expect(
+      present(mixed)
+        .filter((row) => row.type === "message")
+        .map((row) => row.message.text),
+    ).toEqual(["Real content"]);
+  });
+});
+
+it("retains mobile sentinel text with an attachment", () => {
+  const item = {
+    ...userMessage(),
+    text: "@@@@@",
+    attachments: [
+      {
+        type: "image" as const,
+        id: ChatAttachmentId.make("photo"),
+        name: "photo.png",
+        mimeType: "image/png",
+        sizeBytes: 1,
+      },
+    ],
+  };
+  expect(
+    deriveThreadFeedPresentation(buildThreadFeed([projected(item, 0)]), null, new Set()).some(
+      (row) => row.type === "message",
+    ),
+  ).toBe(true);
+});

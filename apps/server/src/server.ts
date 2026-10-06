@@ -80,6 +80,7 @@ import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import * as ServerSettings from "./serverSettings.ts";
+import * as WorkMode from "./jones/workMode/WorkMode.ts";
 import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts";
 import * as NativeAppIconResolver from "./assets/NativeAppIconResolver.ts";
 import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
@@ -507,6 +508,12 @@ const ProviderInstallationRefreshLive = Layer.effectDiscard(
 );
 
 const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const workMode = yield* WorkMode.WorkMode;
+      yield* workMode.start;
+    }),
+  ).pipe(Layer.provide(WorkMode.layer), Layer.provide(ProjectionStoreV2.layer)),
   AgentAwarenessRelay.layer,
   ThreadSettlementWorkerLive,
   Layer.effectDiscard(StorageCleanup.make.pipe(Effect.flatMap((service) => service.start()))).pipe(

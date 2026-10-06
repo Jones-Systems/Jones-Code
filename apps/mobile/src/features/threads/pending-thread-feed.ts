@@ -1,3 +1,4 @@
+import { isWorkModeSentinelMessage } from "@t3tools/shared/jones/workMode";
 import type { ThreadFeedEntry } from "../../lib/threadActivity";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 
@@ -19,7 +20,11 @@ export function appendPendingThreadMessages(
   return [
     ...presentedFeed,
     ...queuedMessages
-      .filter((message) => !deliveredIds.has(message.messageId))
+      .filter(
+        (message) =>
+          !deliveredIds.has(message.messageId) &&
+          !isWorkModeSentinelMessage({ ...message, role: "user" }),
+      )
       .map((pendingMessage): PendingThreadFeedEntry => ({
         type: "message",
         id: pendingMessage.messageId,

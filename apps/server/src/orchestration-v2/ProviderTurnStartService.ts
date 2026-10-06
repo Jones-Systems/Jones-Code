@@ -1,3 +1,4 @@
+import { isWorkModeKeepWarm, workModeProviderPrompt } from "../jones/provider/workModePrompt.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -522,25 +523,40 @@ export const layer: Layer.Layer<
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
+      const keepWarm = isWorkModeKeepWarm(message);
       const sessionResult = yield* Effect.result(
-        providerSessions.open({
-          threadId: projection.thread.id,
-          providerSessionId,
-          modelSelection: run.modelSelection,
-          runtimePolicy: resolvedRuntimePolicy,
-          ...(existingSessionProjection === undefined
-            ? {}
-            : { resumeFromSession: existingSessionProjection }),
-          ...(providerThread.nativeThreadRef?.nativeId == null
-            ? {}
-            : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
-          ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
-            ? {}
-            : {
-                initialProviderItemIdentityVersion:
-                  providerThread.nativeMetadata.itemIdentityVersion,
-              }),
-        }),
+        keepWarm
+          ? providerSessions.get(providerSessionId).pipe(
+              Effect.flatMap((live) =>
+                Option.isSome(live) && providerThread.nativeThreadRef !== null
+                  ? Effect.succeed(live.value)
+                  : Effect.fail(
+                      new ProviderSessionManager.ProviderSessionOpenError({
+                        instanceId: run.providerInstanceId,
+                        providerSessionId,
+                        cause: "Keep-warm requires the existing live provider conversation.",
+                      }),
+                    ),
+              ),
+            )
+          : providerSessions.open({
+              threadId: projection.thread.id,
+              providerSessionId,
+              modelSelection: run.modelSelection,
+              runtimePolicy: resolvedRuntimePolicy,
+              ...(existingSessionProjection === undefined
+                ? {}
+                : { resumeFromSession: existingSessionProjection }),
+              ...(providerThread.nativeThreadRef?.nativeId == null
+                ? {}
+                : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
+              ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
+                ? {}
+                : {
+                    initialProviderItemIdentityVersion:
+                      providerThread.nativeMetadata.itemIdentityVersion,
+                  }),
+            }),
       );
       // The last start attempt fails the run with the provider's own reason
       // instead of leaving it `starting` after the effect gives up. A run that
@@ -684,6 +700,9 @@ export const layer: Layer.Layer<
           return resumed.success;
         }
 
+        if (keepWarm) {
+          return yield* loadFromProvider(Effect.fail(resumed.failure));
+        }
         yield* Effect.logWarning("Provider resume failed; attempting a fresh native session", {
           driver: session.driver,
           providerThreadId: providerThread.id,
@@ -943,10 +962,12 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
-      const userText = projectComposerContextForProvider({
-        text: message.text,
-        records: message.context?.records ?? [],
-      });
+      const userText = workModeProviderPrompt(
+        projectComposerContextForProvider({
+          text: message.text,
+          records: message.context?.records ?? [],
+        }),
+      );
       // Delivered once: this run's provider turn marks the work as told. A
       // restart continuation is prompted by its own text or resumes natively.
       const noteContinuation = isRestartNoteContinuation(

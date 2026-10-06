@@ -155,6 +155,8 @@ it("does not commit running state when inherited background routing cannot be re
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly keepWarm?: boolean;
+  readonly liveKeepWarmSession?: boolean;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
@@ -183,7 +185,9 @@ function makeLocalCommandHarness(input: {
   const oldInstanceId = ProviderInstanceId.make("antigravity-personal");
   const newInstanceId = ProviderInstanceId.make("codex-personal");
   const checkpointScopeId = CheckpointScopeId.make("scope-native-account-command");
-  const messageId = MessageId.make("message-native-account-command");
+  const messageId = MessageId.make(
+    input.keepWarm ? "work-mode:thread:generation" : "message-native-account-command",
+  );
   const run: OrchestrationV2ThreadProjection["runs"][number] = {
     id: runId,
     threadId,
@@ -313,7 +317,12 @@ function makeLocalCommandHarness(input: {
         id: MessageId.make(`previous-message-${index}`),
         text,
       })),
-      message,
+      {
+        ...message,
+        ...(input.keepWarm
+          ? { createdBy: "system" as const, creationSource: "server" as const }
+          : {}),
+      },
     ],
     checkpointScopes: [
       {
@@ -391,7 +400,7 @@ function makeLocalCommandHarness(input: {
           cause: "native thread is gone",
         }),
       ),
-    ensureThread: () => Effect.succeed(providerThread),
+    ensureThread: vi.fn(() => Effect.succeed(providerThread)),
   };
   const open = vi.fn(() =>
     input.interruptOpen === true
@@ -521,7 +530,15 @@ function makeLocalCommandHarness(input: {
               }),
             ),
         }),
-        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          open,
+          get: () =>
+            Effect.succeed(
+              input.liveKeepWarmSession
+                ? Option.some(resumeFallbackSession as never)
+                : Option.none(),
+            ),
+        }),
         Layer.mock(ProviderAuthService.ProviderAuthService)({ tryHandlePromptCommand }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
@@ -531,6 +548,7 @@ function makeLocalCommandHarness(input: {
     ),
   );
   return {
+    resumeFallbackSession,
     open,
     writeIfRunCurrent,
     startRootRun,
@@ -855,3 +873,29 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+effectIt.effect("keep-warm does not reopen an expired provider session", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "@@@@@", keepWarm: true });
+    yield* harness.start;
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+  }),
+);
+
+effectIt.effect("keep-warm does not replace a native conversation when resume fails", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "@@@@@",
+      keepWarm: true,
+      liveKeepWarmSession: true,
+      historyReadFailureAfterFallback: new Error("must not reach fallback history"),
+    });
+    yield* harness.start;
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.resumeFallbackSession.ensureThread).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+  }),
+);

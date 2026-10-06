@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  EventId,
   type ModelSelection,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
@@ -38,6 +39,7 @@ import * as McpProviderSession from "../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { workModeFixture } from "../jones/workMode/Fixtures.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
@@ -449,6 +451,7 @@ function makeTestLayer(input: {
     configuredEventSinkLayer,
     IdAllocator.layer,
     TestMcpRegistryLayer,
+    ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
     ProviderSessionManager.layerWithOptions({
       idleTimeoutMs: input.idleTimeoutMs,
       ...(input.maxIdlePinMs === undefined ? {} : { maxIdlePinMs: input.maxIdlePinMs }),
@@ -1739,6 +1742,200 @@ it.effect("ProviderSessionManagerV2 releases idle sessions without sweeping all 
 
     yield* effect.pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 1000 })));
   }),
+);
+
+function openWorkModeRetentionSession(lineage?: OrchestrationV2AppThread["lineage"]) {
+  return Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const now = yield* DateTime.now;
+    const fixture = workModeFixture();
+    const thread = {
+      ...fixture.thread,
+      ...(lineage === undefined ? {} : { lineage }),
+      createdAt: now,
+      updatedAt: now,
+    };
+    const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
+      {
+        id: EventId.make("retention:thread"),
+        type: "thread.created",
+        threadId: thread.id,
+        occurredAt: now,
+        payload: thread,
+      },
+      {
+        id: EventId.make("retention:run"),
+        type: "run.created",
+        threadId: thread.id,
+        occurredAt: now,
+        payload: { ...fixture.runs[0]!, requestedAt: now, startedAt: now, completedAt: now },
+      },
+      {
+        id: EventId.make("retention:message"),
+        type: "message.updated",
+        threadId: thread.id,
+        occurredAt: now,
+        payload: { ...fixture.messages[0]!, createdAt: now, updatedAt: now },
+      },
+      {
+        id: EventId.make("retention:context"),
+        type: "provider-thread.updated",
+        threadId: thread.id,
+        occurredAt: now,
+        payload: { ...fixture.providerThreads[0]!, createdAt: now, updatedAt: now },
+      },
+      {
+        id: EventId.make("retention:turn"),
+        type: "provider-turn.updated",
+        threadId: thread.id,
+        occurredAt: now,
+        payload: { ...fixture.providerTurns[0]!, startedAt: now, completedAt: now },
+      },
+    ];
+    yield* sink.write({ events });
+    const providerSessionId = fixture.providerSessions[0]!.id;
+    yield* manager.open({
+      threadId: thread.id,
+      providerSessionId,
+      modelSelection: thread.modelSelection,
+      runtimePolicy,
+      initialNativeThreadId: fixture.providerThreads[0]!.nativeThreadRef!.nativeId!,
+    });
+    return { threadId: thread.id, providerSessionId };
+  });
+}
+
+it.effect(
+  "ProviderSessionManagerV2 retains Work mode across nine intervals then releases on disable",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const { threadId, providerSessionId } = yield* openWorkModeRetentionSession();
+        yield* TestClock.adjust("30 minutes");
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        for (let round = 0; round < 9; round++) {
+          yield* TestClock.adjust("55 minutes");
+          assert.equal((yield* Ref.get(state)).closeCount, 0);
+        }
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        yield* settings.updateSettings({ workModeEnabled: false });
+        yield* TestClock.adjust("1 minute");
+        yield* projections.getThreadProjection(threadId);
+        assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+        assert.equal(
+          (yield* projections.getThreadProjection(threadId)).providerSessions[0]!.status,
+          "stopped",
+        );
+      }).pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: 30 * 60_000,
+            serverSettingsLayer: ServerSettings.layerTest({ workModeEnabled: true }),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 releases retained Work mode at the next check after settlement",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const { threadId, providerSessionId } = yield* openWorkModeRetentionSession();
+        yield* TestClock.adjust("56 minutes");
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        const now = yield* DateTime.now;
+        yield* projections.apply({
+          id: EventId.make("retention:settle"),
+          type: "thread.settled",
+          threadId,
+          occurredAt: now,
+          payload: { ...(yield* projections.getThread(threadId)), settledAt: now, updatedAt: now },
+        });
+        yield* TestClock.adjust("1 minute");
+        yield* projections.getThreadProjection(threadId);
+        assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+      }).pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: 30 * 60_000,
+            serverSettingsLayer: ServerSettings.layerTest({ workModeEnabled: true }),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect.each(["subagent", "fork"] as const)(
+  "ProviderSessionManagerV2 keeps the 30-minute idle timeout for a %s",
+  (relationshipToParent) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const { threadId, providerSessionId } = yield* openWorkModeRetentionSession({
+          parentThreadId: ThreadId.make("parent"),
+          relationshipToParent,
+          rootThreadId: ThreadId.make("parent"),
+        });
+        yield* TestClock.adjust(30 * 60_000 - 1);
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        yield* TestClock.adjust(1);
+        yield* projections.getThreadProjection(threadId);
+        assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+      }).pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: 30 * 60_000,
+            serverSettingsLayer: ServerSettings.layerTest({ workModeEnabled: true }),
+          }),
+        ),
+      );
+    }),
+);
+it.effect(
+  "ProviderSessionManagerV2 manual shutdown wins over Work mode residency without reopening",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const { providerSessionId } = yield* openWorkModeRetentionSession();
+        yield* TestClock.adjust("56 minutes");
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        yield* manager.release({ providerSessionId, reason: "manual_shutdown" });
+        assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        yield* TestClock.adjust("9 hours");
+        assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+      }).pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: 30 * 60_000,
+            serverSettingsLayer: ServerSettings.layerTest({ workModeEnabled: true }),
+          }),
+        ),
+      );
+    }),
 );
 
 it.effect("ProviderSessionManagerV2 persists release when session scope close hangs", () =>
