@@ -1596,6 +1596,8 @@ export const make = Effect.fn("TerminalManager.make")(function* () {
   const nativeTelemetry = yield* NativeTelemetryClient.NativeTelemetryClient;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const path = yield* Path.Path;
+  const context = yield* Effect.context<never>();
+  const installedOwnerObservation = Context.getOrUndefined(context, TerminalOwnerObservation);
   const resolveProviderInstanceEnvironment = Effect.fn(
     "terminal.resolveProviderInstanceEnvironment",
   )((rawProviderInstanceId: string, env: Record<string, string> | undefined) =>
@@ -1608,7 +1610,7 @@ export const make = Effect.fn("TerminalManager.make")(function* () {
   );
   return yield* makeWithOptions({
     logsDir: terminalLogsDir,
-    ownerObservation: {
+    ownerObservation: installedOwnerObservation ?? {
       observeCurrentBirth: (threadId) =>
         readApplicationThreadBirth(ThreadId.make(threadId)).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),

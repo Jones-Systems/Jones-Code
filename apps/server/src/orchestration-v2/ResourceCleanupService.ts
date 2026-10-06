@@ -1,4 +1,5 @@
 import type { LegacyOwnedTerminalControl } from "./RecordedTypes.ts";
+import { ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -8,6 +9,20 @@ import * as Schema from "effect/Schema";
 import { resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import * as EventSink from "./EventSink.ts";
+
+export const terminalOwnerObservationLive = Layer.effect(
+  TerminalManager.TerminalOwnerObservation,
+  Effect.gen(function* () {
+    const eventSink = yield* EventSink.EventSinkV2;
+    return {
+      observeCurrentBirth: (threadId: string) =>
+        eventSink.readApplicationBirthRecord === undefined
+          ? Effect.succeed(null)
+          : eventSink.readApplicationBirthRecord(ThreadId.make(threadId)),
+    };
+  }),
+);
 
 export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupError>()(
   "ResourceCleanupError",

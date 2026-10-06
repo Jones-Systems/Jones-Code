@@ -156,6 +156,7 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import {
   OrchestrationEventInfrastructureLayerLive,
+  OrchestrationV2EventSinkLayerLive,
   OrchestrationV2ProductionLayerLive,
   ProjectServiceLayerLive,
   ProjectSetupScriptRunnerLayerLive,
@@ -399,6 +400,11 @@ const TerminalLayerLive = TerminalManager.layer.pipe(
   Layer.provide(PtyAdapterLive),
   Layer.provide(PortScannerLayerLive),
   Layer.provide(NativeTelemetryLayerLive),
+  Layer.provide(
+    ResourceCleanupService.terminalOwnerObservationLive.pipe(
+      Layer.provide(OrchestrationV2EventSinkLayerLive),
+    ),
+  ),
 );
 
 const PreviewLayerLive = Layer.empty.pipe(
