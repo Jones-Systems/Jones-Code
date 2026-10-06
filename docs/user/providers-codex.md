@@ -81,6 +81,18 @@ reported accounts, refresh provider status, and confirm the second instance has
 its own shadow path and login. A shadow-home conflict usually means the directory
 contains a copied Codex setup. Use a fresh shadow directory and sign in again.
 
+## Stop a goal-driven turn
+
+Press **Stop** to pause the thread's active Codex goal before interrupting its
+live child turns and root turn. The pause stays with the native Codex conversation
+when its provider session restarts.
+
+If Codex cannot confirm the goal pause, the thread shows **Goal may still be
+active** and still attempts Stop. Check the goal before continuing. If the root
+does not acknowledge Stop, the thread shows **Turn may still be running** and
+reports the failure; it keeps the turn's last known state until Codex supplies a
+completion event.
+
 ## Answer questions while Codex works
 
 Codex can ask a question and keep working. Answer it in the thread's question

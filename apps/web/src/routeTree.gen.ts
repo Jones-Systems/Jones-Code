@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkQueueRouteImport } from './routes/work-queue'
 import { Route as WelcomeRouteImport } from './routes/welcome'
+import { Route as VoiceReviewRouteImport } from './routes/voice-review'
 import { Route as UsageRouteImport } from './routes/usage'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as PairRouteImport } from './routes/pair'
@@ -45,6 +46,11 @@ const WorkQueueRoute = WorkQueueRouteImport.update({
 const WelcomeRoute = WelcomeRouteImport.update({
   id: '/welcome',
   path: '/welcome',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const VoiceReviewRoute = VoiceReviewRouteImport.update({
+  id: '/voice-review',
+  path: '/voice-review',
   getParentRoute: () => rootRouteImport,
 } as any)
 const UsageRoute = UsageRouteImport.update({
@@ -180,6 +186,7 @@ export interface FileRoutesByFullPath {
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
   '/usage': typeof UsageRoute
+  '/voice-review': typeof VoiceReviewRoute
   '/welcome': typeof WelcomeRoute
   '/work-queue': typeof WorkQueueRoute
   '/conversations': typeof ChatConversationsRoute
@@ -207,6 +214,7 @@ export interface FileRoutesByTo {
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
   '/usage': typeof UsageRoute
+  '/voice-review': typeof VoiceReviewRoute
   '/welcome': typeof WelcomeRoute
   '/work-queue': typeof WorkQueueRoute
   '/conversations': typeof ChatConversationsRoute
@@ -237,6 +245,7 @@ export interface FileRoutesById {
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
   '/usage': typeof UsageRoute
+  '/voice-review': typeof VoiceReviewRoute
   '/welcome': typeof WelcomeRoute
   '/work-queue': typeof WorkQueueRoute
   '/_chat/conversations': typeof ChatConversationsRoute
@@ -268,6 +277,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/settings'
     | '/usage'
+    | '/voice-review'
     | '/welcome'
     | '/work-queue'
     | '/conversations'
@@ -295,6 +305,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/settings'
     | '/usage'
+    | '/voice-review'
     | '/welcome'
     | '/work-queue'
     | '/conversations'
@@ -324,6 +335,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/settings'
     | '/usage'
+    | '/voice-review'
     | '/welcome'
     | '/work-queue'
     | '/_chat/conversations'
@@ -354,6 +366,7 @@ export interface RootRouteChildren {
   PairRoute: typeof PairRoute
   SettingsRoute: typeof SettingsRouteWithChildren
   UsageRoute: typeof UsageRoute
+  VoiceReviewRoute: typeof VoiceReviewRoute
   WelcomeRoute: typeof WelcomeRoute
   WorkQueueRoute: typeof WorkQueueRoute
   ProjectsProjectKeyRoute: typeof ProjectsProjectKeyRoute
@@ -373,6 +386,13 @@ declare module '@tanstack/react-router' {
       path: '/welcome'
       fullPath: '/welcome'
       preLoaderRoute: typeof WelcomeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/voice-review': {
+      id: '/voice-review'
+      path: '/voice-review'
+      fullPath: '/voice-review'
+      preLoaderRoute: typeof VoiceReviewRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/usage': {
@@ -615,6 +635,7 @@ const rootRouteChildren: RootRouteChildren = {
   PairRoute: PairRoute,
   SettingsRoute: SettingsRouteWithChildren,
   UsageRoute: UsageRoute,
+  VoiceReviewRoute: VoiceReviewRoute,
   WelcomeRoute: WelcomeRoute,
   WorkQueueRoute: WorkQueueRoute,
   ProjectsProjectKeyRoute: ProjectsProjectKeyRoute,
