@@ -190,6 +190,17 @@ and copying a thread reference. A copied reference uses the thread's pull reques
 link when available, otherwise its thread ID. See [keybindings](./keybindings.md)
 for custom configuration.
 
+## Block messages from other threads
+
+Ask the agent to block incoming messages for its thread, or for another thread
+in the same project. The block stays in place across restarts. You can still
+message the thread directly, and task-completion notifications and work already
+accepted into its queue continue normally.
+
+To allow messages again, ask the agent in the blocked thread to unblock itself.
+Agents in other threads cannot remove its block. New forks and subagent threads
+start with their own unblocked setting.
+
 ## Inspect agent work
 
 **Limited** means the provider stopped on a usage or rate limit. The conversation

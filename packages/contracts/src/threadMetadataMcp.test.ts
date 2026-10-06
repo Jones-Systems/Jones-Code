@@ -32,12 +32,18 @@ describe("ThreadMetadataMcpUpdateInput", () => {
         },
       },
     );
+    for (const action of ["block_thread_messages", "allow_thread_messages"] as const) {
+      assert.deepEqual(decodeUpdate({ action }), { action });
+    }
     assert.deepEqual(decodeUpdate({ action: "unlink_pull_request" }), {
       action: "unlink_pull_request",
     });
   });
 
   it("rejects missing action data and fields from another action", () => {
+    for (const action of ["block_thread_messages", "allow_thread_messages"] as const) {
+      assert.throws(() => decodeUpdate({ action, title: "Not allowed" }));
+    }
     assert.throws(() => decodeUpdate({ action: "rename" }));
     assert.throws(() => decodeUpdate({ action: "regenerate_title", title: "Not allowed" }));
     assert.throws(() => decodeUpdate({ action: "link_pull_request" }));
