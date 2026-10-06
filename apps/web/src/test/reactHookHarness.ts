@@ -38,12 +38,23 @@ function createReactHookHarness() {
   let cursor = 0;
   let slots: unknown[] = [];
   const nextIndex = () => cursor++;
+  const isEffectSlot = (
+    value: unknown,
+  ): value is {
+    readonly kind: "effect";
+    readonly dependencies: readonly unknown[] | undefined;
+    readonly cleanup: (() => void) | undefined;
+  } => typeof value === "object" && value !== null && "kind" in value && value.kind === "effect";
 
   return {
     beginRender() {
       cursor = 0;
     },
+    snapshot() {
+      return [...slots] as readonly unknown[];
+    },
     reset() {
+      for (const slot of slots) if (isEffectSlot(slot)) slot.cleanup?.();
       cursor = 0;
       slots = [];
     },
@@ -54,6 +65,26 @@ function createReactHookHarness() {
     useMemo<T>(factory: () => T): T {
       nextIndex();
       return factory();
+    },
+    useEffect(effect: () => void | (() => void), dependencies?: readonly unknown[]): void {
+      const index = nextIndex();
+      const previous = slots[index];
+      const unchanged =
+        isEffectSlot(previous) &&
+        dependencies !== undefined &&
+        previous.dependencies !== undefined &&
+        dependencies.length === previous.dependencies.length &&
+        dependencies.every((dependency, dependencyIndex) =>
+          Object.is(dependency, previous.dependencies?.[dependencyIndex]),
+        );
+      if (unchanged) return;
+      if (isEffectSlot(previous)) previous.cleanup?.();
+      const cleanup = effect();
+      slots[index] = {
+        kind: "effect",
+        dependencies,
+        cleanup: typeof cleanup === "function" ? cleanup : undefined,
+      };
     },
     useMemoCache(size: number): unknown[] {
       const index = nextIndex();
