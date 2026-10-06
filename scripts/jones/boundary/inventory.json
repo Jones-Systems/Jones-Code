@@ -146,7 +146,7 @@
     "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.testkit.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/Adapters/CodexCapacityContinuation.test.ts": "jones-owned",
-    "apps/server/src/orchestration-v2/Adapters/CodexCapacityContinuation.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/Adapters/CodexCapacityContinuation.ts": "hook",
     "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts": "jones-tests-in-upstream",
@@ -450,10 +450,6 @@
     {
       "from": "apps/server/scripts/acp-replay-agent.ts",
       "to": "apps/server/scripts/acpReplayStatusPublication.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
-      "to": "apps/server/src/orchestration-v2/Adapters/CodexCapacityContinuation.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
