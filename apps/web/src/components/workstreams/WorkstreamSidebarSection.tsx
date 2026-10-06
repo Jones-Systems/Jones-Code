@@ -15,6 +15,10 @@ import * as Effect from "effect/Effect";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode, type DragEvent } from "react";
 
+import { useWorkstreamAppearance } from "../../jones/workstreamAppearance/useWorkstreamAppearance";
+import { WorkstreamColorDialog } from "../../jones/workstreamAppearance/WorkstreamColorDialog";
+import { workstreamAppearanceBorder } from "@t3tools/client-runtime/state/workstreams";
+
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { canEditWorkstreams, workstreamTint } from "./nativeWorkstreamActions";
@@ -195,6 +199,8 @@ export function WorkstreamSidebarSection(props: {
     [],
     Schema.Array(Schema.String),
   );
+  const appearance = useWorkstreamAppearance(data);
+  const [colorEditing, setColorEditing] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [dragging, setDragging] = useState<string | null>(null);
@@ -224,6 +230,7 @@ export function WorkstreamSidebarSection(props: {
     setPullRequestStatus({});
     setReceipt(null);
     setEditing(null);
+    setColorEditing(null);
     setDragging(null);
     setGroupDropTarget(null);
     setCommandError(null);
@@ -384,9 +391,23 @@ export function WorkstreamSidebarSection(props: {
         </p>
       ) : null}
       {commandError ? <p className="px-1 pb-1 text-xs text-destructive">{commandError}</p> : null}
+      {colorEditing && appearance.writable && appearance.colors.has(colorEditing) ? (
+        <WorkstreamColorDialog
+          key={`${bindingKey}:${colorEditing}`}
+          name={items.find((item) => item.workstreamId === colorEditing)?.name ?? "Workstream"}
+          saved={appearance.colors.get(colorEditing)!}
+          generation={data.binding.serverGeneration}
+          createCommandId={workstreamCommandId}
+          save={appearance.save}
+          onClose={() => setColorEditing(null)}
+        />
+      ) : null}
       <ul className="space-y-0.5">
         {items.map((item, index) => (
           <li
+            style={workstreamAppearanceBorder(
+              appearance.colors.get(item.workstreamId)?.border_color,
+            )}
             className={`relative rounded-md border-l-2 ${workstreamTint(item.workstreamId)} ${props.threadDropTarget === item.workstreamId ? "ring-2 ring-primary bg-primary/10" : ""}`}
             data-drop-target={props.threadDropTarget === item.workstreamId ? "thread" : undefined}
             key={item.workstreamId}
@@ -485,6 +506,7 @@ export function WorkstreamSidebarSection(props: {
                     const next = name.trim();
                     if (next && next !== item.name) update(item, { name: next });
                     setEditing(null);
+                    setColorEditing(null);
                   }}
                   onChange={(event) => setName(event.target.value)}
                   onKeyDown={(event) => {
@@ -519,6 +541,9 @@ export function WorkstreamSidebarSection(props: {
                     <MoreHorizontalIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
+                    {appearance.writable ? (
+                      <MenuItem onClick={() => setColorEditing(item.workstreamId)}>Color…</MenuItem>
+                    ) : null}
                     <MenuItem
                       onClick={() => {
                         setName(item.name);

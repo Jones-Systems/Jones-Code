@@ -76,3 +76,4 @@ export {
   OrchestrationThreadDetailSnapshot,
 } from "./legacyOrchestrationCompatibility.ts";
 export * from "./hostStatus.ts";
+export * from "./jones/workstreamAppearance.ts";

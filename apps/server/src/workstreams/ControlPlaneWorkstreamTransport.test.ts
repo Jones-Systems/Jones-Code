@@ -2,6 +2,8 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import {
+  WORKSTREAM_APPEARANCE_CONTRACT,
+  WORKSTREAM_APPEARANCE_MANIFEST,
   WORKSTREAM_CONTRACT_FAMILY,
   WORKSTREAM_CONTRACT_MANIFEST_SHA256,
   WORKSTREAM_CONTRACT_VERSION,
@@ -23,6 +25,50 @@ const activation = {
     signingSecret: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
   },
 } as const;
+
+it.effect("negotiates independent appearance without interpreting errors as automatic colors", () =>
+  Effect.gen(function* () {
+    const old = makeControlPlaneWorkstreamTransport(
+      activation,
+      async () => new Response("Not found", { status: 404 }),
+    );
+    expect(
+      yield* old.transport.readAppearance!({ workstream_ids: ["workstream-fixture"] }),
+    ).toEqual({ supported: false });
+    const unavailable = makeControlPlaneWorkstreamTransport(
+      activation,
+      async () => new Response("Unavailable", { status: 503 }),
+    );
+    const failure = yield* unavailable.transport.readAppearance!({
+      workstream_ids: ["workstream-fixture"],
+    }).pipe(Effect.flip);
+    expect(failure.effect).toBe("no-effect");
+    const configured = makeControlPlaneWorkstreamTransport(activation, async (input, init) => {
+      expect(String(input)).toBe("https://control-plane.example/workstream-appearance/v1/read");
+      expect(new Headers(init?.headers).get("x-control-contract-version")).toBe(
+        WORKSTREAM_APPEARANCE_CONTRACT,
+      );
+      return new Response(
+        JSON.stringify({
+          owner_id: "owner-fixture",
+          server_generation: 7,
+          permissions: ["workstreams:read"],
+          items: [{ workstream_id: "workstream-fixture", border_color: "#123ABC", version: 1 }],
+        }),
+        {
+          headers: {
+            "x-control-contract-version": WORKSTREAM_APPEARANCE_CONTRACT,
+            "x-control-contract-manifest": WORKSTREAM_APPEARANCE_MANIFEST,
+          },
+        },
+      );
+    });
+    const result = yield* configured.transport.readAppearance!({
+      workstream_ids: ["workstream-fixture"],
+    });
+    expect(result.supported && result.page.items[0]?.border_color).toBe("#123ABC");
+  }),
+);
 
 it("matches the control-plane canonicalSignedRequest fixed 32-byte key vector", () => {
   expect(

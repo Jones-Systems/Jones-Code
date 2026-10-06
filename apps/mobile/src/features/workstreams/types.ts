@@ -1,11 +1,20 @@
 import type { WorkstreamDtoPage } from "@t3tools/client-runtime/state/workstreams";
 import type { EnvironmentHttpAuthHeaders } from "@t3tools/client-runtime/authorization";
-import type { WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";
+import type {
+  WorkstreamCommand,
+  WorkstreamReceipt,
+  WorkstreamAppearance,
+  WorkstreamAppearanceWrite,
+} from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type { WorkstreamClient } from "./gateway";
 import type { MobileWorkstreamGroup, MobileWorkstreamSnapshot } from "./projection";
 
 export interface MobileWorkstreams {
+  readonly saveAppearance: (
+    snapshot: MobileWorkstreamSnapshot,
+    input: WorkstreamAppearanceWrite,
+  ) => Promise<WorkstreamAppearance>;
   readonly groups: readonly MobileWorkstreamGroup[];
   readonly secondaryLabelsByKey: ReadonlyMap<string, readonly string[]>;
   readonly snapshots: readonly MobileWorkstreamSnapshot[];

@@ -377,6 +377,7 @@ export interface ThreadListV2WorkstreamListItem {
   readonly groupKey: string;
   readonly name: string;
   readonly color: string;
+  readonly borderColor?: string;
   readonly count: number;
   readonly expanded: boolean;
 }
@@ -423,6 +424,7 @@ export function threadListV2ListItemsAreEqual(
         previous.groupKey === item.groupKey &&
         previous.name === item.name &&
         previous.color === item.color &&
+        previous.borderColor === item.borderColor &&
         previous.count === item.count &&
         previous.expanded === item.expanded
       );

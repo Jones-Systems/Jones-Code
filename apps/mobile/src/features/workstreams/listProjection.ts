@@ -7,6 +7,7 @@ export interface MobileWorkstreamGroup {
   readonly key: string;
   readonly name: string;
   readonly color: string;
+  readonly borderColor?: string;
   readonly threadKeys: ReadonlySet<string>;
 }
 
@@ -73,6 +74,7 @@ export function projectMobileWorkstreamList(
       groupKey: group.key,
       name: group.name,
       color: group.color,
+      ...(group.borderColor ? { borderColor: group.borderColor } : {}),
       count: rows.length,
       expanded,
     });

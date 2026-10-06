@@ -715,7 +715,30 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
   }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
 
+import {
+  WorkstreamAppearanceRead,
+  WorkstreamAppearanceWrite,
+  WorkstreamAppearanceResult,
+  WorkstreamAppearance,
+} from "./jones/workstreamAppearance.ts";
+
 class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
+  .add(
+    HttpApiEndpoint.post("appearanceRead", "/api/workstreams/appearance/read", {
+      headers: OptionalBearerHeaders,
+      payload: WorkstreamAppearanceRead,
+      success: WorkstreamAppearanceResult,
+      error: EnvironmentWorkstreamSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("appearanceSave", "/api/workstreams/appearance/write", {
+      headers: OptionalBearerHeaders,
+      payload: WorkstreamAppearanceWrite,
+      success: WorkstreamAppearance,
+      error: EnvironmentWorkstreamSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
   .add(
     HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
       headers: OptionalBearerHeaders,
