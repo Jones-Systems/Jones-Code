@@ -96,7 +96,7 @@ import {
 import { assignProjectsToEnvironments } from "../components/pullRequest/pullRequestProjectAssignment.logic";
 import { pullRequestFilterProjects } from "../components/pullRequest/pullRequestProjectFilter.logic";
 import { environmentMachineIcon } from "../components/EnvironmentMachineIcon";
-import { PullRequestCiStatusPopover } from "../components/pullRequest/PullRequestCiStatusPopover";
+import { PullRequestCiStatusPopover } from "../jones/pullRequestCi/PullRequestCiStatusPopover";
 import { PullRequestDetailPanel } from "../components/pullRequest/PullRequestDetailPanel";
 import {
   PullRequestFiltersMenu,

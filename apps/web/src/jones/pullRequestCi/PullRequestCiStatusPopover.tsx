@@ -5,10 +5,16 @@ import { useEffect, useState } from "react";
 import { useLiveRefresh } from "~/hooks/useLiveRefresh";
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useEnvironmentQuery } from "~/state/query";
-import { Button } from "../ui/button";
-import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../ui/popover";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Button } from "~/components/ui/button";
+import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "~/components/ui/popover";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 
 type CiRunner = PullRequestCiStatusResult["runners"]["items"][number];
 type CiJob = PullRequestCiStatusResult["jobs"]["items"][number];

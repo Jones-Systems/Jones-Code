@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { PullRequestCiStatusResult } from "@t3tools/contracts";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
-import { readGitHubCiStatus } from "./GitHubPullRequestCli.ts";
+import { readGitHubCiStatus } from "../jones/pullRequestCi/GitHubCiStatus.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
