@@ -19,6 +19,7 @@ import {
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import {
   collectAssistantCitations,
   serializeAssistantCitation,
@@ -70,6 +71,7 @@ import {
   composerDraftHasUserContent,
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
+  deriveEffectiveComposerModelState,
   finalizePromotedDraftThreadByRef,
   markPromotedDraftThreadByRef,
   restoreFailedBackgroundDraftThread,
@@ -1932,6 +1934,53 @@ describe("composerDraftStore modelSelection", () => {
     );
   });
 
+  it("inherits reasoning effort after switching models while preserving speed options", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "old-model", {
+        reasoningEffort: "low",
+        fastMode: true,
+        serviceTier: "priority",
+      }),
+    );
+    store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "new-model"));
+
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(
+      modelSelection(CODEX_DRIVER, "new-model", { fastMode: true, serviceTier: "priority" }),
+    );
+  });
+
+  it("keeps same-model reasoning effort when a model-only selection is repeated", () => {
+    const store = useComposerDraftStore.getState();
+    const selection = modelSelection(CODEX_DRIVER, "current-model", { reasoningEffort: "low" });
+    store.setModelSelection(threadRef, selection);
+    store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "current-model"));
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(selection);
+  });
+
+  it("does not restore old thread effort into an optionless draft selection", () => {
+    const state = deriveEffectiveComposerModelState({
+      draft: {
+        activeProvider: CODEX_INSTANCE,
+        modelSelectionByProvider: {
+          [CODEX_INSTANCE]: modelSelection(CODEX_DRIVER, "new-model"),
+        },
+      },
+      providers: [],
+      selectedProvider: CODEX_DRIVER,
+      selectedInstanceId: CODEX_INSTANCE,
+      threadModelSelection: modelSelection(CODEX_DRIVER, "old-model", { reasoningEffort: "low" }),
+      projectModelSelection: modelSelection(CODEX_DRIVER, "new-model", { reasoningEffort: "high" }),
+      settings: DEFAULT_UNIFIED_SETTINGS,
+    });
+    expect(state.modelOptions).toBeNull();
+  });
+
   it("keeps default-only model selections on the draft", () => {
     const store = useComposerDraftStore.getState();
     store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "gpt-5.4"));
@@ -2512,6 +2561,21 @@ describe("composerDraftStore sticky composer settings", () => {
       modelSelection(CURSOR_DRIVER, "composer-2.5", {
         fastMode: false,
       }),
+    );
+  });
+
+  it("inherits sticky reasoning effort after switching models while preserving speed options", () => {
+    const store = useComposerDraftStore.getState();
+    store.setStickyModelSelection(
+      modelSelection(CODEX_DRIVER, "old-model", {
+        reasoningEffort: "low",
+        fastMode: false,
+        serviceTier: "priority",
+      }),
+    );
+    store.setStickyModelSelection(modelSelection(CODEX_DRIVER, "new-model"));
+    expect(useComposerDraftStore.getState().stickyModelSelectionByProvider[CODEX_INSTANCE]).toEqual(
+      modelSelection(CODEX_DRIVER, "new-model", { fastMode: false, serviceTier: "priority" }),
     );
   });
 

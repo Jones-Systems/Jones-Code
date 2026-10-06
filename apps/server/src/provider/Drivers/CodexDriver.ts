@@ -200,7 +200,12 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
           enabled,
           config,
         },
-        { onUsageLimits: (update) => snapshot.applyUsageLimits(update) },
+        {
+          onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+          getModelCatalog: Effect.suspend(() =>
+            snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+          ),
+        },
       ).pipe(
         Effect.mapError(
           (cause) =>

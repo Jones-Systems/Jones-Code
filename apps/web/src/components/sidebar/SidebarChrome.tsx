@@ -1,4 +1,10 @@
-import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  BookOpenIcon,
+  ChartNoAxesColumnIcon,
+  MicIcon,
+  SettingsIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -6,6 +12,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { usePullRequestsSupported } from "../../state/environments";
+import { SidebarActiveThreadsPill } from "./SidebarActiveThreadsPill";
 import { T3Wordmark } from "../T3Wordmark";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -32,8 +39,14 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
+  activeThreadCount,
+  activeOnly,
+  onToggleActiveOnly,
 }: {
   isElectron: boolean;
+  activeThreadCount?: number;
+  activeOnly?: boolean;
+  onToggleActiveOnly?: () => void;
 }) {
   const stageLabel = useEnvironmentStageLabel();
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
@@ -60,10 +73,17 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
         variant={backdropVariant ? "media-navigation" : "ghost"}
         className="relative top-auto z-10 translate-y-0 md:hidden"
       />
-      {/* One visible line: the pill wraps onto the clipped second line once it no longer fits.
+      {/* One visible line: the pills wrap onto the clipped second line once it no longer fits.
           The padding keeps the brand's focus ring inside the clip. */}
       <div className="relative z-10 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-2 overflow-hidden py-0.5">
         <SidebarBrand onBackdrop={backdropVariant !== null} />
+        {onToggleActiveOnly ? (
+          <SidebarActiveThreadsPill
+            count={activeThreadCount ?? 0}
+            activeOnly={activeOnly ?? false}
+            onToggle={onToggleActiveOnly}
+          />
+        ) : null}
         {pillLabel ? (
           <div className="ml-1 flex h-7 items-center">
             <Badge data-environment-identification="pill" size="sm" variant="secondary">
@@ -142,10 +162,12 @@ function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
 function SidebarUtilityItem({
   icon,
   label,
+  tooltip = label,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
+  tooltip?: string;
   onClick: () => void;
 }) {
   return (
@@ -158,7 +180,7 @@ function SidebarUtilityItem({
             </SidebarMenuButton>
           }
         />
-        <TooltipPopup side="top">{label}</TooltipPopup>
+        <TooltipPopup side="top">{tooltip}</TooltipPopup>
       </Tooltip>
     </SidebarMenuItem>
   );
@@ -183,6 +205,14 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       to: "/pull-requests",
       search: readPullRequestListPreferences(),
     });
+  }, [closeMobileSidebar, navigate]);
+  const handleConversationsClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/conversations" });
+  }, [closeMobileSidebar, navigate]);
+  const handleVoiceReviewClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/voice-review" });
   }, [closeMobileSidebar, navigate]);
   const handleSettingsClick = useCallback(() => {
     closeMobileSidebar();
@@ -225,9 +255,20 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             />
           ) : null}
           <SidebarUtilityItem
+            icon={<BookOpenIcon />}
+            label="Conversation Library"
+            onClick={handleConversationsClick}
+          />
+          <SidebarUtilityItem
             icon={<ChartNoAxesColumnIcon />}
             label="Usage"
             onClick={handleUsageClick}
+          />
+          <SidebarUtilityItem
+            icon={<MicIcon />}
+            label="Voice review"
+            tooltip="Review, edit, and pause voice prompts"
+            onClick={handleVoiceReviewClick}
           />
         </>
       )}

@@ -21,6 +21,7 @@ export type T3McpToolSummaryAction =
   | "thread-send"
   | "thread-wait"
   | "thread-interrupt"
+  | "thread-settle"
   | "thread-configuration"
   | "thread-configure"
   | "thread-fork"
@@ -137,6 +138,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_thread_interrupt: tool(
     ["Interrupt", "Interrupting", "Requested an interrupt of", "a T3 thread"],
     "thread-interrupt",
+  ),
+  t3_thread_settle: tool(
+    ["Request settlement of", "Requesting settlement of", "Requested settlement of", "this thread"],
+    "thread-settle",
   ),
   t3_worktree_handoff: tool(
     ["Hand off", "Handing off", "Handed off", "thread to a git worktree"],

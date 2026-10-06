@@ -8,7 +8,7 @@ import {
   resolveWorktreeSetupProgress,
 } from "./ChatView.logic";
 import * as DateTime from "effect/DateTime";
-import { restorePlanFollowUpComposer } from "./ChatView.logic";
+import { clearSubmittedComposer, restoreFailedComposerSend } from "./chat/composerSendRecovery";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { prepareQueuedEditAttachments, recoverQueuedMessageEdit } from "./chat/queuedMessageEdit";
 import {
@@ -314,6 +314,7 @@ import { getProviderModelCapabilities } from "../providerModels";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  isProviderInstancePickerReady,
   NO_PROVIDER_MODEL_SELECTION,
   shouldShowInstanceBadge,
   sortProviderInstanceEntries,
@@ -432,6 +433,7 @@ import {
   resolveComposerTimelineInset,
   resolveScrollToEndClearance,
 } from "./composerFooterLayout";
+import { matchesProviderModelLock } from "./chat/ProviderInstanceShortcuts";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
@@ -522,11 +524,13 @@ import {
   reconcileMountedTerminalThreadIds,
   resolveComposerInteractionMode,
   resolveComposerProviderSelection,
+  resolveComposerPickerModelSelection,
   getAntigravitySendBlockReason,
   observeProactivePanelUserChoice,
   resolveProactiveTurnDiffAction,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
+  resolveFirstSendWorktreePreparation,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
   startNewThreadForProject,
@@ -1781,6 +1785,10 @@ export default function ChatView(props: ChatViewProps) {
   const [restingComposerControlsHost, setRestingComposerControlsHost] =
     useState<HTMLDivElement | null>(null);
   const [restingComposerControlsVisible, setRestingComposerControlsVisible] = useState(false);
+  const [shortcutControlsHost, setShortcutControlsHost] = useState<HTMLDivElement | null>(null);
+  const [shortcutWorkspaceElement, setShortcutWorkspaceElement] = useState<HTMLDivElement | null>(
+    null,
+  );
   const citeAssistantText = useCallback(
     (citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => {
       const inserted = composerRef.current?.citeAssistantText(citation, sourceAnchor) ?? false;
@@ -1904,6 +1912,11 @@ export default function ChatView(props: ChatViewProps) {
     [],
   );
   const [composerOverlayElement, setComposerOverlayElement] = useState<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    setShortcutWorkspaceElement(
+      composerOverlayElement?.closest<HTMLDivElement>("[data-chat-workspace-drop-target]") ?? null,
+    );
+  }, [composerOverlayElement]);
   // Space the timeline keeps clear above its end. Tracks the overlay while the
   // composer is expanded and holds that height while it rests, so the resting
   // composer never exposes rows that its expansion will cover.
@@ -1931,6 +1944,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const isResuming = resumingThreadKeys.has(routeThreadKey);
   const composerSendGenerationRef = useRef(0);
+  const composerRecoveryGenerationRef = useRef(new Map<string, number>());
   const multipleModelSelections = fanoutState.selections;
   const setMultipleModelSelections = useCallback(
     (selections: SetStateAction<ReadonlyArray<ModelSelection> | null>) => {
@@ -3164,7 +3178,7 @@ export default function ChatView(props: ChatViewProps) {
       ),
     [providerStatuses, settings],
   );
-  const { selectedProviderEntry, requestedDriverKind } = useMemo(
+  const { selectedProviderEntry, requestedDriverKind, lockedContinuationGroupKey } = useMemo(
     () =>
       resolveComposerProviderSelection({
         entries: providerInstanceEntries,
@@ -4515,6 +4529,10 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const queuedRunsControlRef = useRef<QueuedRunsControlHandle>(null);
+  const onSteerNextQueuedMessage = useCallback(() => {
+    if (sendInFlightRef.current) return false;
+    return queuedRunsControlRef.current?.steerNext(false) ?? false;
+  }, [sendInFlightRef]);
   const queuedEditSaveInFlightRef = useRef(false);
   const [isSavingQueuedEdit, setIsSavingQueuedEdit] = useState(false);
   const queuedEditImageResources = useMemo(
@@ -8416,15 +8434,12 @@ export default function ChatView(props: ChatViewProps) {
     }
     if (
       multipleModelSelections !== null &&
-      (!isLocalDraftThread ||
-        !isGitRepo ||
-        !activeThreadBranch ||
-        multipleModelSelections.length === 0)
+      (!isLocalDraftThread || !isGitRepo || multipleModelSelections.length === 0)
     ) {
       toastManager.add(
         stackedThreadToast({
           type: "warning",
-          title: "Choose models and a base branch",
+          title: "Choose models in a Git project",
           description:
             "Multiple models need a new thread in a Git project. Each gets its own worktree.",
         }),
@@ -8711,9 +8726,19 @@ export default function ChatView(props: ChatViewProps) {
       const followUpReviewComments = [...composerReviewComments];
       const followUpPreviewAnnotations = [...composerPreviewAnnotations];
       const followUpThreadContexts = [...composerThreadContexts];
-      promptRef.current = "";
-      clearComposerDraftContent(composerDraftTarget);
-      composerRef.current?.resetCursorState();
+      const followUpGeneration = ++composerSendGenerationRef.current;
+      composerRecoveryGenerationRef.current.set(routeThreadKey, followUpGeneration);
+      const isCurrentFollowUp = () =>
+        composerRecoveryGenerationRef.current.get(routeThreadKey) === followUpGeneration;
+      const clearedFollowUp = clearSubmittedComposer({
+        routeThreadKey,
+        currentRouteThreadKeyRef,
+        composerDraftTarget,
+        promptRef,
+        expectedDraft: useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
+        isCurrentSend: isCurrentFollowUp,
+        resetCursor: () => composerRef.current?.resetCursorState(),
+      });
       const followUpSent = await onSubmitPlanFollowUp({
         text: followUp.text,
         context: buildMessageContext({
@@ -8724,29 +8749,31 @@ export default function ChatView(props: ChatViewProps) {
         }),
         interactionMode: followUp.interactionMode,
       });
-      if (!followUpSent) {
-        promptRef.current = followUpPromptSnapshot;
-        composerTerminalContextsRef.current = [...followUpTerminalContexts];
-        restorePlanFollowUpComposer({
+      if (!followUpSent && clearedFollowUp) {
+        restoreFailedComposerSend({
+          routeThreadKey,
+          currentRouteThreadKeyRef,
+          composerDraftTarget,
+          promptRef,
+          backgroundDraftOpened: false,
+          composerImagesRef,
+          composerFilesRef,
+          composerTerminalContextsRef,
+          expectedDraft: clearedFollowUp.draft,
+          isCurrentSend: isCurrentFollowUp,
           snapshot: {
             prompt: followUpPromptSnapshot,
+            images: [],
+            files: [],
             terminalContexts: followUpTerminalContexts,
             reviewComments: followUpReviewComments,
             previewAnnotations: followUpPreviewAnnotations,
             threadContexts: followUpThreadContexts,
           },
-          writePrompt: (prompt) => setComposerDraftPrompt(composerDraftTarget, prompt),
-          writeTerminalContexts: (contexts) =>
-            setComposerDraftTerminalContexts(composerDraftTarget, [...contexts]),
-          writeReviewComments: (comments) =>
-            setComposerDraftReviewComments(composerDraftTarget, [...comments]),
-          writePreviewAnnotations: (annotations) =>
-            setComposerDraftPreviewAnnotations(composerDraftTarget, [...annotations]),
-          writeThreadContexts: (records) =>
-            setComposerDraftThreadContexts(composerDraftTarget, [...records]),
           resetCursor: (options) => composerRef.current?.resetCursorState(options),
         });
       } else if (
+        followUpSent &&
         submissionIntent === "background" &&
         currentRouteThreadKeyRef.current === routeThreadKey
       ) {
@@ -8800,20 +8827,19 @@ export default function ChatView(props: ChatViewProps) {
     }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeMessageCount === 0;
-    const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
-        ? activeThreadBranch
-        : null;
+    const worktreePreparation = resolveFirstSendWorktreePreparation({
+      isFirstMessage,
+      sendEnvMode,
+      worktreePath: activeThread.worktreePath,
+      projectCwd: activeProject.workspaceRoot,
+      baseBranch: activeThreadBranch,
+      startFromOrigin,
+    });
+    const shouldCreateWorktree = worktreePreparation !== undefined;
 
-    // In worktree mode, require an explicit base branch so we don't silently
-    // fall back to local execution when branch selection is missing.
-    const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
-    if (shouldCreateWorktree && !activeThreadBranch) {
-      setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
-      return;
-    }
-
+    const submittedComposerDraft = useComposerDraftStore
+      .getState()
+      .getComposerDraft(composerDraftTarget);
     const composerImagesSnapshot = [...composerImages];
     const composerFilesSnapshot = [...composerFiles];
     const composerAttachmentsSnapshot = [...composerImagesSnapshot, ...composerFilesSnapshot];
@@ -8935,6 +8961,19 @@ export default function ChatView(props: ChatViewProps) {
 
     sendInFlightRef.current = true;
     const sendGeneration = ++composerSendGenerationRef.current;
+    composerRecoveryGenerationRef.current.set(routeThreadKey, sendGeneration);
+    const isCurrentComposerSend = () =>
+      composerRecoveryGenerationRef.current.get(routeThreadKey) === sendGeneration;
+    const clearSendingComposer = () =>
+      clearSubmittedComposer({
+        routeThreadKey,
+        currentRouteThreadKeyRef,
+        composerDraftTarget,
+        promptRef,
+        expectedDraft: submittedComposerDraft,
+        isCurrentSend: isCurrentComposerSend,
+        resetCursor: () => composerRef.current?.resetCursorState(),
+      });
     const attachmentCapabilitiesBeforeUpload = readLiveAttachmentCapabilities();
     if (attachmentCapabilitiesBeforeUpload.fileBlockReason !== null) {
       sendInFlightRef.current = false;
@@ -8993,13 +9032,13 @@ export default function ChatView(props: ChatViewProps) {
       await dockStarted;
     }
     beginLocalDispatch({
-      preparingWorktree: multipleModelSelections !== null || Boolean(baseBranchForWorktree),
+      preparingWorktree: multipleModelSelections !== null || shouldCreateWorktree,
       // Only a draft has a background submission to hide behind its hero.
       submissionIntent:
         submissionIntent === "background" && !isLocalDraftThread ? "foreground" : submissionIntent,
     });
     setWorktreeSetupRef(
-      multipleModelSelections === null && baseBranchForWorktree
+      multipleModelSelections === null && shouldCreateWorktree
         ? {
             environmentId: activeThread.environmentId,
             threadId: threadIdForSend,
@@ -9053,10 +9092,7 @@ export default function ChatView(props: ChatViewProps) {
             composerAttachmentsSnapshot[0]?.name ||
             "New thread",
         );
-        promptRef.current = "";
-        clearComposerDraftContent(composerDraftTarget);
-        composerRef.current?.resetCursorState();
-        clearedDraft = true;
+        clearedDraft = clearSendingComposer() !== null;
         const clearedDraftSnapshot = useComposerDraftStore
           .getState()
           .getComposerDraft(composerDraftTarget);
@@ -9092,6 +9128,9 @@ export default function ChatView(props: ChatViewProps) {
                 environmentId,
                 input: {
                   threadId: targetThreadId,
+                  serverResolvesWorktreeBase:
+                    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)
+                      ?.environment.capabilities.worktreeDefaultBase === true,
                   message: {
                     messageId: newMessageId(),
                     role: "user",
@@ -9122,7 +9161,7 @@ export default function ChatView(props: ChatViewProps) {
                     },
                     prepareWorktree: {
                       projectCwd: activeProject.workspaceRoot,
-                      baseBranch: activeThreadBranch!,
+                      ...(activeThreadBranch === null ? {} : { baseBranch: activeThreadBranch }),
                       requireWorktree: true,
                       ...(startFromOrigin ? { startFromOrigin: true } : {}),
                     },
@@ -9363,9 +9402,7 @@ export default function ChatView(props: ChatViewProps) {
         }),
       );
     }
-    promptRef.current = "";
-    clearComposerDraftContent(composerDraftTarget);
-    composerRef.current?.resetCursorState();
+    const clearedComposer = clearSendingComposer();
 
     let firstComposerImageName: string | null = null;
     if (composerImagesSnapshot.length > 0) {
@@ -9446,7 +9483,7 @@ export default function ChatView(props: ChatViewProps) {
     let turnStartSucceeded = false;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
       const bootstrap =
-        isLocalDraftThread || baseBranchForWorktree
+        isLocalDraftThread || shouldCreateWorktree
           ? {
               ...(isLocalDraftThread
                 ? {
@@ -9462,12 +9499,10 @@ export default function ChatView(props: ChatViewProps) {
                     },
                   }
                 : {}),
-              ...(baseBranchForWorktree
+              ...(worktreePreparation
                 ? {
                     prepareWorktree: {
-                      projectCwd: activeProject.workspaceRoot,
-                      baseBranch: baseBranchForWorktree,
-                      ...(startFromOrigin ? { startFromOrigin: true } : {}),
+                      ...worktreePreparation,
                     },
                     runSetupScript: true,
                   }
@@ -9483,6 +9518,9 @@ export default function ChatView(props: ChatViewProps) {
         environmentId,
         input: {
           threadId: threadIdForSend,
+          serverResolvesWorktreeBase:
+            appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
+              .capabilities.worktreeDefaultBase === true,
           message: {
             messageId: messageIdForSend,
             role: "user",
@@ -9606,46 +9644,38 @@ export default function ChatView(props: ChatViewProps) {
         );
         clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
       }
-      if (
-        backgroundDraftOpened
-          ? !composerDraftHasUserContent(
-              useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
-            )
-          : promptRef.current.length === 0 &&
-            composerImagesRef.current.length === 0 &&
-            composerFilesRef.current.length === 0 &&
-            composerTerminalContextsRef.current.length === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)
-              ?.previewAnnotations.length ?? 0) === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
-              .length ?? 0) === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.threadContexts
-              .length ?? 0) === 0
-      ) {
-        setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
-          for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
-          }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
-          return next.length === existing.length ? existing : next;
-        });
-        promptRef.current = messageTextForSend;
-        const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
-        composerImagesRef.current = retryComposerImages;
-        composerFilesRef.current = composerFilesSnapshot;
-        composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, messageTextForSend);
-        addComposerDraftImages(composerDraftTarget, retryComposerImages);
-        addComposerDraftFiles(composerDraftTarget, composerFilesSnapshot);
-        setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
-        setComposerDraftPreviewAnnotations(composerDraftTarget, composerPreviewAnnotationsSnapshot);
-        setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
-        setComposerDraftThreadContexts(composerDraftTarget, composerThreadContextsSnapshot);
-        composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(messageTextForSend, messageTextForSend.length),
-          prompt: messageTextForSend,
-          detectTrigger: true,
+      if (clearedComposer) {
+        restoreFailedComposerSend({
+          routeThreadKey,
+          currentRouteThreadKeyRef,
+          backgroundDraftOpened,
+          composerDraftTarget,
+          promptRef,
+          composerImagesRef,
+          composerFilesRef,
+          composerTerminalContextsRef,
+          expectedDraft: clearedComposer.draft,
+          isCurrentSend: isCurrentComposerSend,
+          snapshot: {
+            prompt: messageTextForSend,
+            images: composerImagesSnapshot,
+            files: composerFilesSnapshot,
+            terminalContexts: composerTerminalContextsSnapshot,
+            previewAnnotations: composerPreviewAnnotationsSnapshot,
+            reviewComments: composerReviewCommentsSnapshot,
+            threadContexts: composerThreadContextsSnapshot,
+          },
+          onRestore: () => {
+            setOptimisticUserMessages((existing) => {
+              const removed = existing.filter((message) => message.id === messageIdForSend);
+              for (const message of removed) {
+                revokeUserMessagePreviewUrls(message);
+              }
+              const next = existing.filter((message) => message.id !== messageIdForSend);
+              return next.length === existing.length ? existing : next;
+            });
+          },
+          resetCursor: (options) => composerRef.current?.resetCursorState(options),
         });
       }
       if (!isAtomCommandInterrupted(failure)) {
@@ -10255,12 +10285,25 @@ export default function ChatView(props: ChatViewProps) {
 
   const onProviderModelSelect = useCallback(
     (instanceId: ProviderInstanceId, model: string, options?: { focusComposer?: boolean }) => {
-      if (!activeThread) return;
+      if (
+        !activeThread ||
+        isEnvironmentChanging ||
+        activeEnvironmentUnavailable ||
+        isRevertingCheckpoint
+      )
+        return;
       // Look up the configured instance so model normalization and custom
       // model lookup stay scoped to that exact instance. Unknown instance ids
       // are rejected by returning early; the server remains authoritative too.
-      const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-      const resolvedDriverKind = entry?.driver ?? null;
+      const configuredEntry = providerInstanceEntries.find(
+        (entry) => entry.instanceId === instanceId,
+      );
+      if (!configuredEntry || !isProviderInstancePickerReady(configuredEntry)) {
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+        return;
+      }
+      const entry = configuredEntry.snapshot;
+      const resolvedDriverKind = entry.driver;
       if (
         !supportsProviderSwitchingViaHandoff &&
         lockedProvider !== null &&
@@ -10272,20 +10315,15 @@ export default function ChatView(props: ChatViewProps) {
       }
       if (
         !supportsProviderSwitchingViaHandoff &&
-        lockedProvider !== null &&
-        activeRuntime?.providerInstanceId
+        !matchesProviderModelLock(
+          configuredEntry,
+          lockedProvider,
+          lockedContinuationGroupKey,
+          activeRuntime?.providerInstanceId ?? activeThread.modelSelection.instanceId,
+        )
       ) {
-        const currentEntry = providerStatuses.find(
-          (snapshot) => snapshot.instanceId === activeRuntime.providerInstanceId,
-        );
-        if (
-          currentEntry?.continuation?.groupKey &&
-          entry?.continuation?.groupKey &&
-          currentEntry.continuation.groupKey !== entry.continuation.groupKey
-        ) {
-          if (options?.focusComposer !== false) scheduleComposerFocus();
-          return;
-        }
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+        return;
       }
       const resolvedModel = resolveAppModelSelectionForInstance(
         instanceId,
@@ -10297,16 +10335,19 @@ export default function ChatView(props: ChatViewProps) {
         if (options?.focusComposer !== false) scheduleComposerFocus();
         return;
       }
-      // Restore this model's own remembered options; without any, start it
-      // from its default rather than carrying the previous model's over.
-      const rememberedOptions =
-        useComposerDraftStore.getState().stickyOptionsByModelByProvider[instanceId]?.[
-          resolvedModel
-        ];
-      const nextModelSelection: ModelSelection =
-        rememberedOptions !== undefined && rememberedOptions.length > 0
-          ? { instanceId, model: resolvedModel, options: [...rememberedOptions] }
-          : { instanceId, model: resolvedModel };
+      // Remember other traits, but a model switch inherits current effort instead
+      // of reviving a historical choice from the model's sticky snapshot.
+      const store = useComposerDraftStore.getState();
+      const draft = store.getComposerDraft(composerDraftTarget);
+      const currentInstance = draft?.activeProvider ?? activeThread.modelSelection.instanceId;
+      const currentSelection =
+        draft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
+      const nextModelSelection = resolveComposerPickerModelSelection({
+        instanceId,
+        model: resolvedModel,
+        currentSelection,
+        rememberedOptions: store.stickyOptionsByModelByProvider[instanceId]?.[resolvedModel],
+      });
       const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
         hasStartedSession: activeRuntime !== null,
@@ -10339,6 +10380,12 @@ export default function ChatView(props: ChatViewProps) {
       activeRuntime,
       lockedProvider,
       supportsProviderSwitchingViaHandoff,
+      lockedContinuationGroupKey,
+      providerInstanceEntries,
+      composerDraftTarget,
+      isEnvironmentChanging,
+      activeEnvironmentUnavailable,
+      isRevertingCheckpoint,
       scheduleComposerFocus,
       setComposerDraftModelSelection,
       setStickyComposerModelSelection,
@@ -11060,6 +11107,7 @@ export default function ChatView(props: ChatViewProps) {
               ref={setComposerOverlayElement}
               inert={isRevertingCheckpoint}
               data-chat-composer-overlay="true"
+              data-chat-composer-layout={isDraftHeroState ? "hero" : "docked"}
               className={
                 isDraftHeroState
                   ? "pointer-events-none absolute inset-0 z-20 flex items-center"
@@ -11256,6 +11304,8 @@ export default function ChatView(props: ChatViewProps) {
                                 supportsPullRequests ? activeProjectRepository : null
                               }
                               restingControlsHost={restingComposerControlsHost}
+                              shortcutControlsHost={shortcutControlsHost}
+                              shortcutWorkspaceElement={shortcutWorkspaceElement}
                               restingControlsHaveLeadingContext={
                                 mountComposerContextStrip &&
                                 (isGitRepo || showComposerEnvironmentIndicator)
@@ -11274,6 +11324,7 @@ export default function ChatView(props: ChatViewProps) {
                               onPageScrollKeyUp={onComposerPageScrollKeyUp}
                               onPageScrollRelease={onComposerPageScrollRelease}
                               onCompactContext={onCompactContext}
+                              onSteerNextQueuedMessage={onSteerNextQueuedMessage}
                               onSend={onSend}
                               onResume={onResume}
                               onInterrupt={onInterrupt}
@@ -11349,7 +11400,7 @@ export default function ChatView(props: ChatViewProps) {
                                         setPendingServerThreadBranch,
                                     }
                                   : {})}
-                                envLocked={envLocked}
+                                envLocked={envLocked || isSendBusy}
                                 onComposerFocusRequest={scheduleComposerFocus}
                                 {...(canCheckoutPullRequestIntoThread
                                   ? { onCheckoutPullRequestRequest: openPullRequestDialog }
@@ -11373,11 +11424,28 @@ export default function ChatView(props: ChatViewProps) {
                         </div>
                       </div>
                     </ComposerSurface.Shell>
-                    <div
-                      aria-hidden
-                      className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"
-                    />
+                    {isDraftHeroState ? (
+                      <div
+                        aria-hidden
+                        className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"
+                      />
+                    ) : null}
                   </div>
+                </div>
+              </div>
+              <div
+                className={cn(
+                  "w-full ps-(--workspace-gutter-start) pe-(--workspace-gutter-end)",
+                  isDraftHeroState && "absolute inset-x-0 bottom-0",
+                )}
+              >
+                <div
+                  ref={setShortcutControlsHost}
+                  data-chat-composer-shortcut-host="true"
+                  className="relative w-full"
+                />
+                <div aria-hidden className="pb-safe">
+                  <div className="h-4 sm:h-5" />
                 </div>
               </div>
             </div>

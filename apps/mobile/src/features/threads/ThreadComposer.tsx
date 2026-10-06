@@ -64,6 +64,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import type { ComposerDocumentAttachment } from "../../lib/composerContext";
 import { useProject, useThreadShells } from "../../state/entities";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
@@ -257,8 +258,8 @@ const FOLLOW_UP_ACTION_LABEL = {
 } as const;
 
 const FOLLOW_UP_ACTION_SUBTITLE = {
-  queue: "Run after the current turn",
-  steer: "Interrupt what the agent is doing",
+  queue: "Send after tools finish, or next turn",
+  steer: "Send into the current turn now",
   restart: "Start the turn over with this message",
 } as const;
 
@@ -647,9 +648,31 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const lockedProviderInstanceId = props.canSwitchProvider
     ? undefined
     : currentModelSelection.instanceId;
+  const configuredDefaultModelSelection = useMemo(
+    () =>
+      props.serverConfig?.settings
+        ? resolveProjectSettings(
+            props.serverConfig.settings,
+            props.selectedThread.projectId,
+            project,
+          ).settings.defaultModelSelection
+        : null,
+    [props.serverConfig?.settings, props.selectedThread.projectId, project],
+  );
   const modelOptions = useMemo(
-    () => buildModelOptions(props.serverConfig, currentModelSelection, lockedProviderInstanceId),
-    [props.serverConfig, currentModelSelection, lockedProviderInstanceId],
+    () =>
+      buildModelOptions(
+        props.serverConfig,
+        currentModelSelection,
+        lockedProviderInstanceId,
+        configuredDefaultModelSelection,
+      ),
+    [
+      props.serverConfig,
+      currentModelSelection,
+      lockedProviderInstanceId,
+      configuredDefaultModelSelection,
+    ],
   );
   const threadProviderGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);
   const currentModelOption =

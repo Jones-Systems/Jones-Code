@@ -88,6 +88,16 @@ function initRepoWithCommit(
   });
 }
 
+const initLinkedWorktree = Effect.fn("initLinkedWorktree")(function* (root: string) {
+  const repository = NodePath.join(root, "repository");
+  const worktree = NodePath.join(root, "worktree");
+  const fileSystem = yield* FileSystem.FileSystem;
+  yield* fileSystem.makeDirectory(repository, { recursive: true });
+  yield* initRepoWithCommit(repository);
+  yield* git(repository, ["worktree", "add", "-b", "checkpoint-test", worktree]);
+  return worktree;
+});
+
 function buildLargeText(lineCount = 5_000): string {
   return Array.from({ length: lineCount }, (_, index) => `line ${String(index).padStart(5, "0")}`)
     .join("\n")
@@ -127,11 +137,51 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
       expect(yield* checkpointStore.isGitRepository(nested)).toBe(true);
     }),
   );
+  describe("captureCheckpoint", () => {
+    it.effect.each(["clean", "dirty"] as const)(
+      "refuses %s primary checkouts without writing checkpoint refs",
+      (state) =>
+        Effect.gen(function* () {
+          const checkpointStore = yield* CheckpointStore.CheckpointStore;
+          const cwd = yield* makeTmpDir(`checkpoint-store-primary-${state}-`);
+          yield* initRepoWithCommit(cwd);
+          if (state === "dirty") {
+            yield* writeTextFile(NodePath.join(cwd, "README.md"), "dirty primary checkout\n");
+          }
+          const checkpointRef = checkpointRefForThreadTurn(
+            ThreadId.make(`thread-primary-checkout-${state}`),
+            0,
+          );
+          const fileSystem = yield* FileSystem.FileSystem;
+          yield* git(cwd, ["checkout", "-b", "primary-safety-test"]);
+          const originalIndex = yield* fileSystem.readFile(NodePath.join(cwd, ".git", "index"));
+          const originalObjects = yield* git(cwd, ["count-objects", "-v"]);
+          const originalMetadata = yield* fileSystem.readDirectory(NodePath.join(cwd, ".git"));
+          const result = yield* checkpointStore
+            .captureCheckpoint({ cwd, checkpointRef })
+            .pipe(Effect.result);
+
+          expect(result).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "VcsPrimaryCheckoutCheckpointError" },
+          });
+          expect(yield* checkpointStore.hasCheckpointRef({ cwd, checkpointRef })).toBe(false);
+          expect(yield* fileSystem.readFile(NodePath.join(cwd, ".git", "index"))).toEqual(
+            originalIndex,
+          );
+          expect(yield* git(cwd, ["count-objects", "-v"])).toBe(originalObjects);
+          expect(yield* fileSystem.readDirectory(NodePath.join(cwd, ".git"))).toEqual(
+            originalMetadata,
+          );
+        }),
+    );
+  });
+
   describe("diffCheckpoints", () => {
     it.effect("returns full oversized checkpoint diffs without truncation", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
         const threadId = ThreadId.make("thread-checkpoint-store");
         const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
@@ -162,8 +212,8 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
 
     it.effect("keeps a/ and b/ patch prefixes when the repository disables them", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
         yield* git(tmp, ["config", "diff.noprefix", "true"]);
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
         const threadId = ThreadId.make("thread-checkpoint-store-noprefix");
@@ -193,8 +243,8 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
 
     it.effect("can hide indentation churn when changes wrap existing lines", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
         const threadId = ThreadId.make("thread-checkpoint-store-whitespace");
         const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
@@ -287,8 +337,8 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
   describe("checkpoint file summaries", () => {
     it.effect("counts changes whose full patch exceeds the output limit", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
         const threadId = ThreadId.make("large-checkpoint-summary");
         const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
@@ -317,8 +367,8 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
 
     it.effect("preserves file paths and turn ranges without changing the user index", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
         yield* git(tmp, ["config", "diff.renames", "copies"]);
         const fileSystem = yield* FileSystem.FileSystem;
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
@@ -358,7 +408,13 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
           yield* writeTextFile(NodePath.join(tmp, path), contents);
         }
         yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: firstTurn });
-        const userIndex = yield* fileSystem.readFile(NodePath.join(tmp, ".git/index"));
+        const indexPath = yield* git(tmp, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-path",
+          "index",
+        ]);
+        const userIndex = yield* fileSystem.readFile(indexPath);
         const input = {
           cwd: tmp,
           fromCheckpointRef: baseline,
@@ -408,14 +464,14 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         expect(
           yield* checkpointStore.diffCheckpoints({ ...input, toCheckpointRef: baseline }),
         ).toBe("");
-        expect(yield* fileSystem.readFile(NodePath.join(tmp, ".git/index"))).toEqual(userIndex);
+        expect(yield* fileSystem.readFile(indexPath)).toEqual(userIndex);
       }),
     );
 
     it.effect("uses HEAD for a missing baseline only when requested", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
         const threadId = ThreadId.make("checkpoint-summary-fallback");
         const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);

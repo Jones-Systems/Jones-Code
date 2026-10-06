@@ -1,3 +1,4 @@
+import { ReasoningEffortShortcuts } from "./ReasoningEffortShortcuts";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "./runtimeModeConfig";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
@@ -198,6 +199,8 @@ import {
   shouldUseRestingComposerLayout,
 } from "../composerFooterLayout";
 import { measureRestingComposerControls } from "./restingComposerControlsMeasurement";
+import { ProviderInstanceShortcuts } from "./ProviderInstanceShortcuts";
+import { useComposerShortcutRails } from "./composerShortcutRails";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import {
   ComposerContextActionsContext,
@@ -284,6 +287,7 @@ import {
 } from "./composerSlashCommandSearch";
 import {
   getComposerPromptInjectionState,
+  getComposerEffectiveTraitsOptions,
   getComposerProviderState,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
@@ -319,6 +323,7 @@ import {
   getComposerPromptLengthValidationMessage,
   getComposerSubmissionValidationMessage,
   submitComposerDraft,
+  handleComposerEnter,
 } from "./composerSubmission";
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
 import { PierreEntryIcon } from "./PierreEntryIcon";
@@ -1598,6 +1603,8 @@ export interface ChatComposerProps {
   pullRequestProjectId: ProjectId | null;
   pullRequestRepository: string | null;
   restingControlsHost: HTMLDivElement | null;
+  shortcutControlsHost: HTMLDivElement | null;
+  shortcutWorkspaceElement: HTMLDivElement | null;
   restingControlsHaveLeadingContext: boolean;
   onRestingControlsVisibilityChange: (visible: boolean) => void;
   getTimelineScrollableNode: () => HTMLElement | null;
@@ -1634,6 +1641,7 @@ export interface ChatComposerProps {
 
   // Callbacks
   onCompactContext: () => void;
+  onSteerNextQueuedMessage: () => boolean;
   onSend: (
     e?: { preventDefault: () => void },
     dispatchMode?: ComposerDispatchMode,
@@ -1742,6 +1750,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     pullRequestProjectId,
     pullRequestRepository,
     restingControlsHost,
+    shortcutControlsHost,
+    shortcutWorkspaceElement,
     restingControlsHaveLeadingContext,
     onRestingControlsVisibilityChange,
     getTimelineScrollableNode,
@@ -1758,6 +1768,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPageScrollKeyUp,
     onPageScrollRelease,
     onCompactContext,
+    onSteerNextQueuedMessage,
     onSend,
     onResume,
     onInterrupt,
@@ -2234,6 +2245,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [selectedProviderEntry],
   );
 
+  const configuredDefaultDriverKind = providerInstanceEntries.find(
+    (entry) => entry.instanceId === activeProjectDefaultModelSelection?.instanceId,
+  )?.driverKind;
+
   const composerPromptInjectionState = useMemo(
     () => getComposerPromptInjectionState(prompt),
     [prompt],
@@ -2242,6 +2257,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () =>
       getComposerProviderState({
         provider: selectedProvider,
+        instanceId: selectedInstanceId,
+        defaultModelSelection: activeProjectDefaultModelSelection,
+        defaultDriverKind: configuredDefaultDriverKind,
         model: selectedModel,
         models: selectedProviderModels,
         promptInjectionState: composerPromptInjectionState,
@@ -2249,6 +2267,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         planModeEnabled: settings.planModeEnabled,
       }),
     [
+      activeProjectDefaultModelSelection,
+      configuredDefaultDriverKind,
       composerModelOptions,
       composerPromptInjectionState,
       selectedInstanceId,
@@ -2376,6 +2396,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   });
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
+  const shortcutBandRef = useRef<HTMLDivElement>(null);
+  const accountShortcutGroupRef = useRef<HTMLDivElement>(null);
+  const effortShortcutGroupRef = useRef<HTMLDivElement>(null);
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const providerInputRejectedRef = useRef(false);
   const composerSelectLockRef = useRef(false);
@@ -2874,6 +2897,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const providerTraitsMenuContent = renderProviderTraitsMenuContent({
     provider: selectedProvider,
     instanceId: selectedInstanceId,
+    defaultModelSelection: activeProjectDefaultModelSelection,
+    defaultDriverKind: configuredDefaultDriverKind,
     ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
     ...(routeKind === "draft" && draftId ? { draftId } : {}),
     model: selectedModel,
@@ -2887,6 +2912,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const providerTraitsPickerInput = {
     provider: selectedProvider,
     instanceId: selectedInstanceId,
+    defaultModelSelection: activeProjectDefaultModelSelection,
+    defaultDriverKind: configuredDefaultDriverKind,
     ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
     ...(routeKind === "draft" && draftId ? { draftId } : {}),
     model: selectedModel,
@@ -2901,6 +2928,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const providerTraitsPicker = renderProviderTraitsPicker(providerTraitsPickerInput);
   const [inlineRestingControlsHost, setInlineRestingControlsHost] = useState<HTMLDivElement | null>(
     null,
+  );
+  const effectiveTraitsOptions = useMemo(
+    () =>
+      getComposerEffectiveTraitsOptions({
+        provider: selectedProvider,
+        instanceId: selectedInstanceId,
+        defaultModelSelection: activeProjectDefaultModelSelection,
+        defaultDriverKind: configuredDefaultDriverKind,
+        model: selectedModel,
+        models: selectedProviderModels,
+        modelOptions: composerModelOptions?.[selectedInstanceId],
+        planModeEnabled: settings.planModeEnabled,
+      }),
+    [
+      selectedProvider,
+      selectedInstanceId,
+      activeProjectDefaultModelSelection,
+      configuredDefaultDriverKind,
+      selectedModel,
+      selectedProviderModels,
+      composerModelOptions,
+      settings.planModeEnabled,
+    ],
   );
   const {
     controlsRef: restingComposerControlsRef,
@@ -4368,6 +4418,54 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     if ((key === "ArrowUp" || key === "ArrowDown") && submissionIntent === null) {
       return navigatePromptHistory(key === "ArrowUp" ? "backward" : "forward", event);
+    }
+    if (
+      key === "Enter" &&
+      handleComposerEnter({
+        event,
+        intent: {
+          keybindings,
+          isMobileViewport,
+          isDraftThread: routeKind === "draft",
+          isRunning: phase === "running",
+          sendShortcut: settings.sendShortcut,
+          prompt: promptRef.current,
+        },
+        hasDraftContext:
+          composerImagesRef.current.length > 0 ||
+          composerFilesRef.current.length > 0 ||
+          composerTerminalContextsRef.current.length > 0 ||
+          composerPreviewAnnotations.length > 0 ||
+          composerReviewComments.length > 0 ||
+          composerThreadContexts.length > 0 ||
+          (pendingImageCompressionsRef.current.get(attachmentTargetKey) ?? 0) > 0 ||
+          pendingDraftWork.has(attachmentTargetKey),
+        queueActionDisabled:
+          noProviderAvailable ||
+          isSendDisabled ||
+          isSendBusy ||
+          isConnecting ||
+          isRevertingCheckpoint === true ||
+          projectSelectionRequired ||
+          environmentUnavailable !== null ||
+          isEditingQueuedMessage ||
+          activePendingApproval !== null ||
+          pendingUserInputs.length > 0 ||
+          showPlanFollowUpPrompt,
+        onSteerNextQueuedMessage,
+        onSubmit: (intent) =>
+          submitComposer(
+            undefined,
+            resolveComposerDispatchMode({
+              running: phase === "running",
+              alternateModifier: intent === "alternate",
+              activeTurnDefault: settings.followUpBehavior,
+            }),
+            intent,
+          ),
+      })
+    ) {
+      return true;
     }
     if (submissionIntent) {
       submitComposer(
@@ -6479,6 +6577,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
+  const shortcutRailsContentKey = useMemo(
+    () => [modelOptionsByInstance, selectedInstanceId, selectedModel, effectiveTraitsOptions],
+    [modelOptionsByInstance, selectedInstanceId, selectedModel, effectiveTraitsOptions],
+  );
+  const shortcutRails = useComposerShortcutRails({
+    host: shortcutControlsHost,
+    workspace: shortcutWorkspaceElement,
+    formRef: composerFormRef,
+    bandRef: shortcutBandRef,
+    accountGroupRef: accountShortcutGroupRef,
+    effortGroupRef: effortShortcutGroupRef,
+    contentKey: shortcutRailsContentKey,
+    eligible:
+      !isMobileViewport &&
+      !isComposerApprovalState &&
+      pendingUserInputs.length === 0 &&
+      multipleModelSelections === null &&
+      environmentUnavailable === null &&
+      !providerCatalogPending &&
+      !noProviderAvailable &&
+      !isConnecting &&
+      !isSendBusy &&
+      !isPreparingWorktree &&
+      externalSendDisabledReason === null &&
+      !props.isRevertingCheckpoint &&
+      !projectSelectionRequired,
+    hasWideActions: composerFooterHasWideActions,
+  });
+
   // Render
   // ------------------------------------------------------------------
   return (
@@ -6548,6 +6675,52 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       data-chat-composer-form="true"
       {...threadContextDropTargetProps()}
     >
+      {shortcutControlsHost
+        ? createPortal(
+            <div
+              ref={shortcutBandRef}
+              data-chat-composer-shortcut-rails="true"
+              aria-hidden={!shortcutRails.visible || undefined}
+              inert={!shortcutRails.visible || undefined}
+              className="relative w-full"
+              style={{ height: shortcutRails.height }}
+            >
+              <div className="pointer-events-auto absolute bottom-0 left-0">
+                <ProviderInstanceShortcuts
+                  instanceEntries={providerInstanceEntries}
+                  settings={settings}
+                  modelOptionsByInstance={modelOptionsByInstance}
+                  rememberedSelections={composerDraft.modelSelectionByProvider}
+                  activeInstanceId={selectedInstanceId}
+                  model={selectedModelForPickerWithCustomFallback}
+                  lockedProvider={lockedProvider}
+                  lockedContinuationGroupKey={lockedContinuationGroupKey ?? null}
+                  lockedInstanceId={
+                    activeThread?.runtime?.providerInstanceId ??
+                    activeThreadModelSelection?.instanceId ??
+                    null
+                  }
+                  disabled={isSendBusy}
+                  visible={shortcutRails.visible}
+                  groupRef={accountShortcutGroupRef}
+                  getModelDisabledReason={getModelDisabledReason}
+                  onSelect={onProviderModelSelect}
+                />
+              </div>
+              <div className="pointer-events-auto absolute right-0 bottom-0 w-max">
+                {providerTraitsPicker ? (
+                  <ReasoningEffortShortcuts
+                    {...providerTraitsPickerInput}
+                    {...effectiveTraitsOptions}
+                    groupRef={effortShortcutGroupRef}
+                    visible={shortcutRails.visible}
+                  />
+                ) : null}
+              </div>
+            </div>,
+            shortcutControlsHost,
+          )
+        : null}
       {composerControlsCollapsed && restingControlsHost
         ? createPortal(
             <div

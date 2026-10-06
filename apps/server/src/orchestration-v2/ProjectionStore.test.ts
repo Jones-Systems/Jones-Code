@@ -330,7 +330,50 @@ it.effect("memory recovery selection includes unfinished items from missing runs
   }).pipe(Effect.provide(ProjectionStore.layerMemory)),
 );
 
+const selfSettlementRecoveryRoundtrip = Effect.gen(function* () {
+  const store = yield* ProjectionStore.ProjectionStoreV2;
+  const threadId = yield* addRolledBackRecoveryCandidate("self-settlement-recovery");
+  const thread = yield* store.getThread(threadId);
+  const now = yield* DateTime.now;
+  const intent = {
+    mcpCredentialId: "synthetic-credential",
+    commandId: CommandId.make("synthetic-settlement-request"),
+    runId: RunId.make("synthetic-requesting-run"),
+    providerSessionId: ProviderSessionId.make("synthetic-session"),
+    providerInstanceId,
+  };
+  assert.notInclude(yield* store.getRecoveryThreadIds("self-settlement"), threadId);
+  for (const type of ["thread.metadata-updated", "thread.settled", "thread.unsettled"] as const) {
+    yield* store.apply({
+      id: EventId.make(`self-settlement-recovery:${type}`),
+      type,
+      threadId,
+      occurredAt: now,
+      payload: { ...thread, selfSettlement: intent, updatedAt: now },
+    });
+    assert.deepEqual((yield* store.getThreadProjection(threadId)).thread.selfSettlement, intent);
+    assert.include(yield* store.getRecoveryThreadIds("self-settlement"), threadId);
+  }
+  yield* store.apply({
+    id: EventId.make("self-settlement-recovery:cancel"),
+    type: "thread.metadata-updated",
+    threadId,
+    occurredAt: now,
+    payload: { ...thread, selfSettlement: null, updatedAt: now },
+  });
+  assert.isNull((yield* store.getThread(threadId)).selfSettlement);
+  assert.notInclude(yield* store.getRecoveryThreadIds("self-settlement"), threadId);
+});
+
+it.effect("memory projection retains self-settlement intent until cancellation", () =>
+  selfSettlementRecoveryRoundtrip.pipe(Effect.provide(ProjectionStore.layerMemory)),
+);
+
 it.layer(TestLayer)("ProjectionStoreV2", (it) => {
+  it.effect(
+    "retains self-settlement intent until cancellation",
+    () => selfSettlementRecoveryRoundtrip,
+  );
   it.effect(
     "keeps restart-cancelled work through a stale run.updated",
     () => restartCancelledWorkSurvivesStaleRunUpdate,
@@ -4623,4 +4666,80 @@ it.effect.each([
         "a foreign row must not supply the app thread's identity",
       );
     }).pipe(Effect.provide(backend === "SQL" ? TestLayer : ProjectionStore.layerMemory)),
+);
+
+it.effect.each([
+  { backend: "memory", eligibility: true },
+  { backend: "memory", eligibility: false },
+  { backend: "memory", eligibility: undefined },
+  { backend: "sql", eligibility: true },
+  { backend: "sql", eligibility: false },
+  { backend: "sql", eligibility: undefined },
+] as const)(
+  "keeps $backend queue eligibility $eligibility Boolean through stale snapshots",
+  ({ backend, eligibility }) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate(
+        `queue-policy-${backend}-${eligibility}`,
+      );
+      const stale = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      yield* store.apply({
+        id: EventId.make(`queue-policy-birth-${backend}-${eligibility}`),
+        type: "run.created",
+        threadId,
+        runId: stale.id,
+        occurredAt: now,
+        payload: {
+          ...stale,
+          ...(eligibility === undefined ? {} : { queuedToolBoundaryEligible: eligibility }),
+        },
+      });
+      yield* store.apply({
+        id: EventId.make(`queue-policy-update-${backend}-${eligibility}`),
+        type: "run.updated",
+        threadId,
+        runId: stale.id,
+        occurredAt: now,
+        payload: { ...stale, status: "completed", completedAt: now },
+      });
+      const persisted = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      assert.strictEqual(persisted.queuedToolBoundaryEligible, eligibility);
+      const thread = (yield* store.getThreadProjection(threadId)).thread;
+      const replay = Effect.gen(function* () {
+        const memory = yield* ProjectionStore.ProjectionStoreV2;
+        yield* memory.apply({
+          id: EventId.make("queue-policy-replay-thread"),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: thread,
+        });
+        yield* memory.apply({
+          id: EventId.make("queue-policy-replay-birth"),
+          type: "run.created",
+          threadId,
+          runId: stale.id,
+          occurredAt: now,
+          payload: {
+            ...stale,
+            ...(eligibility === undefined ? {} : { queuedToolBoundaryEligible: eligibility }),
+          },
+        });
+        yield* memory.apply({
+          id: EventId.make("queue-policy-replay-update"),
+          type: "run.updated",
+          threadId,
+          runId: stale.id,
+          occurredAt: now,
+          payload: stale,
+        });
+        assert.strictEqual(
+          (yield* memory.getThreadProjection(threadId)).runs[0]!.queuedToolBoundaryEligible,
+          eligibility,
+        );
+      });
+      yield* replay.pipe(Effect.provide(ProjectionStore.layerMemory));
+    }).pipe(Effect.provide(backend === "memory" ? ProjectionStore.layerMemory : TestLayer)),
 );

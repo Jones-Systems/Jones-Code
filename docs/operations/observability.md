@@ -668,3 +668,72 @@ Before you take one:
   swapping, it can make the problem worse or crash the server.
 - The file contains everything in server memory, including tokens, secrets, and thread content. Do
   not share it publicly. Delete it when you are done, because storage cleanup does not remove it.
+
+## Netdata host status
+
+Configure Netdata API v3 connections in the **Jones Code server process environment**
+to expose host CPU and RAM through authenticated `GET /api/host-status`. The fixed
+slots are `vps`, `test`, `mini`, and `home`. The browser requests the primary
+serving environment's gateway; it does not inspect the client machine or receive
+collector URLs or tokens. Desktop uses its primary environment's bearer route;
+when its local environment is disabled, no local-machine fallback is used.
+
+A shared parent collector can serve all mapped nodes. Each shared slot requires
+an explicit machine GUID from `/api/v3/nodes`; unmapped slots stay unavailable.
+For example, these placeholders configure mappings without adopting a live collector:
+
+```sh
+T3CODE_NETDATA_URL=http://127.0.0.1:19999
+T3CODE_NETDATA_VPS_NODE='<vps-machine-guid>'
+T3CODE_NETDATA_TEST_NODE='<test-machine-guid>'
+T3CODE_NETDATA_MINI_NODE='<mini-machine-guid>'
+T3CODE_NETDATA_HOME_NODE='<home-machine-guid>'
+```
+
+| Variable                    | Meaning                                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------- |
+| `T3CODE_NETDATA_URL`        | Shared parent base URL reachable from the serving environment.                                |
+| `T3CODE_NETDATA_TOKEN`      | Optional bearer token for the shared parent, supplied through protected server configuration. |
+| `T3CODE_NETDATA_<ID>_NODE`  | Exact machine GUID for a fixed slot.                                                          |
+| `T3CODE_NETDATA_<ID>_URL`   | Per-slot endpoint override; without `_NODE`, it must report exactly one node.                 |
+| `T3CODE_NETDATA_<ID>_TOKEN` | Per-slot bearer token. A URL override never inherits the shared token.                        |
+
+Tokens authenticate API reads; they are not Netdata streaming keys. Keep collector
+configuration out of browser build variables. Changing process launch settings
+requires a separately authorized server restart; source changes do not activate
+or reconfigure a collector.
+
+The endpoint requires an authenticated session with `orchestration:read` and
+returns `cache-control: no-store`. Unconfigured slots return `not_configured`;
+invalid data, stale source samples, and upstream failures produce explicit
+unavailable states per host. One failed host does not hide the others. The gateway
+rejects redirects, URL credentials, unsupported response shapes, and oversized
+bodies, with a three-second deadline per host.
+
+Queries select the configured node's GUID and a five-second window aggregated to
+one point. Logical CPU count and total RAM come from that node's metadata. CPU
+uses `system.cpu` percentage units and the complete macOS or Linux dimension set.
+The executing dimensions are summed; idle, iowait, and steal are excluded, and
+Linux guest dimensions are counted once. The result is 0–100% of total host CPU
+capacity, without dividing by logical core count.
+
+Occupied RAM remains on the wire for compatibility: total bytes minus native
+`system.ram/free` MiB, including reclaimable memory. The optional
+`availableMemoryBytes` is collected separately: Linux `mem.available/avail`, or
+the macOS collector estimate of free + speculative + inactive + purgeable pages.
+Missing or invalid available-memory data leaves CPU usable and available RAM
+unavailable; free RAM is never relabeled as available RAM. Every reported byte
+value is integral and bounded by total RAM.
+
+The header shows compact whole numbers such as `VPS · 24% · 41`: total-host CPU
+percentage and available RAM in GiB. Tooltips retain units and collector-estimate
+meaning. CPU and RAM colors use their unrounded utilization, and either can raise
+the badge background; the RAM color is not a direct measurement of memory
+pressure. The breadcrumb receives its natural width first; complete badges fit
+into the remaining space in VPS, Test, Mini, Home order, with hidden badges
+removed from keyboard focus.
+
+Source timestamps older than 30 seconds become unavailable. The client expires
+presented values at 30 seconds even while another request is pending, polls every
+ten seconds while visible, clears samples when hidden or after failures, and
+releases timers and aborts its request on unmount.
