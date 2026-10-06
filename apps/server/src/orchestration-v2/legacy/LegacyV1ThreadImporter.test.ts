@@ -242,6 +242,12 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
       assert.isTrue((yield* maintenance.verify).valid);
       const shellProjection = yield* projections.getThreadProjection(threadId);
       assert.equal(shellProjection.thread.historyOrigin, "v1_import");
+      assert.deepEqual(shellProjection.runs, []);
+      assert.deepEqual(shellProjection.attempts, []);
+      assert.isUndefined(
+        (yield* projections.getShellSnapshot()).threads.find((thread) => thread.id === threadId)
+          ?.latestRunProviderSettlement,
+      );
       assert.equal(shellProjection.thread.branch, "main");
       assert.equal(shellProjection.thread.worktreePath, "/tmp/legacy-project");
       assert.deepEqual(

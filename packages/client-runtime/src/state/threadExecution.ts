@@ -51,7 +51,21 @@ function summarizeThreadRun(
   projection: OrchestrationV2ThreadProjection,
   run: OrchestrationV2ThreadProjection["runs"][number],
 ): ThreadRunSummary {
+  const settlement = projection.attempts.find(
+    (attempt) => attempt.id === run.activeAttemptId,
+  )?.providerSettlement;
   return {
+    ...(settlement === undefined
+      ? {}
+      : {
+          providerSettlement:
+            settlement === null
+              ? null
+              : {
+                  ...settlement,
+                  completedAt: DateTime.formatIso(settlement.completedAt),
+                },
+        }),
     runId: run.id,
     status: run.status,
     requestedAt: DateTime.formatIso(run.requestedAt),
