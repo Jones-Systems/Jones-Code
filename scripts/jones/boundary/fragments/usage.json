@@ -1,0 +1,55 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "usage",
+  "jonesOwnedPaths": ["apps/web/src/jones/usage/"],
+  "hookPaths": [
+    "apps/web/src/components/usage/UsagePage.tsx",
+    "apps/web/src/components/usage/UsagePage.test.tsx",
+    "apps/web/src/components/usage/UsagePage.refresh.test.tsx",
+    "apps/web/src/components/usage/SavedTokenAccounting.test.tsx",
+    "apps/web/src/components/usage/usageDateRange.test.ts"
+  ],
+  "tombstones": [
+    "apps/web/src/components/usage/SavedTokenAccounting.tsx",
+    "apps/web/src/components/usage/UsageProviderDetails.tsx",
+    "apps/web/src/components/usage/usageDateRange.ts"
+  ],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/usage/UsagePage.tsx",
+      "to": "apps/web/src/jones/usage/SavedTokenAccounting.tsx"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsagePage.tsx",
+      "to": "apps/web/src/jones/usage/UsageProviderDetails.tsx"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsagePage.tsx",
+      "to": "apps/web/src/jones/usage/UsageRangePicker.tsx"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsagePage.tsx",
+      "to": "apps/web/src/jones/usage/useUsageWindow.ts"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsagePage.tsx",
+      "to": "apps/web/src/jones/usage/useUsageProviderDetails.ts"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsagePage.test.tsx",
+      "to": "apps/web/src/jones/usage/SavedTokenAccounting.tsx"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsagePage.refresh.test.tsx",
+      "to": "apps/web/src/jones/usage/SavedTokenAccounting.tsx"
+    },
+    {
+      "from": "apps/web/src/components/usage/SavedTokenAccounting.test.tsx",
+      "to": "apps/web/src/jones/usage/SavedTokenAccounting.tsx"
+    },
+    {
+      "from": "apps/web/src/components/usage/usageDateRange.test.ts",
+      "to": "apps/web/src/jones/usage/usageDateRange.ts"
+    }
+  ]
+}

@@ -41,7 +41,7 @@ vi.mock("../../state/server", () => ({
 }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => testState.read }));
 
-import { SavedTokenAccounting } from "./SavedTokenAccounting";
+import { SavedTokenAccounting } from "../../jones/usage/SavedTokenAccounting";
 
 const REPORT_ID = "a".repeat(64);
 const READ_AT = "2026-10-02T15:00:00Z";

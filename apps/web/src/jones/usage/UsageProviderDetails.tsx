@@ -2,10 +2,10 @@ import { formatCount, formatTokens, formatUsd } from "@t3tools/shared/usageForma
 import type { ModelTotals, ProviderTotals } from "@t3tools/shared/usageMerge";
 import { XIcon } from "lucide-react";
 
-import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { ProviderInstanceIcon } from "../../components/chat/ProviderInstanceIcon";
 
-import { Button } from "../ui/button";
-import { PROVIDER_PRESENTATION } from "./usageProviders";
+import { Button } from "../../components/ui/button";
+import { PROVIDER_PRESENTATION } from "../../components/usage/usageProviders";
 
 export const USAGE_PROVIDER_DETAILS_ID = "usage-provider-details";
 
