@@ -173,6 +173,7 @@ import {
   persistServerRuntimeState,
 } from "./serverRuntimeState.ts";
 import { orchestrationHttpApiLayer } from "./orchestration-v2/http.ts";
+import { conversationLibraryHttpApiLayer } from "./conversations/http.ts";
 import * as VoiceReview from "./voiceReview/bridge.ts";
 import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./voiceReview/http.ts";
 import { projectHttpApiLayer } from "./project/http.ts";
@@ -647,6 +648,7 @@ const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(authHttpApiLayer),
       Layer.provide(connectHttpApiLayer),
       Layer.provide(orchestrationHttpApiLayer),
+      Layer.provide(conversationLibraryHttpApiLayer),
       Layer.provide(
         voiceReviewHttpApiLayer.pipe(
           Layer.provide(VoiceReview.layer.pipe(Layer.provide(VoiceReview.dependenciesLayer))),
