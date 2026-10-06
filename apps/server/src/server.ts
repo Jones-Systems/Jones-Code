@@ -174,6 +174,8 @@ import {
 } from "./serverRuntimeState.ts";
 import { orchestrationHttpApiLayer } from "./orchestration-v2/http.ts";
 import { conversationLibraryHttpApiLayer } from "./conversations/http.ts";
+import * as VoiceReview from "./voiceReview/bridge.ts";
+import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./voiceReview/http.ts";
 import { projectHttpApiLayer } from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -647,6 +649,11 @@ const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(connectHttpApiLayer),
       Layer.provide(orchestrationHttpApiLayer),
       Layer.provide(conversationLibraryHttpApiLayer),
+      Layer.provide(
+        voiceReviewHttpApiLayer.pipe(
+          Layer.provide(VoiceReview.layer.pipe(Layer.provide(VoiceReview.dependenciesLayer))),
+        ),
+      ),
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(hostStatusHttpApiLayer.pipe(Layer.provide(HostStatus.layer))),
       Layer.provide(projectHttpApiLayer),
@@ -677,6 +684,7 @@ const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),
+  Layer.provide(voiceReviewResponseHeadersLayer),
   Layer.provide(browserApiCorsLayer),
   Layer.provide(httpCompressionLayer),
 );
