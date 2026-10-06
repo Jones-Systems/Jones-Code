@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - The synchronous compiler-host and Git inspection CLI uses Node filesystem and subprocess APIs.
 import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
@@ -543,10 +544,13 @@ function regularPath(root: string, name: string): string {
   if (!NodeFS.lstatSync(full).isFile()) throw new Error(`Source must be a regular file: ${name}`);
   return full;
 }
+function writeLine(value: string): void {
+  process.stdout.write(`${value}\n`);
+}
 export function runCli(args: string[]): number {
   if (args.includes("--help")) {
     if (args.length !== 1) throw new Error("--help cannot be combined with options");
-    console.log(
+    writeLine(
       "Usage: node scripts/jones/check-boundary.ts [--strict] [--json]\nChecks the working tree against pinned source ancestry. Default is advisory (exit 0); strict violations exit 1; invalid inputs/incomplete reads exit 2. No revision or inventory overrides.",
     );
     return 0;
@@ -662,18 +666,18 @@ export function runCli(args: string[]): number {
     surface: "working-tree",
     ...result,
   };
-  if (args.includes("--json")) console.log(JSON.stringify(report, null, 2));
+  if (args.includes("--json")) writeLine(JSON.stringify(report, null, 2));
   else {
-    console.log(
+    writeLine(
       `Classified ${Object.keys(result.classified).length} changed paths; scanned ${result.scannedFiles} source files; ${result.violations.length} violations; ${result.acceptedUnsupported.length} source-bound unsupported import dispositions. ${args.includes("--strict") ? "Strict" : "Advisory"} mode.`,
     );
     for (const violation of result.violations)
-      console.log(`${violation.code}: ${violation.path}: ${violation.detail}`);
+      writeLine(`${violation.code}: ${violation.path}: ${violation.detail}`);
     for (const disposition of result.acceptedUnsupported)
-      console.log(
+      writeLine(
         `accepted-unsupported: ${disposition.path}: ${disposition.expression}: ${disposition.reason}`,
       );
-    console.log(result.coverage);
+    writeLine(result.coverage);
   }
   return boundaryExit(args.includes("--strict"), result.violations);
 }
@@ -684,8 +688,8 @@ if (
   try {
     process.exitCode = runCli(process.argv.slice(2));
   } catch (error) {
-    console.error(
-      `Boundary check incomplete: ${error instanceof Error ? error.message : String(error)}`,
+    process.stderr.write(
+      `Boundary check incomplete: ${error instanceof Error ? error.message : String(error)}\n`,
     );
     process.exitCode = 2;
   }
