@@ -7,15 +7,12 @@ import {
 import { QuoteIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { resolveCitationPlacement, type CitationRect } from "~/jones/assistantCitation/placement";
 import {
   captureAssistantTextSelection,
   type AssistantCitationSourceAnchor,
 } from "~/lib/assistantTextSelection";
-import {
-  observeSelectionActions,
-  resolveSelectionActionPosition,
-  type SelectionActionPoint,
-} from "~/lib/selectionActions";
+import { observeSelectionActions, type SelectionActionPoint } from "~/lib/selectionActions";
 import { Button } from "../ui/button";
 
 export function AssistantSelectionToolbar({
@@ -29,7 +26,8 @@ export function AssistantSelectionToolbar({
 }) {
   const [selection, setSelection] = useState<{
     citation: AssistantCitation;
-    position: SelectionActionPoint;
+    rects: CitationRect[];
+    pointer: SelectionActionPoint | null;
     sourceAnchor: AssistantCitationSourceAnchor;
   } | null>(null);
   const toolbarRef = useRef<HTMLButtonElement>(null);
@@ -39,8 +37,19 @@ export function AssistantSelectionToolbar({
     const toolbar = toolbarRef.current;
     if (!toolbar || !selection) return;
     const rect = toolbar.getBoundingClientRect();
-    toolbar.style.left = `${Math.max(8, Math.min(selection.position.x, window.innerWidth - rect.width - 8))}px`;
-    toolbar.style.top = `${Math.max(8, Math.min(selection.position.y, window.innerHeight - rect.height - 8))}px`;
+    const position = resolveCitationPlacement({
+      rects: selection.rects,
+      pointer: selection.pointer,
+      toolbar: rect,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+    });
+    if (!position) {
+      setSelection(null);
+      return;
+    }
+    toolbar.style.left = `${position.x}px`;
+    toolbar.style.top = `${position.y}px`;
+    toolbar.style.visibility = "visible";
   }, [selection]);
 
   useEffect(() => {
@@ -60,7 +69,12 @@ export function AssistantSelectionToolbar({
         clear();
         return;
       }
-      const rects = captured.range.getClientRects();
+      const rects = Array.from(captured.range.getClientRects(), (selectedRect) => ({
+        left: Math.max(selectedRect.left, viewportRect.left),
+        right: Math.min(selectedRect.right, viewportRect.right),
+        top: Math.max(selectedRect.top, viewportRect.top),
+        bottom: Math.min(selectedRect.bottom, viewportRect.bottom),
+      }));
       setSelection({
         sourceAnchor: { source: captured.source, range: captured.range, viewport },
         citation: {
@@ -69,12 +83,8 @@ export function AssistantSelectionToolbar({
           messageId: MessageId.make(messageId),
           ...captured.selector,
         },
-        position: resolveSelectionActionPosition({
-          bounds: viewportRect,
-          selectionRect: rects.item(rects.length - 1) ?? rect,
-          pointer,
-          viewport: { width: window.innerWidth, height: window.innerHeight },
-        }),
+        rects,
+        pointer,
       });
     };
     const actions = observeSelectionActions({
@@ -135,7 +145,7 @@ export function AssistantSelectionToolbar({
       disabled={tooLong}
       aria-label={tooLong ? "Selection is too long to cite" : "Cite selection in composer"}
       className="fixed z-50 max-w-[calc(100vw-1rem)]"
-      style={{ left: selection.position.x, top: selection.position.y }}
+      style={{ left: 0, top: 0, visibility: "hidden" }}
       onPointerDown={(event) => event.preventDefault()}
       onClick={cite}
       onKeyDown={(event) => {
