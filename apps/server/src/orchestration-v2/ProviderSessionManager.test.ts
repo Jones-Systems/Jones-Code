@@ -1088,7 +1088,40 @@ it.effect(
           new Set(["preview", "orchestration", "worktree", "pull-requests"]),
         );
 
+        const binding = {
+          threadId,
+          providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          mcpCredentialId: captured!.providerSessionId,
+        };
+        assert.notEqual(binding.mcpCredentialId, providerSessionId);
+        assert.isTrue(yield* manager.isMcpCallerAttached(binding));
+        assert.isFalse(
+          yield* manager.isMcpCallerAttached({ ...binding, mcpCredentialId: "wrong-credential" }),
+        );
+        assert.isFalse(
+          yield* manager.isMcpCallerAttached({
+            ...binding,
+            threadId: ThreadId.make("other-thread"),
+          }),
+        );
+        assert.isFalse(
+          yield* manager.isMcpCallerAttached({
+            ...binding,
+            providerSessionId: yield* idAllocator.allocate.providerSession({
+              providerInstanceId: modelSelection.instanceId,
+              threadId,
+            }),
+          }),
+        );
+        assert.isFalse(
+          yield* manager.isMcpCallerAttached({
+            ...binding,
+            providerInstanceId: ProviderInstanceId.make("other-provider"),
+          }),
+        );
         yield* manager.close(providerSessionId);
+        assert.isFalse(yield* manager.isMcpCallerAttached(binding));
         assert.isUndefined(McpProviderSession.readMcpProviderSession(threadId));
         assert.isUndefined(yield* registry.resolve(token!));
       });

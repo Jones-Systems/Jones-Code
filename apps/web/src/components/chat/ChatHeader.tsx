@@ -31,6 +31,7 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { cn } from "~/lib/utils";
+import { HostStatusIndicators } from "./HostStatusIndicators";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -238,7 +239,7 @@ export const ChatHeader = memo(function ChatHeader({
     >
       <WorkspaceBreadcrumb
         ariaLabel="Thread breadcrumb"
-        className="flex-1 overflow-clip [overflow-clip-margin:2px]"
+        className="flex-initial overflow-clip [overflow-clip-margin:2px]"
       >
         {/* The project always leads the header: knowing which project a
             thread lives in is priority zero, and the thread title alone
@@ -332,6 +333,7 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
+      <HostStatusIndicators />
     </div>
   );
 });

@@ -16,6 +16,7 @@ import {
   RunAttemptId,
   ProviderTurnId,
   ThreadId,
+  VcsPrimaryCheckoutCheckpointError,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -53,10 +54,12 @@ const modelSelection = {
 } as const;
 
 it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
-  it.effect.each([false, true])(
+  it.effect.each([false, true, "primary checkout refusal"] as const)(
     "captures without decoding history or losing newer delegated completion, ref lookup fails=%s",
-    (refLookupFails) =>
+    (captureCase) =>
       Effect.gen(function* () {
+        const refLookupFails = captureCase === true;
+        const primaryCheckout = captureCase === "primary checkout refusal";
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
         const now = yield* DateTime.now;
         const later = DateTime.add(now, { seconds: 1 });
@@ -300,14 +303,22 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           Layer.provide(
             Layer.mergeAll(
               IdAllocator.layer,
-              refLookupFails
+              refLookupFails || primaryCheckout
                 ? CheckpointService.layer.pipe(
                     Layer.provide(
                       Layer.mergeAll(
                         IdAllocator.layer,
                         Layer.mock(CheckpointStore.CheckpointStore)({
                           isGitRepository: () => Effect.succeed(true),
-                          captureCheckpoint: () => Effect.void,
+                          captureCheckpoint: () =>
+                            primaryCheckout
+                              ? Effect.fail(
+                                  new VcsPrimaryCheckoutCheckpointError({
+                                    operation: "test.primaryCheckoutCapture",
+                                    cwd: "/repo",
+                                  }),
+                                )
+                              : Effect.void,
                           hasCheckpointRef: () =>
                             Effect.fail(
                               new VcsProcessTimeoutError({
@@ -363,10 +374,13 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           const capturedEvent = events.find((event) => event.type === "checkpoint.captured");
           assert.equal(
             runUpdated.payload.checkpointId,
-            refLookupFails ? capturedEvent?.payload.id : captured.id,
+            refLookupFails || primaryCheckout ? capturedEvent?.payload.id : captured.id,
           );
-          if (refLookupFails && capturedEvent?.type === "checkpoint.captured") {
-            assert.equal(capturedEvent.payload.status, "ready");
+          if (
+            (refLookupFails || primaryCheckout) &&
+            capturedEvent?.type === "checkpoint.captured"
+          ) {
+            assert.equal(capturedEvent.payload.status, primaryCheckout ? "error" : "ready");
             assert.deepEqual(capturedEvent.payload.files, []);
           }
           assert.isUndefined(

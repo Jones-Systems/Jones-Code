@@ -257,8 +257,8 @@ const FOLLOW_UP_ACTION_LABEL = {
 } as const;
 
 const FOLLOW_UP_ACTION_SUBTITLE = {
-  queue: "Run after the current turn",
-  steer: "Interrupt what the agent is doing",
+  queue: "Send after tools finish, or next turn",
+  steer: "Send into the current turn now",
   restart: "Start the turn over with this message",
 } as const;
 

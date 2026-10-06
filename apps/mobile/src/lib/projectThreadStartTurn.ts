@@ -32,15 +32,12 @@ export interface ProjectThreadStartTurnSpec {
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin: boolean;
+  readonly serverResolvesWorktreeBase?: boolean;
   /** Generated temp branch for worktree mode; unused for local mode. */
   readonly worktreeBranchName: string;
 }
 
-/**
- * Single source of the `thread.turn.start` bootstrap payload used to create a
- * thread from a project draft — shared by the immediate send path and the
- * offline outbox drain so both deliver identical commands.
- */
+/** Project-draft creation payload shared by connected submissions and offline outbox delivery. */
 export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpec) {
   const title = deriveThreadTitleSeed({ text: spec.text, attachments: spec.uploadedAttachments });
   const isWorktree = spec.workspaceMode === "worktree";
@@ -59,6 +56,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
     titleSeed: title,
     runtimeMode: spec.runtimeMode,
     interactionMode: spec.interactionMode,
+    serverResolvesWorktreeBase: spec.serverResolvesWorktreeBase,
     bootstrap: {
       createThread: {
         projectId: spec.projectId,
@@ -74,7 +72,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
         ? {
             prepareWorktree: {
               projectCwd: spec.projectCwd,
-              baseBranch: spec.branch!,
+              ...(spec.branch !== null ? { baseBranch: spec.branch } : {}),
               branch: spec.worktreeBranchName,
               ...(spec.startFromOrigin ? { startFromOrigin: true } : {}),
             },
