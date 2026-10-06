@@ -2275,6 +2275,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         for (const frame of frames) yield* Queue.offer(harness.sdkMessages, frame);
         const terminal = yield* Queue.take(harness.terminalReceipts);
         assert.equal(terminal.status, status);
+        assert.equal(
+          terminal.evidenceKind,
+          status === "interrupted" ? "attributed_abort" : "provider_result",
+        );
+        assert.equal(terminal.providerTurn?.id, terminal.providerTurnId);
+        assert.equal(terminal.providerTurn?.status, terminal.status);
+        assert.isNotNull(terminal.providerTurn?.completedAt);
         const latest = new Map(
           harness.events.flatMap((event) =>
             event.type === "turn_item.updated" && event.turnItem.type === "reasoning"

@@ -185,6 +185,11 @@ describe("CursorAdapterV2", () => {
           status === "finished" ? "idle" : status === "cancelled" ? "cancelled" : "failed",
         );
         assert.isNotNull(rows.at(-1)?.subagent.completedAt);
+        const terminal = events.find((event) => event.type === "turn.terminal");
+        assert.equal(terminal?.evidenceKind, "provider_result");
+        assert.equal(terminal?.providerTurn?.id, terminal?.providerTurnId);
+        assert.equal(terminal?.providerTurn?.status, terminal?.status);
+        assert.isNotNull(terminal?.providerTurn?.completedAt);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
   );
 
@@ -308,6 +313,7 @@ describe("CursorAdapterV2", () => {
       if (Option.isSome(first)) {
         assert.equal(first.value.status, "failed");
         assert.equal(first.value.failure?.class, "transport_error");
+        assert.equal(first.value.evidenceKind, "local_failure");
       }
 
       assert.isDefined(runtime.compactThread);

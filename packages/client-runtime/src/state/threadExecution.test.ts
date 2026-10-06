@@ -7,6 +7,8 @@ import {
   ProviderSessionId,
   ProviderDriverKind,
   RunId,
+  RunAttemptId,
+  ProviderTurnId,
   ThreadId,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2RunStatus,
@@ -676,4 +678,73 @@ describe("provider-reported model selection", () => {
     expect(formatModelSelectionEffort(selected, models, variantReport)).toBe("Default");
     expect(formatModelSelectionEffort(selected, models)).toBe("Unknown");
   });
+});
+
+describe("provider response settlement and operational activity", () => {
+  it.each([undefined, null, "completed", "interrupted", "failed", "cancelled"] as const)(
+    "keeps %s provider evidence independent from checkpoint-wait and Stop",
+    (outcome) => {
+      const attemptId = RunAttemptId.make("attempt:presentation");
+      const providerTurnId = ProviderTurnId.make("provider-turn:presentation");
+      const completedAt = DateTime.add(now, { seconds: 5 });
+      const current = { ...run("run-presentation", 1, "waiting"), activeAttemptId: attemptId };
+      const providerSettlement =
+        outcome === undefined
+          ? undefined
+          : outcome === null
+            ? null
+            : {
+                runAttemptId: attemptId,
+                providerTurnId,
+                status: outcome,
+                completedAt,
+              };
+      const attempt = {
+        id: attemptId,
+        runId: current.id,
+        attemptOrdinal: 1,
+        rootNodeId: NodeId.make("node:presentation"),
+        providerInstanceId: current.providerInstanceId,
+        providerThreadId: ProviderThreadId.make("provider-thread:presentation"),
+        providerTurnId,
+        reason: "initial" as const,
+        status: "completed" as const,
+        startedAt: now,
+        completedAt,
+        ...(outcome === undefined ? {} : { providerSettlement }),
+      };
+      const projection = { ...v2Projection, runs: [current], attempts: [attempt] };
+      const summary = deriveLatestThreadRun(projection);
+      expect(summary?.status).toBe("waiting");
+      expect(summary?.completedAt).toBeNull();
+      expect(summary?.providerSettlement).toEqual(
+        providerSettlement == null
+          ? providerSettlement
+          : { ...providerSettlement, completedAt: DateTime.formatIso(completedAt) },
+      );
+      expect(Object.hasOwn(summary!, "providerSettlement")).toBe(outcome !== undefined);
+      expect(deriveThreadActivityRun(projection)).toEqual(summary);
+      expect(threadRuntimeHasInterruptibleRun(deriveThreadRuntime(projection))).toBe(false);
+      const afterCheckpoint = {
+        ...projection,
+        runs: [
+          {
+            ...current,
+            status: "completed" as const,
+            completedAt: DateTime.add(completedAt, { minutes: 1 }),
+          },
+        ],
+      };
+      expect(deriveLatestThreadRun(afterCheckpoint)?.providerSettlement).toEqual(
+        summary?.providerSettlement,
+      );
+      const newer = {
+        ...run("newer", 2, "running"),
+        activeAttemptId: RunAttemptId.make("newer-attempt"),
+      };
+      expect(
+        deriveLatestThreadRun({ ...projection, runs: [current, newer] })?.providerSettlement,
+      ).toBeUndefined();
+    },
+  );
 });

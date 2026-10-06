@@ -1663,6 +1663,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       state: ThreadState,
       terminal: TurnTerminal,
       threadDisposition: "reusable" | "broken" = "reusable",
+      evidenceKind: "provider_result" | "attributed_abort" | "local_failure" = "local_failure",
     ) {
       const turn = state.active;
       if (turn === undefined) return;
@@ -1773,6 +1774,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       yield* setSessionStatus(pending.size > 0 ? "waiting" : anyActive ? "running" : "ready", null);
       const base = {
         type: "turn.terminal" as const,
+        providerTurn: state.providerTurns.get(String(turn.providerTurn.id))!,
+        evidenceKind:
+          terminal.status === "interrupted" && evidenceKind === "provider_result"
+            ? "attributed_abort"
+            : evidenceKind,
         driver,
         providerThreadId: state.providerThread.id,
         providerTurnId: turn.providerTurn.id,
@@ -2416,13 +2422,13 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         turn.heldEnd = end;
         return;
       }
-      yield* finishTurn(state, end);
+      yield* finishTurn(state, end, "reusable", "provider_result");
     });
 
     /** Ends a turn held for its steers once none is left to deliver. */
     const endIfSettled = (state: ThreadState, turn: ActiveTurn) =>
       turn.heldEnd !== undefined && turn.steers.size === 0
-        ? finishTurn(state, turn.heldEnd)
+        ? finishTurn(state, turn.heldEnd, "reusable", "provider_result")
         : Effect.void;
 
     const handleEvent = Effect.fnUntraced(function* (event: OpenCode2StreamEvent) {
@@ -3715,6 +3721,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                   detail: `OpenCode session ${sessionId} already has an active turn`,
                 });
               }
+              // Orchestration can rebind a native fork to its own thread ID.
+              // Adopt it before setup can emit updates, retaining native session state.
+              state.providerThread = { ...state.providerThread, id: turnInput.providerThread.id };
               // OpenCode already ran this turn on its own; it prompts nothing.
               if (isContinuation(turnInput)) return yield* runWake(state, turnInput);
               // After a timed-out Stop the server says whether that run is gone. A
