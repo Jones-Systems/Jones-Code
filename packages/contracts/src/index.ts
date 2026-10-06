@@ -63,4 +63,6 @@ export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
+export * from "./workstreams.ts";
+export * from "./workstreamPlacements.ts";
 export * from "./hostStatus.ts";
