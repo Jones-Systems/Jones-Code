@@ -10,7 +10,9 @@
   "tombstones": [
     "apps/web/src/components/usage/SavedTokenAccounting.tsx",
     "apps/web/src/components/usage/UsageProviderDetails.tsx",
-    "apps/web/src/components/usage/usageDateRange.ts"
+    "apps/web/src/components/usage/usageDateRange.ts",
+    "apps/web/src/components/usage/SavedTokenAccounting.test.tsx",
+    "apps/web/src/components/usage/usageDateRange.test.ts"
   ],
   "allowedImports": [
     {

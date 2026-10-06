@@ -2,12 +2,12 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
 import * as TestClock from "effect/testing/TestClock";
-import * as SourceControlRateLimit from "../sourceControl/SourceControlRateLimit.ts";
+import * as SourceControlRateLimit from "../../sourceControl/SourceControlRateLimit.ts";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { PullRequestCiStatusResult } from "@t3tools/contracts";
-import * as GitHubCli from "../sourceControl/GitHubCli.ts";
-import { readGitHubCiStatus } from "../jones/pullRequestCi/GitHubCiStatus.ts";
+import * as GitHubCli from "../../sourceControl/GitHubCli.ts";
+import { readGitHubCiStatus } from "./GitHubCiStatus.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 

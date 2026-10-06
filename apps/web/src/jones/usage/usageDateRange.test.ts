@@ -5,7 +5,7 @@ import {
   makeRollingUsageWindow,
   toLocalDateTimeValue,
   validateCustomUsageWindow,
-} from "../../jones/usage/usageDateRange";
+} from "./usageDateRange";
 
 afterEach(() => vi.unstubAllEnvs());
 

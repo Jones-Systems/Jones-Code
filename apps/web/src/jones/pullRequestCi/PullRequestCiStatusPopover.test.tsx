@@ -33,10 +33,7 @@ vi.mock("~/components/ui/tooltip", () => ({
   TooltipPopup: () => null,
 }));
 
-import {
-  PullRequestCiStatusPopover,
-  runnerRuntime,
-} from "~/jones/pullRequestCi/PullRequestCiStatusPopover";
+import { PullRequestCiStatusPopover, runnerRuntime } from "./PullRequestCiStatusPopover";
 
 type Job = PullRequestCiStatusResult["jobs"]["items"][number];
 const runner = { id: 7, name: "linux-7", status: "online" as const, busy: true, labels: [] };

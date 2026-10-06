@@ -7,7 +7,12 @@
     "apps/server/src/pullRequest/PullRequestService.ts",
     "apps/web/src/routes/_chat.pull-requests.tsx"
   ],
-  "tombstones": ["apps/web/src/components/pullRequest/PullRequestCiStatusPopover.tsx"],
+  "tombstones": [
+    "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.tsx",
+    "apps/server/src/pullRequest/GitHubCiStatus.test.ts",
+    "apps/server/src/pullRequest/PullRequestCiStatus.test.ts",
+    "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.test.tsx"
+  ],
   "allowedImports": [
     {
       "from": "apps/server/src/pullRequest/PullRequestService.ts",
