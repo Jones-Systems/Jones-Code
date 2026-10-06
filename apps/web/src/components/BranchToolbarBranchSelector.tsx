@@ -50,6 +50,7 @@ import {
   resolveBranchToolbarValue,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
+  resolveAutomaticWorktreeBaseBranch,
   sanitizeNewRefName,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
@@ -507,19 +508,22 @@ export function BranchToolbarBranchSelector({
     : (defaultBranchName ?? currentGitBranch);
 
   useEffect(() => {
-    if (
-      effectiveEnvMode !== "worktree" ||
-      activeWorktreePath ||
-      activeThreadBranch ||
-      !worktreeBaseBranchCandidate
-    ) {
+    const branch = resolveAutomaticWorktreeBaseBranch({
+      effectiveEnvMode,
+      envLocked,
+      activeWorktreePath,
+      activeThreadBranch,
+      worktreeBaseBranchCandidate,
+    });
+    if (branch === null) {
       return;
     }
-    setThreadBranch(worktreeBaseBranchCandidate, null, true);
+    setThreadBranch(branch, null, true);
   }, [
     activeThreadBranch,
     activeWorktreePath,
     effectiveEnvMode,
+    envLocked,
     setThreadBranch,
     worktreeBaseBranchCandidate,
   ]);

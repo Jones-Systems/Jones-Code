@@ -2004,8 +2004,28 @@ code {
   border-bottom: 1px solid color-mix(in srgb, var(--contrast-border) 60%, transparent);
 }
 
+/* Size top-level expanded tables to their content, capped by the conversation
+   pane. The row follows ChatCanvas's lane insets; surrounding text retains the
+   reading width, and nested tables stay inside their markdown parent. */
+[data-timeline-root] .chat-markdown > .chat-markdown-table-container[data-expanded="true"] {
+  position: relative;
+  left: 50%;
+  width: max-content;
+  max-width: calc(100cqw - 0.5rem);
+  margin-inline: 0;
+  transform: translateX(-50%);
+}
+
+.chat-markdown [data-markdown-table-scroll] {
+  max-height: min(24rem, 60dvh);
+}
+
+.chat-markdown .chat-markdown-table-container[data-expanded="true"] [data-markdown-table-scroll] {
+  max-height: min(30rem, 75dvh);
+}
+
 /* Collapsed (default): single-line cells truncate so arbitrary chat content
-   cannot blow the column out; the footer toggle expands cells to wrap. */
+   cannot blow the column out; the footer toggle expands the table and wraps cells. */
 .chat-markdown .chat-markdown-table-container[data-expanded="false"] th,
 .chat-markdown .chat-markdown-table-container[data-expanded="false"] td {
   overflow: hidden;

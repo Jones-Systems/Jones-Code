@@ -11,7 +11,7 @@ describe("user message intent badge", () => {
   it("labels messages waiting behind the active turn", () => {
     expect(resolveUserMessageIntentBadge("queued_turn")).toEqual({
       label: "queued",
-      accessibilityLabel: "Queued behind the active turn",
+      accessibilityLabel: "Queued for a safe tool boundary or the next turn",
       tone: "queued",
     });
   });

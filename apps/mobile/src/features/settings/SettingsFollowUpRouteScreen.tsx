@@ -20,7 +20,7 @@ const FOLLOW_UP_OPTIONS: ReadonlyArray<{
   {
     behavior: "queue",
     label: "Queue",
-    description: "Your message waits and runs after the current turn finishes.",
+    description: "Your message waits for tools to finish, or for the next turn when needed.",
   },
   {
     behavior: "steer",
