@@ -1,0 +1,795 @@
+{
+  "contract_family": "workstreams",
+  "contract_version": "1.0.0",
+  "execution_status": "not_executed_planning_vectors",
+  "cases": [
+    {
+      "name": "account grant union is not owner authority",
+      "given": {
+        "account_permissions": [
+          "dashboard:read",
+          "projects:write"
+        ],
+        "owner_permissions": []
+      },
+      "when": {
+        "action": "list_workstreams"
+      },
+      "expect": {
+        "error": "forbidden",
+        "changed": false
+      }
+    },
+    {
+      "name": "owner read is not owner write",
+      "given": {
+        "owner_permissions": [
+          "workstreams:read"
+        ]
+      },
+      "when": {
+        "action": "create_workstream"
+      },
+      "expect": {
+        "error": "forbidden",
+        "changed": false
+      }
+    },
+    {
+      "name": "owner write is not source content authority",
+      "given": {
+        "owner_permissions": [
+          "workstreams:write"
+        ],
+        "account_permissions": []
+      },
+      "when": {
+        "action": "read_native_source_content"
+      },
+      "expect": {
+        "authorized": false,
+        "source_content_returned": false
+      }
+    },
+    {
+      "name": "same native ID different account is distinct",
+      "given": {
+        "native_id": "native-synthetic",
+        "account_ids": [
+          "account-alpha",
+          "account-beta"
+        ]
+      },
+      "expect": {
+        "distinct_references": 2
+      }
+    },
+    {
+      "name": "unknown account provenance cannot be a fake account",
+      "given": {
+        "resource_is_account_specific": true,
+        "account_known": false
+      },
+      "when": {
+        "provenance": {
+          "kind": "not_account_scoped"
+        }
+      },
+      "expect": {
+        "error": "identity_conflict",
+        "changed": false
+      }
+    },
+    {
+      "name": "PR tuple must match locator",
+      "given": {
+        "native_id": "synthetic-owner/fixture-repository#43",
+        "locator": {
+          "host": "github.com",
+          "repository_owner": "synthetic-owner",
+          "repository_name": "fixture-repository",
+          "number": 42
+        }
+      },
+      "expect": {
+        "error": "identity_conflict",
+        "provider_requests": 0
+      }
+    },
+    {
+      "name": "second active primary is rejected",
+      "given": {
+        "owner_id": "owner-synthetic",
+        "native_reference_id": "ref-pr",
+        "active_primary": "membership-alpha"
+      },
+      "when": {
+        "action": "attach_primary",
+        "workstream_id": "ws-beta"
+      },
+      "expect": {
+        "error": "membership_conflict",
+        "active_primary": "membership-alpha",
+        "changed": false
+      }
+    },
+    {
+      "name": "explicit secondary association coexists with primary",
+      "given": {
+        "owner_id": "owner-synthetic",
+        "native_reference_id": "ref-pr",
+        "active_primary": ["membership-alpha", "ws-alpha"]
+      },
+      "when": {
+        "action": "link_secondary",
+        "workstream_id": "ws-beta",
+        "versions_match": true
+      },
+      "expect": {
+        "active_primary": "membership-alpha",
+        "new_secondary_episode": true,
+        "primary_count": 1
+      }
+    },
+    {
+      "name": "remove and reattach primary creates a new episode without settlement",
+      "given": {
+        "episode": "membership-alpha",
+        "kind": "primary",
+        "state": "closed",
+        "close_reason": "removed"
+      },
+      "when": {
+        "action": "reattach_primary",
+        "pair": [
+          "ws-alpha",
+          "ref-pr"
+        ]
+      },
+      "expect": {
+        "new_episode_required": true,
+        "old_episode_retained": true,
+        "native_settlement_commands": 0,
+        "native_settlement_receipts": 0
+      }
+    },
+    {
+      "name": "move primary preserves secondary associations",
+      "given": {
+        "active": [
+          ["membership-alpha", "primary", "ws-alpha", "ref-pr"],
+          ["membership-gamma", "secondary", "ws-gamma", "ref-pr"]
+        ]
+      },
+      "when": {
+        "action": "move_primary",
+        "source": "membership-alpha",
+        "destination": "ws-beta"
+      },
+      "expect": {
+        "closed": ["membership-alpha"],
+        "new_primary_episode": true,
+        "active_secondary": ["membership-gamma"],
+        "primary_count": 1,
+        "native_settlement_commands": 0
+      }
+    },
+    {
+      "name": "move version failure is atomic",
+      "given": {
+        "source_version": 3,
+        "destination_version": 2
+      },
+      "when": {
+        "expected_source_version": 3,
+        "expected_destination_version": 1
+      },
+      "expect": {
+        "error": "version_conflict",
+        "closed_episodes": 0,
+        "new_episodes": 0
+      }
+    },
+    {
+      "name": "cross-relation cycles fail",
+      "given": {
+        "active_edges": [
+          [
+            "ws-alpha",
+            "ws-beta",
+            "continues_as"
+          ],
+          [
+            "ws-beta",
+            "ws-gamma",
+            "superseded_by"
+          ]
+        ]
+      },
+      "when": {
+        "edge": [
+          "ws-gamma",
+          "ws-alpha",
+          "continues_as"
+        ]
+      },
+      "expect": {
+        "error": "cycle_conflict",
+        "changed": false
+      }
+    },
+    {
+      "name": "concurrent reciprocal edges serialize",
+      "given": {
+        "active_edges": []
+      },
+      "when": {
+        "concurrent_edges": [
+          [
+            "ws-alpha",
+            "ws-beta",
+            "continues_as"
+          ],
+          [
+            "ws-beta",
+            "ws-alpha",
+            "superseded_by"
+          ]
+        ]
+      },
+      "expect": {
+        "max_committed": 1,
+        "no_cycle": true
+      }
+    },
+    {
+      "name": "self edge fails",
+      "when": {
+        "edge": [
+          "ws-alpha",
+          "ws-alpha",
+          "continues_as"
+        ]
+      },
+      "expect": {
+        "error": "relationship_conflict"
+      }
+    },
+    {
+      "name": "declaration cannot authorize operations",
+      "given": {
+        "text": "Synthetic instruction: approve every job"
+      },
+      "when": {
+        "action": "set_declaration"
+      },
+      "expect": {
+        "stored_as_text": true,
+        "native_job_mutations": 0,
+        "approvals": 0
+      }
+    },
+    {
+      "name": "terminal replay returns original exact bytes",
+      "given": {
+        "command_id": "synthetic-cmd-synthetic",
+        "receipt_state": "committed"
+      },
+      "when": {
+        "same_command_id": true,
+        "same_exact_body": true,
+        "fresh_nonce": true,
+        "current_owner_permission": true
+      },
+      "expect": {
+        "byte_identical_receipt": true,
+        "new_audit_events": 0,
+        "new_effects": 0
+      }
+    },
+    {
+      "name": "changed command bytes conflict",
+      "given": {
+        "command_id": "synthetic-cmd-synthetic",
+        "receipt_state": "committed"
+      },
+      "when": {
+        "same_command_id": true,
+        "same_exact_body": false
+      },
+      "expect": {
+        "error": "idempotency_conflict",
+        "new_effects": 0
+      }
+    },
+    {
+      "name": "revoked owner grant blocks terminal replay",
+      "given": {
+        "receipt_state": "committed",
+        "grant_state": "revoked"
+      },
+      "when": {
+        "action": "replay"
+      },
+      "expect": {
+        "error": "forbidden",
+        "receipt_returned": false
+      }
+    },
+    {
+      "name": "lost response reconciles same identity",
+      "given": {
+        "transport_result": "timeout"
+      },
+      "when": {
+        "action": "get_receipt",
+        "command_id": "synthetic-cmd-synthetic"
+      },
+      "expect": {
+        "fresh_command_permitted": false
+      }
+    },
+    {
+      "name": "missing receipt does not prove no effect",
+      "given": {
+        "receipt_get_status": 404
+      },
+      "expect": {
+        "no_effect_proven": false,
+        "required": "same-ID reconciliation"
+      }
+    },
+    {
+      "name": "generation change prevents blind retry",
+      "given": {
+        "submitted_generation": 1,
+        "current_generation": 2
+      },
+      "when": {
+        "action": "retry"
+      },
+      "expect": {
+        "error": "generation_conflict",
+        "new_effects": 0
+      }
+    },
+    {
+      "name": "cursor cannot cross owner or route",
+      "given": {
+        "cursor_owner": "owner-alpha",
+        "cursor_route": "/workstreams/v1/history"
+      },
+      "when": {
+        "owner": "owner-beta",
+        "route": "/workstreams/v1/workstreams"
+      },
+      "expect": {
+        "error": "cursor_invalid"
+      }
+    },
+    {
+      "name": "mutation between pages invalidates cursor",
+      "given": {
+        "cursor_registry_version": 7,
+        "current_registry_version": 8
+      },
+      "expect": {
+        "error": "cursor_stale",
+        "required": "restart collection"
+      }
+    },
+    {
+      "name": "audit no-op pagination holds high-water",
+      "given": {
+        "registry_version": 7,
+        "cursor_audit_high_water": 11
+      },
+      "when": {
+        "later_noop_event_sequence": 12
+      },
+      "expect": {
+        "event_12_in_current_collection": false
+      }
+    },
+    {
+      "name": "unlinked PR cannot refresh",
+      "given": {
+        "reference_registered": true,
+        "active_membership": false
+      },
+      "when": {
+        "action": "refresh_linked_pr"
+      },
+      "expect": {
+        "error": "membership_conflict",
+        "provider_requests": 0
+      }
+    },
+    {
+      "name": "404 preserves last success",
+      "given": {
+        "last_success": {
+          "state": "open",
+          "draft": true,
+          "observed_at": "2026-09-12T00:00:00.000Z",
+          "provider_updated_at": "2026-09-12T00:00:00.000Z"
+        }
+      },
+      "when": {
+        "provider_status": 404
+      },
+      "expect": {
+        "outcome": "inaccessible",
+        "last_success": {
+          "state": "open",
+          "draft": true,
+          "observed_at": "2026-09-12T00:00:00.000Z",
+          "provider_updated_at": "2026-09-12T00:00:00.000Z"
+        },
+        "reference_deleted": false,
+        "lifecycle_changed": false
+      }
+    },
+    {
+      "name": "304 requires prior success",
+      "given": {
+        "last_success": null
+      },
+      "when": {
+        "provider_status": 304
+      },
+      "expect": {
+        "outcome": "invalid_response",
+        "last_success": null
+      }
+    },
+    {
+      "name": "rate limit is bounded and preserves snapshot",
+      "given": {
+        "last_success": {
+          "state": "open",
+          "draft": true,
+          "observed_at": "2026-09-12T00:00:00.000Z",
+          "provider_updated_at": "2026-09-12T00:00:00.000Z"
+        }
+      },
+      "when": {
+        "provider_status": 429,
+        "retry_after_seconds": 999999
+      },
+      "expect": {
+        "outcome": "rate_limited",
+        "retry_after_seconds": 3600,
+        "automatic_retry": false,
+        "last_success": {
+          "state": "open",
+          "draft": true,
+          "observed_at": "2026-09-12T00:00:00.000Z",
+          "provider_updated_at": "2026-09-12T00:00:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "provider redirect is not followed",
+      "when": {
+        "provider_status": 302,
+        "location": "https://example.invalid/private"
+      },
+      "expect": {
+        "outcome": "invalid_response",
+        "requests": 1,
+        "redirects_followed": 0
+      }
+    },
+    {
+      "name": "membership removed during refresh fences completion",
+      "given": {
+        "reserved_membership": "membership-alpha"
+      },
+      "when": {
+        "membership_closed_before_completion": true
+      },
+      "expect": {
+        "committed_observation": false,
+        "previous_observation_retained": true
+      }
+    },
+    {
+      "name": "PR merged does not complete workstream",
+      "when": {
+        "provider_pr_state": "closed",
+        "provider_merged": true
+      },
+      "expect": {
+        "snapshot_state": "merged",
+        "workstream_lifecycle_unchanged": true,
+        "membership_unchanged": true
+      }
+    },
+    {
+      "name": "owner AAD cannot decrypt another owner or account domain",
+      "given": {
+        "aad_domain": "workstreams-owner-v1",
+        "owner": "owner-alpha"
+      },
+      "when": {
+        "substitute_owner": "owner-beta",
+        "try_account_codec": true
+      },
+      "expect": {
+        "decryption_rejected": true,
+        "per_account_keys_added": 0
+      }
+    },
+    {
+      "name": "no summary needed for organization",
+      "given": {
+        "summary": null,
+        "extraction_state": "unavailable",
+        "name": "Synthetic coordination"
+      },
+      "expect": {
+        "name_renderable": true,
+        "explicit_membership_available": true
+      }
+    },
+    {
+      "name": "schema-valid invalid calendar timestamp rejected",
+      "when": {
+        "timestamp": "2026-02-30T00:00:00Z"
+      },
+      "expect": {
+        "error": "invalid_request"
+      }
+    },
+    {
+      "name": "name is metadata not inferred identity",
+      "given": {
+        "workstream_names": [
+          "Same synthetic name",
+          "Same synthetic name"
+        ]
+      },
+      "expect": {
+        "distinct_ids_allowed": true,
+        "inferred_merge": false
+      }
+    },
+    {
+      "name": "account grants cannot bootstrap owner CSRF",
+      "given": {
+        "trusted_identity": true,
+        "account_permissions": [
+          "dashboard:read"
+        ],
+        "owner_permissions": []
+      },
+      "when": {
+        "route": "/workstreams/v1/session"
+      },
+      "expect": {
+        "error": "forbidden",
+        "csrf_token_returned": false
+      }
+    },
+    {
+      "name": "pending receipt polling preserves terminal business bytes",
+      "given": {
+        "current_owner_read_and_write_permissions": true,
+        "server_generation_unchanged": true,
+        "command_id": "synthetic-cmd-refresh-pr"
+      },
+      "steps": [
+        {
+          "method": "POST",
+          "route": "/workstreams/v1/commands",
+          "expected_status": 202,
+          "response_fixture": "pending refresh receipt"
+        },
+        {
+          "method": "GET",
+          "route": "/workstreams/v1/commands/{command_id}",
+          "expected_status": 202,
+          "response_fixture": "pending refresh receipt"
+        },
+        {
+          "method": "GET",
+          "route": "/workstreams/v1/commands/{command_id}",
+          "expected_status": 202,
+          "response_fixture": "unresolved refresh receipt"
+        },
+        {
+          "method": "GET",
+          "route": "/workstreams/v1/commands/{command_id}",
+          "expected_status": 200,
+          "response_fixture": "committed refresh receipt"
+        },
+        {
+          "method": "POST",
+          "route": "/workstreams/v1/commands",
+          "expected_status": 200,
+          "response_fixture": "committed refresh receipt",
+          "request": "same command ID and exact business bytes with fresh transport nonce"
+        },
+        {
+          "method": "GET",
+          "route": "/workstreams/v1/commands/{command_id}",
+          "expected_status": 200,
+          "response_fixture": "committed refresh receipt"
+        }
+      ],
+      "expect": {
+        "terminal_response_bytes_identical_across_steps": [
+          4,
+          5,
+          6
+        ],
+        "new_business_effects_from_poll_or_replay": 0,
+        "fresh_command_id_created": false
+      }
+    },
+    {
+      "name": "quarantined registration cannot become membership or refresh",
+      "given": {
+        "registration_state": "quarantined",
+        "attestation_version": 0
+      },
+      "when": {
+        "actions": ["attach_primary", "link_secondary", "refresh_linked_pr"]
+      },
+      "expect": {
+        "each_error": "registration_unverified",
+        "memberships_created": 0,
+        "provider_requests": 0,
+        "changed": false
+      }
+    },
+    {
+      "name": "attestation gates exact verified identity",
+      "given": {
+        "registration_state": "verification-pending",
+        "claimed_identity": ["github", "github-public-synthetic", "synthetic-owner/fixture-repository#42"]
+      },
+      "when": {
+        "action": "verify_reference",
+        "proof": {
+          "authority_namespace": "synthetic-owner",
+          "store_generation": 1,
+          "native_id": "synthetic-owner/fixture-repository#42"
+        }
+      },
+      "expect": {
+        "registration_state": "attested",
+        "attestation_version_increment": 1,
+        "immutable_evidence_digest": true
+      }
+    },
+    {
+      "name": "expired or changed native authority requires re-attestation",
+      "given": {
+        "registration_state": "attested",
+        "attestation_version": 2
+      },
+      "when": {
+        "material_change": "store_generation"
+      },
+      "expect": {
+        "registration_state": "re-attestation-required",
+        "membership_commands_admitted": 0,
+        "refresh_provider_requests": 0
+      }
+    },
+    {
+      "name": "coordination disposition and native settlement have separate partial outcomes",
+      "given": {
+        "membership_id": "membership-alpha",
+        "native_reference_id": "ref-t3-thread"
+      },
+      "when": {
+        "commands": [
+          ["cmd-coordinate-done", "set_coordination_disposition"],
+          ["cmd-native-settle", "request_native_t3_settlement"]
+        ],
+        "native_result": "denied"
+      },
+      "expect": {
+        "coordination_receipt": "committed",
+        "native_settlement_receipt": "denied",
+        "receipt_count": 2,
+        "partial_outcome_visible": true
+      }
+    },
+    {
+      "name": "membership removal never settles native T3 state",
+      "given": {
+        "membership_id": "membership-alpha",
+        "native_state": "unsettled"
+      },
+      "when": {
+        "action": "remove_membership"
+      },
+      "expect": {
+        "membership_close_reason": "removed",
+        "native_state": "unsettled",
+        "native_adapter_calls": 0,
+        "native_settlement_receipts": 0
+      }
+    },
+    {
+      "name": "browser mutation missing Origin rejects before admission",
+      "given": {
+        "transport": "trustedOwnerIngress",
+        "csrf": "valid",
+        "origin": null
+      },
+      "when": { "route": "/workstreams/v1/commands", "method": "POST" },
+      "expect": { "error": "forbidden", "receipt_created": false, "changed": false }
+    },
+    {
+      "name": "browser mutation forged Origin rejects before admission",
+      "given": {
+        "transport": "trustedOwnerIngress",
+        "csrf": "valid",
+        "origin": "https://evil.example.invalid"
+      },
+      "when": { "route": "/workstreams/v1/commands", "method": "POST" },
+      "expect": { "error": "forbidden", "receipt_created": false, "changed": false }
+    },
+    {
+      "name": "browser mutation missing or forged CSRF rejects before admission",
+      "given": {
+        "transport": "trustedOwnerIngress",
+        "origin": "exact-configured-origin",
+        "csrf_variants": ["missing", "forged", "expired", "cross-session"]
+      },
+      "when": { "route": "/workstreams/v1/commands", "method": "POST" },
+      "expect": { "each_error": "forbidden", "receipt_created": false, "changed": false }
+    },
+    {
+      "name": "browser supplied trusted identity header is ignored and rejected",
+      "given": {
+        "public_request_header": "Tailscale-User-Login",
+        "trusted_proxy_injection": false
+      },
+      "when": { "route": "/workstreams/v1/commands", "method": "POST" },
+      "expect": { "error": "unauthorized", "receipt_created": false, "changed": false }
+    },
+    {
+      "name": "terminal lifecycle reopening appends a later immutable declaration",
+      "given": {
+        "workstream_id": "ws-alpha",
+        "lifecycle_history": [
+          { "lifecycle": "active", "declaration_revision": 1 },
+          { "lifecycle": "completed", "declaration_revision": 2 }
+        ]
+      },
+      "when": {
+        "action": "update_workstream",
+        "lifecycle": "active"
+      },
+      "expect": {
+        "current_lifecycle": "active",
+        "declaration_revision": 3,
+        "prior_declarations_preserved": 2,
+        "terminal_declaration_superseded": true,
+        "history_overwrites": 0
+      }
+    },
+    {
+      "name": "closed coordination taxonomies remain independent",
+      "given": {
+        "lifecycle": ["planned", "active", "paused", "completed", "deferred", "abandoned"],
+        "progress": ["progressing", "waiting", "blocked", "unknown", "stale"],
+        "membership": ["active-primary", "active-secondary", "ended"],
+        "ended_reasons": ["removed", "completed", "completed-and-delivery-verified", "superseded", "continued-elsewhere", "deferred", "abandoned", "other"],
+        "delivery": ["none-observed", "branch-open", "pr-open", "merged", "released", "deployed", "deployment-verified", "failed", "unknown", "stale"],
+        "freshness": ["current", "stale", "inaccessible", "partial-coverage", "conflicting", "unknown"]
+      },
+      "expect": {
+        "dimensions_independent": true,
+        "native_lifecycle_preserved_verbatim": true,
+        "semantic_inference_mutations": 0
+      }
+    }
+  ]
+}
