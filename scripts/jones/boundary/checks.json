@@ -12,9 +12,7 @@
     },
     {
       "id": "jones-provider-settlement",
-      "tests": [
-        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
       ]
