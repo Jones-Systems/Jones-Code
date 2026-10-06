@@ -214,6 +214,7 @@
     "apps/server/src/relay/AgentAwarenessRelay.test.ts": "jones-tests-in-upstream",
     "apps/server/src/server.ts": "hook",
     "apps/server/src/sourceControl/GitLabCli.ts": "accepted-shared",
+    "apps/server/src/testUtils/shardWeights.json": "policy",
     "apps/server/src/tokenAccounting/ProcessReader.test.ts": "jones-owned",
     "apps/server/src/tokenAccounting/ProcessReader.ts": "jones-owned",
     "apps/server/src/tokenAccounting/ProcessReaderConfig.test.ts": "jones-owned",
