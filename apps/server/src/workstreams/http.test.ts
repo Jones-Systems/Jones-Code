@@ -22,6 +22,8 @@ import * as Etag from "effect/unstable/http/Etag";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { environmentAuthenticatedAuthLayer } from "../auth/http.ts";
 import { make, WorkstreamGateway, WorkstreamGatewayError } from "./WorkstreamGateway.ts";
+import { WorkstreamsRegistrationContext } from "../jones/workstreams/registrationContext/service.ts";
+import { makeRegistrationFixture } from "../jones/workstreams/registrationContext/testFixtures.ts";
 import { makeSyntheticWorkstreamTransport } from "./SyntheticWorkstreamTransport.ts";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -148,6 +150,7 @@ const withHttpFixture = Effect.fn(function* (
   ) as EnvironmentAuth.EnvironmentAuth["Service"];
   const routes = HttpApiBuilder.layer(WorkstreamTestApi).pipe(
     Layer.provide(workstreamHttpApiLayer),
+    Layer.provide(Layer.succeed(WorkstreamsRegistrationContext, makeRegistrationFixture().service)),
     Layer.provide(environmentAuthenticatedAuthLayer),
     Layer.provide(Layer.succeed(EnvironmentAuth.EnvironmentAuth, auth)),
     Layer.provide(

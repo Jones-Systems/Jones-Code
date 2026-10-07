@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
-import type { JonesActionsCandidate, JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
+import type {
+  JonesActionsCandidate,
+  JonesStagedArtifact,
+} from "@t3tools/shared/jones/jonesActions";
 import { JonesUpdater, type JonesUpdaterHost } from "./JonesUpdater.ts";
 
 const candidate: JonesActionsCandidate = {
