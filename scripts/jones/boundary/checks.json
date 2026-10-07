@@ -347,6 +347,18 @@
       ]
     },
     {
+      "id": "jones-performance-diagnostics",
+      "tests": [
+        "apps/server/src/jones/performance/v2Workload.test.ts",
+        "apps/server/scripts/jones/v2Benchmark.test.mjs",
+        "scripts/jones/performance/current-qualification.node-test.mjs"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/performance/v2Workload.test.ts apps/server/scripts/jones/v2Benchmark.test.mjs",
+        "node --test --test-concurrency=1 scripts/jones/performance/current-qualification.node-test.mjs"
+      ]
+    },
+    {
       "id": "jones-performance-migration-restore",
       "tests": [
         "scripts/jones/performance/migration-restore.node-test.mjs"
