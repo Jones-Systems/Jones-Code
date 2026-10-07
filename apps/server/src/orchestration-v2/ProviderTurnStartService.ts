@@ -1,4 +1,12 @@
-import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import {
+  modelSelectionsEqual,
+  codexModelFamily,
+  normalizeModelSlug,
+  getConfiguredReasoningEffort,
+} from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
@@ -37,6 +45,10 @@ import {
 import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
 import {
   ProviderAdapterTurnStartError,
+  hasUnknownRuntimeBinding,
+  runtimeBinding,
+  identityForRequest,
+  requestedRuntimeIdentity,
   type ProviderAdapterV2Error,
   type ProviderAdapterV2HistoricalContext,
   type ProviderAdapterV2SessionRuntime,
@@ -95,6 +107,8 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
+  | ServerSettings.ServerSettingsService
+  | ProviderInstanceRegistry.ProviderInstanceRegistry
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -109,6 +123,8 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    const currentSettings = yield* ServerSettings.ServerSettingsService;
+    const instanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
 
     // These callbacks outlive startup while a run drains background work. Build
     // them outside start's scope so they cannot retain its full thread history.
@@ -684,6 +700,8 @@ export const layer: Layer.Layer<
           return resumed.success;
         }
 
+        if (hasUnknownRuntimeBinding(resumed.failure))
+          return yield* loadFromProvider(Effect.fail(resumed.failure));
         yield* Effect.logWarning("Provider resume failed; attempting a fresh native session", {
           driver: session.driver,
           providerThreadId: providerThread.id,
@@ -818,6 +836,10 @@ export const layer: Layer.Layer<
       });
       const runningProviderThread: OrchestrationV2ProviderThread = {
         ...loadedProviderThread,
+        runtimeIdentity: identityForRequest(
+          requestedRuntimeIdentity(run.modelSelection, session.driver),
+          loadedProviderThread.runtimeIdentity,
+        ),
         contextUsage: handoffUsage,
         id: providerThread.id,
         driver: session.driver,
@@ -930,7 +952,28 @@ export const layer: Layer.Layer<
           payload: runningRootNode,
         },
       ];
+      const runningBinding =
+        loadedProviderThread.runtimeIdentity?.runtimeGeneration === undefined
+          ? undefined
+          : runtimeBinding(
+              runningProviderThread,
+              loadedProviderThread.runtimeIdentity.runtimeGeneration,
+            );
       const runningWrite = yield* eventSink.writeIfRunCurrent({
+        runtimeIdentityRequest: runningProviderThread.runtimeIdentity!.requested,
+        ...(loadedProviderThread.runtimeIdentity === undefined
+          ? {}
+          : {
+              runtimeIdentityPreviousRequest: loadedProviderThread.runtimeIdentity.requested,
+            }),
+        ...(runningBinding === undefined
+          ? {}
+          : {
+              runtimeEvidence: {
+                ...runningBinding,
+                evidenceRevision: loadedProviderThread.runtimeIdentity?.evidenceRevision,
+              },
+            }),
         threadId: projection.thread.id,
         runId: run.id,
         activeAttemptId: attempt.id,
@@ -1085,6 +1128,82 @@ export const layer: Layer.Layer<
                 !coveredItemIds.has(item.id) &&
                 historicalMessage(item) !== null,
             );
+      const startWithConfiguredEffort = (
+        turnInput: Parameters<typeof session.startTurn>[0],
+        compact = false,
+      ) =>
+        Effect.gen(function* () {
+          let dispatchInput = turnInput;
+          if (
+            session.driver === "codex" &&
+            !turnInput.modelSelection.options?.some((option) => option.id === "reasoningEffort")
+          ) {
+            const settingsResult = yield* currentSettings.getSettings.pipe(Effect.option);
+            if (Option.isSome(settingsResult)) {
+              const project = yield* projects
+                .getById(projection.thread.projectId)
+                .pipe(Effect.catch(() => Effect.succeedNone));
+              const settings = resolveProjectSettings(
+                settingsResult.value,
+                projection.thread.projectId,
+                Option.getOrUndefined(project),
+              ).settings;
+              const defaultSelection = settings.defaultModelSelection ?? undefined;
+              const selected = yield* instanceRegistry.getInstance(
+                turnInput.modelSelection.instanceId,
+              );
+              const snapshot =
+                selected === undefined ? undefined : yield* selected.snapshot.getSnapshot;
+              const defaultInstance =
+                defaultSelection === undefined
+                  ? undefined
+                  : yield* instanceRegistry.getInstance(defaultSelection.instanceId);
+              const canonical = normalizeModelSlug(
+                codexModelFamily(turnInput.modelSelection.model),
+                session.driver,
+              );
+              const model =
+                snapshot?.models.find(
+                  (candidate) => candidate.slug === turnInput.modelSelection.model,
+                ) ??
+                snapshot?.models.find((candidate) =>
+                  [candidate.slug, ...(candidate.aliases ?? [])].some(
+                    (slug) =>
+                      normalizeModelSlug(codexModelFamily(slug), session.driver) === canonical,
+                  ),
+                );
+              const effort = getConfiguredReasoningEffort({
+                modelSelection: turnInput.modelSelection,
+                driverKind: session.driver,
+                capabilities: model?.capabilities ?? undefined,
+                defaultModelSelection: defaultSelection,
+                defaultDriverKind:
+                  defaultSelection === undefined
+                    ? undefined
+                    : (settings.providerInstances[defaultSelection.instanceId]?.driver ??
+                      defaultInstance?.driverKind),
+              });
+              if (effort !== undefined)
+                dispatchInput = { ...turnInput, configuredReasoningEffort: effort };
+            }
+          }
+          // A settings read can outlive the attempt. Never dispatch its stale prompt.
+          if (!(yield* isCurrentAttemptInStatus("running"))) return;
+          const start = compact ? session.compactThread! : session.startTurn;
+          yield* start(dispatchInput);
+        }).pipe(
+          Effect.mapError((cause) =>
+            cause._tag === "ProviderAdapterTurnStartError"
+              ? cause
+              : new ProviderAdapterTurnStartError({
+                  driver: session.driver,
+                  threadId: projection.thread.id,
+                  providerThreadId: providerThread.id,
+                  runId: run.id,
+                  cause,
+                }),
+          ),
+        );
       const startWithHandoffs = (
         turnInput: Parameters<typeof session.startTurn>[0],
         compact = false,
@@ -1163,19 +1282,21 @@ export const layer: Layer.Layer<
               }),
           });
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
-          const start = compact ? session.compactThread! : session.startTurn;
           const context = [delivery.context, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
           // A note continuation has no turn to resume; its text is the prompt.
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
-          yield* start({
-            ...(noteContinuation ? promptedInput : turnInput),
-            message: {
-              ...turnInput.message,
-              text: context === "" ? userText : `${context}\n\nUser message:\n${userText}`,
+          yield* startWithConfiguredEffort(
+            {
+              ...(noteContinuation ? promptedInput : turnInput),
+              message: {
+                ...turnInput.message,
+                text: context === "" ? userText : `${context}\n\nUser message:\n${userText}`,
+              },
             },
-          });
+            compact,
+          );
           // The provider already accepted the turn. A stale pending marker
           // can force a fresh thread later, but must not stop live ingestion.
           yield* delivery.delivered.pipe(
@@ -1204,7 +1325,7 @@ export const layer: Layer.Layer<
         missedItems.length === 0 &&
         restartNote === "" &&
         !noteContinuation
-          ? session
+          ? makeDeliverySession(session, startWithConfiguredEffort)
           : makeDeliverySession(session, startWithHandoffs);
       yield* runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),

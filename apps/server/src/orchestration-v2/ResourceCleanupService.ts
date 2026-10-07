@@ -1,3 +1,4 @@
+import type { LegacyOwnedTerminalControl } from "./RecordedTypes.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -19,13 +20,25 @@ export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupErro
 ) {}
 
 export class ResourceCleanupService extends Context.Reference<{
-  readonly cleanupTerminals: (threadId: string) => Effect.Effect<void, ResourceCleanupError>;
+  readonly cleanupTerminals: (
+    threadId: string,
+    legacyOwnedControl?: LegacyOwnedTerminalControl,
+  ) => Effect.Effect<void, ResourceCleanupError>;
   readonly cleanupAttachments: (
     attachmentIds: ReadonlyArray<string>,
   ) => Effect.Effect<void, ResourceCleanupError>;
 }>("t3/orchestration-v2/ResourceCleanupService", {
   defaultValue: () => ({
-    cleanupTerminals: () => Effect.void,
+    cleanupTerminals: (threadId, legacyOwnedControl) =>
+      legacyOwnedControl === undefined
+        ? Effect.void
+        : Effect.fail(
+            new ResourceCleanupError({
+              operation: "terminal",
+              threadId,
+              cause: new Error("Bound legacy terminal cleanup requires its executing owner."),
+            }),
+          ),
     cleanupAttachments: () => Effect.void,
   }),
 }) {}
@@ -37,9 +50,12 @@ export const live = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     const config = yield* ServerConfig.ServerConfig;
     return {
-      cleanupTerminals: (threadId: string) =>
+      cleanupTerminals: (threadId: string, legacyOwnedControl?: LegacyOwnedTerminalControl) =>
         terminals
-          .close({ threadId, deleteHistory: true })
+          .close(
+            { threadId, deleteHistory: true },
+            legacyOwnedControl === undefined ? {} : { legacyOwnedControl },
+          )
           .pipe(
             Effect.mapError(
               (cause) => new ResourceCleanupError({ operation: "terminal", threadId, cause }),

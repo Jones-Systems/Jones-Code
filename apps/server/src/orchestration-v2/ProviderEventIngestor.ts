@@ -389,6 +389,30 @@ export const layer: Layer.Layer<
     const normalize: ProviderEventIngestorV2Shape["normalize"] = (input) =>
       Effect.gen(function* () {
         switch (input.event.type) {
+          case "runtime_identity.observed": {
+            const { binding, requested, observed } = input.event;
+            if (
+              input.providerInstanceId !== binding.providerInstanceId ||
+              input.providerSessionId !== binding.providerSessionId ||
+              input.threadId !== binding.threadId ||
+              input.event.driver !== binding.driver
+            )
+              return [];
+            const current = (yield* projections.getThreadRecords(binding.threadId, [
+              "providerThreads",
+            ])).providerThreads.find((thread) => thread.id === binding.providerThreadId);
+            if (current?.runtimeIdentity === undefined) return [];
+            return [
+              yield* makeDomainEvent(input, {
+                type: "provider-thread.updated",
+                threadId: binding.threadId,
+                payload: {
+                  ...current,
+                  runtimeIdentity: { ...current.runtimeIdentity, requested, observed },
+                },
+              }),
+            ];
+          }
           case "app_thread.created":
             return [
               yield* makeDomainEvent(input, {
@@ -554,6 +578,27 @@ export const layer: Layer.Layer<
           if (events.length === 0) {
             return [];
           }
+          const observation =
+            input.event.type === "runtime_identity.observed" ? input.event : undefined;
+          const identity =
+            observation === undefined
+              ? undefined
+              : events.find((event) => event.type === "provider-thread.updated");
+          const runtimeGuard =
+            observation === undefined
+              ? "runtimeEvidence" in input.event && input.event.runtimeEvidence !== undefined
+                ? { runtimeEvidence: input.event.runtimeEvidence }
+                : {}
+              : {
+                  runtimeEvidence: {
+                    ...observation.binding,
+                    ...(identity?.type === "provider-thread.updated" &&
+                    identity.payload.runtimeIdentity?.evidenceRevision !== undefined
+                      ? { evidenceRevision: identity.payload.runtimeIdentity.evidenceRevision }
+                      : {}),
+                  },
+                  runtimeIdentityObservation: observation.requested,
+                };
           const mapWriteError = (cause: unknown) =>
             new ProviderEventPublishError({
               providerSessionId: input.providerSessionId,
@@ -564,6 +609,7 @@ export const layer: Layer.Layer<
             const ownerResult = yield* eventSink
               .writeIfProviderThreadOwner({
                 guardPendingUserInputCancellations: true,
+                ...runtimeGuard,
                 ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                 ...input.writeIfProviderThreadOwner,
                 events,
@@ -575,6 +621,7 @@ export const layer: Layer.Layer<
             return yield* eventSink
               .write({
                 guardPendingUserInputCancellations: true,
+                ...runtimeGuard,
                 ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                 events,
               })
@@ -583,6 +630,7 @@ export const layer: Layer.Layer<
           const result = yield* eventSink
             .writeIfRunCurrent({
               guardPendingUserInputCancellations: true,
+              ...runtimeGuard,
               ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
               threadId: input.threadId,
               ...input.writeIfRunCurrent,

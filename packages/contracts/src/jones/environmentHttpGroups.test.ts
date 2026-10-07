@@ -8,6 +8,8 @@ import { EnvironmentAuthenticatedAuth, EnvironmentHttpApi } from "../environment
 describe("Jones environment HTTP registration", () => {
   it("preserves the environment group order", () => {
     expect(Object.keys(EnvironmentHttpApi.groups)).toEqual([
+      "providerQueue",
+      "queueDispatch",
       "voiceReview",
       "hostStatus",
       "metadata",
