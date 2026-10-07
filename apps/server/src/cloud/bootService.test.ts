@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
+  HostProcessArchitecture,
   HostProcessExecutablePath,
   HostProcessPlatform,
   HostProcessUserId,
@@ -11,18 +12,24 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as BootService from "./bootService.ts";
 import { pinnedRuntimePaths } from "./pinnedRuntime.ts";
+import { qualifiedPayloadDigest, QUALIFIED_RUNTIME_RECEIPT } from "../jones/cloud/qualifiedRuntime.ts";
 import {
   parseServiceState,
   SERVICE_LAUNCHER_PROTOCOL,
   SERVICE_RESTART_PENDING_FILE,
   serviceStateHasPendingUpdate,
 } from "./serviceProtocol.ts";
+
+const NativeFixtureJson = Schema.fromJsonString(Schema.Unknown);
+const encodeNativeFixtureJson = Schema.encodeSync(NativeFixtureJson);
+const decodeNativeFixtureJson = Schema.decodeUnknownSync(NativeFixtureJson);
 
 const linuxRuntime = "/home/theo/.t3/runtime/versions/1.2.3/t3";
 const linuxPlan = {
@@ -832,6 +839,116 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           `launchctl bootstrap gui/501 ${plistPath}`,
         ]);
       }
+    }),
+  );
+});
+
+it.layer(NodeServices.layer)("qualified boot service setup boundary", (it) => {
+  it.effect("blocks a version-only preview before probes, downloads or service stops", () =>
+    Effect.gen(function* () {
+      const { makeService, fs, statePath, commands } = yield* makeHarness();
+      const preview = yield* makeService(undefined, "0.0.0-preview.20261002.100.1");
+      const error = yield* preview.install({ allowDowngrade: true }).pipe(Effect.flip);
+      expect(error._tag).toBe("BootServiceBootstrapRequiredError");
+      expect(commands).toEqual([]);
+      expect(yield* fs.exists(statePath)).toBe(false);
+    }),
+  );
+
+  it.effect(
+    "refuses replacing an installed Jones source with a stable version even with allow-downgrade",
+    () =>
+      Effect.gen(function* () {
+        const { service, fs, statePath, commands } = yield* makeHarness();
+        yield* service.install();
+        const previewState = encodeNativeFixtureJson({
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "0.0.0-preview.20261002.100.1",
+        });
+        yield* fs.writeFileString(statePath, previewState);
+        commands.length = 0;
+        const error = yield* service
+          .install({ allowDowngrade: true, start: false })
+          .pipe(Effect.flip);
+        expect(error._tag).toBe("BootServiceBootstrapRequiredError");
+        expect(commands).toEqual([]);
+        expect(yield* fs.readFileString(statePath)).toBe(previewState);
+      }),
+  );
+
+  it.effect("retains an exact existing qualified install as a read-only no-op", () =>
+    Effect.gen(function* () {
+      const { makeService, fs, statePath, commands } = yield* makeHarness();
+      const path = yield* Path.Path;
+      const arch = yield* HostProcessArchitecture;
+      const version = "0.0.0-preview.20261002.100.1";
+      const preview = yield* makeService(undefined, version);
+      const baseDir = path.dirname(path.dirname(statePath));
+      const runtime = pinnedRuntimePaths(path, baseDir, version, "linux");
+      yield* fs.chmod(runtime.entryPath, 0o700);
+      const status = yield* preview.status;
+      const plan = {
+        program: [runtime.entryPath, "__service-launcher"],
+        baseDir,
+        logPath: status.logPath,
+        unitPath: status.unitPath,
+      };
+      yield* fs.makeDirectory(path.dirname(status.unitPath), { recursive: true });
+      const unit = BootService.renderBootServiceUnit(plan);
+      const state = encodeNativeFixtureJson({
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        activeVersion: version,
+      });
+      yield* fs.writeFileString(status.unitPath, unit);
+      yield* fs.writeFileString(statePath, state);
+      yield* fs.writeFileString(
+        path.join(runtime.versionDir, QUALIFIED_RUNTIME_RECEIPT),
+        encodeNativeFixtureJson({
+          protocol: 1,
+          repository: "Jones-Systems/Jones-Code",
+          channel: "jones-main",
+          version,
+          sourceSha: "a".repeat(40),
+          sourceTree: "b".repeat(40),
+          installedSourceSha: "c".repeat(40),
+          runId: 100,
+          runAttempt: 1,
+          artifactId: 101,
+          workflow: ".github/workflows/artifact-cli-linux.yml",
+          artifactDigest: `sha256:${"d".repeat(64)}`,
+          archiveSha256: "e".repeat(64),
+          platform: "linux",
+          architecture: arch,
+          payloadSha256: yield* Effect.promise(() => qualifiedPayloadDigest(runtime.versionDir)),
+        }),
+        { mode: 0o600 },
+      );
+      commands.length = 0;
+      expect(yield* preview.install({ start: false })).toEqual(plan);
+      expect(commands).toEqual([]);
+      expect(yield* fs.readFileString(statePath)).toBe(state);
+      expect(yield* fs.readFileString(status.unitPath)).toBe(unit);
+    }),
+  );
+
+  it.effect("preserves desktop native ownership before any generic service setup side effect", () =>
+    Effect.gen(function* () {
+      const { service, fs, statePath, commands } = yield* makeHarness();
+      const marker = statePath.replace("service-state.json", "jones-active-install.json");
+      yield* fs.writeFileString(
+        marker,
+        encodeNativeFixtureJson({ owner: "desktop", home: "native-fixture" }),
+      );
+      const error = yield* service.install().pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "BootServiceBootstrapRequiredError",
+        reason: "desktop-owned-home",
+      });
+      expect(commands).toEqual([]);
+      expect(yield* fs.exists(statePath)).toBe(false);
+      expect(decodeNativeFixtureJson(yield* fs.readFileString(marker))).toMatchObject({
+        owner: "desktop",
+      });
     }),
   );
 });
