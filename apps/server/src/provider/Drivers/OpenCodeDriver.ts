@@ -1,3 +1,4 @@
+import * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeCreationPolicy.ts";
 /**
  * OpenCodeDriver — `ProviderDriver` for the OpenCode runtime.
  *
@@ -200,6 +201,10 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       const serverConfig = yield* ServerConfig.ServerConfig;
       const httpClient = yield* HttpClient.HttpClient;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const authorityOption = yield* Effect.serviceOption(OpenCodeCreationPolicy.OpenCodeAuthority);
+      const authority = Option.isSome(authorityOption)
+        ? authorityOption.value.forInstance(instanceId)
+        : undefined;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
@@ -277,6 +282,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       );
       // One OpenCode 2 server per instance, spawned on first use or reached at `serverUrl`.
       const openCode2Server = yield* OpenCode2Server.make({
+        ...(authority !== undefined ? { authority } : {}),
         binaryPath: effectiveConfig.binaryPath,
         serverUrl: effectiveConfig.serverUrl,
         serverPassword: effectiveConfig.serverPassword,
@@ -299,57 +305,66 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         ),
       });
       const loadOpenCode2Models = yield* makeOpenCode2ModelLoader(
-        openCode2Server.withConnection((connection) =>
-          connection.client.model.list({ location: { directory: serverConfig.cwd } }).pipe(
-            Effect.map((models) => models.data),
-            Effect.mapError(
-              (cause) =>
-                new OpenCodeRuntime.OpenCodeRuntimeError({
-                  operation: "model.list",
-                  detail: "The OpenCode server could not list its models.",
-                  cause,
-                }),
+        openCode2Server.withConnection(
+          (connection) =>
+            connection.client.model.list({ location: { directory: serverConfig.cwd } }).pipe(
+              Effect.map((models) => models.data),
+              Effect.mapError(
+                (cause) =>
+                  new OpenCodeRuntime.OpenCodeRuntimeError({
+                    operation: "model.list",
+                    detail: "The OpenCode server could not list its models.",
+                    cause,
+                  }),
+              ),
             ),
-          ),
+          undefined,
+          "models",
         ),
       );
       // A 2.x server lists skills and commands per directory, so one server
       // answers every workspace. Its event stream says when a directory it had
       // not served yet finished scanning.
       const listOpenCode2Workspace = (cwd: string) =>
-        openCode2Server.withConnection(({ client, events }) =>
-          Effect.gen(function* () {
-            const location = { directory: cwd };
-            const scanned = yield* Deferred.make<void>();
-            const pending = new Set(["command.updated", "skill.updated"]);
-            const stream = yield* events.pipe(Effect.option);
-            if (stream._tag === "Some") {
-              yield* stream.value.pipe(
-                Stream.runForEach((event) =>
-                  "location" in event &&
-                  event.location?.directory === cwd &&
-                  pending.delete(event.type) &&
-                  pending.size === 0
-                    ? Deferred.succeed(scanned, undefined)
-                    : Effect.void,
+        openCode2Server.withConnection(
+          ({ client, events }) =>
+            Effect.gen(function* () {
+              const location = { directory: cwd };
+              const scanned = yield* Deferred.make<void>();
+              const pending = new Set(["command.updated", "skill.updated"]);
+              const stream = yield* events.pipe(Effect.option);
+              if (stream._tag === "Some") {
+                yield* stream.value.pipe(
+                  Stream.runForEach((event) =>
+                    "location" in event &&
+                    event.location?.directory === cwd &&
+                    pending.delete(event.type) &&
+                    pending.size === 0
+                      ? Deferred.succeed(scanned, undefined)
+                      : Effect.void,
+                  ),
+                  Effect.ignore,
+                  Effect.forkScoped,
+                );
+              }
+              return yield* loadOpenCode2Workspace(
+                Effect.all(
+                  {
+                    skills: client.skill.list({ location }).pipe(Effect.map((list) => list.data)),
+                    commands: client.command
+                      .list({ location })
+                      .pipe(Effect.map((list) => list.data)),
+                  },
+                  { concurrency: "unbounded" },
                 ),
-                Effect.ignore,
-                Effect.forkScoped,
+                Deferred.await(scanned),
               );
-            }
-            return yield* loadOpenCode2Workspace(
-              Effect.all(
-                {
-                  skills: client.skill.list({ location }).pipe(Effect.map((list) => list.data)),
-                  commands: client.command.list({ location }).pipe(Effect.map((list) => list.data)),
-                },
-                { concurrency: "unbounded" },
-              ),
-              Deferred.await(scanned),
-            );
-          }).pipe(Effect.scoped),
+            }).pipe(Effect.scoped),
+          undefined,
+          "inventory",
         );
       const serverOwner = yield* OpenCodeServerOwner.make({
+        ...(authority !== undefined ? { authority } : {}),
         binaryPath: effectiveConfig.binaryPath,
         directory: serverConfig.cwd,
         ...(effectiveConfig.serverPassword
@@ -435,16 +450,19 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
                 return yield* loadWorkspaceInventory(client);
               }),
             )
-          : serverOwner.withServer((server) =>
-              loadWorkspaceInventory(
-                openCodeRuntime.createOpenCodeSdkClient({
-                  baseUrl: server.url,
-                  directory: cwd,
-                  ...(server.serverPassword !== undefined
-                    ? { serverPassword: server.serverPassword }
-                    : {}),
-                }),
-              ),
+          : serverOwner.withServer(
+              (server) =>
+                loadWorkspaceInventory(
+                  openCodeRuntime.createOpenCodeSdkClient({
+                    baseUrl: server.url,
+                    directory: cwd,
+                    ...(server.serverPassword !== undefined
+                      ? { serverPassword: server.serverPassword }
+                      : {}),
+                  }),
+                ),
+              undefined,
+              "inventory",
             );
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
