@@ -105,6 +105,15 @@
         "apps/web/src/components/chat/ReasoningEffortShortcuts.test.tsx",
         "apps/web/src/components/chat/composerShortcutRails.test.ts"
       ]
+    },
+    {
+      "id": "native-organization-metadata",
+      "tests": [
+        "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
+        "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
+        "packages/contracts/src/jones/organizationMetadata.test.ts"
+      ],
+      "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer."
     }
   ]
 }

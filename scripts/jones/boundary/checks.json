@@ -130,6 +130,17 @@
       "id": "jones-process-placement-build",
       "tests": ["native/process-placement/build.test.mjs"],
       "commands": ["node --test native/process-placement/build.test.mjs"]
+    },
+    {
+      "id": "jones-native-organization-metadata",
+      "tests": [
+        "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
+        "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
+        "packages/contracts/src/jones/organizationMetadata.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts packages/contracts/src/jones/organizationMetadata.test.ts"
+      ]
     }
   ]
 }
