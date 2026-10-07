@@ -245,6 +245,19 @@
       ]
     },
     {
+      "id": "jones-decision-snapshot",
+      "tests": [
+        "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/mcp/McpInvocationContext.test.ts",
+        "apps/server/src/mcp/McpSessionRegistry.test.ts",
+        "apps/server/src/mcp/McpHttpServer.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/mcp/McpInvocationContext.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts apps/server/src/mcp/McpHttpServer.test.ts"
+      ]
+    },
+    {
       "id": "jones-qualified-updates",
       "tests": [
         "packages/shared/src/jones/jonesActions.test.ts",
