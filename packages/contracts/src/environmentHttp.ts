@@ -884,6 +884,7 @@ export class ProviderQueueHttpApi extends HttpApiGroup.make("providerQueue")
 const {
   EnvironmentVoiceReviewHttpApi,
   EnvironmentHostStatusHttpApi,
+  EnvironmentWorkQueueMetadataHttpApi: WorkQueueMetadataHttpApi,
   EnvironmentConversationLibraryHttpApi: ConversationLibraryHttpApi,
 } = makeJonesHttpGroups({
   OptionalBearerHeaders,
@@ -894,11 +895,14 @@ const {
 
 export class EnvironmentConversationLibraryHttpApi extends ConversationLibraryHttpApi {}
 
+export class EnvironmentWorkQueueMetadataHttpApi extends WorkQueueMetadataHttpApi {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(ProviderQueueHttpApi)
   .add(EnvironmentQueueDispatchHttpApi)
   .add(EnvironmentVoiceReviewHttpApi)
   .add(EnvironmentHostStatusHttpApi)
+  .add(EnvironmentWorkQueueMetadataHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)

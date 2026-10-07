@@ -130,6 +130,20 @@
       "id": "jones-process-placement-build",
       "tests": ["native/process-placement/build.test.mjs"],
       "commands": ["node --test native/process-placement/build.test.mjs"]
+    },
+    {
+      "id": "jones-work-queue-metadata",
+      "tests": [
+        "apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts",
+        "apps/server/src/jones/workQueueMetadata/http.test.ts",
+        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
+        "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "packages/contracts/src/jones/workQueueMetadata.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/jones/workQueueMetadata/http.test.ts apps/web/src/components/workQueue/WorkQueuePage.test.tsx packages/client-runtime/src/jones/workQueueMetadata.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/workQueueMetadata.test.ts"
+      ]
     }
   ]
 }
