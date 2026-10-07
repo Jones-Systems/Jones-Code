@@ -8,6 +8,8 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import type * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import type * as FileSystem from "effect/FileSystem";
@@ -39,8 +41,15 @@ vi.mock("../../../package.json", () => ({
   },
 }));
 
+class FixtureIoError extends Data.TaggedError("FixtureIoError")<{
+  readonly cause: unknown;
+}> {}
+
 const io = <A>(run: (signal: AbortSignal) => Promise<A>) =>
-  Effect.tryPromise({ try: run, catch: (cause) => cause });
+  Effect.tryPromise({
+    try: run,
+    catch: (cause) => new FixtureIoError({ cause }),
+  });
 const fileIo = <A>(run: () => Promise<A>) => io(run).pipe(Effect.uninterruptible);
 
 function latch() {
@@ -105,7 +114,7 @@ function withRuntime<A, E>(
     E,
     | ServerConfig.ServerConfig
     | ServerEnvironment.ServerEnvironment
-    | HostProcessEnvironment
+    | Context.Service.Identifier<typeof HostProcessEnvironment>
     | FileSystem.FileSystem
   >,
 ) {
@@ -116,8 +125,12 @@ function withRuntime<A, E>(
         getEnvironmentId: Effect.succeed(EnvironmentId.make("fixture")),
         getDescriptor: Effect.die("Startup adapter must bind the environment ID directly."),
       }),
-      Effect.provide(ServerConfig.layerTest(root, root).pipe(Layer.provide(NodeServices.layer))),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(root, root).pipe(Layer.provide(NodeServices.layer)),
+          NodeServices.layer,
+        ),
+      ),
     ),
   );
 }
@@ -155,7 +168,7 @@ async function observe(file: string, signal: AbortSignal) {
   }
 }
 
-const milestone = <A, E>(effect: Effect.Effect<void, unknown>, startup: Fiber.Fiber<A, E>) =>
+const milestone = <A, E>(effect: Effect.Effect<void, FixtureIoError>, startup: Fiber.Fiber<A, E>) =>
   Effect.raceFirst(effect, Fiber.join(startup));
 const absent = (path: string) =>
   fileIo(() => expect(NodeFSP.lstat(path)).rejects.toMatchObject({ code: "ENOENT" }));

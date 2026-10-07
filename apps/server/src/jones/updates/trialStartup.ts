@@ -1,6 +1,7 @@
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Schema from "effect/Schema";
 import type * as NetAddress from "effect/unstable/net/NetAddress";
 import packageJson from "../../../package.json" with { type: "json" };
 import * as ServerConfig from "../../config.ts";
@@ -55,7 +56,7 @@ export const awaitJonesTrialStartup = <E, R>(input: {
             return pending;
           },
           catch: (cause) =>
-            cause instanceof JonesTrialGateError
+            Schema.is(JonesTrialGateError)(cause)
               ? cause
               : new JonesTrialGateError({ step: "identity", uncertain: false, cause }),
         }),
@@ -67,7 +68,7 @@ export const awaitJonesTrialStartup = <E, R>(input: {
             await pending;
           },
           catch: (cause) =>
-            cause instanceof JonesTrialGateError
+            Schema.is(JonesTrialGateError)(cause)
               ? cause
               : new JonesTrialGateError({ step: "cancel", uncertain: false, cause }),
         }).pipe(Effect.catch((error) => (error.uncertain ? Effect.fail(error) : Effect.void))),

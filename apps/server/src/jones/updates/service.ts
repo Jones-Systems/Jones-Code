@@ -40,7 +40,7 @@ export class JonesUpdates extends Context.Service<
     readonly download: (input: JonesUpdateDownloadInput) => Effect.Effect<JonesUpdateState>;
     readonly install: (input: JonesUpdateInstallInput) => Effect.Effect<JonesUpdateState>;
   }
->()("t3/jonesUpdates/service/JonesUpdates") {}
+>()("t3/jones/updates/service/JonesUpdates") {}
 
 const blocked = (message: string): JonesUpdateState => ({
   source: "jones-actions",

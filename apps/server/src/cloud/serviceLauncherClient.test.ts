@@ -3,6 +3,7 @@ import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Duration from "effect/Duration";
+import * as Schema from "effect/Schema";
 import { TestClock } from "effect/testing";
 import * as NetAddress from "effect/unstable/net/NetAddress";
 import {
@@ -23,6 +24,8 @@ import {
   type ServiceLauncherParentMessage,
 } from "./serviceProtocol.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
+
+const encodeContextFixture = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 class FakeLauncherProcess {
   readonly connected = true;
@@ -443,9 +446,9 @@ it.effect("establishes the qualified outcome only after exact grant and durable 
 it.effect("holds qualified pending context without a startup gate before sending", () =>
   Effect.gen(function* () {
     const fixture = qualifiedFixture(4);
-    expect(decodeServiceLauncherContext(JSON.stringify(fixture.context))?.update).toHaveProperty(
-      "qualified",
-    );
+    expect(
+      decodeServiceLauncherContext(encodeContextFixture(fixture.context))?.update,
+    ).toHaveProperty("qualified");
     const client = yield* fixture.make();
     expect(client.requiresQualifiedTrialGate).toBe(true);
     expect((yield* client.prepareTrial.pipe(Effect.flip)).operation).toBe("qualified-proof");
@@ -460,7 +463,7 @@ it.effect("holds qualified pending context without a startup gate before sending
 it.effect("rejects legacy qualified context instead of stripping its identity", () =>
   Effect.gen(function* () {
     const fixture = qualifiedFixture(3);
-    expect(decodeServiceLauncherContext(JSON.stringify(fixture.context))).toBeUndefined();
+    expect(decodeServiceLauncherContext(encodeContextFixture(fixture.context))).toBeUndefined();
     expect((yield* fixture.make().pipe(Effect.flip)).operation).toBe("decode-context");
     expect(fixture.host.sent).toEqual([]);
   }),

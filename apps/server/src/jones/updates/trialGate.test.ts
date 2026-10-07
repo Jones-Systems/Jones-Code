@@ -565,12 +565,9 @@ it("retains a reservation when directory fsync fails and never treats it as acti
     vi.mocked(NodeFSP.open).mockImplementation(async (path, flags, mode) => {
       const file = await original.open(path, flags, mode);
       if (path === root && ++directoryOpens === 2) {
-        return {
-          sync: async () => {
-            throw new Error("Synthetic reservation fsync failure");
-          },
-          close: () => file.close(),
-        } as typeof file;
+        file.sync = async () => {
+          throw new Error("Synthetic reservation fsync failure");
+        };
       }
       return file;
     });

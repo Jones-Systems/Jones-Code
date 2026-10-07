@@ -79,10 +79,13 @@ function cancelled(signal?: AbortSignal): void {
 }
 
 class PublicationFailure {
-  constructor(
-    readonly published: boolean,
-    readonly cause: unknown,
-  ) {}
+  readonly published: boolean;
+  readonly cause: unknown;
+
+  constructor(published: boolean, cause: unknown) {
+    this.published = published;
+    this.cause = cause;
+  }
 }
 
 async function writeDurableExclusive(
@@ -235,7 +238,7 @@ export async function awaitJonesTrialCommit(input: {
     )
       throw new Error("Descriptor identity or artifact paths differ.");
   } catch (cause) {
-    if (cause instanceof JonesTrialGateError) throw cause;
+    if (Schema.is(JonesTrialGateError)(cause)) throw cause;
     throw new JonesTrialGateError({ step: "identity", uncertain: false, cause });
   }
   try {
@@ -272,7 +275,7 @@ export async function awaitJonesTrialCommit(input: {
     let reservationPublished = false;
     const finish = (cause?: unknown) => {
       if (terminal) {
-        if (cause instanceof JonesTrialGateError && cause.uncertain) terminalCause = cause;
+        if (Schema.is(JonesTrialGateError)(cause) && cause.uncertain) terminalCause = cause;
         return;
       }
       terminal = true;
@@ -330,7 +333,7 @@ export async function awaitJonesTrialCommit(input: {
         cancelled(signal);
         finish();
       } catch (cause) {
-        if (cause instanceof JonesTrialGateError) finish(cause);
+        if (Schema.is(JonesTrialGateError)(cause)) finish(cause);
         else if (cause instanceof PublicationFailure) {
           reservationPublished = cause.published;
           finish(new JonesTrialGateError({ step, uncertain: cause.published, cause: cause.cause }));
