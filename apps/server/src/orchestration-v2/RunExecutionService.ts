@@ -1,4 +1,4 @@
-import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
+import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
