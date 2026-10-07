@@ -88,6 +88,7 @@ export class PreviewAutomationTargetUnavailableError extends Schema.TaggedError<
     threadId: ThreadId,
     tabId: Schema.NullOr(PreviewTabId),
     bridgeAvailable: Schema.Boolean,
+    outcome: Schema.optional(Schema.Literal("not_started")),
   },
 ) {
   get responseTag() {
@@ -199,10 +200,14 @@ export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewA
     threadId: ThreadId,
     tabId: Schema.NullOr(PreviewTabId),
     cause: Schema.Defect(),
+    outcome: Schema.optional(Schema.Literal("not_started")),
   },
 ) {
   static fromCause(
-    input: PreviewAutomationOperationContext & { readonly cause: unknown },
+    input: PreviewAutomationOperationContext & {
+      readonly cause: unknown;
+      readonly outcome?: "not_started";
+    },
   ): PreviewAutomationHostError {
     if (isPreviewAutomationHostError(input.cause)) return input.cause;
     if (
@@ -260,13 +265,21 @@ export function serializePreviewAutomationHostError(
   const detail = Object.fromEntries(
     Object.entries(error).filter(
       ([key]) =>
-        key !== "_tag" && key !== "cause" && key !== "name" && key !== "message" && key !== "stack",
+        key !== "_tag" &&
+        key !== "cause" &&
+        key !== "name" &&
+        key !== "message" &&
+        key !== "stack" &&
+        key !== "outcome",
     ),
   );
   return {
     _tag: "responseTag" in error ? error.responseTag : error._tag,
     message: error.message,
-    ...(isPreviewAutomationNotStartedHostError(error) ? { outcome: "not_started" as const } : {}),
+    ...(isPreviewAutomationNotStartedHostError(error) ||
+    ("outcome" in error && error.outcome === "not_started")
+      ? { outcome: "not_started" as const }
+      : {}),
     ...(Object.keys(detail).length === 0 ? {} : { detail }),
   };
 }
