@@ -758,7 +758,10 @@
     "apps/server/src/provider/Drivers/OpenCodeDriver.ts": "hook",
     "apps/server/src/provider/OpenCodeServerOwner.ts": "hook",
     "apps/server/src/provider/opencode2/OpenCode2Server.ts": "hook",
-    "apps/server/src/provider/opencodeRuntime.ts": "hook"
+    "apps/server/src/provider/opencodeRuntime.ts": "hook",
+    "apps/server/src/jones/runtime/CurrentThreadRuntimeAttachment.ts": "jones-owned",
+    "apps/server/src/jones/runtime/RuntimeCensus.ts": "jones-owned",
+    "apps/server/src/jones/runtime/RuntimeCensus.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -1,3 +1,4 @@
+import type * as RuntimeAttachment from "../jones/runtime/CurrentThreadRuntimeAttachment.ts";
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -157,6 +158,10 @@ export interface ProviderSessionManagerV2Shape {
     readonly providerInstanceId: ProviderInstanceId;
     readonly mcpCredentialId: string;
   }) => Effect.Effect<boolean>;
+
+  readonly readCurrentThreadRuntimeAttachment?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RuntimeAttachment.CurrentThreadRuntimeAttachment>;
 
   readonly observeThreadActivity?: (
     threadId: ThreadId,
@@ -1989,6 +1994,91 @@ export const layerWithOptions = (
       yield* Effect.addFinalizer(() => shutdown);
 
       const equivalentBinding = Schema.toEquivalence(ProviderRuntimeBinding);
+      const readCurrentThreadRuntimeAttachment = Effect.fn(
+        "ProviderSessionManager.readCurrentThreadRuntimeAttachment",
+      )(function* (threadId: ThreadId) {
+        const observedAt = DateTime.formatIso(yield* DateTime.now);
+        const unknown = (reason: string): RuntimeAttachment.CurrentThreadRuntimeAttachment => ({
+          status: "unknown",
+          reason,
+          observedAt,
+        });
+        return yield* Effect.gen(function* () {
+          const before = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
+          if (before.thread.archivedAt !== null || before.thread.deletedAt !== null)
+            return unknown("thread_unavailable");
+          const entries = yield* Ref.get(sessions);
+          const noResident = Ref.get(sessions).pipe(
+            Effect.map(
+              (current) =>
+                ![...current.values()].some((entry) => entry.attachedThreadIds.has(threadId)),
+            ),
+          );
+          if (![...entries.values()].some((entry) => entry.attachedThreadIds.has(threadId)))
+            return { status: "stopped", observedAt, isCurrent: noResident } as const;
+          const provider = before.providerThreads.find(
+            (thread) => thread.id === before.thread.activeProviderThreadId,
+          );
+          const generation = provider?.runtimeIdentity?.runtimeGeneration;
+          const binding =
+            provider === undefined || generation === undefined
+              ? undefined
+              : runtimeBinding(provider, generation);
+          if (binding === undefined || binding.threadId !== threadId)
+            return unknown("native_binding_unavailable");
+          const key = sessionKey(binding.providerSessionId);
+          const entry = entries.get(key);
+          if (
+            entry === undefined ||
+            !entry.attachedThreadIds.has(threadId) ||
+            entry.runtime.instanceId !== binding.providerInstanceId ||
+            entry.runtime.driver !== binding.driver ||
+            entry.runtime.providerSessionId !== binding.providerSessionId
+          )
+            return unknown("runtime_binding_changed");
+          const runtime = entry.runtime;
+          const loadedKey = entry.loadedProviderThreadKeyByThread.get(threadId);
+          const attachedThreadIds = entry.attachedThreadIds;
+          const evidenceRevision = provider?.runtimeIdentity?.evidenceRevision ?? null;
+          const isCurrent = Effect.gen(function* () {
+            const after = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
+            const currentProvider = after.providerThreads.find(
+              (thread) => thread.id === after.thread.activeProviderThreadId,
+            );
+            const currentGeneration = currentProvider?.runtimeIdentity?.runtimeGeneration;
+            const currentBinding =
+              currentProvider === undefined || currentGeneration === undefined
+                ? undefined
+                : runtimeBinding(currentProvider, currentGeneration);
+            const current = (yield* Ref.get(sessions)).get(key);
+            return (
+              currentBinding !== undefined &&
+              equivalentBinding(binding, currentBinding) &&
+              (currentProvider?.runtimeIdentity?.evidenceRevision ?? null) === evidenceRevision &&
+              current?.runtime === runtime &&
+              current.attachedThreadIds === attachedThreadIds &&
+              current.attachedThreadIds.has(threadId) &&
+              current.loadedProviderThreadKeyByThread.get(threadId) === loadedKey &&
+              DateTime.toEpochMillis(after.thread.createdAt) ===
+                DateTime.toEpochMillis(before.thread.createdAt) &&
+              after.thread.archivedAt === null &&
+              after.thread.deletedAt === null
+            );
+          }).pipe(Effect.catchCause(() => Effect.succeed(false)));
+          if (!(yield* isCurrent)) return unknown("runtime_binding_changed");
+          return {
+            status: "attached",
+            binding: Object.freeze({ ...binding }),
+            evidenceRevision,
+            observedAt,
+            isCurrent,
+            physicalIncarnation: {
+              status: "unknown",
+              reason: "physical_incarnation_capture_unavailable",
+            },
+          } as const;
+        }).pipe(Effect.catchCause(() => Effect.succeed(unknown("runtime_binding_unavailable"))));
+      });
       const observeThreadActivity = Effect.fn("ProviderSessionManager.observeThreadActivity")(
         function* (threadId: ThreadId) {
           const unavailable = (reason: string): RuntimeObservation.ProviderRuntimeObservation => ({
@@ -2060,6 +2150,7 @@ export const layerWithOptions = (
       );
 
       return ProviderSessionManagerV2.of({
+        readCurrentThreadRuntimeAttachment,
         observeThreadActivity,
         isMcpCallerAttached: (input) =>
           Ref.get(sessions).pipe(
