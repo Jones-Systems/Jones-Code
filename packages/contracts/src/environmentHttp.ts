@@ -66,6 +66,12 @@ import {
   RelayLinkProofRequest,
 } from "./relay.ts";
 
+import { makeJonesHttpGroups } from "./jones/environmentHttpGroups.ts";
+export {
+  EnvironmentConversationLibraryErrorSchema,
+  EnvironmentConversationLibraryErrorCode,
+  type EnvironmentConversationLibraryError,
+} from "./jones/environmentHttpGroups.ts";
 import {
   T3WorkstreamCommandPollParams,
   T3WorkstreamCommandRequest,
@@ -83,12 +89,6 @@ import {
   WorkstreamReceipt,
 } from "./workstreams.ts";
 import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
-import { makeJonesHttpGroups } from "./jones/environmentHttpGroups.ts";
-export {
-  EnvironmentConversationLibraryErrorSchema,
-  EnvironmentConversationLibraryErrorCode,
-  type EnvironmentConversationLibraryError,
-} from "./jones/environmentHttpGroups.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -690,30 +690,19 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
   }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
 
-import {
-  WorkstreamAppearanceRead,
-  WorkstreamAppearanceWrite,
-  WorkstreamAppearanceResult,
-  WorkstreamAppearance,
-} from "./jones/workstreamAppearance.ts";
+const {
+  EnvironmentVoiceReviewHttpApi,
+  EnvironmentHostStatusHttpApi,
+  EnvironmentConversationLibraryHttpApi: ConversationLibraryHttpApi,
+  EnvironmentWorkstreamAppearanceHttpApi,
+} = makeJonesHttpGroups({
+  OptionalBearerHeaders,
+  EnvironmentAuthenticatedAuth,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+});
 
-class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
-  .add(
-    HttpApiEndpoint.post("appearanceRead", "/api/workstreams/appearance/read", {
-      headers: OptionalBearerHeaders,
-      payload: WorkstreamAppearanceRead,
-      success: WorkstreamAppearanceResult,
-      error: EnvironmentWorkstreamSnapshotErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("appearanceSave", "/api/workstreams/appearance/write", {
-      headers: OptionalBearerHeaders,
-      payload: WorkstreamAppearanceWrite,
-      success: WorkstreamAppearance,
-      error: EnvironmentWorkstreamSnapshotErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
+class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpApi
   .add(
     HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
       headers: OptionalBearerHeaders,
@@ -903,17 +892,6 @@ export class ProviderQueueHttpApi extends HttpApiGroup.make("providerQueue")
       error: [EnvironmentScopeRequiredError],
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
-
-const {
-  EnvironmentVoiceReviewHttpApi,
-  EnvironmentHostStatusHttpApi,
-  EnvironmentConversationLibraryHttpApi: ConversationLibraryHttpApi,
-} = makeJonesHttpGroups({
-  OptionalBearerHeaders,
-  EnvironmentAuthenticatedAuth,
-  EnvironmentScopeRequiredError,
-  EnvironmentInternalError,
-});
 
 export class EnvironmentConversationLibraryHttpApi extends ConversationLibraryHttpApi {}
 

@@ -1,0 +1,131 @@
+import { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
+
+const decodeProjection = Schema.decodeUnknownSync(
+  Schema.toCodecJson(OrchestrationV2ThreadProjection),
+);
+
+export function workModeFixture(): OrchestrationV2ThreadProjection {
+  const at = "1970-01-01T00:00:00.000Z";
+  const modelSelection = { instanceId: "codex", model: "test-model" };
+  return decodeProjection({
+    thread: {
+      id: "thread-work-mode",
+      projectId: "project-work-mode",
+      title: "Work Mode",
+      providerInstanceId: "codex",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdBy: "user",
+      creationSource: "web",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: "provider-thread-work-mode",
+      lineage: {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: "thread-work-mode",
+      },
+      forkedFrom: null,
+      createdAt: at,
+      updatedAt: at,
+      archivedAt: null,
+      deletedAt: null,
+    },
+    runs: [
+      {
+        id: "run-work-mode",
+        threadId: "thread-work-mode",
+        ordinal: 1,
+        providerInstanceId: "codex",
+        modelSelection,
+        providerThreadId: "provider-thread-work-mode",
+        userMessageId: "message-work-mode",
+        rootNodeId: "node-work-mode",
+        activeAttemptId: "attempt-work-mode",
+        status: "completed",
+        requestedAt: at,
+        startedAt: at,
+        completedAt: at,
+        checkpointId: null,
+        contextHandoffId: null,
+      },
+    ],
+    providerSessions: [
+      {
+        id: "session-work-mode",
+        driver: "codex",
+        providerInstanceId: "codex",
+        status: "ready",
+        cwd: "/work-mode-fixture",
+        model: "test-model",
+        capabilities: CodexProviderCapabilitiesV2,
+        createdAt: at,
+        updatedAt: at,
+        lastError: null,
+      },
+    ],
+    providerThreads: [
+      {
+        id: "provider-thread-work-mode",
+        driver: "codex",
+        providerInstanceId: "codex",
+        providerSessionId: "session-work-mode",
+        appThreadId: "thread-work-mode",
+        ownerNodeId: null,
+        nativeThreadRef: { driver: "codex", nativeId: "native-work-mode", strength: "strong" },
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: at,
+        updatedAt: at,
+      },
+    ],
+    providerTurns: [
+      {
+        id: "turn-work-mode",
+        providerThreadId: "provider-thread-work-mode",
+        nodeId: "node-work-mode",
+        runAttemptId: "attempt-work-mode",
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "completed",
+        startedAt: at,
+        completedAt: at,
+      },
+    ],
+    messages: [
+      {
+        id: "message-work-mode",
+        threadId: "thread-work-mode",
+        runId: "run-work-mode",
+        nodeId: "node-work-mode",
+        role: "user",
+        text: "Normal work",
+        attachments: [],
+        streaming: false,
+        createdBy: "user",
+        creationSource: "web",
+        createdAt: at,
+        updatedAt: at,
+      },
+    ],
+    attempts: [],
+    nodes: [],
+    subagents: [],
+    runtimeRequests: [],
+    plans: [],
+    turnItems: [],
+    checkpointScopes: [],
+    checkpoints: [],
+    contextHandoffs: [],
+    contextTransfers: [],
+    visibleTurnItems: [],
+    updatedAt: at,
+  });
+}

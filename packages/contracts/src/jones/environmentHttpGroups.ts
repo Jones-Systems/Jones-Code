@@ -30,6 +30,12 @@ import {
   LibraryReplySchema,
   LibraryRequestSchema,
 } from "../conversationLibrary.ts";
+import {
+  WorkstreamAppearanceRead,
+  WorkstreamAppearanceWrite,
+  WorkstreamAppearanceResult,
+  WorkstreamAppearance,
+} from "./workstreamAppearance.ts";
 
 const EnvironmentConversationLibraryInvalidError = Schema.Struct({
   kind: Schema.Literal("error"),
@@ -289,9 +295,28 @@ export const makeJonesHttpGroups = ({
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+  class EnvironmentWorkstreamAppearanceHttpApi extends HttpApiGroup.make("workstreams")
+    .add(
+      HttpApiEndpoint.post("appearanceRead", "/api/workstreams/appearance/read", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamAppearanceRead,
+        success: WorkstreamAppearanceResult,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("appearanceSave", "/api/workstreams/appearance/write", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamAppearanceWrite,
+        success: WorkstreamAppearance,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    ) {}
+
   return {
     EnvironmentVoiceReviewHttpApi,
     EnvironmentHostStatusHttpApi,
     EnvironmentConversationLibraryHttpApi,
+    EnvironmentWorkstreamAppearanceHttpApi,
   };
 };

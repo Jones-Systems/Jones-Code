@@ -14,6 +14,7 @@ import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { usePullRequestsSupported } from "../../state/environments";
 import { SidebarActiveThreadsPill } from "./SidebarActiveThreadsPill";
+import { SidebarWorkModePill } from "../../jones/workMode/SidebarWorkModePill";
 import { T3Wordmark } from "../T3Wordmark";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -85,6 +86,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
             onToggle={onToggleActiveOnly}
           />
         ) : null}
+        <SidebarWorkModePill />
         {pillLabel ? (
           <div className="ml-1 flex h-7 items-center">
             <Badge data-environment-identification="pill" size="sm" variant="secondary">

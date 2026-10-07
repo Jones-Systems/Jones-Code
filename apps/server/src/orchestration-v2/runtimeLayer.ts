@@ -325,6 +325,6 @@ export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
   agentSessionImporterProvided,
 ).pipe(
   Layer.provideMerge(OrchestrationV2LayerLive.pipe(Layer.provide(ProjectServiceLayerLive))),
-  Layer.provide(Scheduler.layer),
+  Layer.provideMerge(Scheduler.layer),
   Layer.provideMerge(OrchestrationEventInfrastructureLayerLive),
 );

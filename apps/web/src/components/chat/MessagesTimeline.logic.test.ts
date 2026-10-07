@@ -1,4 +1,4 @@
-import { ThreadId, type WorktreeSetupSnapshot } from "@t3tools/contracts";
+import { ChatAttachmentId, ThreadId, type WorktreeSetupSnapshot } from "@t3tools/contracts";
 import {
   CheckpointRef,
   NodeId,
@@ -5154,4 +5154,88 @@ describe("failed turn transcript", () => {
       });
     },
   );
+});
+
+describe("work mode history", () => {
+  function entry(
+    role: "user" | "assistant",
+    text: string,
+    id: string = role,
+  ): Extract<TimelineEntry, { kind: "message" }> {
+    return {
+      kind: "message",
+      id,
+      createdAt: "2026-01-01T00:00:00Z",
+      message: {
+        id: MessageId.make(id),
+        role,
+        text,
+        runId: role === "assistant" ? RunId.make("warm") : null,
+        streaming: false,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    };
+  }
+  function input(timelineEntries: TimelineEntry[]) {
+    return {
+      timelineEntries,
+      isWorking: false,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    };
+  }
+  it("hides persisted sentinel pairs and their live header noise without changing history", () => {
+    const history = [entry("user", "@@@@@"), entry("assistant", "@@@@@")];
+    expect(deriveMessagesTimelineRows({ ...input(history), isWorking: true })).toEqual([]);
+    expect(history).toHaveLength(2);
+    expect(history[1]?.message.text).toBe("@@@@@");
+  });
+  it("keeps unexpected replies and real content in the same turn", () => {
+    for (const text of ["@@@@", "@@@@@ plus text", " @@@@@", "@@@@@\n", "Failed to respond"]) {
+      const rows = deriveMessagesTimelineRows(
+        input([
+          entry("user", "@@@@@"),
+          entry("assistant", text),
+          entry("assistant", "@@@@@", "sentinel"),
+        ]),
+      );
+      expect(rows.filter((row) => row.kind === "message").map((row) => row.message.text)).toEqual([
+        text,
+      ]);
+    }
+  });
+  it("keeps attachment messages and invalidates streaming projections across the sentinel boundary", () => {
+    const attached = entry("user", "@@@@@");
+    const withAttachment = {
+      ...attached,
+      message: {
+        ...attached.message,
+        attachments: [
+          {
+            type: "image",
+            id: ChatAttachmentId.make("image"),
+            name: "photo",
+            mimeType: "image/png",
+            sizeBytes: 1,
+          },
+        ],
+      },
+    } satisfies Extract<TimelineEntry, { kind: "message" }>;
+    expect(
+      deriveMessagesTimelineRows(input([withAttachment])).some((row) => row.kind === "message"),
+    ).toBe(true);
+    const partial = entry("assistant", "@@@@");
+    const streaming = { ...partial, message: { ...partial.message, streaming: true } };
+    const previous = deriveMessagesTimelineRowsWithState(input([streaming]));
+    const completed = { ...streaming, message: { ...streaming.message, text: "@@@@@" } };
+    const hidden = deriveMessagesTimelineRowsWithState(input([completed]), previous);
+    expect(hidden.rows).toEqual([]);
+    const unexpected = { ...completed, message: { ...completed.message, text: "@@@@@ extra" } };
+    expect(
+      deriveMessagesTimelineRowsWithState(input([unexpected]), hidden).rows.some(
+        (row) => row.kind === "message",
+      ),
+    ).toBe(true);
+  });
 });

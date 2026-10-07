@@ -106,6 +106,13 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { admitWorkMode } from "../jones/workMode/Admission.ts";
+import {
+  workModeCommand,
+  type WorkModeCandidate,
+  type WorkModeAdmissionResult,
+} from "../jones/workMode/Policy.ts";
 import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
@@ -294,6 +301,13 @@ export interface OrchestratorV2DispatchResult {
 }
 
 export interface OrchestratorV2Shape {
+  readonly requestWorkMode: (
+    candidate: WorkModeCandidate,
+  ) => Effect.Effect<
+    WorkModeAdmissionResult,
+    OrchestratorV2Error | import("@t3tools/contracts").ServerSettingsError,
+    ServerSettings.ServerSettingsService
+  >;
   readonly requestSelfSettlement: (input: {
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
@@ -11516,6 +11530,47 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   };
 
+  const requestWorkMode: OrchestratorV2Shape["requestWorkMode"] = (candidate) => {
+    const command = workModeCommand(candidate);
+    return threadDispatch.withLock(
+      candidate.threadId,
+      admitWorkMode(candidate, {
+        hasReceipt: commandReceipts
+          .getByCommandId(command.commandId)
+          .pipe(mapDispatchError(command), Effect.map(Option.isSome)),
+        getProviderContext: projectionStore.getThread(candidate.threadId).pipe(
+          Effect.flatMap((thread) =>
+            projectionStore.getThreadProviderContext(
+              candidate.threadId,
+              thread.modelSelection.instanceId,
+            ),
+          ),
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: candidate.threadId, cause }),
+          ),
+        ),
+        getProjection: projectionStore
+          .getThreadProjection(candidate.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: candidate.threadId, cause }),
+            ),
+          ),
+        hasLiveSession: (owner) =>
+          providerSessions.get(owner.providerSessionId!).pipe(
+            mapDispatchError(command),
+            Effect.map(
+              (session) =>
+                Option.isSome(session) &&
+                session.value.instanceId === owner.providerInstanceId &&
+                session.value.providerSession.status === "ready",
+            ),
+          ),
+        dispatch: dispatchWithReceiptEffect,
+      }),
+    );
+  };
+
   const requestSelfSettlement: OrchestratorV2Shape["requestSelfSettlement"] = (input) =>
     threadDispatch.withLock(
       input.threadId,
@@ -11962,6 +12017,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   return OrchestratorV2.of({
+    requestWorkMode,
     requestSelfSettlement,
     resumeQueuedRuns,
     recoverDelegatedTasks,
@@ -12088,6 +12144,7 @@ export const layer: Layer.Layer<
 const layerUnavailable: Layer.Layer<OrchestratorV2> = Layer.succeed(
   OrchestratorV2,
   OrchestratorV2.of({
+    requestWorkMode: () => Effect.succeed("skipped" as const),
     requestSelfSettlement: (input) =>
       Effect.fail(
         new OrchestratorDispatchError({

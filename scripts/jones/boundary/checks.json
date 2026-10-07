@@ -3,7 +3,9 @@
   "groups": [
     {
       "id": "jones-boundary",
-      "tests": ["scripts/jones/check-boundary.test.ts"],
+      "tests": [
+        "scripts/jones/check-boundary.test.ts"
+      ],
       "commands": [
         "vp test run scripts/jones/check-boundary.test.ts",
         "node scripts/jones/check-boundary.ts --strict --json",
@@ -12,7 +14,9 @@
     },
     {
       "id": "jones-provider-settlement",
-      "tests": ["apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"],
+      "tests": [
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
+      ],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
       ]
@@ -128,8 +132,45 @@
     },
     {
       "id": "jones-process-placement-build",
-      "tests": ["native/process-placement/build.test.mjs"],
-      "commands": ["node --test native/process-placement/build.test.mjs"]
+      "tests": [
+        "native/process-placement/build.test.mjs"
+      ],
+      "commands": [
+        "node --test native/process-placement/build.test.mjs"
+      ]
+    },
+    {
+      "id": "jones-workstream-appearance",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx",
+        "packages/client-runtime/src/state/workstreams/appearance.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx packages/client-runtime/src/state/workstreams/appearance.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ]
+    },
+    {
+      "id": "jones-work-mode",
+      "tests": [
+        "apps/mobile/src/features/threads/pending-thread-feed.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts",
+        "apps/server/src/jones/provider/workModePrompt.test.ts",
+        "apps/server/src/jones/workMode/Policy.test.ts",
+        "apps/server/src/jones/workMode/Retention.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/web/src/components/chat/MessagesTimeline.logic.test.ts",
+        "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
+        "packages/contracts/src/jones/workMode.test.ts",
+        "packages/shared/src/jones/workMode.test.ts",
+        "packages/shared/src/serverSettings.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/mobile/src/features/threads/pending-thread-feed.test.ts apps/mobile/src/lib/threadActivity.test.ts apps/server/src/jones/provider/workModePrompt.test.ts apps/server/src/jones/workMode/Policy.test.ts apps/server/src/jones/workMode/Retention.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/web/src/components/chat/MessagesTimeline.logic.test.ts apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx packages/contracts/src/jones/workMode.test.ts packages/shared/src/jones/workMode.test.ts packages/shared/src/serverSettings.test.ts"
+      ]
     },
     {
       "id": "jones-persistent-host-connections",
