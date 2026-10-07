@@ -32,7 +32,7 @@ import {
 import { readRuntimeBinding } from "./runtime-binding.mjs";
 
 const receivingRoot = NodePath.resolve(import.meta.dirname, "../../..");
-const lookupIndex = "idx_orch_events_thread_creation_lookup";
+const lookupIndex = "orchestration_events_v2_created_threads_idx";
 const hash = (value) => NodeCrypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const quote = (name) => `"${name.replaceAll('"', '""')}"`;
 const canonical = (value) => {
@@ -74,6 +74,7 @@ async function loadModules(source, current) {
   );
   const dependencies = {
     Effect: "effect/Effect",
+    Schema: "effect/Schema",
     Layer: "effect/Layer",
     ManagedRuntime: "effect/ManagedRuntime",
     Logger: "effect/Logger",
@@ -93,6 +94,7 @@ async function loadModules(source, current) {
       Importer: "apps/server/src/orchestration-v2/legacy/LegacyV1ThreadImporter.ts",
       Contracts: "packages/contracts/src/index.ts",
       Guard: "apps/server/src/jones/persistence/JonesMigrationGuard.ts",
+      Birth: "apps/server/src/jones/importedHistory/ApplicationBirth.ts",
     });
   return Object.fromEntries(
     await Promise.all([
@@ -342,6 +344,113 @@ async function nativeBackup(source, destination, binding, signal) {
   }
 }
 
+export function receivingCreationLookupProgram({ modules, queryEffect }) {
+  const { Effect } = modules;
+  return Effect.gen(function* () {
+    const threadId = modules.Contracts.ThreadId.make("qualification-native-birth");
+    const payload = JSON.stringify({
+      id: threadId,
+      projectId: "qualification-project",
+      createdAt: "2026-10-07T00:00:00.000Z",
+      deletedAt: null,
+    });
+    const lookup =
+      "SELECT event_id, sequence, payload_json FROM orchestration_events WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ? AND event_type = 'thread.created' ORDER BY sequence DESC LIMIT 1";
+    const indexedLookup = lookup.replace(
+      "FROM orchestration_events",
+      `FROM orchestration_events INDEXED BY ${lookupIndex}`,
+    );
+    const definitions = yield* queryEffect(
+      "SELECT sql FROM sqlite_schema WHERE type='index' AND name=?",
+      [lookupIndex],
+    );
+    NodeAssert.equal(definitions.length, 1, "receiving migration055 lookup index missing");
+    return yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        yield* queryEffect("BEGIN");
+        return yield* restore(
+          Effect.gen(function* () {
+            yield* queryEffect(
+              "INSERT INTO orchestration_v2_projection_threads(thread_id,project_id,title,default_provider,runtime_mode,interaction_mode,created_at,updated_at,payload_json) VALUES(?,?,'Synthetic','codex','full-access','default',?,?,?)",
+              [
+                threadId,
+                "qualification-project",
+                "2026-10-07T00:00:00.000Z",
+                "2026-10-07T00:00:00.000Z",
+                payload,
+              ],
+            );
+            for (const [eventId, version, streamVersion] of [
+              ["qualification-current-birth", 2, 1],
+              ["qualification-foreign-birth", 1, 2],
+            ])
+              yield* queryEffect(
+                "INSERT INTO orchestration_events(event_id,aggregate_kind,stream_id,stream_version,event_type,occurred_at,actor_kind,payload_json,metadata_json,application_event_version) VALUES(?,'thread',?,?,'thread.created',?,'system',?,'{}',?)",
+                [eventId, threadId, streamVersion, "2026-10-07T00:00:00.000Z", payload, version],
+              );
+            const birth = yield* modules.Birth.readApplicationBirthRecord(threadId);
+            NodeAssert.equal(birth?.eventId, "qualification-current-birth");
+            const plan = yield* queryEffect(`EXPLAIN QUERY PLAN ${indexedLookup}`, [threadId]);
+            NodeAssert.ok(plan.some((row) => String(row.detail).includes(lookupIndex)));
+            NodeAssert.deepEqual(
+              yield* queryEffect(indexedLookup, [threadId]),
+              yield* queryEffect(lookup, [threadId]),
+            );
+            yield* queryEffect(`DROP INDEX ${lookupIndex}`);
+            yield* queryEffect(indexedLookup, [threadId]).pipe(
+              Effect.match({
+                onFailure: (error) => {
+                  NodeAssert.equal(error?._tag, "SqlError");
+                  NodeAssert.equal(error.reason?._tag, "UnknownError");
+                  NodeAssert.equal(error.reason?.operation, "execute");
+                  NodeAssert.equal(error.reason?.cause?.code, "ERR_SQLITE_ERROR");
+                  NodeAssert.equal(error.reason?.cause?.message, `no such index: ${lookupIndex}`);
+                },
+                onSuccess: () => NodeAssert.fail("lookup succeeded after its index was removed"),
+              }),
+            );
+            yield* queryEffect(definitions[0].sql);
+            yield* queryEffect(
+              "UPDATE orchestration_v2_projection_threads SET payload_json=? WHERE thread_id=?",
+              [
+                JSON.stringify({
+                  id: threadId,
+                  projectId: "replacement-project",
+                  createdAt: "2026-10-07T00:00:00.000Z",
+                }),
+                threadId,
+              ],
+            );
+            NodeAssert.equal(yield* modules.Birth.readApplicationBirthRecord(threadId), null);
+            return {
+              owner: "055_OrchestrationV2/RecoveryIndexes",
+              index: lookupIndex,
+              plan,
+              actualLookupExecuted: true,
+              foreignBirthExcluded: true,
+              changedProjectionRejected: true,
+              missingIndexRejected: true,
+            };
+          }),
+        ).pipe(Effect.ensuring(queryEffect("ROLLBACK").pipe(Effect.orDie)));
+      }),
+    );
+  });
+}
+
+export async function probeReceivingCreationLookup({ modules, run, query }) {
+  return run(
+    receivingCreationLookupProgram({
+      modules,
+      queryEffect: (text, values = []) =>
+        modules.Effect.tryPromise({
+          try: () => query(text, values),
+          catch: (cause) => cause,
+        }),
+    }),
+  );
+}
+
 function receivingJonesManifest(candidate) {
   const path = NodePath.join(
     candidate.worktreePath,
@@ -551,19 +660,6 @@ export async function runBoundMigrationRestoreCase(request, input) {
     cleanups: [],
     runnerClosed: false,
   };
-  if (specification.kind === "successor") {
-    const successor = receivingJonesManifest(candidate).find(
-      ({ id, path }) =>
-        id === 138 && NodePath.basename(path) === "138_JonesThreadCreationLookupIndex.ts",
-    );
-    if (!successor)
-      return {
-        ...evidence,
-        status: "unavailable",
-        reason: "successor-138 pending #148",
-        cleanup: null,
-      };
-  }
   const caseOwner = createOwnedRoot(input);
   evidence.creationReceipt = caseOwner.creationReceipt;
   const caseRoot = caseOwner.creationReceipt.canonicalRootPath;
@@ -821,6 +917,44 @@ export async function runBoundMigrationRestoreCase(request, input) {
         );
         NodeAssert.deepEqual(reopened.capture.content, repeated.capture.content);
       }
+      if (specification.kind === "foreign" || specification.kind === "successor") {
+        evidence.foreignWire = (
+          await phase(
+            "receiving-V2-codec-refuses-foreign-command-wire",
+            destination,
+            candidate,
+            true,
+            "client",
+            async ({ modules, query }) => {
+              const before = await capture(query);
+              NodeAssert.throws(() =>
+                modules.Schema.decodeUnknownSync(modules.Contracts.OrchestrationV2Command)({
+                  type: "thread.activity.append",
+                  commandId: "qualification-foreign-wire",
+                  threadId: "fixture-leased",
+                  activity: {
+                    id: "qualification-foreign-activity",
+                    kind: "fixture.note",
+                    summary: "Synthetic foreign wire",
+                    tone: "info",
+                    turnId: null,
+                    payload: { synthetic: true },
+                    createdAt: "2026-10-02T12:30:00.000Z",
+                  },
+                  createdAt: "2026-10-02T12:30:00.000Z",
+                }),
+              );
+              NodeAssert.deepEqual((await capture(query)).content, before.content);
+              return {
+                receivingCodec: "OrchestrationV2Command",
+                rejected: true,
+                unchanged: true,
+                dispatched: false,
+              };
+            },
+          )
+        ).value;
+      }
       if (specification.kind === "foreign") {
         const variants =
           requirement.foreign === "lookup007"
@@ -875,27 +1009,14 @@ export async function runBoundMigrationRestoreCase(request, input) {
         evidence.badHistory = { rejected: true, unchanged: true, variants };
       }
       if (specification.kind === "successor") {
-        const successor = receivingJonesManifest(candidate).find(({ id }) => id === 138);
-        NodeAssert.ok(
-          opened.capture.content.ledgers.jones_sql_migrations.some(
-            ({ id, name }) => id === successor.id && name === successor.name,
-          ),
-        );
         evidence.successor = (
           await phase(
-            "successor-138-lookup-plan",
+            "receiving-055-application-birth-lookup",
             destination,
             candidate,
             true,
             "client",
-            async ({ query }) => {
-              const plan = await query(
-                "EXPLAIN QUERY PLAN SELECT event_id FROM orchestration_events WHERE stream_id=? AND aggregate_kind='thread' AND event_type='thread.created' ORDER BY sequence DESC LIMIT 1",
-                ["fixture-leased"],
-              );
-              NodeAssert.ok(plan.some((row) => String(row.detail).includes(lookupIndex)));
-              return { index: lookupIndex, plan };
-            },
+            probeReceivingCreationLookup,
           )
         ).value;
       }

@@ -1,0 +1,33 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "imported-history-mobile",
+  "jonesOwnedPaths": ["apps/mobile/src/jones/importedHistory/"],
+  "hookPaths": [
+    "apps/mobile/src/features/threads/ThreadQueueControl.tsx",
+    "apps/mobile/src/state/use-composer-drafts.ts",
+    "apps/mobile/src/state/use-thread-composer-state.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/mobile/src/state/use-thread-composer-state.ts",
+      "to": "apps/mobile/src/jones/importedHistory/runtime.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-composer-drafts.ts",
+      "to": "packages/client-runtime/src/jones/importedHistory/continuation.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadComposer.tsx",
+      "to": "apps/mobile/src/jones/importedHistory/ContinuationChoiceNotice.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadQueueControl.tsx",
+      "to": "apps/mobile/src/jones/importedHistory/ContinuationChoiceNotice.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadQueueControl.tsx",
+      "to": "packages/shared/src/jones/importedHistoryCanonical.ts"
+    }
+  ]
+}

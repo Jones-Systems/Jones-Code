@@ -304,6 +304,41 @@
         "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts"
       ],
       "scope": "Codex-first issued-reference execution, durable start before allocation, exact physical binding and direct acknowledgement, no resume or replay, and ordinary-path compatibility. Missing trusted grant or qualified account denies capability."
+    },
+    {
+      "id": "imported-history-client",
+      "tests": [
+        "packages/shared/src/jones/importedHistoryCanonical.test.ts",
+        "packages/client-runtime/src/jones/importedHistory/commands.test.ts",
+        "packages/client-runtime/src/jones/importedHistory/continuation.test.ts",
+        "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.test.tsx",
+        "apps/web/src/components/chat/QueuedRunsControl.test.tsx",
+        "apps/web/src/composerDraftStore.test.ts",
+        "apps/web/src/components/ChatView.logic.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationPreparation.test.ts"
+      ],
+      "scope": "Existing imported composer and queue choice placements use exact reviewed delivery, shared canonical bytes, durable original correlation and exclusive WebLocks. Lost responses observe the original command; accepted admission remains pending, without clearing replacement drafts or claiming execution."
+    },
+    {
+      "id": "imported-history-mobile",
+      "tests": [
+        "apps/mobile/src/jones/importedHistory/controller.test.ts",
+        "apps/mobile/src/jones/importedHistory/identity.test.ts",
+        "apps/mobile/src/state/use-composer-drafts.test.ts",
+        "apps/mobile/src/features/threads/threadQueueControlPresentation.test.ts",
+        "apps/mobile/src/state/queued-run-edit.test.ts"
+      ],
+      "scope": "Existing mobile composer and queue imported choices persist exact original correlation before delivery, use receiving typed HTTP and shared canonical bytes, serialize per-thread controllers in the current process, retain unknown no-resend and stale-draft fences. Admission remains pending execution."
+    },
+    {
+      "id": "receiving-native-qualification",
+      "tests": [
+        "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts",
+        "apps/server/src/jones/importedHistory/ApplicationBirth.test.ts",
+        "scripts/jones/performance/current-qualification.node-test.mjs",
+        "scripts/jones/performance/migration-restore.node-test.mjs"
+      ],
+      "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
     }
   ]
 }

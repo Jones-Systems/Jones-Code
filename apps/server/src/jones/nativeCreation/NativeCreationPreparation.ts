@@ -1,3 +1,4 @@
+import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
 import * as NodeCrypto from "node:crypto";
 import * as NodeBuffer from "node:buffer";
 import {
@@ -142,14 +143,7 @@ export class NativeCreationPreparationError extends Schema.TaggedError<NativeCre
 ) {}
 
 export function nativeCreationCanonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_key, child: unknown) => {
-    if (child !== null && typeof child === "object" && !Array.isArray(child)) {
-      return Object.fromEntries(
-        Object.entries(child).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
-      );
-    }
-    return child;
-  });
+  return importedHistoryCanonicalJson(value);
 }
 
 export const nativeCreationSha256 = (value: string | Uint8Array): string =>

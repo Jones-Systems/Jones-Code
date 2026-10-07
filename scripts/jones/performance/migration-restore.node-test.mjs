@@ -17,7 +17,7 @@ import {
 import { qualificationSourcePins } from "./sources.mjs";
 
 NodeTest.test(
-  "migration restore V2 case table preserves receiving-loader semantics and the pending successor",
+  "migration restore V2 case table preserves receiving-loader semantics and the receiving lookup owner",
   () => {
     NodeAssert.equal(migrationRestoreSchema, "jones-performance-migration-restore/v2");
     NodeAssert.equal(nativeBackupSchema, "jones-performance-native-backup/v1");
@@ -34,12 +34,12 @@ NodeTest.test(
         "rollback-injected",
         "restore-pre",
         "restore-post",
-        "successor-138",
+        "receiving-creation-lookup",
       ],
     );
     NodeAssert.equal(
-      migrationRestoreCase("successor-138").prerequisite,
-      "138_JonesThreadCreationLookupIndex",
+      migrationRestoreCase("receiving-creation-lookup").prerequisite,
+      "055_OrchestrationV2/RecoveryIndexes",
     );
     NodeAssert.equal(
       new Set(qualificationCases.map(({ id }) => id)).size,
@@ -201,6 +201,29 @@ NodeTest.test(
             backup.originalClosedOutput.healthQualification,
             "unqualified-readonly-health",
           );
+        }
+        if (caseId.startsWith("foreign-") || caseId === "receiving-creation-lookup")
+          NodeAssert.deepEqual(evidence.foreignWire, {
+            receivingCodec: "OrchestrationV2Command",
+            rejected: true,
+            unchanged: true,
+            dispatched: false,
+          });
+        if (caseId === "receiving-creation-lookup") {
+          NodeAssert.equal(evidence.successor.owner, "055_OrchestrationV2/RecoveryIndexes");
+          NodeAssert.equal(evidence.successor.index, "orchestration_events_v2_created_threads_idx");
+          for (const oracle of [
+            "actualLookupExecuted",
+            "foreignBirthExcluded",
+            "changedProjectionRejected",
+            "missingIndexRejected",
+          ])
+            NodeAssert.equal(evidence.successor[oracle], true);
+          NodeAssert.equal(evidence.foreignHistory.featureAdopted, false);
+          NodeAssert.deepEqual(evidence.foreignGuard, {
+            unchangedForeignContent: true,
+            adoptedForeignFeatures: false,
+          });
         }
         if (caseId.startsWith("foreign-")) {
           NodeAssert.equal(evidence.badHistory.rejected, true);

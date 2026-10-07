@@ -7,6 +7,7 @@ import * as NodeURL from "node:url";
 import {
   assertCurrentCandidate,
   currentQualificationModules,
+  currentQualificationRequiredOracles,
   currentQualificationUnavailable,
 } from "./current-qualification.mjs";
 import { readRuntimeBinding } from "./runtime-binding.mjs";
@@ -115,6 +116,15 @@ try {
     NodeAssert.ok(
       results.some((test) => test.module === file),
       `missing module ${file}`,
+    );
+  for (const oracle of currentQualificationRequiredOracles)
+    NodeAssert.equal(
+      results.filter(
+        (test) =>
+          test.module === oracle.module && test.name === oracle.name && test.state === "passed",
+      ).length,
+      1,
+      `required oracle missing or duplicated: ${oracle.module}: ${oracle.name}`,
     );
   assertCurrentCandidate(candidate);
 } catch (error) {

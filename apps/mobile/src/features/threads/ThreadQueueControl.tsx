@@ -1,3 +1,9 @@
+import {
+  ContinuationChoiceNotice,
+  useMobileImportedHistoryChoice,
+} from "../../jones/importedHistory/ContinuationChoiceNotice";
+import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
+import * as Option from "effect/Option";
 import { type StaticScreenProps, useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
 import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
@@ -23,7 +29,11 @@ import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
 import { useAssetUrl } from "../../state/assets";
 import { beginQueuedRunEdit, useQueuedRunEdit } from "../../state/queued-run-edit";
-import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
+import {
+  environmentThreadDetails,
+  threadEnvironment,
+  useEnvironmentThread,
+} from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   REMOVE_QUEUED_MESSAGE_ACCESSIBILITY_LABEL,
@@ -52,6 +62,14 @@ export function useThreadQueuedCount(target: QueueTarget) {
 
 export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const target = route.params;
+  const { choice: importedChoice, state: importedState } = useMobileImportedHistoryChoice(
+    target.environmentId,
+    target.threadId,
+  );
+  const importedThread =
+    Option.getOrNull(useEnvironmentThread(target.environmentId, target.threadId).data)?.thread
+      .historyOrigin === "v1_import";
+
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const theme = useUniwindTheme();
@@ -77,6 +95,32 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   } | null>(null);
   const [translation] = useState(() => new Animated.Value(0));
   const queuedRuns = workflow?.queuedRuns ?? [];
+  const importedQueueRef = useRef({ target, queuedRuns });
+  importedQueueRef.current = { target, queuedRuns };
+  const reviewImportedQueued = async (runId: RunId) => {
+    const entry = queuedRuns.find((candidate) => candidate.run.id === runId);
+    if (entry === undefined) return;
+    const snapshot = importedHistoryCanonicalJson(entry);
+    const queueIdentity = importedHistoryCanonicalJson(queuedRuns);
+    const unchanged = () => {
+      const current = importedQueueRef.current;
+      const row = current.queuedRuns.find(
+        (candidate) => candidate.run.id === runId && candidate.messageId === entry.messageId,
+      );
+      return (
+        current.target.environmentId === target.environmentId &&
+        current.target.threadId === target.threadId &&
+        row !== undefined &&
+        importedHistoryCanonicalJson(row) === snapshot &&
+        importedHistoryCanonicalJson(current.queuedRuns) === queueIdentity
+      );
+    };
+    await importedChoice.review(
+      { type: "queued_run", runId, messageId: entry.messageId },
+      snapshot,
+      unchanged,
+    );
+  };
   const order = queuedRuns.map(({ run }) => run.id).join(",");
 
   useEffect(() => {
@@ -184,6 +228,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       contentContainerClassName="px-5 pb-6"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
+      <ContinuationChoiceNotice environmentId={target.environmentId} threadId={target.threadId} />
       {workflow?.isHeld && queuedRuns.length > 0 ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">Queue held after restart</Text>
@@ -323,6 +368,15 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                 background={theme["--color-sheet"]}
                 onRemove={() => void act(run.id, "remove")}
               >
+                {importedThread ? (
+                  <MaterialButton
+                    label="Review imported history"
+                    disabled={importedState.busy || busyRunId !== null}
+                    onPress={() => {
+                      void reviewImportedQueued(run.id);
+                    }}
+                  />
+                ) : null}
                 <ControlPillMenu
                   accessibilityLabel={`Actions for queued message ${index + 1}`}
                   shouldOpenOnLongPress
