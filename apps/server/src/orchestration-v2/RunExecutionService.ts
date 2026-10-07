@@ -48,6 +48,7 @@ import type {
 } from "./ProviderAdapter.ts";
 import { ProviderAdapterTurnStartError } from "./ProviderAdapter.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
+import * as ProviderEventOrigin from "../jones/orchestration/ProviderEventOrigin.ts";
 import type { ProjectionStoreV2Error } from "./ProjectionStore.ts";
 import { makeProviderFailure, makeProviderFailureTurnItem } from "./ProviderFailure.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
@@ -1254,6 +1255,12 @@ export const layer: Layer.Layer<
           const filterAssistantEvent = makeAssistantStreamingFilter(responseStreamingMode);
           const providerEventFiber = yield* eventSubscription.events.pipe(
             Stream.filterEffect((event) =>
+              ProviderEventOrigin.revalidateProviderEventOrigin(event, input.session).pipe(
+                Effect.result,
+                Effect.map((result) => result._tag === "Success"),
+              ),
+            ),
+            Stream.filterEffect((event) =>
               Ref.modify(eventRouting, (state) => routeProviderEvent(event, routeIdentity, state)),
             ),
             Stream.tap((event) =>
@@ -1282,6 +1289,11 @@ export const layer: Layer.Layer<
                     event.providerThread.id === input.providerThread.id;
                   // Exact routed turns retain their raw history after replacement;
                   // settlement and run effects still require the current attempt.
+                  const currentOrigin = yield* ProviderEventOrigin.revalidateProviderEventOrigin(
+                    deliveredEvent,
+                    input.session,
+                  ).pipe(Effect.result);
+                  if (currentOrigin._tag === "Failure") return;
                   const storedEvents = yield* providerEventIngestor.ingestNormalized({
                     analyticsContext: {
                       modelSelection: input.modelSelection,

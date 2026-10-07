@@ -691,6 +691,7 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
 ) {}
 
 const {
+  EnvironmentJonesUpdatesHttpApi,
   EnvironmentVoiceReviewHttpApi,
   EnvironmentHostStatusHttpApi,
   EnvironmentWorkQueueMetadataHttpApi: WorkQueueMetadataHttpApi,
@@ -913,4 +914,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentWorkstreamsNativeHttpApi)
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentConnectHttpApi)
-  .add(EnvironmentConversationLibraryHttpApi) {}
+  .add(EnvironmentConversationLibraryHttpApi)
+  .add(EnvironmentJonesUpdatesHttpApi) {}

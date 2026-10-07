@@ -1,3 +1,9 @@
+import type {
+  WorkstreamCommand,
+  WorkstreamReceipt,
+  WorkstreamPrObservation,
+} from "@t3tools/contracts";
+import { reference as nativeReference } from "./nativeWorkstreamActions.fixtures";
 import { isValidElement, type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -956,5 +962,130 @@ describe("Workstream sidebar binding cancellation", () => {
       action: { workstream_id: "ws-b", expected_version: 9 },
     });
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("Workstream Sidebar PR action snapshot integration", () => {
+  afterEach(() => hooks.reset());
+  it("refreshes through the current snapshot and reads the committed observation without a legacy submission", async () => {
+    let version = 11;
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const context = () => ({ owner_id: "owner", server_generation: 7, registry_version: version });
+    const registrationContext = () => ({
+      protocol: "workstreams-registration-context/1.0.0" as const,
+      state: "ready" as const,
+      ...context(),
+      principal_id: "principal",
+      grant_id: "grant",
+      authorization_revision: 1,
+      sources: [
+        {
+          provider: "github" as const,
+          source_instance_id: "github-owner",
+          authority_namespace: "github-authority",
+          store_generation: 1,
+          resource_kind: "pull_request" as const,
+          id_kind: "external" as const,
+          account_provenance: { kind: "not_account_scoped" as const },
+        },
+      ],
+    });
+    const observation = (): typeof WorkstreamPrObservation.Type => ({
+      native_reference_id: "reference-a",
+      observation_version: version === 11 ? 2 : 3,
+      attempted_at: "2026-09-30T12:00:00Z",
+      outcome: "observed",
+      retry_after_seconds: null,
+      last_success: {
+        state: version === 11 ? "open" : "merged",
+        draft: false,
+        observed_at: "2026-09-30T12:00:00Z",
+        provider_updated_at: null,
+      },
+      command_id: "refresh-command-001",
+    });
+    const reference = {
+      ...nativeReference,
+      native_reference_id: "reference-a",
+      identity: {
+        ...nativeReference.identity,
+        provider: "github" as const,
+        source_instance_id: "github-owner",
+        resource_kind: "pull_request" as const,
+        id_kind: "external" as const,
+        native_id: "jones-systems/t3code#5",
+      },
+      pr_locator: detailWithReference.references.items[0]!.pr_locator,
+    };
+    const submit = vi.fn();
+    const submitStep = vi.fn(async (_command: WorkstreamCommand): Promise<WorkstreamReceipt> => {
+      version = 12;
+      return { state: "committed", registry_version: version } as WorkstreamReceipt;
+    });
+    const controller: WorkstreamListView = {
+      data,
+      loading: false,
+      error: null,
+      placements: null,
+      placementInventory: { coverage: "complete", identities: [], json: "[]", totalIdentities: 0 },
+      registrationContext: registrationContext(),
+      retry: vi.fn(async () => {}),
+      refresh: vi.fn(),
+      submit,
+      runBindingOperation: async (operation) => {
+        const result = await operation(submitStep);
+        finish();
+        return result;
+      },
+      loadActionSnapshot: vi.fn(async () => ({
+        data: { ...data, binding: { ...binding, registryVersion: version } },
+        references: { context: context(), items: [reference], next_cursor: null },
+        placements: null,
+        registrationContext: registrationContext(),
+      })),
+      loadDetail: vi.fn(async () => ({
+        ...detailWithReference,
+        detail: { ...detailWithReference.detail, context: context() },
+      })),
+      loadReference: vi.fn(async () => {
+        return { context: context(), reference, latest_observation: observation() };
+      }),
+    };
+    hooks.beginRender();
+    const initial = WorkstreamSidebarSection({ controller });
+    const alpha = visitElements(
+      initial,
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
+    ) as ReactElement<{ onClick: () => void }>;
+    alpha.props.onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+    hooks.beginRender();
+    const detailed = WorkstreamSidebarSection({ controller });
+    const refresh = visitElements(
+      detailed,
+      (element) => element.props.children === "Refresh status",
+    ) as ReactElement<{ onClick: () => void }>;
+    refresh.props.onClick();
+    await finished;
+    await Promise.resolve();
+    await Promise.resolve();
+    hooks.beginRender();
+    const refreshed = WorkstreamSidebarSection({ controller });
+    expect(containsText(refreshed, "merged · current")).toBe(true);
+    expect(submit).not.toHaveBeenCalled();
+    expect(submitStep).toHaveBeenCalledOnce();
+    expect(submitStep.mock.calls[0]?.[0]).toMatchObject({
+      expected_registry_version: 11,
+      action: {
+        operation: "refresh_linked_pr",
+        membership_id: "membership-a",
+        expected_observation_version: 2,
+      },
+    });
+    expect(controller.loadActionSnapshot).toHaveBeenCalledTimes(2);
   });
 });

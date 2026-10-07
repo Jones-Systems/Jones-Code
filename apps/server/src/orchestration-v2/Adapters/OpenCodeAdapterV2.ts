@@ -1,3 +1,4 @@
+import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
 import type {
   Event as OpenCodeEvent,
   Message as OpenCodeMessage,
@@ -999,6 +1000,11 @@ export function makeOpenCodeAdapterV2(
           lastError: null,
         };
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event, Cause.Done>();
+        const eventProducer = ProviderEventOrigin.makeProviderEventProducer({
+          driver: OPENCODE_PROVIDER,
+          instanceId: options.instanceId,
+          providerSessionId: input.providerSessionId,
+        });
         let nativeStreamFailure: OrchestrationV2ProviderFailure | null = null;
         const threads = new Map<string, OpenCodeThreadState>();
         const commandReceipts = new Map<string, Deferred.Deferred<void>>();
@@ -1030,7 +1036,12 @@ export function makeOpenCodeAdapterV2(
         let hasConnected = false;
 
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+          Queue.offer(
+            events,
+            ProviderEventOrigin.stampProviderEvent(event, {
+              producer: eventProducer.origin,
+            }),
+          ).pipe(Effect.asVoid);
 
         const logProtocolEvent = makeOpenCodeProtocolLogger({
           nativeEventLogger: options.nativeEventLogger,
@@ -2738,6 +2749,7 @@ export function makeOpenCodeAdapterV2(
                     threadDisposition: "broken",
                   });
               }
+              eventProducer.drain();
               yield* Queue.end(events);
             }),
           ),
@@ -2798,6 +2810,7 @@ export function makeOpenCodeAdapterV2(
           scope,
           Effect.sync(() => {
             closing = true;
+            eventProducer.drain();
           }),
         );
 
@@ -3014,6 +3027,7 @@ export function makeOpenCodeAdapterV2(
           driver: OPENCODE_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: sessionEntity,
+          eventOriginMode: "captured",
           events: Stream.fromEffectRepeat(Queue.take(events)),
           hasPendingBackgroundWork: Effect.sync(() => busySessionIds.size > 0),
           ensureThread: (threadInput) =>

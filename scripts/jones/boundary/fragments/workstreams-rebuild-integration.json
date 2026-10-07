@@ -98,7 +98,12 @@
     "packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/conformance.json",
     "packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/negative-cases.json",
     "packages/contracts/contracts/workstreams-t3-provider/v1/manifest.json",
-    "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json"
+    "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json",
+    "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.tsx",
+    "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.test.tsx",
+    "apps/web/src/jones/workstreams/workstreamReferenceActions.ts",
+    "apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts",
+    "apps/web/src/jones/workstreams/workstreamActionSnapshot.ts"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
