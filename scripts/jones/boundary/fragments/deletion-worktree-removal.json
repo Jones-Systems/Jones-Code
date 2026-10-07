@@ -1,0 +1,21 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "deletion-worktree-removal",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.ts",
+    "apps/server/src/jones/cleanup/DeletionWorktreeRemovalTypes.ts",
+    "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionWorktreeRemovalTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.ts"
+    }
+  ]
+}

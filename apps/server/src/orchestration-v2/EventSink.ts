@@ -1,3 +1,5 @@
+import type { DeletionWorktreeRemovalStartV1 } from "../jones/cleanup/DeletionWorktreeRemovalTypes.ts";
+import type { DeletionWorktreeRemovalObservationV1 } from "../jones/cleanup/DeletionWorktreeRemoval.ts";
 import { DispatchGuardRejected } from "./DispatchGuard.ts";
 import {
   type RecordedRun as OrchestrationV2Run,
@@ -135,6 +137,21 @@ interface EventSinkStreamInput {
 }
 
 export interface EventSinkV2Shape {
+  /** Optional native owner ports; absence is unavailable, never admission or replay consent. */
+  readonly readDeletionWorktreeRemovalStart?: (
+    effectId: string,
+  ) => Effect.Effect<
+    { readonly start: DeletionWorktreeRemovalStartV1; readonly ordinal: number } | null,
+    EventSinkV2Error
+  >;
+  readonly revalidateDeletionWorktreeRemovalStart?: (
+    start: DeletionWorktreeRemovalStartV1,
+    ordinal: number,
+  ) => Effect.Effect<void, EventSinkV2Error>;
+  readonly qualifyDeletionWorktreeRemovalObservation?: (
+    observation: DeletionWorktreeRemovalObservationV1,
+  ) => Effect.Effect<void, EventSinkV2Error>;
+
   readonly commitLegacyPreflight: (input: {
     readonly commandId: CommandId;
     readonly event: OrchestrationV2PrivateEvent;

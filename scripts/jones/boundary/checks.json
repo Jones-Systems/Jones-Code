@@ -345,6 +345,15 @@
         "vp test run apps/server/src/jones/performance/v2Workload.test.ts apps/server/scripts/jones/v2Benchmark.test.mjs",
         "node --test --test-concurrency=1 scripts/jones/performance/current-qualification.node-test.mjs"
       ]
+    },
+    {
+      "id": "jones-deletion-worktree-removal",
+      "tests": ["apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts"],
+      "commands": [
+        "vp test run apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
     }
   ]
 }

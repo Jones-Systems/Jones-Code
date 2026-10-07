@@ -184,6 +184,11 @@
         "packages/contracts/src/device.test.ts"
       ],
       "scope": "Adapted rebuild #80 direct device admission, generation-bound grants, server gateway lifecycle, desktop media tunnel IPC, shared media routing and proxy fallback. Existing device schemas, SSH host lifecycle, stream view and connection checks retain exact shared seams."
+    },
+    {
+      "id": "deletion-worktree-removal",
+      "tests": ["apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts"],
+      "scope": "Synthetic producer custody; receiving native deletion ledger remains unavailable."
     }
   ]
 }
