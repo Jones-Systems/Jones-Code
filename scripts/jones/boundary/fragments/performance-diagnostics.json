@@ -1,0 +1,14 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "performance-diagnostics",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/orchestration/v2Workload.ts",
+    "apps/server/src/jones/orchestration/v2Workload.test.ts",
+    "apps/server/scripts/jones/v2Benchmark.worker.mjs",
+    "apps/server/scripts/jones/v2Benchmark.test.mjs",
+    "apps/server/scripts/jones/v2Benchmark.mjs"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

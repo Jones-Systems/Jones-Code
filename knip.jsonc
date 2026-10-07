@@ -28,6 +28,8 @@
       // Vite+ pack entries and the launcher used by installed background services.
       "entry": [
         "src/bin.ts!",
+        "scripts/jones/v2Benchmark.mjs",
+        "scripts/jones/v2Benchmark.worker.mjs",
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
         "scripts/evaluate-thread-titles.ts",
