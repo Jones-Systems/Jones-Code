@@ -1,4 +1,8 @@
-import { planDelegatedCheckout } from "./DelegatedCheckoutPolicy.ts";
+import {
+  planStandaloneCheckout,
+  planStandaloneBirthPlacement,
+  planDelegatedCheckout,
+} from "./DelegatedCheckoutPolicy.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
@@ -1561,6 +1565,344 @@ describe("Ordinary checkout EventSink admission", () => {
         encodeJson(yield* sql`SELECT * FROM orchestration_v2_ordinary_checkout_admissions`),
         encodeJson(before),
       );
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
+it.effect(
+  "links standalone command-origin firstsend to its distinct planned checkout without changing the source lease",
+  () =>
+    Effect.gen(function* () {
+      const parent = yield* claimFixture("delegated-parent");
+      const sink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      const acceptedAt = yield* DateTime.now;
+      const childId = ThreadId.make("child:isolated-checkout");
+      const birthCommandId = CommandId.make("standalone-store:birth");
+      const placement = planStandaloneBirthPlacement({
+        kind: "mcp_create",
+        birthCommandId,
+        targetThreadId: childId,
+        canonicalWorktreesDir: "/fixture/worktrees",
+        projectWorkspaceRoot: "/fixture/project",
+      });
+      const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+        type: "message.dispatch",
+        commandId: "standalone-store:firstsend",
+        threadId: childId,
+        messageId: "message:isolated-checkout",
+        text: "Inspect the committed source",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      if (command.type !== "message.dispatch")
+        return yield* Effect.die("Unexpected fixture command");
+      const plan = planStandaloneCheckout({
+        kind: "mcp_create",
+        birthCommandId,
+        parentThreadId: parent.owner.id,
+        parentCheckoutPath: parent.owner.worktreePath!,
+        parentCommit: "a".repeat(40),
+        childThreadId: childId,
+        canonicalProjectRoot: "/fixture/project",
+        projectWorkspaceRoot: "/fixture/project",
+        canonicalWorktreesDir: "/fixture/worktrees",
+        ...placement,
+      });
+      const child = {
+        ...thread(childId),
+        worktreePath: plan.worktreePath,
+        branch: plan.branch,
+        standaloneCheckoutBirth: {
+          version: 1 as const,
+          kind: "mcp_create" as const,
+          birthCommandId,
+          birthCommandType: "thread.create" as const,
+          sourceThreadId: parent.owner.id,
+          sourceCreatedAt: DateTime.formatIso(parent.owner.createdAt),
+          projectId,
+          ...placement,
+        },
+      };
+      const runId = RunId.make("run:isolated-checkout");
+      const attemptId = RunAttemptId.make("attempt:isolated-checkout");
+      const nodeId = NodeId.make("node:isolated-checkout");
+      const messageId = MessageId.make("message:isolated-checkout");
+      const providerThreadId = ProviderThreadId.make("provider-thread:isolated-checkout");
+      const scope = {
+        threadId: childId,
+        runId,
+        nodeId,
+        providerInstanceId,
+        occurredAt: acceptedAt,
+      };
+      const run = {
+        ...parent.run,
+        id: runId,
+        threadId: childId,
+        providerThreadId,
+        rootNodeId: nodeId,
+        activeAttemptId: attemptId,
+        userMessageId: messageId,
+        status: "preparing" as const,
+        workspacePreparation: plan.workspaceStrategy,
+      };
+      const events: Array<OrchestrationV2DomainEvent> = [
+        {
+          ...scope,
+          id: EventId.make("event:isolated-checkout:run"),
+          type: "run.created",
+          payload: run,
+        },
+        {
+          ...scope,
+          id: EventId.make("event:isolated-checkout:attempt"),
+          type: "run-attempt.created",
+          payload: {
+            id: attemptId,
+            runId,
+            attemptOrdinal: 1,
+            rootNodeId: nodeId,
+            providerInstanceId,
+            providerThreadId,
+            providerTurnId: null,
+            reason: "initial",
+            status: "pending",
+            startedAt: null,
+            completedAt: null,
+          },
+        },
+        {
+          ...scope,
+          id: EventId.make("event:isolated-checkout:node"),
+          type: "node.updated",
+          payload: {
+            id: nodeId,
+            threadId: childId,
+            runId,
+            parentNodeId: null,
+            rootNodeId: nodeId,
+            kind: "root_turn",
+            status: "pending",
+            countsForRun: true,
+            providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            runtimeRequestId: null,
+            checkpointScopeId: null,
+            startedAt: null,
+            completedAt: null,
+          },
+        },
+        {
+          ...scope,
+          id: EventId.make("event:isolated-checkout:message"),
+          type: "message.updated",
+          payload: {
+            id: messageId,
+            threadId: childId,
+            runId,
+            nodeId,
+            role: "user",
+            text: command.text,
+            attachments: [],
+            streaming: false,
+            createdBy: "agent",
+            creationSource: "mcp",
+            createdAt: acceptedAt,
+            updatedAt: acceptedAt,
+          },
+        },
+      ];
+      yield* sink.commitCommand({
+        commandId: birthCommandId,
+        threadId: childId,
+        commandType: "thread.create",
+        acceptedAt,
+        events: [
+          {
+            id: EventId.make("event:isolated-checkout:birth"),
+            type: "thread.created",
+            threadId: childId,
+            providerInstanceId,
+            occurredAt: acceptedAt,
+            payload: child,
+          },
+        ],
+        effects: [],
+      });
+      const ordinaryCheckout = yield* sink.captureOrdinaryCheckout!({
+        command,
+        threadId: childId,
+        projectId,
+        branch: plan.branch,
+        canonicalProjectRoot: plan.canonicalProjectRoot,
+        canonicalCheckoutPath: plan.worktreePath,
+        source: {
+          projectWorkspaceRoot: plan.projectWorkspaceRoot,
+          worktreePath: plan.worktreePath,
+        },
+        leaseId: "standalone-store:lease",
+      });
+      const input = {
+        commandId: command.commandId,
+        threadId: childId,
+        commandType: command.type,
+        acceptedAt,
+        ordinaryStandaloneFirstSend: command,
+        ordinaryCheckout,
+        events,
+        effects: [
+          {
+            id: "effect:isolated-checkout:prepare",
+            commandId: command.commandId,
+            threadId: childId,
+            request: {
+              type: "delegated-workspace.prepare" as const,
+              runId,
+              plan,
+              standalone: {
+                version: 1 as const,
+                kind: "mcp_create" as const,
+                birthCommandId,
+                messageCommandId: command.commandId,
+                messageId: command.messageId,
+              },
+            },
+          },
+        ],
+      };
+      const originalParentLease =
+        yield* sql`SELECT * FROM worktree_ownership_leases WHERE resource_path = ${parent.owner.worktreePath}`;
+      const committed = yield* sink.commitCommand(input);
+      assert.isTrue(committed.committed);
+      const admission = yield* sink.ordinaryCheckoutLifetime!.readAdmission(
+        command.commandId,
+        childId,
+      );
+      assert.isNotNull(admission);
+      assert.deepEqual(admission!.capture.origin, {
+        kind: "command",
+      });
+      assert.equal(admission!.capture.canonicalCheckoutPath, plan.worktreePath);
+      assert.equal(admission!.capture.applicationBirth.eventId, "event:isolated-checkout:birth");
+      assert.equal(admission!.run!.runId, runId);
+      assert.deepEqual(
+        yield* sink.ordinaryCheckoutLifetime!.readAdmissionForRun({ threadId: childId, runId }),
+        admission,
+      );
+      const childLease = yield* sql<{
+        readonly owner_thread_id: string;
+        readonly branch: string;
+      }>`SELECT * FROM worktree_ownership_leases WHERE resource_path = ${plan.worktreePath}`;
+      assert.equal(childLease.length, 1);
+      assert.equal(childLease[0]!.owner_thread_id, childId);
+      assert.equal(childLease[0]!.branch, plan.branch);
+      assert.deepEqual(
+        yield* sql`SELECT * FROM worktree_ownership_leases WHERE resource_path = ${parent.owner.worktreePath}`,
+        originalParentLease,
+      );
+      const replay = yield* sink.commitCommand(input);
+      assert.isFalse(replay.committed);
+      assert.deepEqual(replay.storedEvents, committed.storedEvents);
+      assert.equal(
+        (yield* sql`SELECT * FROM orchestration_v2_ordinary_checkout_admissions WHERE command_id = ${command.commandId}`)
+          .length,
+        1,
+      );
+      yield* sink.validateOrdinaryCheckoutCommandReplay!(command, childId);
+    }).pipe(Effect.provide(layer)),
+);
+
+describe("Ordinary checkout provider continuation notification sources", () => {
+  const commitContinuation = Effect.fnUntraced(function* (
+    id: string,
+    source: Record<string, unknown>,
+  ) {
+    const owner = yield* createFixture(`owner:${id}`);
+    const store = yield* makeOrdinaryCheckoutStore();
+    const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+      type: "message.dispatch",
+      commandId: `provider-continuation:message:${id}`,
+      threadId: owner.id,
+      messageId: `message:${id}`,
+      text: "Background work finished",
+      attachments: [],
+      modelSelection,
+      dispatchMode: { type: "queue_after_active" },
+      notification: { source, outcome: "completed", summary: "Subagent finished" },
+      createdBy: "agent",
+      creationSource: "provider",
+    });
+    const capture = yield* store.capture({
+      command,
+      threadId: owner.id,
+      projectId,
+      branch: owner.branch,
+      canonicalProjectRoot: "/fixture/project",
+      canonicalCheckoutPath: "/fixture/worktree",
+      source: { projectWorkspaceRoot: "/fixture/project", worktreePath: owner.worktreePath },
+      leaseId: `lease:${id}`,
+    });
+    const sink = yield* EventSink.EventSinkV2;
+    const result = yield* sink.commitCommand({
+      commandId: command.commandId,
+      threadId: owner.id,
+      commandType: command.type,
+      acceptedAt: now,
+      events: [
+        {
+          id: EventId.make(`event:${id}:accepted`),
+          type: "thread.metadata-updated",
+          threadId: owner.id,
+          providerInstanceId,
+          occurredAt: now,
+          payload: { ...owner, title: id },
+        },
+      ],
+      effects: [],
+      ordinaryCheckout: capture,
+    });
+    assert.isTrue(result.committed);
+    assert.equal(result.receipt.status, "accepted");
+    const bindings = yield* store.readCurrentCommands(command.commandId);
+    assert.equal(bindings.length, 1);
+    assert.equal(bindings[0]!.commandId, command.commandId);
+    assert.deepEqual(bindings[0]!.canonicalCommand, capture.capture.canonicalCommand);
+    yield* sink.validateOrdinaryCheckoutCommandReplay!(command, owner.id);
+    return (bindings[0]!.canonicalCommand.notification as { readonly source: unknown }).source;
+  });
+
+  it.effect("accepts a queued subagent continuation with its child thread", () =>
+    Effect.gen(function* () {
+      const childThreadId = ThreadId.make("thread:continuation-subagent-child");
+      assert.deepEqual(
+        yield* commitContinuation("continuation-subagent-child", {
+          kind: "subagent",
+          childThreadId,
+        }),
+        { kind: "background_task", work: "subagent", childThreadId },
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("accepts a queued subagent continuation without a child thread", () =>
+    Effect.gen(function* () {
+      assert.deepEqual(yield* commitContinuation("continuation-subagent", { kind: "subagent" }), {
+        kind: "background_task",
+        work: "subagent",
+      });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("accepts a queued command continuation", () =>
+    Effect.gen(function* () {
+      assert.deepEqual(yield* commitContinuation("continuation-command", { kind: "command" }), {
+        kind: "background_command",
+      });
     }).pipe(Effect.provide(layer)),
   );
 });

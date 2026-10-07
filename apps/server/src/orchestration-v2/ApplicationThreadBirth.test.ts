@@ -52,23 +52,21 @@ it.effect("binds authority to the exact canonical birth event and sequence", () 
   }).pipe(Effect.provide(SqlitePersistenceMemory)),
 );
 
-for (const [field, value] of [
+it.effect.each([
   ["id", "thread:foreign"],
   ["projectId", "project:foreign"],
   ["createdAt", "2026-10-05T01:00:00.000Z"],
   ["deletedAt", "2026-10-05T01:00:00.000Z"],
-] as const) {
-  it.effect(`refuses a projection with changed ${field}`, () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* seed;
-      yield* sql`UPDATE orchestration_v2_projection_threads
-        SET payload_json = ${encodeJson({ ...identity, [field]: value })}
-        WHERE thread_id = ${threadId}`;
-      assert.isNull(yield* readApplicationThreadBirth(threadId));
-    }).pipe(Effect.provide(SqlitePersistenceMemory)),
-  );
-}
+] as const)("refuses a projection with changed %s", ([field, value]) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seed;
+    yield* sql`UPDATE orchestration_v2_projection_threads
+      SET payload_json = ${encodeJson({ ...identity, [field]: value })}
+      WHERE thread_id = ${threadId}`;
+    assert.isNull(yield* readApplicationThreadBirth(threadId));
+  }).pipe(Effect.provide(SqlitePersistenceMemory)),
+);
 
 it.effect("refuses legacy births and a recreated id until its projection agrees", () =>
   Effect.gen(function* () {

@@ -197,8 +197,8 @@ export function projectContextHandoffForWire(
 }
 
 function projectRecordedThreadForWire(thread: RecordedAppThread): OrchestrationV2AppThread {
-  if (!("legacyBootstrapClaim" in thread)) return thread;
-  const { legacyBootstrapClaim: _claim, ...publicThread } = thread;
+  if (!("legacyBootstrapClaim" in thread) && !("standaloneCheckoutBirth" in thread)) return thread;
+  const { legacyBootstrapClaim: _claim, standaloneCheckoutBirth: _birth, ...publicThread } = thread;
   return publicThread;
 }
 

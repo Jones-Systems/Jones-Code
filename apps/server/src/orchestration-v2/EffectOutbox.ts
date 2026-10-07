@@ -28,16 +28,36 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as SchemaParser from "effect/SchemaParser";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { DelegatedCheckoutPlanV1 } from "./DelegatedCheckoutPolicy.ts";
 import { ProviderNativeEffectEvidence } from "./ProviderAdapter.ts";
+
+const standalonePreparationBindingShape = Schema.Struct({
+  version: Schema.Literal(1),
+  kind: Schema.Literals(["fork", "mcp_create"]),
+  birthCommandId: CommandId,
+  messageCommandId: CommandId,
+  messageId: MessageId,
+});
+export const StandalonePreparationBindingV1 = Schema.declareConstructor<
+  typeof standalonePreparationBindingShape.Type,
+  typeof standalonePreparationBindingShape.Encoded
+>()(
+  [standalonePreparationBindingShape],
+  ([codec]) =>
+    (input, _ast, options) =>
+      SchemaParser.decodeUnknownEffect(codec)(input, { ...options, onExcessProperty: "error" }),
+);
+export type StandalonePreparationBindingV1 = typeof StandalonePreparationBindingV1.Type;
 
 export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("delegated-workspace.prepare"),
     runId: RunId,
     plan: DelegatedCheckoutPlanV1,
+    standalone: Schema.optional(StandalonePreparationBindingV1),
   }),
   Schema.Struct({
     type: Schema.Literal("provider-runtime.continue"),

@@ -14,6 +14,7 @@ import type { SqlError } from "effect/unstable/sql/SqlError";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../../provider/Services/ProviderInstanceRegistry.ts";
 import * as ThreadManagementService from "../ThreadManagementService.ts";
@@ -54,6 +55,10 @@ import * as TurnItemPositionStore from "../TurnItemPositionStore.ts";
 import * as RuntimeRequestService from "../RuntimeRequestService.ts";
 import * as ThreadCommandExecutor from "../ThreadCommandExecutor.ts";
 import * as ThreadForkService from "../ThreadForkService.ts";
+import {
+  makeCheckoutPlannerLayer,
+  makeCheckoutPreparationServices,
+} from "./CheckoutPreparationFixture.ts";
 import {
   runOrchestratorV2Scenario,
   type OrchestratorV2ScenarioStepError,
@@ -155,6 +160,12 @@ export interface OrchestratorV2ProviderReplayScenario<
 > extends OrchestratorV2Scenario {
   readonly transcript: Transcript;
   readonly runtimePolicyOverride?: RuntimePolicy.RuntimePolicyV2Override;
+  /**
+   * Run as production does for standalone conversations: the real checkout
+   * planner and preparation, and each thread's provider cwd from its own
+   * checkout or project root. A cwd override would defeat this and is refused.
+   */
+  readonly standaloneCheckout?: true;
 }
 
 export interface OrchestratorV2ProviderReplayHarness<
@@ -529,7 +540,10 @@ export function makeOrchestratorV2ProviderReplayLayer<
 }
 
 export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
-  scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
+  scenario: Pick<
+    OrchestratorV2ProviderReplayScenario,
+    "name" | "runtimePolicyOverride" | "standaloneCheckout"
+  >,
   registryLayer: Layer.Layer<ProviderAdapterRegistry.ProviderAdapterRegistryV2, Error>,
   options?: {
     readonly delegatedPreparation?: never;
@@ -562,7 +576,10 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
 >;
 
 export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
-  scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
+  scenario: Pick<
+    OrchestratorV2ProviderReplayScenario,
+    "name" | "runtimePolicyOverride" | "standaloneCheckout"
+  >,
   registryLayer: Layer.Layer<ProviderAdapterRegistry.ProviderAdapterRegistryV2, Error>,
   options: {
     readonly delegatedPreparation: ReplayDelegatedPreparationFactory;
@@ -595,7 +612,10 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
 >;
 
 export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
-  scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
+  scenario: Pick<
+    OrchestratorV2ProviderReplayScenario,
+    "name" | "runtimePolicyOverride" | "standaloneCheckout"
+  >,
   registryLayer: Layer.Layer<ProviderAdapterRegistry.ProviderAdapterRegistryV2, Error>,
   options?: {
     readonly delegatedPreparation?: ReplayDelegatedPreparationFactory;
@@ -628,7 +648,10 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
 >;
 
 export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
-  scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
+  scenario: Pick<
+    OrchestratorV2ProviderReplayScenario,
+    "name" | "runtimePolicyOverride" | "standaloneCheckout"
+  >,
   registryLayer: Layer.Layer<ProviderAdapterRegistry.ProviderAdapterRegistryV2, Error>,
   options: {
     readonly delegatedPreparation?: ReplayDelegatedPreparationFactory;
@@ -671,12 +694,11 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
         : { ...config, worktreesDir: options.checkoutFixture.worktreesDir };
     }).pipe(Effect.orDie),
   ).pipe(Layer.provide(NodeServices.layer));
-  const runtimeLayer =
-    scenario.runtimePolicyOverride === undefined
-      ? RuntimePolicy.layer
-      : RuntimePolicy.layerWithOverride(scenario.runtimePolicyOverride).pipe(
-          Layer.provide(RuntimePolicy.layer),
-        );
+  const standalone = scenario.standaloneCheckout === true;
+  if (standalone && scenario.runtimePolicyOverride?.cwd !== undefined)
+    throw new Error(
+      `Standalone replay scenario ${scenario.name} cannot override the provider cwd.`,
+    );
   const databaseLayer = options.databaseLayer ?? SqlitePersistenceMemory;
   // One queue shared by the adapters, the orchestrator, and the worker, like
   // runtimeLayer.ts; layer memoization keeps it a single instance.
@@ -730,6 +752,30 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     EffectOutbox.layer,
     TurnItemPositionStore.layer,
   ).pipe(Layer.provide(databaseLayer));
+  const basePolicyLayer = standalone
+    ? RuntimePolicy.layerFromProjectStore.pipe(
+        Layer.provide(
+          Layer.merge(
+            storesLayer,
+            Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+              getInstance: () => Effect.succeed(undefined),
+            }),
+          ),
+        ),
+      )
+    : RuntimePolicy.layer;
+  const runtimeLayer =
+    scenario.runtimePolicyOverride === undefined
+      ? basePolicyLayer
+      : RuntimePolicy.layerWithOverride(scenario.runtimePolicyOverride).pipe(
+          Layer.provide(basePolicyLayer),
+        );
+  const checkoutPlannerLayer = standalone
+    ? makeCheckoutPlannerLayer(
+        serverConfigLayer,
+        Layer.merge(NodeServices.layer, checkoutFileSystem),
+      )
+    : Layer.empty;
   const eventSinkProvided = EventSink.layerFromStores.pipe(
     Layer.provide(Layer.mergeAll(storesLayer, databaseLayer)),
   );
@@ -863,14 +909,20 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
         providerSwitchServiceProvided,
         runExecutionServiceProvided,
         ThreadForkService.layer,
+        checkoutPlannerLayer,
       ),
     ),
   );
   const legacyImporterProvided = ThreadManagementService.privateLegacyImporterLayer.pipe(
     Layer.provide(persistenceLayer),
   );
+  const delegatedPreparation: ReplayDelegatedPreparationFactory | undefined =
+    options.delegatedPreparation ??
+    (standalone
+      ? (owners) => makeCheckoutPreparationServices(owners, makeProviderRegistryLayer([]))
+      : undefined);
   const threadManagementProvided =
-    options.delegatedPreparation === undefined
+    delegatedPreparation === undefined
       ? Layer.unwrap(
           Effect.gen(function* () {
             const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -887,7 +939,6 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
           Layer.provide(Layer.merge(orchestratorProvided, legacyImporterProvided)),
           Layer.provide(NodeServices.layer),
         );
-  const delegatedPreparation = options.delegatedPreparation;
   const delegatedLaunchProvided =
     delegatedPreparation === undefined
       ? Layer.empty
@@ -966,8 +1017,9 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     eventSinkProvided,
     fixtureProjects,
     continuationWorkerProvided,
-    options.delegatedPreparation === undefined ? Layer.empty : threadManagementProvided,
+    delegatedPreparation === undefined ? Layer.empty : threadManagementProvided,
     delegatedLaunchProvided,
+    checkoutPlannerLayer,
   ).pipe(Layer.provide(worktreeRepairDependenciesTestLayer), Layer.provide(NodeServices.layer));
 
   // Build the daemon from the exact worker instance exposed alongside the

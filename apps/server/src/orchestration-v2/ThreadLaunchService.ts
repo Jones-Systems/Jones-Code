@@ -3893,8 +3893,21 @@ const make = Effect.gen(function* () {
         admission?.run === null ||
         admission?.run === undefined ||
         project === null ||
-        admission.capture.origin.kind !== "delegated_child" ||
-        admission.capture.origin.parentThreadId !== plan.parentThreadId ||
+        !(request.standalone === undefined
+          ? admission.capture.origin.kind === "delegated_child" &&
+            admission.capture.origin.parentThreadId === plan.parentThreadId
+          : admission.capture.origin.kind === "command" &&
+            admission.capture.commandId === request.standalone.messageCommandId &&
+            request.standalone.messageCommandId === effect.commandId &&
+            run?.userMessageId === request.standalone.messageId &&
+            projection.thread.standaloneCheckoutBirth?.version === 1 &&
+            projection.thread.standaloneCheckoutBirth.kind === request.standalone.kind &&
+            projection.thread.standaloneCheckoutBirth.birthCommandId ===
+              request.standalone.birthCommandId &&
+            projection.thread.standaloneCheckoutBirth.sourceThreadId === plan.parentThreadId &&
+            projection.thread.standaloneCheckoutBirth.projectId === projectId &&
+            projection.thread.standaloneCheckoutBirth.branch === plan.branch &&
+            projection.thread.standaloneCheckoutBirth.worktreePath === plan.worktreePath) ||
         effect.threadId !== plan.childThreadId ||
         run?.status !== "preparing" ||
         run.id !== admission.run.runId ||
@@ -3941,11 +3954,18 @@ const make = Effect.gen(function* () {
           currentEffect.leaseExpiresAt <= DateTime.formatIso(yield* DateTime.now) ||
           currentEffect.request.type !== "delegated-workspace.prepare" ||
           canonicalJson(
-            yield* Schema.encodeEffect(DelegatedCheckoutPlanV1)(currentEffect.request.plan),
-          ) !== canonicalJson(yield* Schema.encodeEffect(DelegatedCheckoutPlanV1)(plan)) ||
+            yield* Schema.encodeEffect(EffectOutbox.OrchestrationEffectRequestV2)(
+              currentEffect.request,
+            ),
+          ) !==
+            canonicalJson(
+              yield* Schema.encodeEffect(EffectOutbox.OrchestrationEffectRequestV2)(request),
+            ) ||
           currentProjection.thread.projectId !== projectId ||
           currentProjection.thread.worktreePath !== plan.worktreePath ||
           currentProjection.thread.branch !== plan.branch ||
+          canonicalJson(currentProjection.thread.standaloneCheckoutBirth ?? null) !==
+            canonicalJson(projection.thread.standaloneCheckoutBirth ?? null) ||
           currentProjection.thread.deletedAt !== null ||
           currentRun?.activeAttemptId !== source.preparation.runAttemptId ||
           currentRun.rootNodeId !== source.preparation.nodeId ||

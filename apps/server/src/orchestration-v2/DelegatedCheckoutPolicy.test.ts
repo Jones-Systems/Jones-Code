@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import { CommandId, ThreadId } from "@t3tools/contracts";
-import { planDelegatedCheckout } from "./DelegatedCheckoutPolicy.ts";
+import {
+  planStandaloneBirthPlacement,
+  planStandaloneCheckout,
+  planDelegatedCheckout,
+} from "./DelegatedCheckoutPolicy.ts";
 
 const input = {
   commandId: CommandId.make("delegate:one"),
@@ -48,5 +52,59 @@ describe("DP1 committed-base delegated checkout plan", () => {
     expect(() =>
       planDelegatedCheckout({ ...input, parentCheckoutPath: first.worktreePath }),
     ).toThrow("physically distinct");
+  });
+});
+
+describe("standalone committed-base checkout placement", () => {
+  const birth = {
+    kind: "fork" as const,
+    birthCommandId: CommandId.make("fork:one"),
+    targetThreadId: input.childThreadId,
+    canonicalWorktreesDir: input.canonicalWorktreesDir,
+    projectWorkspaceRoot: input.canonicalProjectRoot,
+  };
+  it("keeps idle placement deterministic and separates siblings and MCP roots", () => {
+    const placement = planStandaloneBirthPlacement(birth);
+    expect(planStandaloneBirthPlacement(birth)).toEqual(placement);
+    expect(placement.branch).toMatch(/^t3code\/fork-/);
+    expect(
+      planStandaloneBirthPlacement({ ...birth, targetThreadId: ThreadId.make("sibling") })
+        .worktreePath,
+    ).not.toBe(placement.worktreePath);
+    expect(planStandaloneBirthPlacement({ ...birth, kind: "mcp_create" }).branch).toMatch(
+      /^t3code\/thread-/,
+    );
+  });
+  it("pins firstsend without changing birth placement and refuses path/base/identity substitution", () => {
+    const placement = planStandaloneBirthPlacement(birth);
+    const capture = {
+      ...input,
+      ...birth,
+      ...placement,
+      projectWorkspaceRoot: birth.projectWorkspaceRoot,
+    };
+    const plan = planStandaloneCheckout(capture);
+    expect(plan.workspaceStrategy).toEqual({
+      type: "worktree",
+      baseRef: input.parentCommit,
+      branch: placement.branch,
+      startFromOrigin: false,
+    });
+    expect(planStandaloneCheckout({ ...capture, parentCommit: "b".repeat(40) }).worktreePath).toBe(
+      placement.worktreePath,
+    );
+    expect(() => planStandaloneCheckout({ ...capture, branch: "other" })).toThrow(
+      "placement changed",
+    );
+    expect(() => planStandaloneCheckout({ ...capture, worktreePath: "/other" })).toThrow(
+      "placement changed",
+    );
+    expect(() => planStandaloneCheckout({ ...capture, parentCommit: "HEAD" })).toThrow("immutable");
+    expect(() =>
+      planStandaloneCheckout({ ...capture, parentCheckoutPath: placement.worktreePath }),
+    ).toThrow("distinct");
+    expect(() =>
+      planStandaloneCheckout({ ...capture, parentThreadId: input.childThreadId }),
+    ).toThrow("distinct");
   });
 });

@@ -72,25 +72,97 @@ function materializeWorkspacePlaceholder(value: unknown, workspace: string): unk
   );
 }
 
+function containsWorkspacePlaceholder(value: unknown): boolean {
+  if (value === REPLAY_TRANSCRIPT_WORKSPACE_PLACEHOLDER) return true;
+  if (Array.isArray(value)) return value.some(containsWorkspacePlaceholder);
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.values(value).some(containsWorkspacePlaceholder)
+  );
+}
+
 /**
  * Resolves portable fixture placeholders before a replay driver sees the transcript.
  * The resulting outbound frames still use exact structural equality during replay.
+ * `entryWorkspaces` gives listed entries (by index) another workspace, for a
+ * thread that runs in its own checkout; every listed entry must be an
+ * outbound frame that contains the placeholder.
  */
 export function materializeReplayTranscriptWorkspace(
   transcript: ProviderReplayTranscript,
   workspace: string,
+  entryWorkspaces: ReadonlyMap<number, string> = new Map(),
 ): ProviderReplayTranscript {
+  for (const index of entryWorkspaces.keys()) {
+    const entry = transcript.entries[index];
+    if (entry?.type !== "expect_outbound" || !containsWorkspacePlaceholder(entry.frame))
+      throw new Error(
+        `Transcript ${transcript.scenario} entry ${index} has no outbound workspace placeholder.`,
+      );
+  }
   return {
     ...transcript,
-    entries: transcript.entries.map((entry) =>
+    entries: transcript.entries.map((entry, index) =>
       entry.type === "expect_outbound"
         ? {
             ...entry,
-            frame: materializeWorkspacePlaceholder(entry.frame, workspace),
+            frame: materializeWorkspacePlaceholder(
+              entry.frame,
+              entryWorkspaces.get(index) ?? workspace,
+            ),
           }
         : entry,
     ),
   };
+}
+
+const frameRecord = (value: unknown): Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+
+/**
+ * Entries of a Codex transcript that belong to forked native threads: the
+ * k-th `thread/fork` request and every later request on the native thread
+ * its reply created go to `forkWorkspaces[k]`. The transcript must hold
+ * exactly that many forks, each with a reply naming its thread.
+ */
+export function codexForkWorkspaceEntries(
+  transcript: ProviderReplayTranscript,
+  forkWorkspaces: ReadonlyArray<string>,
+): ReadonlyMap<number, string> {
+  const entries = new Map<number, string>();
+  const threadWorkspaces = new Map<string, string>();
+  const pendingForks = new Map<unknown, string>();
+  let forks = 0;
+  transcript.entries.forEach((entry, index) => {
+    const frame = frameRecord(
+      entry.type === "expect_outbound" || entry.type === "emit_inbound" ? entry.frame : undefined,
+    );
+    if (entry.type === "expect_outbound" && frame.method === "thread/fork") {
+      const workspace = forkWorkspaces[forks++];
+      if (workspace === undefined) return;
+      pendingForks.set(frame.id, workspace);
+      if (containsWorkspacePlaceholder(frame)) entries.set(index, workspace);
+      return;
+    }
+    if (entry.type === "emit_inbound" && pendingForks.has(frame.id) && "result" in frame) {
+      const threadId = frameRecord(frameRecord(frame.result).thread).id;
+      if (typeof threadId === "string") threadWorkspaces.set(threadId, pendingForks.get(frame.id)!);
+      pendingForks.delete(frame.id);
+      return;
+    }
+    const threadId = frameRecord(frame.params).threadId;
+    if (entry.type === "expect_outbound" && typeof threadId === "string") {
+      const workspace = threadWorkspaces.get(threadId);
+      if (workspace !== undefined && containsWorkspacePlaceholder(frame))
+        entries.set(index, workspace);
+    }
+  });
+  if (forks !== forkWorkspaces.length || threadWorkspaces.size !== forkWorkspaces.length)
+    throw new Error(
+      `Transcript ${transcript.scenario} has ${forks} forks and ${threadWorkspaces.size} forked threads; expected ${forkWorkspaces.length}.`,
+    );
+  return entries;
 }
 
 /** Adds current runtime context to legacy prompt expectations, keeping outbound matching exact. */

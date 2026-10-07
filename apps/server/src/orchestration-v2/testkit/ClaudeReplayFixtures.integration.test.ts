@@ -8,7 +8,6 @@ import {
   type ProviderReplayTranscript,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 
 import { classifyClaudeNativeTool } from "../Adapters/ClaudeAdapterV2.ts";
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
@@ -19,6 +18,7 @@ import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import { ORCHESTRATOR_REPLAY_FIXTURES } from "./fixtures/index.ts";
 import { subagentInput } from "./fixtures/subagent/input.ts";
 import { runOrchestratorV2Scenario } from "./OrchestratorScenario.ts";
+import { checkpointWorkspace } from "./ReplayFixtureWorkspace.ts";
 import { makeOrchestratorV2ProviderReplayLayer } from "./ProviderReplayHarness.ts";
 import { materializeReplayTranscriptRuntimeInstructions } from "./ReplayTranscriptNdjson.ts";
 import { CLAUDE_MODEL_SELECTION, materializeFixtureInput } from "./fixtures/shared.ts";
@@ -148,10 +148,7 @@ describe("Claude Agent SDK replay fixtures", () => {
         driver: ProviderDriverKind.make("claudeAgent"),
         modelSelection: CLAUDE_MODEL_SELECTION,
       }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
-      const fs = yield* FileSystem.FileSystem;
-      const workspaceRoot = yield* fs.makeTempDirectoryScoped({
-        prefix: "t3-claude-replay-subagent-",
-      });
+      const workspaceRoot = yield* checkpointWorkspace("claude-replay-subagent");
       const checkoutFixture = {
         projects: materialized.commands.flatMap((command) =>
           command.type === "thread.create"
@@ -166,6 +163,7 @@ describe("Claude Agent SDK replay fixtures", () => {
         commands: materialized.commands,
         steps: materialized.steps,
         projectionThreadIds: materialized.projectionThreadIds,
+        runtimePolicyOverride: { cwd: workspaceRoot },
       };
       yield* Effect.gen(function* () {
         const result = yield* runOrchestratorV2Scenario(scenario);

@@ -54,29 +54,13 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as ServerConfig from "../config.ts";
 import * as GitManager from "../git/GitManager.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
-import * as ProcessRunner from "../processRunner.ts";
-import * as PortScanner from "../preview/PortScanner.ts";
-import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
-import * as TerminalManager from "../terminal/Manager.ts";
-import * as PtyAdapter from "../terminal/PtyAdapter.ts";
-import * as ProjectService from "../project/ProjectService.ts";
-import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
-import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
-import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
-import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
-import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
-import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
-import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
-import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
-import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
-import * as TextGeneration from "../textGeneration/TextGeneration.ts";
-import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
-import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
-import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
-import { terminalOwnerObservationLive } from "../orchestration-v2/ResourceCleanupService.ts";
+import {
+  RecordedAppThreadJson,
+  type StandaloneThreadCreateCommand,
+} from "../orchestration-v2/RecordedTypes.ts";
+import { canonicalJson } from "../orchestration-v2/CanonicalJson.ts";
 import * as ApplicationThreadBirth from "../orchestration-v2/ApplicationThreadBirth.ts";
 import * as DelegatedCheckoutPlanner from "../orchestration-v2/DelegatedCheckoutPlanner.ts";
 import * as OrdinaryCheckoutOwnership from "../orchestration-v2/OrdinaryCheckoutOwnership.ts";
@@ -96,9 +80,13 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import * as ProviderContinuationRequests from "../orchestration-v2/ProviderContinuationRequests.ts";
 import { checkpointWorkspace } from "../orchestration-v2/testkit/ReplayFixtureWorkspace.ts";
 import {
+  type CheckoutPreparationAudit,
+  makeCheckoutPreparationAudit,
+  makeCheckoutPreparationServices,
+} from "../orchestration-v2/testkit/CheckoutPreparationFixture.ts";
+import {
   makeOrchestratorV2ProviderReplayLayer,
   makeOrchestratorV2ReplayLayerWithRegistry,
-  type ReplayDelegatedPreparationOwners,
 } from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import {
   decodeProviderReplayNdjson,
@@ -114,154 +102,9 @@ import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
 
-interface DelegatedPreparationAudit {
-  factories: number;
-  finalized: number;
-  controls: string[];
-  ownedDirectories: string[];
-  acquisitions: Array<{
-    sql: SqlClient.SqlClient;
-    sink: EventSink.EventSinkV2["Service"];
-    management: ThreadManagementService.ThreadManagementService["Service"];
-    projects: ProjectService.ProjectService["Service"];
-    terminals: TerminalManager.TerminalManager["Service"];
-    receipts: CommandReceiptStore.CommandReceiptStoreV2["Service"];
-    outbox: EffectOutbox.EffectOutboxV2["Service"];
-  }>;
-}
-
-const delegatedPreparationAudit = (): DelegatedPreparationAudit => ({
-  factories: 0,
-  finalized: 0,
-  controls: [],
-  ownedDirectories: [],
-  acquisitions: [],
-});
-
-function makeDelegatedPreparationServices(
-  owners: ReplayDelegatedPreparationOwners,
-  providerRegistryLayer: ReturnType<typeof makeProviderRegistryLayer>,
-  audit: DelegatedPreparationAudit,
-) {
-  audit.factories++;
-  const unexpectedControl = (operation: string) =>
-    Effect.sync(() => {
-      audit.controls.push(operation);
-      throw new Error(`Unexpected delegated no-script virtual terminal control: ${operation}`);
-    });
-  const common = Layer.mergeAll(
-    owners.persistenceLayer,
-    owners.legacyImporterLayer,
-    owners.managementLayer,
-    owners.configLayer,
-    owners.settingsLayer,
-    owners.platformLayer,
-    ThreadCommandExecutor.layer,
-    providerRegistryLayer,
-    Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
-    Layer.mock(TextGeneration.TextGeneration)({}),
-  );
-  const workspace = WorkspacePaths.layer.pipe(Layer.provide(owners.platformLayer));
-  const metadata = ProjectEnrichmentService.layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        RepositoryIdentityResolver.layer,
-        ProjectFaviconResolver.layer.pipe(
-          Layer.provide(Layer.merge(workspace, T3ProjectFileLoader.layer)),
-        ),
-      ),
-    ),
-    Layer.provide(owners.platformLayer),
-  );
-  const projects = ProjectService.layer.pipe(
-    Layer.provide(Layer.merge(workspace, metadata)),
-    Layer.provide(common),
-  );
-  const terminals = TerminalManager.layer.pipe(
-    Layer.provide(terminalOwnerObservationLive.pipe(Layer.provide(owners.eventSinkLayer))),
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.succeed(PtyAdapter.PtyAdapter, {
-          spawn: (input) =>
-            unexpectedControl("spawn").pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new PtyAdapter.PtySpawnError({
-                    adapter: "delegated-no-script-virtual",
-                    shell: input.shell,
-                  }),
-                ),
-              ),
-            ),
-        }),
-        Layer.mock(NativeTelemetryClient.NativeTelemetryClient)({
-          processTable: Effect.succeed([]),
-        }),
-        Layer.mock(PortScanner.PortDiscovery)({
-          registerTerminalProcesses: () => unexpectedControl("registerTerminalProcesses"),
-          unregisterTerminal: () => unexpectedControl("unregisterTerminal"),
-        }),
-        ProcessRunner.layer,
-      ),
-    ),
-    Layer.provide(common),
-  );
-  const setup = ProjectSetupScriptRunner.layer.pipe(
-    Layer.provide(Layer.merge(projects, terminals)),
-    Layer.provide(common),
-  );
-  const process = VcsProcess.layer.pipe(Layer.provide(owners.platformLayer));
-  const drivers = Layer.merge(GitVcsDriver.layer, VcsDriverRegistry.layer).pipe(
-    Layer.provide(process),
-    Layer.provide(common),
-  );
-  const sourceControl = Layer.effect(
-    SourceControlProviderRegistry.SourceControlProviderRegistry,
-    SourceControlProviderRegistry.makeWithProviders([]),
-  ).pipe(Layer.provide(Layer.merge(process, drivers)), Layer.provide(common));
-  const manager = GitManager.layer.pipe(
-    Layer.provide(Layer.mergeAll(drivers, sourceControl, setup)),
-    Layer.provide(common),
-  );
-  const workflow = Layer.effect(GitWorkflow.GitWorkflowService, GitWorkflow.make).pipe(
-    Layer.provide(Layer.merge(drivers, manager)),
-  );
-  const folders = ManagedProjectFolders.layer.pipe(
-    Layer.provide(Layer.mergeAll(projects, workflow, drivers)),
-    Layer.provide(common),
-  );
-  const physical = Layer.mergeAll(
-    projects,
-    terminals,
-    setup,
-    workflow,
-    folders,
-    WorktreeSetupTracker.layer,
-    providerRegistryLayer,
-    Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
-    Layer.mock(TextGeneration.TextGeneration)({}),
-  );
-  const capture = Layer.effectDiscard(
-    Effect.gen(function* () {
-      audit.ownedDirectories.push((yield* ServerConfig.ServerConfig).baseDir);
-      audit.acquisitions.push({
-        sql: yield* SqlClient.SqlClient,
-        sink: yield* EventSink.EventSinkV2,
-        management: yield* ThreadManagementService.ThreadManagementService,
-        projects: yield* ProjectService.ProjectService,
-        terminals: yield* TerminalManager.TerminalManager,
-        receipts: yield* CommandReceiptStore.CommandReceiptStoreV2,
-        outbox: yield* EffectOutbox.EffectOutboxV2,
-      });
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          audit.finalized++;
-        }),
-      );
-    }),
-  ).pipe(Layer.provide(Layer.merge(physical, common)));
-  return Layer.merge(physical, capture);
-}
+type DelegatedPreparationAudit = CheckoutPreparationAudit;
+const delegatedPreparationAudit = makeCheckoutPreparationAudit;
+const makeDelegatedPreparationServices = makeCheckoutPreparationServices;
 
 const makeDelegatedPlannerFixture = Effect.fn(function* (cwd: string) {
   const fs = yield* FileSystem.FileSystem.pipe(Effect.provide(NodeServices.layer));
@@ -771,6 +614,21 @@ describe("orchestrator MCP toolkit", () => {
         Effect.gen(function* () {
           const cwd = yield* checkpointWorkspace("orchestrator-mcp-toolkit");
           const plannerFixture = yield* makeDelegatedPlannerFixture(cwd);
+          // The original parent owns `cwd`; each later mutating root needs its own checkout.
+          const ownRootCheckout = Effect.fn(function* (branch: string) {
+            const worktreePath = (yield* Path.Path.pipe(Effect.provide(NodeServices.layer))).join(
+              plannerFixture.config.worktreesDir,
+              branch,
+            );
+            yield* plannerFixtureGit(plannerFixture, cwd, [
+              "worktree",
+              "add",
+              "-b",
+              branch,
+              worktreePath,
+            ]);
+            return { branch, worktreePath };
+          });
           const preparationAudit = delegatedPreparationAudit();
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const parentTerminalGates = new Map<ThreadId, Deferred.Deferred<void>>();
@@ -2987,6 +2845,7 @@ describe("orchestrator MCP toolkit", () => {
             parentTerminalGates.set(lateParentThreadId, lateParentGate);
             deliveryTerminalGates.set(lateParentThreadId, lateDeliveryGate);
             yield* Ref.set(continuationOffers, []);
+            const lateParentCheckout = yield* ownRootCheckout("mcp-late-completion-parent");
             yield* orchestrator.dispatch({
               type: "thread.create",
               createdBy: "user",
@@ -2998,8 +2857,8 @@ describe("orchestrator MCP toolkit", () => {
               modelSelection: codexSelection,
               runtimeMode: "full-access",
               interactionMode: "default",
-              branch: null,
-              worktreePath: cwd,
+              branch: lateParentCheckout.branch,
+              worktreePath: lateParentCheckout.worktreePath,
             });
             yield* orchestrator.dispatch({
               type: "message.dispatch",
@@ -3539,6 +3398,7 @@ describe("orchestrator MCP toolkit", () => {
             parentTerminalGates.set(fanoutParentThreadId, fanoutParentGate);
             deliveryTerminalGates.set(fanoutParentThreadId, firstFanoutDeliveryGate);
             yield* Ref.set(continuationOffers, []);
+            const fanoutParentCheckout = yield* ownRootCheckout("mcp-fanout-parent");
             yield* orchestrator.dispatch({
               type: "thread.create",
               createdBy: "user",
@@ -3550,8 +3410,8 @@ describe("orchestrator MCP toolkit", () => {
               modelSelection: codexSelection,
               runtimeMode: "full-access",
               interactionMode: "default",
-              branch: null,
-              worktreePath: cwd,
+              branch: fanoutParentCheckout.branch,
+              worktreePath: fanoutParentCheckout.worktreePath,
             });
             yield* orchestrator.dispatch({
               type: "message.dispatch",
@@ -4420,6 +4280,7 @@ describe("MCP genuine delegated checkout capture", () => {
 const makeActualDelegatedPreparationFixture = Effect.fn(function* (
   name: string,
   audit: DelegatedPreparationAudit,
+  standalone = false,
 ) {
   const cwd = yield* checkpointWorkspace(name);
   const fixture = yield* makeDelegatedPlannerFixture(cwd);
@@ -4443,7 +4304,7 @@ const makeActualDelegatedPreparationFixture = Effect.fn(function* (
     }),
   ]);
   const replay = makeOrchestratorV2ReplayLayerWithRegistry(
-    { name, runtimePolicyOverride: { cwd } },
+    { name, ...(standalone ? {} : { runtimePolicyOverride: { cwd } }) },
     adapters,
     {
       databaseLayer: SqlitePersistenceMemory,
@@ -4456,7 +4317,7 @@ const makeActualDelegatedPreparationFixture = Effect.fn(function* (
       },
     },
   ).pipe(Layer.provideMerge(SqlitePersistenceMemory), Layer.provideMerge(fixture.layer));
-  return { cwd, fixture, replay };
+  return { cwd, fixture, replay, capturedTurns };
 });
 
 const requestActualDelegatedChild = Effect.fn(function* (commandId: CommandId) {
@@ -5140,3 +5001,551 @@ describe("MCP actual delegated preparation", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 });
+
+const originalServices = (audit: DelegatedPreparationAudit) => {
+  const captured = audit.acquisitions[0];
+  if (captured === undefined) throw new Error("Missing original scope-owned services");
+  return captured;
+};
+
+const birthStandaloneRoot = Effect.fn(function* (cwd: string) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  yield* orchestrator.dispatch({
+    type: "thread.create",
+    commandId: CommandId.make("standalone:source:create"),
+    threadId: parentThreadId,
+    projectId,
+    title: "Standalone source",
+    modelSelection: codexSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: cwd,
+    createdBy: "user",
+    creationSource: "web",
+  });
+  const targetThreadId = ThreadId.make("standalone:target");
+  const birthCommand = {
+    type: "thread.create" as const,
+    commandId: CommandId.make("standalone:target:create"),
+    threadId: targetThreadId,
+    projectId,
+    title: "Standalone target",
+    modelSelection: codexSelection,
+    runtimeMode: "full-access" as const,
+    interactionMode: "default" as const,
+    branch: null,
+    worktreePath: cwd,
+    createdBy: "agent" as const,
+    creationSource: "mcp" as const,
+    standaloneBirthRequest: { kind: "mcp_create" as const, sourceThreadId: parentThreadId },
+  } satisfies StandaloneThreadCreateCommand;
+  const accepted = yield* orchestrator.dispatch(birthCommand);
+  const born = yield* orchestrator.getThreadProjection(targetThreadId);
+  const birth = born.thread.standaloneCheckoutBirth;
+  if (birth === undefined) return yield* Effect.die("Standalone private birth was lost");
+  const message = {
+    type: "message.dispatch" as const,
+    commandId: CommandId.make("standalone:target:firstsend"),
+    threadId: targetThreadId,
+    messageId: MessageId.make("standalone:target:message"),
+    text: "Keep the original firstsend identity",
+    attachments: [],
+    modelSelection: codexSelection,
+    dispatchMode: { type: "start_immediately" as const },
+    createdBy: "user" as const,
+    creationSource: "web" as const,
+  };
+  return { targetThreadId, birthCommand, accepted, born, birth, message };
+});
+
+describe("standalone checkout core", () => {
+  it.live(
+    "standalone idle birth persists privately and firstsend pins committed HEAD once through actual preparation",
+    () =>
+      Effect.gen(function* () {
+        const audit = delegatedPreparationAudit();
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { cwd, fixture, replay, capturedTurns } =
+              yield* makeActualDelegatedPreparationFixture("standalone-pin-timing", audit, true);
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            yield* Effect.gen(function* () {
+              const orchestrator = yield* Orchestrator.OrchestratorV2;
+              const outbox = originalServices(audit).outbox;
+              const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+              const sink = yield* EventSink.EventSinkV2;
+              const sql = yield* SqlClient.SqlClient;
+              const beforeRefs = yield* plannerFixtureGit(fixture, cwd, ["show-ref"]);
+              const target = yield* birthStandaloneRoot(cwd);
+              expect(yield* fs.exists(target.birth.worktreePath)).toBe(false);
+              expect(target.born.runs).toEqual([]);
+              expect(target.born.checkpointScopes).toEqual([]);
+              expect(yield* outbox.listByThreadId(target.targetThreadId)).toEqual([]);
+              expect(yield* plannerFixtureGit(fixture, cwd, ["show-ref"])).toBe(beforeRefs);
+              expect((yield* orchestrator.dispatch(target.birthCommand)).sequence).toBe(
+                target.accepted.sequence,
+              );
+              const stored = yield* sql<{
+                payload_json: string;
+              }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id = ${target.targetThreadId}`;
+              const persisted = yield* Schema.decodeUnknownEffect(
+                Schema.fromJsonString(RecordedAppThreadJson),
+              )(stored[0]!.payload_json);
+              expect(persisted.standaloneCheckoutBirth).toEqual(target.birth);
+              yield* fs.writeFileString(
+                path.join(cwd, "committed-before-send.txt"),
+                "committed between birth and firstsend",
+              );
+              yield* plannerFixtureGit(fixture, cwd, ["add", "committed-before-send.txt"]);
+              yield* plannerFixtureGit(fixture, cwd, ["commit", "-m", "before firstsend"]);
+              const pinned = yield* plannerFixtureGit(fixture, cwd, ["rev-parse", "HEAD"]);
+              yield* fs.writeFileString(
+                path.join(cwd, "staged-only.txt"),
+                "uncommitted staged source",
+              );
+              yield* plannerFixtureGit(fixture, cwd, ["add", "staged-only.txt"]);
+              yield* fs.writeFileString(path.join(cwd, "README.md"), "uncommitted unstaged source");
+              yield* fs.writeFileString(path.join(cwd, "untracked-only.txt"), "untracked source");
+              const accepted = yield* orchestrator.dispatch(target.message);
+              const preparing = yield* orchestrator.getThreadProjection(target.targetThreadId);
+              expect(preparing.runs).toHaveLength(1);
+              expect(preparing.runs[0]?.status).toBe("preparing");
+              expect(preparing.runs[0]?.userMessageId).toBe(target.message.messageId);
+              expect(preparing.checkpointScopes).toEqual([]);
+              expect(preparing.nodes[0]?.checkpointScopeId).toBeNull();
+              expect(
+                preparing.turnItems.filter((item) => item.type === "command_execution"),
+              ).toHaveLength(1);
+              const effects = yield* outbox.listByCommandId(target.message.commandId);
+              expect(effects).toHaveLength(1);
+              const effect = effects[0]!;
+              if (effect.request.type !== "delegated-workspace.prepare")
+                return yield* Effect.die("Missing standalone prepare effect");
+              expect(effect.request.plan.parentCommit).toBe(pinned);
+              expect(effect.request.standalone).toMatchObject({
+                kind: "mcp_create",
+                birthCommandId: target.birthCommand.commandId,
+                messageCommandId: target.message.commandId,
+                messageId: target.message.messageId,
+              });
+              const linked = yield* sink.ordinaryCheckoutLifetime!.readEffectLink(effect);
+              expect(linked?.admission.capture.origin).toEqual({ kind: "command" });
+              expect(linked?.admission.capture.commandId).toBe(target.message.commandId);
+              expect(canonicalJson(linked?.admission.capture.canonicalCommand)).toBe(
+                canonicalJson(target.message),
+              );
+              expect(linked?.admission.capture.canonicalCheckoutPath).toBe(
+                target.birth.worktreePath,
+              );
+              expect(yield* Ref.get(capturedTurns)).toEqual([]);
+              yield* plannerFixtureGit(fixture, cwd, ["commit", "-m", "after firstsend"]);
+              const later = yield* plannerFixtureGit(fixture, cwd, ["rev-parse", "HEAD"]);
+              expect(later).not.toBe(pinned);
+              const sourceStatus = yield* plannerFixtureGit(fixture, cwd, [
+                "--no-optional-locks",
+                "status",
+                "--porcelain=v1",
+              ]);
+              const indexPath = yield* plannerFixtureGit(fixture, cwd, [
+                "rev-parse",
+                "--git-path",
+                "index",
+              ]);
+              const indexBefore = yield* fs.readFile(path.resolve(cwd, indexPath));
+              expect((yield* orchestrator.dispatch(target.message)).sequence).toBe(
+                accepted.sequence,
+              );
+              expect(yield* outbox.listByCommandId(target.message.commandId)).toEqual(effects);
+              expect(yield* worker.drain(1)).toBe(1);
+              const released = yield* orchestrator.getThreadProjection(target.targetThreadId);
+              expect(released.runs[0]?.status).toBe("starting");
+              expect(released.checkpointScopes).toHaveLength(1);
+              expect(released.checkpointScopes[0]?.cwd).toBe(target.birth.worktreePath);
+              expect(
+                yield* plannerFixtureGit(fixture, target.birth.worktreePath, ["rev-parse", "HEAD"]),
+              ).toBe(pinned);
+              expect(
+                yield* plannerFixtureGit(fixture, target.birth.worktreePath, [
+                  "symbolic-ref",
+                  "--short",
+                  "HEAD",
+                ]),
+              ).toBe(target.birth.branch);
+              expect(
+                yield* fs.exists(path.join(target.birth.worktreePath, "committed-before-send.txt")),
+              ).toBe(true);
+              expect(
+                yield* fs.exists(path.join(target.birth.worktreePath, "staged-only.txt")),
+              ).toBe(false);
+              expect(
+                yield* fs.exists(path.join(target.birth.worktreePath, "untracked-only.txt")),
+              ).toBe(false);
+              expect(
+                yield* fs.readFileString(path.join(target.birth.worktreePath, "README.md")),
+              ).not.toBe("uncommitted unstaged source");
+              expect(yield* plannerFixtureGit(fixture, cwd, ["rev-parse", "HEAD"])).toBe(later);
+              expect(
+                yield* plannerFixtureGit(fixture, cwd, [
+                  "--no-optional-locks",
+                  "status",
+                  "--porcelain=v1",
+                ]),
+              ).toBe(sourceStatus);
+              expect(yield* fs.readFile(path.resolve(cwd, indexPath))).toEqual(indexBefore);
+              const starts = (yield* outbox.listByThreadId(target.targetThreadId)).filter(
+                (row) => row.request.type === "provider-turn.start",
+              );
+              expect(starts).toHaveLength(1);
+              expect(yield* Ref.get(capturedTurns)).toEqual([]);
+              expect(yield* worker.drain(1)).toBe(1);
+              expect(yield* Ref.get(capturedTurns)).toHaveLength(1);
+              expect((yield* orchestrator.dispatch(target.message)).sequence).toBe(
+                accepted.sequence,
+              );
+              expect(
+                (yield* orchestrator.getThreadProjection(target.targetThreadId)).runs,
+              ).toHaveLength(1);
+            }).pipe(Effect.provide(replay));
+          }),
+        );
+        expect(audit.finalized).toBe(1);
+        expect(audit.controls).toEqual([]);
+        const fs = yield* FileSystem.FileSystem;
+        for (const root of audit.ownedDirectories) expect(yield* fs.exists(root)).toBe(false);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.live.each([
+    "source deleted",
+    "source recreated",
+    "source non-Git",
+    "source unborn",
+    "source checkout missing",
+    "target exists",
+    "branch mismatch",
+    "path mismatch",
+    "project mismatch",
+    "birth receipt substituted",
+    "second birth",
+  ] as const)(
+    "standalone firstsend refuses %s before a run, lease or physical preparation",
+    (failure) =>
+      Effect.gen(function* () {
+        const audit = delegatedPreparationAudit();
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { cwd, fixture, replay } = yield* makeActualDelegatedPreparationFixture(
+              `standalone-refusal-${failure.replaceAll(" ", "-")}`,
+              audit,
+              true,
+            );
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            yield* Effect.gen(function* () {
+              const orchestrator = yield* Orchestrator.OrchestratorV2;
+              const sink = yield* EventSink.EventSinkV2;
+              const receipts = originalServices(audit).receipts;
+              const outbox = originalServices(audit).outbox;
+              const target = yield* birthStandaloneRoot(cwd);
+              const source = (yield* orchestrator.getThreadProjection(parentThreadId)).thread;
+              if (
+                failure === "source deleted" ||
+                failure === "source recreated" ||
+                failure === "second birth" ||
+                failure === "project mismatch"
+              ) {
+                const thread =
+                  failure === "second birth" || failure === "project mismatch"
+                    ? target.born.thread
+                    : source;
+                const now = yield* DateTime.now;
+                yield* sink.write({
+                  events: [
+                    {
+                      id: EventId.make(`standalone:alter:${failure}`),
+                      type:
+                        failure === "source deleted"
+                          ? "thread.deleted"
+                          : failure === "project mismatch"
+                            ? "thread.metadata-updated"
+                            : "thread.created",
+                      threadId: thread.id,
+                      occurredAt: now,
+                      payload: {
+                        ...thread,
+                        ...(failure === "source deleted"
+                          ? { deletedAt: now }
+                          : failure === "project mismatch"
+                            ? { projectId: ProjectId.make("changed-project") }
+                            : { createdAt: DateTime.add(thread.createdAt, { seconds: 1 }) }),
+                      },
+                    },
+                  ],
+                });
+              } else if (failure === "source non-Git") {
+                yield* fs.rename(path.join(cwd, ".git"), path.join(cwd, ".retained-git"));
+              } else if (failure === "source unborn") {
+                yield* plannerFixtureGit(fixture, cwd, [
+                  "symbolic-ref",
+                  "HEAD",
+                  "refs/heads/unborn-test",
+                ]);
+              } else if (failure === "target exists") {
+                yield* fs.makeDirectory(target.birth.worktreePath, { recursive: true });
+                yield* fs.writeFileString(
+                  path.join(target.birth.worktreePath, "retained.txt"),
+                  "existing owner",
+                );
+              } else if (failure === "birth receipt substituted") {
+                const receipt = Option.getOrThrow(
+                  yield* receipts.getByCommandId(target.birthCommand.commandId),
+                );
+                yield* receipts.upsert({ ...receipt, commandType: "thread.fork" });
+              } else {
+                yield* orchestrator.dispatch({
+                  type: "thread.metadata.update",
+                  commandId: CommandId.make(`standalone:meta:${failure}`),
+                  threadId:
+                    failure === "source checkout missing" ? parentThreadId : target.targetThreadId,
+                  ...(failure === "branch mismatch"
+                    ? { branch: "changed-branch" }
+                    : { worktreePath: path.join(cwd, "missing-checkout") }),
+                });
+              }
+              const refused = yield* orchestrator.dispatch(target.message).pipe(Effect.exit);
+              expect(Exit.isFailure(refused)).toBe(true);
+              expect((yield* orchestrator.getThreadProjection(target.targetThreadId)).runs).toEqual(
+                [],
+              );
+              expect(yield* outbox.listByThreadId(target.targetThreadId)).toEqual([]);
+              expect(Option.isNone(yield* receipts.getByCommandId(target.message.commandId))).toBe(
+                true,
+              );
+              if (failure === "target exists")
+                expect(
+                  yield* fs.readFileString(path.join(target.birth.worktreePath, "retained.txt")),
+                ).toBe("existing owner");
+              else expect(yield* fs.exists(target.birth.worktreePath)).toBe(false);
+            }).pipe(Effect.provide(replay));
+          }),
+        );
+        expect(audit.finalized).toBe(1);
+        const fs = yield* FileSystem.FileSystem;
+        for (const root of audit.ownedDirectories) expect(yield* fs.exists(root)).toBe(false);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+it.live.each([
+  "binding removed",
+  "binding substituted",
+  "plan substituted",
+  "worker substituted",
+] as const)("standalone producer refuses %s on an authentic original admission", (failure) =>
+  Effect.gen(function* () {
+    const audit = delegatedPreparationAudit();
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const { cwd, replay } = yield* makeActualDelegatedPreparationFixture(
+          `standalone-producer-${failure.replaceAll(" ", "-")}`,
+          audit,
+          true,
+        );
+        const fs = yield* FileSystem.FileSystem;
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const outbox = originalServices(audit).outbox;
+          const launch = yield* ThreadLaunchService.ThreadLaunchService;
+          const target = yield* birthStandaloneRoot(cwd);
+          yield* orchestrator.dispatch(target.message);
+          const claimed = Option.getOrThrow(
+            yield* outbox.claimNext({
+              workerId: "standalone-original-worker",
+              leaseDurationMs: 60_000,
+            }),
+          );
+          if (
+            claimed.request.type !== "delegated-workspace.prepare" ||
+            claimed.request.standalone === undefined ||
+            launch.prepareDelegated === undefined
+          )
+            return yield* Effect.die("Missing authentic standalone original claim");
+          const request = claimed.request;
+          const standalone = claimed.request.standalone;
+          const copied = {
+            ...claimed,
+            ...(failure === "worker substituted"
+              ? { leaseOwner: "other-worker" }
+              : {
+                  request:
+                    failure === "plan substituted"
+                      ? {
+                          ...request,
+                          plan: {
+                            ...request.plan,
+                            parentCommit: "b".repeat(40),
+                            workspaceStrategy: {
+                              ...request.plan.workspaceStrategy,
+                              baseRef: "b".repeat(40),
+                            },
+                          },
+                        }
+                      : failure === "binding removed"
+                        ? { type: request.type, runId: request.runId, plan: request.plan }
+                        : {
+                            ...request,
+                            standalone: {
+                              ...standalone,
+                              messageId: MessageId.make("other-message"),
+                            },
+                          },
+                }),
+          };
+          expect(Exit.isFailure(yield* launch.prepareDelegated(copied).pipe(Effect.exit))).toBe(
+            true,
+          );
+          expect(yield* fs.exists(target.birth.worktreePath)).toBe(false);
+          expect(
+            (yield* orchestrator.getThreadProjection(target.targetThreadId)).runs[0]?.status,
+          ).toBe("preparing");
+          const receipts = originalServices(audit).receipts;
+          expect(
+            Option.isNone(
+              yield* receipts.getByCommandId(CommandId.make(`${target.message.commandId}:release`)),
+            ),
+          ).toBe(true);
+          const current = Option.getOrThrow(yield* outbox.get(claimed.id));
+          expect(current.status).toBe("running");
+          expect(current.leaseOwner).toBe(claimed.leaseOwner);
+        }).pipe(Effect.provide(replay));
+      }),
+    );
+    expect(audit.finalized).toBe(1);
+    const fs = yield* FileSystem.FileSystem;
+    for (const root of audit.ownedDirectories) expect(yield* fs.exists(root)).toBe(false);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live.each(["native_fork", "portable_context"] as const)(
+  "standalone pending fork retains %s while deferring checkpoint and provider start",
+  (strategy) =>
+    Effect.gen(function* () {
+      const audit = delegatedPreparationAudit();
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const { cwd, replay, fixture } = yield* makeActualDelegatedPreparationFixture(
+            `standalone-fork-${strategy}`,
+            audit,
+            true,
+          );
+          const fs = yield* FileSystem.FileSystem;
+          yield* Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            const sink = yield* EventSink.EventSinkV2;
+            const outbox = originalServices(audit).outbox;
+            yield* acceptPlannerParent(cwd);
+            expect(yield* worker.drain(1)).toBe(1);
+            const source = yield* orchestrator.getThreadProjection(parentThreadId);
+            const sourceRun = source.runs[0]!;
+            const providerThread = source.providerThreads[0]!;
+            const now = yield* DateTime.now;
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make("standalone:source:finished"),
+                  type: "run.updated",
+                  threadId: parentThreadId,
+                  runId: sourceRun.id,
+                  occurredAt: now,
+                  payload: { ...sourceRun, status: "completed", completedAt: now },
+                },
+                {
+                  id: EventId.make("standalone:source:native-ref"),
+                  type: "provider-thread.updated",
+                  threadId: parentThreadId,
+                  occurredAt: now,
+                  payload: {
+                    ...providerThread,
+                    ...(strategy === "portable_context" ? { nativeThreadRef: null } : {}),
+                    status: "idle",
+                  },
+                },
+              ],
+            });
+            const sourceHead = yield* plannerFixtureGit(fixture, cwd, ["rev-parse", "HEAD"]);
+            const targetThreadId = ThreadId.make("standalone:fork:target");
+            const fork = {
+              type: "thread.fork" as const,
+              commandId: CommandId.make("standalone:fork:birth"),
+              sourceThreadId: parentThreadId,
+              targetThreadId,
+              sourcePoint: { type: "run" as const, runId: sourceRun.id },
+              createdBy: "user" as const,
+              creationSource: "web" as const,
+            };
+            const accepted = yield* orchestrator.dispatch(fork);
+            const idle = yield* orchestrator.getThreadProjection(targetThreadId);
+            expect(idle.thread.standaloneCheckoutBirth?.kind).toBe("fork");
+            expect(idle.runs).toEqual([]);
+            expect(idle.checkpointScopes).toEqual([]);
+            expect(idle.contextTransfers[0]?.sourcePoint.runId).toBe(sourceRun.id);
+            expect(yield* fs.exists(idle.thread.worktreePath!)).toBe(false);
+            expect((yield* orchestrator.dispatch(fork)).sequence).toBe(accepted.sequence);
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("standalone:fork:send"),
+              threadId: targetThreadId,
+              messageId: MessageId.make("standalone:fork:message"),
+              text: "Continue the chosen source point",
+              attachments: [],
+              modelSelection: codexSelection,
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "user",
+              creationSource: "web",
+            });
+            const preparing = yield* orchestrator.getThreadProjection(targetThreadId);
+            expect(preparing.runs[0]?.status).toBe("preparing");
+            expect(preparing.checkpointScopes).toEqual([]);
+            expect(preparing.nodes[0]?.checkpointScopeId).toBeNull();
+            // A native fork resolves when the provider forks at start; until then only the portable handoff is resolved.
+            expect(preparing.contextTransfers[0]?.resolution?.strategy).toBe(
+              strategy === "native_fork" ? undefined : strategy,
+            );
+            expect(preparing.contextTransfers[0]?.sourcePoint).toEqual(
+              idle.contextTransfers[0]?.sourcePoint,
+            );
+            expect(
+              preparing.turnItems.filter((item) => item.type === "command_execution"),
+            ).toHaveLength(1);
+            const effects = yield* outbox.listByThreadId(targetThreadId);
+            expect(effects).toHaveLength(1);
+            expect(effects[0]?.request.type).toBe("delegated-workspace.prepare");
+            if (strategy === "native_fork")
+              expect(preparing.providerThreads[0]?.forkedFrom?.providerThreadId).toBe(
+                providerThread.id,
+              );
+            else expect(preparing.contextHandoffs).toHaveLength(1);
+            expect(yield* worker.drain(1)).toBe(1);
+            const released = yield* orchestrator.getThreadProjection(targetThreadId);
+            expect(released.runs[0]?.status).toBe("starting");
+            expect(released.checkpointScopes).toHaveLength(1);
+            expect(released.checkpointScopes[0]?.cwd).toBe(idle.thread.worktreePath);
+            expect(
+              (yield* outbox.listByThreadId(targetThreadId)).filter(
+                (effect) => effect.request.type === "provider-turn.start",
+              ),
+            ).toHaveLength(1);
+            expect(
+              yield* plannerFixtureGit(fixture, idle.thread.worktreePath!, ["rev-parse", "HEAD"]),
+            ).toBe(sourceHead);
+          }).pipe(Effect.provide(replay));
+        }),
+      );
+      expect(audit.finalized).toBe(1);
+      const fs = yield* FileSystem.FileSystem;
+      for (const root of audit.ownedDirectories) expect(yield* fs.exists(root)).toBe(false);
+    }).pipe(Effect.provide(NodeServices.layer)),
+);

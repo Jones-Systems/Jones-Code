@@ -34,6 +34,10 @@ import {
   type makeOrchestratorV2ReplayLayerWithRegistry,
   runOrchestratorV2ProviderReplayScenario,
 } from "./testkit/ProviderReplayHarness.ts";
+import {
+  observeStandaloneForkCheckouts,
+  prepareStandaloneForkCheckouts,
+} from "./testkit/CheckoutPreparationFixture.ts";
 import { checkpointWorkspace } from "./testkit/ReplayFixtureWorkspace.ts";
 import {
   decodeProviderReplayNdjson,
@@ -631,13 +635,50 @@ describe("OpenCode 2 through the orchestrator", () => {
       const recorded = yield* readProviderReplayTranscript(
         new URL("./testkit/fixtures/opencode2_fork/opencode_transcript.ndjson", import.meta.url),
       );
+      const source = threadCommands({ name, worktreePath: cwd });
+      const target = ThreadId.make(`thread:${name}:target`);
+      const checkouts = yield* prepareStandaloneForkCheckouts({
+        projectWorkspaceRoot: cwd,
+        forks: [{ birthCommandId: source.command("fork"), targetThreadId: target }],
+      });
+      const plannedTarget = checkouts.planned[0]!;
+      // Authored, not recorded: the recording forked within one directory, so it
+      // has no move. These four entries check only that T3 reads the target's
+      // models and moves the fork there after its rules and before its first
+      // prompt, accepting the move's empty reply. They do not show that OpenCode
+      // relocates the session; the recorded events after them keep their source.
+      const labelOf = (entry: ProviderReplayEntry | undefined) =>
+        entry === undefined || entry.type === "runtime_exit" ? undefined : entry.label;
+      const forkedAt = recorded.entries.findIndex((entry) => labelOf(entry) === "session.forked");
+      assert.equal(labelOf(recorded.entries[forkedAt + 1]), "session.instructions.entry.put.2");
+      const isolation = [
+        ...directoryModels(plannedTarget.worktreePath),
+        out("session.move", {
+          sessionID: recorded.metadata?.["forkedNativeSessionId"],
+          directory: plannedTarget.worktreePath,
+        }),
+        reply("session.move", null),
+      ].map((entry, index) =>
+        labelled(
+          entry,
+          `isolation.synthetic.${["model.list", "model.list.response", "session.move", "session.move.response"][index]}`,
+        ),
+      );
       // The recording scrubbed its directory to `<work>`; the fork it answers
       // runs where its source does, which is this test's workspace.
       const transcript = yield* OpenCode2OrchestratorReplayHarness.decodeTranscript(
-        withDirectory(recorded, cwd),
+        withDirectory(
+          {
+            ...recorded,
+            entries: [
+              ...recorded.entries.slice(0, forkedAt + 1),
+              ...isolation,
+              ...recorded.entries.slice(forkedAt + 1),
+            ],
+          },
+          cwd,
+        ),
       );
-      const source = threadCommands({ name, worktreePath: cwd });
-      const target = ThreadId.make(`thread:${name}:target`);
       const [one, two] = [source.message("one"), source.message("two")];
       const commands: ReadonlyArray<OrchestrationV2Command> = [
         source.create,
@@ -671,10 +712,18 @@ describe("OpenCode 2 through the orchestrator", () => {
           ? [{ type: "await_thread_idle" as const, threadId: command.threadId }]
           : []),
       ]);
+      const fixture = checkoutFixtureOptions(name, cwd).checkoutFixture!;
       const result = yield* runOrchestratorV2ProviderReplayScenario(
-        { name, transcript, commands, steps, projectionThreadIds: [source.threadId, target] },
+        {
+          name,
+          transcript,
+          commands,
+          steps,
+          projectionThreadIds: [source.threadId, target],
+          standaloneCheckout: true,
+        },
         OpenCode2OrchestratorReplayHarness,
-        checkoutFixtureOptions(name, cwd),
+        { checkoutFixture: { ...fixture, worktreesDir: checkouts.worktreesDir } },
       ).pipe(provideDeterministicTestRuntime);
       const forked = result.projections.get(target);
       assert.isDefined(forked);
@@ -693,6 +742,15 @@ describe("OpenCode 2 through the orchestrator", () => {
         row.item.type === "assistant_message" ? [row.item.text] : [],
       );
       assert.deepEqual(visible, ["ONE", "ONE"]);
+      // The fork runs in its own checkout of the source's committed HEAD.
+      assert.equal(forked.thread.worktreePath, plannedTarget.worktreePath);
+      assert.equal(forked.thread.branch, plannedTarget.branch);
+      const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+      assert.deepEqual(checkoutState.targets, [
+        { head: checkouts.sourceHead, branch: plannedTarget.branch },
+      ]);
+      assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+      assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
   );
 

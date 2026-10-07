@@ -2,6 +2,7 @@ import {
   type ApplicationProjectEvent,
   CommandId,
   EventId,
+  ProjectId,
   RunId,
   ThreadId,
   OrchestrationDispatchTarget,
@@ -76,7 +77,46 @@ export const LegacyNoTerminalControl = Schema.declareConstructor<
 );
 export type LegacyNoTerminalControl = typeof LegacyNoTerminalControl.Type;
 
+const standaloneCheckoutBirthShape = Schema.Struct({
+  version: Schema.Literal(1),
+  kind: Schema.Literals(["fork", "mcp_create"]),
+  birthCommandId: CommandId,
+  birthCommandType: Schema.Literals(["thread.fork", "thread.create"]),
+  sourceThreadId: ThreadId,
+  sourceCreatedAt: Schema.String,
+  projectId: ProjectId,
+  branch: Schema.NonEmptyString,
+  worktreePath: Schema.NonEmptyString,
+}).check(
+  Schema.makeFilter(
+    (birth) =>
+      (birth.kind === "fork" && birth.birthCommandType === "thread.fork") ||
+      (birth.kind === "mcp_create" && birth.birthCommandType === "thread.create"),
+  ),
+);
+export const StandaloneCheckoutBirthV1 = Schema.declareConstructor<
+  typeof standaloneCheckoutBirthShape.Type,
+  typeof standaloneCheckoutBirthShape.Encoded
+>()(
+  [standaloneCheckoutBirthShape],
+  ([codec]) =>
+    (input, _ast, options) =>
+      SchemaParser.decodeUnknownEffect(codec)(input, { ...options, onExcessProperty: "error" }),
+);
+export type StandaloneCheckoutBirthV1 = typeof StandaloneCheckoutBirthV1.Type;
+
+export type StandaloneThreadCreateCommand = Extract<
+  OrchestrationV2ServerCommand,
+  { type: "thread.create" }
+> & {
+  readonly standaloneBirthRequest?: {
+    readonly kind: "mcp_create";
+    readonly sourceThreadId: ThreadId;
+  };
+};
+
 const recordedThreadFields = {
+  standaloneCheckoutBirth: Schema.optional(StandaloneCheckoutBirthV1),
   legacyBootstrapClaim: Schema.optional(OrchestrationV2LegacyBootstrapPolicy),
 };
 const legacyDeletionProvenanceFields = {
@@ -448,7 +488,11 @@ export type LegacyFailureDeleteCommand = Extract<
 > & { readonly legacyNoControl: LegacyNoTerminalControl };
 
 export type RecordedServerCommand =
-  | Exclude<OrchestrationV2ServerCommand, { readonly type: "prepared-run.progress" }>
+  | Exclude<
+      OrchestrationV2ServerCommand,
+      { readonly type: "prepared-run.progress" | "thread.create" }
+    >
+  | StandaloneThreadCreateCommand
   | (Extract<OrchestrationV2ServerCommand, { readonly type: "prepared-run.progress" }> & {
       readonly legacyPreparationUpdate?: LegacyPreparationUpdate;
     });

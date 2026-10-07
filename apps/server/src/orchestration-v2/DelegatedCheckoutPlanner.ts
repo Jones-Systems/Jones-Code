@@ -5,17 +5,35 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
+import type { StandaloneCheckoutBirthV1 } from "./RecordedTypes.ts";
 import { ServerConfig } from "../config.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import {
   DelegatedCheckoutPlanError,
   planDelegatedCheckout,
+  planStandaloneBirthPlacement,
+  planStandaloneCheckout,
   type DelegatedCheckoutPlanV1,
 } from "./DelegatedCheckoutPolicy.ts";
 
 export class DelegatedCheckoutPlanner extends Context.Service<
   DelegatedCheckoutPlanner,
   {
+    readonly placeStandaloneBirth: (input: {
+      readonly kind: "fork" | "mcp_create";
+      readonly birthCommandId: CommandId;
+      readonly targetThreadId: ThreadId;
+      readonly projectWorkspaceRoot: string;
+    }) => Effect.Effect<
+      { readonly branch: string; readonly worktreePath: string },
+      DelegatedCheckoutPlanError
+    >;
+    readonly captureStandaloneFirstSend: (input: {
+      readonly birth: StandaloneCheckoutBirthV1;
+      readonly source: OrchestrationV2AppThread;
+      readonly projectWorkspaceRoot: string;
+      readonly targetThreadId: ThreadId;
+    }) => Effect.Effect<DelegatedCheckoutPlanV1, DelegatedCheckoutPlanError>;
     readonly capture: (input: {
       readonly commandId: CommandId;
       readonly parent: OrchestrationV2AppThread;
@@ -31,7 +49,40 @@ export const layer = Layer.effect(
     const fs = yield* FileSystem.FileSystem;
     const git = yield* GitWorkflowService;
     const config = yield* ServerConfig;
+    const standaloneError = (cause: unknown) =>
+      Schema.is(DelegatedCheckoutPlanError)(cause)
+        ? cause
+        : new DelegatedCheckoutPlanError({
+            message: `The standalone source checkout could not be captured: ${String(cause)}`,
+          });
     return DelegatedCheckoutPlanner.of({
+      placeStandaloneBirth: (input) =>
+        Effect.gen(function* () {
+          const canonicalWorktreesDir = yield* fs.realPath(config.worktreesDir);
+          return planStandaloneBirthPlacement({ ...input, canonicalWorktreesDir });
+        }).pipe(Effect.mapError(standaloneError)),
+      captureStandaloneFirstSend: (input) =>
+        Effect.gen(function* () {
+          const canonicalProjectRoot = yield* fs.realPath(input.projectWorkspaceRoot);
+          const parentCheckoutPath = yield* fs.realPath(
+            input.source.worktreePath ?? input.projectWorkspaceRoot,
+          );
+          const canonicalWorktreesDir = yield* fs.realPath(config.worktreesDir);
+          const { commitSha: parentCommit } = yield* git.resolveCommit({
+            cwd: parentCheckoutPath,
+            revision: "HEAD",
+          });
+          return planStandaloneCheckout({
+            ...input.birth,
+            parentThreadId: input.source.id,
+            parentCheckoutPath,
+            parentCommit,
+            childThreadId: input.targetThreadId,
+            canonicalProjectRoot,
+            projectWorkspaceRoot: input.projectWorkspaceRoot,
+            canonicalWorktreesDir,
+          });
+        }).pipe(Effect.mapError(standaloneError)),
       capture: (input) =>
         Effect.gen(function* () {
           const canonicalProjectRoot = yield* fs.realPath(input.projectWorkspaceRoot);

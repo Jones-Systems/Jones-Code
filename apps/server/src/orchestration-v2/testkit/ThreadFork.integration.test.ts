@@ -13,7 +13,10 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Predicate from "effect/Predicate";
 
-import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
+import {
+  ClaudeOrchestratorReplayHarness,
+  makeObservedClaudeOrchestratorReplayHarness,
+} from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import { CodexOrchestratorReplayHarness } from "../Adapters/CodexAdapterV2.testkit.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import { unobservedRuntimeIdentity } from "../ProviderAdapter.ts";
@@ -25,9 +28,14 @@ import {
   THREAD_FORK_NATIVE_SOURCE_PROMPT,
   THREAD_FORK_NATIVE_TARGET_PROMPT,
 } from "./fixtures/shared.ts";
+import {
+  observeStandaloneForkCheckouts,
+  prepareStandaloneForkCheckouts,
+} from "./CheckoutPreparationFixture.ts";
 import { runOrchestratorV2ProviderReplayScenario } from "./ProviderReplayHarness.ts";
 import { makeCheckpointWorkspace as createCheckpointWorkspace } from "./ReplayFixtureWorkspace.ts";
 import {
+  codexForkWorkspaceEntries,
   decodeProviderReplayNdjson,
   materializeReplayTranscriptWorkspace,
 } from "./ReplayTranscriptNdjson.ts";
@@ -108,8 +116,24 @@ describe("orchestration V2 thread fork", () => {
             Effect.orDie,
           ),
         );
+        const checkouts = yield* prepareStandaloneForkCheckouts({
+          projectWorkspaceRoot: cwd,
+          forks: [
+            {
+              birthCommandId: CommandId.make("command-thread-fork-native"),
+              targetThreadId: ThreadId.make("thread-fork-native-target"),
+            },
+          ],
+        });
         const transcript = yield* CodexOrchestratorReplayHarness.decodeTranscript(
-          materializeReplayTranscriptWorkspace(rawTranscript, cwd),
+          materializeReplayTranscriptWorkspace(
+            rawTranscript,
+            cwd,
+            codexForkWorkspaceEntries(
+              rawTranscript,
+              checkouts.planned.map((target) => target.worktreePath),
+            ),
+          ),
         );
 
         const materialized = yield* Effect.gen(function* () {
@@ -215,7 +239,7 @@ describe("orchestration V2 thread fork", () => {
               { type: "await_thread_idle", threadId: materialized.targetThreadId },
             ],
             projectionThreadIds: [materialized.sourceThreadId, materialized.targetThreadId],
-            runtimePolicyOverride: { cwd },
+            standaloneCheckout: true,
           },
           CodexOrchestratorReplayHarness,
           {
@@ -228,6 +252,7 @@ describe("orchestration V2 thread fork", () => {
                 },
               ],
               resolvePath: () => undefined,
+              worktreesDir: checkouts.worktreesDir,
             },
           },
         ).pipe(provideDeterministicTestRuntime);
@@ -294,6 +319,18 @@ describe("orchestration V2 thread fork", () => {
           1,
           "duplicate fork command must return the receipt without creating another transfer",
         );
+
+        // The fork runs in its own checkout of the source's committed HEAD.
+        const isolatedTarget = result.projections.get(materialized.targetThreadId)?.thread;
+        const plannedTarget = checkouts.planned[0]!;
+        assert.equal(isolatedTarget?.worktreePath, plannedTarget.worktreePath);
+        assert.equal(isolatedTarget?.branch, plannedTarget.branch);
+        const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+        assert.deepEqual(checkoutState.targets, [
+          { head: checkouts.sourceHead, branch: plannedTarget.branch },
+        ]);
+        assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+        assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -310,6 +347,16 @@ describe("orchestration V2 thread fork", () => {
             Effect.orDie,
           ),
         );
+        const checkouts = yield* prepareStandaloneForkCheckouts({
+          projectWorkspaceRoot: cwd,
+          forks: [
+            {
+              birthCommandId: CommandId.make("command-thread-fork-native"),
+              targetThreadId: ThreadId.make("thread-fork-native-target"),
+            },
+          ],
+        });
+        const claude = makeObservedClaudeOrchestratorReplayHarness();
 
         const materialized = yield* Effect.gen(function* () {
           const ids = yield* IdAllocator.IdAllocatorV2;
@@ -403,9 +450,9 @@ describe("orchestration V2 thread fork", () => {
               { type: "await_thread_idle", threadId: materialized.targetThreadId },
             ],
             projectionThreadIds: [materialized.sourceThreadId, materialized.targetThreadId],
-            runtimePolicyOverride: { cwd },
+            standaloneCheckout: true,
           },
-          ClaudeOrchestratorReplayHarness,
+          claude.harness,
           {
             checkoutFixture: {
               projects: [
@@ -416,6 +463,7 @@ describe("orchestration V2 thread fork", () => {
                 },
               ],
               resolvePath: () => undefined,
+              worktreesDir: checkouts.worktreesDir,
             },
           },
         ).pipe(provideDeterministicTestRuntime);
@@ -538,6 +586,37 @@ describe("orchestration V2 thread fork", () => {
         assert.lengthOf(transfers, 1);
         assert.equal(transfers[0]?.status, "consumed");
         assert.equal(transfers[0]?.resolution?.strategy, "native_fork");
+
+        // The fork runs in its own checkout of the source's committed HEAD.
+        const isolatedTarget = result.projections.get(materialized.targetThreadId)?.thread;
+        const plannedTarget = checkouts.planned[0]!;
+        assert.equal(isolatedTarget?.worktreePath, plannedTarget.worktreePath);
+        assert.equal(isolatedTarget?.branch, plannedTarget.branch);
+        const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+        assert.deepEqual(checkoutState.targets, [
+          { head: checkouts.sourceHead, branch: plannedTarget.branch },
+        ]);
+        assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+        assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
+        const targetCwds = claude.cwdObservations.filter(
+          (observation) => observation.threadId === materialized.targetThreadId,
+        );
+        assert.isNotEmpty(targetCwds);
+        assert.deepEqual(
+          [...new Set(targetCwds.map((observation) => observation.cwd))],
+          [plannedTarget.worktreePath],
+        );
+        assert.isTrue(targetCwds.some((observation) => observation.operation === "session.fork"));
+        assert.deepEqual(
+          [
+            ...new Set(
+              claude.cwdObservations
+                .filter((observation) => observation.threadId === materialized.sourceThreadId)
+                .map((observation) => observation.cwd),
+            ),
+          ],
+          [cwd],
+        );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -550,8 +629,24 @@ describe("orchestration V2 thread fork", () => {
           Effect.orDie,
         ),
       );
+      const checkouts = yield* prepareStandaloneForkCheckouts({
+        projectWorkspaceRoot: cwd,
+        forks: [
+          {
+            birthCommandId: CommandId.make("command-thread-fork-native-prior-turn"),
+            targetThreadId: ThreadId.make("thread-fork-native-prior-turn-target"),
+          },
+        ],
+      });
       const transcript = yield* CodexOrchestratorReplayHarness.decodeTranscript(
-        materializeReplayTranscriptWorkspace(rawTranscript, cwd),
+        materializeReplayTranscriptWorkspace(
+          rawTranscript,
+          cwd,
+          codexForkWorkspaceEntries(
+            rawTranscript,
+            checkouts.planned.map((target) => target.worktreePath),
+          ),
+        ),
       );
 
       const materialized = yield* Effect.gen(function* () {
@@ -666,7 +761,8 @@ describe("orchestration V2 thread fork", () => {
             { type: "await_thread_idle", threadId: materialized.targetThreadId },
           ],
           projectionThreadIds: [materialized.sourceThreadId, materialized.targetThreadId],
-          runtimePolicyOverride: { cwd, ...CODEX_READ_ONLY_NEVER_POLICY },
+          runtimePolicyOverride: CODEX_READ_ONLY_NEVER_POLICY,
+          standaloneCheckout: true,
         },
         CodexOrchestratorReplayHarness,
         {
@@ -679,6 +775,7 @@ describe("orchestration V2 thread fork", () => {
               },
             ],
             resolvePath: () => undefined,
+            worktreesDir: checkouts.worktreesDir,
           },
         },
       ).pipe(provideDeterministicTestRuntime);
@@ -731,6 +828,18 @@ describe("orchestration V2 thread fork", () => {
         "fork boundary beta",
         "fork target visible projection must not inherit source turns after the fork point",
       );
+
+      // The fork runs in its own checkout of the source's committed HEAD.
+      const isolatedTarget = result.projections.get(materialized.targetThreadId)?.thread;
+      const plannedTarget = checkouts.planned[0]!;
+      assert.equal(isolatedTarget?.worktreePath, plannedTarget.worktreePath);
+      assert.equal(isolatedTarget?.branch, plannedTarget.branch);
+      const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+      assert.deepEqual(checkoutState.targets, [
+        { head: checkouts.sourceHead, branch: plannedTarget.branch },
+      ]);
+      assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+      assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -745,6 +854,16 @@ describe("orchestration V2 thread fork", () => {
           Effect.orDie,
         ),
       );
+      const checkouts = yield* prepareStandaloneForkCheckouts({
+        projectWorkspaceRoot: cwd,
+        forks: [
+          {
+            birthCommandId: CommandId.make("command-thread-fork-native-prior-turn"),
+            targetThreadId: ThreadId.make("thread-fork-native-prior-turn-target"),
+          },
+        ],
+      });
+      const claude = makeObservedClaudeOrchestratorReplayHarness();
 
       const materialized = yield* Effect.gen(function* () {
         const ids = yield* IdAllocator.IdAllocatorV2;
@@ -858,9 +977,9 @@ describe("orchestration V2 thread fork", () => {
             { type: "await_thread_idle", threadId: materialized.targetThreadId },
           ],
           projectionThreadIds: [materialized.sourceThreadId, materialized.targetThreadId],
-          runtimePolicyOverride: { cwd },
+          standaloneCheckout: true,
         },
-        ClaudeOrchestratorReplayHarness,
+        claude.harness,
         {
           checkoutFixture: {
             projects: [
@@ -871,6 +990,7 @@ describe("orchestration V2 thread fork", () => {
               },
             ],
             resolvePath: () => undefined,
+            worktreesDir: checkouts.worktreesDir,
           },
         },
       ).pipe(provideDeterministicTestRuntime);
@@ -892,6 +1012,37 @@ describe("orchestration V2 thread fork", () => {
         "forking from the first source run must not preserve later source turns in native Claude context",
       );
       assert.equal(targetProjection.contextTransfers[0]?.resolution?.strategy, "native_fork");
+
+      // The fork runs in its own checkout of the source's committed HEAD.
+      const isolatedTarget = result.projections.get(materialized.targetThreadId)?.thread;
+      const plannedTarget = checkouts.planned[0]!;
+      assert.equal(isolatedTarget?.worktreePath, plannedTarget.worktreePath);
+      assert.equal(isolatedTarget?.branch, plannedTarget.branch);
+      const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+      assert.deepEqual(checkoutState.targets, [
+        { head: checkouts.sourceHead, branch: plannedTarget.branch },
+      ]);
+      assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+      assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
+      const targetCwds = claude.cwdObservations.filter(
+        (observation) => observation.threadId === materialized.targetThreadId,
+      );
+      assert.isNotEmpty(targetCwds);
+      assert.deepEqual(
+        [...new Set(targetCwds.map((observation) => observation.cwd))],
+        [plannedTarget.worktreePath],
+      );
+      assert.isTrue(targetCwds.some((observation) => observation.operation === "session.fork"));
+      assert.deepEqual(
+        [
+          ...new Set(
+            claude.cwdObservations
+              .filter((observation) => observation.threadId === materialized.sourceThreadId)
+              .map((observation) => observation.cwd),
+          ),
+        ],
+        [cwd],
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -910,6 +1061,16 @@ describe("orchestration V2 thread fork", () => {
           Effect.orDie,
         ),
       );
+      const checkouts = yield* prepareStandaloneForkCheckouts({
+        projectWorkspaceRoot: cwd,
+        forks: [
+          {
+            birthCommandId: CommandId.make("command-thread-fork-native-prior-turn-source-rollback"),
+            targetThreadId: ThreadId.make("thread-fork-native-prior-turn-source-rollback-target"),
+          },
+        ],
+      });
+      const claude = makeObservedClaudeOrchestratorReplayHarness();
 
       const materialized = yield* Effect.gen(function* () {
         const ids = yield* IdAllocator.IdAllocatorV2;
@@ -1057,9 +1218,9 @@ describe("orchestration V2 thread fork", () => {
             },
           ],
           projectionThreadIds: [materialized.sourceThreadId, materialized.targetThreadId],
-          runtimePolicyOverride: { cwd },
+          standaloneCheckout: true,
         },
-        ClaudeOrchestratorReplayHarness,
+        claude.harness,
         {
           checkoutFixture: {
             projects: [
@@ -1070,6 +1231,7 @@ describe("orchestration V2 thread fork", () => {
               },
             ],
             resolvePath: () => undefined,
+            worktreesDir: checkouts.worktreesDir,
           },
         },
       ).pipe(provideDeterministicTestRuntime);
@@ -1106,6 +1268,37 @@ describe("orchestration V2 thread fork", () => {
         "source rollback must not cause the fork target to inherit turns past its fork point",
       );
       assert.equal(targetProjection.contextTransfers[0]?.resolution?.strategy, "native_fork");
+
+      // The fork runs in its own checkout of the source's committed HEAD.
+      const isolatedTarget = result.projections.get(materialized.targetThreadId)?.thread;
+      const plannedTarget = checkouts.planned[0]!;
+      assert.equal(isolatedTarget?.worktreePath, plannedTarget.worktreePath);
+      assert.equal(isolatedTarget?.branch, plannedTarget.branch);
+      const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+      assert.deepEqual(checkoutState.targets, [
+        { head: checkouts.sourceHead, branch: plannedTarget.branch },
+      ]);
+      assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+      assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
+      const targetCwds = claude.cwdObservations.filter(
+        (observation) => observation.threadId === materialized.targetThreadId,
+      );
+      assert.isNotEmpty(targetCwds);
+      assert.deepEqual(
+        [...new Set(targetCwds.map((observation) => observation.cwd))],
+        [plannedTarget.worktreePath],
+      );
+      assert.isTrue(targetCwds.some((observation) => observation.operation === "session.fork"));
+      assert.deepEqual(
+        [
+          ...new Set(
+            claude.cwdObservations
+              .filter((observation) => observation.threadId === materialized.sourceThreadId)
+              .map((observation) => observation.cwd),
+          ),
+        ],
+        [cwd],
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -1132,6 +1325,16 @@ describe("orchestration V2 thread fork", () => {
           Effect.orDie,
         ),
       );
+      const checkouts = yield* prepareStandaloneForkCheckouts({
+        projectWorkspaceRoot: cwd,
+        forks: [
+          {
+            birthCommandId: CommandId.make("command-thread-fork-native-fork-local-rollback"),
+            targetThreadId: ThreadId.make("thread-fork-native-fork-local-rollback-target"),
+          },
+        ],
+      });
+      const claude = makeObservedClaudeOrchestratorReplayHarness();
 
       const materialized = yield* Effect.gen(function* () {
         const ids = yield* IdAllocator.IdAllocatorV2;
@@ -1289,9 +1492,9 @@ describe("orchestration V2 thread fork", () => {
             { type: "await_thread_idle", threadId: materialized.targetThreadId },
           ],
           projectionThreadIds: [materialized.sourceThreadId, materialized.targetThreadId],
-          runtimePolicyOverride: { cwd },
+          standaloneCheckout: true,
         },
-        ClaudeOrchestratorReplayHarness,
+        claude.harness,
         {
           checkoutFixture: {
             projects: [
@@ -1302,6 +1505,7 @@ describe("orchestration V2 thread fork", () => {
               },
             ],
             resolvePath: () => undefined,
+            worktreesDir: checkouts.worktreesDir,
           },
         },
       ).pipe(provideDeterministicTestRuntime);
@@ -1332,6 +1536,37 @@ describe("orchestration V2 thread fork", () => {
         targetVisibleAssistantText,
         "fork local second",
         "resumeSessionAt must reopen the Claude fork before the rolled-back second fork turn",
+      );
+
+      // The fork runs in its own checkout of the source's committed HEAD.
+      const isolatedTarget = result.projections.get(materialized.targetThreadId)?.thread;
+      const plannedTarget = checkouts.planned[0]!;
+      assert.equal(isolatedTarget?.worktreePath, plannedTarget.worktreePath);
+      assert.equal(isolatedTarget?.branch, plannedTarget.branch);
+      const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+      assert.deepEqual(checkoutState.targets, [
+        { head: checkouts.sourceHead, branch: plannedTarget.branch },
+      ]);
+      assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+      assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
+      const targetCwds = claude.cwdObservations.filter(
+        (observation) => observation.threadId === materialized.targetThreadId,
+      );
+      assert.isNotEmpty(targetCwds);
+      assert.deepEqual(
+        [...new Set(targetCwds.map((observation) => observation.cwd))],
+        [plannedTarget.worktreePath],
+      );
+      assert.isTrue(targetCwds.some((observation) => observation.operation === "session.fork"));
+      assert.deepEqual(
+        [
+          ...new Set(
+            claude.cwdObservations
+              .filter((observation) => observation.threadId === materialized.sourceThreadId)
+              .map((observation) => observation.cwd),
+          ),
+        ],
+        [cwd],
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );

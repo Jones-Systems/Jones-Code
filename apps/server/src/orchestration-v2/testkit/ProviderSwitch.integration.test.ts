@@ -64,6 +64,10 @@ import {
   CURSOR_MODEL_SELECTION,
   GROK_MODEL_SELECTION,
 } from "./fixtures/shared.ts";
+import {
+  observeStandaloneForkCheckouts,
+  prepareStandaloneForkCheckouts,
+} from "./CheckoutPreparationFixture.ts";
 import { makeOrchestratorV2ReplayLayerWithRegistry } from "./ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "./ReplayFixtureWorkspace.ts";
 
@@ -368,7 +372,7 @@ const waitForIdle = Effect.fn("ProviderSwitchTest.waitForIdle")(function* (
     const projection = yield* orchestrator.getThreadProjection(targetThreadId);
     if (
       projection.runs.every(
-        (run) => !["queued", "starting", "running", "waiting"].includes(run.status),
+        (run) => !["preparing", "queued", "starting", "running", "waiting"].includes(run.status),
       )
     ) {
       return projection;
@@ -2761,6 +2765,15 @@ describe("orchestration v2 provider switching", () => {
         const sourcePrompt = "Remember that the release color is violet.";
         const targetPrompt = "What release color did we choose?";
         const cwd = yield* checkpointWorkspace("cross-provider-fork");
+        const checkouts = yield* prepareStandaloneForkCheckouts({
+          projectWorkspaceRoot: cwd,
+          forks: [
+            {
+              birthCommandId: CommandId.make("command:cross-provider-fork:fork"),
+              targetThreadId: ThreadId.make("thread:cross-provider-fork:target"),
+            },
+          ],
+        });
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const registryLayer = ProviderAdapterRegistry.makeLayer([
           makeTestAdapter({
@@ -2844,8 +2857,8 @@ describe("orchestration v2 provider switching", () => {
             makeOrchestratorV2ReplayLayerWithRegistry(
               {
                 name: "cross-provider-fork",
+                standaloneCheckout: true,
                 runtimePolicyOverride: {
-                  cwd,
                   approvalPolicy: "never",
                   sandboxPolicy: {
                     type: "readOnly",
@@ -2855,7 +2868,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registryLayer,
-              { checkoutFixture: providerSwitchCheckoutFixture(cwd) },
+              {
+                checkoutFixture: {
+                  ...providerSwitchCheckoutFixture(cwd),
+                  worktreesDir: checkouts.worktreesDir,
+                },
+              },
             ),
           ),
         );
@@ -2889,6 +2907,21 @@ describe("orchestration v2 provider switching", () => {
         assert.include(targetTurn?.text ?? "", sourcePrompt);
         assert.include(targetTurn?.text ?? "", "I will remember violet.");
         assert.include(targetTurn?.text ?? "", targetPrompt);
+
+        // The fork runs in its own checkout of the source's committed HEAD.
+        const plannedTarget = checkouts.planned[0]!;
+        assert.equal(targetProjection.thread.worktreePath, plannedTarget.worktreePath);
+        assert.equal(targetProjection.thread.branch, plannedTarget.branch);
+        assert.deepEqual(
+          [...new Set(targetProjection.providerSessions.map((session) => session.cwd))],
+          [plannedTarget.worktreePath],
+        );
+        const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+        assert.deepEqual(checkoutState.targets, [
+          { head: checkouts.sourceHead, branch: plannedTarget.branch },
+        ]);
+        assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+        assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
       }),
     ),
   );
@@ -2902,6 +2935,15 @@ describe("orchestration v2 provider switching", () => {
         const sourceResponse = "I will remember indigo.";
         const targetPrompt = "What deployment marker did we choose?";
         const cwd = yield* checkpointWorkspace("cursor-portable-fork");
+        const checkouts = yield* prepareStandaloneForkCheckouts({
+          projectWorkspaceRoot: cwd,
+          forks: [
+            {
+              birthCommandId: CommandId.make("command:cursor-portable-fork:fork"),
+              targetThreadId: ThreadId.make("thread:cursor-portable-fork:target"),
+            },
+          ],
+        });
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const registryLayer = ProviderAdapterRegistry.makeLayer([
           makeTestAdapter({
@@ -2981,8 +3023,8 @@ describe("orchestration v2 provider switching", () => {
             makeOrchestratorV2ReplayLayerWithRegistry(
               {
                 name: "cursor-portable-fork",
+                standaloneCheckout: true,
                 runtimePolicyOverride: {
-                  cwd,
                   approvalPolicy: "never",
                   sandboxPolicy: {
                     type: "readOnly",
@@ -2992,7 +3034,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registryLayer,
-              { checkoutFixture: providerSwitchCheckoutFixture(cwd) },
+              {
+                checkoutFixture: {
+                  ...providerSwitchCheckoutFixture(cwd),
+                  worktreesDir: checkouts.worktreesDir,
+                },
+              },
             ),
           ),
         );
@@ -3022,6 +3069,21 @@ describe("orchestration v2 provider switching", () => {
         assert.include(targetTurn?.text ?? "", sourcePrompt);
         assert.include(targetTurn?.text ?? "", sourceResponse);
         assert.include(targetTurn?.text ?? "", targetPrompt);
+
+        // The fork runs in its own checkout of the source's committed HEAD.
+        const plannedTarget = checkouts.planned[0]!;
+        assert.equal(targetProjection.thread.worktreePath, plannedTarget.worktreePath);
+        assert.equal(targetProjection.thread.branch, plannedTarget.branch);
+        assert.deepEqual(
+          [...new Set(targetProjection.providerSessions.map((session) => session.cwd))],
+          [plannedTarget.worktreePath],
+        );
+        const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+        assert.deepEqual(checkoutState.targets, [
+          { head: checkouts.sourceHead, branch: plannedTarget.branch },
+        ]);
+        assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+        assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
       }),
     ),
   );
@@ -3038,6 +3100,15 @@ describe("orchestration v2 provider switching", () => {
           const forkPrompt = "Remember that the fork marker is cobalt.";
           const mergePrompt = "Report all three remembered markers.";
           const cwd = yield* checkpointWorkspace("cross-provider-merge");
+          const checkouts = yield* prepareStandaloneForkCheckouts({
+            projectWorkspaceRoot: cwd,
+            forks: [
+              {
+                birthCommandId: CommandId.make("command:cross-provider-merge:fork"),
+                targetThreadId: ThreadId.make("thread:cross-provider-merge:fork"),
+              },
+            ],
+          });
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const registryLayer = ProviderAdapterRegistry.makeLayer([
             makeTestAdapter({
@@ -3151,7 +3222,7 @@ describe("orchestration v2 provider switching", () => {
             },
           ] satisfies ReadonlyArray<OrchestrationV2Command>;
 
-          const projection = yield* Effect.gen(function* () {
+          const [projection, isolatedFork] = yield* Effect.gen(function* () {
             const orchestrator = yield* Orchestrator.OrchestratorV2;
             yield* orchestrator.dispatch(commands[0]!);
             yield* orchestrator.dispatch(commands[1]!);
@@ -3188,14 +3259,15 @@ describe("orchestration v2 provider switching", () => {
               });
             }
             yield* orchestrator.dispatch(commands[6]!);
-            return yield* waitForIdle(sourceThreadId);
+            const merged = yield* waitForIdle(sourceThreadId);
+            return [merged, yield* orchestrator.getThreadProjection(forkThreadId)] as const;
           }).pipe(
             Effect.provide(
               makeOrchestratorV2ReplayLayerWithRegistry(
                 {
                   name: "cross-provider-merge",
+                  standaloneCheckout: true,
                   runtimePolicyOverride: {
-                    cwd,
                     approvalPolicy: "never",
                     sandboxPolicy: {
                       type: "readOnly",
@@ -3205,7 +3277,12 @@ describe("orchestration v2 provider switching", () => {
                   },
                 },
                 registryLayer,
-                { checkoutFixture: providerSwitchCheckoutFixture(cwd) },
+                {
+                  checkoutFixture: {
+                    ...providerSwitchCheckoutFixture(cwd),
+                    worktreesDir: checkouts.worktreesDir,
+                  },
+                },
               ),
             ),
           );
@@ -3244,6 +3321,23 @@ describe("orchestration v2 provider switching", () => {
           assert.equal(mergeTransfer.status, "consumed");
           assert.equal(mergeTransfer.targetProviderInstanceId, "codex");
           assert.equal(mergeTransfer.resolution?.strategy, "fork_delta_context");
+
+          // The fork runs in its own checkout of the source's committed HEAD.
+          const plannedTarget = checkouts.planned[0]!;
+          assert.equal(isolatedFork.thread.worktreePath, plannedTarget.worktreePath);
+          assert.equal(isolatedFork.thread.branch, plannedTarget.branch);
+          // A native fork shares the source's provider session; its turns carry the
+          // target cwd, which the recorded Codex fork replays check exactly.
+          assert.deepEqual(
+            [...new Set(projection.providerSessions.map((session) => session.cwd))],
+            [cwd],
+          );
+          const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+          assert.deepEqual(checkoutState.targets, [
+            { head: checkouts.sourceHead, branch: plannedTarget.branch },
+          ]);
+          assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+          assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
         }),
       ),
   );
@@ -3262,6 +3356,7 @@ describe("orchestration v2 provider switching", () => {
           model: "gpt-5.4",
         } satisfies ModelSelection;
         const cwd = yield* checkpointWorkspace("custom-codex-instances");
+        const workCwd = yield* checkpointWorkspace("custom-codex-instances-work");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const registryLayer = ProviderAdapterRegistry.makeLayer([
           makeTestAdapter({
@@ -3284,9 +3379,9 @@ describe("orchestration v2 provider switching", () => {
 
         const [personal, work] = yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
-          for (const [targetThreadId, selection, suffix] of [
-            [personalThreadId, personalSelection, "personal"],
-            [workThreadId, workSelection, "work"],
+          for (const [targetThreadId, selection, suffix, worktreePath] of [
+            [personalThreadId, personalSelection, "personal", cwd],
+            [workThreadId, workSelection, "work", workCwd],
           ] as const) {
             yield* orchestrator.dispatch({
               type: "thread.create",
@@ -3300,7 +3395,7 @@ describe("orchestration v2 provider switching", () => {
               runtimeMode: "full-access",
               interactionMode: "default",
               branch: null,
-              worktreePath: null,
+              worktreePath,
             });
             yield* orchestrator.dispatch({
               type: "message.dispatch",
@@ -3326,7 +3421,6 @@ describe("orchestration v2 provider switching", () => {
               {
                 name: "custom-codex-instances",
                 runtimePolicyOverride: {
-                  cwd,
                   approvalPolicy: "never",
                   sandboxPolicy: {
                     type: "readOnly",

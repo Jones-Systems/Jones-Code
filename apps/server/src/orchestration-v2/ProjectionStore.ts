@@ -2311,7 +2311,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       authoritative: boolean,
     ) => sql`
       CASE WHEN json_type(orchestration_v2_projection_runs.payload_json, ${fieldPath}) IS NOT NULL
-        AND (${!authoritative} OR json_type(excluded.payload_json, ${fieldPath}) IS NULL)
+        AND (${booleanInt(!authoritative)} OR json_type(excluded.payload_json, ${fieldPath}) IS NULL)
       THEN json_set(${payload}, ${fieldPath},
         CASE json_type(orchestration_v2_projection_runs.payload_json, ${fieldPath})
           WHEN 'true' THEN json('true') WHEN 'false' THEN json('false')

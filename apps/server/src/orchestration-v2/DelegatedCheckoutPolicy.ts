@@ -91,3 +91,62 @@ export function planDelegatedCheckout(input: {
     },
   };
 }
+
+export function planStandaloneBirthPlacement(input: {
+  readonly kind: "fork" | "mcp_create";
+  readonly birthCommandId: CommandId;
+  readonly targetThreadId: ThreadId;
+  readonly canonicalWorktreesDir: string;
+  readonly projectWorkspaceRoot: string;
+}): { readonly branch: string; readonly worktreePath: string } {
+  const branch = `t3code/${input.kind === "fork" ? "fork" : "thread"}-${sha256(
+    canonicalJson({ commandId: input.birthCommandId, threadId: input.targetThreadId }),
+  )}`;
+  return {
+    branch,
+    worktreePath: nativeWorktreePath({
+      worktreesDir: input.canonicalWorktreesDir,
+      cwd: input.projectWorkspaceRoot,
+      branch,
+    }),
+  };
+}
+
+export function planStandaloneCheckout(input: {
+  readonly kind: "fork" | "mcp_create";
+  readonly birthCommandId: CommandId;
+  readonly parentThreadId: ThreadId;
+  readonly parentCheckoutPath: string;
+  readonly parentCommit: string;
+  readonly childThreadId: ThreadId;
+  readonly canonicalProjectRoot: string;
+  readonly projectWorkspaceRoot: string;
+  readonly canonicalWorktreesDir: string;
+  readonly branch: string;
+  readonly worktreePath: string;
+}): DelegatedCheckoutPlanV1 {
+  const placement = planStandaloneBirthPlacement({ ...input, targetThreadId: input.childThreadId });
+  if (placement.branch !== input.branch || placement.worktreePath !== input.worktreePath)
+    throw new DelegatedCheckoutPlanError({ message: "The standalone birth placement changed." });
+  const plan: DelegatedCheckoutPlanV1 = {
+    version: 1,
+    parentThreadId: input.parentThreadId,
+    parentCheckoutPath: input.parentCheckoutPath,
+    parentCommit: input.parentCommit,
+    canonicalProjectRoot: input.canonicalProjectRoot,
+    projectWorkspaceRoot: input.projectWorkspaceRoot,
+    childThreadId: input.childThreadId,
+    ...placement,
+    workspaceStrategy: {
+      type: "worktree",
+      baseRef: input.parentCommit,
+      branch: placement.branch,
+      startFromOrigin: false,
+    },
+  };
+  if (!Schema.is(DelegatedCheckoutPlanV1)(plan))
+    throw new DelegatedCheckoutPlanError({
+      message: "Standalone checkout requires a distinct thread and immutable committed base.",
+    });
+  return plan;
+}

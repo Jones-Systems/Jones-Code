@@ -15,6 +15,7 @@ import {
   type ModelSelection,
   type ProviderApprovalDecision,
   type ProviderReplayTranscript,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -476,9 +477,23 @@ function makeClaudeSessionForkFrame(
   };
 }
 
+/**
+ * The directory the adapter actually passed to the SDK for one call. Frames
+ * sanitize or omit it, so tapes stay portable; this keeps the raw value for a
+ * test that needs to see where a thread runs.
+ */
+export interface ClaudeReplayCwdObservation {
+  readonly operation: "query.open" | "session.fork";
+  readonly threadId: ThreadId;
+  readonly cwd: string | undefined;
+}
+
 function makeReplayQueryRunner(
   transcript: ClaudeAgentSdkReplayTranscript,
-  replayOptions: { readonly replayGate?: ProviderReplayGate } = {},
+  replayOptions: {
+    readonly replayGate?: ProviderReplayGate;
+    readonly observeCwd?: (observation: ClaudeReplayCwdObservation) => void;
+  } = {},
 ): ClaudeQueryRunner {
   let cursor = 0;
   let failure: ClaudeAgentSdkReplayError | null = null;
@@ -801,6 +816,11 @@ function makeReplayQueryRunner(
 
   return {
     open: (input) => {
+      replayOptions.observeCwd?.({
+        operation: "query.open",
+        threadId: input.threadId,
+        cwd: input.options.cwd,
+      });
       assertNextOutboundFrame(makeClaudeQueryOpenFrame(input));
       return {
         messages: Stream.fromAsyncIterable(replayMessagesWithGateCleanup(input.options), (cause) =>
@@ -831,6 +851,11 @@ function makeReplayQueryRunner(
       };
     },
     forkSession: (input) => {
+      replayOptions.observeCwd?.({
+        operation: "session.fork",
+        threadId: input.threadId,
+        cwd: input.options.dir,
+      });
       assertNextOutboundFrame(makeClaudeSessionForkFrame(input, transcript.scenario));
       return assertNextReplyFrame<ClaudeSessionForkedFrame>(
         "session.forked",
@@ -952,6 +977,7 @@ function makeClaudeAgentSdkReplayLayer(
     readonly replayGate?: ProviderReplayGate;
     // Shared across runtimes; its owner asserts completion.
     readonly queryRunner?: ClaudeQueryRunner;
+    readonly observeCwd?: (observation: ClaudeReplayCwdObservation) => void;
   } = {},
 ): Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunner> {
   if (options.queryRunner !== undefined) {
@@ -979,6 +1005,7 @@ function makeClaudeProviderAdapterRegistryReplayLayer(
   options: {
     readonly replayGate?: ProviderReplayGate;
     readonly queryRunner?: ClaudeQueryRunner;
+    readonly observeCwd?: (observation: ClaudeReplayCwdObservation) => void;
   } = {},
 ) {
   const serverConfigLayer = Layer.effect(
@@ -2826,6 +2853,24 @@ export const ClaudeOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarnes
   makeProviderAdapterRegistryLayer: (transcript, options) =>
     makeClaudeProviderAdapterRegistryReplayLayer(transcript, options),
 };
+
+/** The replay harness, also recording each SDK call's raw directory in call order. */
+export function makeObservedClaudeOrchestratorReplayHarness() {
+  const cwdObservations: Array<ClaudeReplayCwdObservation> = [];
+  return {
+    harness: {
+      ...ClaudeOrchestratorReplayHarness,
+      makeProviderAdapterRegistryLayer: (transcript, options) =>
+        makeClaudeProviderAdapterRegistryReplayLayer(transcript, {
+          ...options,
+          observeCwd: (observation) => {
+            cwdObservations.push(observation);
+          },
+        }),
+    } satisfies typeof ClaudeOrchestratorReplayHarness,
+    cwdObservations: cwdObservations as ReadonlyArray<ClaudeReplayCwdObservation>,
+  };
+}
 
 /**
  * Replays one transcript across several orchestrator runtimes, the way a

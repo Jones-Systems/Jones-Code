@@ -554,7 +554,7 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
         capture.origin.kind !== "command"
       )
         return false;
-      const command = yield* Schema.decodeUnknownEffect(Schema.toType(OrchestrationV2Command))({
+      const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
         ...capture.canonicalCommand,
         ...(typeof capture.canonicalCommand.createdAt === "string"
           ? {
@@ -1021,7 +1021,7 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
           Schema.fromJsonString(Ordinary.OrdinaryCheckoutAdmissionV1),
         )(row.admission_json, { onExcessProperty: "error" });
         const capture = admission.capture;
-        const command = yield* Schema.decodeUnknownEffect(Schema.toType(OrchestrationV2Command))(
+        const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)(
           {
             ...capture.canonicalCommand,
             ...(typeof capture.canonicalCommand.createdAt === "string"
@@ -1210,7 +1210,7 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
     const decodeOrdinaryCanonicalCommand = Effect.fnUntraced(function* (
       canonical: Readonly<Record<string, unknown>>,
     ) {
-      const command = yield* Schema.decodeUnknownEffect(Schema.toType(OrchestrationV2Command))(
+      const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)(
         {
           ...canonical,
           ...(typeof canonical.createdAt === "string"

@@ -122,11 +122,20 @@ const runFixtureProvider = Effect.fn("runOrchestratorReplayFixture")(function* <
     },
   };
 
-  const result = yield* runOrchestratorV2ProviderReplayScenario(
-    scenario,
-    input.harness,
-    input.driver.runContinuationWorker === true ? { runContinuationWorker: true } : {},
-  ).pipe(provideDeterministicTestRuntime);
+  const result = yield* runOrchestratorV2ProviderReplayScenario(scenario, input.harness, {
+    ...(input.driver.runContinuationWorker === true ? { runContinuationWorker: true } : {}),
+    checkoutFixture: {
+      projects: Array.from(
+        new Set(
+          materialized.commands.flatMap((command) =>
+            command.type === "thread.create" ? [command.projectId] : [],
+          ),
+        ),
+        (projectId) => ({ projectId, workspaceRoot: workspace, title: input.fixtureName }),
+      ),
+      resolvePath: () => undefined,
+    },
+  }).pipe(provideDeterministicTestRuntime);
   input.driver.assertOutput(result, transcript);
   assertProviderNativeSubagentRootTurns(result);
   const expectedAbsentWorkspacePaths = input.driver.expectedAbsentWorkspacePaths;

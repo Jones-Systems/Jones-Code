@@ -37,6 +37,7 @@ import { checkpointWorkspace } from "./testkit/ReplayFixtureWorkspace.ts";
 const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "test-model" };
+const projectId = ProjectId.make("project:background-work-stop");
 
 // Codex turns leave commands running, then the thread moves to another
 // provider thread (a provider switch). Stop on the newer, settled run must
@@ -143,7 +144,7 @@ it.effect("Stop reaches background work an earlier provider thread still runs", 
           type: "thread.create",
           commandId: CommandId.make("create"),
           threadId,
-          projectId: ProjectId.make("project:background-work-stop"),
+          projectId,
           title: "Background work stop",
           modelSelection,
           runtimeMode: "full-access",
@@ -437,7 +438,13 @@ it.effect("Stop reaches background work an earlier provider thread still runs", 
           makeOrchestratorV2ReplayLayerWithRegistry(
             { name: "background-work-stop" },
             ProviderAdapterRegistry.makeSingleLayer(adapter),
-            { runEffectWorker: false },
+            {
+              runEffectWorker: false,
+              checkoutFixture: {
+                projects: [{ projectId, title: "Background work stop", workspaceRoot: cwd }],
+                resolvePath: () => undefined,
+              },
+            },
           ),
         ),
       );

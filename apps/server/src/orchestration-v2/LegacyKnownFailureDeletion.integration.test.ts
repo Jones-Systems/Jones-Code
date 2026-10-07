@@ -19,6 +19,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -32,6 +33,7 @@ import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import { makeGitVcsDriverCore } from "../vcs/GitVcsDriverCore.ts";
+import { nativeWorktreePath } from "../vcs/worktreePath.ts";
 import { makeSqlitePersistenceLive } from "../persistence/Layers/Sqlite.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as EventSink from "./EventSink.ts";
@@ -120,8 +122,17 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
           const root = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-known-failure-" });
           const cwd = `${root}/repo`;
           const common = `${cwd}/.git`;
-          const target = `${root}/owned`;
+          const worktreesDir = `${root}/worktrees`;
+          const plannedBranch = scenario === "entered_partial" ? "legacy/valid" : "legacy/invalid?";
           yield* fs.makeDirectory(common, { recursive: true });
+          yield* fs.makeDirectory(worktreesDir);
+          const target = nativeWorktreePath({
+            worktreesDir: yield* fs.realPath(worktreesDir),
+            cwd,
+            branch: plannedBranch,
+          });
+          const path = yield* Path.Path;
+          yield* fs.makeDirectory(path.dirname(target));
           const uploaded = `${root}/attachments/original-upload.png`;
           yield* fs.makeDirectory(`${root}/attachments`);
           const originalBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -149,7 +160,11 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
           const runtime = makeOrchestratorV2ReplayLayerWithRegistry(
             { name: `legacy-failure-${scenario}` },
             registry,
-            { databaseLayer: database, runEffectWorker: false },
+            {
+              databaseLayer: database,
+              runEffectWorker: false,
+              checkoutFixture: { projects: [], resolvePath: () => undefined, worktreesDir },
+            },
           ).pipe(Layer.provide(Layer.succeed(TerminalManager.TerminalManager, manager)));
           const management = Management.layer.pipe(Layer.provide(runtime));
           const stores = Layer.mergeAll(
@@ -273,7 +288,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                 modelSelection,
                 runtimeMode: "full-access",
                 interactionMode: "default",
-                branch: null,
+                branch: plannedBranch,
                 worktreePath: null,
                 createdBy: "user",
                 creationSource: "web",
@@ -380,7 +395,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                   {
                     cwd,
                     refName: "main",
-                    newRefName: scenario === "entered_partial" ? "legacy/valid" : "legacy/invalid?",
+                    newRefName: plannedBranch,
                     path: target,
                   },
                   {

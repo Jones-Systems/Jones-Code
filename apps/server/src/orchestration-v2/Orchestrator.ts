@@ -101,6 +101,9 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import { readApplicationThreadBirth } from "./ApplicationThreadBirth.ts";
+import { canonicalJson } from "./CanonicalJson.ts";
+import type { StandaloneCheckoutBirthV1 } from "./RecordedTypes.ts";
 import { DelegatedCheckoutPlanner } from "./DelegatedCheckoutPlanner.ts";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
@@ -884,6 +887,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+  const sql = yield* SqlClient.SqlClient;
   const fileSystem = yield* FileSystem.FileSystem;
   const serverConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
   const path = yield* Path.Path;
@@ -2268,7 +2272,56 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
+    const planner = yield* Effect.serviceOption(DelegatedCheckoutPlanner);
+    let standaloneCheckoutBirth: StandaloneCheckoutBirthV1 | undefined;
+    if (command.standaloneBirthRequest !== undefined && Option.isSome(planner)) {
+      const source = yield* projectionStore
+        .getThread(command.standaloneBirthRequest.sourceThreadId)
+        .pipe(mapDispatchError(command));
+      if (
+        command.standaloneBirthRequest.kind !== "mcp_create" ||
+        source.id === command.threadId ||
+        source.deletedAt !== null ||
+        source.projectId !== command.projectId ||
+        command.createdBy !== "agent" ||
+        command.creationSource !== "mcp"
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            "Standalone MCP birth requires its live source in the same project and server-owned provenance.",
+        });
+      const project = Option.getOrNull(
+        yield* projects.get(command.projectId).pipe(mapDispatchError(command)),
+      );
+      if (project === null)
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Standalone birth project is unavailable.",
+        });
+      const placement = yield* planner.value
+        .placeStandaloneBirth({
+          kind: "mcp_create",
+          birthCommandId: command.commandId,
+          targetThreadId: command.threadId,
+          projectWorkspaceRoot: project.workspaceRoot,
+        })
+        .pipe(mapDispatchError(command));
+      standaloneCheckoutBirth = {
+        version: 1,
+        kind: "mcp_create",
+        birthCommandId: command.commandId,
+        birthCommandType: "thread.create",
+        sourceThreadId: source.id,
+        sourceCreatedAt: DateTime.formatIso(source.createdAt),
+        projectId: source.projectId,
+        ...placement,
+      };
+    }
     const thread: OrchestrationV2AppThread = {
+      ...(standaloneCheckoutBirth === undefined ? {} : { standaloneCheckoutBirth }),
       ...(command.legacyBootstrap === undefined
         ? {}
         : { legacyBootstrapClaim: command.legacyBootstrap }),
@@ -2281,8 +2334,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       modelSelection: command.modelSelection,
       runtimeMode: command.runtimeMode,
       interactionMode: command.interactionMode,
-      branch: command.branch,
-      worktreePath: command.worktreePath,
+      branch: standaloneCheckoutBirth?.branch ?? command.branch,
+      worktreePath: standaloneCheckoutBirth?.worktreePath ?? command.worktreePath,
       activeProviderThreadId: null,
       lineage: {
         parentThreadId: null,
@@ -3548,9 +3601,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         type: "fork",
       }),
     );
-    const { targetThread, transfer } = yield* threadForkService
+    const planner = yield* Effect.serviceOption(DelegatedCheckoutPlanner);
+    const project = Option.isNone(planner)
+      ? null
+      : Option.getOrNull(
+          yield* projects.get(sourceProjection.thread.projectId).pipe(mapDispatchError(command)),
+        );
+    if (Option.isSome(planner) && project === null)
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Standalone fork project is unavailable.",
+      });
+    const placement =
+      Option.isSome(planner) && project !== null
+        ? yield* planner.value
+            .placeStandaloneBirth({
+              kind: "fork",
+              birthCommandId: command.commandId,
+              targetThreadId: command.targetThreadId,
+              projectWorkspaceRoot: project.workspaceRoot,
+            })
+            .pipe(mapDispatchError(command))
+        : undefined;
+    const { targetThread: copiedTargetThread, transfer } = yield* threadForkService
       .plan({
         sourceProjection,
+        ...(placement === undefined ? {} : { placement }),
         sourceRun,
         sourceProviderThread,
         canonicalSourcePoint: contextSourcePointForRun(sourceProjection, sourceRun),
@@ -3562,6 +3639,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         createdAt: now,
       })
       .pipe(mapDispatchError(command));
+    const { standaloneCheckoutBirth: _sourceBirth, ...cleanTargetThread } =
+      copiedTargetThread as OrchestrationV2AppThread;
+    const targetThread: OrchestrationV2AppThread = {
+      ...cleanTargetThread,
+      ...(placement === undefined
+        ? {}
+        : {
+            standaloneCheckoutBirth: {
+              version: 1 as const,
+              kind: "fork" as const,
+              birthCommandId: command.commandId,
+              birthCommandType: "thread.fork" as const,
+              sourceThreadId: sourceProjection.thread.id,
+              sourceCreatedAt: DateTime.formatIso(sourceProjection.thread.createdAt),
+              projectId: sourceProjection.thread.projectId,
+              ...placement,
+            },
+          }),
+    };
 
     yield* emitEvent({
       type: "thread.created",
@@ -5564,6 +5660,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         return;
       }
+      if (
+        dispatchMode.type === "defer_start" &&
+        (pendingForkTransfer === undefined ||
+          pendingMergeBackTransfer !== undefined ||
+          isProviderSwitch ||
+          canResumeAcrossInstances)
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Deferred standalone preparation supports only a pending fork.",
+        });
       const sourceProjection =
         pendingForkTransfer === undefined
           ? null
@@ -5960,14 +6068,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           }),
         );
       }
+      // A fork's own checkout preparation is server work, not part of its conversation delta.
       const mergeBackDeltaItems =
         mergeBackSourceProjection === null || mergeBackSourceRun === null
           ? []
-          : yield* readHandoffItems(
+          : (yield* readHandoffItems(
               mergeBackSourceProjection.thread.id,
               mergeBackSourceProjection.runs
                 .filter((run) => run.ordinal <= mergeBackSourceRun.ordinal)
                 .map((run) => run.id),
+            )).filter(
+              (item) =>
+                item.type !== "command_execution" ||
+                item.input !== WORKSPACE_PREPARATION_INPUT ||
+                item.providerTurnId !== null,
             );
       const mergeBackHandoff =
         pendingMergeBackTransfer === undefined ||
@@ -6002,29 +6116,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
-      const checkpointScope = yield* checkpointService
-        .prepareRootRunScope({
-          threadId: command.threadId,
-          runId,
-          rootNodeId,
-          providerThreadId: providerThread.id,
-          cwd:
-            resolvedRuntimePolicy.cwd ??
-            existingProviderSession?.cwd ??
-            projection.thread.worktreePath ??
-            process.cwd(),
-          createdAt: now,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorDispatchError({
-                commandId: command.commandId,
-                commandType: command.type,
-                cause,
-              }),
-          ),
-        );
+      const checkpointScope =
+        dispatchMode.type === "defer_start"
+          ? null
+          : yield* checkpointService
+              .prepareRootRunScope({
+                threadId: command.threadId,
+                runId,
+                rootNodeId,
+                providerThreadId: providerThread.id,
+                cwd:
+                  resolvedRuntimePolicy.cwd ??
+                  existingProviderSession?.cwd ??
+                  projection.thread.worktreePath ??
+                  process.cwd(),
+                createdAt: now,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestratorDispatchError({
+                      commandId: command.commandId,
+                      commandType: command.type,
+                      cause,
+                    }),
+                ),
+              );
       const run: OrchestrationV2Run = {
         id: runId,
         threadId: command.threadId,
@@ -6035,7 +6152,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         userMessageId: command.messageId,
         rootNodeId,
         activeAttemptId: attemptId,
-        status: "starting",
+        status: dispatchMode.type === "defer_start" ? "preparing" : "starting",
+        ...(dispatchMode.type === "defer_start" && dispatchMode.workspaceStrategy !== undefined
+          ? { workspacePreparation: dispatchMode.workspaceStrategy }
+          : {}),
+        ...(dispatchMode.type === "defer_start" && dispatchMode.runSetupScript !== undefined
+          ? { workspaceRunSetupScript: dispatchMode.runSetupScript }
+          : {}),
         queuePosition: null,
         requestedAt: now,
         startedAt: null,
@@ -6079,7 +6202,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerTurnId: null,
         nativeItemRef: null,
         runtimeRequestId: null,
-        checkpointScopeId: checkpointScope.id,
+        checkpointScopeId: checkpointScope?.id ?? null,
         startedAt: null,
         completedAt: null,
       };
@@ -6399,24 +6522,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: rootNode,
       });
-      yield* emitEvent({
-        type: "checkpoint-scope.created",
-        threadId: command.threadId,
-        runId,
-        nodeId: rootNodeId,
-        providerInstanceId: modelSelection.instanceId,
-        occurredAt: now,
-        payload: yield* checkpointService.ensureScope(checkpointScope).pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorDispatchError({
-                commandId: command.commandId,
-                commandType: command.type,
-                cause,
-              }),
+      if (checkpointScope !== null)
+        yield* emitEvent({
+          type: "checkpoint-scope.created",
+          threadId: command.threadId,
+          runId,
+          nodeId: rootNodeId,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: yield* checkpointService.ensureScope(checkpointScope).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause,
+                }),
+            ),
           ),
-        ),
-      });
+        });
       if (handoffTurnItem !== null) {
         yield* emitEvent({
           type: "turn-item.updated",
@@ -6446,6 +6570,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: notificationTurnItem(turnItem, message, projection.subagents),
       });
+      if (dispatchMode.type === "defer_start")
+        yield* emitEvent({
+          type: "turn-item.updated",
+          threadId: command.threadId,
+          runId,
+          nodeId: rootNodeId,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: {
+            id: idAllocator.derive.turnItemFromProviderItem({
+              driver: adapter.driver,
+              nativeItemId: `workspace-preparation:${runId}`,
+            }),
+            threadId: command.threadId,
+            runId,
+            nodeId: rootNodeId,
+            providerThreadId: providerThread.id,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: turnItem.ordinal + 1,
+            status: "running",
+            title: WORKSPACE_PREPARATION_INPUT,
+            startedAt: now,
+            completedAt: null,
+            updatedAt: now,
+            type: "command_execution",
+            input: WORKSPACE_PREPARATION_INPUT,
+          },
+        });
       const forkResolution = nativeForkResolution ?? portableForkResolution;
       if (pendingForkTransfer !== undefined && forkResolution !== null) {
         yield* emitEvent({
@@ -6501,7 +6655,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         threadId: command.threadId,
         request: { type: "provider-turn.start", runId },
       } satisfies PendingOrchestrationEffectV2;
-      yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);
+      if (dispatchMode.type !== "defer_start")
+        yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);
     });
 
   const dispatchDelegatedTaskRequest = Effect.fn("orchestrationV2.dispatch.delegatedTaskRequest")(
@@ -10257,6 +10412,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchOnce = Effect.fn("orchestrationV2.dispatch.once")(function* (
     command: OrchestrationV2ServerCommand,
+    effectiveMessage?: Extract<OrchestrationV2ServerCommand, { type: "message.dispatch" }>,
   ): Effect.fn.Return<
     {
       readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -10702,7 +10858,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             threadId: command.threadId,
           });
         }
-        yield* dispatchMessage(command, events, effects);
+        yield* dispatchMessage(effectiveMessage ?? command, events, effects);
         break;
       }
       case "notification.delivery.accept":
@@ -11047,6 +11203,111 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+    const standaloneFirstSend =
+      Option.isSome(existingReceipt) ||
+      command.type !== "message.dispatch" ||
+      command.dispatchMode.type !== "start_immediately"
+        ? undefined
+        : yield* Effect.gen(function* () {
+            // Read failures keep the ordinary dispatch's projection error.
+            const projection = yield* projectionStore
+              .getThreadRecords(command.threadId, ["runs"])
+              .pipe(
+                Effect.mapError(
+                  (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+                ),
+              );
+            const birth = projection.thread.standaloneCheckoutBirth;
+            if (birth === undefined || projection.runs.length !== 0) return undefined;
+            const reject = (cause: string) =>
+              new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause,
+              });
+            if (
+              projection.thread.deletedAt !== null ||
+              projection.thread.archivedAt !== null ||
+              birth.sourceThreadId === command.threadId ||
+              birth.branch !== projection.thread.branch ||
+              birth.worktreePath !== projection.thread.worktreePath ||
+              birth.projectId !== projection.thread.projectId
+            )
+              return yield* reject("Standalone firstsend differs from its live birth target.");
+            const receipt = Option.getOrNull(
+              yield* commandReceipts
+                .getByCommandId(birth.birthCommandId)
+                .pipe(mapDispatchError(command)),
+            );
+            const events = yield* eventSink
+              .readByCommandId({ commandId: birth.birthCommandId })
+              .pipe(Stream.runCollect, mapDispatchError(command));
+            const births = events.filter(
+              (stored) =>
+                stored.event.type === "thread.created" &&
+                stored.event.threadId === command.threadId,
+            );
+            const recorded = births[0];
+            const currentBirth = yield* readApplicationThreadBirth(command.threadId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              mapDispatchError(command),
+            );
+            if (
+              receipt?.status !== "accepted" ||
+              receipt.commandType !== birth.birthCommandType ||
+              receipt.threadId !== command.threadId ||
+              births.length !== 1 ||
+              recorded?.event.type !== "thread.created" ||
+              canonicalJson(recorded.event.payload.standaloneCheckoutBirth) !==
+                canonicalJson(birth) ||
+              currentBirth === null ||
+              recorded.event.id !== currentBirth.eventId ||
+              recorded.sequence !== currentBirth.sequence
+            )
+              return yield* reject(
+                "Standalone firstsend lacks its exact accepted application birth.",
+              );
+            const source = yield* projectionStore
+              .getThread(birth.sourceThreadId)
+              .pipe(mapDispatchError(command));
+            if (
+              source.deletedAt !== null ||
+              DateTime.formatIso(source.createdAt) !== birth.sourceCreatedAt ||
+              source.projectId !== birth.projectId
+            )
+              return yield* reject(
+                "Standalone firstsend source was deleted, recreated or moved to another project.",
+              );
+            if (yield* fileSystem.exists(birth.worktreePath).pipe(mapDispatchError(command)))
+              return yield* reject(
+                "Standalone firstsend cannot adopt an existing target checkout.",
+              );
+            const project = Option.getOrNull(
+              yield* projects.get(birth.projectId).pipe(mapDispatchError(command)),
+            );
+            const planner = yield* Effect.serviceOption(DelegatedCheckoutPlanner);
+            if (project === null || Option.isNone(planner))
+              return yield* reject("Standalone checkout planner or project is unavailable.");
+            const plan = yield* planner.value
+              .captureStandaloneFirstSend({
+                birth,
+                source,
+                projectWorkspaceRoot: project.workspaceRoot,
+                targetThreadId: command.threadId,
+              })
+              .pipe(mapDispatchError(command));
+            return { birth, plan };
+          });
+    const effectiveMessage =
+      standaloneFirstSend !== undefined && command.type === "message.dispatch"
+        ? {
+            ...command,
+            dispatchMode: {
+              type: "defer_start" as const,
+              workspaceStrategy: standaloneFirstSend.plan.workspaceStrategy,
+            },
+          }
+        : undefined;
     const checkoutCommand =
       command.type === "message.dispatch" ||
       command.type === "checkpoint.rollback" ||
@@ -11074,6 +11335,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                       }),
                 ),
               );
+              if (
+                checkoutCommand.type === "message.dispatch" &&
+                isProviderNativeSubagentThread(thread)
+              )
+                return undefined;
               const project = Option.getOrNull(
                 yield* projects.get(thread.projectId).pipe(mapDispatchError(command)),
               );
@@ -11091,8 +11357,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               let canonicalCheckoutPath: string;
               if (
                 checkoutCommand.type === "message.dispatch" &&
-                checkoutCommand.dispatchMode.type === "defer_start" &&
-                checkoutCommand.dispatchMode.workspaceStrategy?.type === "worktree" &&
+                (effectiveMessage ?? checkoutCommand).dispatchMode.type === "defer_start" &&
+                "workspaceStrategy" in (effectiveMessage ?? checkoutCommand).dispatchMode &&
+                (
+                  effectiveMessage?.dispatchMode.workspaceStrategy ??
+                  (checkoutCommand.dispatchMode.type === "defer_start"
+                    ? checkoutCommand.dispatchMode.workspaceStrategy
+                    : undefined)
+                )?.type === "worktree" &&
                 (thread.worktreePath === null ||
                   !(yield* fileSystem.exists(checkoutPath).pipe(mapDispatchError(command))))
               ) {
@@ -11330,7 +11602,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   cause,
                 }),
             ),
-            Effect.andThen(dispatchOnce(command)),
+            Effect.andThen(dispatchOnce(command, effectiveMessage)),
           )
         : dispatchOnce(command)
     ).pipe(
@@ -11446,6 +11718,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       return { sequence: resultSequence, storedEvents: [] } satisfies OrchestratorV2DispatchResult;
     }
+    const acceptedEffects = [...plan.effects];
+    if (standaloneFirstSend !== undefined && command.type === "message.dispatch") {
+      const runEvent = plan.events.find(
+        (event) => event.type === "run.created" && event.threadId === command.threadId,
+      );
+      if (runEvent?.type !== "run.created" || runEvent.payload.status !== "preparing")
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Standalone firstsend did not produce its unique preparing run.",
+        });
+      acceptedEffects.push({
+        id: `effect:${command.commandId}:delegated-workspace.prepare:${runEvent.payload.id}`,
+        commandId: command.commandId,
+        threadId: command.threadId,
+        request: {
+          type: "delegated-workspace.prepare",
+          runId: runEvent.payload.id,
+          plan: standaloneFirstSend.plan,
+          standalone: {
+            version: 1,
+            kind: standaloneFirstSend.birth.kind,
+            birthCommandId: standaloneFirstSend.birth.birthCommandId,
+            messageCommandId: command.commandId,
+            messageId: command.messageId,
+          },
+        },
+      });
+    }
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
     const committed = yield* eventSink
       .commitCommand({
@@ -11455,8 +11756,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         acceptedAt,
         ...(ordinaryCheckout === undefined ? {} : { ordinaryCheckout }),
         ...(command.type === "delegated_task.request" ? { ordinaryDelegatedCommand: command } : {}),
+        ...(standaloneFirstSend === undefined || command.type !== "message.dispatch"
+          ? {}
+          : { ordinaryStandaloneFirstSend: command }),
         events: plan.events,
-        effects: plan.effects,
+        effects: acceptedEffects,
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),

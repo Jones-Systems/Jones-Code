@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import { CommandId, EventId, ThreadId } from "@t3tools/contracts";
+import { CommandId, EventId, MessageId, RunId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -228,3 +228,36 @@ it.effect(
       );
     }).pipe(Effect.provide(Layer.fresh(layer()))),
 );
+
+it("roundtrips closed standalone preparation bindings and keeps old delegated payloads decodable", () => {
+  const plan = {
+    version: 1 as const,
+    parentThreadId: ThreadId.make("source"),
+    parentCheckoutPath: "/source",
+    parentCommit: "a".repeat(40),
+    canonicalProjectRoot: "/project",
+    projectWorkspaceRoot: "/project",
+    childThreadId: ThreadId.make("target"),
+    branch: "fork/target",
+    worktreePath: "/target",
+    workspaceStrategy: {
+      type: "worktree" as const,
+      baseRef: "a".repeat(40),
+      branch: "fork/target",
+      startFromOrigin: false,
+    },
+  };
+  const request = { type: "delegated-workspace.prepare" as const, runId: RunId.make("run"), plan };
+  const decode = Schema.decodeUnknownSync(EffectOutbox.OrchestrationEffectRequestV2);
+  assert.deepEqual(decode(request), request);
+  const standalone = {
+    version: 1 as const,
+    kind: "fork" as const,
+    birthCommandId: CommandId.make("birth"),
+    messageCommandId: CommandId.make("send"),
+    messageId: MessageId.make("message"),
+  };
+  assert.deepEqual(decode({ ...request, standalone }), { ...request, standalone });
+  assert.throws(() => decode({ ...request, standalone: { ...standalone, authority: true } }));
+  assert.throws(() => decode({ ...request, standalone: { ...standalone, version: 2 } }));
+});

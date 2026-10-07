@@ -976,6 +976,10 @@ export interface EventSinkV2Shape {
   >;
   readonly commitCommand: (input: {
     readonly ordinaryCheckout?: OrdinaryCheckoutCommitCapture;
+    readonly ordinaryStandaloneFirstSend?: Extract<
+      OrchestrationV2Command,
+      { type: "message.dispatch" }
+    >;
     readonly ordinaryDelegatedCommand?: Extract<
       OrchestrationV2Command,
       { readonly type: "delegated_task.request" }
@@ -3713,6 +3717,59 @@ const baseLayer: Layer.Layer<
               events: storedEvents,
               effects: input.effects,
             });
+          if (input.ordinaryStandaloneFirstSend !== undefined) {
+            const command = input.ordinaryStandaloneFirstSend;
+            const preparing = input.effects.filter(
+              (effect) => effect.request.type === "delegated-workspace.prepare",
+            );
+            const effect = preparing[0];
+            const runEvents = storedEvents.filter(
+              (stored) =>
+                stored.event.type === "run.created" && stored.event.threadId === input.threadId,
+            );
+            const run = runEvents[0];
+            const thread = yield* projectionStore.getThread(input.threadId);
+            const request = effect?.request;
+            if (
+              command.commandId !== input.commandId ||
+              command.type !== input.commandType ||
+              command.threadId !== input.threadId ||
+              command.dispatchMode.type !== "start_immediately" ||
+              checkoutCapture === undefined ||
+              checkoutCapture.capture.origin.kind !== "command" ||
+              checkoutCapture.capture.commandId !== command.commandId ||
+              input.effects.some((effect) => effect.request.type === "provider-turn.start") ||
+              storedEvents.some((stored) => stored.event.type === "checkpoint-scope.created") ||
+              preparing.length !== 1 ||
+              effect?.commandId !== input.commandId ||
+              effect.threadId !== input.threadId ||
+              request?.type !== "delegated-workspace.prepare" ||
+              request.standalone === undefined ||
+              request.standalone.messageCommandId !== command.commandId ||
+              request.standalone.messageId !== command.messageId ||
+              runEvents.length !== 1 ||
+              run?.event.type !== "run.created" ||
+              run.event.payload.status !== "preparing" ||
+              run.event.payload.id !== request.runId ||
+              run.event.payload.userMessageId !== command.messageId ||
+              run.event.payload.workspacePreparation?.type !== "worktree" ||
+              run.event.payload.workspacePreparation.baseRef !== request.plan.parentCommit ||
+              run.event.payload.workspacePreparation.branch !== request.plan.branch ||
+              run.event.payload.workspacePreparation.startFromOrigin !== false ||
+              thread.branch !== request.plan.branch ||
+              thread.worktreePath !== request.plan.worktreePath ||
+              thread.id !== request.plan.childThreadId ||
+              thread.standaloneCheckoutBirth?.kind !== request.standalone.kind ||
+              thread.standaloneCheckoutBirth.birthCommandId !== request.standalone.birthCommandId ||
+              thread.standaloneCheckoutBirth.sourceThreadId !== request.plan.parentThreadId
+            )
+              return yield* new EventSinkWriteError({
+                commandId: input.commandId,
+                eventCount: storedEvents.length,
+                cause:
+                  "Standalone firstsend requires its original receipt, command admission and unique pinned preparing run/effect.",
+              });
+          }
           if (input.ordinaryDelegatedCommand !== undefined) {
             const command = input.ordinaryDelegatedCommand;
             const preparing = input.effects.filter(

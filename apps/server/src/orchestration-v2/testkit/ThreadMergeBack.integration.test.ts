@@ -17,7 +17,10 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 
-import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
+import {
+  ClaudeOrchestratorReplayHarness,
+  makeObservedClaudeOrchestratorReplayHarness,
+} from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import { CodexOrchestratorReplayHarness } from "../Adapters/CodexAdapterV2.testkit.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
@@ -36,9 +39,14 @@ import {
   THREAD_MERGE_BACK_SIBLINGS_SOURCE_PROMPT,
   THREAD_MERGE_BACK_SOURCE_PROMPT,
 } from "./fixtures/shared.ts";
+import {
+  observeStandaloneForkCheckouts,
+  prepareStandaloneForkCheckouts,
+} from "./CheckoutPreparationFixture.ts";
 import { runOrchestratorV2ProviderReplayScenario } from "./ProviderReplayHarness.ts";
 import { makeCheckpointWorkspace } from "./ReplayFixtureWorkspace.ts";
 import {
+  codexForkWorkspaceEntries,
   decodeProviderReplayNdjson,
   materializeReplayTranscriptWorkspace,
 } from "./ReplayTranscriptNdjson.ts";
@@ -386,6 +394,16 @@ describe("orchestration V2 merge-back provider replay", () => {
               Effect.orDie,
             ),
         );
+        const checkouts = yield* prepareStandaloneForkCheckouts({
+          projectWorkspaceRoot: cwd,
+          forks: materialized.commands.flatMap((command) =>
+            command.type === "thread.fork"
+              ? [{ birthCommandId: command.commandId, targetThreadId: command.targetThreadId }]
+              : [],
+          ),
+        });
+        const forkWorkspaces = checkouts.planned.map((target) => target.worktreePath);
+        const claude = makeObservedClaudeOrchestratorReplayHarness();
         const checkoutFixture = {
           projects: [
             {
@@ -395,6 +413,7 @@ describe("orchestration V2 merge-back provider replay", () => {
             },
           ],
           resolvePath: () => undefined,
+          worktreesDir: checkouts.worktreesDir,
         };
         const scenario = {
           name: `thread_merge_back_continue/${variant.driver}`,
@@ -414,7 +433,7 @@ describe("orchestration V2 merge-back provider replay", () => {
             { type: "await_thread_idle" as const, threadId: materialized.sourceThreadId },
           ],
           projectionThreadIds: [materialized.sourceThreadId, materialized.forkThreadId],
-          runtimePolicyOverride: { cwd },
+          standaloneCheckout: true as const,
         };
         const result =
           variant.driver === "codex"
@@ -422,7 +441,11 @@ describe("orchestration V2 merge-back provider replay", () => {
                 {
                   ...scenario,
                   transcript: yield* CodexOrchestratorReplayHarness.decodeTranscript(
-                    materializeReplayTranscriptWorkspace(parameterizedTranscript, cwd),
+                    materializeReplayTranscriptWorkspace(
+                      parameterizedTranscript,
+                      cwd,
+                      codexForkWorkspaceEntries(parameterizedTranscript, forkWorkspaces),
+                    ),
                   ),
                 },
                 CodexHistoryReplayHarness,
@@ -436,7 +459,7 @@ describe("orchestration V2 merge-back provider replay", () => {
                       parameterizedTranscript,
                     ),
                 },
-                ClaudeOrchestratorReplayHarness,
+                claude.harness,
                 { checkoutFixture },
               ).pipe(provideDeterministicTestRuntime);
 
@@ -464,6 +487,44 @@ describe("orchestration V2 merge-back provider replay", () => {
         );
         assert.notInclude(visibleConversationText(source), "Context handoff (");
         assert.include(visibleConversationText(fork), "merge fork stored");
+
+        // Each fork runs in its own checkout of the source's committed HEAD; merge-back
+        // transfers context only and leaves the source checkout unchanged.
+        const forkThreadIds = [materialized.forkThreadId];
+        assert.deepEqual(
+          forkThreadIds.map((threadId) => {
+            const thread = result.projections.get(threadId)?.thread;
+            return { branch: thread?.branch, worktreePath: thread?.worktreePath };
+          }),
+          checkouts.planned.map(({ branch, worktreePath }) => ({ branch, worktreePath })),
+        );
+        const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+        assert.deepEqual(
+          checkoutState.targets,
+          checkouts.planned.map(({ branch }) => ({ head: checkouts.sourceHead, branch })),
+        );
+        assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+        assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
+        if (variant.driver === "claudeAgent") {
+          const cwdsOf = (threadId: ThreadId) => [
+            ...new Set(
+              claude.cwdObservations
+                .filter((observation) => observation.threadId === threadId)
+                .map((observation) => observation.cwd),
+            ),
+          ];
+          assert.deepEqual(
+            forkThreadIds.map(cwdsOf),
+            forkWorkspaces.map((path) => [path]),
+          );
+          assert.deepEqual(cwdsOf(materialized.sourceThreadId), [cwd]);
+          assert.lengthOf(
+            claude.cwdObservations.filter(
+              (observation) => observation.operation === "session.fork",
+            ),
+            forkThreadIds.length,
+          );
+        }
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -648,6 +709,16 @@ describe("orchestration V2 merge-back provider replay", () => {
               Effect.orDie,
             ),
         );
+        const checkouts = yield* prepareStandaloneForkCheckouts({
+          projectWorkspaceRoot: cwd,
+          forks: materialized.commands.flatMap((command) =>
+            command.type === "thread.fork"
+              ? [{ birthCommandId: command.commandId, targetThreadId: command.targetThreadId }]
+              : [],
+          ),
+        });
+        const forkWorkspaces = checkouts.planned.map((target) => target.worktreePath);
+        const claude = makeObservedClaudeOrchestratorReplayHarness();
         const steps = [
           { type: "dispatch" as const, command: materialized.commands[0]!, await: true },
           { type: "advance_clock" as const, duration: "1 millis" as const },
@@ -677,6 +748,7 @@ describe("orchestration V2 merge-back provider replay", () => {
             },
           ],
           resolvePath: () => undefined,
+          worktreesDir: checkouts.worktreesDir,
         };
         const scenario = {
           name: `thread_merge_back_siblings/${variant.driver}`,
@@ -687,7 +759,7 @@ describe("orchestration V2 merge-back provider replay", () => {
             materialized.firstForkThreadId,
             materialized.secondForkThreadId,
           ],
-          runtimePolicyOverride: { cwd },
+          standaloneCheckout: true as const,
         };
         const result =
           variant.driver === "codex"
@@ -695,7 +767,11 @@ describe("orchestration V2 merge-back provider replay", () => {
                 {
                   ...scenario,
                   transcript: yield* CodexOrchestratorReplayHarness.decodeTranscript(
-                    materializeReplayTranscriptWorkspace(transcript, cwd),
+                    materializeReplayTranscriptWorkspace(
+                      transcript,
+                      cwd,
+                      codexForkWorkspaceEntries(transcript, forkWorkspaces),
+                    ),
                   ),
                 },
                 CodexHistoryReplayHarness,
@@ -706,7 +782,7 @@ describe("orchestration V2 merge-back provider replay", () => {
                   ...scenario,
                   transcript: yield* ClaudeOrchestratorReplayHarness.decodeTranscript(transcript),
                 },
-                ClaudeOrchestratorReplayHarness,
+                claude.harness,
                 { checkoutFixture },
               ).pipe(provideDeterministicTestRuntime);
 
@@ -752,6 +828,44 @@ describe("orchestration V2 merge-back provider replay", () => {
         assert.notInclude(visibleConversationText(firstFork), "second merge sibling stored");
         assert.include(visibleConversationText(secondFork), "second merge sibling stored");
         assert.notInclude(visibleConversationText(secondFork), "first merge sibling stored");
+
+        // Each fork runs in its own checkout of the source's committed HEAD; merge-back
+        // transfers context only and leaves the source checkout unchanged.
+        const forkThreadIds = [materialized.firstForkThreadId, materialized.secondForkThreadId];
+        assert.deepEqual(
+          forkThreadIds.map((threadId) => {
+            const thread = result.projections.get(threadId)?.thread;
+            return { branch: thread?.branch, worktreePath: thread?.worktreePath };
+          }),
+          checkouts.planned.map(({ branch, worktreePath }) => ({ branch, worktreePath })),
+        );
+        const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+        assert.deepEqual(
+          checkoutState.targets,
+          checkouts.planned.map(({ branch }) => ({ head: checkouts.sourceHead, branch })),
+        );
+        assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+        assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
+        if (variant.driver === "claudeAgent") {
+          const cwdsOf = (threadId: ThreadId) => [
+            ...new Set(
+              claude.cwdObservations
+                .filter((observation) => observation.threadId === threadId)
+                .map((observation) => observation.cwd),
+            ),
+          ];
+          assert.deepEqual(
+            forkThreadIds.map(cwdsOf),
+            forkWorkspaces.map((path) => [path]),
+          );
+          assert.deepEqual(cwdsOf(materialized.sourceThreadId), [cwd]);
+          assert.lengthOf(
+            claude.cwdObservations.filter(
+              (observation) => observation.operation === "session.fork",
+            ),
+            forkThreadIds.length,
+          );
+        }
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

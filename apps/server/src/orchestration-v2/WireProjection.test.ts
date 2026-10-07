@@ -24,6 +24,12 @@ import {
   projectTurnItemForDetail,
   projectDomainEventForWire,
 } from "./WireProjection.ts";
+import {
+  RecordedAppThread,
+  RecordedAppThreadJson,
+  StandaloneCheckoutBirthV1,
+} from "./RecordedTypes.ts";
+import { OrchestrationV2Command } from "@t3tools/contracts";
 import { threadShellFromProjection } from "./ProjectionStore.ts";
 
 const decodeTurnItem = Schema.decodeUnknownSync(OrchestrationV2TurnItem);
@@ -482,4 +488,89 @@ describe("orchestration V2 wire projection", () => {
     };
     expect(projectTurnItemForWire({ ...base, output })).not.toHaveProperty("output");
   });
+});
+
+it("retains standalone birth in recorded codecs, strips it on wire and rejects excess private fields", () => {
+  const birth = {
+    version: 1 as const,
+    kind: "fork" as const,
+    birthCommandId: CommandId.make("birth"),
+    birthCommandType: "thread.fork" as const,
+    sourceThreadId: ThreadId.make("source"),
+    sourceCreatedAt: DateTime.formatIso(base.updatedAt),
+    projectId: ProjectId.make("project"),
+    branch: "fork/target",
+    worktreePath: "/target",
+  };
+  const thread = Schema.decodeUnknownSync(RecordedAppThread)({
+    createdBy: "user",
+    creationSource: "web",
+    id: base.threadId,
+    projectId: birth.projectId,
+    title: "Target",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "fixture" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: birth.branch,
+    worktreePath: birth.worktreePath,
+    activeProviderThreadId: null,
+    lineage: {
+      parentThreadId: birth.sourceThreadId,
+      relationshipToParent: "fork",
+      rootThreadId: birth.sourceThreadId,
+    },
+    forkedFrom: null,
+    createdAt: base.updatedAt,
+    updatedAt: base.updatedAt,
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    snoozedUntil: null,
+    snoozedAt: null,
+    lastVisitedAt: null,
+    deletedAt: null,
+    standaloneCheckoutBirth: birth,
+  });
+  const json = Schema.encodeSync(RecordedAppThreadJson)(thread);
+  expect(Schema.decodeUnknownSync(RecordedAppThreadJson)(json).standaloneCheckoutBirth).toEqual(
+    birth,
+  );
+  const wire = projectDomainEventForWire({
+    id: EventId.make("birth-event"),
+    type: "thread.created",
+    threadId: thread.id,
+    occurredAt: thread.createdAt,
+    payload: thread,
+  });
+  expect(wire.payload).not.toHaveProperty("standaloneCheckoutBirth");
+  expect(wire.payload).toHaveProperty("worktreePath", birth.worktreePath);
+  expect(thread.standaloneCheckoutBirth).toEqual(birth);
+  expect(() =>
+    Schema.decodeUnknownSync(StandaloneCheckoutBirthV1)({ ...birth, extra: true }),
+  ).toThrow();
+  expect(() =>
+    Schema.decodeUnknownSync(StandaloneCheckoutBirthV1)({
+      ...birth,
+      birthCommandType: "thread.create",
+    }),
+  ).toThrow();
+  const publicCreate = Schema.decodeUnknownSync(OrchestrationV2Command)({
+    type: "thread.create",
+    commandId: "public-create",
+    threadId: "public-target",
+    projectId: birth.projectId,
+    title: "Public",
+    modelSelection: thread.modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdBy: "user",
+    creationSource: "web",
+    standaloneBirthRequest: { kind: "mcp_create", sourceThreadId: birth.sourceThreadId },
+    standaloneCheckoutBirth: birth,
+  });
+  expect(publicCreate).not.toHaveProperty("standaloneBirthRequest");
+  expect(publicCreate).not.toHaveProperty("standaloneCheckoutBirth");
 });
