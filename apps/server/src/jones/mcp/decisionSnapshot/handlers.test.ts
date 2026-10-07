@@ -6,7 +6,10 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpInvocationContext, type McpCapability } from "../../../mcp/McpInvocationContext.ts";
 import { CollectorFailure, DecisionSnapshotCollector } from "./collector.ts";
+import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
+import * as ProviderSessionManager from "../../../orchestration-v2/ProviderSessionManager.ts";
 import {
+  DecisionSnapshotNativeCountsLive,
   DecisionSnapshotNativeCounts,
   DecisionSnapshotToolkitHandlersLive,
   NativeCountReadError,
@@ -246,3 +249,54 @@ it.effect("refuses registry counts from a changed native binding", () =>
     });
   }),
 );
+
+it.effect(
+  "binds the application census while keeping an empty external background scope partial",
+  () =>
+    Effect.gen(function* () {
+      const nativePorts = yield* DecisionSnapshotNativeCounts.pipe(
+        Effect.provide(
+          DecisionSnapshotNativeCountsLive.pipe(
+            Layer.provide(
+              Layer.merge(
+                ProjectionStore.layerMemory,
+                Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+              ),
+            ),
+          ),
+        ),
+      );
+      const h = yield* harness(false, 0, nativePorts);
+      assertApplicationScope(yield* h.call(["decision-snapshot"]));
+      expect(
+        yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(h.state().envelope),
+      ).toMatchObject({
+        sources: {
+          threads: {
+            status: "partial",
+            scope: { count_scope: "application", native_background_coverage: "unknown" },
+            values: { total: 0 },
+          },
+        },
+      });
+    }),
+);
+function assertApplicationScope(result: unknown) {
+  expect(result).toMatchObject({
+    coverage: "partial",
+    authority_effect: "none",
+    sources: {
+      threads: {
+        status: "partial",
+        reason: "native_background_coverage_incomplete",
+        scope: {
+          count_scope: "application",
+          application_census_coverage: "complete",
+          native_background_coverage: "unknown",
+          snapshot_sequence: 0,
+        },
+        values: { total: 0, operating: 0, background_unknown: 0, foreground_unknown: 0 },
+      },
+    },
+  });
+}

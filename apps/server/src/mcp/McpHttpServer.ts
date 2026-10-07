@@ -17,7 +17,7 @@ import { PreviewAutomationError } from "@t3tools/contracts";
 
 import { DecisionSnapshotCollectorLive } from "../jones/mcp/decisionSnapshot/collector.ts";
 import {
-  DecisionSnapshotNativeCountsUnavailable,
+  DecisionSnapshotNativeCountsLive,
   DecisionSnapshotToolkitHandlersLive,
 } from "../jones/mcp/decisionSnapshot/handlers.ts";
 import { DecisionSnapshotToolkit } from "../jones/mcp/decisionSnapshot/tools.ts";
@@ -717,7 +717,7 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
 
 const DecisionSnapshotToolkitRegistrationLive = McpServer.toolkit(DecisionSnapshotToolkit).pipe(
   Layer.provide(DecisionSnapshotToolkitHandlersLive),
-  Layer.provide(DecisionSnapshotNativeCountsUnavailable),
+  Layer.provide(DecisionSnapshotNativeCountsLive),
   Layer.provide(DecisionSnapshotCollectorLive),
 );
 
