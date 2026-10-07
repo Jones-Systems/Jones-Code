@@ -1,9 +1,9 @@
-import * as Crypto from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Custody checks require native statfs observations and bounded SQLite header reads.
 import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Bind canonical fixture paths synchronously before runtime acquisition.
 import * as NodePath from "node:path";
-import * as Util from "node:util";
+import * as NodeUtil from "node:util";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -135,7 +135,7 @@ export interface CurrentProductionResult<A> {
   captureSha256?: string;
 }
 const hash = (value: unknown) =>
-  Crypto.createHash("sha256")
+  NodeCrypto.createHash("sha256")
     .update(`${JSON.stringify(value)}\n`)
     .digest("hex");
 function freezeEvidence<A>(value: A): A {
@@ -328,7 +328,7 @@ export async function produceCurrentFixture<A>(
         if (
           !projectCommit.committed ||
           projectReplay.committed ||
-          !Util.isDeepStrictEqual(projectCommit.receipt, projectReplay.receipt)
+          !NodeUtil.isDeepStrictEqual(projectCommit.receipt, projectReplay.receipt)
         )
           throw new Error("project fixture command receipt or idempotent replay differs");
         replayedCommands++;
@@ -340,8 +340,8 @@ export async function produceCurrentFixture<A>(
           if (
             !committed.committed ||
             replay.committed ||
-            !Util.isDeepStrictEqual(committed.receipt, replay.receipt) ||
-            !Util.isDeepStrictEqual(committed.storedEvents, replay.storedEvents)
+            !NodeUtil.isDeepStrictEqual(committed.receipt, replay.receipt) ||
+            !NodeUtil.isDeepStrictEqual(committed.storedEvents, replay.storedEvents)
           )
             throw new Error("thread fixture command receipt or idempotent replay differs");
           replayedCommands++;
