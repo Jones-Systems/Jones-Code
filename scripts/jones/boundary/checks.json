@@ -494,6 +494,25 @@
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/contracts typecheck"
       ]
+    },
+    {
+      "id": "jones-imported-history-admission",
+      "tests": [
+        "apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts",
+        "apps/server/src/jones/importedHistory/http.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+        "apps/server/src/orchestration-v2/QueuedRunOrder.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "packages/contracts/src/environmentHttp.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts apps/server/src/jones/importedHistory/http.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts packages/contracts/src/environmentHttp.test.ts",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/contracts typecheck"
+      ]
     }
   ]
 }
