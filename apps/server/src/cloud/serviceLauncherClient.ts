@@ -7,6 +7,15 @@ import * as Schema from "effect/Schema";
 
 import packageJson from "../../package.json" with { type: "json" };
 import {
+  assertQualifiedTrialBinding,
+  assertQualifiedResumeUnreserved,
+  makeQualifiedTrialReceipt,
+  reserveQualifiedResume,
+  sameQualifiedTrialIdentity,
+  type QualifiedTrialReceipt,
+  type QualifiedTrialRuntimeWitness,
+} from "../jones/cloud/qualifiedStartup.ts";
+import {
   decodeServiceLauncherContext,
   decodeServiceLauncherParentMessage,
   SERVICE_LAUNCHER_CONTEXT_ENV,
@@ -26,6 +35,9 @@ export class ServiceLauncherClientError extends Schema.TaggedError<ServiceLaunch
       "send",
       "disconnect",
       "timeout",
+      "qualified-proof",
+      "qualified-replay",
+      "qualified-reservation",
     ]),
     cause: Schema.optional(Schema.Defect()),
   },
@@ -46,6 +58,12 @@ export class ServiceLauncherClientError extends Schema.TaggedError<ServiceLaunch
         return "The service launcher disconnected before acknowledging the request.";
       case "timeout":
         return "The service launcher did not respond within 30 seconds.";
+      case "qualified-proof":
+        return "The qualified startup identity or grant is missing, unsupported, or mismatched.";
+      case "qualified-replay":
+        return "Qualified startup already attempted a handoff; reconciliation is required.";
+      case "qualified-reservation":
+        return "Qualified startup resume reservation requires reconciliation.";
     }
   }
 }
@@ -103,9 +121,19 @@ export class ServiceLauncherClient extends Context.Service<
   ServiceLauncherClient,
   {
     readonly managed: boolean;
+    readonly requiresQualifiedTrialGate: boolean;
+    readonly prepareQualifiedTrial: (
+      witness: QualifiedTrialRuntimeWitness,
+    ) => Effect.Effect<ServerSelfUpdateOutcome, ServiceLauncherClientError>;
+    readonly qualifiedUpdates?: boolean;
+    readonly qualifiedStaging?: boolean;
+    readonly currentVersion?: string;
+    /** Last durable terminal result; reading it never sends a prepared IPC message. */
+    readonly qualifiedStartupOutcome?: ServerSelfUpdateOutcome | undefined;
     readonly requestUpdate: (input: {
       readonly targetVersion: string;
       readonly dbPath: string;
+      readonly stagedHandle?: string;
     }) => Effect.Effect<string, ServiceLauncherClientError | ServiceLauncherRejectedError>;
     readonly prepareTrial: Effect.Effect<
       ServerSelfUpdateOutcome | undefined,
@@ -113,6 +141,38 @@ export class ServiceLauncherClient extends Context.Service<
     >;
   }
 >()("t3/cloud/serviceLauncherClient") {}
+
+export const QualifiedTrialOperations = Context.Reference<{
+  readonly receipt: typeof makeQualifiedTrialReceipt;
+  readonly assertUnreserved: typeof assertQualifiedResumeUnreserved;
+  readonly reserve: typeof reserveQualifiedResume;
+}>("t3/cloud/serviceLauncherQualifiedTrialOperations", {
+  defaultValue: () => ({
+    receipt: makeQualifiedTrialReceipt,
+    assertUnreserved: assertQualifiedResumeUnreserved,
+    reserve: reserveQualifiedResume,
+  }),
+});
+
+// Cancellation drains native publication before the startup finalizer can touch paired state.
+const qualifiedOperation = <A>(
+  operation: (signal: AbortSignal) => Promise<A>,
+  failure: "qualified-proof" | "qualified-reservation",
+) =>
+  Effect.callback<A, ServiceLauncherClientError>((resume) => {
+    const controller = new AbortController();
+    const completion = Promise.resolve()
+      .then(() => operation(controller.signal))
+      .then(
+        (result) => resume(Effect.succeed(result)),
+        (cause) =>
+          resume(Effect.fail(new ServiceLauncherClientError({ operation: failure, cause }))),
+      );
+    return Effect.promise(async () => {
+      controller.abort();
+      await completion;
+    });
+  });
 
 const resolveStartup = Effect.fn("cloud.service_launcher_client.resolve_startup")(
   function* (options?: { readonly currentVersion?: string }) {
@@ -149,10 +209,12 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
   readonly currentVersion?: string;
 }) {
   const { host, context, managed } = yield* resolveStartup(options);
+  const qualifiedOperations = yield* QualifiedTrialOperations;
 
   const exchange = (
     message: ServiceLauncherChildMessage,
     accept: (reply: ServiceLauncherParentMessage) => boolean,
+    qualifiedReceipt?: QualifiedTrialReceipt,
   ) =>
     Effect.callback<ServiceLauncherParentMessage, ServiceLauncherClientError>((resume) => {
       if (!managed) {
@@ -175,6 +237,26 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
       };
       const onMessage = (...args: ReadonlyArray<unknown>) => {
         const reply = decodeServiceLauncherParentMessage(args[0]);
+        if (qualifiedReceipt !== undefined) {
+          const raw = args[0];
+          if (
+            typeof raw === "object" &&
+            raw !== null &&
+            "type" in raw &&
+            raw.type === "committed"
+          ) {
+            if (
+              reply?.type !== "committed" ||
+              reply.startupGateProtocol !== 1 ||
+              reply.qualified === undefined ||
+              reply.updateId !== qualifiedReceipt.updateId ||
+              !sameQualifiedTrialIdentity(qualifiedReceipt, reply.qualified)
+            ) {
+              settle(Effect.fail(new ServiceLauncherClientError({ operation: "qualified-proof" })));
+              return;
+            }
+          }
+        }
         if (reply !== undefined && accept(reply)) settle(Effect.succeed(reply));
       };
       const onDisconnect = () =>
@@ -183,13 +265,15 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
       host.on("message", onMessage);
       host.on("disconnect", onDisconnect);
       try {
-        host.send(message, (error) => {
+        const sent = host.send(message, (error) => {
           if (error !== null) {
             settle(
               Effect.fail(new ServiceLauncherClientError({ operation: "send", cause: error })),
             );
           }
         });
+        if (!sent && qualifiedReceipt !== undefined)
+          settle(Effect.fail(new ServiceLauncherClientError({ operation: "send" })));
       } catch (cause) {
         settle(Effect.fail(new ServiceLauncherClientError({ operation: "send", cause })));
       }
@@ -202,39 +286,107 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
       }),
     );
 
-  const requestUpdate = (input: { readonly targetVersion: string; readonly dbPath: string }) =>
-    context !== undefined && context.protocol !== SERVICE_LAUNCHER_PROTOCOL
+  const requestUpdate = (input: {
+    readonly targetVersion: string;
+    readonly dbPath: string;
+    readonly stagedHandle?: string;
+  }) =>
+    input.stagedHandle !== undefined &&
+    (context?.qualifiedUpdatesProtocol !== 1 || context.startupGateProtocol !== 1)
       ? Effect.fail(
           new ServiceLauncherRejectedError({
             targetVersion: input.targetVersion,
-            reason: "The installed service launcher must be upgraded before another remote update.",
+            reason:
+              "bootstrap-required: The installed launcher cannot activate qualified Jones artifacts. Upgrade it on this host first.",
           }),
         )
-      : exchange(
-          { type: "request-update", ...input },
-          (reply) => reply.type === "update-accepted" || reply.type === "update-rejected",
-        ).pipe(
-          Effect.flatMap((reply) =>
-            reply.type === "update-accepted"
-              ? Effect.succeed(reply.updateId)
-              : reply.type === "update-rejected"
-                ? Effect.fail(
-                    new ServiceLauncherRejectedError({
-                      targetVersion: input.targetVersion,
-                      reason: reply.reason,
-                    }),
-                  )
-                : Effect.die("service launcher returned an impossible update response"),
-          ),
-        );
+      : context !== undefined && context.protocol !== SERVICE_LAUNCHER_PROTOCOL
+        ? Effect.fail(
+            new ServiceLauncherRejectedError({
+              targetVersion: input.targetVersion,
+              reason:
+                "The installed service launcher must be upgraded before another remote update.",
+            }),
+          )
+        : exchange(
+            { type: "request-update", ...input },
+            (reply) => reply.type === "update-accepted" || reply.type === "update-rejected",
+          ).pipe(
+            Effect.flatMap((reply) =>
+              reply.type === "update-accepted"
+                ? Effect.succeed(reply.updateId)
+                : reply.type === "update-rejected"
+                  ? Effect.fail(
+                      new ServiceLauncherRejectedError({
+                        targetVersion: input.targetVersion,
+                        reason: reply.reason,
+                      }),
+                    )
+                  : Effect.die("service launcher returned an impossible update response"),
+            ),
+          );
 
   const pending = context?.update?.status === "pending" ? context.update : undefined;
-  const outcome =
+  let outcome: ServerSelfUpdateOutcome | undefined =
     context?.update === undefined || context.update.status === "pending"
       ? undefined
       : context.update;
-  const prepareTrial =
-    pending !== undefined
+  const qualifiedTransaction =
+    context?.update !== undefined &&
+    "qualified" in context.update &&
+    context.update.qualified !== undefined;
+  const requiresQualifiedTrialGate = pending !== undefined && pending.qualified !== undefined;
+  let qualifiedAttempted = false;
+  const prepareQualifiedTrial: ServiceLauncherClient["Service"]["prepareQualifiedTrial"] = (
+    witness,
+  ) =>
+    Effect.suspend(() => {
+      if (qualifiedAttempted)
+        return Effect.fail(new ServiceLauncherClientError({ operation: "qualified-replay" }));
+      qualifiedAttempted = true;
+      if (
+        !requiresQualifiedTrialGate ||
+        pending?.qualified === undefined ||
+        context?.protocol !== SERVICE_LAUNCHER_PROTOCOL ||
+        context.qualifiedUpdatesProtocol !== 1 ||
+        context.startupGateProtocol !== 1
+      )
+        return Effect.fail(new ServiceLauncherClientError({ operation: "qualified-proof" }));
+      const qualified = pending.qualified;
+      return Effect.gen(function* () {
+        const receipt = yield* qualifiedOperation(async (signal) => {
+          const receipt = await qualifiedOperations.receipt({
+            updateId: pending.id,
+            qualified,
+            witness,
+            signal,
+          });
+          assertQualifiedTrialBinding({ updateId: pending.id, qualified, receipt });
+          await qualifiedOperations.assertUnreserved(receipt);
+          return receipt;
+        }, "qualified-proof");
+        const reply = yield* exchange(
+          { type: "prepared", updateId: pending.id, startupGateProtocol: 1, qualified: receipt },
+          (reply) => reply.type === "committed",
+          receipt,
+        );
+        if (reply.type !== "committed" || reply.qualified === undefined)
+          return yield* new ServiceLauncherClientError({ operation: "qualified-proof" });
+        yield* qualifiedOperation(
+          (signal) => qualifiedOperations.reserve({ receipt, signal }),
+          "qualified-reservation",
+        );
+        outcome = {
+          id: pending.id,
+          fromVersion: pending.fromVersion,
+          targetVersion: pending.targetVersion,
+          status: "committed",
+        };
+        return outcome;
+      });
+    });
+  const ordinaryPrepareTrial = yield* Effect.cached(
+    pending !== undefined && !requiresQualifiedTrialGate
       ? exchange(
           { type: "prepared", updateId: pending.id },
           (reply) => reply.type === "committed" && reply.updateId === pending.id,
@@ -243,19 +395,36 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
             if (reply.type !== "committed") {
               return Effect.die("service launcher returned an impossible prepared response");
             }
-            return Effect.succeed({
+            outcome = {
               id: pending.id,
               fromVersion: pending.fromVersion,
               targetVersion: pending.targetVersion,
               status: "committed" as const,
-            });
+            };
+            return Effect.succeed(outcome);
           }),
         )
-      : Effect.succeed(outcome);
+      : Effect.succeed(outcome),
+  );
+  const prepareTrial = requiresQualifiedTrialGate
+    ? Effect.suspend(() =>
+        outcome === undefined
+          ? Effect.fail(new ServiceLauncherClientError({ operation: "qualified-proof" }))
+          : Effect.succeed(outcome),
+      )
+    : ordinaryPrepareTrial;
 
   return ServiceLauncherClient.of({
     managed,
+    requiresQualifiedTrialGate,
+    prepareQualifiedTrial,
+    qualifiedUpdates: context?.qualifiedUpdatesProtocol === 1 && context.startupGateProtocol === 1,
+    qualifiedStaging: context?.qualifiedUpdatesProtocol === 1,
+    ...(context === undefined ? {} : { currentVersion: context.childVersion }),
     requestUpdate,
+    get qualifiedStartupOutcome() {
+      return qualifiedTransaction ? outcome : undefined;
+    },
     prepareTrial,
   });
 });
