@@ -33,6 +33,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { signalProcessGroup } from "../process/processGroup.ts";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
 import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
+import * as OpenCodeCreationPolicy from "../jones/provider/opencode/OpenCodeCreationPolicy.ts";
 import { collectStreamAsString } from "./providerSnapshot.ts";
 import * as NetService from "@t3tools/shared/Net";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -85,6 +86,7 @@ const DEFAULT_HOSTNAME = "127.0.0.1";
 const OPENCODE_SERVER_STARTUP_MAX_OUTPUT_CHARS = 64 * 1024;
 const OPENCODE_SKILL_DISCOVERY_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 export interface OpenCodeServerProcess {
+  readonly runtimeGeneration?: string;
   readonly url: string;
   readonly serverPassword?: string;
   readonly version: string;
@@ -237,6 +239,7 @@ export interface OpenCodeRuntimeShape {
   readonly startOpenCodeServerProcess: (input: {
     readonly binaryPath: string;
     readonly directory: string;
+    readonly creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks;
     readonly serverPassword?: string;
     readonly environment?: NodeJS.ProcessEnv;
     readonly port?: number;
@@ -253,6 +256,7 @@ export interface OpenCodeRuntimeShape {
   readonly connectToOpenCodeServer: (input: {
     readonly binaryPath: string;
     readonly directory: string;
+    readonly creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks;
     readonly serverUrl?: string | null;
     readonly serverPassword?: string;
     readonly environment?: NodeJS.ProcessEnv;
@@ -697,10 +701,14 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       // Scopes close in reverse order. Forking this before the group kill is
       // registered forgets the ledger entry only once the group is stopped.
       const ledgerScope = yield* Scope.fork(runtimeScope);
+      const capture = input.creationHooks === undefined
+        ? undefined
+        : yield* OpenCodeCreationPolicy.prepareGeneration(input.directory, input.creationHooks);
       const child = yield* spawner
         .spawn(
           ChildProcess.make(spawnCommand.command, spawnCommand.args, {
             detached: hostPlatform !== "win32",
+            cwd: input.directory,
             shell: spawnCommand.shell,
             env: {
               ...input.environment,
@@ -861,6 +869,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       );
 
       return {
+        ...(capture !== undefined ? { runtimeGeneration: capture.runtimeGeneration } : {}),
         url,
         ...(serverPassword !== undefined ? { serverPassword } : {}),
         version,
@@ -899,6 +908,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     return startOpenCodeServerProcess({
       binaryPath: input.binaryPath,
       directory: input.directory,
+      ...(input.creationHooks !== undefined ? { creationHooks: input.creationHooks } : {}),
       ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
       ...(input.environment !== undefined ? { environment: input.environment } : {}),
       ...(input.port !== undefined ? { port: input.port } : {}),

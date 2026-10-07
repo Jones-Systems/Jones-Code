@@ -7,6 +7,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 
 import * as OpenCodeRuntime from "./opencodeRuntime.ts";
+import * as OpenCodeCreationPolicy from "../jones/provider/opencode/OpenCodeCreationPolicy.ts";
 
 const OPENCODE_SERVER_IDLE_TTL = "30 seconds";
 
@@ -22,6 +23,7 @@ export class OpenCodeServerOwner extends Context.Service<
   {
     readonly withServer: <A, E, R>(
       use: (server: OpenCodeRuntime.OpenCodeServerProcess) => Effect.Effect<A, E, R>,
+      creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks,
     ) => Effect.Effect<A, E | OpenCodeRuntime.OpenCodeRuntimeError, R>;
   }
 >()("t3/provider/OpenCodeServerOwner") {}
@@ -83,50 +85,52 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     );
   });
 
-  const acquireServer = mutex.withPermit(
-    Effect.gen(function* () {
-      yield* cancelIdleClose();
-      if (state.server !== null) {
-        if (yield* state.server.isRunning) {
-          state.borrowers += 1;
-          return state.server;
-        }
-        yield* closeServer(state.server);
-      }
-
-      return yield* Effect.uninterruptibleMask((restore) =>
-        Effect.gen(function* () {
-          const serverScope = yield* Scope.make();
-          const started = yield* Effect.exit(
-            restore(
-              runtime
-                .startOpenCodeServerProcess({
-                  binaryPath: input.binaryPath,
-                  directory: input.directory,
-                  ...(input.serverPassword !== undefined
-                    ? { serverPassword: input.serverPassword }
-                    : {}),
-                  ...(input.environment ? { environment: input.environment } : {}),
-                  ...(input.verify ? { verify: input.verify } : {}),
-                })
-                .pipe(Effect.provideService(Scope.Scope, serverScope)),
-            ),
-          );
-          if (Exit.isFailure(started)) {
-            yield* Scope.close(serverScope, Exit.void).pipe(Effect.ignore);
-            return yield* Effect.failCause(started.cause);
+  const acquireServer = (creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks) =>
+    mutex.withPermit(
+      Effect.gen(function* () {
+        yield* cancelIdleClose();
+        if (state.server !== null) {
+          if (yield* state.server.isRunning) {
+            state.borrowers += 1;
+            return state.server;
           }
+          yield* closeServer(state.server);
+        }
 
-          const server = started.value;
-          state.server = server;
-          state.serverScope = serverScope;
-          state.borrowers = 1;
-          yield* watchServerExit(server).pipe(Effect.forkIn(ownerScope));
-          return server;
-        }),
-      );
-    }),
-  );
+        return yield* Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            const serverScope = yield* Scope.make();
+            const started = yield* Effect.exit(
+              restore(
+                runtime
+                  .startOpenCodeServerProcess({
+                    binaryPath: input.binaryPath,
+                    directory: input.directory,
+                    ...(creationHooks !== undefined ? { creationHooks } : {}),
+                    ...(input.serverPassword !== undefined
+                      ? { serverPassword: input.serverPassword }
+                      : {}),
+                    ...(input.environment ? { environment: input.environment } : {}),
+                    ...(input.verify ? { verify: input.verify } : {}),
+                  })
+                  .pipe(Effect.provideService(Scope.Scope, serverScope)),
+              ),
+            );
+            if (Exit.isFailure(started)) {
+              yield* Scope.close(serverScope, Exit.void).pipe(Effect.ignore);
+              return yield* Effect.failCause(started.cause);
+            }
+
+            const server = started.value;
+            state.server = server;
+            state.serverScope = serverScope;
+            state.borrowers = 1;
+            yield* watchServerExit(server).pipe(Effect.forkIn(ownerScope));
+            return server;
+          }),
+        );
+      }),
+    );
 
   const releaseServer = (server: OpenCodeRuntime.OpenCodeServerProcess) =>
     mutex.withPermit(
@@ -167,9 +171,9 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   );
 
   return OpenCodeServerOwner.of({
-    withServer: (use) =>
+    withServer: (use, creationHooks) =>
       Effect.uninterruptibleMask((restore) =>
-        restore(acquireServer).pipe(
+        restore(acquireServer(creationHooks)).pipe(
           Effect.flatMap((server) =>
             restore(use(server)).pipe(Effect.ensuring(releaseServer(server))),
           ),
