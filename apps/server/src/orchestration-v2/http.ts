@@ -1,3 +1,5 @@
+import { makeCommandObservationQuery } from "./CommandObservation.ts";
+import { makeProviderGoalState } from "./ProviderGoalState.ts";
 import {
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
@@ -68,6 +70,8 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   "orchestration",
   Effect.fnUntraced(function* (handlers) {
     const sql = yield* SqlClient.SqlClient;
+    const commandObservation = yield* makeCommandObservationQuery();
+    const readGoalState = yield* makeProviderGoalState();
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
     const projectStore = yield* ProjectStore.ProjectStoreV2;
@@ -168,6 +172,31 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
     );
 
     return handlers
+      .handle(
+        "commandObservation",
+        Effect.fn("orchestration.commandObservation")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          return yield* commandObservation
+            .observe({ ...args.params, messageId: args.query.messageId })
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("orchestration_command_observation_failed", cause),
+              ),
+            );
+        }),
+      )
+      .handle(
+        "providerGoalState",
+        Effect.fn("orchestration.providerGoalState")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          return yield* readGoalState({
+            ...args.params,
+            expectedInstanceId: args.query.expectedInstanceId,
+          });
+        }),
+      )
       .handle(
         "shellSnapshot",
         Effect.fn("environment.orchestration.shellSnapshot")(function* (args) {

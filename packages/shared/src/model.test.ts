@@ -3,6 +3,7 @@ import { ProviderDriverKind, ProviderInstanceId, type ModelCapabilities } from "
 
 import {
   applyClaudePromptEffortPrefix,
+  applyConfiguredReasoningEffortDefault,
   buildExplicitProviderOptionSelectionsFromDescriptors,
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
@@ -10,6 +11,7 @@ import {
   formatCodexModelName,
   formatModelSlugName,
   getProviderOptionCurrentLabel,
+  getConfiguredReasoningEffort,
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
@@ -221,6 +223,177 @@ describe("descriptor helpers", () => {
       }),
     ).toBe(false);
     expect(modelSelectionsEqual(left, { ...reordered, model: "gpt-5.5" })).toBe(false);
+  });
+});
+
+describe("configured reasoning effort", () => {
+  const input = {
+    modelSelection: createModelSelection(ProviderInstanceId.make("codex-work"), "gpt-5.4"),
+    driverKind: ProviderDriverKind.make("codex"),
+    capabilities: codexCaps,
+    defaultModelSelection: createModelSelection(
+      ProviderInstanceId.make("codex-personal"),
+      "gpt-5.4",
+      [{ id: "reasoningEffort", value: "xhigh" }],
+    ),
+    defaultDriverKind: ProviderDriverKind.make("codex"),
+  };
+
+  it("inherits the current configured effort across Codex accounts", () => {
+    expect(getConfiguredReasoningEffort(input)).toBe("xhigh");
+    expect(
+      getConfiguredReasoningEffort({
+        ...input,
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex-work"), " 5.4 "),
+        defaultModelSelection: { ...input.defaultModelSelection, model: "openai.gpt-5.4" },
+      }),
+    ).toBe("xhigh");
+    expect(
+      getConfiguredReasoningEffort({
+        ...input,
+        modelSelection: { ...input.modelSelection, model: "openai.gpt-5.3" },
+        defaultModelSelection: { ...input.defaultModelSelection, model: "gpt-5.3-codex" },
+      }),
+    ).toBe("xhigh");
+  });
+
+  it("preserves explicit effort while allowing unrelated options", () => {
+    for (const value of ["high", "unsupported", true]) {
+      const explicit = {
+        ...input,
+        modelSelection: {
+          ...input.modelSelection,
+          options: [{ id: "reasoningEffort", value }],
+        },
+      };
+      expect(getConfiguredReasoningEffort(explicit)).toBeUndefined();
+      expect(applyConfiguredReasoningEffortDefault(explicit)).toBe(codexCaps);
+    }
+    expect(
+      getConfiguredReasoningEffort({
+        ...input,
+        modelSelection: { ...input.modelSelection, options: [{ id: "fastMode", value: true }] },
+      }),
+    ).toBe("xhigh");
+  });
+
+  it("does not inherit for other models or provider drivers", () => {
+    expect(
+      getConfiguredReasoningEffort({
+        ...input,
+        modelSelection: { ...input.modelSelection, model: "gpt-5.3-codex" },
+      }),
+    ).toBeUndefined();
+    expect(
+      getConfiguredReasoningEffort({ ...input, driverKind: ProviderDriverKind.make("claude") }),
+    ).toBeUndefined();
+    expect(
+      getConfiguredReasoningEffort({
+        ...input,
+        defaultDriverKind: ProviderDriverKind.make("claude"),
+      }),
+    ).toBeUndefined();
+    expect(
+      getConfiguredReasoningEffort({ ...input, defaultDriverKind: undefined }),
+    ).toBeUndefined();
+  });
+
+  it("leaves catalog fallback when the configured effort or capabilities are unavailable", () => {
+    for (const value of ["unsupported", true]) {
+      expect(
+        getConfiguredReasoningEffort({
+          ...input,
+          defaultModelSelection: {
+            ...input.defaultModelSelection,
+            options: [{ id: "reasoningEffort", value }],
+          },
+        }),
+      ).toBeUndefined();
+    }
+    expect(
+      getConfiguredReasoningEffort({ ...input, defaultModelSelection: undefined }),
+    ).toBeUndefined();
+    expect(
+      getConfiguredReasoningEffort({
+        ...input,
+        defaultModelSelection: createModelSelection(
+          input.defaultModelSelection.instanceId,
+          input.defaultModelSelection.model,
+        ),
+      }),
+    ).toBeUndefined();
+    expect(getConfiguredReasoningEffort({ ...input, capabilities: undefined })).toBeUndefined();
+    expect(
+      getConfiguredReasoningEffort({ ...input, capabilities: { optionDescriptors: [] } }),
+    ).toBeUndefined();
+    expect(
+      getConfiguredReasoningEffort({
+        ...input,
+        capabilities: {
+          optionDescriptors: [{ id: "reasoningEffort", label: "Reasoning", type: "boolean" }],
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      getConfiguredReasoningEffort({
+        ...input,
+        capabilities: {
+          optionDescriptors: [
+            { id: "reasoningEffort", label: "Reasoning", type: "select", options: [] },
+          ],
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      applyConfiguredReasoningEffortDefault({ ...input, defaultModelSelection: undefined }),
+    ).toBe(codexCaps);
+    expect(
+      applyConfiguredReasoningEffortDefault({ ...input, capabilities: undefined }),
+    ).toBeUndefined();
+  });
+
+  it("updates only display defaults without mutating capabilities or persisting inherited options", () => {
+    const inherited = applyConfiguredReasoningEffortDefault(input);
+    expect(inherited?.optionDescriptors).toEqual([
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select",
+        options: [
+          { id: "xhigh", label: "Extra High", isDefault: true },
+          { id: "high", label: "High", isDefault: false },
+        ],
+        currentValue: "xhigh",
+      },
+      codexCaps.optionDescriptors?.[1],
+    ]);
+    expect(inherited?.optionDescriptors?.[1]).toBe(codexCaps.optionDescriptors?.[1]);
+    expect(codexCaps.optionDescriptors?.[0]?.currentValue).toBe("high");
+    expect(input.modelSelection.options).toBeUndefined();
+    expect(
+      buildExplicitProviderOptionSelectionsFromDescriptors(inherited?.optionDescriptors, undefined),
+    ).toBeUndefined();
+  });
+
+  it("reads only the current configured effort when defaults change", () => {
+    const changed = {
+      ...input,
+      defaultModelSelection: {
+        ...input.defaultModelSelection,
+        options: [{ id: "reasoningEffort", value: "high" }],
+      },
+    };
+    expect(getConfiguredReasoningEffort(changed)).toBe("high");
+    expect(
+      applyConfiguredReasoningEffortDefault(changed)?.optionDescriptors?.[0]?.currentValue,
+    ).toBe("high");
+    expect(getConfiguredReasoningEffort(input)).toBe("xhigh");
+    expect(
+      getConfiguredReasoningEffort({
+        ...input,
+        defaultModelSelection: { ...input.defaultModelSelection, model: "gpt-5.3-codex" },
+      }),
+    ).toBeUndefined();
   });
 });
 
