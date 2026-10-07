@@ -130,6 +130,19 @@
       "id": "jones-process-placement-build",
       "tests": ["native/process-placement/build.test.mjs"],
       "commands": ["node --test native/process-placement/build.test.mjs"]
+    },
+    {
+      "id": "jones-persistent-host-connections",
+      "tests": [
+        "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
+        "packages/ssh/src/tunnel.test.ts",
+        "packages/ssh/src/runnerProcess.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/ssh/src/jones/persistentRemoteLifecycle.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/runnerProcess.test.ts",
+        "vp run --filter @t3tools/ssh typecheck",
+        "vp lint packages/ssh/src/tunnel.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/runnerProcess.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts"
+      ]
     }
   ]
 }

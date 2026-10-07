@@ -105,6 +105,15 @@
         "apps/web/src/components/chat/ReasoningEffortShortcuts.test.tsx",
         "apps/web/src/components/chat/composerShortcutRails.test.ts"
       ]
+    },
+    {
+      "id": "persistent-host-connections",
+      "tests": [
+        "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
+        "packages/ssh/src/tunnel.test.ts",
+        "packages/ssh/src/runnerProcess.test.ts"
+      ],
+      "scope": "SSH disconnect and client shutdown preserve host-owned remote servers. Shell policy is isolated under Jones ownership; manager lifecycle tests retain their shared harness."
     }
   ]
 }
