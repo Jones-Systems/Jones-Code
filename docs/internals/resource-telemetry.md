@@ -48,3 +48,17 @@ A WSL backend needs a Linux monitor even though Electron runs on Windows. Window
 desktop packages currently supply only the Windows executable, so native process
 telemetry for the WSL backend is unavailable. The inherited Electron power feed
 still works.
+
+## Provider process attribution
+
+Codex root ownership belongs to each provider-session scope and is registered by
+the [V2 app-server factory](../../apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts).
+Live snapshots classify a matching process as `provider-root` and attach its opaque
+T3 thread ID and provider kind. Descendants remain identifiable through the process
+tree; ownership is not copied onto each child or into historical summaries.
+
+The registration is in memory and its scope finalizer removes it. A sampled start
+time newer than registration cannot inherit the owner, limiting PID reuse. Native
+start times may have second-level precision, so reuse within one time bucket cannot
+be distinguished before the finalizer runs. Missing ownership does not imply that
+the process is stale or safe to stop.
