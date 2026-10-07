@@ -30,6 +30,7 @@ import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
+import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 import type { ProviderAdapterV2Shape } from "../../orchestration-v2/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -182,7 +183,17 @@ function makeHarness(options: HarnessOptions = {}) {
       }),
   );
   const launch = ThreadLaunch.layer.pipe(
-    Layer.provide(Layer.mergeAll(externalServices, threadManagement, receipts, IdAllocator.layer)),
+    Layer.provide(
+      Layer.mergeAll(
+        externalServices,
+        threadManagement,
+        receipts,
+        IdAllocator.layer,
+        outbox,
+        orchestrator,
+        EventStore.layer.pipe(Layer.provide(database)),
+      ),
+    ),
   );
   const projectedProjects = Layer.mock(ProjectStore.ProjectStoreV2)({
     get: (requestedProjectId) =>
@@ -211,6 +222,9 @@ function makeHarness(options: HarnessOptions = {}) {
   return {
     layer: Layer.mergeAll(
       launch,
+      receipts,
+      EventStore.layer.pipe(Layer.provide(database)),
+      orchestrator,
       threadManagement,
       titleRegeneration,
       outbox,

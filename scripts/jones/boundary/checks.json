@@ -16,6 +16,153 @@
       "commands": [
         "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
       ]
+    },
+    {
+      "id": "jones-workstreams-native-stack",
+      "tests": [
+        "apps/mobile/src/features/workstreams/actions.test.ts",
+        "apps/mobile/src/features/workstreams/commands.test.ts",
+        "apps/mobile/src/features/workstreams/loaders.test.ts",
+        "apps/mobile/src/features/workstreams/projection.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/workstreams/WorkstreamPlacements.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
+        "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
+        "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
+        "apps/web/src/components/workstreams/workstreamPresentation.test.ts",
+        "apps/web/src/state/workstreams.test.ts",
+        "packages/client-runtime/src/state/workstreams/colors.test.ts",
+        "packages/client-runtime/src/state/workstreams/lifecycle.test.ts",
+        "packages/client-runtime/src/state/workstreams/live.test.ts",
+        "packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts",
+        "packages/client-runtime/src/state/workstreams/placements.test.ts",
+        "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
+        "packages/contracts/src/queueProtocol.test.ts",
+        "packages/contracts/src/threadCorpusProtocol.test.ts",
+        "packages/contracts/src/workstreams.conformance.test.ts",
+        "packages/contracts/src/workstreams.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/mobile/src/features/workstreams/actions.test.ts apps/mobile/src/features/workstreams/commands.test.ts apps/mobile/src/features/workstreams/loaders.test.ts apps/mobile/src/features/workstreams/projection.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/http.test.ts apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/workstreamPresentation.test.ts apps/web/src/state/workstreams.test.ts packages/client-runtime/src/state/workstreams/colors.test.ts packages/client-runtime/src/state/workstreams/lifecycle.test.ts packages/client-runtime/src/state/workstreams/live.test.ts packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts packages/client-runtime/src/state/workstreams/workstreams.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/workstreams.test.ts"
+      ]
+    },
+    {
+      "id": "jones-native-store-authority",
+      "tests": [
+        "apps/server/src/environment/NativeStoreAuthority.test.ts",
+        "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/environment/NativeStoreAuthority.test.ts apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts"
+      ]
+    },
+    {
+      "id": "jones-voice-review-native",
+      "tests": [
+        "apps/server/src/voiceReview/composition.test.ts",
+        "apps/server/src/voiceReview/config.test.ts",
+        "apps/server/src/voiceReview/native.test.ts",
+        "apps/web/src/components/voiceReview/RecentVoicePrompts.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/server/src/voiceReview/composition.test.ts apps/server/src/voiceReview/config.test.ts apps/server/src/voiceReview/native.test.ts apps/web/src/components/voiceReview/RecentVoicePrompts.test.tsx"
+      ]
+    },
+    {
+      "id": "jones-provider-runtime-identity",
+      "tests": [
+        "apps/server/src/orchestration-v2/EventSink.runtimeIdentity.test.ts",
+        "apps/server/src/resourceTelemetry/ProcessAttribution.test.ts",
+        "packages/contracts/src/providerRuntimeIdentity.test.ts",
+        "packages/contracts/src/resourceTelemetry.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/orchestration-v2/EventSink.runtimeIdentity.test.ts apps/server/src/resourceTelemetry/ProcessAttribution.test.ts packages/contracts/src/providerRuntimeIdentity.test.ts packages/contracts/src/resourceTelemetry.test.ts"
+      ]
+    },
+    {
+      "id": "jones-queue-dispatch-goals",
+      "tests": [
+        "apps/server/src/orchestration-v2/LegacyBootstrapPersistence.test.ts",
+        "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
+        "apps/server/src/orchestration-v2/LegacyKnownFailureDeletion.integration.test.ts",
+        "apps/server/src/orchestration-v2/ProviderGoalState.test.ts",
+        "apps/server/src/orchestration-v2/QueueCompatibility.test.ts",
+        "apps/server/src/orchestration-v2/providerGoalHttp.test.ts",
+        "apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts",
+        "apps/server/src/provider/providerGoal.test.ts",
+        "apps/server/src/provider/providerQueue.test.ts",
+        "apps/server/src/provider/providerQueueHttp.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/orchestration-v2/LegacyBootstrapPersistence.test.ts apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts apps/server/src/orchestration-v2/LegacyKnownFailureDeletion.integration.test.ts apps/server/src/orchestration-v2/ProviderGoalState.test.ts apps/server/src/orchestration-v2/QueueCompatibility.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts apps/server/src/provider/providerGoal.test.ts apps/server/src/provider/providerQueue.test.ts apps/server/src/provider/providerQueueHttp.test.ts"
+      ]
+    },
+    {
+      "id": "jones-process-placement",
+      "tests": [
+        "apps/server/src/process/processPlacement.test.ts",
+        "apps/server/src/process/processPlacementBootstrap.test.ts",
+        "apps/server/src/process/processPlacementSpawner.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/process/processPlacement.test.ts apps/server/src/process/processPlacementBootstrap.test.ts apps/server/src/process/processPlacementSpawner.test.ts"
+      ]
+    },
+    {
+      "id": "jones-composer-shortcuts",
+      "tests": [
+        "apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx",
+        "apps/web/src/components/chat/ProviderInstanceShortcuts.test.ts",
+        "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
+        "apps/web/src/components/chat/ReasoningEffortShortcuts.test.tsx",
+        "apps/web/src/components/chat/composerShortcutRails.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx apps/web/src/components/chat/ProviderInstanceShortcuts.test.ts apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx apps/web/src/components/chat/ReasoningEffortShortcuts.test.tsx apps/web/src/components/chat/composerShortcutRails.test.ts"
+      ]
+    },
+    {
+      "id": "jones-process-placement-build",
+      "tests": ["native/process-placement/build.test.mjs"],
+      "commands": ["node --test native/process-placement/build.test.mjs"]
+    },
+    {
+      "id": "jones-workstream-appearance",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx",
+        "packages/client-runtime/src/state/workstreams/appearance.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx packages/client-runtime/src/state/workstreams/appearance.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ]
+    },
+    {
+      "id": "jones-work-mode",
+      "tests": [
+        "apps/mobile/src/features/threads/pending-thread-feed.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts",
+        "apps/server/src/jones/provider/workModePrompt.test.ts",
+        "apps/server/src/jones/workMode/Policy.test.ts",
+        "apps/server/src/jones/workMode/Retention.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/web/src/components/chat/MessagesTimeline.logic.test.ts",
+        "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
+        "packages/contracts/src/jones/workMode.test.ts",
+        "packages/shared/src/jones/workMode.test.ts",
+        "packages/shared/src/serverSettings.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/mobile/src/features/threads/pending-thread-feed.test.ts apps/mobile/src/lib/threadActivity.test.ts apps/server/src/jones/provider/workModePrompt.test.ts apps/server/src/jones/workMode/Policy.test.ts apps/server/src/jones/workMode/Retention.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/web/src/components/chat/MessagesTimeline.logic.test.ts apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx packages/contracts/src/jones/workMode.test.ts packages/shared/src/jones/workMode.test.ts packages/shared/src/serverSettings.test.ts"
+      ]
     }
   ]
 }

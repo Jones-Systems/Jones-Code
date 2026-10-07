@@ -52,6 +52,11 @@ import {
   type ProviderAdapterV2RuntimePolicy,
   type ProviderAdapterV2SessionRuntime,
   type ProviderAdapterV2Shape,
+  type ProviderAdapterV2OpenSessionInput,
+  type ProviderRuntimeLifecycle,
+  unobservedRuntimeIdentity,
+  requestedRuntimeIdentity,
+  runtimeBinding,
 } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
@@ -289,10 +294,7 @@ function makeProviderAdapter(
     readonly mcpConfigs?: Ref.Ref<
       ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
     >;
-    readonly beforeOpen?: (input: {
-      readonly providerSessionId: ProviderSessionId;
-      readonly initialProviderItemIdentityVersion?: 2;
-    }) => Effect.Effect<void>;
+    readonly beforeOpen?: (input: ProviderAdapterV2OpenSessionInput) => Effect.Effect<void>;
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
     readonly hangSessionScopeClose?: boolean;
     readonly beforeUnload?: Effect.Effect<void>;
@@ -403,10 +405,7 @@ function makeTestLayer(input: {
   readonly mcpConfigs?: Ref.Ref<
     ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
   >;
-  readonly beforeOpen?: (input: {
-    readonly providerSessionId: ProviderSessionId;
-    readonly initialProviderItemIdentityVersion?: 2;
-  }) => Effect.Effect<void>;
+  readonly beforeOpen?: (input: ProviderAdapterV2OpenSessionInput) => Effect.Effect<void>;
   readonly failReleaseEventWrites?: boolean;
   readonly flakyReleaseWrites?: FlakyReleaseWrites;
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
@@ -452,6 +451,7 @@ function makeTestLayer(input: {
     IdAllocator.layer,
     TestMcpRegistryLayer,
     ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
+    providerEventIngestorTestLayer,
     ProviderSessionManager.layerWithOptions({
       idleTimeoutMs: input.idleTimeoutMs,
       ...(input.maxIdlePinMs === undefined ? {} : { maxIdlePinMs: input.maxIdlePinMs }),
@@ -3707,4 +3707,348 @@ it.effect(
       });
       assert.isFalse(denied?.capabilities?.has("device"));
     }),
+);
+
+const runtimeBoundaryScenarios = [
+  { operation: "recovery", outcome: "success" },
+  { operation: "recovery", outcome: "failure" },
+  { operation: "recovery", outcome: "interruption" },
+  { operation: "rollback", outcome: "success" },
+  { operation: "rollback", outcome: "failure" },
+  { operation: "rollback", outcome: "interruption" },
+  { operation: "managed rotation", outcome: "success" },
+  { operation: "managed rotation", outcome: "failure" },
+  { operation: "managed rotation", outcome: "interruption" },
+] as const;
+
+it.effect.each(runtimeBoundaryScenarios)(
+  "publishes a new generation before buffered observations for $operation $outcome",
+  ({ operation, outcome }) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const controller = yield* Ref.make<ProviderRuntimeLifecycle | undefined>(undefined);
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const events = yield* EventStore.EventStoreV2;
+        const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread-runtime-${operation}-${outcome}`);
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const lifecycle = yield* Ref.get(controller);
+        assert.isDefined(lifecycle);
+        if (lifecycle === undefined)
+          return yield* Effect.die(new Error("missing launch lifecycle"));
+        const row = makeProviderThread({ idAllocator: ids, threadId, providerSessionId, now });
+        const requested = requestedRuntimeIdentity(modelSelection, CODEX_DRIVER);
+        const original = yield* lifecycle.reserve(threadId);
+        const originalObserved = {
+          ...unobservedRuntimeIdentity(),
+          model: {
+            status: "observed" as const,
+            value: "original-native",
+            sourceEvent: "thread/start",
+          },
+        };
+        const originalRow = yield* lifecycle.bind({
+          providerThread: row,
+          runtimeGeneration: original,
+          requested,
+          observed: originalObserved,
+        });
+        const candidate = yield* lifecycle.reserve(threadId);
+        assert.notEqual(candidate, original);
+        assert.equal(
+          (yield* store.getThreadProjection(threadId)).providerThreads[0]?.runtimeIdentity
+            ?.runtimeGeneration,
+          original,
+          "reserving before launch must not publish an unconfirmed generation",
+        );
+        const candidateObserved = {
+          ...unobservedRuntimeIdentity(),
+          model: {
+            status: "observed" as const,
+            value: "replacement-native",
+            sourceEvent: "thread/resume",
+          },
+        };
+        if (outcome === "success") {
+          yield* lifecycle.bind({
+            providerThread: originalRow,
+            runtimeGeneration: candidate,
+            requested,
+            observed: candidateObserved,
+          });
+          const replay = yield* events.read({ threadId }).pipe(Stream.runCollect);
+          const writes = replay.flatMap((item) =>
+            item.event.type === "provider-thread.updated" ? [item.event.payload] : [],
+          );
+          const boundaryIndex = writes.findIndex(
+            (item) => item.runtimeIdentity?.runtimeGeneration === candidate,
+          );
+          assert.isAtLeast(boundaryIndex, 0);
+          assert.deepEqual(
+            writes[boundaryIndex]?.runtimeIdentity?.observed,
+            unobservedRuntimeIdentity(),
+          );
+          assert.deepEqual(writes[boundaryIndex + 1]?.runtimeIdentity?.observed, candidateObserved);
+          const stale = yield* ingestor.ingestNormalized({
+            providerSessionId,
+            providerInstanceId: modelSelection.instanceId,
+            threadId,
+            event: {
+              type: "runtime_identity.observed",
+              driver: CODEX_DRIVER,
+              binding: {
+                threadId,
+                providerThreadId: row.id,
+                providerSessionId,
+                providerInstanceId: modelSelection.instanceId,
+                driver: CODEX_DRIVER,
+                nativeThreadId: "native-thread",
+                runtimeGeneration: original,
+              },
+              requested,
+              observed: originalObserved,
+            },
+          });
+          assert.deepEqual(stale, []);
+          yield* lifecycle.abandon(original);
+          assert.equal(
+            (yield* store.getThreadProjection(threadId)).providerThreads[0]?.runtimeIdentity
+              ?.runtimeGeneration,
+            candidate,
+            "closing the old issuer cannot invalidate the replacement",
+          );
+        } else {
+          if (outcome === "interruption") {
+            const started = yield* Deferred.make<void>();
+            const fiber = yield* Effect.gen(function* () {
+              yield* Deferred.succeed(started, undefined);
+              return yield* Effect.never;
+            }).pipe(
+              Effect.ensuring(lifecycle.abandon(candidate).pipe(Effect.orDie)),
+              Effect.forkScoped,
+            );
+            yield* Deferred.await(started);
+            yield* Fiber.interrupt(fiber);
+          } else yield* lifecycle.abandon(candidate);
+          assert.equal(
+            (yield* store.getThreadProjection(threadId)).providerThreads[0]?.runtimeIdentity
+              ?.runtimeGeneration,
+            original,
+          );
+          assert.deepEqual(
+            (yield* store.getThreadProjection(threadId)).providerThreads[0]?.runtimeIdentity
+              ?.observed,
+            originalObserved,
+          );
+          const failed = yield* lifecycle
+            .bind({
+              providerThread: originalRow,
+              runtimeGeneration: candidate,
+              requested,
+              observed: candidateObserved,
+            })
+            .pipe(Effect.result);
+          assert.equal(
+            failed._tag,
+            "Failure",
+            "an abandoned candidate cannot later become current",
+          );
+        }
+      }).pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: 60_000,
+            beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect("keeps two native threads' requested and observed models separate in one process", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const controller = yield* Ref.make<ProviderRuntimeLifecycle | undefined>(undefined);
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const now = yield* DateTime.now;
+      const firstId = ThreadId.make("runtime-shared-first");
+      const secondId = ThreadId.make("runtime-shared-second");
+      const sessionId = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: firstId,
+      });
+      yield* sink.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator: ids, threadId: firstId, now }),
+          yield* makeThreadCreatedEvent({ idAllocator: ids, threadId: secondId, now }),
+        ],
+      });
+      yield* manager.open({
+        threadId: firstId,
+        providerSessionId: sessionId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const lifecycle = yield* Ref.get(controller);
+      if (lifecycle === undefined) return yield* Effect.die(new Error("missing launch lifecycle"));
+      const generation = yield* lifecycle.reserve(firstId);
+      const first = makeProviderThread({
+        idAllocator: ids,
+        threadId: firstId,
+        providerSessionId: sessionId,
+        now,
+      });
+      const second = {
+        ...makeProviderThread({
+          idAllocator: ids,
+          threadId: secondId,
+          providerSessionId: sessionId,
+          now,
+        }),
+        id: ids.derive.providerThread({ driver: CODEX_DRIVER, nativeThreadId: "native-second" }),
+        nativeThreadRef: {
+          driver: CODEX_DRIVER,
+          nativeId: "native-second",
+          strength: "strong" as const,
+        },
+      };
+      const secondSelection = { ...modelSelection, model: "requested-second" };
+      const firstBound = yield* lifecycle.bind({
+        providerThread: first,
+        runtimeGeneration: generation,
+        requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+        observed: {
+          ...unobservedRuntimeIdentity(),
+          model: { status: "observed", value: "native-first", sourceEvent: "thread/start" },
+        },
+      });
+      yield* lifecycle.bind({
+        providerThread: second,
+        runtimeGeneration: generation,
+        requested: requestedRuntimeIdentity(secondSelection, CODEX_DRIVER),
+        observed: {
+          ...unobservedRuntimeIdentity(),
+          model: { status: "observed", value: "native-second", sourceEvent: "thread/start" },
+        },
+      });
+      assert.equal(
+        (yield* store.getThreadProjection(firstId)).providerThreads[0]?.runtimeIdentity?.requested
+          .model,
+        modelSelection.model,
+      );
+      assert.deepEqual(
+        (yield* store.getThreadProjection(secondId)).providerThreads[0]?.runtimeIdentity?.observed
+          .model,
+        { status: "observed", value: "native-second", sourceEvent: "thread/start" },
+      );
+      const changed = yield* lifecycle.bind({
+        providerThread: firstBound,
+        runtimeGeneration: generation,
+        requested: requestedRuntimeIdentity(
+          {
+            ...modelSelection,
+            model: "changed",
+            options: [{ id: "serviceTier", value: "priority" }],
+          },
+          CODEX_DRIVER,
+        ),
+        observed: unobservedRuntimeIdentity(),
+      });
+      assert.equal(changed.runtimeIdentity?.runtimeGeneration, generation);
+      assert.equal(changed.runtimeIdentity?.requested.model, "changed");
+      assert.deepEqual(changed.runtimeIdentity?.observed, unobservedRuntimeIdentity());
+      assert.deepEqual(
+        (yield* store.getThreadProjection(secondId)).providerThreads[0]?.runtimeIdentity?.observed
+          .model,
+        { status: "observed", value: "native-second", sourceEvent: "thread/start" },
+      );
+    }).pipe(
+      Effect.provide(
+        makeTestLayer({
+          state,
+          idleTimeoutMs: 60_000,
+          beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle),
+        }),
+      ),
+    );
+  }),
+);
+
+it.effect("refuses a missing native ID before committing a runtime boundary", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const controller = yield* Ref.make<ProviderRuntimeLifecycle | undefined>(undefined);
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const events = yield* EventStore.EventStoreV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("runtime-missing-native-id");
+      const providerSessionId = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* sink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+      });
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+      const lifecycle = yield* Ref.get(controller);
+      if (lifecycle === undefined) return yield* Effect.die(new Error("missing launch lifecycle"));
+      const row = makeProviderThread({ idAllocator: ids, threadId, providerSessionId, now });
+      const requested = requestedRuntimeIdentity(modelSelection, CODEX_DRIVER);
+      const originalGeneration = yield* lifecycle.reserve(threadId);
+      const current = yield* lifecycle.bind({
+        providerThread: row,
+        runtimeGeneration: originalGeneration,
+        requested,
+        observed: unobservedRuntimeIdentity(),
+      });
+      assert.equal(runtimeBinding(current, originalGeneration)?.nativeThreadId, "native-thread");
+      const candidate = yield* lifecycle.reserve(threadId);
+      const missingNativeId = {
+        ...current,
+        nativeThreadRef: { driver: CODEX_DRIVER, nativeId: null, strength: "strong" as const },
+      };
+      assert.isUndefined(runtimeBinding(missingNativeId, candidate));
+      const before = yield* events.read({ threadId }).pipe(Stream.runCollect);
+      const failure = yield* lifecycle
+        .bind({
+          providerThread: missingNativeId,
+          runtimeGeneration: candidate,
+          requested,
+          observed: unobservedRuntimeIdentity(),
+        })
+        .pipe(Effect.flip);
+      assert.equal(failure._tag, "ProviderRuntimeBindingError");
+      assert.deepEqual((yield* store.getThreadProjection(threadId)).providerThreads, [current]);
+      assert.deepEqual(yield* events.read({ threadId }).pipe(Stream.runCollect), before);
+    }).pipe(
+      Effect.provide(
+        makeTestLayer({
+          state,
+          idleTimeoutMs: 60_000,
+          beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle),
+        }),
+      ),
+    );
+  }),
 );

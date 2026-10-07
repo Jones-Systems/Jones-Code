@@ -1,12 +1,4 @@
 import {
-  ThreadRegistryComposedSnapshot,
-  ThreadRegistryWorkstreams,
-  ThreadRegistryEvents,
-  ThreadRegistryAssociationPayload,
-  ThreadRegistryLabelPayload,
-  ThreadRegistryMutationReceipt,
-} from "../threadRegistry.ts";
-import {
   VoiceReviewRecentList,
   VoiceReviewDiagnostics,
   VoiceReviewDraft,
@@ -17,6 +9,14 @@ import {
   VoiceReviewEditSavePayload,
   VoiceReviewEditCancelPayload,
 } from "../voiceReview.ts";
+import {
+  ThreadRegistryComposedSnapshot,
+  ThreadRegistryWorkstreams,
+  ThreadRegistryEvents,
+  ThreadRegistryAssociationPayload,
+  ThreadRegistryLabelPayload,
+  ThreadRegistryMutationReceipt,
+} from "../threadRegistry.ts";
 import * as Schema from "effect/Schema";
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup";
@@ -30,6 +30,12 @@ import {
   LibraryReplySchema,
   LibraryRequestSchema,
 } from "../conversationLibrary.ts";
+import {
+  WorkstreamAppearanceRead,
+  WorkstreamAppearanceWrite,
+  WorkstreamAppearanceResult,
+  WorkstreamAppearance,
+} from "./workstreamAppearance.ts";
 
 const EnvironmentConversationLibraryInvalidError = Schema.Struct({
   kind: Schema.Literal("error"),
@@ -289,9 +295,28 @@ export const makeJonesHttpGroups = ({
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+  class EnvironmentWorkstreamAppearanceHttpApi extends HttpApiGroup.make("workstreams")
+    .add(
+      HttpApiEndpoint.post("appearanceRead", "/api/workstreams/appearance/read", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamAppearanceRead,
+        success: WorkstreamAppearanceResult,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("appearanceSave", "/api/workstreams/appearance/write", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamAppearanceWrite,
+        success: WorkstreamAppearance,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    ) {}
+
   return {
     EnvironmentVoiceReviewHttpApi,
     EnvironmentHostStatusHttpApi,
     EnvironmentConversationLibraryHttpApi,
+    EnvironmentWorkstreamAppearanceHttpApi,
   };
 };

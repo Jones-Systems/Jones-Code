@@ -1,9 +1,15 @@
+import type { ProviderGoalReadResult } from "../provider/providerGoal.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   ChatAttachment,
   CheckpointId,
   MessageId,
   ModelSelection,
+  ObservedRuntimeIdentity,
+  ProviderRuntimeBinding,
+  ProviderRuntimeEvidenceCapture,
+  RequestedRuntimeIdentity,
+  RuntimeIdentityAttestation,
   NodeId,
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
@@ -77,55 +83,72 @@ export type ProviderAdapterV2SessionStatus = typeof ProviderAdapterV2SessionStat
 
 export const ProviderAdapterV2Event = Schema.Union([
   Schema.Struct({
+    type: Schema.Literal("runtime_identity.observed"),
+    driver: ProviderDriverKind,
+    binding: ProviderRuntimeBinding,
+    requested: RequestedRuntimeIdentity,
+    observed: ObservedRuntimeIdentity,
+  }),
+  Schema.Struct({
     type: Schema.Literal("app_thread.created"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     appThread: OrchestrationV2AppThread,
   }),
   Schema.Struct({
     type: Schema.Literal("provider_session.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerSession: OrchestrationV2ProviderSession,
   }),
   Schema.Struct({
     type: Schema.Literal("provider_thread.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThread: OrchestrationV2ProviderThread,
   }),
   Schema.Struct({
     type: Schema.Literal("provider_turn.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: Schema.optional(ThreadId),
     providerTurn: OrchestrationV2ProviderTurn,
   }),
   Schema.Struct({
     type: Schema.Literal("node.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     node: OrchestrationV2ExecutionNode,
   }),
   Schema.Struct({
     type: Schema.Literal("subagent.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     subagent: OrchestrationV2Subagent,
   }),
   Schema.Struct({
     type: Schema.Literal("message.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     message: OrchestrationV2ConversationMessage,
   }),
   Schema.Struct({
     type: Schema.Literal("turn_item.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     turnItem: OrchestrationV2TurnItem,
   }),
   Schema.Struct({
     type: Schema.Literal("runtime_request.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: Schema.optional(ThreadId),
     runtimeRequest: OrchestrationV2RuntimeRequest,
   }),
   Schema.Struct({
     type: Schema.Literal("plan.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     plan: OrchestrationV2PlanArtifact,
   }),
   Schema.Struct({
@@ -135,6 +158,7 @@ export const ProviderAdapterV2Event = Schema.Union([
       Schema.Literals(["provider_result", "attributed_abort", "local_failure"]),
     ),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     runOrdinal: PositiveInt,
@@ -149,6 +173,7 @@ export const ProviderAdapterV2Event = Schema.Union([
       Schema.Literals(["provider_result", "attributed_abort", "local_failure"]),
     ),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     runOrdinal: PositiveInt,
@@ -362,7 +387,22 @@ export class ProviderAdapterProtocolError extends Schema.TaggedError<ProviderAda
   }
 }
 
+export class ProviderRuntimeBindingError extends Schema.TaggedError<ProviderRuntimeBindingError>()(
+  "ProviderRuntimeBindingError",
+  { driver: ProviderDriverKind, detail: Schema.String, cause: Schema.optional(Schema.Defect()) },
+) {}
+
+export function hasUnknownRuntimeBinding(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth += 1) {
+    if (Reflect.get(current, "_tag") === "ProviderRuntimeBindingError") return true;
+    current = Reflect.get(current, "cause");
+  }
+  return false;
+}
+
 export const ProviderAdapterV2Error = Schema.Union([
+  ProviderRuntimeBindingError,
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
   ProviderAdapterCloseSessionError,
@@ -381,7 +421,92 @@ export const ProviderAdapterV2Error = Schema.Union([
 ]);
 export type ProviderAdapterV2Error = typeof ProviderAdapterV2Error.Type;
 
+export interface ProviderRuntimeLifecycle {
+  readonly reserve: (threadId: ThreadId) => Effect.Effect<string, ProviderAdapterV2Error>;
+  readonly bind: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly runtimeGeneration: string;
+    readonly requested: RequestedRuntimeIdentity;
+    readonly observed: ObservedRuntimeIdentity;
+  }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
+  readonly abandon: (runtimeGeneration: string) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly invalidate: (
+    binding: ProviderRuntimeBinding,
+  ) => Effect.Effect<void, ProviderAdapterV2Error>;
+}
+
+export function requestedRuntimeIdentity(
+  selection: ModelSelection,
+  driver: ProviderDriverKind,
+): RequestedRuntimeIdentity {
+  const tier = selection.options?.find((option) => option.id === "serviceTier")?.value;
+  return {
+    providerInstanceId: selection.instanceId,
+    providerDriver: driver,
+    model: selection.model,
+    serviceTier: typeof tier === "string" ? tier : null,
+  };
+}
+
+export function unobservedRuntimeIdentity(): ObservedRuntimeIdentity {
+  return {
+    backend: { status: "unknown" },
+    model: { status: "unknown" },
+    account: {
+      status: "unavailable",
+      reason: "No supported provider event safely binds an account to this runtime.",
+    },
+    serviceTier: { status: "unknown" },
+  };
+}
+
+export function runtimeBinding(
+  thread: OrchestrationV2ProviderThread,
+  runtimeGeneration: string,
+): ProviderRuntimeBinding | undefined {
+  if (
+    thread.appThreadId === null ||
+    thread.providerSessionId === null ||
+    thread.nativeThreadRef === null ||
+    thread.nativeThreadRef.nativeId === null
+  )
+    return undefined;
+  return {
+    threadId: thread.appThreadId,
+    providerThreadId: thread.id,
+    providerSessionId: thread.providerSessionId,
+    providerInstanceId: thread.providerInstanceId,
+    driver: thread.driver,
+    nativeThreadId: thread.nativeThreadRef.nativeId,
+    runtimeGeneration,
+  };
+}
+
+export function identityForRequest(
+  requested: RequestedRuntimeIdentity,
+  previous?: RuntimeIdentityAttestation,
+): RuntimeIdentityAttestation {
+  const sameOwner =
+    previous?.requested.providerInstanceId === requested.providerInstanceId &&
+    previous.requested.providerDriver === requested.providerDriver;
+  const sameRequest =
+    sameOwner &&
+    previous.requested.model === requested.model &&
+    previous.requested.serviceTier === requested.serviceTier;
+  return {
+    ...(sameOwner && previous.runtimeGeneration !== undefined
+      ? { runtimeGeneration: previous.runtimeGeneration }
+      : {}),
+    ...(sameOwner && previous.evidenceRevision !== undefined
+      ? { evidenceRevision: previous.evidenceRevision }
+      : {}),
+    requested,
+    observed: sameRequest ? previous.observed : unobservedRuntimeIdentity(),
+  };
+}
+
 export interface ProviderAdapterV2OpenSessionInput {
+  readonly runtimeLifecycle?: ProviderRuntimeLifecycle;
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
   readonly modelSelection: ModelSelection;
@@ -413,6 +538,8 @@ export interface ProviderAdapterV2TurnInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly message: ProviderAdapterV2TurnMessage;
   readonly modelSelection: ModelSelection;
+  /** Dispatch-only default; never changes durable requested model options. */
+  readonly configuredReasoningEffort?: string;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
 }
 
@@ -567,6 +694,9 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly readGoalState?: (
+    providerThread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<ProviderGoalReadResult>;
   readonly readThreadSnapshot: (
     input: ProviderAdapterV2ReadThreadSnapshotInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;

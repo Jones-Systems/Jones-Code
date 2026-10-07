@@ -8,6 +8,8 @@ import { EnvironmentAuthenticatedAuth, EnvironmentHttpApi } from "../environment
 describe("Jones environment HTTP registration", () => {
   it("preserves the environment group order", () => {
     expect(Object.keys(EnvironmentHttpApi.groups)).toEqual([
+      "providerQueue",
+      "queueDispatch",
       "voiceReview",
       "hostStatus",
       "metadata",
@@ -27,6 +29,7 @@ describe("Jones environment HTTP registration", () => {
       ...Object.values(groups.voiceReview.endpoints),
       ...Object.values(groups.hostStatus.endpoints),
       ...Object.values(groups.conversationLibrary.endpoints),
+      ...Object.values(groups.workstreams.endpoints),
     ];
     expect(routes.map(({ identifier, method, path }) => [identifier, method, path])).toEqual([
       ["recent", "GET", "/api/voice-review/recent"],
@@ -47,6 +50,19 @@ describe("Jones environment HTTP registration", () => {
       ["delete", "POST", "/api/voice-review/drafts/:id/delete"],
       ["snapshot", "GET", "/api/host-status"],
       ["conversationLibrary", "POST", "/api/conversation-library"],
+      ["appearanceRead", "POST", "/api/workstreams/appearance/read"],
+      ["appearanceSave", "POST", "/api/workstreams/appearance/write"],
+      ["threadPlacements", "POST", "/api/workstreams/thread-placements"],
+      ["list", "GET", "/api/workstreams"],
+      ["references", "GET", "/api/workstreams/references"],
+      ["reference", "GET", "/api/workstreams/references/:nativeReferenceId"],
+      ["detail", "GET", "/api/workstreams/:workstreamId"],
+      ["memberships", "GET", "/api/workstreams/:workstreamId/memberships"],
+      ["declarations", "GET", "/api/workstreams/:workstreamId/declarations"],
+      ["edges", "GET", "/api/workstreams/:workstreamId/edges"],
+      ["history", "GET", "/api/workstreams/:workstreamId/history"],
+      ["command", "GET", "/api/workstreams/commands/:commandId"],
+      ["submit", "POST", "/api/workstreams/commands"],
     ]);
     const bearerHeaders = Schema.Struct({
       authorization: Schema.optionalKey(Schema.String),

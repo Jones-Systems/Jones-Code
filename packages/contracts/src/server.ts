@@ -1,3 +1,4 @@
+import { QualifiedQuota } from "./providerQueue.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { AcpRegistryUrlAuthAction } from "./acpRegistry.ts";
@@ -276,6 +277,7 @@ export const ServerProvider = Schema.Struct({
   workspaceSnapshots: Schema.optionalKey(Schema.Array(ServerProviderWorkspaceSnapshot)),
   // Absent when the driver has no notion of subscription usage.
   usageLimits: Schema.optional(ServerProviderUsageLimits),
+  qualifiedQuota: Schema.optionalKey(QualifiedQuota),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   compatibilityAdvisory: Schema.optionalKey(ServerProviderCompatibilityAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),

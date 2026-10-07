@@ -117,10 +117,6 @@
   "tombstones": [],
   "allowedImports": [
     {
-      "from": "packages/contracts/src/environmentHttp.ts",
-      "to": "packages/contracts/src/jones/workstreamAppearance.ts"
-    },
-    {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/workstreamAppearance.ts"
     },
