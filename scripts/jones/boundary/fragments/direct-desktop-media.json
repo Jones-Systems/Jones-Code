@@ -1,0 +1,104 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "direct-desktop-media",
+  "jonesOwnedPaths": [
+    "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts",
+    "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.ts",
+    "apps/desktop/src/jones/deviceMedia/ipcMethods.ts",
+    "apps/server/src/jones/device/DeviceDirectAdmission.test.ts",
+    "apps/server/src/jones/device/DeviceDirectAdmission.ts",
+    "apps/server/src/jones/device/DeviceDirectGrants.test.ts",
+    "apps/server/src/jones/device/DeviceDirectGrants.ts",
+    "apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts",
+    "apps/server/src/jones/device/directAccess.ts",
+    "apps/server/src/jones/device/directDeviceGateway.test.ts",
+    "apps/server/src/jones/device/directDeviceGateway.ts",
+    "apps/server/src/jones/device/directLifecycle.ts",
+    "apps/server/src/jones/device/directMediaPolicy.ts",
+    "apps/web/src/jones/device/device.test.tsx",
+    "apps/web/src/jones/device/useDeviceStreamRoute.ts",
+    "packages/client-runtime/src/jones/device/mediaRoute.test.ts",
+    "packages/client-runtime/src/jones/device/mediaRoute.ts"
+  ],
+  "hookPaths": [
+    "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
+    "apps/desktop/src/main.ts",
+    "apps/server/src/device/DeviceHubProxy.test.ts",
+    "apps/server/src/device/DeviceHubProxy.ts",
+    "apps/server/src/device/SshDeviceHost.test.ts",
+    "apps/server/src/device/SshDeviceHost.ts",
+    "apps/server/src/device/sshDeviceScript.ts",
+    "apps/web/src/components/device/DeviceStreamView.tsx",
+    "packages/client-runtime/src/device/hubAccess.ts",
+    "packages/contracts/src/device.test.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/ipc.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
+      "to": "apps/desktop/src/jones/deviceMedia/ipcMethods.ts"
+    },
+    {
+      "from": "apps/desktop/src/main.ts",
+      "to": "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.ts"
+    },
+    {
+      "from": "apps/server/src/device/DeviceHubProxy.test.ts",
+      "to": "apps/server/src/jones/device/directMediaPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/device/DeviceHubProxy.test.ts",
+      "to": "apps/server/src/jones/device/DeviceDirectGrants.ts"
+    },
+    {
+      "from": "apps/server/src/device/DeviceHubProxy.ts",
+      "to": "apps/server/src/jones/device/directAccess.ts"
+    },
+    {
+      "from": "apps/server/src/device/SshDeviceHost.test.ts",
+      "to": "apps/server/src/jones/device/DeviceDirectGrants.ts"
+    },
+    {
+      "from": "apps/server/src/device/SshDeviceHost.ts",
+      "to": "apps/server/src/jones/device/DeviceDirectGrants.ts"
+    },
+    {
+      "from": "apps/server/src/device/SshDeviceHost.ts",
+      "to": "apps/server/src/jones/device/directLifecycle.ts"
+    },
+    {
+      "from": "apps/server/src/device/SshDeviceHost.ts",
+      "to": "apps/server/src/jones/device/DeviceDirectAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/device/sshDeviceScript.ts",
+      "to": "apps/server/src/jones/device/directDeviceGateway.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/device/DeviceDirectGrants.ts"
+    },
+    {
+      "from": "apps/web/src/components/device/DeviceStreamView.tsx",
+      "to": "apps/web/src/jones/device/useDeviceStreamRoute.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/device/hubAccess.ts",
+      "to": "packages/client-runtime/src/jones/device/mediaRoute.ts"
+    },
+    {
+      "from": "packages/contracts/src/device.test.ts",
+      "to": "packages/contracts/src/jones/deviceMedia.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/deviceMedia.ts"
+    },
+    {
+      "from": "packages/contracts/src/ipc.ts",
+      "to": "packages/contracts/src/jones/deviceMedia.ts"
+    }
+  ]
+}

@@ -66,7 +66,7 @@
     "apps/desktop/src/app/DesktopUserDataOverride.test.ts": "jones-owned",
     "apps/desktop/src/app/DesktopUserDataOverride.ts": "jones-owned",
     "apps/desktop/src/boot.ts": "accepted-shared",
-    "apps/desktop/src/ipc/DesktopIpcHandlers.ts": "accepted-shared",
+    "apps/desktop/src/ipc/DesktopIpcHandlers.ts": "hook",
     "apps/desktop/src/ipc/channels.ts": "accepted-shared",
     "apps/desktop/src/ipc/methods/window.test.ts": "jones-tests-in-upstream",
     "apps/desktop/src/ipc/methods/window.ts": "accepted-shared",
@@ -470,7 +470,7 @@
     "apps/web/src/components/voiceReview/useVoiceReview.ts": "jones-owned",
     "apps/web/src/components/voiceReview/voiceReviewActions.test.ts": "jones-owned",
     "apps/web/src/components/voiceReview/voiceReviewActions.ts": "jones-owned",
-    "apps/web/src/components/workQueue/WorkQueuePage.test.tsx": "jones-owned",
+    "apps/web/src/components/workQueue/WorkQueuePage.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/workQueue/WorkQueuePage.tsx": "jones-owned",
     "apps/web/src/components/workQueue/WorkQueuePanel.tsx": "jones-owned",
     "apps/web/src/components/workQueue/WorkQueuePreview.tsx": "jones-owned",
@@ -498,12 +498,6 @@
     "apps/web/src/hostStatus.test.ts": "jones-owned",
     "apps/web/src/hostStatus.ts": "jones-owned",
     "apps/web/src/index.css": "accepted-shared",
-    "apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts": "jones-tests-in-upstream",
-    "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx": "jones-owned",
-    "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx": "jones-tests-in-upstream",
-    "apps/web/src/jones/composer/ReasoningEffortShortcuts.tsx": "jones-owned",
-    "apps/web/src/jones/composer/composerShortcutRails.test.ts": "jones-tests-in-upstream",
-    "apps/web/src/jones/composer/composerShortcutRails.ts": "jones-owned",
     "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/jones/workMode/SidebarWorkModePill.tsx": "jones-owned",
     "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx": "jones-tests-in-upstream",
@@ -603,7 +597,7 @@
     "packages/contracts/src/environmentHttp.ts": "hook",
     "packages/contracts/src/hostStatus.ts": "jones-owned",
     "packages/contracts/src/index.ts": "hook",
-    "packages/contracts/src/ipc.ts": "accepted-shared",
+    "packages/contracts/src/ipc.ts": "hook",
     "packages/contracts/src/jones/workMode.test.ts": "jones-tests-in-upstream",
     "packages/contracts/src/jones/workMode.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamAppearance.ts": "jones-owned",
@@ -679,7 +673,83 @@
     "scripts/lib/brand-assets.ts": "accepted-shared",
     "scripts/release-smoke.ts": "accepted-shared",
     "scripts/stamp-jones-build.test.ts": "jones-owned",
-    "scripts/stamp-jones-build.ts": "jones-owned"
+    "scripts/stamp-jones-build.ts": "jones-owned",
+    "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts": "jones-owned",
+    "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/mcp/organizationMetadata/handlers.ts": "jones-owned",
+    "apps/server/src/jones/mcp/organizationMetadata/tools.ts": "jones-owned",
+    "apps/server/src/mcp/McpHttpServer.ts": "hook",
+    "packages/contracts/src/jones/organizationMetadata.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/jones/organizationMetadata.ts": "jones-owned",
+    "apps/server/src/jones/http/registration.ts": "jones-owned",
+    "apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.ts": "jones-owned",
+    "apps/server/src/jones/workQueueMetadata/config.ts": "jones-owned",
+    "apps/server/src/jones/workQueueMetadata/http.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/workQueueMetadata/http.ts": "jones-owned",
+    "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.tsx": "jones-owned",
+    "apps/web/src/jones/workQueue/useWorkQueueMetadata.ts": "jones-owned",
+    "packages/client-runtime/src/jones/workQueueMetadata.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/jones/workQueueMetadata.ts": "jones-owned",
+    "packages/contracts/src/jones/environmentHttpGroups.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/jones/environmentHttpGroups.ts": "jones-owned",
+    "packages/contracts/src/jones/fixtures/work_queue_metadata_v1.json.fixture": "jones-owned",
+    "packages/contracts/src/jones/workQueueMetadata.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/jones/workQueueMetadata.ts": "jones-owned",
+    "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts": "jones-tests-in-upstream",
+    "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.ts": "jones-owned",
+    "apps/desktop/src/jones/deviceMedia/ipcMethods.ts": "jones-owned",
+    "apps/desktop/src/main.ts": "hook",
+    "apps/server/src/device/DeviceHost.ts": "accepted-shared",
+    "apps/server/src/device/DeviceHubProxy.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/device/DeviceHubProxy.ts": "hook",
+    "apps/server/src/device/DeviceService.ts": "accepted-shared",
+    "apps/server/src/device/SshDeviceHost.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/device/SshDeviceHost.ts": "hook",
+    "apps/server/src/device/sshDeviceScript.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/device/sshDeviceScript.ts": "hook",
+    "apps/server/src/jones/device/DeviceDirectAdmission.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/device/DeviceDirectAdmission.ts": "jones-owned",
+    "apps/server/src/jones/device/DeviceDirectGrants.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/device/DeviceDirectGrants.ts": "jones-owned",
+    "apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/device/directAccess.ts": "jones-owned",
+    "apps/server/src/jones/device/directDeviceGateway.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/device/directDeviceGateway.ts": "jones-owned",
+    "apps/server/src/jones/device/directLifecycle.ts": "jones-owned",
+    "apps/server/src/jones/device/directMediaPolicy.ts": "jones-owned",
+    "apps/web/src/components/device/DeviceStreamView.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/device/DeviceStreamView.tsx": "hook",
+    "apps/web/src/components/settings/DeviceHostEditor.tsx": "accepted-shared",
+    "apps/web/src/components/settings/deviceHostConnectionChecks.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/settings/deviceHostConnectionChecks.ts": "accepted-shared",
+    "apps/web/src/jones/device/device.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/jones/device/useDeviceStreamRoute.ts": "jones-owned",
+    "docs/internals/devices.md": "accepted-shared",
+    "docs/user/devices.md": "accepted-shared",
+    "packages/client-runtime/src/device/hubAccess.ts": "hook",
+    "packages/client-runtime/src/device/stream.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/device/stream.ts": "accepted-shared",
+    "packages/client-runtime/src/jones/device/mediaRoute.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/jones/device/mediaRoute.ts": "jones-owned",
+    "packages/contracts/src/device.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/device.ts": "accepted-shared",
+    "packages/contracts/src/jones/deviceMedia.ts": "jones-owned",
+    "apps/server/src/jones/processPlacement/processPlacement.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/processPlacement/processPlacement.ts": "jones-owned",
+    "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/processPlacement/processPlacementBootstrap.ts": "jones-owned",
+    "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/processPlacement/processPlacementSpawner.ts": "jones-owned",
+    "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts": "jones-owned",
+    "apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx": "jones-owned",
+    "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/jones/composer/ReasoningEffortShortcuts.tsx": "jones-owned",
+    "apps/web/src/jones/composer/composerShortcutRails.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/jones/composer/composerShortcutRails.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -737,28 +807,8 @@
       "to": "apps/server/src/cli/workstream.ts"
     },
     {
-      "from": "apps/server/src/diagnostics/ProcessDiagnostics.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
       "to": "apps/server/src/provider/providerGoal.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
@@ -791,14 +841,6 @@
     {
       "from": "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
       "to": "apps/server/src/orchestration-v2/ServerUpdateContinuation.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
@@ -957,44 +999,12 @@
       "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
     },
     {
-      "from": "apps/server/src/provider/Drivers/CodexDriver.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
       "from": "apps/server/src/provider/Drivers/CodexDriver.ts",
       "to": "apps/server/src/provider/qualifiedQuota.ts"
     },
     {
       "from": "apps/server/src/provider/Layers/CodexProvider.ts",
       "to": "apps/server/src/provider/qualifiedQuota.ts"
-    },
-    {
-      "from": "apps/server/src/provider/Layers/ProviderInstanceRegistryHydration.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/provider/Layers/ProviderInstanceRegistryLive.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/provider/Layers/ProviderRegistry.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/resourceTelemetry/Model.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/resourceTelemetry/Model.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/resourceTelemetry/ResourceTelemetry.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
     },
     {
       "from": "apps/server/src/server.ts",
@@ -1019,10 +1029,6 @@
     {
       "from": "apps/server/src/server.ts",
       "to": "apps/server/src/provider/providerQueueHttp.ts"
-    },
-    {
-      "from": "apps/server/src/server.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
     },
     {
       "from": "apps/server/src/server.ts",

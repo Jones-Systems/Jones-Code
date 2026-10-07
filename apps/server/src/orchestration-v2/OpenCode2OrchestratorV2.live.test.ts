@@ -53,7 +53,7 @@ import * as AntigravityInstallation from "../provider/AntigravityInstallation.ts
 import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ModelManifest from "../provider/ModelManifest.ts";
-import * as ProcessAttribution from "../resourceTelemetry/ProcessAttribution.ts";
+import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import { ProviderInstanceRegistryHydrationLive } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as ProviderEventLoggers from "../provider/Layers/ProviderEventLoggers.ts";
 import * as OpenCode2Client from "../provider/opencode2/OpenCode2Client.ts";

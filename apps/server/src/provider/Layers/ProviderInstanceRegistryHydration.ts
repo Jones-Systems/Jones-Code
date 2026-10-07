@@ -52,7 +52,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import * as Settings from "../../serverSettings.ts";
-import type * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
+import type * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "../builtInDrivers.ts";
 import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistryMutator from "../Services/ProviderInstanceRegistryMutator.ts";

@@ -1,3 +1,5 @@
+import * as WorkQueueMetadataService from "../workQueueMetadata/WorkQueueMetadataService.ts";
+import { workQueueMetadataHttpApiLayer } from "../workQueueMetadata/http.ts";
 import * as Layer from "effect/Layer";
 import { conversationLibraryHttpApiLayer } from "../../conversations/http.ts";
 import * as HostStatus from "../../hostStatus/HostStatus.ts";
@@ -11,6 +13,9 @@ export { voiceReviewResponseHeadersLayer } from "../../voiceReview/http.ts";
 
 export const provideConversationAndVoiceReview = <A, E, R>(api: Layer.Layer<A, E, R>) =>
   api.pipe(
+    Layer.provide(
+      workQueueMetadataHttpApiLayer.pipe(Layer.provide(WorkQueueMetadataService.layer)),
+    ),
     Layer.provide(conversationLibraryHttpApiLayer),
     Layer.provide(
       voiceReviewHttpApiLayer.pipe(
