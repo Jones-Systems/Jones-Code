@@ -1787,12 +1787,21 @@ const make = Effect.gen(function* () {
         return {
           projectId: parent.thread.projectId,
           currentThreadId: scope.threadId,
-          threads: yield* Effect.forEach(page, (shell) => Effect.gen(function* () {
-            const item = listItemFromShell(shell);
-            if (!Object.hasOwn(threadManagement, "observeThreadActivity") || threadManagement.observeThreadActivity === undefined) return item;
-            const activityObservation = yield* threadManagement.observeThreadActivity(shell.id);
-            return { ...item, activityObservation };
-          }), { concurrency: 1 }),
+          threads: yield* Effect.forEach(
+            page,
+            (shell) =>
+              Effect.gen(function* () {
+                const item = listItemFromShell(shell);
+                if (
+                  !Object.hasOwn(threadManagement, "observeThreadActivity") ||
+                  threadManagement.observeThreadActivity === undefined
+                )
+                  return item;
+                const activityObservation = yield* threadManagement.observeThreadActivity(shell.id);
+                return { ...item, activityObservation };
+              }),
+            { concurrency: 1 },
+          ),
           nextCursor,
           total: filtered.length,
         } satisfies OrchestratorMcpThreadListResult;

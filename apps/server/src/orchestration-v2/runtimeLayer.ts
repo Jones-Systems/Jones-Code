@@ -236,7 +236,11 @@ const agentSessionImporterProvided = agentSessionImporterLayer.pipe(
 
 const threadManagementProvided = threadManagementServiceLayer.pipe(
   Layer.provide(
-    Layer.mergeAll(orchestratorProvided, legacyV1ThreadImporterProvided, providerSessionManagerProvided),
+    Layer.mergeAll(
+      orchestratorProvided,
+      legacyV1ThreadImporterProvided,
+      providerSessionManagerProvided,
+    ),
   ),
 );
 export const ProjectSetupScriptRunnerLayerLive = projectSetupScriptRunnerLayer.pipe(

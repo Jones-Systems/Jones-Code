@@ -8,14 +8,12 @@
     "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.test.ts"
   ],
   "hookPaths": [
-    "apps/server/src/orchestration-v2/ProviderAdapter.ts",
     "apps/server/src/orchestration-v2/ThreadManagementService.ts",
     "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
     "apps/server/src/mcp/OrchestratorMcpService.ts",
     "apps/server/src/mcp/OrchestratorMcpService.test.ts",
     "packages/contracts/src/orchestratorMcp.ts",
-    "packages/contracts/src/orchestratorMcp.test.ts",
-    "apps/server/src/orchestration-v2/runtimeLayer.ts"
+    "packages/contracts/src/orchestratorMcp.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [

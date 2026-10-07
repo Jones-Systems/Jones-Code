@@ -55,9 +55,7 @@ export function providerThreadForegroundActivity(
     thread.activityRunStatus === "preparing" ||
     thread.activityRunStatus === "starting" ||
     thread.activityRunStatus === "running";
-  return isApprovalRequestKind(
-    thread.pendingRuntimeRequest?.kind,
-  )
+  return isApprovalRequestKind(thread.pendingRuntimeRequest?.kind)
     ? "waiting_approval"
     : thread.pendingRuntimeRequest?.kind === "user_input"
       ? "waiting_input"
@@ -127,6 +125,8 @@ export function providerThreadActivityObservation(
         ? native.status
         : null,
     backgroundStatus: native.backgroundCoverage === "complete" ? "known" : "unknown",
-    ...(native.backgroundCoverage !== "complete" ? { reason: "native_background_coverage_incomplete" } : {}),
+    ...(native.backgroundCoverage !== "complete"
+      ? { reason: "native_background_coverage_incomplete" }
+      : {}),
   };
 }

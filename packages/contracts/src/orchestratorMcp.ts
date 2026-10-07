@@ -293,7 +293,9 @@ export const OrchestratorMcpThreadListInput = Schema.Struct({
 export type OrchestratorMcpThreadListInput = typeof OrchestratorMcpThreadListInput.Type;
 
 export const OrchestratorMcpThreadActivityObservation = Schema.Struct({
-  foreground: Schema.NullOr(Schema.Literals(["working", "waiting_approval", "waiting_input", "waiting_plan"])),
+  foreground: Schema.NullOr(
+    Schema.Literals(["working", "waiting_approval", "waiting_input", "waiting_plan"]),
+  ),
   background: Schema.NullOr(Schema.Literals(["working", "monitoring"])),
   backgroundStatus: Schema.Literals(["known", "unknown"]),
   reason: Schema.optional(Schema.String),

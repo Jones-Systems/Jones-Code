@@ -25,7 +25,9 @@ export function providerSessionBackgroundLiveness(input: {
   const items = input.turnItems.filter(
     (item) => item.threadId === input.threadId && item.providerThreadId === input.providerThreadId,
   );
-  const agentItems = new Set(items.filter((item) => item.type === "subagent").map((item) => item.id));
+  const agentItems = new Set(
+    items.filter((item) => item.type === "subagent").map((item) => item.id),
+  );
   const agents = input.subagents.filter((agent) => agent.threadId === input.threadId);
   const agentNodes = new Set(agents.map((agent) => agent.id));
   const tasks =

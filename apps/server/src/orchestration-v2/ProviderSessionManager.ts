@@ -1991,52 +1991,71 @@ export const layerWithOptions = (
       const equivalentBinding = Schema.toEquivalence(ProviderRuntimeBinding);
       const observeThreadActivity = Effect.fn("ProviderSessionManager.observeThreadActivity")(
         function* (threadId: ThreadId) {
-          const unavailable = (reason: string): RuntimeObservation.ProviderRuntimeObservation =>
-            ({ status: "unknown", reason });
+          const unavailable = (reason: string): RuntimeObservation.ProviderRuntimeObservation => ({
+            status: "unknown",
+            reason,
+          });
           const read = Effect.gen(function* () {
             const before = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
             const provider = before.providerThreads.find(
               (thread) => thread.id === before.thread.activeProviderThreadId,
             );
-            if (provider?.providerSessionId == null) return unavailable("native_binding_unavailable");
+            if (provider?.providerSessionId == null)
+              return unavailable("native_binding_unavailable");
             const key = sessionKey(provider.providerSessionId);
             const entry = (yield* Ref.get(sessions)).get(key);
             if (entry === undefined) return unavailable("runtime_not_resident");
             const runtime = entry.runtime;
-            if (!entry.attachedThreadIds.has(threadId) ||
-                runtime.providerSessionId !== provider.providerSessionId ||
-                runtime.instanceId !== provider.providerInstanceId || runtime.driver !== provider.driver)
+            if (
+              !entry.attachedThreadIds.has(threadId) ||
+              runtime.providerSessionId !== provider.providerSessionId ||
+              runtime.instanceId !== provider.providerInstanceId ||
+              runtime.driver !== provider.driver
+            )
               return unavailable("runtime_binding_changed");
             if (runtime.readThreadActivity === undefined)
               return unavailable("native_activity_unsupported");
             const generation = provider.runtimeIdentity?.runtimeGeneration;
-            const binding = generation === undefined ? undefined : runtimeBinding(provider, generation);
+            const binding =
+              generation === undefined ? undefined : runtimeBinding(provider, generation);
             if (binding === undefined || binding.threadId !== threadId)
               return unavailable("native_binding_unavailable");
             const loadedKey = entry.loadedProviderThreadKeyByThread.get(threadId);
             const sampledAt = yield* Clock.currentTimeMillis;
-            const observation = yield* runtime.readThreadActivity(provider).pipe(Effect.timeout("3 seconds"));
+            const observation = yield* runtime
+              .readThreadActivity(provider)
+              .pipe(Effect.timeout("3 seconds"));
             const after = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
             const current = after.providerThreads.find(
               (thread) => thread.id === after.thread.activeProviderThreadId,
             );
             const currentGeneration = current?.runtimeIdentity?.runtimeGeneration;
-            const currentBinding = current === undefined || currentGeneration === undefined
-              ? undefined : runtimeBinding(current, currentGeneration);
+            const currentBinding =
+              current === undefined || currentGeneration === undefined
+                ? undefined
+                : runtimeBinding(current, currentGeneration);
             const currentEntry = (yield* Ref.get(sessions)).get(key);
-            if (currentBinding === undefined || !equivalentBinding(binding, currentBinding) ||
-                currentEntry?.runtime !== runtime || !currentEntry.attachedThreadIds.has(threadId) ||
-                currentEntry.loadedProviderThreadKeyByThread.get(threadId) !== loadedKey ||
-                after.thread.archivedAt !== null || after.thread.deletedAt !== null)
+            if (
+              currentBinding === undefined ||
+              !equivalentBinding(binding, currentBinding) ||
+              currentEntry?.runtime !== runtime ||
+              !currentEntry.attachedThreadIds.has(threadId) ||
+              currentEntry.loadedProviderThreadKeyByThread.get(threadId) !== loadedKey ||
+              after.thread.archivedAt !== null ||
+              after.thread.deletedAt !== null
+            )
               return unavailable("runtime_binding_changed");
             if (observation.status === "unknown") return observation;
-            if (!equivalentBinding(binding, observation.binding)) return unavailable("runtime_binding_changed");
+            if (!equivalentBinding(binding, observation.binding))
+              return unavailable("runtime_binding_changed");
             const observedAt = Date.parse(observation.observedAt);
             if (!Number.isFinite(observedAt) || observedAt < sampledAt)
               return unavailable("native_activity_stale");
             return observation;
           });
-          return yield* read.pipe(Effect.catchCause(() => Effect.succeed(unavailable("native_activity_unavailable"))));
+          return yield* read.pipe(
+            Effect.catchCause(() => Effect.succeed(unavailable("native_activity_unavailable"))),
+          );
         },
       );
 
