@@ -434,7 +434,7 @@ const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
           if (intercept) intercepted = true;
           return (intercept ? beforeLock : Effect.void).pipe(
             Effect.andThen(withLock(id, effect)),
-            Effect.ensuring(id === threadId ? Deferred.succeed(reacted, undefined) : Effect.void),
+            Effect.ensuring(intercept ? Deferred.succeed(reacted, undefined) : Effect.void),
           );
         });
       const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observedLock);
