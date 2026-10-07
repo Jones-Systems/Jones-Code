@@ -225,6 +225,7 @@
     "apps/server/src/orchestration-v2/ThreadManagementService.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/ThreadMessageIntake.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/WireProjection.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/legacy/LegacyV1ThreadImporter.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/runtimeLayer.test.ts": "jones-tests-in-upstream",
