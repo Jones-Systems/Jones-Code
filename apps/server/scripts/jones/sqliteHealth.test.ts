@@ -442,8 +442,19 @@ describe("jones-sqlite-health — closed fixture integration", () => {
       profile: "health-offline-delete" as const,
       recipe: { kind: "coherent-v2" as const, threads: 2, historyTurns: 3, payloadBytes: 256 },
     };
-    const readHealth = (context: ClosedSyntheticFixture) =>
-      runSqliteHealth(
+    let measuredSchemaRecords: number | null = null;
+    const readHealth = (context: ClosedSyntheticFixture) => {
+      const database = new NodeSqlite.DatabaseSync(context.fixture.canonicalPath, {
+        readOnly: true,
+      });
+      try {
+        measuredSchemaRecords = Number(
+          database.prepare("SELECT COUNT(*) AS count FROM sqlite_schema").get()?.count,
+        );
+      } finally {
+        database.close();
+      }
+      return runSqliteHealth(
         parseHealthArguments([
           "--fixture-root",
           context.fixture.receipt.creationReceipt.canonicalRootPath,
@@ -454,10 +465,11 @@ describe("jones-sqlite-health — closed fixture integration", () => {
           "--include",
           "counts,integrity,foreign-keys",
           "--max-records",
-          "256",
+          "512",
         ]),
         { receipt: context.fixture.receipt, expectedBinding: binding },
       );
+    };
     const consumerClosed = (report: HealthEnvelope) =>
       report.child.closed &&
       report.child.reaped &&
@@ -502,9 +514,11 @@ describe("jones-sqlite-health — closed fixture integration", () => {
           },
         }),
       ).toBe("completed");
-      expect(accepted.value.limits.maxRecords).toBe(256);
+      expect(accepted.value.limits.maxRecords).toBe(512);
       expect(accepted.value.results.metadata.status).toBe("completed");
-      expect(accepted.value.results.metadata.data?.schema.length).toBeLessThanOrEqual(256);
+      expect(measuredSchemaRecords).toBeGreaterThan(256);
+      expect(measuredSchemaRecords).toBeLessThanOrEqual(512);
+      expect(accepted.value.results.metadata.data?.schema.length).toBe(measuredSchemaRecords);
       const custodyPin = syntheticFixtureReceiptSha256(fixtureCustodyReceipt(accepted.receipt));
       expect(accepted.receipt.schema).toBe("jones-performance-fixture/v2");
       expect(accepted.receiptSha256).not.toBe(custodyPin);
@@ -649,6 +663,23 @@ describe("jones-sqlite-health — d-readonly", () => {
       expect(result.report.results.counts.data?.find((row) => row.name === "threads")?.status).toBe(
         "unavailable",
       );
+    });
+  });
+
+  it("keeps the metadata default and accepts only a bounded explicit record limit", async () => {
+    await withFixture(async (fixture) => {
+      expect(parseHealthArguments(argumentsFor(fixture)).limits.maxRecords).toBe(128);
+      expect(
+        parseHealthArguments(argumentsFor(fixture, ["--max-records", "256"])).limits.maxRecords,
+      ).toBe(256);
+      expect(
+        parseHealthArguments(argumentsFor(fixture, ["--max-records", "512"])).limits.maxRecords,
+      ).toBe(512);
+      for (const limit of ["0", "513", "1.5"]) {
+        expect(() =>
+          parseHealthArguments(argumentsFor(fixture, ["--max-records", limit])),
+        ).toThrow();
+      }
     });
   });
 

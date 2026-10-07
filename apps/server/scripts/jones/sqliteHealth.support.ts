@@ -391,7 +391,7 @@ export function parseHealthArguments(args: readonly string[]): HealthRequest {
       1024 * 1024,
     ),
     maxStderrBytes: boundedInteger(flags.get("--max-stderr-bytes"), 16 * 1024, 1, 64 * 1024),
-    maxRecords: boundedInteger(flags.get("--max-records"), 128, 1, 256),
+    maxRecords: boundedInteger(flags.get("--max-records"), 128, 1, 512),
     maxDiagnostics: boundedInteger(flags.get("--max-diagnostics"), 64, 1, 128),
   };
   return { fixtureRoot, fixtureReceiptSha256, fixtureBinding, schemaProfile, include, limits };
