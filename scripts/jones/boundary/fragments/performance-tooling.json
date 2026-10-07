@@ -2,9 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "performance-tooling",
   "jonesOwnedPaths": [],
-  "hookPaths": [
-    "scripts/package.json"
-  ],
+  "hookPaths": ["scripts/package.json"],
   "tombstones": [],
   "allowedImports": []
 }

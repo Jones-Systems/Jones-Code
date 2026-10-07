@@ -1,0 +1,4036 @@
+{
+  "contract_family": "workstreams-registration-context",
+  "contract_version": "1.0.0",
+  "cases": [
+    {
+      "name": "Request rejects extra field 0",
+      "schema": "#/$defs/Request",
+      "value": {
+        "private_content": "synthetic forbidden content"
+      }
+    },
+    {
+      "name": "Request rejects primitive None",
+      "schema": "#/$defs/Request",
+      "value": null
+    },
+    {
+      "name": "Request rejects primitive False",
+      "schema": "#/$defs/Request",
+      "value": false
+    },
+    {
+      "name": "Request rejects primitive 17",
+      "schema": "#/$defs/Request",
+      "value": 17
+    },
+    {
+      "name": "Request rejects primitive 'synthetic'",
+      "schema": "#/$defs/Request",
+      "value": "synthetic"
+    },
+    {
+      "name": "Request rejects primitive []",
+      "schema": "#/$defs/Request",
+      "value": []
+    },
+    {
+      "name": "Build rejects extra field 0",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "private_content": "synthetic forbidden content"
+      }
+    },
+    {
+      "name": "Build rejects primitive None",
+      "schema": "#/$defs/Build",
+      "value": null
+    },
+    {
+      "name": "Build rejects primitive False",
+      "schema": "#/$defs/Build",
+      "value": false
+    },
+    {
+      "name": "Build rejects primitive 17",
+      "schema": "#/$defs/Build",
+      "value": 17
+    },
+    {
+      "name": "Build rejects primitive 'synthetic'",
+      "schema": "#/$defs/Build",
+      "value": "synthetic"
+    },
+    {
+      "name": "Build rejects primitive []",
+      "schema": "#/$defs/Build",
+      "value": []
+    },
+    {
+      "name": "T3Source rejects extra field 0",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "private_content": "synthetic forbidden content"
+      }
+    },
+    {
+      "name": "T3Source rejects extra field 1",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped",
+          "private_content": "synthetic forbidden content"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "name": "T3Source rejects extra field 2",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "private_content": "synthetic forbidden content"
+        }
+      }
+    },
+    {
+      "name": "T3Source rejects primitive None",
+      "schema": "#/$defs/T3Source",
+      "value": null
+    },
+    {
+      "name": "T3Source rejects primitive False",
+      "schema": "#/$defs/T3Source",
+      "value": false
+    },
+    {
+      "name": "T3Source rejects primitive 17",
+      "schema": "#/$defs/T3Source",
+      "value": 17
+    },
+    {
+      "name": "T3Source rejects primitive 'synthetic'",
+      "schema": "#/$defs/T3Source",
+      "value": "synthetic"
+    },
+    {
+      "name": "T3Source rejects primitive []",
+      "schema": "#/$defs/T3Source",
+      "value": []
+    },
+    {
+      "name": "GitHubSource rejects extra field 0",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "private_content": "synthetic forbidden content"
+      }
+    },
+    {
+      "name": "GitHubSource rejects extra field 1",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped",
+          "private_content": "synthetic forbidden content"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external"
+      }
+    },
+    {
+      "name": "GitHubSource rejects primitive None",
+      "schema": "#/$defs/GitHubSource",
+      "value": null
+    },
+    {
+      "name": "GitHubSource rejects primitive False",
+      "schema": "#/$defs/GitHubSource",
+      "value": false
+    },
+    {
+      "name": "GitHubSource rejects primitive 17",
+      "schema": "#/$defs/GitHubSource",
+      "value": 17
+    },
+    {
+      "name": "GitHubSource rejects primitive 'synthetic'",
+      "schema": "#/$defs/GitHubSource",
+      "value": "synthetic"
+    },
+    {
+      "name": "GitHubSource rejects primitive []",
+      "schema": "#/$defs/GitHubSource",
+      "value": []
+    },
+    {
+      "name": "Response rejects extra field 0",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "private_content": "synthetic forbidden content"
+      }
+    },
+    {
+      "name": "Response rejects extra field 1",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "private_content": "synthetic forbidden content"
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Response rejects extra field 2",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped",
+              "private_content": "synthetic forbidden content"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped",
+              "private_content": "synthetic forbidden content"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Response rejects extra field 3",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "private_content": "synthetic forbidden content"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Response rejects extra field 4",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external",
+            "private_content": "synthetic forbidden content"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Response rejects extra field 5",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped",
+              "private_content": "synthetic forbidden content"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped",
+              "private_content": "synthetic forbidden content"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Response rejects primitive None",
+      "schema": "#/$defs/Response",
+      "value": null
+    },
+    {
+      "name": "Response rejects primitive False",
+      "schema": "#/$defs/Response",
+      "value": false
+    },
+    {
+      "name": "Response rejects primitive 17",
+      "schema": "#/$defs/Response",
+      "value": 17
+    },
+    {
+      "name": "Response rejects primitive 'synthetic'",
+      "schema": "#/$defs/Response",
+      "value": "synthetic"
+    },
+    {
+      "name": "Response rejects primitive []",
+      "schema": "#/$defs/Response",
+      "value": []
+    },
+    {
+      "name": "request rejects caller selector owner_id",
+      "schema": "#/$defs/Request",
+      "value": {
+        "owner_id": "synthetic"
+      }
+    },
+    {
+      "name": "request rejects caller selector principal_id",
+      "schema": "#/$defs/Request",
+      "value": {
+        "principal_id": "synthetic"
+      }
+    },
+    {
+      "name": "request rejects caller selector source_instance_id",
+      "schema": "#/$defs/Request",
+      "value": {
+        "source_instance_id": "synthetic"
+      }
+    },
+    {
+      "name": "request rejects caller selector provider",
+      "schema": "#/$defs/Request",
+      "value": {
+        "provider": "synthetic"
+      }
+    },
+    {
+      "name": "request rejects caller selector origin",
+      "schema": "#/$defs/Request",
+      "value": {
+        "origin": "synthetic"
+      }
+    },
+    {
+      "name": "request rejects caller selector credential_locator",
+      "schema": "#/$defs/Request",
+      "value": {
+        "credential_locator": "synthetic"
+      }
+    },
+    {
+      "name": "request rejects caller selector authorization_header",
+      "schema": "#/$defs/Request",
+      "value": {
+        "authorization_header": "synthetic"
+      }
+    },
+    {
+      "name": "request rejects caller selector session_id",
+      "schema": "#/$defs/Request",
+      "value": {
+        "session_id": "synthetic"
+      }
+    },
+    {
+      "name": "request rejects caller selector path",
+      "schema": "#/$defs/Request",
+      "value": {
+        "path": "synthetic"
+      }
+    },
+    {
+      "name": "request rejects caller selector command",
+      "schema": "#/$defs/Request",
+      "value": {
+        "command": "synthetic"
+      }
+    },
+    {
+      "name": "request rejects caller selector query",
+      "schema": "#/$defs/Request",
+      "value": {
+        "query": "synthetic"
+      }
+    },
+    {
+      "name": "response rejects origin",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "origin": "synthetic"
+      }
+    },
+    {
+      "name": "T3 source rejects origin",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "origin": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub source rejects origin",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "origin": "synthetic"
+      }
+    },
+    {
+      "name": "response rejects credential_locator",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "credential_locator": "synthetic"
+      }
+    },
+    {
+      "name": "T3 source rejects credential_locator",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "credential_locator": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub source rejects credential_locator",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "credential_locator": "synthetic"
+      }
+    },
+    {
+      "name": "response rejects authorization_header",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "authorization_header": "synthetic"
+      }
+    },
+    {
+      "name": "T3 source rejects authorization_header",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "authorization_header": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub source rejects authorization_header",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "authorization_header": "synthetic"
+      }
+    },
+    {
+      "name": "response rejects session_id",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "session_id": "synthetic"
+      }
+    },
+    {
+      "name": "T3 source rejects session_id",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "session_id": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub source rejects session_id",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "session_id": "synthetic"
+      }
+    },
+    {
+      "name": "response rejects native_id",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "native_id": "synthetic"
+      }
+    },
+    {
+      "name": "T3 source rejects native_id",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "native_id": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub source rejects native_id",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "native_id": "synthetic"
+      }
+    },
+    {
+      "name": "response rejects thread_detail",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "thread_detail": "synthetic"
+      }
+    },
+    {
+      "name": "T3 source rejects thread_detail",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "thread_detail": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub source rejects thread_detail",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "thread_detail": "synthetic"
+      }
+    },
+    {
+      "name": "response rejects messages",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "messages": "synthetic"
+      }
+    },
+    {
+      "name": "T3 source rejects messages",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "messages": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub source rejects messages",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "messages": "synthetic"
+      }
+    },
+    {
+      "name": "response rejects title",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "title": "synthetic"
+      }
+    },
+    {
+      "name": "T3 source rejects title",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "title": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub source rejects title",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "title": "synthetic"
+      }
+    },
+    {
+      "name": "response rejects workspace",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "workspace": "synthetic"
+      }
+    },
+    {
+      "name": "T3 source rejects workspace",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "workspace": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub source rejects workspace",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "workspace": "synthetic"
+      }
+    },
+    {
+      "name": "response rejects path",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "path": "synthetic"
+      }
+    },
+    {
+      "name": "T3 source rejects path",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "path": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub source rejects path",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "path": "synthetic"
+      }
+    },
+    {
+      "name": "response rejects command",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ],
+        "command": "synthetic"
+      }
+    },
+    {
+      "name": "T3 source rejects command",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "command": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub source rejects command",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "command": "synthetic"
+      }
+    },
+    {
+      "name": "GitHub omits native_protocol",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "native_protocol": "workstreams-t3-provider/1.0.0"
+      }
+    },
+    {
+      "name": "GitHub omits build",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "name": "build exact hexadecimal sha 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "name": "build exact hexadecimal sha 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "name": "build exact hexadecimal sha 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "name": "build exact hexadecimal sha 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "name": "build exact hexadecimal sha 'gggggggggggggggggggggggggggggggggggggggg'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "gggggggggggggggggggggggggggggggggggggggg",
+        "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "name": "build exact hexadecimal sha 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "name": "build exact hexadecimal sha 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\r\\n'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n",
+        "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "name": "build exact hexadecimal tree 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "build exact hexadecimal tree 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "build exact hexadecimal tree 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+      }
+    },
+    {
+      "name": "build exact hexadecimal tree 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    },
+    {
+      "name": "build exact hexadecimal tree 'gggggggggggggggggggggggggggggggggggggggg'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "gggggggggggggggggggggggggggggggggggggggg"
+      }
+    },
+    {
+      "name": "build exact hexadecimal tree 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "build exact hexadecimal tree 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\r\\n'",
+      "schema": "#/$defs/Build",
+      "value": {
+        "repository": "Jones-Systems/Jones-Code",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"
+      }
+    },
+    {
+      "name": "T3 source rejects provider",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "other",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "name": "T3 source rejects resource_kind",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "pull_request",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "name": "T3 source rejects id_kind",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "external",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "name": "T3 source rejects native_protocol",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/2.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "name": "T3 source rejects store_generation",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 0,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "name": "T3 source rejects source_instance_id",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "../source",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "name": "T3 source rejects authority_namespace",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority\n",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "name": "T3 source rejects account_provenance",
+      "schema": "#/$defs/T3Source",
+      "value": {
+        "source_instance_id": "source-t3-synthetic",
+        "authority_namespace": "authority-t3-synthetic",
+        "store_generation": 7,
+        "account_provenance": {
+          "kind": "account",
+          "account_id": "synthetic",
+          "account_namespace": "synthetic"
+        },
+        "provider": "t3",
+        "resource_kind": "thread",
+        "id_kind": "internal",
+        "native_protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    },
+    {
+      "name": "GitHub source rejects provider",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "t3",
+        "resource_kind": "pull_request",
+        "id_kind": "external"
+      }
+    },
+    {
+      "name": "GitHub source rejects resource_kind",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "thread",
+        "id_kind": "external"
+      }
+    },
+    {
+      "name": "GitHub source rejects id_kind",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 11,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "internal"
+      }
+    },
+    {
+      "name": "GitHub source rejects store_generation",
+      "schema": "#/$defs/GitHubSource",
+      "value": {
+        "source_instance_id": "source-github-synthetic",
+        "authority_namespace": "authority-github-synthetic",
+        "store_generation": 0,
+        "account_provenance": {
+          "kind": "not_account_scoped"
+        },
+        "provider": "github",
+        "resource_kind": "pull_request",
+        "id_kind": "external"
+      }
+    },
+    {
+      "name": "source cardinality [{'source_instance_id': 'source-t3-synthetic', 'authority_namespace': 'authority-t3-synthetic', 'store_generation': 7, 'account_provenance': {'kind': 'not_account_scoped'}, 'provider': 't3', 'resource_kind': 'thread', 'id_kind': 'internal', 'native_protocol': 'workstreams-t3-provider/1.0.0', 'build': {'repository': 'Jones-Systems/Jones-Code', 'sha': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'tree': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}}, {'source_instance_id': 'source-t3-synthetic', 'authority_namespace': 'authority-t3-synthetic', 'store_generation': 7, 'account_provenance': {'kind': 'not_account_scoped'}, 'provider': 't3', 'resource_kind': 'thread', 'id_kind': 'internal', 'native_protocol': 'workstreams-t3-provider/1.0.0', 'build': {'repository': 'Jones-Systems/Jones-Code', 'sha': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'tree': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}}]",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "source cardinality [{'source_instance_id': 'source-github-synthetic', 'authority_namespace': 'authority-github-synthetic', 'store_generation': 11, 'account_provenance': {'kind': 'not_account_scoped'}, 'provider': 'github', 'resource_kind': 'pull_request', 'id_kind': 'external'}, {'source_instance_id': 'source-github-synthetic', 'authority_namespace': 'authority-github-synthetic', 'store_generation': 11, 'account_provenance': {'kind': 'not_account_scoped'}, 'provider': 'github', 'resource_kind': 'pull_request', 'id_kind': 'external'}]",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "source cardinality [{'source_instance_id': 'source-t3-synthetic', 'authority_namespace': 'authority-t3-synthetic', 'store_generation': 7, 'account_provenance': {'kind': 'not_account_scoped'}, 'provider': 't3', 'resource_kind': 'thread', 'id_kind': 'internal', 'native_protocol': 'workstreams-t3-provider/1.0.0', 'build': {'repository': 'Jones-Systems/Jones-Code', 'sha': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'tree': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}}, {'source_instance_id': 'different-t3', 'authority_namespace': 'authority-t3-synthetic', 'store_generation': 7, 'account_provenance': {'kind': 'not_account_scoped'}, 'provider': 't3', 'resource_kind': 'thread', 'id_kind': 'internal', 'native_protocol': 'workstreams-t3-provider/1.0.0', 'build': {'repository': 'Jones-Systems/Jones-Code', 'sha': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'tree': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}}]",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "different-t3",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "source cardinality [{'source_instance_id': 'source-github-synthetic', 'authority_namespace': 'authority-github-synthetic', 'store_generation': 11, 'account_provenance': {'kind': 'not_account_scoped'}, 'provider': 'github', 'resource_kind': 'pull_request', 'id_kind': 'external'}, {'source_instance_id': 'different-github', 'authority_namespace': 'authority-github-synthetic', 'store_generation': 11, 'account_provenance': {'kind': 'not_account_scoped'}, 'provider': 'github', 'resource_kind': 'pull_request', 'id_kind': 'external'}]",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          },
+          {
+            "source_instance_id": "different-github",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "source cardinality [{'source_instance_id': 'source-t3-synthetic', 'authority_namespace': 'authority-t3-synthetic', 'store_generation': 7, 'account_provenance': {'kind': 'not_account_scoped'}, 'provider': 't3', 'resource_kind': 'thread', 'id_kind': 'internal', 'native_protocol': 'workstreams-t3-provider/1.0.0', 'build': {'repository': 'Jones-Systems/Jones-Code', 'sha': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'tree': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}}, {'source_instance_id': 'source-github-synthetic', 'authority_namespace': 'authority-github-synthetic', 'store_generation': 11, 'account_provenance': {'kind': 'not_account_scoped'}, 'provider': 'github', 'resource_kind': 'pull_request', 'id_kind': 'external'}, {'source_instance_id': 'source-t3-synthetic', 'authority_namespace': 'authority-t3-synthetic', 'store_generation': 7, 'account_provenance': {'kind': 'not_account_scoped'}, 'provider': 't3', 'resource_kind': 'thread', 'id_kind': 'internal', 'native_protocol': 'workstreams-t3-provider/1.0.0', 'build': {'repository': 'Jones-Systems/Jones-Code', 'sha': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'tree': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}}]",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          },
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "source cardinality None",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": null
+      }
+    },
+    {
+      "name": "source cardinality {}",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": {}
+      }
+    },
+    {
+      "name": "source cardinality 'synthetic'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": "synthetic"
+      }
+    },
+    {
+      "name": "version fence authorization_revision 0",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 0,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence authorization_revision -1",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": -1,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence authorization_revision 1.5",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 1.5,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence authorization_revision 9007199254740992",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 9007199254740992,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence authorization_revision '1'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": "1",
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence server_generation 0",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 0,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence server_generation -1",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": -1,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence server_generation 1.5",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 1.5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence server_generation 9007199254740992",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 9007199254740992,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence server_generation '1'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": "1",
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence registry_version -1",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": -1,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence registry_version 1.5",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 1.5,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence registry_version 9007199254740992",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 9007199254740992,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "version fence registry_version '0'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": "0",
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid owner_id ''",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid owner_id 'id\\n'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "id\n",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid owner_id 'id\\r\\n'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "id\r\n",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid owner_id '../id'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "../id",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid owner_id 'id;command'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "id;command",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid owner_id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid principal_id ''",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid principal_id 'id\\n'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "id\n",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid principal_id 'id\\r\\n'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "id\r\n",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid principal_id '../id'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "../id",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid principal_id 'id;command'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "id;command",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid principal_id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid grant_id ''",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid grant_id 'id\\n'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "id\n",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid grant_id 'id\\r\\n'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "id\r\n",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid grant_id '../id'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "../id",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid grant_id 'id;command'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "id;command",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid grant_id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unsupported response version",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/2.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unavailable is not a business envelope",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "unavailable",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "response requires protocol",
+      "schema": "#/$defs/Response",
+      "value": {
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "response requires state",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "response requires owner_id",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "response requires principal_id",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "response requires grant_id",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "response requires authorization_revision",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "server_generation": 5,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "response requires server_generation",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "registry_version": 0,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "response requires registry_version",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "sources": [
+          {
+            "source_instance_id": "source-t3-synthetic",
+            "authority_namespace": "authority-t3-synthetic",
+            "store_generation": 7,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "t3",
+            "resource_kind": "thread",
+            "id_kind": "internal",
+            "native_protocol": "workstreams-t3-provider/1.0.0",
+            "build": {
+              "repository": "Jones-Systems/Jones-Code",
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "source_instance_id": "source-github-synthetic",
+            "authority_namespace": "authority-github-synthetic",
+            "store_generation": 11,
+            "account_provenance": {
+              "kind": "not_account_scoped"
+            },
+            "provider": "github",
+            "resource_kind": "pull_request",
+            "id_kind": "external"
+          }
+        ]
+      }
+    },
+    {
+      "name": "response requires sources",
+      "schema": "#/$defs/Response",
+      "value": {
+        "protocol": "workstreams-registration-context/1.0.0",
+        "state": "ready",
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "grant_id": "grant-synthetic",
+        "authorization_revision": 3,
+        "server_generation": 5,
+        "registry_version": 0
+      }
+    }
+  ]
+}

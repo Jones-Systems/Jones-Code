@@ -14,8 +14,13 @@ import { readRuntimeBinding } from "../../../../scripts/jones/performance/runtim
 import { assertCurrentCandidate } from "../../../../scripts/jones/performance/current-qualification.mjs";
 
 const root = NodeFS.realpathSync(process.cwd());
-let report, databaseClosed = false;
-const phase = (name) => NodeFS.appendFileSync(NodePath.join(root, "phases.jsonl"), `${JSON.stringify({ phase: name, pid: process.pid })}\n`);
+let report,
+  databaseClosed = false;
+const phase = (name) =>
+  NodeFS.appendFileSync(
+    NodePath.join(root, "phases.jsonl"),
+    `${JSON.stringify({ phase: name, pid: process.pid })}\n`,
+  );
 try {
   NodeAssert.match(NodePath.basename(root), /^v2-benchmark-[a-f0-9-]{36}$/);
   const requestPath = NodePath.join(root, "request.json");
@@ -24,28 +29,49 @@ try {
   const request = JSON.parse(NodeFS.readFileSync(requestPath, "utf8"));
   NodeAssert.equal(request.root, root);
   const candidate = assertCurrentCandidate(request.candidate);
-  NodeAssert.equal(candidate.worktreePath, NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "../../../.."));
+  NodeAssert.equal(
+    candidate.worktreePath,
+    NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "../../../.."),
+  );
   const runtime = readRuntimeBinding();
   NodeAssert.equal(runtime.executablePath, process.execPath);
   NodeAssert.equal(runtime.nodeVersion, process.versions.node);
-  for (const key of ["HOME", "TMPDIR", "TMP", "TEMP", "XDG_CACHE_HOME"]) NodeAssert.ok(process.env[key]?.startsWith(`${root}${NodePath.sep}`));
+  for (const key of ["HOME", "TMPDIR", "TMP", "TEMP", "XDG_CACHE_HOME"])
+    NodeAssert.ok(process.env[key]?.startsWith(`${root}${NodePath.sep}`));
   phase("bound");
   const dbPath = NodePath.join(root, "synthetic.sqlite");
   NodeFS.closeSync(NodeFS.openSync(dbPath, "wx", 0o600));
   const database = makeSqlitePersistenceLive(dbPath).pipe(Layer.provide(NodeServices.layer));
-  const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(Layer.provideMerge(database));
+  const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
+    Layer.provideMerge(database),
+  );
   const services = Layer.mergeAll(stores, EventSink.layer.pipe(Layer.provide(stores)));
   phase("workload-start");
-  const workloadExit = await Effect.runPromise(runV2Workload(request.workload).pipe(Effect.exit, Effect.provide(services)));
+  const workloadExit = await Effect.runPromise(
+    runV2Workload(request.workload).pipe(Effect.exit, Effect.provide(services)),
+  );
   databaseClosed = true;
   phase("database-closed");
-  if (workloadExit._tag === "Failure") throw new Error("synthetic workload failed", { cause: workloadExit.cause });
+  if (workloadExit._tag === "Failure")
+    throw new Error("synthetic workload failed", { cause: workloadExit.cause });
   const measurements = workloadExit.value;
   NodeAssert.equal(measurements.journal[0]?.journal_mode, "wal");
   assertCurrentCandidate(candidate);
-  report = { schema: "jones-sqlite-v2-benchmark/v1", outcome: "passed", candidate, runtime, measurements };
+  report = {
+    schema: "jones-sqlite-v2-benchmark/v1",
+    outcome: "passed",
+    candidate,
+    runtime,
+    measurements,
+  };
 } catch (error) {
-  report = { schema: "jones-sqlite-v2-benchmark/v1", outcome: "failed", error: String(error?.stack ?? error).slice(0, 8192) };
+  report = {
+    schema: "jones-sqlite-v2-benchmark/v1",
+    outcome: "failed",
+    error: String(error?.stack ?? error).slice(0, 8192),
+  };
 }
-process.stdout.write(`${JSON.stringify({ ...report, databaseClosed, installedRuntimeQualification: "unverified" })}\n`);
+process.stdout.write(
+  `${JSON.stringify({ ...report, databaseClosed, installedRuntimeQualification: "unverified" })}\n`,
+);
 process.exitCode = report.outcome === "passed" ? 0 : 1;

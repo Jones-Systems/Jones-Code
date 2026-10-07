@@ -958,10 +958,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) =>
     Effect.gen(function* () {
       const eventId = yield* mapDispatchError(command)(
-        idAllocator.allocate.event({
-          threadId: event.threadId,
-          commandId: command.commandId,
-        }),
+        // Settlement events use context-free IDs so their real ID fits the pinned v1 provider Id.
+        idAllocator.allocate.event(
+          event.type === "thread.settled" || event.type === "thread.unsettled"
+            ? {}
+            : { threadId: event.threadId, commandId: command.commandId },
+        ),
       );
       return {
         ...event,
