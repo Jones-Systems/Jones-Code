@@ -5,7 +5,11 @@ import {
   nativeWorkstreamThreadKey,
   WORKSTREAM_TINT_PALETTE,
 } from "@t3tools/client-runtime/state/workstreams";
-import { projectMobileWorkstreams, type MobileWorkstreamSnapshot } from "./projection";
+import {
+  sameMobileWorkstreamAuthority,
+  projectMobileWorkstreams,
+  type MobileWorkstreamSnapshot,
+} from "./projection";
 import { data, placements, now, thread } from "./actions.fixtures";
 
 function snapshot(environmentId: string): MobileWorkstreamSnapshot {
@@ -35,6 +39,56 @@ function snapshot(environmentId: string): MobileWorkstreamSnapshot {
   };
 }
 describe("mobile registry projection", () => {
+  it("keeps in-flight authority valid across appearance-only refreshes and rejects replaced core state", () => {
+    const original = snapshot("env:a");
+    const appearanceOnly = {
+      ...original,
+      appearance: {
+        owner_id: data.binding.ownerId,
+        server_generation: data.binding.serverGeneration,
+        permissions: ["workstreams:read"] as const,
+        items: [],
+      },
+    };
+    expect(sameMobileWorkstreamAuthority(appearanceOnly, original)).toBe(true);
+    expect(
+      sameMobileWorkstreamAuthority(
+        { ...appearanceOnly, generation: original.generation + 1 },
+        original,
+      ),
+    ).toBe(false);
+    expect(
+      sameMobileWorkstreamAuthority({ ...appearanceOnly, data: { ...original.data } }, original),
+    ).toBe(false);
+    expect(sameMobileWorkstreamAuthority({ ...appearanceOnly, placements: null }, original)).toBe(
+      false,
+    );
+    expect(
+      sameMobileWorkstreamAuthority({ ...appearanceOnly, identityKeys: new Set() }, original),
+    ).toBe(false);
+    expect(sameMobileWorkstreamAuthority(snapshot("env:b"), original)).toBe(false);
+  });
+  it("uses shared saved colors for borders while preserving automatic indicators", () => {
+    const original = snapshot("env:a");
+    const before = projectMobileWorkstreams([original], [thread], now);
+    const saved = {
+      ...original,
+      appearance: {
+        owner_id: data.binding.ownerId,
+        server_generation: data.binding.serverGeneration,
+        permissions: ["workstreams:read"] as const,
+        items: data.items.map((item) => ({
+          workstream_id: item.workstreamId,
+          border_color: "#123ABC",
+          version: 1,
+        })),
+      },
+    };
+    const after = projectMobileWorkstreams([saved], [thread], now);
+    expect(after.groups[0]?.borderColor).toBe("#123ABC");
+    expect(after.groups[0]?.color).toBe(before.groups[0]?.color);
+    expect(after.groups[0]?.threadKeys).toEqual(before.groups[0]?.threadKeys);
+  });
   it("groups cross-environment repositories without conflating repeated thread IDs", () => {
     const other = { ...thread, environmentId: "env:b", projectId: "another-repo" };
     const result = projectMobileWorkstreams(

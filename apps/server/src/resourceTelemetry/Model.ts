@@ -10,7 +10,7 @@ import type {
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
-import type { ProcessAttributionRecord } from "./ProcessAttribution.ts";
+import type { ProcessAttributionRecord } from "../jones/resourceTelemetry/ProcessAttribution.ts";
 
 const MAX_DELTA_INTERVAL_MS = 30_000;
 const ELECTRON_IDENTITY_TOLERANCE_MS = 2_000;

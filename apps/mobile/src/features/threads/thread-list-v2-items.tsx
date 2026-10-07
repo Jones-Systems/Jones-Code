@@ -234,13 +234,17 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
 export const ThreadListV2WorkstreamHeader = memo(function ThreadListV2WorkstreamHeader(props: {
   readonly name: string;
   readonly color: string;
+  readonly borderColor?: string;
   readonly count: number;
   readonly expanded: boolean;
   readonly onToggle: () => void;
   readonly onOpen: () => void;
 }) {
   return (
-    <View className="flex-row items-center px-3 py-1">
+    <View
+      className="flex-row items-center px-3 py-1"
+      style={{ borderLeftWidth: 2, borderLeftColor: props.borderColor ?? props.color }}
+    >
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${props.name}, ${props.count} threads`}

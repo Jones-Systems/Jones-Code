@@ -1,5 +1,5 @@
 /**
- * Migration runner with independent inline upstream and Jones loaders.
+ * Migration runner with independent upstream and Jones loaders.
  *
  * Uses Migrator.make with fromRecord to define migrations inline.
  * All migrations are statically imported - no dynamic file system loading.
@@ -12,7 +12,7 @@ import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
-import { runJonesMigrations } from "./JonesMigrationGuard.ts";
+import * as JonesMigrations from "../jones/persistence/JonesMigrations.ts";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -71,12 +71,6 @@ import Migration0053 from "./Migrations/053_PullRequestFilesViewed.ts";
 import Migration0054 from "./Migrations/054_ProjectionThreadsAutoSettleDisabledAt.ts";
 import Migration0055 from "./Migrations/055_OrchestrationV2.ts";
 import Migration0056 from "./Migrations/056_RemoveRedundantProjectionIndexes.ts";
-import JonesMigration0001 from "./Migrations/001_JonesWorktreeOwnershipLeases.ts";
-import JonesMigration0002 from "./Migrations/002_JonesProjectionThreadRuntimeIdentity.ts";
-import JonesMigration0003 from "./Migrations/003_JonesNativeCreationIntents.ts";
-import JonesMigration0004 from "./Migrations/004_JonesNativeCreationCommandIdentities.ts";
-import JonesMigration0005 from "./Migrations/005_JonesWorkstreamsNativeAttempts.ts";
-import JonesMigration0006 from "./Migrations/006_JonesWorkstreamsProviderEnrollments.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -151,17 +145,6 @@ export const migrationEntries = [
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 
-// Preserve the released Jones identities. New Jones migrations start at 100;
-// IDs 7–99 belong to known foreign histories, never to this rebuild's loader.
-const jonesMigrationEntries = [
-  [1, "WorktreeOwnershipLeases", JonesMigration0001],
-  [2, "ProjectionThreadRuntimeIdentity", JonesMigration0002],
-  [3, "NativeCreationIntents", JonesMigration0003],
-  [4, "NativeCreationCommandIdentities", JonesMigration0004],
-  [5, "WorkstreamsNativeAttempts", JonesMigration0005],
-  [6, "WorkstreamsProviderEnrollments", JonesMigration0006],
-] as const;
-
 const makeMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
     Object.fromEntries(
@@ -233,12 +216,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     ).pipe(Effect.annotateLogs({ divergent }));
   }
   if (toMigrationInclusive === undefined) {
-    const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
-    if (jonesMigrations.length > 0) {
-      yield* Effect.log("Jones migrations ran successfully").pipe(
-        Effect.annotateLogs({ migrations: jonesMigrations.map(([id, name]) => `${id}_${name}`) }),
-      );
-    }
+    yield* JonesMigrations.runMigrations();
   }
   return executedMigrations;
 });

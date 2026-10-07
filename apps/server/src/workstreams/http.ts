@@ -145,6 +145,20 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
         yield* requireEnvironmentScope(AuthOrchestrationReadScope);
       });
     return handlers
+      .handle("appearanceRead", (args) =>
+        read(args.endpoint.name).pipe(
+          Effect.andThen(
+            internal("appearanceRead", gateway.readAppearance(args.payload.workstream_ids)),
+          ),
+        ),
+      )
+      .handle("appearanceSave", (args) =>
+        Effect.gen(function* () {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          return yield* internal("appearanceSave", gateway.saveAppearance(args.payload));
+        }),
+      )
       .handle("threadPlacements", (args) =>
         read(args.endpoint.name).pipe(
           Effect.andThen(internal("threadPlacements", gateway.readThreadPlacements(args.payload))),

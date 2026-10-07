@@ -10,22 +10,38 @@ import {
 import {
   T3_PLACEMENT_MAX_IDENTITIES,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
+  type WorkstreamAppearancePage,
   type T3PlacementIdentity,
   type T3WorkstreamListResult,
   type T3WorkstreamMetadata,
 } from "@t3tools/contracts";
 const COLORS = ["#0284c7", "#7c3aed", "#059669", "#d97706", "#e11d48"];
 export interface MobileWorkstreamSnapshot {
+  readonly appearance?: WorkstreamAppearancePage | null;
   readonly prepared: PreparedConnection;
   readonly generation: number;
   readonly data: T3WorkstreamListResult;
   readonly placements: LiveT3Placements | null;
   readonly identityKeys: ReadonlySet<string>;
 }
+export function sameMobileWorkstreamAuthority(
+  left: MobileWorkstreamSnapshot,
+  right: MobileWorkstreamSnapshot,
+): boolean {
+  return (
+    left.prepared === right.prepared &&
+    left.generation === right.generation &&
+    left.data === right.data &&
+    left.placements === right.placements &&
+    left.identityKeys === right.identityKeys
+  );
+}
+
 export interface MobileWorkstreamGroup {
   readonly key: string;
   readonly name: string;
   readonly color: string;
+  readonly borderColor?: string;
   readonly workstream: T3WorkstreamMetadata;
   readonly threadKeys: ReadonlySet<string>;
   readonly snapshot: MobileWorkstreamSnapshot;
@@ -93,12 +109,26 @@ export function projectMobileWorkstreams(
         conflicts.add(key);
         continue;
       }
+      const savedAppearance = snapshot.appearance?.items.find(
+        (item) => item.workstream_id === group.workstream.workstreamId,
+      );
+      const priorAppearance = prior?.snapshot.appearance?.items.find(
+        (item) => item.workstream_id === group.workstream.workstreamId,
+      );
+      const appearanceSnapshot =
+        priorAppearance && priorAppearance.version > (savedAppearance?.version ?? -1)
+          ? prior!.snapshot
+          : snapshot;
+      const appearance = appearanceSnapshot.appearance?.items.find(
+        (item) => item.workstream_id === group.workstream.workstreamId,
+      );
       groups.set(key, {
         key,
         name: group.workstream.name,
         color: COLORS[workstreamPaletteIndex(group.workstream.workstreamId)]!,
+        ...(appearance?.border_color ? { borderColor: appearance.border_color } : {}),
         workstream: group.workstream,
-        snapshot: prior?.snapshot ?? snapshot,
+        snapshot: appearanceSnapshot,
         threadKeys: new Set([
           ...(prior?.threadKeys ?? []),
           ...group.threads.map((thread) =>

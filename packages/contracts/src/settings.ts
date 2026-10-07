@@ -1,3 +1,4 @@
+import { WorkModeEnabled } from "./jones/workMode.ts";
 import { SshDeviceHostConfigs } from "./device.ts";
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
@@ -1194,6 +1195,7 @@ export const StorageCleanupSettings = Schema.Struct({
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
 export const ServerSettings = Schema.Struct({
+  workModeEnabled: WorkModeEnabled,
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(StorageCleanupSettings)({}))),
@@ -1574,6 +1576,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  workModeEnabled: Schema.optionalKey(Schema.Boolean),
   worktreeCleanup: Schema.optionalKey(
     Schema.NullOr(
       Schema.Union([

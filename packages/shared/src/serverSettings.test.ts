@@ -24,6 +24,15 @@ import {
 const FOLDED_SERVER_SETTINGS = { ...DEFAULT_SERVER_SETTINGS, projectSettingsFolded: true };
 
 describe("serverSettings helpers", () => {
+  it("preserves Work mode through unrelated updates and supports disabling", () => {
+    const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { workModeEnabled: true });
+    expect(
+      applyServerSettingsPatch(enabled, { enableProviderUpdateChecks: false }).workModeEnabled,
+    ).toBe(true);
+    expect(applyServerSettingsPatch(enabled, { workModeEnabled: false }).workModeEnabled).toBe(
+      false,
+    );
+  });
   it("changes a cleanup rule without replacing the machine's other rules", () => {
     const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       storageCleanup: { worktreeAfterDays: 8, worktreeOnMerge: true, logsAfterDays: 30 },

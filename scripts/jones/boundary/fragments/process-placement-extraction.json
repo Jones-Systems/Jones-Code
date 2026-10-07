@@ -1,0 +1,22 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "process-placement-extraction",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/processPlacement/processPlacement.test.ts",
+    "apps/server/src/jones/processPlacement/processPlacement.ts",
+    "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
+    "apps/server/src/jones/processPlacement/processPlacementBootstrap.ts",
+    "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
+    "apps/server/src/jones/processPlacement/processPlacementSpawner.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [
+    "apps/server/src/process/processPlacement.test.ts",
+    "apps/server/src/process/processPlacement.ts",
+    "apps/server/src/process/processPlacementBootstrap.test.ts",
+    "apps/server/src/process/processPlacementBootstrap.ts",
+    "apps/server/src/process/processPlacementSpawner.test.ts",
+    "apps/server/src/process/processPlacementSpawner.ts"
+  ],
+  "allowedImports": []
+}

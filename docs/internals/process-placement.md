@@ -7,7 +7,7 @@ Jones Code process. Integration must cover every launch route before an
 installed server can advertise or require placement.
 
 Placement belongs to the environment that owns execution, regardless of the
-client's machine. The versioned [binding](../../apps/server/src/process/processPlacement.ts)
+client's machine. The versioned [binding](../../apps/server/src/jones/processPlacement/processPlacement.ts)
 selects separate control and workload siblings in an already delegated Linux
 cgroup v2 hierarchy. A policy owner must establish that hierarchy and its CPU
 limits. The helper only moves itself, verifies membership, then replaces itself
@@ -24,7 +24,7 @@ adapter must preserve its existing cancellation and process-group ownership.
 An external cold bootstrap must validate its own immutable artifacts, establish
 and read back the delegated hierarchy, remove the bootstrap variable and emit
 a ready binding before replacing itself with the launcher. The
-[bootstrap contract](../../apps/server/src/process/processPlacementBootstrap.ts)
+[bootstrap contract](../../apps/server/src/jones/processPlacement/processPlacementBootstrap.ts)
 validates inputs; it does not install a service or implement that bootstrap.
 Optional negative nice with reset-on-fork applies only to an explicitly selected
 server generation. It requires separately supplied host permissions and does

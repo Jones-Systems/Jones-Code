@@ -8,6 +8,7 @@ import { Alert, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/AppText";
+import { WorkModeSettings } from "../../jones/workMode/WorkModeSettings";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { ScreenScrollView } from "../../components/ScreenScrollView";
 import { serverEnvironment } from "../../state/server";
@@ -167,6 +168,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                 onUpdate={connections.onUpdateEnvironment}
               />
             </SettingsSection>
+            <WorkModeSettings key={environmentId} environmentId={environmentId} />
             {!connected ? (
               <Text className="px-2 text-sm text-foreground-muted">
                 Connect this environment to manage it.

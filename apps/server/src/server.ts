@@ -1,3 +1,5 @@
+import * as DeviceDirectGrants from "./jones/device/DeviceDirectGrants.ts";
+import * as JonesHttp from "./jones/http/registration.ts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
 import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
@@ -48,8 +50,6 @@ import {
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
-import { hostStatusHttpApiLayer } from "./hostStatus/http.ts";
-import * as HostStatus from "./hostStatus/HostStatus.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as SqlitePersistence from "./persistence/Layers/Sqlite.ts";
@@ -89,6 +89,7 @@ import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import * as ServerSettings from "./serverSettings.ts";
+import * as WorkMode from "./jones/workMode/WorkMode.ts";
 import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts";
 import * as NativeAppIconResolver from "./assets/NativeAppIconResolver.ts";
 import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
@@ -157,12 +158,10 @@ import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClient.ts";
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
-import * as ProcessAttribution from "./resourceTelemetry/ProcessAttribution.ts";
+import * as ProcessAttribution from "./jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
-import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
-import { makeRuntimeReader } from "./tokenAccounting/RuntimeReader.ts";
 import {
   OrchestrationEventInfrastructureLayerLive,
   OrchestrationV2ProductionLayerLive,
@@ -182,9 +181,6 @@ import {
   persistServerRuntimeState,
 } from "./serverRuntimeState.ts";
 import { orchestrationHttpApiLayer } from "./orchestration-v2/http.ts";
-import { conversationLibraryHttpApiLayer } from "./conversations/http.ts";
-import * as VoiceReview from "./voiceReview/bridge.ts";
-import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./voiceReview/http.ts";
 import { projectHttpApiLayer } from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -523,6 +519,12 @@ const ProviderInstallationRefreshLive = Layer.effectDiscard(
 );
 
 const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const workMode = yield* WorkMode.WorkMode;
+      yield* workMode.start;
+    }),
+  ).pipe(Layer.provide(WorkMode.layer), Layer.provide(ProjectionStoreV2.layer)),
   AgentAwarenessRelay.layer,
   ThreadSettlementWorkerLive,
   Layer.effectDiscard(StorageCleanup.make.pipe(Effect.flatMap((service) => service.start()))).pipe(
@@ -565,6 +567,7 @@ const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive, DeviceLayerLive)),
+  Layer.provideMerge(DeviceDirectGrants.layer),
   Layer.provideMerge(PersistenceLayerLive),
   // Both read a user-owned file out of the state directory and stream changes
   // to clients; neither depends on the other.
@@ -634,9 +637,7 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
   Layer.provideMerge(ProcessAttributionLayerLive),
   Layer.provideMerge(UsageLayerLive),
-  Layer.provideMerge(
-    Layer.suspend(() => TokenAccountingService.layerWithReader(makeRuntimeReader(process.env))),
-  ),
+  Layer.provideMerge(JonesHttp.tokenAccountingLayer),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
   Layer.provideMerge(ExternalLauncher.layer),
@@ -661,25 +662,10 @@ const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(orchestrationHttpApiLayer),
       Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(queueCompatibilityHttpApiLayer.pipe(Layer.provide(QueueCompatibility.layer))),
-      Layer.provide(conversationLibraryHttpApiLayer),
-      Layer.provide(
-        voiceReviewHttpApiLayer.pipe(
-          Layer.provide(
-            VoiceReview.layer.pipe(
-              Layer.provide(
-                VoiceReview.dependenciesLayerLive.pipe(
-                  Layer.provide(
-                    Layer.merge(ProjectionStoreV2.layer, ServerEnvironment.identityLayer),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
+      JonesHttp.provideConversationAndVoiceReview,
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(workstreamHttpApiLayer),
-      Layer.provide(hostStatusHttpApiLayer.pipe(Layer.provide(HostStatus.layer))),
+      Layer.provide(JonesHttp.hostStatusHttpApiLayer),
       Layer.provide(projectHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),
@@ -709,7 +695,7 @@ const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),
-  Layer.provide(voiceReviewResponseHeadersLayer),
+  Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),
   Layer.provide(workstreamResponseHeadersLayer),
   Layer.provide(browserApiCorsLayer),
   Layer.provide(httpCompressionLayer),

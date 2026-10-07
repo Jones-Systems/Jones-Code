@@ -46,7 +46,7 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { providerModelKey, sortProviderModelItems } from "../../modelOrdering";
-import { matchesProviderModelLock } from "./ProviderInstanceShortcuts";
+import { matchesProviderModelLock } from "../../jones/composer/ProviderInstanceShortcuts";
 
 type ModelPickerItem = {
   slug: string;

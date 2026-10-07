@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import {
+  validateAppearanceBinding,
   appendWorkstreamDtoPage,
   nativeWorkstreamThreadKey,
   planWorkstreamOwnerOrder,
@@ -13,6 +14,8 @@ import {
 import {
   EnvironmentId,
   T3PlacementIdentity,
+  type WorkstreamAppearancePage,
+  type WorkstreamAppearanceWrite,
   type WorkstreamCommand,
   type WorkstreamReceipt,
 } from "@t3tools/contracts";
@@ -21,7 +24,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { Pressable, Text } from "react-native";
+import { AppState, Pressable, Text } from "react-native";
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { environmentCatalog } from "../../connection/catalog";
@@ -37,6 +40,7 @@ import { canEditWorkstreams } from "./actions";
 import { MobileWorkstreamControls } from "./Controls";
 
 import {
+  sameMobileWorkstreamAuthority,
   mobilePlacementInventory,
   projectMobileWorkstreams,
   type MobileWorkstreamSnapshot,
@@ -207,6 +211,31 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
               ),
             { signal: controller.signal },
           );
+          let appearance: WorkstreamAppearancePage | null = null;
+          try {
+            const items: WorkstreamAppearancePage["items"][number][] = [];
+            const ids = data.items.map((item) => item.workstreamId);
+            for (let start = 0; start < Math.max(1, ids.length); start += 100) {
+              const batch = ids.slice(start, start + 100);
+              const result = await request(
+                connection.prepared,
+                "POST",
+                "/appearance/read",
+                (client, headers) =>
+                  client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
+                controller.signal,
+              );
+              if (!result.supported) {
+                appearance = null;
+                break;
+              }
+              validateAppearanceBinding(result.page, data.binding, batch);
+              items.push(...result.page.items);
+              appearance = { ...result.page, items };
+            }
+          } catch {
+            appearance = null;
+          }
           let placements: LiveT3Placements | null = null;
           try {
             placements = await loadLiveT3Placements(
@@ -232,6 +261,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
           }
           return {
             ...connection,
+            appearance,
             data,
             placements,
             identityKeys: new Set(
@@ -276,12 +306,67 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       ]),
     )
     .join("|");
+  useEffect(() => {
+    const abort = new AbortController();
+    let loading = false;
+    const updateColors = async () => {
+      if (loading || AppState.currentState !== "active") return;
+      loading = true;
+      try {
+        for (const snapshot of snapshotsRef.current) {
+          if (!snapshot.appearance) continue;
+          const ids = snapshot.data.items.map((item) => item.workstreamId);
+          let appearance = snapshot.appearance;
+          const items: WorkstreamAppearancePage["items"][number][] = [];
+          for (let start = 0; start < Math.max(1, ids.length); start += 100) {
+            const batch = ids.slice(start, start + 100);
+            const result = await request(
+              snapshot.prepared,
+              "POST",
+              "/appearance/read",
+              (client, headers) =>
+                client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
+              abort.signal,
+            );
+            if (!result.supported) throw new Error("Appearance unavailable.");
+            validateAppearanceBinding(result.page, snapshot.data.binding, batch);
+            items.push(...result.page.items);
+            appearance = { ...result.page, items };
+          }
+          if (!abort.signal.aborted)
+            setLoaded((previous) =>
+              previous.connections !== connections
+                ? previous
+                : {
+                    ...previous,
+                    snapshots: previous.snapshots.map((item) =>
+                      item === snapshot ? { ...item, appearance } : item,
+                    ),
+                  },
+            );
+        }
+      } catch {
+        /* Retain the last observed display until an explicit refresh. */
+      } finally {
+        loading = false;
+      }
+    };
+    const timer = setInterval(() => void updateColors(), 30_000);
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") void updateColors();
+    });
+    return () => {
+      abort.abort();
+      clearInterval(timer);
+      subscription.remove();
+    };
+  }, [connections, request]);
   const assertCurrent = (snapshot: MobileWorkstreamSnapshot) => {
     if (
       !current.current.some(
         (entry) => entry.prepared === snapshot.prepared && entry.generation === snapshot.generation,
       ) ||
-      !snapshotsRef.current.some((entry) => entry === snapshot)
+      !snapshotsRef.current.some((entry) => sameMobileWorkstreamAuthority(entry, snapshot))
     )
       throw new Error("Workstream access changed. Refresh before retrying.");
   };
@@ -447,7 +532,32 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     () => projectMobileWorkstreams(snapshots, threads, Date.now()),
     [snapshots, threads],
   );
+  const saveAppearance = async (
+    snapshot: MobileWorkstreamSnapshot,
+    input: WorkstreamAppearanceWrite,
+  ) => {
+    assertCurrent(snapshot);
+    if (!snapshot.appearance?.permissions.includes("workstreams:write"))
+      throw new Error("Color editing unavailable.");
+    const controller = new AbortController();
+    controllers.current.add(controller);
+    try {
+      const result = await request(
+        snapshot.prepared,
+        "POST",
+        "/appearance/write",
+        (client, headers) => client.appearanceSave({ headers, payload: input }),
+        controller.signal,
+      );
+      assertCurrent(snapshot);
+      refreshMountedWorkstreams();
+      return result;
+    } finally {
+      controllers.current.delete(controller);
+    }
+  };
   const api: MobileWorkstreams = {
+    saveAppearance,
     ...projection,
     snapshots,
     enabled,

@@ -19,8 +19,9 @@ source does not itself authorize running setup or accessing those files.
 Confirm the applicable scope before invoking it; do not print their contents.
 
 Give the printed pairing URL to the authorized tester. The bare origin does not
-authenticate a new browser. Agents must have browser authorization before
-opening a browser and must not consume the user's pairing token.
+authenticate a new browser. [Standing local app testing permission](./contributor-guidance.md#local-app-testing-permission)
+covers isolated synthetic verification; agents must not consume the user's
+pairing token.
 
 Prefer a container? See [Dev container](../internals/devcontainer.md) for VS Code and Codespaces setup.
 
@@ -33,7 +34,8 @@ See the [mobile README](../../apps/mobile/README.md) for native builds and Metro
 Flags go directly after the task name, for example
 `vp run dev --home-dir /absolute/task-owned/t3-home`.
 Use an isolated, task-owned directory with a defined lifetime and cleanup owner.
-Add `--browser` only when opening a browser is authorized.
+The [standing testing permission](./contributor-guidance.md#local-app-testing-permission)
+covers `--browser` for isolated synthetic verification.
 
 ### State and ports
 
@@ -147,8 +149,10 @@ The workarounds live in the [web entry](../../apps/web/src/bootstrap.ts) and
 
 Configure or reuse this credential only when the task authorizes the exact
 configuration access and change. This procedure does not grant permission to
-read existing `.env` values, copy credentials, start a shared server, or open a
-browser. Reuse an existing authorization within its scope.
+read existing `.env` values, copy credentials, or start a shared server.
+Browser verification is covered separately by [standing local app testing
+permission](./contributor-guidance.md#local-app-testing-permission); credential
+configuration still needs exact authorization.
 
 Use this only on a hostname where you trust every service. Browsers send cookies to all ports
 on that hostname. Any service you visit there can receive the reusable admin credential,

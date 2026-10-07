@@ -26,6 +26,10 @@ vi.mock("../../hooks/useLocalStorage", () => ({
   useLocalStorage: (_key: string, initial: unknown) => hooks.useState(initial),
 }));
 
+vi.mock("../../jones/workstreamAppearance/useWorkstreamAppearance", () => ({
+  useWorkstreamAppearance: () => ({ writable: false, colors: new Map(), save: vi.fn() }),
+}));
+
 import { WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
 
 const binding = {

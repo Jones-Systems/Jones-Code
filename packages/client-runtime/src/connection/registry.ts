@@ -796,8 +796,8 @@ export const make = Effect.gen(function* () {
         } else if (enabled) {
           yield* createServiceScope(next);
         }
-        // The supervisor only owns the RPC session. A managed SSH backend and
-        // its tunnel outlive it, so switching off tears those down as well.
+        // The supervisor only owns the RPC session. Switching off also releases
+        // the local SSH tunnel; the host server and provider processes remain running.
         if (
           !enabled &&
           entry.target._tag === "SshConnectionTarget" &&

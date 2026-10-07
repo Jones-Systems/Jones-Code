@@ -58,7 +58,7 @@ import packageJson from "../../../package.json" with { type: "json" };
 import codexCollabWire from "../../provider/testFixtures/codexMultiAgentWire.json" with { type: "json" };
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as ServerConfig from "../../config.ts";
-import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
+import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { EventNdjsonLogger } from "../../provider/Layers/EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "../../provider/Layers/ProviderEventLoggers.ts";

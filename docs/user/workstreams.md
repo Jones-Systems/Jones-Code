@@ -8,6 +8,8 @@ Collapse a group to save space; your choice is remembered in this browser. Drag 
 
 Workstreams need a connected owner registry with current access. Assignment also needs a registered, verified thread reference. If placements cannot be verified, refresh before moving a thread. Read-only access lets you inspect groups and their history. It does not enable registry changes.
 
+Choose **Color…** from a Workstream's menu to preview a preset or custom RGB border. **Save** shares the choice with your connected devices; **Cancel** keeps the saved color, and **Reset to automatic** restores the default after saving. On mobile, open the group's menu to choose its color. Color editing requires a registry that supports shared appearance and current write access.
+
 Changing membership preserves the conversation's repository, project, pinning, snooze and settlement state. Pinned, snoozed and settled conversations keep their native sidebar shelves.
 
 Each group shows running threads out of its total known primary members, including members in those shelves. Secondary associations do not increase the total. A purple dot marks threads waiting for input or approval, followed by a blue spinner while threads are running. **Failed** replaces both indicators when a member fails; the running count remains visible.

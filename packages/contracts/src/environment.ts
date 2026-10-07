@@ -112,6 +112,7 @@ export const NativeBootstrapCreationCapability = nativeBootstrapCapabilityStruct
 export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  workQueueMetadata: Schema.optionalKey(Schema.Boolean),
   queueDispatch: Schema.optionalKey(QueueDispatchCapability),
   threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   nativeBootstrapCreation: Schema.optionalKey(NativeBootstrapCreationCapability),
@@ -175,6 +176,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadPinReorder: Schema.optionalKey(Schema.Boolean),
   /** Server persists manual Active order through thread.active.reorder. */
   threadActiveReorder: Schema.optionalKey(Schema.Boolean),
+  workMode: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.auto-settle.set (per-thread auto-settle off).
       Same version-skew contract as threadSettlement. */
   threadAutoSettleOptOut: Schema.optionalKey(Schema.Boolean),

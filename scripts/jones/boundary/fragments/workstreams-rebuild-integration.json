@@ -1,0 +1,220 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workstreams-rebuild-integration",
+  "jonesOwnedPaths": [
+    "apps/mobile/src/features/workstreams/Controls.tsx",
+    "apps/mobile/src/features/workstreams/actions.fixtures.ts",
+    "apps/mobile/src/features/workstreams/actions.test.ts",
+    "apps/mobile/src/features/workstreams/actions.ts",
+    "apps/mobile/src/features/workstreams/commands.test.ts",
+    "apps/mobile/src/features/workstreams/commands.ts",
+    "apps/mobile/src/features/workstreams/gateway.ts",
+    "apps/mobile/src/features/workstreams/listProjection.ts",
+    "apps/mobile/src/features/workstreams/loaders.test.ts",
+    "apps/mobile/src/features/workstreams/loaders.ts",
+    "apps/mobile/src/features/workstreams/projection.test.ts",
+    "apps/mobile/src/features/workstreams/projection.ts",
+    "apps/mobile/src/features/workstreams/types.ts",
+    "apps/mobile/src/features/workstreams/useWorkstreams.ts",
+    "apps/mobile/src/jones/workstreamAppearance/WorkstreamColorPicker.tsx",
+    "apps/server/src/cli/workstream.ts",
+    "apps/server/src/environment/NativePlacementTrust.ts",
+    "apps/server/src/environment/NativeStoreAuthority.test.ts",
+    "apps/server/src/environment/NativeStoreAuthority.ts",
+    "apps/server/src/environment/nativeStoreAuthorityPath.ts",
+    "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts",
+    "apps/server/src/environment/nativeStoreAuthorityPersistence.ts",
+    "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+    "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.ts",
+    "apps/server/src/workstreams/SyntheticWorkstreamTransport.ts",
+    "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+    "apps/server/src/workstreams/WorkstreamGateway.ts",
+    "apps/server/src/workstreams/WorkstreamPlacements.test.ts",
+    "apps/server/src/workstreams/http.test.ts",
+    "apps/server/src/workstreams/http.ts",
+    "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",
+    "apps/web/src/components/workstreams/WorkstreamNativeSidebar.tsx",
+    "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+    "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
+    "apps/web/src/components/workstreams/WorkstreamSidebarSection.tsx",
+    "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
+    "apps/web/src/components/workstreams/nativeThreadGrouping.ts",
+    "apps/web/src/components/workstreams/nativeWorkstreamActions.fixtures.ts",
+    "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
+    "apps/web/src/components/workstreams/nativeWorkstreamActions.ts",
+    "apps/web/src/components/workstreams/types.ts",
+    "apps/web/src/components/workstreams/workstreamPresentation.test.ts",
+    "apps/web/src/components/workstreams/workstreamPresentation.ts",
+    "apps/web/src/components/workstreams/workstreamThreadStatus.ts",
+    "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx",
+    "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.tsx",
+    "apps/web/src/jones/workstreamAppearance/useWorkstreamAppearance.ts",
+    "apps/web/src/state/workstreams.test.ts",
+    "apps/web/src/state/workstreams.ts",
+    "docs/user/workstreams.md",
+    "packages/client-runtime/src/state/workstreams/appearance.test.ts",
+    "packages/client-runtime/src/state/workstreams/appearance.ts",
+    "packages/client-runtime/src/state/workstreams/cache.ts",
+    "packages/client-runtime/src/state/workstreams/colors.test.ts",
+    "packages/client-runtime/src/state/workstreams/colors.ts",
+    "packages/client-runtime/src/state/workstreams/index.ts",
+    "packages/client-runtime/src/state/workstreams/lifecycle.test.ts",
+    "packages/client-runtime/src/state/workstreams/lifecycle.ts",
+    "packages/client-runtime/src/state/workstreams/live.test.ts",
+    "packages/client-runtime/src/state/workstreams/live.ts",
+    "packages/client-runtime/src/state/workstreams/model.ts",
+    "packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts",
+    "packages/client-runtime/src/state/workstreams/nativeThreadGrouping.ts",
+    "packages/client-runtime/src/state/workstreams/placements.test.ts",
+    "packages/client-runtime/src/state/workstreams/placements.ts",
+    "packages/client-runtime/src/state/workstreams/projection.ts",
+    "packages/client-runtime/src/state/workstreams/reducer.ts",
+    "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
+    "packages/client-runtime/src/voiceReview/fixtures.ts",
+    "packages/contracts/src/legacyOrchestrationCompatibility.ts",
+    "packages/contracts/src/queueProtocol.test.ts",
+    "packages/contracts/src/queueProtocol.ts",
+    "packages/contracts/src/threadCorpusProtocol.test.ts",
+    "packages/contracts/src/threadCorpusProtocol.ts",
+    "packages/contracts/src/threadRegistry.ts",
+    "packages/contracts/src/workstreamPlacements.ts",
+    "packages/contracts/src/workstreams-fixtures/README.md",
+    "packages/contracts/src/workstreams-fixtures/conformance.json.fixture",
+    "packages/contracts/src/workstreams-fixtures/negative-cases.json.fixture",
+    "packages/contracts/src/workstreams-fixtures/raw-fixtures.d.ts",
+    "packages/contracts/src/workstreams-fixtures/semantic-cases.json.fixture",
+    "packages/contracts/src/workstreams.conformance.test.ts",
+    "packages/contracts/src/workstreams.test.ts",
+    "packages/contracts/src/workstreams.ts",
+    "packages/contracts/test-fixtures/queue-dispatch-capability.json",
+    "packages/contracts/test-fixtures/thread-corpus-capability.json"
+  ],
+  "hookPaths": [
+    "apps/mobile/src/features/home/HomeScreen.tsx",
+    "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",
+    "apps/mobile/src/features/threads/thread-list-v2-items.tsx",
+    "apps/mobile/src/features/threads/threadListV2.test.ts",
+    "apps/mobile/src/features/threads/threadListV2.ts",
+    "apps/server/src/binCli.ts",
+    "apps/server/src/cli/config.test.ts",
+    "apps/server/src/cli/config.ts",
+    "apps/server/src/cloud/http.test.ts",
+    "apps/server/src/cloud/serviceLauncherClient.test.ts",
+    "apps/server/src/cloud/serviceLauncherClient.ts",
+    "apps/server/src/cloud/serviceProtocol.ts",
+    "apps/server/src/config.ts",
+    "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.testkit.ts",
+    "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
+    "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
+    "apps/server/src/serviceLauncher.test.ts",
+    "apps/server/src/serviceLauncher.ts",
+    "apps/web/src/components/sidebar/SidebarThreadHeader.tsx",
+    "apps/web/src/lib/runtime.test.ts",
+    "apps/web/src/lib/runtime.ts",
+    "apps/web/src/test/reactHookHarness.ts",
+    "packages/client-runtime/src/authorization/index.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/workstreamAppearance.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/home/HomeScreen.tsx",
+      "to": "apps/mobile/src/features/workstreams/useWorkstreams.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/home/HomeScreen.tsx",
+      "to": "apps/mobile/src/features/workstreams/listProjection.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",
+      "to": "apps/mobile/src/features/workstreams/useWorkstreams.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",
+      "to": "apps/mobile/src/features/workstreams/listProjection.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/threadListV2.test.ts",
+      "to": "apps/mobile/src/features/workstreams/listProjection.ts"
+    },
+    {
+      "from": "apps/server/src/binCli.ts",
+      "to": "apps/server/src/cli/workstream.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/workstreams/http.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.test.ts",
+      "to": "apps/server/src/environment/nativeStoreAuthorityPersistence.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/environment/nativeStoreAuthorityPersistence.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/components/workstreams/WorkstreamSidebarSection.tsx"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/components/workstreams/nativeWorkstreamActions.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/state/workstreams.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/components/workstreams/nativeThreadGrouping.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/components/workstreams/WorkstreamNativeSidebar.tsx"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/queueProtocol.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/threadCorpusProtocol.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/workstreams.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/workstreamPlacements.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/workstreams.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/workstreamPlacements.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/threadRegistry.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/queueProtocol.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/threadCorpusProtocol.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/legacyOrchestrationCompatibility.ts"
+    }
+  ]
+}

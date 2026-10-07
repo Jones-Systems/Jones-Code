@@ -1,7 +1,7 @@
 import { readCodexGoalState, unknownProviderGoal } from "../../provider/providerGoal.ts";
 import type { ServerProviderModel } from "@t3tools/contracts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
-import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
+import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import {
   makeCodexCapacityContinuation,
   reduceCodexCapacityContinuation,

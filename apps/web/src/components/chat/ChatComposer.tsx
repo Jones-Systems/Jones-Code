@@ -1,4 +1,4 @@
-import { ReasoningEffortShortcuts } from "./ReasoningEffortShortcuts";
+import { ReasoningEffortShortcuts } from "../../jones/composer/ReasoningEffortShortcuts";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "./runtimeModeConfig";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
@@ -199,8 +199,8 @@ import {
   shouldUseRestingComposerLayout,
 } from "../composerFooterLayout";
 import { measureRestingComposerControls } from "./restingComposerControlsMeasurement";
-import { ProviderInstanceShortcuts } from "./ProviderInstanceShortcuts";
-import { useComposerShortcutRails } from "./composerShortcutRails";
+import { ProviderInstanceShortcuts } from "../../jones/composer/ProviderInstanceShortcuts";
+import { useComposerShortcutRails } from "../../jones/composer/composerShortcutRails";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import {
   ComposerContextActionsContext,

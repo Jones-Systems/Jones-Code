@@ -30,13 +30,33 @@ import * as Schema from "effect/Schema";
 
 import { WorkstreamTransportError, type WorkstreamTransport } from "./WorkstreamGateway.ts";
 
+import {
+  WORKSTREAM_APPEARANCE_CONTRACT,
+  WORKSTREAM_APPEARANCE_MANIFEST,
+  WORKSTREAM_APPEARANCE_ROUTE,
+  WorkstreamAppearancePage,
+  WorkstreamAppearance,
+} from "@t3tools/contracts";
+
 const EMPTY_SHA256 = NodeCrypto.createHash("sha256").update("").digest("hex");
 const TIMEOUT_MS = 15_000;
 
 class BoundedTransportFailure extends Error {
-  readonly reason: "invalid_target" | "response_too_large" | "http_error" | "cursor_stale";
+  readonly reason:
+    | "invalid_target"
+    | "response_too_large"
+    | "http_error"
+    | "cursor_stale"
+    | "unsupported_appearance";
 
-  constructor(reason: "invalid_target" | "response_too_large" | "http_error" | "cursor_stale") {
+  constructor(
+    reason:
+      | "invalid_target"
+      | "response_too_large"
+      | "http_error"
+      | "cursor_stale"
+      | "unsupported_appearance",
+  ) {
     super(reason);
     this.reason = reason;
   }
@@ -155,7 +175,8 @@ function query(input: { readonly limit: number; readonly cursor?: string }): str
 export function signWorkstreamRequest(input: {
   readonly contractVersion?:
     | typeof WORKSTREAM_CONTRACT_HEADER_VERSION
-    | typeof T3_PLACEMENT_CONTRACT;
+    | typeof T3_PLACEMENT_CONTRACT
+    | typeof WORKSTREAM_APPEARANCE_CONTRACT;
   readonly requestId: string;
   readonly idempotencyKey?: string;
   readonly sentAt: string;
@@ -238,10 +259,13 @@ async function performRequest(input: {
   readonly idempotencyKey?: string;
   readonly signal: AbortSignal;
 }): Promise<string> {
+  const appearance =
+    input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/read` ||
+    input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/write`;
   const placement =
     input.target === T3_PLACEMENT_ROUTE || input.target.startsWith(`${T3_PLACEMENT_ROUTE}?`);
   if (
-    (!input.target.startsWith("/workstreams/v1/") && !placement) ||
+    (!input.target.startsWith("/workstreams/v1/") && !placement && !appearance) ||
     (placement &&
       (input.method !== "POST" ||
         input.target !== T3_PLACEMENT_ROUTE ||
@@ -257,7 +281,11 @@ async function performRequest(input: {
       ? EMPTY_SHA256
       : NodeCrypto.createHash("sha256").update(input.body).digest("hex");
   const signature = signWorkstreamRequest({
-    contractVersion: placement ? T3_PLACEMENT_CONTRACT : WORKSTREAM_CONTRACT_HEADER_VERSION,
+    contractVersion: appearance
+      ? WORKSTREAM_APPEARANCE_CONTRACT
+      : placement
+        ? T3_PLACEMENT_CONTRACT
+        : WORKSTREAM_CONTRACT_HEADER_VERSION,
     requestId,
     ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
     sentAt: input.sentAt,
@@ -277,12 +305,16 @@ async function performRequest(input: {
       accept: "application/json",
       "content-type": "application/json; charset=utf-8",
       "x-control-algorithm": "hmac-sha256-v1",
-      "x-control-contract-version": placement
-        ? T3_PLACEMENT_CONTRACT
-        : `workstreams/${WORKSTREAM_CONTRACT_VERSION}`,
-      "x-control-contract-manifest": placement
-        ? T3_PLACEMENT_MANIFEST_SHA256
-        : WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+      "x-control-contract-version": appearance
+        ? WORKSTREAM_APPEARANCE_CONTRACT
+        : placement
+          ? T3_PLACEMENT_CONTRACT
+          : `workstreams/${WORKSTREAM_CONTRACT_VERSION}`,
+      "x-control-contract-manifest": appearance
+        ? WORKSTREAM_APPEARANCE_MANIFEST
+        : placement
+          ? T3_PLACEMENT_MANIFEST_SHA256
+          : WORKSTREAM_CONTRACT_MANIFEST_SHA256,
       "x-control-request-id": requestId,
       "x-control-timestamp": input.sentAt,
       "x-control-nonce": nonce,
@@ -294,6 +326,19 @@ async function performRequest(input: {
     },
     ...(input.body === "" ? {} : { body: input.body }),
   });
+  if (appearance) {
+    if (response.status === 404 && response.headers.get("x-control-contract-version") === null) {
+      await response.body?.cancel();
+      throw new BoundedTransportFailure("unsupported_appearance");
+    }
+    if (
+      response.headers.get("x-control-contract-version") !== WORKSTREAM_APPEARANCE_CONTRACT ||
+      response.headers.get("x-control-contract-manifest") !== WORKSTREAM_APPEARANCE_MANIFEST
+    ) {
+      await response.body?.cancel();
+      throw new BoundedTransportFailure("http_error");
+    }
+  }
   if (
     placement &&
     (response.headers.get("x-control-contract-version") !== T3_PLACEMENT_CONTRACT ||
@@ -353,7 +398,9 @@ export function makeControlPlaneWorkstreamTransport(
           new WorkstreamTransportError({
             operation,
             effect:
-              method === "POST" && operation !== "thread_placements"
+              method === "POST" &&
+              operation !== "thread_placements" &&
+              operation !== "appearance_read"
                 ? "unknown-effect"
                 : "no-effect",
             detail:
@@ -367,7 +414,9 @@ export function makeControlPlaneWorkstreamTransport(
               new WorkstreamTransportError({
                 operation,
                 effect:
-                  method === "POST" && operation !== "thread_placements"
+                  method === "POST" &&
+                  operation !== "thread_placements" &&
+                  operation !== "appearance_read"
                     ? "unknown-effect"
                     : "no-effect",
                 detail: "Control-plane request timed out.",
@@ -383,7 +432,9 @@ export function makeControlPlaneWorkstreamTransport(
             new WorkstreamTransportError({
               operation,
               effect:
-                method === "POST" && operation !== "thread_placements"
+                method === "POST" &&
+                operation !== "thread_placements" &&
+                operation !== "appearance_read"
                   ? "unknown-effect"
                   : "no-effect",
               detail: "Control-plane returned invalid JSON for the accepted contract.",
@@ -399,6 +450,31 @@ export function makeControlPlaneWorkstreamTransport(
       authorizationRevision: config.authorizationRevision,
     },
     transport: {
+      readAppearance: (input) =>
+        request(
+          "appearance_read",
+          "POST",
+          `${WORKSTREAM_APPEARANCE_ROUTE}/read`,
+          WorkstreamAppearancePage,
+          JSON.stringify(input),
+          NodeCrypto.randomUUID(),
+        ).pipe(
+          Effect.map((page) => ({ supported: true as const, page })),
+          Effect.catch((error) =>
+            error.detail === "unsupported_appearance"
+              ? Effect.succeed({ supported: false as const })
+              : Effect.fail(error),
+          ),
+        ),
+      saveAppearance: (input) =>
+        request(
+          "appearance_write",
+          "POST",
+          `${WORKSTREAM_APPEARANCE_ROUTE}/write`,
+          WorkstreamAppearance,
+          JSON.stringify(input),
+          input.command_id,
+        ),
       listThreadPlacements: (input) =>
         Schema.encodeEffect(Schema.fromJsonString(T3PlacementRequest))(input, {
           onExcessProperty: "error",
