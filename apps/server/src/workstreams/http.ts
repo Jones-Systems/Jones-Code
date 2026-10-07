@@ -27,6 +27,11 @@ import type { T3PlacementTrustProvider } from "../environment/NativePlacementTru
 import * as NativeStoreAuthority from "../environment/NativeStoreAuthority.ts";
 import { makeControlPlaneWorkstreamTransport } from "./ControlPlaneWorkstreamTransport.ts";
 import { WorkstreamGateway, make, type WorkstreamGatewayError } from "./WorkstreamGateway.ts";
+import { createRegistrationContextHandler } from "./registrationContext/http.ts";
+import {
+  WorkstreamsRegistrationContext,
+  makeWorkstreamsRegistrationContext,
+} from "./registrationContext/service.ts";
 
 export const WORKSTREAM_RESPONSE_HEADERS = {
   "cache-control": "private, no-store",
@@ -97,6 +102,14 @@ const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrus
 export const workstreamGatewayLayerLive = makeWorkstreamGatewayLayerLive().pipe(
   Layer.provide(NativeStoreAuthority.layer),
 );
+export const workstreamRegistrationContextLayerLive = Layer.effect(
+  WorkstreamsRegistrationContext,
+  Effect.gen(function* () {
+    const configured = makeControlPlaneWorkstreamTransport();
+    const authority = yield* NativeStoreAuthority.NativeStoreAuthority;
+    return makeWorkstreamsRegistrationContext({ ...configured.registrationContext, authority });
+  }),
+).pipe(Layer.provide(NativeStoreAuthority.layer));
 
 const internal = <A>(
   operation: string,
@@ -139,12 +152,14 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
   "workstreams",
   Effect.fnUntraced(function* (handlers) {
     const gateway = yield* WorkstreamGateway;
+    const registrationContext = yield* WorkstreamsRegistrationContext;
     const read = (name: string) =>
       Effect.gen(function* () {
         yield* annotateEnvironmentRequest(name);
         yield* requireEnvironmentScope(AuthOrchestrationReadScope);
       });
     return handlers
+      .handle("registrationContext", createRegistrationContextHandler(registrationContext))
       .handle("threadPlacements", (args) =>
         read(args.endpoint.name).pipe(
           Effect.andThen(internal("threadPlacements", gateway.readThreadPlacements(args.payload))),
