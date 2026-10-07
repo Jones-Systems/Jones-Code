@@ -23,6 +23,11 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { environmentAuthenticatedAuthLayer } from "../auth/http.ts";
 import { make, WorkstreamGateway, WorkstreamGatewayError } from "./WorkstreamGateway.ts";
 import { makeSyntheticWorkstreamTransport } from "./SyntheticWorkstreamTransport.ts";
+import { WorkstreamsRegistrationContext } from "./registrationContext/service.ts";
+import {
+  makeRegistrationFixture,
+  response as registrationResponse,
+} from "./registrationContext/testFixtures.ts";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -148,6 +153,7 @@ const withHttpFixture = Effect.fn(function* (
   ) as EnvironmentAuth.EnvironmentAuth["Service"];
   const routes = HttpApiBuilder.layer(WorkstreamTestApi).pipe(
     Layer.provide(workstreamHttpApiLayer),
+    Layer.provide(Layer.succeed(WorkstreamsRegistrationContext, makeRegistrationFixture().service)),
     Layer.provide(environmentAuthenticatedAuthLayer),
     Layer.provide(Layer.succeed(EnvironmentAuth.EnvironmentAuth, auth)),
     Layer.provide(
@@ -292,4 +298,19 @@ it.effect.each([
     },
     reason,
   ),
+);
+
+it.effect("serves registration context through the production Workstreams API group", () =>
+  withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls }) => {
+    const result = await handler(
+      new Request("http://fixture/api/workstreams/registration-context", {
+        headers: { authorization: "Bearer synthetic-token" },
+      }),
+    );
+    expect(result.status).toBe(200);
+    expect(result.headers.get("cache-control")).toBe("private, no-store");
+    expect(result.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await result.json()).toEqual(registrationResponse);
+    expect(calls).toEqual({ reads: 0, writes: 0 });
+  }),
 );

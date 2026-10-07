@@ -39,6 +39,7 @@ import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import {
   workstreamGatewayLayerLive,
+  workstreamRegistrationContextLayerLive,
   workstreamHttpApiLayer,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
@@ -49,6 +50,12 @@ import { hostStatusHttpApiLayer } from "./hostStatus/http.ts";
 import * as HostStatus from "./hostStatus/HostStatus.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
+import {
+  nativeWorkstreamsHttpApiLayer,
+  nativeWorkstreamsRuntimeLayer,
+} from "./workstreams/runtimeIntegration/native.ts";
+import * as NativeStoreAuthority from "./environment/NativeStoreAuthority.ts";
+import * as AuthSessions from "./persistence/AuthSessions.ts";
 import * as SqlitePersistence from "./persistence/Layers/Sqlite.ts";
 import * as PullRequestFilesViewed from "./persistence/PullRequestFilesViewed.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -661,6 +668,7 @@ const makeRoutesLayer = Layer.mergeAll(
       ),
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(workstreamHttpApiLayer),
+      Layer.provide(nativeWorkstreamsHttpApiLayer),
       Layer.provide(hostStatusHttpApiLayer.pipe(Layer.provide(HostStatus.layer))),
       Layer.provide(projectHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
@@ -688,6 +696,17 @@ const makeRoutesLayer = Layer.mergeAll(
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
   Layer.provide(workstreamGatewayLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer))),
+  Layer.provide(
+    workstreamRegistrationContextLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer)),
+  ),
+  Layer.provide(
+    nativeWorkstreamsRuntimeLayer.pipe(
+      Layer.provide(
+        NativeStoreAuthority.layer.pipe(Layer.provide(ServerEnvironment.identityLayer)),
+      ),
+      Layer.provide(AuthSessions.layer),
+    ),
+  ),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),
