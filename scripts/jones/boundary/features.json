@@ -29,16 +29,12 @@
     },
     {
       "id": "work-queue-preview",
-      "tests": [
-        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx"
-      ],
+      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
       "scope": "Mock submitted-work preview. Rebuild #113 canonical queue metadata remains outside automatically accepted scope; queue dispatch compatibility and process placement have separate source test references."
     },
     {
       "id": "boundary-inventory",
-      "tests": [
-        "scripts/jones/check-boundary.test.ts"
-      ]
+      "tests": ["scripts/jones/check-boundary.test.ts"]
     },
     {
       "id": "provider-settlement",
