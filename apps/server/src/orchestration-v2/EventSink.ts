@@ -1,3 +1,5 @@
+import { readApplicationBirthRecord } from "../jones/importedHistory/ApplicationBirth.ts";
+import type { ImportedApplicationAttachmentBirthV1 } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
 import { DispatchGuardRejected } from "./DispatchGuard.ts";
 import {
   type RecordedRun as OrchestrationV2Run,
@@ -135,6 +137,10 @@ interface EventSinkStreamInput {
 }
 
 export interface EventSinkV2Shape {
+  readonly readApplicationBirthRecord?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ImportedApplicationAttachmentBirthV1 | null, EventSinkV2Error>;
+
   readonly commitLegacyPreflight: (input: {
     readonly commandId: CommandId;
     readonly event: OrchestrationV2PrivateEvent;
@@ -1410,6 +1416,12 @@ const baseLayer: Layer.Layer<
     }
 
     return EventSinkV2.of({
+      readApplicationBirthRecord: (threadId) =>
+        sql
+          .withTransaction(
+            readApplicationBirthRecord(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          )
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       commitLegacyPreflight,
       write: (input) =>
         writeEffect({ ...input, effects: [] }).pipe(
