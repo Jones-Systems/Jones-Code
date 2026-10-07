@@ -31,6 +31,8 @@
       "entry": [
         "src/bin.ts!",
         "scripts/jones/currentFixtures.ts",
+        "src/jones/cloud/*.ts",
+        "src/jones/updates/*.ts",
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
         "scripts/evaluate-thread-titles.ts",
