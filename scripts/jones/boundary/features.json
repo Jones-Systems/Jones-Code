@@ -1,7 +1,7 @@
 {
   "schema": "jones.boundary-features/v1",
   "scopeReference": "docs/operations/upstream-sync.md",
-  "baseline": "f6876f9bac082f0314e6e01b6b7db98c1a3b0246",
+  "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
       "id": "conversation-library",
@@ -30,7 +30,7 @@
     {
       "id": "work-queue-preview",
       "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
-      "scope": "Mock submitted-work preview. Rebuild #113 real queue metadata is absent; #113 and #114 remain outside automatic scope adoption pending owner disposition."
+      "scope": "Mock submitted-work preview. Rebuild #113 canonical queue metadata remains outside automatically accepted scope; queue dispatch compatibility and process placement have separate source test references."
     },
     {
       "id": "boundary-inventory",
@@ -68,6 +68,42 @@
       "tests": [
         "packages/contracts/src/queueProtocol.test.ts",
         "packages/contracts/src/threadCorpusProtocol.test.ts"
+      ]
+    },
+    {
+      "id": "queue-dispatch-goals",
+      "tests": [
+        "apps/server/src/orchestration-v2/QueueCompatibility.test.ts",
+        "apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts",
+        "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
+        "apps/server/src/provider/providerQueue.test.ts",
+        "apps/server/src/provider/providerGoal.test.ts"
+      ]
+    },
+    {
+      "id": "provider-runtime-identity",
+      "tests": [
+        "apps/server/src/orchestration-v2/EventSink.runtimeIdentity.test.ts",
+        "apps/server/src/resourceTelemetry/ProcessAttribution.test.ts",
+        "packages/contracts/src/providerRuntimeIdentity.test.ts"
+      ]
+    },
+    {
+      "id": "process-placement",
+      "tests": [
+        "apps/server/src/process/processPlacement.test.ts",
+        "apps/server/src/process/processPlacementBootstrap.test.ts",
+        "apps/server/src/process/processPlacementSpawner.test.ts",
+        "native/process-placement/build.test.mjs"
+      ]
+    },
+    {
+      "id": "composer-shortcuts",
+      "tests": [
+        "apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx",
+        "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
+        "apps/web/src/components/chat/ReasoningEffortShortcuts.test.tsx",
+        "apps/web/src/components/chat/composerShortcutRails.test.ts"
       ]
     }
   ]
