@@ -10,16 +10,17 @@ outside that scope.
 ## Before rollout
 
 Use the [build artifact procedure](./build-artifacts.md) to select a successful
-Linux CLI build and verify its exact built commit. PR artifacts can contain a
+CLI build for the target platform and verify its exact built commit. PR artifacts can contain a
 merge-ref commit rather than the PR head. Retain the artifact directory, including
 `ARTIFACT.json`, `SOURCE_COMMIT`, `SHA256SUMS`, and the archive. Select the host's
 platform and architecture. These unsigned checksums and descriptors are not
 independent signatures; choose a source and build run you trust.
 
-The current workflows produce Linux CLI archives and a Mac desktop DMG. They do
-not produce a darwin CLI archive. Mac service rollout is blocked until a separate
-approved artifact workflow or explicitly approved local build supplies a verified
-CLI archive and native execution evidence. A desktop DMG is not that artifact.
+The manual Mac CLI artifact workflow source is available alongside the Linux CLI
+and Mac desktop workflows. Mac service rollout still requires a successful native
+Mac job supplying a verified darwin-arm64 CLI archive and native execution evidence,
+or an explicitly approved local build with equivalent evidence. A desktop DMG is
+not that artifact.
 
 For each host, record these read-only observations before deployment:
 

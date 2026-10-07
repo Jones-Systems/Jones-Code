@@ -71,6 +71,47 @@ Publishing this workflow does not authorize a VPS service restart, installation,
 replacement of an active binary, or use of the real T3 home. Those steps need a
 separate decision covering the target, state backup, rollback, and verification.
 
+## Mac CLI artifact
+
+The separate **Mac CLI artifact** workflow builds a headless Apple Silicon CLI
+archive on a GitHub-hosted `macos-15` runner and asserts the runner is `arm64`.
+It runs only through manual dispatch: no main push or pull request starts it.
+Once this workflow policy has been reviewed and a native run is authorized,
+select the intended source ref in Actions. A successful job packages
+`t3-VERSION-darwin-arm64.tar.gz`, then extracts it and runs `--version` and a real
+loopback server with an empty `PATH` and an isolated home. Its build and smoke
+scratch use the exact workspace directory `.artifact-cli-mac-scratch`; scoped
+script cleanup and the always-run job cleanup own removal, with disposable-runner
+teardown covering forced termination.
+
+Download the successful run's seven-day artifact into a new empty directory and
+verify it on a Mac:
+
+```bash
+gh run download RUN_ID --repo Jones-Systems/Jones-Code \
+  --name jones-code-cli-mac-arm64-RUN_ID-RUN_ATTEMPT--VERSION --dir ./jones-code-mac-trial
+cd ./jones-code-mac-trial
+shasum -a 256 -c SHA256SUMS
+cat SOURCE_COMMIT
+cat ARTIFACT.json
+```
+
+Confirm the source, version, architecture, checksum, and run identity before an
+approved isolated foreground trial. Use the manual trial procedure above with
+`t3-VERSION-darwin-arm64.tar.gz` and its matching extracted directory, keeping all
+adjacent runtime files together. The archive builder ad hoc signs the CLI and
+native dependencies. `ARTIFACT.json` records `signing: "ad-hoc"`, `signed: false`,
+and `notarized: false`: `signed` means publisher-authenticated signing, which ad
+hoc signing does not provide. There is no Developer ID identity, notarization,
+GitHub Release, or release feed.
+
+Workflow source alone proves no successful native artifact. A successful smoke
+run would establish native archive startup and loopback serving, but not
+Gatekeeper acceptance, provider login or work, private pairing, installed service
+startup, boot behavior, or host rollout. Those require separately authorized
+native evidence. Publishing this manual workflow does not authorize dispatch or
+installation.
+
 ## Mac desktop artifact
 
 The companion **Mac Desktop Artifact** workflow builds an Apple Silicon
@@ -96,7 +137,7 @@ verification alone do not perform those steps.
 
 ## Public Connect configuration and provenance
 
-Both trial workflows copy the tracked `.env.example` before compiling. It contains
+All three trial workflows copy the tracked `.env.example` before compiling. It contains
 public production Clerk and relay identifiers documented in
 [T3 Connect](../internals/t3-connect.md); no credential
 or signing material is supplied. Process variables still override those public
@@ -107,11 +148,11 @@ requires separately recorded public-configuration provenance.
 Each workflow uploads `ARTIFACT.json` with repository, built source commit,
 version, platform, architecture, artifact filename, SHA-256, run/attempt and
 public configuration source. CLI jobs upload `SHA256SUMS` and `SOURCE_COMMIT`;
-Mac jobs upload the DMG checksum and `SOURCE_COMMIT`. Compare all three identities
+Mac desktop jobs upload the DMG checksum and `SOURCE_COMMIT`. Compare all three identities
 before using an artifact. The source stamp records the committed Git tree even
 when build-only package versions have changed the workspace; it refuses a checkout
-whose HEAD differs from `GITHUB_SHA`. Public build configuration, unsigned container
-verification, authentic binary login and peer connection are separate checks;
+whose HEAD differs from `GITHUB_SHA`. Public build configuration, archive/container
+verification, publisher-authenticated signing, binary login and peer connection are separate checks;
 these workflows leave login and peer connection explicitly untested. Select the artifact for the target host's architecture.
 
 A future Jones release needs an approved exact source/tag, distinct version,

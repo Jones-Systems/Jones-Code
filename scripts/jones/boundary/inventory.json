@@ -14,6 +14,7 @@
     ".github/actions/setup-apt-mirrors/action.yml": "upstream-deleted",
     ".github/pull_request_template.md": "policy",
     ".github/workflows/artifact-cli-linux.yml": "policy",
+    ".github/workflows/artifact-cli-mac.yml": "policy",
     ".github/workflows/artifact-desktop-mac.yml": "policy",
     ".github/workflows/ci.yml": "policy",
     ".github/workflows/cursor-hygiene-webhook.yml": "upstream-deleted",
