@@ -252,6 +252,7 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
   scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
   registryLayer: Layer.Layer<ProviderAdapterRegistry.ProviderAdapterRegistryV2, Error>,
   options: {
+    readonly serverConfigLayer?: Layer.Layer<ServerConfig.ServerConfig>;
     readonly databaseLayer?: Layer.Layer<
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
@@ -269,10 +270,12 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
   Orchestrator.OrchestratorV2 | EffectWorker.OrchestrationEffectWorkerV2 | EventSink.EventSinkV2,
   Error | MigrationError | PlatformError.PlatformError | SqlError
 > {
-  const serverConfigLayer = Layer.effect(
-    ServerConfig.ServerConfig,
-    makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
-  ).pipe(Layer.provide(NodeServices.layer));
+  const serverConfigLayer =
+    options.serverConfigLayer ??
+    Layer.effect(
+      ServerConfig.ServerConfig,
+      makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
+    ).pipe(Layer.provide(NodeServices.layer));
   const runtimeLayer =
     scenario.runtimePolicyOverride === undefined
       ? RuntimePolicy.layer

@@ -1658,6 +1658,11 @@ export const OrchestrationV2DomainEvent = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("provider-session.detach-requested"),
+    payload: Schema.Struct({ providerSessionId: ProviderSessionId }),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("provider-session.detached"),
     payload: OrchestrationV2ProviderSessionDetached,
   }),
@@ -2499,6 +2504,11 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("provider-session.detach-requested"),
+    payload: Schema.Struct({ providerSessionId: ProviderSessionId }),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("provider-session.detached"),
     payload: OrchestrationV2ProviderSessionDetachedJson,
   }),
@@ -3090,6 +3100,9 @@ export type OrchestrationV2ServerCommand =
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
+  stopCurrentThreadRuntime: "orchestration.stopCurrentThreadRuntime",
+  readCurrentRuntimeStopTarget: "orchestration.readCurrentRuntimeStopTarget",
+  observeCurrentThreadRuntimeStop: "orchestration.observeCurrentThreadRuntimeStop",
   dispatchNativeBootstrap: "orchestration.dispatchNativeBootstrap",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",

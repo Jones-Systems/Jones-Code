@@ -116,6 +116,13 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   queueDispatch: Schema.optionalKey(QueueDispatchCapability),
   threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   nativeBootstrapCreation: Schema.optionalKey(NativeBootstrapCreationCapability),
+  currentRuntimeStop: Schema.optionalKey(
+    Schema.Struct({
+      targetRequired: Schema.Literal(true),
+      supportedDrivers: Schema.Array(Schema.Literals(["codex", "claudeAgent"])),
+      backgroundCoverage: Schema.Literal("partial"),
+    }),
+  ),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
   worktreeDefaultBase: Schema.optionalKey(Schema.Boolean),

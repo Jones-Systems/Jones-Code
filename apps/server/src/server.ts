@@ -1,3 +1,4 @@
+import { importedHistoryHttpApiLayer } from "./jones/importedHistory/http.ts";
 import * as DeviceDirectGrants from "./jones/device/DeviceDirectGrants.ts";
 import * as JonesHttp from "./jones/http/registration.ts";
 import * as JonesUpdates from "./jones/updates/service.ts";
@@ -675,6 +676,7 @@ const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(authHttpApiLayer),
       Layer.provide(connectHttpApiLayer),
       Layer.provide(jonesUpdatesHttpApiLayer),
+      Layer.provide(importedHistoryHttpApiLayer),
       Layer.provide(orchestrationHttpApiLayer),
       Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(queueCompatibilityHttpApiLayer.pipe(Layer.provide(QueueCompatibility.layer))),

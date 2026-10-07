@@ -6116,6 +6116,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               cwd: request.input.runtimePolicy.cwd,
               runtimeGeneration: currentProducer.generation,
             });
+            yield* request.input.revalidateStartAdmission ?? Effect.void;
             if (!currentCapacityBinding(request))
               return yield* toProtocolError("Native physical binding changed before send.");
             request.startDispatched = true;
@@ -6710,6 +6711,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               yield* Ref.update(pendingRootTurns, (current) =>
                 new Map(current).set(threadId, turnInput),
               );
+              yield* turnInput.revalidateStartAdmission ?? Effect.void;
               yield* client.request("thread/compact/start", { threadId }).pipe(
                 Effect.tapError(() =>
                   Ref.update(pendingRootTurns, (current) => {
@@ -7941,6 +7943,48 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           );
         return {
           ...runtime,
+          captureRuntimeStop: (providerThread) =>
+            Effect.gen(function* () {
+              const producer = currentProducer;
+              const nativeId = providerThread.nativeThreadRef?.nativeId;
+              const bound =
+                typeof nativeId !== "string" ? undefined : producer.bindings.get(nativeId);
+              const revision = providerThread.runtimeIdentity?.evidenceRevision;
+              const binding = runtimeBinding(providerThread, producer.generation);
+              // Shared physical processes cannot be closed on behalf of only one native thread.
+              if (
+                !producer.active ||
+                producer.bindings.size !== 1 ||
+                bound?.id !== providerThread.id ||
+                binding === undefined ||
+                revision === undefined ||
+                providerThread.runtimeIdentity?.runtimeGeneration !== producer.generation
+              )
+                return null;
+              const isCurrent = Effect.sync(
+                () =>
+                  currentProducer === producer &&
+                  producer.active &&
+                  producer.bindings.size === 1 &&
+                  producer.bindings.get(binding.nativeThreadId)?.id === providerThread.id,
+              );
+              return {
+                binding,
+                evidenceRevision: revision,
+                isCurrent,
+                stop: lifecyclePermit.withPermits(1)(
+                  Effect.gen(function* () {
+                    if (!(yield* isCurrent))
+                      return yield* toProtocolError(
+                        "Captured Codex runtime was replaced before stop.",
+                      );
+                    producer.active = false;
+                    producer.eventProducer.drain();
+                    yield* Scope.close(producer.scope, Exit.void);
+                  }),
+                ),
+              };
+            }),
           ensureThread: (value) =>
             lifecyclePermit.withPermits(1)(
               Effect.suspend(() =>
@@ -8035,6 +8079,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                       }
                       // Settings/catalog reads precede producer validation. Capacity retries
                       // retain the already-built native parameters and never re-read defaults.
+                      yield* dispatchInput.revalidateStartAdmission ?? Effect.void;
                       yield* prepareProducer(dispatchInput);
                       yield* withProducer(runtime.startTurn(dispatchInput));
                     }),

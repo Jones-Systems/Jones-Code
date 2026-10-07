@@ -1078,6 +1078,8 @@ export function applyToProjection(
         ...base,
         providerSessions: upsertById(base.providerSessions, event.payload),
       };
+    case "provider-session.detach-requested":
+      return projection;
     case "provider-session.detached":
       return {
         ...base,
@@ -2514,6 +2516,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             }
             break;
           }
+          case "provider-session.detach-requested":
+            break;
           case "provider-session.detached": {
             yield* sql`
               DELETE FROM orchestration_v2_projection_provider_session_bindings
@@ -2996,6 +3000,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         }
 
         if (
+          event.type !== "provider-session.detach-requested" &&
           event.type !== "thread.created" &&
           event.type !== "thread.archived" &&
           event.type !== "thread.unarchived" &&

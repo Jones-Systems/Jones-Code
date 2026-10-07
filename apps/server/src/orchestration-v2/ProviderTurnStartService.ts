@@ -244,6 +244,10 @@ export const layer: Layer.Layer<
       readonly nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard;
     }) {
       const { runId } = input;
+      if (eventSink.assertRuntimeStopStartAllowed)
+        yield* eventSink
+          .assertRuntimeStopStartAllowed({ threadId: input.threadId, runId })
+          .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
       const run = projection.runs.find((candidate) => candidate.id === runId);
       if (run === undefined) {
@@ -258,6 +262,16 @@ export const layer: Layer.Layer<
       const providerThread = projection.providerThreads.find(
         (candidate) => candidate.id === run.providerThreadId,
       );
+      if (
+        providerThread !== undefined &&
+        eventSink.assertImportedHistoryStartAllowed !== undefined
+      ) {
+        yield* eventSink.assertImportedHistoryStartAllowed({
+          threadId: input.threadId,
+          runId,
+          providerThreadId: providerThread.id,
+        });
+      }
       const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
       const checkpointScope = projection.checkpointScopes.find(
         (candidate) => candidate.id === rootNode?.checkpointScopeId,
@@ -1252,7 +1266,46 @@ export const layer: Layer.Layer<
           }
           // A settings read can outlive the attempt. Never dispatch its stale prompt.
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
+          const stopRuntimeGeneration = loadedProviderThread.runtimeIdentity?.runtimeGeneration;
+          dispatchInput = {
+            ...dispatchInput,
+            revalidateStartAdmission:
+              eventSink.assertRuntimeStopStartAllowed === undefined
+                ? Effect.void
+                : eventSink
+                    .assertRuntimeStopStartAllowed({
+                      threadId: input.threadId,
+                      runId,
+                      providerThreadId: providerThread.id,
+                      ...(stopRuntimeGeneration === undefined
+                        ? {}
+                        : {
+                            runtimeGeneration: stopRuntimeGeneration,
+                          }),
+                    })
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderAdapterTurnStartError({
+                            driver: session.driver,
+                            threadId: input.threadId,
+                            providerThreadId: providerThread.id,
+                            runId,
+                            cause,
+                          }),
+                      ),
+                    ),
+          };
           const start = compact ? session.compactThread! : session.startTurn;
+          if (eventSink.assertRuntimeStopStartAllowed)
+            yield* eventSink.assertRuntimeStopStartAllowed({
+              threadId: input.threadId,
+              runId,
+              providerThreadId: providerThread.id,
+              ...(stopRuntimeGeneration === undefined
+                ? {}
+                : { runtimeGeneration: stopRuntimeGeneration }),
+            });
           yield* start(dispatchInput);
         }).pipe(
           Effect.mapError((cause) =>

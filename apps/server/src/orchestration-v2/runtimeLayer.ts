@@ -1,6 +1,7 @@
 import * as NativeCreationRepositorySqlite from "../jones/nativeCreation/NativeCreationRepositorySqlite.ts";
 import * as NativeCreationAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
 import * as NativeCreationProviderExecutor from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
+import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
@@ -143,6 +144,17 @@ const providerSessionManagerProvided = providerSessionManagerLayer.pipe(
   ),
 );
 
+const currentRuntimeStopProvided = RuntimeStop.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      eventSinkProvided,
+      providerSessionManagerProvided,
+      projectionStoreLayer,
+      AuthSessions.layer,
+    ),
+  ),
+);
+
 const providerAuthServiceProvided = ProviderAuthServiceLive.pipe(
   Layer.provide(Layer.merge(projectionStoreLayer, providerSessionManagerProvided)),
 );
@@ -238,6 +250,7 @@ const orchestratorProvided = orchestratorLayer.pipe(
       providerSwitchServiceProvided,
       runExecutionServiceProvided,
       threadForkServiceLayer,
+      currentRuntimeStopProvided,
     ),
   ),
 );
@@ -311,6 +324,7 @@ const effectExecutorProvided = effectExecutorLayer.pipe(
       providerTurnStartServiceProvided,
       runtimeRequestServiceProvided,
       threadTitleRegenerationProvided,
+      currentRuntimeStopProvided,
       threadManagementProvided,
     ),
   ),
@@ -341,6 +355,7 @@ export const OrchestrationV2LayerLive = Layer.mergeAll(
   storesLayer,
   eventSinkProvided,
   orchestratorProvided,
+  currentRuntimeStopProvided,
   threadManagementProvided,
   effectWorkerProvided,
   providerSessionManagerProvided,

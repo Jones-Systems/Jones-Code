@@ -12,6 +12,18 @@
     {
       "from": "apps/server/src/orchestration-v2/EventSink.ts",
       "to": "apps/server/src/jones/importedHistory/ImportedApplicationAttachmentInventory.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/importedHistory/ImportedHistoryChoice.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/importedHistory/http.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/importedHistory.ts"
     }
   ]
 }
