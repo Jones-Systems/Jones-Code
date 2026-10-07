@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
+import * as RuntimeCensus from "../../runtime/RuntimeCensus.ts";
 import { type ProjectId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -25,9 +26,14 @@ interface OperatingCounts {
   readonly foregroundWaitingInput: number;
   readonly foregroundWaitingPlan: number;
   readonly backgroundOperating: number;
-  // Zero attests complete native background coverage; projection-only lower bounds must report a gap.
+  // Application counts also retain unknown external coverage, even when every application thread was sampled.
   readonly backgroundUnknown: number;
   readonly backgroundSampledAt: string;
+  readonly foregroundUnknown?: number;
+  readonly snapshotSequence?: number;
+  readonly countScope?: "application";
+  readonly applicationCensusCoverage?: "complete";
+  readonly nativeBackgroundCoverage?: "unknown";
 }
 interface RegistryObservation {
   readonly counts: {
@@ -62,10 +68,18 @@ export class DecisionSnapshotNativeCounts extends Context.Service<
     readonly readRegistryCounts?: () => Effect.Effect<RegistryObservation, NativeCountReadError>;
   }
 >()("t3/jones/mcp/decisionSnapshot/handlers/DecisionSnapshotNativeCounts") {}
-export const DecisionSnapshotNativeCountsUnavailable = Layer.succeed(
+export const DecisionSnapshotNativeCountsLive = Layer.effect(
   DecisionSnapshotNativeCounts,
-  {},
-);
+  Effect.gen(function* () {
+    const census = yield* RuntimeCensus.RuntimeCensus;
+    return DecisionSnapshotNativeCounts.of({
+      readOperatingCounts: (projectId) =>
+        census
+          .readOperatingCounts(projectId)
+          .pipe(Effect.mapError(() => new NativeCountReadError({ source: "threads" }))),
+    });
+  }),
+).pipe(Layer.provide(RuntimeCensus.layer));
 
 interface NativeCountEntry {
   readonly status: "observed" | "partial" | "unavailable" | "timeout";
@@ -110,10 +124,22 @@ export const DecisionSnapshotToolkitHandlersLive = DecisionSnapshotToolkit.toLay
             : countsPort.readOperatingCounts(projectId).pipe(
                 Effect.map((counts) => ({
                   status:
-                    counts.backgroundUnknown === 0 ? ("observed" as const) : ("partial" as const),
+                    counts.backgroundUnknown === 0 && counts.nativeBackgroundCoverage !== "unknown"
+                      ? ("observed" as const)
+                      : ("partial" as const),
                   observed_at: counts.backgroundSampledAt,
                   timestamp_basis: "native_observation" as const,
-                  scope: threadScope,
+                  scope: {
+                    ...threadScope,
+                    ...(counts.countScope === undefined
+                      ? {}
+                      : {
+                          count_scope: counts.countScope,
+                          application_census_coverage: counts.applicationCensusCoverage,
+                          native_background_coverage: counts.nativeBackgroundCoverage,
+                          snapshot_sequence: counts.snapshotSequence,
+                        }),
+                  },
                   values: {
                     operating: counts.operating,
                     total: counts.total,
@@ -121,9 +147,17 @@ export const DecisionSnapshotToolkitHandlersLive = DecisionSnapshotToolkit.toLay
                     foreground_waiting_input: counts.foregroundWaitingInput,
                     foreground_waiting_plan: counts.foregroundWaitingPlan,
                     background_operating: counts.backgroundOperating,
+                    ...(counts.countScope === undefined
+                      ? {}
+                      : {
+                          foreground_unknown: counts.foregroundUnknown,
+                          background_unknown: counts.backgroundUnknown,
+                        }),
                   },
                   reason:
-                    counts.backgroundUnknown === 0 ? null : "native_background_coverage_incomplete",
+                    counts.backgroundUnknown === 0 && counts.nativeBackgroundCoverage !== "unknown"
+                      ? null
+                      : "native_background_coverage_incomplete",
                 })),
                 Effect.catch(() =>
                   Effect.succeed(absentEntry("native_projection_unavailable", threadScope)),

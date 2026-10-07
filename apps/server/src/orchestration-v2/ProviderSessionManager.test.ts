@@ -4350,6 +4350,20 @@ it.effect.each(["monitoring", "unsupported", "replacement", "selected-account"] 
             observed: unobservedRuntimeIdentity(),
           });
           yield* runtime.resumeThread({ providerThread: provider, threadId });
+          if (manager.readCurrentThreadRuntimeAttachment === undefined)
+            return yield* Effect.die("Missing attachment reader");
+          assert.isFalse(yield* Deferred.isDone(sampleStarted));
+          const attachment = yield* manager.readCurrentThreadRuntimeAttachment(threadId);
+          assert.equal(attachment.status, "attached");
+          if (attachment.status !== "attached")
+            return yield* Effect.die("Missing attachment capture");
+          assert.deepEqual(attachment.binding, runtimeBinding(provider, generation));
+          assert.equal(attachment.physicalIncarnation.status, "unknown");
+          assert.isTrue(yield* attachment.isCurrent);
+          assert.isFalse(
+            yield* Deferred.isDone(sampleStarted),
+            "attachment reads must not invoke a native probe",
+          );
           if (scenario === "selected-account") {
             const projections = yield* ProjectionStore.ProjectionStoreV2;
             const selected = ProviderInstanceId.make("next-account");
@@ -4380,6 +4394,10 @@ it.effect.each(["monitoring", "unsupported", "replacement", "selected-account"] 
             });
             yield* Deferred.succeed(sampleContinue, undefined);
             const result = yield* Fiber.join(observing);
+            assert.isFalse(
+              yield* attachment.isCurrent,
+              "the original capture must reject a replacement session runtime",
+            );
             assert.equal(result.status, "unknown");
             if (result.status === "unknown") assert.equal(result.reason, "runtime_binding_changed");
           } else {
@@ -4392,6 +4410,11 @@ it.effect.each(["monitoring", "unsupported", "replacement", "selected-account"] 
               (yield* Ref.get(state)).closeCount,
               1,
               "sampling must not postpone idle release",
+            );
+            assert.isFalse(yield* attachment.isCurrent);
+            assert.equal(
+              (yield* manager.readCurrentThreadRuntimeAttachment(threadId)).status,
+              "stopped",
             );
           }
         }).pipe(

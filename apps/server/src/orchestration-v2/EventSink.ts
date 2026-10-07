@@ -1,4 +1,6 @@
 import * as RuntimeStop from "../jones/runtime/RuntimeStopSqlite.ts";
+import { importedApplicationAttachmentSha256V1 as nativeChoiceDigest } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
+import * as ImportedChoice from "../jones/importedHistory/ImportedHistoryChoice.ts";
 import { readApplicationBirthRecord } from "../jones/importedHistory/ApplicationBirth.ts";
 import type { ImportedApplicationAttachmentBirthV1 } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
 import * as NativeCreationRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
@@ -161,6 +163,15 @@ export interface EventSinkV2Shape {
     readonly providerThreadId?: string;
     readonly runtimeGeneration?: string;
   }) => Effect.Effect<void, EventSinkV2Error>;
+  readonly reviewImportedHistory?: (
+    input: Parameters<typeof ImportedChoice.reviewImportedHistory>[0],
+  ) => Effect.Effect<import("@t3tools/contracts").ImportedHistoryReview, EventSinkV2Error>;
+  readonly readImportedHistoryChoice?: (
+    input: Parameters<typeof ImportedChoice.readImportedHistoryChoice>[0],
+  ) => Effect.Effect<import("@t3tools/contracts").ImportedHistoryOutcome | null, EventSinkV2Error>;
+  readonly assertImportedHistoryStartAllowed?: (
+    input: Parameters<typeof ImportedChoice.claimImportedHistoryStart>[0],
+  ) => Effect.Effect<void, EventSinkV2Error>;
 
   readonly readApplicationBirthRecord?: (
     threadId: ThreadId,
@@ -244,6 +255,7 @@ export interface EventSinkV2Shape {
   >;
   readonly commitCommand: (input: {
     readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
+    readonly importedHistory?: ImportedChoice.ImportedHistoryContext;
     readonly nativeCreation?: {
       readonly claimId: string;
       readonly command: import("@t3tools/contracts").OrchestrationV2Command;
@@ -838,6 +850,33 @@ const baseLayer: Layer.Layer<
                 threadId: effect.threadId,
                 runId: effect.request.runId,
               });
+          const imported = input.importedHistory;
+          if (imported === undefined) {
+            const installed =
+              yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jones_imported_history_choices'`;
+            const reservedChoices =
+              installed.length === 0
+                ? []
+                : yield* sql`SELECT command_id FROM jones_imported_history_choices WHERE command_id = ${input.commandId}`;
+            if (reservedChoices.length !== 0)
+              return yield* new ImportedChoice.ImportedHistoryChoiceError({
+                code: "private_imported_lineage_required",
+              });
+          } else if (
+            imported.command.commandId !== input.commandId ||
+            imported.command.threadId !== input.threadId ||
+            input.commandType !== imported.command.type
+          ) {
+            return yield* new ImportedChoice.ImportedHistoryChoiceError({
+              code: "choice_command_conflict",
+            });
+          }
+          const choice =
+            imported === undefined
+              ? undefined
+              : yield* ImportedChoice.reserveImportedHistoryChoice(imported).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                );
           if (
             input.effects.some(
               (effect) =>
@@ -884,6 +923,22 @@ const baseLayer: Layer.Layer<
           });
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
+            if (imported !== undefined) {
+              const outcome = yield* ImportedChoice.readImportedHistoryChoice({
+                threadId: input.threadId,
+                commandId: input.commandId,
+                principal: imported.principal,
+              }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+              if (
+                choice?.duplicate !== true ||
+                outcome === null ||
+                existing.receipt.commandType !== imported.command.type ||
+                existing.receipt.threadId !== input.threadId
+              )
+                return yield* new ImportedChoice.ImportedHistoryChoiceError({
+                  code: "unknown_receipt",
+                });
+            }
             if (input.nativeCreation !== undefined) {
               const boundary = existing.storedEvents.at(-1);
               if (
@@ -906,6 +961,31 @@ const baseLayer: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
+          if (imported !== undefined && choice !== undefined && choice.rejectionReason !== null) {
+            const receipt: CommandReceiptStore.CommandReceiptV2 = {
+              commandId: input.commandId,
+              threadId: input.threadId,
+              commandType: input.commandType,
+              acceptedAt: input.acceptedAt,
+              resultSequence: 0,
+              status: "rejected",
+              error: choice.rejectionReason,
+            };
+            yield* commandReceipts.upsert(receipt);
+            yield* ImportedChoice.recordImportedHistoryOutcome({
+              commandId: input.commandId,
+              threadId: input.threadId,
+              actorSessionId: imported.principal.sessionId,
+              commandDigest: choice.identity.commandDigest,
+              deliveryDigest: choice.identity.deliveryDigest,
+              reviewedBasis: imported.command.reviewedBasis,
+              status: "rejected",
+              runId: null,
+              effectId: null,
+              reason: choice.rejectionReason,
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+            return { receipt, storedEvents: [], committed: true as const, cancelledEffectIds: [] };
+          }
           const normalized = yield* normalizeEvents(input.events);
           const storedEvents = yield* eventStore
             .append({
@@ -932,6 +1012,78 @@ const baseLayer: Layer.Layer<
           };
           yield* commandReceipts.upsert(receipt);
           if (input.runtimeStop) yield* runtimeStops.record(input.runtimeStop);
+          if (imported !== undefined && choice !== undefined) {
+            if (choice.duplicate)
+              return yield* new ImportedChoice.ImportedHistoryChoiceError({
+                code: "unbound_choice",
+              });
+            const starts = input.effects.filter(
+              (effect) => effect.request.type === "provider-turn.start",
+            );
+            if (
+              starts.length !== 1 ||
+              input.effects.some(
+                (effect) => effect.nativeCreationExecutionReference !== undefined,
+              ) ||
+              starts[0]!.commandId !== input.commandId ||
+              starts[0]!.threadId !== input.threadId
+            )
+              return yield* new ImportedChoice.ImportedHistoryChoiceError({
+                code: "start_effect_conflict",
+              });
+            const start = starts[0]!;
+            if (start.request.type !== "provider-turn.start")
+              return yield* new ImportedChoice.ImportedHistoryChoiceError({
+                code: "start_effect_conflict",
+              });
+            const runId = start.request.runId;
+            const records = yield* projectionStore.getThreadRecords(input.threadId, [
+              "runs",
+              "messages",
+              "providerThreads",
+            ]);
+            const run = records.runs.find((run) => run.id === runId);
+            const messageId =
+              imported.command.delivery.type === "message" &&
+              imported.command.delivery.command.type === "message.dispatch"
+                ? imported.command.delivery.command.messageId
+                : imported.command.delivery.type === "queued_run"
+                  ? imported.command.delivery.messageId
+                  : null;
+            const provider = records.providerThreads.find(
+              (provider) => provider.id === run?.providerThreadId,
+            );
+            if (
+              run === undefined ||
+              provider === undefined ||
+              run.status !== "starting" ||
+              run.activeAttemptId === null ||
+              run.userMessageId !== messageId ||
+              provider.nativeThreadRef !== null ||
+              provider.nativeConversationHeadRef !== null ||
+              (imported.command.delivery.type === "queued_run" &&
+                imported.command.delivery.runId !== run.id)
+            )
+              return yield* new ImportedChoice.ImportedHistoryChoiceError({
+                code: "fresh_context_binding_required",
+              });
+            const source =
+              yield* sql`SELECT * FROM orchestration_v2_projection_turn_items WHERE thread_id = ${input.threadId} AND run_id IS NULL ORDER BY ordinal, turn_item_id`;
+            yield* sql`INSERT INTO jones_imported_history_start_reservations (effect_id, command_id, thread_id, run_id, run_attempt_id, provider_thread_id, source_digest)
+              VALUES (${start.id}, ${input.commandId}, ${input.threadId}, ${run.id}, ${run.activeAttemptId}, ${provider.id}, ${nativeChoiceDigest(source)})`;
+            yield* ImportedChoice.recordImportedHistoryOutcome({
+              commandId: input.commandId,
+              threadId: input.threadId,
+              actorSessionId: imported.principal.sessionId,
+              commandDigest: choice.identity.commandDigest,
+              deliveryDigest: choice.identity.deliveryDigest,
+              reviewedBasis: imported.command.reviewedBasis,
+              status: "accepted",
+              runId,
+              effectId: start.id,
+              reason: null,
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          }
           if (input.nativeCreation !== undefined) {
             if (
               Option.isNone(nativeCreation) ||
@@ -967,7 +1119,11 @@ const baseLayer: Layer.Layer<
         (result) =>
           Effect.gen(function* () {
             yield* effectOutbox.signalCancellations(result.cancelledEffectIds);
-            if (result.committed && input.effects.length > 0) {
+            if (
+              result.committed &&
+              result.receipt.status === "accepted" &&
+              input.effects.length > 0
+            ) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }
             if (result.committed) yield* publishStoredEvents(result.storedEvents);
@@ -1557,6 +1713,33 @@ const baseLayer: Layer.Layer<
         runtimeStops.complete(commandId, result).pipe(Effect.mapError(stopError)),
       assertRuntimeStopStartAllowed: (input) =>
         runtimeStops.assertStartAllowed(input).pipe(Effect.mapError(stopError)),
+      reviewImportedHistory: (input) =>
+        sql
+          .withTransaction(
+            ImportedChoice.reviewImportedHistory(input).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
+          )
+          .pipe(
+            Effect.map((facts) => facts.review),
+            Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })),
+          ),
+      readImportedHistoryChoice: (input) =>
+        sql
+          .withTransaction(
+            ImportedChoice.readImportedHistoryChoice(input).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
+          )
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      assertImportedHistoryStartAllowed: (input) =>
+        sql
+          .withTransaction(
+            ImportedChoice.claimImportedHistoryStart(input).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
+          )
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       readApplicationBirthRecord: (threadId) =>
         sql
           .withTransaction(

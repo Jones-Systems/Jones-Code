@@ -2,11 +2,13 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "runtime-stop",
   "jonesOwnedPaths": [
-    "apps/server/src/jones/runtime/",
     "apps/web/src/hooks/useCurrentRuntimeStop.ts",
     "apps/web/src/hooks/useCurrentRuntimeStop.test.ts",
     "packages/client-runtime/src/operations/currentRuntimeStop.ts",
-    "packages/client-runtime/src/operations/currentRuntimeStop.test.ts"
+    "packages/client-runtime/src/operations/currentRuntimeStop.test.ts",
+    "apps/server/src/jones/runtime/RuntimeStop.ts",
+    "apps/server/src/jones/runtime/RuntimeStop.test.ts",
+    "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
   ],
   "hookPaths": [
     "apps/server/src/auth/RpcAuthorization.ts",

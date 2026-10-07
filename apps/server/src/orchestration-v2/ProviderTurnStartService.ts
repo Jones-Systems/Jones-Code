@@ -254,6 +254,16 @@ export const layer: Layer.Layer<
       const providerThread = projection.providerThreads.find(
         (candidate) => candidate.id === run.providerThreadId,
       );
+      if (
+        providerThread !== undefined &&
+        eventSink.assertImportedHistoryStartAllowed !== undefined
+      ) {
+        yield* eventSink.assertImportedHistoryStartAllowed({
+          threadId: input.threadId,
+          runId,
+          providerThreadId: providerThread.id,
+        });
+      }
       const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
       const checkpointScope = projection.checkpointScopes.find(
         (candidate) => candidate.id === rootNode?.checkpointScopeId,

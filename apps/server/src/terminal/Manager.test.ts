@@ -1,3 +1,4 @@
+import * as NativeSetup from "./NativeSetupControl.ts";
 import {
   LegacyOwnedTerminalControl,
   LegacyNoTerminalControl,
@@ -471,6 +472,147 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  const nativeSetupControl = (cwd: string): NativeSetup.NativeSetupControl => ({
+    claimId: "native-fixture-claim",
+    effectId: "native-fixture-setup",
+    bootId: "native-fixture-boot",
+    producerId: "native-fixture-producer",
+    threadId: "native-fixture-thread",
+    terminalId: "native-fixture-terminal",
+    generation: "native-fixture-generation",
+    projectCwd: cwd,
+    worktreePath: cwd,
+    definitionDigest: "native-fixture-definition",
+  });
+  it.effect(
+    "native setup captures one exact spawn and write and refuses ordinary replacement",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager(5, { shellResolver: () => "/bin/sh" });
+        const control = nativeSetupControl(process.cwd());
+        const input = openInput({
+          threadId: control.threadId,
+          terminalId: control.terminalId,
+          cwd: control.worktreePath,
+          worktreePath: control.worktreePath,
+        });
+        const order: string[] = [];
+        const opened = yield* manager.openNativeSetup!(input, {
+          control,
+          beforeSpawn: (plan) =>
+            Effect.sync(() => {
+              assert.lengthOf(ptyAdapter.spawnInputs, 0);
+              assert.equal(plan.shell, "/bin/sh");
+              assert.deepEqual(plan.shellArgs, []);
+              order.push("spawn-authority");
+            }),
+          afterSpawn: (proof) =>
+            Effect.sync(() => {
+              assert.lengthOf(ptyAdapter.spawnInputs, 1);
+              assert.equal(proof.pid, ptyAdapter.processes[0]!.pid);
+              order.push("spawn-proof");
+            }),
+        });
+        assert.equal(opened.terminalId, control.terminalId);
+        yield* manager.writeNativeSetup!(
+          {
+            threadId: control.threadId,
+            terminalId: control.terminalId,
+            data: "synthetic-command\r",
+          },
+          control,
+          Effect.sync(() => {
+            assert.lengthOf(ptyAdapter.processes[0]!.writes, 0);
+            order.push("write-authority");
+          }),
+        );
+        const observed = yield* manager.observeNativeSetup!(control);
+        assert.equal(observed.status, "running");
+        assert.isTrue(observed.writeEntered);
+        assert.deepEqual(order, ["spawn-authority", "spawn-proof", "write-authority"]);
+        const retried = yield* manager.writeNativeSetup!(
+          {
+            threadId: control.threadId,
+            terminalId: control.terminalId,
+            data: "synthetic-command\r",
+          },
+          control,
+          Effect.void,
+        ).pipe(Effect.result);
+        const ordinaryWrite = yield* manager
+          .write({ threadId: control.threadId, terminalId: control.terminalId, data: "ordinary\r" })
+          .pipe(Effect.result);
+        const ordinaryOpen = yield* manager.open(input).pipe(Effect.result);
+        const restart = yield* manager
+          .restart(
+            restartInput({
+              threadId: control.threadId,
+              terminalId: control.terminalId,
+              cwd: control.worktreePath,
+              worktreePath: control.worktreePath,
+            }),
+          )
+          .pipe(Effect.result);
+        const close = yield* manager
+          .close({ threadId: control.threadId, terminalId: control.terminalId })
+          .pipe(Effect.result);
+        for (const result of [retried, ordinaryWrite, ordinaryOpen, restart, close])
+          assert.equal(result._tag, "Failure");
+        assert.lengthOf(ptyAdapter.spawnInputs, 1);
+        assert.deepEqual(ptyAdapter.processes[0]!.writes, ["synthetic-command\r"]);
+      }),
+  );
+  it.effect.each(["before-spawn", "after-spawn", "before-write"] as const)(
+    "native setup retains unknown and refuses replay after %s refusal",
+    (phase) =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager(5, { shellResolver: () => "/bin/sh" });
+        const control = nativeSetupControl(process.cwd());
+        const input = openInput({
+          threadId: control.threadId,
+          terminalId: control.terminalId,
+          cwd: control.worktreePath,
+          worktreePath: control.worktreePath,
+        });
+        const denied = Effect.fail(
+          new NativeSetup.NativeSetupControlError({
+            operation: "open",
+            message: "synthetic revoked authority",
+          }),
+        );
+        const opened = yield* manager.openNativeSetup!(input, {
+          control,
+          beforeSpawn: () => (phase === "before-spawn" ? denied : Effect.void),
+          afterSpawn: () => (phase === "after-spawn" ? denied : Effect.void),
+        }).pipe(Effect.result);
+        if (phase === "before-write") {
+          assert.equal(opened._tag, "Success");
+          const result = yield* manager.writeNativeSetup!(
+            { threadId: control.threadId, terminalId: control.terminalId, data: "synthetic\r" },
+            control,
+            denied,
+          ).pipe(Effect.result);
+          assert.equal(result._tag, "Failure");
+          const repeatedWrite = yield* manager.writeNativeSetup!(
+            { threadId: control.threadId, terminalId: control.terminalId, data: "synthetic\r" },
+            control,
+            Effect.void,
+          ).pipe(Effect.result);
+          assert.equal(repeatedWrite._tag, "Failure");
+        } else assert.equal(opened._tag, "Failure");
+        const observation = yield* manager.observeNativeSetup!(control);
+        assert.equal(observation.status, phase === "before-spawn" ? "unknown" : "running");
+        const retry = yield* manager.openNativeSetup!(input, {
+          control,
+          beforeSpawn: () => Effect.void,
+          afterSpawn: () => Effect.void,
+        }).pipe(Effect.result);
+        assert.equal(retry._tag, "Failure");
+        assert.lengthOf(ptyAdapter.spawnInputs, phase === "before-spawn" ? 0 : 1);
+        for (const process of ptyAdapter.processes) assert.lengthOf(process.writes, 0);
+      }),
+  );
+
   it.effect.each([
     "qualified",
     "intent_lost",

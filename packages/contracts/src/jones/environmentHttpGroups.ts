@@ -1,4 +1,12 @@
 import {
+  ImportedHistoryStart,
+  ImportedHistoryReview,
+  ImportedHistoryOutcome,
+  ImportedHistoryReviewInput,
+  ImportedHistoryObserveInput,
+  ImportedHistoryUnavailable,
+} from "./importedHistory.ts";
+import {
   JonesUpdateDownloadInput,
   JonesUpdateInstallInput,
   JonesUpdateState,
@@ -439,7 +447,34 @@ export const makeJonesHttpGroups = ({
       }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
 
+  class EnvironmentImportedHistoryHttpApi extends HttpApiGroup.make("jonesImportedHistory")
+    .add(
+      HttpApiEndpoint.post("review", "/api/jones/imported-history/review", {
+        headers: OptionalBearerHeaders,
+        payload: ImportedHistoryReviewInput,
+        success: ImportedHistoryReview,
+        error: [EnvironmentScopeRequiredError, ImportedHistoryUnavailable],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("start", "/api/jones/imported-history/start", {
+        headers: OptionalBearerHeaders,
+        payload: ImportedHistoryStart,
+        success: ImportedHistoryOutcome,
+        error: [EnvironmentScopeRequiredError, ImportedHistoryUnavailable],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("observe", "/api/jones/imported-history/observe", {
+        headers: OptionalBearerHeaders,
+        payload: ImportedHistoryObserveInput,
+        success: Schema.NullOr(ImportedHistoryOutcome),
+        error: [EnvironmentScopeRequiredError, ImportedHistoryUnavailable],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    ) {}
+
   return {
+    EnvironmentImportedHistoryHttpApi,
     EnvironmentJonesUpdatesHttpApi,
     EnvironmentWorkQueueMetadataHttpApi,
     EnvironmentVoiceReviewHttpApi,

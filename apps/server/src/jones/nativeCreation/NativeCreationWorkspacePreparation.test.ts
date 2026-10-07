@@ -1,3 +1,4 @@
+import * as SetupCustody from "./NativeWorkspaceSetupCustody.ts";
 import type * as WorkspaceTypes from "./NativeCreationWorkspaceTypes.ts";
 import { assert, it } from "@effect/vitest";
 import { NativeCreationHistoricalBinding } from "@t3tools/contracts";
@@ -187,11 +188,25 @@ const scenario = Effect.fnUntraced(function* (setup = false, fetch = false) {
             }),
           )
         : Effect.void,
-    setup: (_basis, _proof, check) =>
+    setup: (_basis, _proof, check, custody) =>
       Effect.gen(function* () {
+        const start = yield* SetupCustody.consume(
+          custody,
+          (yield* repository.readWorkspaceClaim!(input.claimId).pipe(
+            Effect.mapError(
+              () =>
+                new Workspace.NativeWorkspaceError({
+                  code: "conflict",
+                  message: "Synthetic workspace claim read failed",
+                }),
+            ),
+          )).intent,
+          basis,
+        );
+        assert.isTrue(start.terminalId?.startsWith("native-setup-") === true);
         yield* mutate("setup", check);
         yield* Deferred.succeed(started, undefined);
-        return { terminalId: "retained-terminal", completion: Deferred.await(completion) };
+        return { terminalId: start.terminalId!, completion: Deferred.await(completion) };
       }),
     cleanup: (_basis, _proof, check) => mutate("cleanup", check),
   });
@@ -257,7 +272,7 @@ it.effect("setup waits for exact retained terminal completion before verified re
       assert.isTrue(Option.isNone(yield* s.repository.readWorkspaceVerified!(s.input.claimId)));
       yield* Deferred.succeed(s.completion, 0);
       const result = yield* Fiber.join(fiber);
-      assert.strictEqual(result.setupTerminalId, "retained-terminal");
+      assert.isTrue(result.setupTerminalId?.startsWith("native-setup-") === true);
       assert.isTrue(Option.isSome(yield* s.repository.readWorkspaceVerified!(s.input.claimId)));
     }).pipe(Effect.provide(s.service));
   }).pipe(Effect.scoped, Effect.provide(repositoryLayer)),
@@ -357,7 +372,7 @@ it.effect("cancellation retains started setup and terminal identity and never re
       const setup = facts.find((fact) => fact.kind === "setup" && fact.phase === "completed");
       assert.ok(setup && setup.kind === "setup" && setup.phase === "completed");
       if (setup && setup.kind === "setup" && setup.phase === "completed") {
-        assert.strictEqual(setup.terminalId, "retained-terminal");
+        assert.isTrue(setup.terminalId?.startsWith("native-setup-") === true);
         assert.strictEqual(setup.result, "unknown");
       }
       assert.strictEqual((yield* owner.prepare(s.input).pipe(Effect.result))._tag, "Failure");

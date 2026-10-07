@@ -15,6 +15,8 @@ import JonesMigration0103 from "./Migrations/103_JonesRuntimeStop.ts";
 
 // Preserve the released Jones identities. New Jones migrations start at 100;
 // IDs 7–99 belong to known foreign histories, never to this rebuild's loader.
+import JonesMigration0102 from "./Migrations/102_JonesImportedHistoryChoices.ts";
+
 const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
   [2, "ProjectionThreadRuntimeIdentity", JonesMigration0002],
@@ -24,6 +26,7 @@ const jonesMigrationEntries = [
   [6, "WorkstreamsProviderEnrollments", JonesMigration0006],
   [100, "NativeCreationExecution", JonesMigration0100],
   [101, "NativeWorkspacePreparation", JonesMigration0101],
+  [102, "ImportedHistoryChoices", JonesMigration0102],
   [103, "RuntimeStop", JonesMigration0103],
 ] as const;
 

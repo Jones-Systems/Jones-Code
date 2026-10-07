@@ -18,6 +18,7 @@ import * as HttpClientError from "effect/unstable/http/HttpClientError";
 import { OpenCodeRuntimeError } from "../opencodeRuntime.ts";
 import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 import * as OpenCode2Client from "./OpenCode2Client.ts";
+import * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeCreationPolicy.ts";
 
 const INFO_TIMEOUT = "5 seconds";
 
@@ -25,6 +26,12 @@ export interface OpenCode2Connection extends OpenCode2Client.OpenCode2Api {
   readonly url: string;
   readonly version: string;
   readonly external: boolean;
+  readonly ownedProcess?: {
+    readonly runtimeGeneration: string;
+    readonly isRunning: Effect.Effect<boolean>;
+    readonly incarnation?: OpenCodeCreationPolicy.OpenCodePhysicalIncarnation;
+    readonly isCurrent?: Effect.Effect<boolean>;
+  };
 }
 
 export class OpenCode2Server extends Context.Service<
@@ -33,6 +40,8 @@ export class OpenCode2Server extends Context.Service<
     /** Runs `use` against the instance's server, spawning it first when T3 owns it. */
     readonly withConnection: <A, E, R>(
       use: (connection: OpenCode2Connection) => Effect.Effect<A, E, R>,
+      creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks,
+      consumerKind?: "models" | "inventory" | "session" | "other",
     ) => Effect.Effect<A, E | OpenCodeRuntimeError, R>;
   }
 >()("t3/provider/opencode2/OpenCode2Server") {}
@@ -142,6 +151,7 @@ export const verifyServer = (client: OpenCodeClient) =>
  * built once per server; a failed check is not remembered.
  */
 export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
+  readonly authority?: OpenCodeCreationPolicy.OpenCodeQualifiedAuthority;
   readonly binaryPath: string;
   readonly serverUrl: string;
   readonly serverPassword: string;
@@ -168,27 +178,53 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
       Effect.tap(remember),
     );
     return OpenCode2Server.of({
-      withConnection: (use) =>
+      withConnection: (use, _hooks, consumerKind = "other") =>
         Effect.suspend(() => (latest === undefined ? connect : Effect.succeed(latest))).pipe(
-          Effect.flatMap(use),
+          Effect.flatMap((connection) =>
+            OpenCodeCreationPolicy.authorizeConsumption(
+              undefined,
+              input.authority,
+              consumerKind,
+            ).pipe(Effect.andThen(() => use(connection))),
+          ),
         ),
     });
   }
 
   const password = yield* generatePassword;
   const owner = yield* OpenCodeServerOwner.make({
+    ...(input.authority !== undefined ? { authority: input.authority } : {}),
     binaryPath: input.binaryPath,
     directory: input.directory,
     environment: serverEnvironment(input.environment, password),
     verify: (url) => connectTo(url, password, false).pipe(Effect.flatMap(remember)),
   });
   return OpenCode2Server.of({
-    withConnection: (use) =>
-      owner.withServer((server) =>
-        // The owner verifies every server it starts before lending it out.
-        latest?.url === server.url
-          ? use(latest)
-          : Effect.die(new Error("OpenCode 2 server was lent before verification.")),
+    withConnection: (use, creationHooks, consumerKind) =>
+      owner.withServer(
+        (server) => {
+          // The owner verifies every server it starts before lending it out.
+          if (latest?.url !== server.url) {
+            return Effect.die(new Error("OpenCode 2 server was lent before verification."));
+          }
+          if (
+            server.runtimeGeneration !== undefined &&
+            (latest.ownedProcess?.runtimeGeneration !== server.runtimeGeneration ||
+              latest.ownedProcess?.incarnation !== server.ownedProcess?.incarnation)
+          ) {
+            latest = {
+              ...latest,
+              ownedProcess: Object.freeze({
+                runtimeGeneration: server.runtimeGeneration,
+                isRunning: server.isRunning,
+                ...(server.ownedProcess !== undefined ? server.ownedProcess : {}),
+              }),
+            };
+          }
+          return use(latest);
+        },
+        creationHooks,
+        consumerKind,
       ),
   });
 });
