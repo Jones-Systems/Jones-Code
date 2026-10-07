@@ -87,6 +87,7 @@ const OPENCODE_SERVER_STARTUP_MAX_OUTPUT_CHARS = 64 * 1024;
 const OPENCODE_SKILL_DISCOVERY_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 export interface OpenCodeServerProcess {
   readonly runtimeGeneration?: string;
+  readonly ownedProcess?: OpenCodeCreationPolicy.OpenCodeOwnedProcess;
   readonly url: string;
   readonly serverPassword?: string;
   readonly version: string;
@@ -95,6 +96,7 @@ export interface OpenCodeServerProcess {
 }
 
 export interface OpenCodeServerConnection {
+  readonly ownedProcess?: OpenCodeCreationPolicy.OpenCodeOwnedProcess;
   readonly url: string;
   readonly serverPassword?: string;
   readonly version: string;
@@ -870,7 +872,15 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       );
 
       return {
-        ...(capture !== undefined ? { runtimeGeneration: capture.runtimeGeneration } : {}),
+        ...(capture !== undefined
+          ? {
+              runtimeGeneration: capture.runtimeGeneration,
+              ownedProcess: Object.freeze({
+                incarnation: Object.freeze({ ...capture, pid: Number(child.pid), url }),
+                isCurrent: child.isRunning.pipe(Effect.orElseSucceed(() => false)),
+              }),
+            }
+          : {}),
         url,
         ...(serverPassword !== undefined ? { serverPassword } : {}),
         version,
@@ -917,6 +927,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     }).pipe(
       Effect.map((server) => ({
+        ...(server.ownedProcess !== undefined ? { ownedProcess: server.ownedProcess } : {}),
         url: server.url,
         ...(server.serverPassword !== undefined ? { serverPassword: server.serverPassword } : {}),
         version: server.version,

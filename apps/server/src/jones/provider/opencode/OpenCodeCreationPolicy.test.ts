@@ -1,5 +1,10 @@
 import { it } from "@effect/vitest";
-import { ProviderDriverKind } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -67,7 +72,15 @@ const syntheticRuntime = (
       const process = yield* start(input);
       return {
         ...process,
-        ...(capture === undefined ? {} : { runtimeGeneration: capture.runtimeGeneration }),
+        ...(capture === undefined
+          ? {}
+          : {
+              runtimeGeneration: capture.runtimeGeneration,
+              ownedProcess: Object.freeze({
+                incarnation: Object.freeze({ ...capture, pid: 123, url: process.url }),
+                isCurrent: process.isRunning,
+              }),
+            }),
       };
     }),
   connectToOpenCodeServer: unusedRuntimeMethod,
@@ -434,6 +447,12 @@ it.effect("passes the hook bundle and exposes the immutable owned generation", (
         expect(second).toBe(first);
         expect(first.ownedProcess?.runtimeGeneration).toBe("existing-owner-generation-1");
         expect(Object.isFrozen(first.ownedProcess)).toBe(true);
+        expect(first.ownedProcess?.incarnation?.pid).toBe(123);
+        expect(first.ownedProcess?.incarnation?.runtimeGeneration).toBe(
+          "existing-owner-generation-1",
+        );
+        expect(first.ownedProcess?.incarnation).toBe(second.ownedProcess?.incarnation);
+        expect(yield* first.ownedProcess!.isCurrent!).toBe(true);
         expect(yield* first.ownedProcess!.isRunning).toBe(true);
         expect(trace).toEqual(["reserve", "authorize:/qualified/project", "start"]);
       }),
@@ -461,4 +480,189 @@ it.effect("external connections ignore local creation hooks and expose no owned 
     Effect.provide([syntheticClient, syntheticCrypto]),
     Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, syntheticRuntime(unusedRuntimeMethod)),
   ),
+);
+
+const adoptionFixture = () => {
+  const trace: string[] = [];
+  let current = true;
+  let authorized = true;
+  const incarnation = Object.freeze({
+    directory: "/synthetic/project",
+    runtimeGeneration: "physical-owner-generation",
+    pid: 321,
+    url: "http://127.0.0.1:4321",
+  });
+  const parent = { incarnation, isCurrent: Effect.sync(() => current) };
+  const lifecycle: ProviderAdapter.ProviderRuntimeLifecycle = {
+    reserve: () =>
+      Effect.sync(() => {
+        trace.push("reserve-adoption");
+        return "session-owner-generation";
+      }),
+    abandon: (generation) =>
+      Effect.sync(() => {
+        trace.push(`abandon-adoption:${generation}`);
+      }),
+    bind: ({ providerThread }) => Effect.succeed(providerThread),
+    invalidate: () => Effect.void,
+  };
+  const captures: OpenCodeCreationPolicy.OpenCodeSessionAdoptionCapture[] = [];
+  const authority: OpenCodeCreationPolicy.OpenCodeQualifiedAuthority = {
+    creationHooks: makeHooks(trace, []),
+    authorizeAdoption: (capture) =>
+      Effect.sync(() => {
+        captures.push(capture);
+        trace.push("authorize-adoption");
+        return Effect.sync(() => authorized);
+      }),
+    authorizeConsumption: ({ kind, parent: captured }) =>
+      Effect.sync(() => {
+        expect(captured).toBe(incarnation);
+        trace.push(`consume:${kind}`);
+      }),
+  };
+  const input = {
+    parent,
+    authority,
+    providerInstanceId: ProviderInstanceId.make("synthetic-opencode"),
+    session: {
+      threadId: ThreadId.make("synthetic-thread"),
+      providerSessionId: ProviderSessionId.make("synthetic-session"),
+      runtimeLifecycle: lifecycle,
+    },
+  };
+  return {
+    input,
+    trace,
+    captures,
+    incarnation,
+    replaceParent: () => {
+      current = false;
+    },
+    revoke: () => {
+      authorized = false;
+    },
+  };
+};
+
+it.effect("adopts the captured physical parent with a distinct session-owner generation", () =>
+  Effect.gen(function* () {
+    const fixture = adoptionFixture();
+    const adopted = yield* OpenCodeCreationPolicy.adoptSession(fixture.input);
+    expect(adopted.capture.parent).toBe(fixture.incarnation);
+    expect(adopted.capture.runtimeGeneration).toBe("session-owner-generation");
+    expect(Object.isFrozen(adopted.capture)).toBe(true);
+    expect(fixture.trace).toEqual(["reserve-adoption", "authorize-adoption"]);
+    expect(yield* adopted.isCurrent).toBe(true);
+    fixture.replaceParent();
+    expect(yield* adopted.isCurrent).toBe(false);
+  }),
+);
+
+it.effect("a refused adoption abandons only its unadopted session generation", () =>
+  Effect.gen(function* () {
+    const fixture = adoptionFixture();
+    const refused = yield* OpenCodeCreationPolicy.adoptSession({
+      ...fixture.input,
+      authority: {
+        ...fixture.input.authority,
+        authorizeAdoption: () => Effect.fail(deniedAuthorization()),
+      },
+    }).pipe(Effect.exit);
+    expect(refused._tag).toBe("Failure");
+    expect(fixture.trace).toEqual([
+      "reserve-adoption",
+      "abandon-adoption:session-owner-generation",
+    ]);
+  }),
+);
+
+it.effect(
+  "replacement during authority readback rejects adoption and abandons its exact reservation",
+  () =>
+    Effect.gen(function* () {
+      const fixture = adoptionFixture();
+      const refused = yield* OpenCodeCreationPolicy.adoptSession({
+        ...fixture.input,
+        authority: {
+          ...fixture.input.authority,
+          authorizeAdoption: () =>
+            Effect.sync(() => {
+              fixture.replaceParent();
+              return Effect.succeed(true);
+            }),
+        },
+      }).pipe(Effect.exit);
+      expect(refused._tag).toBe("Failure");
+      expect(fixture.trace).toEqual([
+        "reserve-adoption",
+        "abandon-adoption:session-owner-generation",
+      ]);
+    }),
+);
+
+it.effect(
+  "adoption observations reject revoked authority and consumers retain their actual purpose",
+  () =>
+    Effect.gen(function* () {
+      const fixture = adoptionFixture();
+      const adopted = yield* OpenCodeCreationPolicy.adoptSession(fixture.input);
+      yield* OpenCodeCreationPolicy.authorizeConsumption(
+        fixture.input.parent,
+        fixture.input.authority,
+        "models",
+      );
+      yield* OpenCodeCreationPolicy.authorizeConsumption(
+        fixture.input.parent,
+        fixture.input.authority,
+        "inventory",
+      );
+      expect(fixture.trace).toEqual([
+        "reserve-adoption",
+        "authorize-adoption",
+        "consume:models",
+        "consume:inventory",
+      ]);
+      fixture.revoke();
+      expect(yield* adopted.isCurrent).toBe(false);
+    }),
+);
+
+it.effect("qualified adoption rejects an unbound parent before any reservation", () =>
+  Effect.gen(function* () {
+    const fixture = adoptionFixture();
+    const refused = yield* OpenCodeCreationPolicy.adoptSession({
+      ...fixture.input,
+      parent: undefined,
+    }).pipe(Effect.exit);
+    expect(refused._tag).toBe("Failure");
+    expect(fixture.trace).toEqual([]);
+    yield* OpenCodeCreationPolicy.authorizeConsumption(undefined, undefined, "session");
+  }),
+);
+
+it.effect("the real shared owner rejects its captured parent after idle replacement", () =>
+  Effect.gen(function* () {
+    const trace: string[] = [];
+    const generations: string[] = [];
+    let starts = 0;
+    const hooks = makeHooks(trace, generations);
+    const runtime = syntheticRuntime(() => Effect.sync(() => processSnapshot(++starts)));
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const owner = yield* OpenCodeServerOwner.make(ownerInput);
+        const first = yield* owner.withServer(Effect.succeed, hooks);
+        const borrowed = yield* owner.withServer(Effect.succeed, hooks);
+        expect(borrowed.ownedProcess?.incarnation).toBe(first.ownedProcess?.incarnation);
+        expect(generations).toEqual(["existing-owner-generation-1"]);
+        expect(yield* first.ownedProcess!.isCurrent).toBe(true);
+        yield* TestClock.adjust("31 seconds");
+        const replacement = yield* owner.withServer(Effect.succeed, hooks);
+        expect(yield* first.ownedProcess!.isCurrent).toBe(false);
+        expect(yield* replacement.ownedProcess!.isCurrent).toBe(true);
+        expect(replacement.ownedProcess?.incarnation).not.toBe(first.ownedProcess?.incarnation);
+        expect(generations).toEqual(["existing-owner-generation-1", "existing-owner-generation-2"]);
+      }),
+    ).pipe(Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime));
+  }),
 );

@@ -206,6 +206,17 @@
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
       ],
       "scope": "Bound owner-backed observation through ProviderSessionManager and optional ThreadManagementService/MCP output. Codex reports current positive live work with partial coverage; unsupported adapters and missing native coverage remain explicit. Ordinary MCP status and session retention are unchanged."
+    },
+    {
+      "id": "opencode-process-adoption",
+      "tests": [
+        "apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts",
+        "apps/server/src/provider/OpenCodeServerOwner.test.ts",
+        "apps/server/src/provider/opencode2/OpenCode2Server.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts"
+      ],
+      "scope": "Physical process incarnation, qualified per-session adoption and pre-effect revocation checks; absent authority preserves ordinary sessions. Positive authority and live provider qualification are not supplied."
     }
   ]
 }
