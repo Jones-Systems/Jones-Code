@@ -9,9 +9,9 @@ import { resolveSelectableModel } from "@t3tools/shared/model";
 import type { Ref } from "react";
 import { getAppModelOptionsForInstance, type AppModelOption } from "../../modelSelection";
 import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
-import { ComposerControl } from "./ComposerControl";
-import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
-import { getProviderStatusMessage } from "./ProviderStatusBanner";
+import { ComposerControl } from "../../components/chat/ComposerControl";
+import { ProviderInstanceIcon } from "../../components/chat/ProviderInstanceIcon";
+import { getProviderStatusMessage } from "../../components/chat/ProviderStatusBanner";
 
 const PROVIDER_INSTANCE_SHORTCUT_LIMIT = 9;
 

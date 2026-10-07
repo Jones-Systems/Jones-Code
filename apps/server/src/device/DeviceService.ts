@@ -1070,6 +1070,7 @@ export const make = Effect.gen(function* () {
                   host.id === id &&
                   host.label === previous.config.label &&
                   host.target === previous.config.target &&
+                  host.directSshTarget === previous.config.directSshTarget &&
                   host.port === previous.config.port &&
                   host.identityFile === previous.config.identityFile,
               )
@@ -1118,6 +1119,9 @@ export const make = Effect.gen(function* () {
                 service
                   .setHostStatus(host.id, { status, ...(detail ? { detail } : {}) })
                   .pipe(Effect.asVoid),
+              service
+                .currentReadiness(host.id)
+                .pipe(Effect.map((ready) => ready?.directMedia ?? null)),
             ).pipe(Effect.provideService(Scope.Scope, hostScope), Effect.provide(hostContext));
             hosts.set(host.id, instance);
             configured.set(host.id, { config: host, scope: hostScope });

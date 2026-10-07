@@ -8,10 +8,10 @@ import {
   type ProviderOptionDescriptor,
 } from "@t3tools/contracts";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
-import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Menu, MenuPopup, MenuTrigger } from "../../components/ui/menu";
 import { ReasoningEffortShortcuts } from "./ReasoningEffortShortcuts";
-import { TraitsMenuContent, useTraitsSelection } from "./TraitsPicker";
-import { getComposerEffectiveTraitsOptions } from "./composerProviderState";
+import { TraitsMenuContent, useTraitsSelection } from "../../components/chat/TraitsPicker";
+import { getComposerEffectiveTraitsOptions } from "../../components/chat/composerProviderState";
 
 const instanceId = ProviderInstanceId.make("reasoning-test");
 const draftId = DraftId.make("reasoning-test-draft");

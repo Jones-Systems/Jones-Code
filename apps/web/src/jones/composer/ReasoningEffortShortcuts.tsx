@@ -1,11 +1,11 @@
 import type { Ref } from "react";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
-import { ComposerControl } from "./ComposerControl";
+import { ComposerControl } from "../../components/chat/ComposerControl";
 import {
   type TraitsMenuContentProps,
   type TraitsPersistence,
   useTraitsSelection,
-} from "./TraitsPicker";
+} from "../../components/chat/TraitsPicker";
 
 const EFFORT_SHORT_LABELS = new Map([
   ["none", "Off"],
