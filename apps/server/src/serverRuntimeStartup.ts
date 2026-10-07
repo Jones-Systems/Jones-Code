@@ -25,6 +25,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import type * as NetAddress from "effect/unstable/net/NetAddress";
 
 import * as ServerConfig from "./config.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
@@ -47,6 +48,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import { forkParked, forkParkedFiber } from "./serverActivation.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
+import * as JonesTrialStartup from "./jones/updates/trialStartup.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import {
   formatHeadlessServeOutput,
@@ -84,7 +86,7 @@ export class ServerRuntimeStartup extends Context.Service<
       threadIds: ReadonlyArray<ThreadId>,
     ) => Effect.Effect<void, ServerRuntimeStartupError>;
     readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
-    readonly markHttpListening: Effect.Effect<void>;
+    readonly markHttpListening: (address: NetAddress.SocketAddress) => Effect.Effect<void>;
     readonly enqueueCommand: <A, E>(
       effect: Effect.Effect<A, E>,
     ) => Effect.Effect<A, E | ServerRuntimeStartupError>;
@@ -407,7 +409,10 @@ export function runOrderedV2StartupPhases<
   DelegationContext,
   WorkerContext,
   BootstrapContext,
+  TrialError = never,
+  TrialContext = never,
 >(input: {
+  readonly awaitTrialCommit?: Effect.Effect<void, TrialError, TrialContext>;
   readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
   readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
   /** Settles delegated tasks whose runs recovery just terminalized. */
@@ -416,6 +421,7 @@ export function runOrderedV2StartupPhases<
   readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
 }) {
   return Effect.gen(function* () {
+    yield* input.awaitTrialCommit ?? Effect.void;
     yield* input.importLegacyShells;
     const recovery = yield* input.recover;
     yield* input.recoverDelegatedTasks;
@@ -424,6 +430,21 @@ export function runOrderedV2StartupPhases<
     return { recovery, bootstrap } as const;
   });
 }
+
+export const runRuntimeShutdown = <PrepareError, ReconcileError, R>(input: {
+  readonly continuationWritesAllowed: boolean;
+  readonly prepareForShutdown: Effect.Effect<void, PrepareError, R>;
+  readonly shutdownSessions: Effect.Effect<void, never, R>;
+  readonly reconcile: Effect.Effect<void, ReconcileError, R>;
+}) => Effect.gen(function* () {
+  // An unactivated native trial owns local cleanup but must preserve paired continuation state.
+  if (!input.continuationWritesAllowed) {
+    yield* input.shutdownSessions;
+    return;
+  }
+  yield* input.prepareForShutdown.pipe(Effect.ensuring(input.shutdownSessions));
+  yield* input.reconcile;
+});
 
 const make = (options?: StartupOptions) =>
   Effect.gen(function* () {
@@ -455,7 +476,9 @@ const make = (options?: StartupOptions) =>
         cause,
       });
     const commandGate = yield* makeCommandGate;
-    const httpListening = yield* Deferred.make<void>();
+    const httpListening = yield* Deferred.make<NetAddress.SocketAddress>();
+    const nativeTrial = yield* JonesTrialStartup.hasJonesTrialAuthority;
+    const trialActivated = yield* Ref.make(false);
     const effectWorkerFiber = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
 
     yield* Effect.addFinalizer(() =>
@@ -472,11 +495,16 @@ const make = (options?: StartupOptions) =>
         if (workerFiber !== null) {
           yield* Fiber.interrupt(workerFiber).pipe(Effect.ignore);
         }
-        yield* providerRuntimeRecovery.prepareForShutdown.pipe(
-          Effect.ensuring(providerSessions.shutdown),
-        );
-        const reconciliation = yield* providerRuntimeRecovery.reconcile("shutdown");
-        yield* Effect.logInfo("V2 orchestration shutdown reconciliation completed", reconciliation);
+        yield* runRuntimeShutdown({
+          continuationWritesAllowed: !nativeTrial || (yield* Ref.get(trialActivated)),
+          prepareForShutdown: providerRuntimeRecovery.prepareForShutdown,
+          shutdownSessions: providerSessions.shutdown,
+          reconcile: providerRuntimeRecovery.reconcile("shutdown").pipe(
+            Effect.flatMap((reconciliation) =>
+              Effect.logInfo("V2 orchestration shutdown reconciliation completed", reconciliation),
+            ),
+          ),
+        });
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("V2 orchestration shutdown reconciliation failed", {
@@ -520,20 +548,26 @@ const make = (options?: StartupOptions) =>
       const welcomeBase = yield* resolveWelcomeBase;
       const environment = yield* serverEnvironment.getDescriptor;
       const legacyMigrationThreadCount = yield* legacyV1ThreadImporter.pendingThreadCount;
-      if (legacyMigrationThreadCount > 0) {
-        yield* lifecycleEvents.publish({
-          version: 1,
-          type: "legacyThreadMigration",
-          payload: {
-            status: "running",
-            totalThreadCount: legacyMigrationThreadCount,
-          },
-        });
-      }
       const { recovery, bootstrap: bootstrapTargets } = yield* runOrderedV2StartupPhases({
+        awaitTrialCommit: JonesTrialStartup.awaitSelectedJonesTrialStartup({
+          waitUntilParked: Deferred.await(httpListening).pipe(
+            Effect.andThen(options?.awaitAuxiliaryParked ?? Effect.void),
+            Effect.asVoid,
+          ),
+          observedListener: Deferred.await(httpListening),
+        }),
         importLegacyShells: runStartupPhase(
           "orchestration-v2.legacy-v1.import-shells",
-          legacyV1ThreadImporter.reconcileShells.pipe(
+          Effect.gen(function* () {
+            if (legacyMigrationThreadCount > 0) {
+              yield* lifecycleEvents.publish({
+                version: 1,
+                type: "legacyThreadMigration",
+                payload: { status: "running", totalThreadCount: legacyMigrationThreadCount },
+              });
+            }
+            return yield* legacyV1ThreadImporter.reconcileShells;
+          }).pipe(
             Effect.tap((summary) =>
               summary.importedThreadCount === 0
                 ? Effect.void
@@ -653,7 +687,10 @@ const make = (options?: StartupOptions) =>
         }),
       );
 
-      yield* options?.activate ?? Effect.void;
+      yield* (options?.activate ?? Effect.void).pipe(
+        Effect.andThen(Ref.set(trialActivated, true)),
+        Effect.uninterruptible,
+      );
       yield* Effect.logDebug("Accepting commands");
       yield* commandGate.signalCommandReady;
       yield* Effect.logDebug("startup phase: publishing ready event");
@@ -717,7 +754,7 @@ const make = (options?: StartupOptions) =>
           Effect.mapError(continuationError),
         ),
       awaitCommandReady: commandGate.awaitCommandReady,
-      markHttpListening: Deferred.succeed(httpListening, undefined),
+      markHttpListening: (address) => Deferred.succeed(httpListening, address).pipe(Effect.asVoid),
       enqueueCommand: commandGate.enqueueCommand,
     } satisfies ServerRuntimeStartup["Service"];
   });
