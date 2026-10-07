@@ -45,7 +45,7 @@ const match = source.match(
   /SELECT payload_json FROM orchestration_v2_projection_messages AS message[\s\S]*?ORDER BY created_at ASC, message_id ASC/,
 );
 NodeAssert.ok(match, "V2 bounded message SQL must still exist");
-export const historyBaselineSql = match[0];
+const historyBaselineSql = match[0];
 export const historySourceSha256 = NodeCrypto.createHash("sha256").update(source).digest("hex");
 const activeRuns =
   "SELECT run_id FROM orchestration_v2_projection_runs WHERE thread_id = ? AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting')";
