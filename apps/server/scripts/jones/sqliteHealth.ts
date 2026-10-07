@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+// @effect-diagnostics nodeBuiltinImport:off -- The native CLI resolves its owned supervisor outside the clean candidate tree without an Effect runtime.
 // @effect-diagnostics globalTimers:off -- The native CLI bounds stdin and its owned child with a deadline cleared in finally; an Effect timeout cannot preempt synchronous SQLite.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";

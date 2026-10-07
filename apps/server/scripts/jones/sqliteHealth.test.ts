@@ -527,8 +527,12 @@ describe("jones-sqlite-health — closed fixture integration", () => {
       expect(accepted.value.results.counts.data?.find((row) => row.name === "runs")?.count).toBe(
         "6",
       );
-      expect(accepted.capture.tables.orchestration_command_receipts?.count).toBe(9);
-      expect(accepted.capture.tables.orchestration_v2_command_receipts?.count).toBe(0);
+      const sharedReceipts = accepted.capture.tables.orchestration_command_receipts;
+      const obsoleteReceipts = accepted.capture.tables.orchestration_v2_command_receipts;
+      if (sharedReceipts?.status !== "present" || obsoleteReceipts?.status !== "present")
+        throw new Error("current fixture receipt table capture is absent");
+      expect(sharedReceipts.count).toBe(9);
+      expect(obsoleteReceipts.count).toBe(0);
       expect(accepted.value.results.integrity.data?.passed).toBe(true);
       expect(accepted.value.results.foreignKeys.data?.passed).toBe(true);
       expect(accepted.value.results.readonly.data?.unchanged).toBe(true);
