@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as LogLevel from "effect/LogLevel";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
@@ -33,6 +34,8 @@ export type StartupPresentation = typeof StartupPresentation.Type;
  */
 export interface ServerDerivedPaths {
   readonly stateDir: string;
+  /** Native placement trust state; deliberately outside application/SQLite state. */
+  readonly authorityStateDir: string;
   readonly dbPath: string;
   readonly keybindingsConfigPath: string;
   readonly settingsPath: string;
@@ -56,6 +59,7 @@ export interface ServerDerivedPaths {
 
 export interface DeriveServerPathsOptions {
   readonly baseDirIsExplicit?: boolean;
+  readonly authorityStateDir?: string;
 }
 
 /**
@@ -144,6 +148,7 @@ export const deriveServerPaths = Effect.fn(function* (
   const providerStatusCacheDir = join(baseDir, "caches");
   return {
     stateDir,
+    authorityStateDir: options.authorityStateDir ?? join(baseDir, "native-store-authority"),
     dbPath,
     keybindingsConfigPath: join(stateDir, "keybindings.json"),
     settingsPath: join(stateDir, "settings.json"),
@@ -164,13 +169,91 @@ export const deriveServerPaths = Effect.fn(function* (
   };
 });
 
+const canonicalizePath = Effect.fn("ServerConfig.canonicalizePath")(function* (input: string) {
+  const path = yield* Path.Path;
+  const fileSystem = yield* FileSystem.FileSystem;
+  let candidate = path.resolve(input);
+  const missingSegments: string[] = [];
+
+  // Authority and protected roots may not exist during first boot. Resolve
+  // their existing ancestor so a symlink cannot hide an overlapping target.
+  while (true) {
+    const canonical = yield* fileSystem.realPath(candidate).pipe(
+      Effect.map(Option.some),
+      Effect.catch((error) =>
+        error.reason._tag === "NotFound"
+          ? Effect.succeed(Option.none<string>())
+          : Effect.fail(error),
+      ),
+    );
+    if (Option.isSome(canonical)) {
+      return missingSegments.reduce(
+        (parent, segment) => path.join(parent, segment),
+        canonical.value,
+      );
+    }
+    const parent = path.dirname(candidate);
+    if (parent === candidate) return path.join(candidate, ...missingSegments);
+    missingSegments.unshift(path.basename(candidate));
+    candidate = parent;
+  }
+});
+
+const isSameOrDescendant = (path: Path.Path, root: string, candidate: string): boolean => {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === "" ||
+    (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
+  );
+};
+
+const pathsOverlap = (path: Path.Path, left: string, right: string): boolean =>
+  isSameOrDescendant(path, left, right) || isSameOrDescendant(path, right, left);
+
+export class AuthorityStateDirConflictError extends Schema.TaggedError<AuthorityStateDirConflictError>()(
+  "AuthorityStateDirConflictError",
+  {
+    authorityStateDir: Schema.String,
+    stateDir: Schema.String,
+    databaseBackupDir: Schema.String,
+  },
+) {}
+
+/** Reject authority placement inside application state or rollback backups. */
+const validateAuthorityStateDir = Effect.fn("ServerConfig.validateAuthorityStateDir")(function* (
+  authorityStateDir: string,
+  stateDir: string,
+  databaseBackupDir: string,
+) {
+  const path = yield* Path.Path;
+  const [authority, state, backup] = yield* Effect.all([
+    canonicalizePath(authorityStateDir),
+    canonicalizePath(stateDir),
+    canonicalizePath(databaseBackupDir),
+  ]);
+  if (pathsOverlap(path, state, authority) || pathsOverlap(path, backup, authority)) {
+    return yield* new AuthorityStateDirConflictError({
+      authorityStateDir,
+      stateDir,
+      databaseBackupDir,
+    });
+  }
+});
+
 export const ensureServerDirectories = Effect.fn(function* (derivedPaths: ServerDerivedPaths) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
+  yield* validateAuthorityStateDir(
+    derivedPaths.authorityStateDir,
+    derivedPaths.stateDir,
+    path.join(path.dirname(derivedPaths.stateDir), "runtime", "db-backup"),
+  );
+
   yield* Effect.all(
     [
       fs.makeDirectory(derivedPaths.stateDir, { recursive: true }),
+      fs.makeDirectory(derivedPaths.authorityStateDir, { recursive: true, mode: 0o700 }),
       fs.makeDirectory(derivedPaths.logsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.providerLogsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.terminalLogsDir, { recursive: true }),
@@ -205,7 +288,9 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
       ? baseDirOrPrefix
       : yield* fs.makeTempDirectoryScoped({ prefix: baseDirOrPrefix.prefix });
   const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
-  yield* ensureServerDirectories(derivedPaths);
+  // Invalid fixture directory layouts are test setup defects rather than
+  // the service layer's ordinary error channel.
+  yield* ensureServerDirectories(derivedPaths).pipe(Effect.orDie);
 
   return ServerConfig.of({
     logLevel: "Error",

@@ -1,3 +1,5 @@
+import * as ProjectionStoreV2 from "../../orchestration-v2/ProjectionStore.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as Layer from "effect/Layer";
 import { conversationLibraryHttpApiLayer } from "../../conversations/http.ts";
 import * as HostStatus from "../../hostStatus/HostStatus.ts";
@@ -14,7 +16,17 @@ export const provideConversationAndVoiceReview = <A, E, R>(api: Layer.Layer<A, E
     Layer.provide(conversationLibraryHttpApiLayer),
     Layer.provide(
       voiceReviewHttpApiLayer.pipe(
-        Layer.provide(VoiceReview.layer.pipe(Layer.provide(VoiceReview.dependenciesLayer))),
+        Layer.provide(
+          VoiceReview.layer.pipe(
+            Layer.provide(
+              VoiceReview.dependenciesLayerLive.pipe(
+                Layer.provide(
+                  Layer.merge(ProjectionStoreV2.layer, ServerEnvironment.identityLayer),
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     ),
   );

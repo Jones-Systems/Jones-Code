@@ -327,6 +327,7 @@ export interface ThreadListV2ThreadListItem {
       availability without changing any shell. */
   readonly canMoveUp: boolean;
   readonly canMoveDown: boolean;
+  readonly secondaryWorkstreamLabel?: string;
 }
 
 export interface ThreadListV2PendingListItem {
@@ -370,7 +371,19 @@ export interface ThreadListV2SettledShelfListItem {
   readonly disabled: boolean;
 }
 
+export interface ThreadListV2WorkstreamListItem {
+  readonly type: "v2-workstream";
+  readonly key: string;
+  readonly groupKey: string;
+  readonly name: string;
+  readonly color: string;
+  readonly borderColor?: string;
+  readonly count: number;
+  readonly expanded: boolean;
+}
+
 export type ThreadListV2ListItem =
+  | ThreadListV2WorkstreamListItem
   | ThreadListV2ThreadListItem
   | ThreadListV2PendingListItem
   | ThreadListV2WorkingShelfListItem
@@ -383,6 +396,7 @@ export function isThreadListV2ListItem(value: {
   readonly type: string;
 }): value is ThreadListV2ListItem {
   return (
+    value.type === "v2-workstream" ||
     value.type === "v2-thread" ||
     value.type === "v2-pending" ||
     value.type === "v2-working-shelf" ||
@@ -403,6 +417,17 @@ export function threadListV2ListItemsAreEqual(
   item: ThreadListV2ListItem,
 ): boolean {
   switch (item.type) {
+    case "v2-workstream":
+      return (
+        previous.type === "v2-workstream" &&
+        previous.key === item.key &&
+        previous.groupKey === item.groupKey &&
+        previous.name === item.name &&
+        previous.color === item.color &&
+        previous.borderColor === item.borderColor &&
+        previous.count === item.count &&
+        previous.expanded === item.expanded
+      );
     case "v2-thread":
       return (
         previous.type === "v2-thread" &&
@@ -417,7 +442,8 @@ export function threadListV2ListItemsAreEqual(
         previous.showTrailingDivider === item.showTrailingDivider &&
         previous.hasQueuedMessages === item.hasQueuedMessages &&
         previous.canMoveUp === item.canMoveUp &&
-        previous.canMoveDown === item.canMoveDown
+        previous.canMoveDown === item.canMoveDown &&
+        previous.secondaryWorkstreamLabel === item.secondaryWorkstreamLabel
       );
     case "v2-pending":
       return (
