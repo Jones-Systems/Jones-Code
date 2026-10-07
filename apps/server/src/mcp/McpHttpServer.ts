@@ -15,6 +15,12 @@ import { McpProtocol, McpSchema, McpServer, Tool } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { PreviewAutomationError } from "@t3tools/contracts";
 
+import { DecisionSnapshotCollectorLive } from "../jones/mcp/decisionSnapshot/collector.ts";
+import {
+  DecisionSnapshotNativeCountsUnavailable,
+  DecisionSnapshotToolkitHandlersLive,
+} from "../jones/mcp/decisionSnapshot/handlers.ts";
+import { DecisionSnapshotToolkit } from "../jones/mcp/decisionSnapshot/tools.ts";
 import { OrganizationMetadataRegistrationLive } from "../jones/mcp/organizationMetadata/handlers.ts";
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
@@ -709,6 +715,12 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
   DeviceScreenshotRegistrationLive,
 );
 
+const DecisionSnapshotToolkitRegistrationLive = McpServer.toolkit(DecisionSnapshotToolkit).pipe(
+  Layer.provide(DecisionSnapshotToolkitHandlersLive),
+  Layer.provide(DecisionSnapshotNativeCountsUnavailable),
+  Layer.provide(DecisionSnapshotCollectorLive),
+);
+
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -718,6 +730,7 @@ const McpTransportLive = McpServer.layerHttp({
 
 export const layer = Layer.mergeAll(
   OrganizationMetadataRegistrationLive,
+  DecisionSnapshotToolkitRegistrationLive,
   PreviewToolkitRegistrationLive,
   OrchestratorToolkitRegistrationLive,
   ThreadToolkitRegistrationLive,
