@@ -266,8 +266,13 @@ const make = Effect.gen(function* () {
         .withTransaction(
           Effect.gen(function* () {
             const { intent } = yield* readByClaim(claimId);
-            if (command.commandId !== intent.commandId || command.type !== "message.dispatch")
+            if (
+              command.commandId !== intent.commandId ||
+              (command.type !== "message.dispatch" && command.type !== "prepared-run.release")
+            )
               return yield* fail("Normalized command identity differs from intent");
+            if (command.type === "prepared-run.release")
+              yield* executionMethods.assertExecutionCapability;
             yield* reserve(claimId, command);
             const canonicalCommand = nativeCreationCanonicalJson(command);
             const existing = yield* sql<{
@@ -568,6 +573,11 @@ const make = Effect.gen(function* () {
       readWorkspaceVerified(claimId).pipe(Effect.mapError(mapRepositoryError)),
     recordWorkspaceVerified,
     hasAutomationEnrollment,
+    isReservedCommandIdentity: (commandId) =>
+      sql`SELECT command_id FROM native_creation_reserved_command_identities WHERE command_id=${commandId}`.pipe(
+        Effect.map((rows) => rows.length > 0),
+        Effect.mapError(mapRepositoryError),
+      ),
     claim,
     readHistory,
     reserveCommand,

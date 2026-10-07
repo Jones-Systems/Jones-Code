@@ -1,6 +1,11 @@
 import { ThreadTurnDispatchGuard } from "./providerQueue.ts";
 import { RuntimeIdentityAttestation } from "./jones/providerRuntimeIdentity.ts";
-import { NativeCreationObservation, NativeCreationRejectionCode } from "./nativeCreation.ts";
+import {
+  NativeBootstrapSubmission,
+  NativeBootstrapDispatchResultV2,
+  NativeCreationObservation,
+  NativeCreationRejectionCode,
+} from "./nativeCreation.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -3085,6 +3090,7 @@ export type OrchestrationV2ServerCommand =
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
+  dispatchNativeBootstrap: "orchestration.dispatchNativeBootstrap",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
@@ -3428,6 +3434,10 @@ export class OrchestrationGetWorkflowScriptError extends Schema.TaggedError<Orch
 }
 
 export const OrchestrationV2RpcSchemas = {
+  dispatchNativeBootstrap: {
+    input: NativeBootstrapSubmission,
+    output: NativeBootstrapDispatchResultV2,
+  },
   dispatchCommand: {
     input: OrchestrationV2Command,
     output: OrchestrationV2DispatchCommandResult,

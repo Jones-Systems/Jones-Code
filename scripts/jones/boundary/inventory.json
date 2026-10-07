@@ -761,7 +761,10 @@
     "apps/server/src/provider/opencodeRuntime.ts": "hook",
     "apps/server/src/jones/runtime/CurrentThreadRuntimeAttachment.ts": "jones-owned",
     "apps/server/src/jones/runtime/RuntimeCensus.ts": "jones-owned",
-    "apps/server/src/jones/runtime/RuntimeCensus.test.ts": "jones-owned"
+    "apps/server/src/jones/runtime/RuntimeCensus.test.ts": "jones-owned",
+    "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts": "jones-owned",
+    "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.ts": "jones-owned",
+    "apps/server/src/jones/nativeCreation/NativeCreationStageDispatch.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

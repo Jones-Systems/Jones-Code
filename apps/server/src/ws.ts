@@ -1,3 +1,8 @@
+import {
+  NativeBootstrapDispatchError,
+  NativeCreationRejectionCode,
+  EnvironmentAuthenticatedPrincipal,
+} from "@t3tools/contracts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import { QueueDispatchCommand } from "@t3tools/contracts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
@@ -1803,6 +1808,41 @@ const makeWsRpcLayer = (
       });
 
       const handlers = ServerWsRpcGroup.of({
+        [ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap]: (submission) =>
+          observeRpcEffect(
+            ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
+            threadLaunch.dispatchNativeBootstrap === undefined
+              ? Effect.fail(
+                  new NativeBootstrapDispatchError({
+                    code: "unsupported_authority",
+                    message: "Native bootstrap is unavailable",
+                  }),
+                )
+              : startup
+                  .enqueueCommand(
+                    threadLaunch.dispatchNativeBootstrap(submission).pipe(
+                      Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+                        ...currentSession,
+                        scopes: new Set(currentSession.scopes),
+                      }),
+                    ),
+                  )
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new NativeBootstrapDispatchError({
+                          code:
+                            "code" in cause &&
+                            typeof cause.code === "string" &&
+                            Schema.is(NativeCreationRejectionCode)(cause.code)
+                              ? cause.code
+                              : "unresolved_claim",
+                          message: "Native bootstrap was rejected; observe the original claim",
+                        }),
+                    ),
+                  ),
+            { "rpc.aggregate": "orchestrationV2" },
+          ),
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Schema.is(QueueDispatchCommand)(command)
             ? observeRpcEffect(
