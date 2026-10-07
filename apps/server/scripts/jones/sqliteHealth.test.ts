@@ -68,7 +68,9 @@ async function withFixture(
   body: (fixture: Fixture) => Promise<void>,
   configure?: (database: NodeSqlite.DatabaseSync, databasePath: string) => void,
 ) {
-  const scratch = NodeFS.mkdtempSync(NodePath.join(NodePath.dirname(worktreePath), ".health-test-"));
+  const scratch = NodeFS.mkdtempSync(
+    NodePath.join(NodePath.dirname(worktreePath), ".health-test-"),
+  );
   const binding = {
     repository: "Jones-Systems/Jones-Code",
     sourceRevision: "73b1702f6d5bde5e16636951f637e5416e5a5a6d",
@@ -146,9 +148,8 @@ async function withFixture(
         failure ??= error;
       }
     }
-    const cleanup = owner && !custody.unknownConsumer && (!database || closed)
-      ? disposeOwnedRoot(owner)
-      : null;
+    const cleanup =
+      owner && !custody.unknownConsumer && (!database || closed) ? disposeOwnedRoot(owner) : null;
     if (owner && (!cleanup || cleanup.outcome !== "complete")) {
       const cleanupFailure = new Error(`fixture cleanup retained exact root ${scratch}`);
       if (failure) console.error(cleanupFailure.message);
@@ -292,8 +293,11 @@ async function cli(
     } catch {
       throw new Error(`CLI emitted an invalid JSON report; ${nativeDiagnostic}`);
     }
-    observedConsumerClose = report.child.closed && report.child.reaped &&
-      report.child.outcome !== "unknown" && report.cleanup.status === "completed" &&
+    observedConsumerClose =
+      report.child.closed &&
+      report.child.reaped &&
+      report.child.outcome !== "unknown" &&
+      report.cleanup.status === "completed" &&
       report.cleanup.supervisorRoot === null;
     expect(output.trim().split("\n")).toHaveLength(1);
     expect(Buffer.byteLength(output)).toBeLessThanOrEqual(report.limits.maxOutputBytes);
@@ -479,11 +483,23 @@ describe("jones-sqlite-health — closed fixture integration", () => {
       expect(accepted.receiptSha256).not.toBe(custodyPin);
       expect(accepted.value.fixture?.receiptSha256).toBe(custodyPin);
       expect(accepted.value.schemaProfile).toBe("orchestration-v2");
-      expect(accepted.value.results.counts.data?.find((row) => row.name === "events")).toEqual({ name: "events", status: "completed", count: "21" });
-      expect(accepted.value.results.counts.data?.find((row) => row.name === "commandReceipts")?.count).toBe("9");
-      expect(accepted.value.results.counts.data?.find((row) => row.name === "threads")?.count).toBe("2");
-      expect(accepted.value.results.counts.data?.find((row) => row.name === "messages")?.count).toBe("12");
-      expect(accepted.value.results.counts.data?.find((row) => row.name === "runs")?.count).toBe("6");
+      expect(accepted.value.results.counts.data?.find((row) => row.name === "events")).toEqual({
+        name: "events",
+        status: "completed",
+        count: "21",
+      });
+      expect(
+        accepted.value.results.counts.data?.find((row) => row.name === "commandReceipts")?.count,
+      ).toBe("9");
+      expect(accepted.value.results.counts.data?.find((row) => row.name === "threads")?.count).toBe(
+        "2",
+      );
+      expect(
+        accepted.value.results.counts.data?.find((row) => row.name === "messages")?.count,
+      ).toBe("12");
+      expect(accepted.value.results.counts.data?.find((row) => row.name === "runs")?.count).toBe(
+        "6",
+      );
       expect(accepted.capture.tables.orchestration_command_receipts?.count).toBe(9);
       expect(accepted.capture.tables.orchestration_v2_command_receipts?.count).toBe(0);
       expect(accepted.value.results.integrity.data?.passed).toBe(true);
@@ -547,32 +563,43 @@ describe("jones-sqlite-health — closed fixture integration", () => {
 
 describe("jones-sqlite-health — d-readonly", () => {
   it("attributes V2 counts to shared events and command receipts despite conflicting obsolete tables", async () => {
-    await withFixture(async (fixture) => {
-      const before = snapshot(fixture.root);
-      const result = await cli(
-        fixture,
-        argumentsFor(fixture, ["--schema-profile", "orchestration-v2", "--include", "counts"]),
-        JSON.stringify(fixture.receipt),
-      );
-      expect(result.report.schemaProfile).toBe("orchestration-v2");
-      expect(result.report.results.counts.status).toBe("completed");
-      expect(result.report.results.counts.data?.map((row) => [row.name, row.count])).toEqual(
-        v2CountTables.map(([name]) => [name, "1"]),
-      );
-      expect(result.report.results.counts.data?.find((row) => row.name === "commandReceipts")).toEqual({ name: "commandReceipts", status: "completed", count: "1" });
-      expect(result.report.results.counts.data?.some((row) => row.name === "activities")).toBe(false);
-      expect(snapshot(fixture.root)).toEqual(before);
-      expect(result.report.cleanup.status).toBe("completed");
-      expect(result.report.child.reaped).toBe(true);
-    }, (database) => {
-      for (const [, table] of countTables) database.exec(`DROP TABLE "${table}"`);
-      database.exec("CREATE TABLE orchestration_v2_events (id INTEGER PRIMARY KEY); INSERT INTO orchestration_v2_events VALUES (1),(2),(3)");
-      database.exec("CREATE TABLE orchestration_v2_command_receipts (id INTEGER PRIMARY KEY); INSERT INTO orchestration_v2_command_receipts VALUES (1),(2),(3)");
-      for (const [, table] of v2CountTables) {
-        database.exec(`CREATE TABLE "${table}" (id INTEGER PRIMARY KEY)`);
-        database.exec(`INSERT INTO "${table}" VALUES (1)`);
-      }
-    });
+    await withFixture(
+      async (fixture) => {
+        const before = snapshot(fixture.root);
+        const result = await cli(
+          fixture,
+          argumentsFor(fixture, ["--schema-profile", "orchestration-v2", "--include", "counts"]),
+          JSON.stringify(fixture.receipt),
+        );
+        expect(result.report.schemaProfile).toBe("orchestration-v2");
+        expect(result.report.results.counts.status).toBe("completed");
+        expect(result.report.results.counts.data?.map((row) => [row.name, row.count])).toEqual(
+          v2CountTables.map(([name]) => [name, "1"]),
+        );
+        expect(
+          result.report.results.counts.data?.find((row) => row.name === "commandReceipts"),
+        ).toEqual({ name: "commandReceipts", status: "completed", count: "1" });
+        expect(result.report.results.counts.data?.some((row) => row.name === "activities")).toBe(
+          false,
+        );
+        expect(snapshot(fixture.root)).toEqual(before);
+        expect(result.report.cleanup.status).toBe("completed");
+        expect(result.report.child.reaped).toBe(true);
+      },
+      (database) => {
+        for (const [, table] of countTables) database.exec(`DROP TABLE "${table}"`);
+        database.exec(
+          "CREATE TABLE orchestration_v2_events (id INTEGER PRIMARY KEY); INSERT INTO orchestration_v2_events VALUES (1),(2),(3)",
+        );
+        database.exec(
+          "CREATE TABLE orchestration_v2_command_receipts (id INTEGER PRIMARY KEY); INSERT INTO orchestration_v2_command_receipts VALUES (1),(2),(3)",
+        );
+        for (const [, table] of v2CountTables) {
+          database.exec(`CREATE TABLE "${table}" (id INTEGER PRIMARY KEY)`);
+          database.exec(`INSERT INTO "${table}" VALUES (1)`);
+        }
+      },
+    );
   });
 
   it("reports missing V2 projection tables while counting the shared authoritative events table", async () => {
@@ -583,9 +610,14 @@ describe("jones-sqlite-health — d-readonly", () => {
         JSON.stringify(fixture.receipt),
       );
       expect(result.report.results.counts.reason).toBe("tables_missing");
-      expect(result.report.results.counts.data?.find((row) => row.name === "events")).toEqual({ name: "events", status: "completed", count: "1" });
-      expect(result.report.results.counts.data?.find((row) => row.name === "threads")?.status)
-        .toBe("unavailable");
+      expect(result.report.results.counts.data?.find((row) => row.name === "events")).toEqual({
+        name: "events",
+        status: "completed",
+        count: "1",
+      });
+      expect(result.report.results.counts.data?.find((row) => row.name === "threads")?.status).toBe(
+        "unavailable",
+      );
     });
   });
 
@@ -785,17 +817,24 @@ describe("jones-sqlite-health — d-readonly", () => {
   });
 
   it("refuses a sealed DELETE fixture with a sidecar before opening SQLite", async () => {
-    await withFixture(async (fixture) => {
-      const before = snapshot(fixture.root);
-      expect(fixture.receipt.layout.some((entry) => entry.relativePath.endsWith("-shm") && entry.present)).toBe(true);
-      const result = await cli(fixture, argumentsFor(fixture), JSON.stringify(fixture.receipt));
-      expect(result.report.reason).toBe("readonly_layout_unqualified");
-      expect(result.report.status).toBe("refused");
-      expect(result.report.runtime.sqliteVersion).toBeNull();
-      expect(snapshot(fixture.root)).toEqual(before);
-    }, (_database, databasePath) => {
-      NodeFS.writeFileSync(`${databasePath}-shm`, Buffer.alloc(64), { flag: "wx", mode: 0o600 });
-    });
+    await withFixture(
+      async (fixture) => {
+        const before = snapshot(fixture.root);
+        expect(
+          fixture.receipt.layout.some(
+            (entry) => entry.relativePath.endsWith("-shm") && entry.present,
+          ),
+        ).toBe(true);
+        const result = await cli(fixture, argumentsFor(fixture), JSON.stringify(fixture.receipt));
+        expect(result.report.reason).toBe("readonly_layout_unqualified");
+        expect(result.report.status).toBe("refused");
+        expect(result.report.runtime.sqliteVersion).toBeNull();
+        expect(snapshot(fixture.root)).toEqual(before);
+      },
+      (_database, databasePath) => {
+        NodeFS.writeFileSync(`${databasePath}-shm`, Buffer.alloc(64), { flag: "wx", mode: 0o600 });
+      },
+    );
   });
 
   it("rejects empty, nonobject, invalid UTF-8, multiple-object and oversized stdin before retention/open", async () => {

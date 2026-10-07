@@ -288,12 +288,8 @@
     },
     {
       "id": "jones-performance-health",
-      "tests": [
-        "apps/server/scripts/jones/sqliteHealth.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/scripts/jones/sqliteHealth.test.ts"
-      ]
+      "tests": ["apps/server/scripts/jones/sqliteHealth.test.ts"],
+      "commands": ["vp test run apps/server/scripts/jones/sqliteHealth.test.ts"]
     }
   ]
 }
