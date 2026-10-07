@@ -49,6 +49,7 @@ import type {
   ProviderSelectionTransitionInput,
   ProviderSelectionTransitionPlan,
 } from "./ProviderSelectionTransition.ts";
+import type { ProviderEventProducerOrigin } from "../jones/orchestration/ProviderEventOrigin.ts";
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
@@ -428,6 +429,7 @@ export interface ProviderRuntimeLifecycle {
     readonly runtimeGeneration: string;
     readonly requested: RequestedRuntimeIdentity;
     readonly observed: ObservedRuntimeIdentity;
+    readonly producerOrigin?: ProviderEventProducerOrigin;
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
   readonly abandon: (runtimeGeneration: string) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly invalidate: (
@@ -617,6 +619,7 @@ export interface ProviderAdapterV2HistoricalContext {
 }
 
 export interface ProviderAdapterV2SessionRuntime {
+  readonly eventOriginMode?: "captured";
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;

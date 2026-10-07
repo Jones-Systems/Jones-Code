@@ -22,6 +22,7 @@ describe("Jones environment HTTP registration", () => {
       "projects",
       "connect",
       "conversationLibrary",
+      "jonesUpdates",
     ]);
   });
 
@@ -33,6 +34,7 @@ describe("Jones environment HTTP registration", () => {
       ...Object.values(groups.workQueueMetadata.endpoints),
       ...Object.values(groups.conversationLibrary.endpoints),
       ...Object.values(groups.workstreams.endpoints),
+      ...Object.values(groups.jonesUpdates.endpoints),
       ...Object.values(groups.workstreamsNative.endpoints),
     ];
     expect(routes.map(({ identifier, method, path }) => [identifier, method, path])).toEqual([
@@ -69,6 +71,11 @@ describe("Jones environment HTTP registration", () => {
       ["history", "GET", "/api/workstreams/:workstreamId/history"],
       ["command", "GET", "/api/workstreams/commands/:commandId"],
       ["submit", "POST", "/api/workstreams/commands"],
+      ["prepareNative", "POST", "/api/jones-updates/prepare-native"],
+      ["state", "GET", "/api/jones-updates"],
+      ["check", "POST", "/api/jones-updates/check"],
+      ["download", "POST", "/api/jones-updates/download"],
+      ["install", "POST", "/api/jones-updates/install"],
       ["context", "GET", "/api/workstreams/native/v1/context"],
       ["attestations", "POST", "/api/workstreams/native/v1/attestations"],
       ["settlements", "POST", "/api/workstreams/native/v1/settlements"],

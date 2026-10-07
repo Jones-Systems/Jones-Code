@@ -1,3 +1,4 @@
+import { executeNativeProviderEffect } from "../jones/nativeCreation/NativeCreationProviderExecution.ts";
 import { CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -106,6 +107,18 @@ export const executorLayer: Layer.Layer<
     const settings = yield* ServerSettings.ServerSettingsService;
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
+        if (effect.nativeCreationExecutionReference !== undefined) {
+          return executeNativeProviderEffect(effect).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationEffectExecutionError({
+                  effectId: effect.id,
+                  effectType: effect.request.type,
+                  cause,
+                }),
+            ),
+          );
+        }
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
           case "provider-runtime.continue": {
