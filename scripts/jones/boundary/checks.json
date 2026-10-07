@@ -328,6 +328,11 @@
       "commands": [
         "vp test run apps/server/src/jones/orchestration/historyExperiment.test.ts apps/server/src/jones/orchestration/shellFanout.test.ts apps/server/src/jones/orchestration/shellFanout.diagnostic.test.ts apps/server/src/orchestration-v2/LiveStreamBudget.test.ts"
       ]
+    },
+    {
+      "id": "jones-performance-health",
+      "tests": ["apps/server/scripts/jones/sqliteHealth.test.ts"],
+      "commands": ["vp test run apps/server/scripts/jones/sqliteHealth.test.ts"]
     }
   ]
 }
