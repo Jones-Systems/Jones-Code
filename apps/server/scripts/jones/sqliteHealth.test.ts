@@ -477,7 +477,29 @@ describe("jones-sqlite-health — closed fixture integration", () => {
         accepted.childReceipt.reaped &&
         accepted.childReceipt.outcome !== "unknown" &&
         consumerClosed(accepted.value);
-      expect(accepted.value.status).toBe("completed");
+      expect(
+        accepted.value.status,
+        JSON.stringify({
+          reason: accepted.value.reason,
+          components: Object.fromEntries(
+            Object.entries(accepted.value.results).map(([name, result]) => [
+              name,
+              { status: result.status, reason: result.reason },
+            ]),
+          ),
+          metadataRecords: accepted.value.results.metadata.data?.schema.length ?? null,
+          child: {
+            outcome: accepted.value.child.outcome,
+            closed: accepted.value.child.closed,
+            reaped: accepted.value.child.reaped,
+          },
+          cleanup: {
+            status: accepted.value.cleanup.status,
+            reason: accepted.value.cleanup.reason,
+            supervisorRetained: accepted.value.cleanup.supervisorRoot !== null,
+          },
+        }),
+      ).toBe("completed");
       const custodyPin = syntheticFixtureReceiptSha256(fixtureCustodyReceipt(accepted.receipt));
       expect(accepted.receipt.schema).toBe("jones-performance-fixture/v2");
       expect(accepted.receiptSha256).not.toBe(custodyPin);
