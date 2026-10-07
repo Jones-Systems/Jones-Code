@@ -9,8 +9,8 @@ const count = Number(process.argv[4] ?? 4);
 const bytes = Number(process.argv[5] ?? 32768);
 const require = NodeModule.createRequire(root + "/apps/server/package.json");
 const load = (name) => import(NodeURL.pathToFileURL(require.resolve("effect/" + name)));
-const [Effect, Stream, Layer, Deferred, Fiber] = await Promise.all(
-  ["Effect", "Stream", "Layer", "Deferred", "Fiber"].map(load),
+const [Effect, Stream, Layer, Deferred, Fiber, Schema] = await Promise.all(
+  ["Effect", "Stream", "Layer", "Deferred", "Fiber", "Schema"].map(load),
 );
 const app = (file) => import(NodeURL.pathToFileURL(root + "/apps/server/src/" + file + ".ts"));
 const [Prefix, Ws, Threads, Events] = await Promise.all([
@@ -19,6 +19,30 @@ const [Prefix, Ws, Threads, Events] = await Promise.all([
   app("orchestration-v2/ThreadManagementService"),
   app("persistence/Services/OrchestrationEventStore"),
 ]);
+const Contracts = await import("@t3tools/contracts");
+const thread = Schema.decodeUnknownSync(Contracts.OrchestrationV2AppThreadJson)({
+  id: "synthetic-thread",
+  projectId: "synthetic-project",
+  title: "Memory fixture",
+  createdBy: "user",
+  creationSource: "web",
+  providerInstanceId: "codex",
+  modelSelection: { instanceId: "codex", model: "gpt-6" },
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  branch: null,
+  worktreePath: null,
+  activeProviderThreadId: null,
+  lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "synthetic-thread" },
+  forkedFrom: null,
+  createdAt: "2026-10-05T00:00:00.000Z",
+  updatedAt: "2026-10-05T00:00:00.000Z",
+  archivedAt: null,
+  deletedAt: null,
+  settledOverride: null,
+  settledAt: null,
+  lastVisitedAt: null,
+});
 const refs = [];
 const fibers = [];
 const checkpoints = [];
@@ -43,6 +67,20 @@ function start(ready) {
         Effect.sync(() => ({
           snapshotSequence: 1,
           projection: {
+            thread,
+            runs: [],
+            attempts: [],
+            nodes: [],
+            subagents: [],
+            providerSessions: [],
+            providerThreads: [],
+            providerTurns: [],
+            runtimeRequests: [],
+            plans: [],
+            checkpointScopes: [],
+            checkpoints: [],
+            contextTransfers: [],
+            updatedAt: thread.updatedAt,
             messages: [history()],
             contextHandoffs: [],
             turnItems: [],
