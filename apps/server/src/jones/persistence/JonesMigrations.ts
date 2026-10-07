@@ -10,6 +10,7 @@ import JonesMigration0006 from "./Migrations/006_JonesWorkstreamsProviderEnrollm
 
 import JonesMigration0100 from "./Migrations/100_JonesNativeCreationExecution.ts";
 import JonesMigration0101 from "./Migrations/101_JonesNativeWorkspacePreparation.ts";
+import JonesMigration0104 from "./Migrations/104_JonesDeletionAdmission.ts";
 
 import JonesMigration0103 from "./Migrations/103_JonesRuntimeStop.ts";
 
@@ -28,6 +29,7 @@ const jonesMigrationEntries = [
   [101, "NativeWorkspacePreparation", JonesMigration0101],
   [102, "ImportedHistoryChoices", JonesMigration0102],
   [103, "RuntimeStop", JonesMigration0103],
+  [104, "DeletionAdmission", JonesMigration0104],
 ] as const;
 
 export const runMigrations = () =>

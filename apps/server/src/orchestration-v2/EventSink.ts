@@ -1,3 +1,14 @@
+import {
+  makeDeletionAdmission,
+  type DeletionAdmissionInput,
+  type DeletionPolicyRead,
+  type DeletionLiveRead,
+} from "../jones/cleanup/DeletionAdmission.ts";
+import type {
+  DeletionWorktreeRemovalTargetV1,
+  DeletionWorktreeRemovalStartV1,
+} from "../jones/cleanup/DeletionWorktreeRemovalTypes.ts";
+import type { DeletionWorktreeRemovalObservationV1 } from "../jones/cleanup/DeletionWorktreeRemoval.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStopSqlite.ts";
 import { importedApplicationAttachmentSha256V1 as nativeChoiceDigest } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
 import * as ImportedChoice from "../jones/importedHistory/ImportedHistoryChoice.ts";
@@ -42,6 +53,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as NodePath from "@effect/platform-node/NodePath";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -141,6 +153,37 @@ interface EventSinkStreamInput {
 }
 
 export interface EventSinkV2Shape {
+  readonly readDeletionWorktreeRemovalStartForTarget?: (
+    threadId: ThreadId,
+    target: DeletionWorktreeRemovalTargetV1,
+  ) => Effect.Effect<
+    { readonly start: DeletionWorktreeRemovalStartV1; readonly ordinal: number } | null,
+    EventSinkV2Error
+  >;
+  readonly startDeletionWorktreeRemoval?: (input: DeletionAdmissionInput) => Effect.Effect<
+    {
+      readonly status: "start_now" | "observe_only";
+      readonly start: DeletionWorktreeRemovalStartV1;
+      readonly ordinal: number;
+    },
+    EventSinkV2Error
+  >;
+  /** Optional native owner ports; absence is unavailable, never admission or replay consent. */
+  readonly readDeletionWorktreeRemovalStart?: (
+    effectId: string,
+  ) => Effect.Effect<
+    { readonly start: DeletionWorktreeRemovalStartV1; readonly ordinal: number } | null,
+    EventSinkV2Error
+  >;
+  readonly revalidateDeletionWorktreeRemovalStart?: (
+    start: DeletionWorktreeRemovalStartV1,
+    ordinal: number,
+    currentRules?: DeletionPolicyRead,
+    currentLive?: DeletionLiveRead,
+  ) => Effect.Effect<void, EventSinkV2Error>;
+  readonly qualifyDeletionWorktreeRemovalObservation?: (
+    observation: DeletionWorktreeRemovalObservationV1,
+  ) => Effect.Effect<void, EventSinkV2Error>;
   readonly readRuntimeStop?: (commandId: CommandId) => Effect.Effect<
     {
       readonly identity: RuntimeStop.RuntimeStopIdentity;
@@ -373,6 +416,7 @@ const baseLayer: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const deletionAdmission = yield* makeDeletionAdmission.pipe(Effect.provide(NodePath.layer));
     const nativeCreation = yield* Effect.serviceOption(
       NativeCreationRepository.NativeCreationRepository,
     );
@@ -1705,6 +1749,26 @@ const baseLayer: Layer.Layer<
 
     const stopError = (cause: unknown) => new EventSinkWriteError({ eventCount: 0, cause });
     return EventSinkV2.of({
+      readDeletionWorktreeRemovalStartForTarget: (threadId, target) =>
+        deletionAdmission
+          .readTarget(threadId, target)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      startDeletionWorktreeRemoval: (input) =>
+        deletionAdmission
+          .start(input)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      readDeletionWorktreeRemovalStart: (effectId) =>
+        deletionAdmission
+          .read(effectId)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      revalidateDeletionWorktreeRemovalStart: (start, ordinal, rules, live) =>
+        deletionAdmission
+          .revalidate(start, ordinal, rules, live)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      qualifyDeletionWorktreeRemovalObservation: (observation) =>
+        deletionAdmission
+          .qualify(observation)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       readRuntimeStop: (commandId) =>
         runtimeStops.readState(commandId).pipe(Effect.mapError(stopError)),
       startRuntimeStop: (commandId, target, revalidate) =>

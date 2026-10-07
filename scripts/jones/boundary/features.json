@@ -275,6 +275,15 @@
         "apps/web/src/hooks/useCurrentRuntimeStop.test.ts"
       ],
       "scope": "Captured current-runtime stop identity, durable observation and queued-start fencing, adapter-bound stop execution, and saved client correlation. Unsupported captures remain unavailable; background coverage remains partial."
+    },
+    {
+      "id": "deletion-worktree-removal",
+      "tests": [
+        "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
+        "apps/server/src/jones/cleanup/DeletionAdmission.test.ts",
+        "apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts"
+      ],
+      "scope": "Deleted-thread worktreeOnDelete policy uses same EventSink SQL admission and original-start qualification; native workspace101 paths require explicit original-owner handoff."
     }
   ]
 }
