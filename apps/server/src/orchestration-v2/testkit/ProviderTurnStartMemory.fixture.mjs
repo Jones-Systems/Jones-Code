@@ -101,6 +101,7 @@ const dependencies = Layer.mergeAll(
   }),
   Layer.mock(Sink.EventSinkV2)({
     assertImportedHistoryStartAllowed: () => Effect.void,
+    assertRuntimeStopStartAllowed: () => Effect.void,
     write: () => Effect.succeed([]),
     writeIfRunCurrent: ({ events }) =>
       Effect.sync(() => {

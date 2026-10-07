@@ -264,6 +264,17 @@
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts"
       ],
       "scope": "Ordinary authenticated reviewed message and queued-run choice acceptance, atomic receipt/event/outbox/outcome reservation, and exact preparation observation. Native enrolled execution remains unavailable."
+    },
+    {
+      "id": "runtime-stop",
+      "tests": [
+        "apps/server/src/jones/runtime/RuntimeStop.test.ts",
+        "apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts",
+        "packages/contracts/src/jones/runtimeStop.test.ts",
+        "packages/client-runtime/src/operations/currentRuntimeStop.test.ts",
+        "apps/web/src/hooks/useCurrentRuntimeStop.test.ts"
+      ],
+      "scope": "Captured current-runtime stop identity, durable observation and queued-start fencing, adapter-bound stop execution, and saved client correlation. Unsupported captures remain unavailable; background coverage remains partial."
     }
   ]
 }

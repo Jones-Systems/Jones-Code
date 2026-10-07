@@ -281,6 +281,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
 describe("AgentAwarenessRelay", () => {
   it("ignores transcript and tool updates but retains activity and metadata changes", () => {
     for (const type of [
+      "provider-session.detach-requested",
       "message.updated",
       "turn-item.updated",
       "provider-turn.updated",

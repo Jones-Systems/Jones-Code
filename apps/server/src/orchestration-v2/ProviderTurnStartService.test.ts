@@ -105,6 +105,7 @@ it("does not commit running state when inherited background routing cannot be re
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
+          assertRuntimeStopStartAllowed: () => Effect.void,
           assertImportedHistoryStartAllowed: () => Effect.void,
         }),
         IdAllocator.layer,
@@ -575,6 +576,7 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
+          assertRuntimeStopStartAllowed: () => Effect.void,
           assertImportedHistoryStartAllowed: () => Effect.void,
           write: () => (input.effortProof?.duringHandoff ?? Effect.void).pipe(Effect.as([])),
         }),
