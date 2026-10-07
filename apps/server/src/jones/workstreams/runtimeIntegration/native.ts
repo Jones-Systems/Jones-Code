@@ -36,7 +36,7 @@ export class NativeWorkstreamsRuntime extends Context.Service<
   }
 >()("t3/jones/workstreams/runtimeIntegration/native/NativeWorkstreamsRuntime") {}
 
-export const makeNativeWorkstreamsRuntimeLayer = (
+const makeNativeWorkstreamsRuntimeLayer = (
   evidence: NativeProviderEvidence = unavailableNativeProviderEvidence,
 ) =>
   Layer.effect(
