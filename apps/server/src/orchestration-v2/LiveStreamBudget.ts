@@ -224,7 +224,7 @@ const retainLiveStream = <A extends object, E, R>(
       Effect.gen(function* () {
         if (closed) return;
         closed = true;
-        budget.release(yield* Queue.clear(queue).pipe(Effect.orElseSucceed(() => [])));
+        budget.release(yield* Queue.clear(queue).pipe(Effect.catchCause(() => Effect.succeed([]))));
         if (error) yield* Queue.fail(queue, error);
         yield* Queue.shutdown(queue);
       });
