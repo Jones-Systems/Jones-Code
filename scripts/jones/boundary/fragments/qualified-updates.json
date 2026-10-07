@@ -20,17 +20,50 @@
     "apps/server/src/jones/updates/stagedSelection.test.ts",
     "apps/server/src/jones/updates/stagedSelection.ts",
     "apps/server/src/jones/updates/trialGate.test.ts",
-    "apps/server/src/jones/updates/trialGate.ts"
+    "apps/server/src/jones/updates/trialGate.ts",
+    "packages/client-runtime/src/jones/updates/jonesUpdates.ts",
+    "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
+    "apps/web/src/jones/updates/JonesUpdateControls.tsx",
+    "apps/web/src/jones/updates/jonesUpdates.ts",
+    "apps/mobile/src/jones/updates/JonesUpdateControls.tsx",
+    "apps/mobile/src/jones/updates/jonesUpdates.ts"
   ],
   "hookPaths": [
     "packages/contracts/package.json",
-    "packages/shared/package.json"
+    "packages/shared/package.json",
+    "packages/client-runtime/package.json",
+    "packages/client-runtime/src/state/server.ts",
+    "apps/web/src/components/ServerUpdateAction.tsx",
+    "apps/web/src/components/ServerUpdateAction.test.tsx",
+    "apps/web/src/components/settings/ConnectionsSettings.tsx",
+    "apps/mobile/src/features/settings/environment-maintenance.ts",
+    "apps/mobile/src/features/settings/environment-maintenance.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "apps/web/src/components/ServerUpdateAction.tsx",
+      "to": "apps/web/src/jones/updates/jonesUpdates.ts"
+    },
+    {
+      "from": "apps/web/src/components/ServerUpdateAction.tsx",
+      "to": "apps/web/src/jones/updates/JonesUpdateControls.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/ConnectionsSettings.tsx",
+      "to": "apps/web/src/jones/updates/JonesUpdateControls.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
+      "to": "apps/mobile/src/jones/updates/jonesUpdates.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
+      "to": "apps/mobile/src/jones/updates/JonesUpdateControls.tsx"
     }
   ]
 }

@@ -268,6 +268,23 @@
       "commands": [
         "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts"
       ]
+    },
+    {
+      "id": "jones-qualified-updates-clients",
+      "tests": [
+        "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
+        "packages/client-runtime/src/state/server.test.ts",
+        "packages/client-runtime/src/state/serverTokenAccounting.test.ts",
+        "packages/client-runtime/src/state/serverUsage.test.ts",
+        "apps/web/src/components/ServerUpdateAction.test.tsx",
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/state/server.test.ts packages/client-runtime/src/state/serverTokenAccounting.test.ts packages/client-runtime/src/state/serverUsage.test.ts apps/web/src/components/ServerUpdateAction.test.tsx apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck"
+      ]
     }
   ]
 }
