@@ -184,6 +184,17 @@
         "vp run --filter @t3tools/ssh typecheck",
         "vp lint packages/ssh/src/tunnel.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/runnerProcess.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts"
       ]
+    },
+    {
+      "id": "jones-native-organization-metadata",
+      "tests": [
+        "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
+        "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
+        "packages/contracts/src/jones/organizationMetadata.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts packages/contracts/src/jones/organizationMetadata.test.ts"
+      ]
     }
   ]
 }

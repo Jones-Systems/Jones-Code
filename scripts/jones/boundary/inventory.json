@@ -673,7 +673,15 @@
     "scripts/lib/brand-assets.ts": "accepted-shared",
     "scripts/release-smoke.ts": "accepted-shared",
     "scripts/stamp-jones-build.test.ts": "jones-owned",
-    "scripts/stamp-jones-build.ts": "jones-owned"
+    "scripts/stamp-jones-build.ts": "jones-owned",
+    "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts": "jones-owned",
+    "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/mcp/organizationMetadata/handlers.ts": "jones-owned",
+    "apps/server/src/jones/mcp/organizationMetadata/tools.ts": "jones-owned",
+    "apps/server/src/mcp/McpHttpServer.ts": "hook",
+    "packages/contracts/src/jones/organizationMetadata.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/jones/organizationMetadata.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -147,6 +147,15 @@
         "packages/ssh/src/runnerProcess.test.ts"
       ],
       "scope": "SSH disconnect and client shutdown preserve host-owned remote servers. Shell policy is isolated under Jones ownership; manager lifecycle tests retain their shared harness."
+    },
+    {
+      "id": "native-organization-metadata",
+      "tests": [
+        "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
+        "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
+        "packages/contracts/src/jones/organizationMetadata.test.ts"
+      ],
+      "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer."
     }
   ]
 }
