@@ -29,12 +29,16 @@
     },
     {
       "id": "work-queue-preview",
-      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
+      "tests": [
+        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx"
+      ],
       "scope": "Mock submitted-work preview remains covered by WorkQueuePage.test.tsx; the adapted canonical metadata panel, service, HTTP route, contracts and shared client runtime are covered by work-queue-metadata."
     },
     {
       "id": "boundary-inventory",
-      "tests": ["scripts/jones/check-boundary.test.ts"]
+      "tests": [
+        "scripts/jones/check-boundary.test.ts"
+      ]
     },
     {
       "id": "provider-settlement",

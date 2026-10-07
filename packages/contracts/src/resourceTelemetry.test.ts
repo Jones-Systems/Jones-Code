@@ -2,7 +2,11 @@ import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ResourceTelemetryProcess, ResourceTelemetryProcessOwner } from "./resourceTelemetry.ts";
+import {
+  DesktopTelemetryControlMessage,
+  ResourceTelemetryProcess,
+  ResourceTelemetryProcessOwner,
+} from "./resourceTelemetry.ts";
 
 const decodeOwner = Schema.decodeUnknownSync(ResourceTelemetryProcessOwner);
 const processCodec = Schema.toCodecJson(ResourceTelemetryProcess);
@@ -61,5 +65,39 @@ describe("ResourceTelemetryProcessOwner", () => {
       encodeProcess({ ...process, category: "provider-root", owner }),
     );
     expect(ownedProcess.owner).toEqual(owner);
+  });
+});
+
+describe("DesktopTelemetryControlMessage Jones selection", () => {
+  const codec = Schema.toCodecJson(DesktopTelemetryControlMessage);
+  const decode = Schema.decodeUnknownSync(codec);
+  const encode = Schema.encodeSync(codec);
+  const legacyRequest = {
+    version: 1,
+    type: "requestDesktopUpdate",
+    requestId: "request-1",
+  } as const;
+
+  it("retains legacy requests and separate qualified Check and Download controls", () => {
+    expect(decode(encode(legacyRequest))).toEqual(legacyRequest);
+    const check = { ...legacyRequest, action: "check" } as const;
+    expect(decode(encode(check))).toEqual(check);
+    const download = {
+      ...legacyRequest,
+      action: "download",
+      artifactId: 13,
+      sourceSha: "b".repeat(40),
+    } as const;
+    expect(decode(encode(download))).toEqual(download);
+  });
+
+  it("rejects an unsupported control action or incorrectly typed selection", () => {
+    for (const invalid of [
+      { action: "install" },
+      { action: "download", artifactId: "13", sourceSha: "b".repeat(40) },
+      { action: "download", artifactId: 13, sourceSha: 42 },
+    ]) {
+      expect(() => decode(JSON.stringify({ ...legacyRequest, ...invalid }))).toThrow();
+    }
   });
 });

@@ -1,9 +1,11 @@
+import * as Workspace from "./NativeCreationWorkspaceTypes.ts";
 import { AuthSessionId, NativeCreationEffect, OrchestrationV2Command } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { makeNativeExecutionMethods } from "./NativeCreationExecutionSqlite.ts";
 import * as Authority from "./NativeCreationAuthority.ts";
 import * as Repository from "./NativeCreationRepository.ts";
 import {
@@ -223,7 +225,9 @@ const make = Effect.gen(function* () {
     if (
       !("threadId" in command) ||
       command.threadId !== intent.threadId ||
-      !["thread.create", "message.dispatch", "thread.delete"].includes(command.type)
+      !["thread.create", "message.dispatch", "thread.delete", "prepared-run.release"].includes(
+        command.type,
+      )
     ) {
       return yield* fail("Creation command does not address the claimed thread");
     }
@@ -232,6 +236,12 @@ const make = Effect.gen(function* () {
     }>`SELECT claim_id FROM native_creation_intents WHERE command_id = ${command.commandId}`;
     if (owners.some((row) => row.claim_id !== claimId))
       return yield* fail("Creation command is claimed by another intent");
+    if (command.type === "prepared-run.release") {
+      const identities =
+        yield* sql`SELECT command_id FROM native_creation_reserved_command_identities WHERE command_id=${command.commandId} AND claim_id=${claimId} AND thread_id=${command.threadId}`;
+      if (identities.length !== 1)
+        return yield* fail("Native prepared release has no reserved execution identity");
+    }
     const canonicalCommand = nativeCreationCanonicalJson(command);
     const existing = yield* getReserved(command.commandId);
     if (Option.isSome(existing)) {
@@ -391,7 +401,172 @@ const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(mapRepositoryError));
 
+  const workspaceEligible = Effect.gen(function* () {
+    const receiving = yield* sql<{
+      migration_id: number;
+    }>`SELECT migration_id FROM jones_sql_migrations
+      WHERE (migration_id = 100 AND name = 'NativeCreationExecution')
+         OR (migration_id = 101 AND name = 'NativeWorkspacePreparation')`;
+    const foreign =
+      yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id BETWEEN 7 AND 99`;
+    if (receiving.length !== 2 || foreign.length !== 0)
+      return yield* new Repository.NativeCreationRepositoryError({
+        code: "unresolved_claim",
+        message: "Native workspace lacks receiving migration provenance",
+      });
+  });
+  const readWorkspaceAdmission = Effect.fnUntraced(function* (claimId: string) {
+    yield* workspaceEligible;
+    const rows = yield* sql<{
+      basis_json: string;
+    }>`SELECT basis_json FROM jones_native_workspace_admissions WHERE claim_id = ${claimId}`;
+    if (rows.length !== 1) return yield* fail("Workspace path admission is missing");
+    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Workspace.NativeWorkspaceBasis))(
+      rows[0]!.basis_json,
+    );
+  });
+  const readWorkspaceVerified = Effect.fnUntraced(function* (claimId: string) {
+    yield* workspaceEligible;
+    const rows = yield* sql<{
+      receipt_json: string;
+    }>`SELECT receipt_json FROM jones_native_workspace_verified WHERE claim_id = ${claimId}`;
+    if (rows.length === 0) return Option.none<Workspace.NativeWorkspaceVerified>();
+    if (rows.length !== 1) return yield* fail("Workspace verification receipt is ambiguous");
+    return Option.some(
+      yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Workspace.NativeWorkspaceVerified))(
+        rows[0]!.receipt_json,
+      ),
+    );
+  });
+  const admitWorkspace = (claimId: string, input: Workspace.NativeWorkspaceBasis) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* workspaceEligible;
+          const basis = yield* Schema.decodeUnknownEffect(Workspace.NativeWorkspaceBasis)(input, {
+            onExcessProperty: "error",
+          });
+          const { intent } = yield* readByClaim(claimId);
+          if (
+            basis.bootId !== intent.claimedBootId ||
+            basis.projectId !== intent.binding.projectId ||
+            basis.projectCwd !== intent.resources.projectCwd ||
+            basis.worktreePath !== intent.resources.worktreePath ||
+            basis.baseRef !== intent.binding.baseBranch
+          )
+            return yield* fail("Workspace admission differs from claimed resources");
+          const rows = yield* sql<{
+            claim_id: string;
+            basis_json: string;
+          }>`SELECT claim_id,basis_json FROM jones_native_workspace_admissions WHERE claim_id = ${claimId} OR worktree_path = ${basis.worktreePath}`;
+          const json = nativeCreationCanonicalJson(basis);
+          if (rows.length > 0) {
+            if (rows.length !== 1 || rows[0]!.claim_id !== claimId || rows[0]!.basis_json !== json)
+              return yield* fail("Workspace path is permanently admitted to a different basis");
+            return;
+          }
+          yield* sql`INSERT INTO jones_native_workspace_admissions (claim_id,worktree_path,basis_json) VALUES (${claimId},${basis.worktreePath},${json})`;
+        }),
+      )
+      .pipe(Effect.mapError(mapRepositoryError));
+  const recordWorkspaceVerified = (input: Workspace.NativeWorkspaceVerified) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* workspaceEligible;
+          const verified = yield* Schema.decodeUnknownEffect(Workspace.NativeWorkspaceVerified)(
+            input,
+            { onExcessProperty: "error" },
+          );
+          const history = yield* readByClaim(verified.claimId);
+          const basis = yield* readWorkspaceAdmission(verified.claimId);
+          if (
+            nativeCreationCanonicalJson(basis) !== nativeCreationCanonicalJson(verified.basis) ||
+            verified.proof.worktreePath !== history.intent.resources.worktreePath ||
+            verified.proof.branch !== history.intent.resources.branch ||
+            verified.proof.baseRef !== basis.baseRef ||
+            verified.proof.physicalGitIdentity !== basis.physicalGitIdentity ||
+            verified.proof.gitCommonDirectory !== basis.gitCommonDirectory ||
+            verified.proof.configuredSubmodulesDigest !==
+              nativeCreationSha256(basis.configuredSubmodulesDefinition) ||
+            verified.proof.baseConfigurationDigest !==
+              nativeCreationSha256(basis.baseConfigurationDefinition)
+          )
+            return yield* fail("Workspace verified identity differs from admission");
+          for (const kind of [
+            "worktree",
+            ...(history.intent.binding.startFromOrigin ? ["fetch"] : []),
+            ...(history.intent.binding.runSetupScript ? ["setup"] : []),
+          ]) {
+            const facts = history.effects.filter((fact) => fact.kind === kind);
+            if (
+              facts.length !== 2 ||
+              !facts.some((fact) => fact.phase === "started") ||
+              !facts.some(
+                (fact) =>
+                  fact.phase === "completed" && "result" in fact && fact.result === "succeeded",
+              )
+            )
+              return yield* fail("Workspace verification requires all retained stage completions");
+          }
+          if (history.intent.binding.runSetupScript) {
+            const setup = history.effects.find(
+              (fact) => fact.kind === "setup" && fact.phase === "completed",
+            );
+            if (
+              !setup ||
+              setup.kind !== "setup" ||
+              setup.phase !== "completed" ||
+              setup.exitCode !== 0 ||
+              !setup.terminalId ||
+              setup.terminalId !== verified.setupTerminalId
+            )
+              return yield* fail(
+                "Workspace verification requires exact retained successful setup terminal",
+              );
+          } else if (verified.setupTerminalId !== null)
+            return yield* fail("Unrequested setup terminal cannot be attested");
+          const existing = yield* readWorkspaceVerified(verified.claimId);
+          if (Option.isSome(existing)) {
+            if (
+              nativeCreationCanonicalJson(existing.value) !== nativeCreationCanonicalJson(verified)
+            )
+              return yield* fail("Workspace verification is immutable");
+            return;
+          }
+          yield* sql`INSERT INTO jones_native_workspace_verified (claim_id,receipt_json) VALUES (${verified.claimId},${nativeCreationCanonicalJson(verified)})`;
+        }),
+      )
+      .pipe(Effect.mapError(mapRepositoryError));
+  const executionMethods = makeNativeExecutionMethods(sql, {
+    // Execution references carry claim IDs; the public history reader accepts command IDs.
+    readHistory: (claimId) =>
+      Effect.gen(function* () {
+        const rows =
+          yield* sql`SELECT claim_id FROM native_creation_intents WHERE claim_id = ${claimId}`;
+        if (rows.length === 0) return Option.none<Repository.NativeCreationHistory>();
+        return Option.some(yield* readByClaim(claimId));
+      }).pipe(Effect.mapError(mapRepositoryError)),
+    getReservedCommand: (commandId) =>
+      getReserved(commandId).pipe(Effect.mapError(mapRepositoryError)),
+  });
   return Repository.NativeCreationRepository.of({
+    ...executionMethods,
+    readWorkspaceClaim: (claimId) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* workspaceEligible;
+            return yield* readByClaim(claimId);
+          }),
+        )
+        .pipe(Effect.mapError(mapRepositoryError)),
+    admitWorkspace,
+    readWorkspaceAdmission: (claimId) =>
+      readWorkspaceAdmission(claimId).pipe(Effect.mapError(mapRepositoryError)),
+    readWorkspaceVerified: (claimId) =>
+      readWorkspaceVerified(claimId).pipe(Effect.mapError(mapRepositoryError)),
+    recordWorkspaceVerified,
     hasAutomationEnrollment,
     claim,
     readHistory,

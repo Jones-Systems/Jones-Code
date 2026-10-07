@@ -41,6 +41,7 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import { makeKeyedSerialExecutor } from "./KeyedSerialExecutor.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
+import * as ProviderEventOrigin from "../jones/orchestration/ProviderEventOrigin.ts";
 import {
   ProviderAdapterEventStreamError,
   ProviderRuntimeBindingError,
@@ -406,6 +407,31 @@ export const layerWithOptions = (
                 binding.requested.providerDriver !== driver
               )
                 return yield* protocolError("The launch reservation or native ownership was lost.");
+              const observedEvent: ProviderAdapterV2Event = {
+                type: "runtime_identity.observed",
+                driver,
+                binding: {
+                  threadId: thread.appThreadId,
+                  providerThreadId: thread.id,
+                  providerSessionId,
+                  providerInstanceId: instanceId,
+                  driver,
+                  nativeThreadId: thread.nativeThreadRef.nativeId,
+                  runtimeGeneration: binding.runtimeGeneration,
+                },
+                requested: binding.requested,
+                observed: binding.observed,
+              };
+              if (binding.producerOrigin !== undefined) {
+                ProviderEventOrigin.stampProviderEvent(observedEvent, {
+                  producer: binding.producerOrigin,
+                });
+              }
+              const revalidateObservation = ProviderEventOrigin.revalidateProviderEventOrigin(
+                observedEvent,
+                { driver, instanceId, providerSessionId },
+              );
+              yield* revalidateObservation;
               const current = yield* readThread(thread.appThreadId, thread.id);
               const previous = current?.runtimeIdentity?.runtimeGeneration ?? null;
               const expected = reservation.bindings.has(thread.id)
@@ -444,25 +470,12 @@ export const layerWithOptions = (
                   "The native binding changed before its boundary committed.",
                 );
               reservation.bindings.set(thread.id, thread.appThreadId);
+              yield* revalidateObservation;
               yield* providerEventIngestor.ingestNormalized({
                 providerSessionId,
                 providerInstanceId: instanceId,
                 threadId: thread.appThreadId,
-                event: {
-                  type: "runtime_identity.observed",
-                  driver,
-                  binding: {
-                    threadId: thread.appThreadId,
-                    providerThreadId: thread.id,
-                    providerSessionId,
-                    providerInstanceId: instanceId,
-                    driver,
-                    nativeThreadId: thread.nativeThreadRef.nativeId,
-                    runtimeGeneration: binding.runtimeGeneration,
-                  },
-                  requested: binding.requested,
-                  observed: binding.observed,
-                },
+                event: observedEvent,
               });
               return (yield* readThread(thread.appThreadId, thread.id)) ?? boundaryThread;
             }).pipe(Effect.mapError(protocolError)),
@@ -1614,7 +1627,20 @@ export const layerWithOptions = (
           ),
         );
 
+      const validateProviderEvent = (
+        runtime: ProviderAdapterV2SessionRuntime,
+        event: ProviderAdapterV2Event,
+      ) =>
+        Effect.gen(function* () {
+          const current = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
+          if (current !== undefined && current.runtime !== runtime) return false;
+          yield* ProviderEventOrigin.revalidateProviderEventOrigin(event, runtime);
+          const latest = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
+          return latest === undefined || latest.runtime === runtime;
+        }).pipe(Effect.catchCause(() => Effect.succeed(false)));
+
       const makeEventSubscription = (
+        runtime: ProviderAdapterV2SessionRuntime,
         subscribers: Ref.Ref<
           ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
         >,
@@ -1647,6 +1673,7 @@ export const layerWithOptions = (
                 ? Effect.succeed(signal.event)
                 : Effect.failCause(signal.cause),
             ),
+            Stream.filterEffect((event) => validateProviderEvent(runtime, event)),
             Stream.ensuring(close),
           );
           return { events, close } satisfies ProviderAdapterV2EventSubscription;
@@ -1659,7 +1686,7 @@ export const layerWithOptions = (
         >,
       ): ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
-        const subscribeEvents = makeEventSubscription(eventSubscribers);
+        const subscribeEvents = makeEventSubscription(runtime, eventSubscribers);
         return {
           ...runtime,
           subscribeEvents,
@@ -1818,6 +1845,7 @@ export const layerWithOptions = (
       const startEventPump = (entry: LiveSessionEntry) => {
         let stoppedByProvider = false;
         return entry.runtime.events.pipe(
+          Stream.filterEffect((event) => validateProviderEvent(entry.runtime, event)),
           Stream.runForEach((event) => {
             if (shutdownSignal.received) return Effect.void;
             if (event.type === "runtime_identity.observed") {

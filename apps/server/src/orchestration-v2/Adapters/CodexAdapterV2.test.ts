@@ -1878,6 +1878,103 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       };
     });
 
+  it.effect("publishes approval artifacts before a consumer can answer the pending request", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativeThreadId = "native-origin-approval-order";
+        const nativeTurnId = "native-origin-approval-turn";
+        const prompt = "Request approval.";
+        const transcript = makeCodexReplayTranscript({
+          scenario: "origin-approval-order",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+            {
+              type: "emit_inbound",
+              frame: {
+                id: 0,
+                method: "item/commandExecution/requestApproval",
+                params: {
+                  kind: "command",
+                  threadId: nativeThreadId,
+                  turnId: nativeTurnId,
+                  itemId: "command-origin-approval",
+                  startedAtMs: 1782622440000,
+                  environmentId: "local",
+                  command: "printf approved",
+                  cwd: "/workspace",
+                  commandActions: [{ type: "unknown", command: "printf approved" }],
+                  availableDecisions: ["accept", "cancel"],
+                },
+              },
+            },
+            {
+              type: "expect_outbound",
+              frame: { id: 0, result: { decision: "accept" } },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                },
+              },
+            },
+            { type: "runtime_exit", status: "success" },
+          ],
+        });
+        const consumed: Array<ProviderAdapterV2Event> = [];
+        const requestPublished = yield* Deferred.make<{
+          readonly event: Extract<ProviderAdapterV2Event, { type: "runtime_request.updated" }>;
+          readonly preceding: ReadonlyArray<ProviderAdapterV2Event>;
+        }>();
+        const harness = yield* makeCodexReplayHarness(transcript, (event) =>
+          Effect.sync(() => {
+            consumed.push(event);
+            return [...consumed];
+          }).pipe(
+            Effect.flatMap((preceding) =>
+              event.type === "runtime_request.updated"
+                ? Deferred.succeed(requestPublished, { event, preceding })
+                : Effect.void,
+            ),
+          ),
+        );
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("origin-approval-order"),
+            text: prompt,
+          }),
+        );
+        const published = yield* Deferred.await(requestPublished);
+        const pending = published.event.runtimeRequest;
+        const nodeEvent = published.preceding.find(
+          (event): event is Extract<ProviderAdapterV2Event, { type: "node.updated" }> =>
+            event.type === "node.updated" && event.node.runtimeRequestId === pending.id,
+        );
+        const itemEvent = published.preceding.find(
+          (event): event is Extract<ProviderAdapterV2Event, { type: "turn_item.updated" }> =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "approval_request" &&
+            event.turnItem.requestId === pending.id,
+        );
+        assert.equal(pending.status, "pending");
+        assert.equal(nodeEvent?.node.status, "waiting");
+        assert.equal(itemEvent?.turnItem.status, "waiting");
+        yield* harness.runtime.respondToRuntimeRequest({
+          requestId: pending.id,
+          decision: "accept",
+        });
+        yield* harness.firstTerminal;
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
   it.effect("reads a bound native goal without starting turns or recovering sessions", () =>
     Effect.gen(function* () {
       const requests: Array<{ method: string; params: unknown }> = [];

@@ -1,4 +1,5 @@
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
+import * as ProviderEventOrigin from "../jones/orchestration/ProviderEventOrigin.ts";
 import * as NetAddress from "effect/unstable/net/NetAddress";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -300,6 +301,8 @@ function makeProviderAdapter(
     readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
     readonly hangSessionScopeClose?: boolean;
     readonly beforeUnload?: Effect.Effect<void>;
+    readonly eventOriginMode?: "captured";
+    readonly beforeEventDelivery?: (event: ProviderAdapterV2Event) => Effect.Effect<void>;
   } = {},
 ): ProviderAdapterV2Shape {
   return {
@@ -352,6 +355,9 @@ function makeProviderAdapter(
           driver: CODEX_DRIVER,
           providerSessionId: input.providerSessionId,
           providerSession: session,
+          ...(options.eventOriginMode === undefined
+            ? {}
+            : { eventOriginMode: options.eventOriginMode }),
           events: options.failEventStream
             ? Stream.fail(
                 new ProviderAdapterEventStreamError({
@@ -360,7 +366,9 @@ function makeProviderAdapter(
                   cause: "process exited",
                 }),
               )
-            : Stream.fromQueue(events),
+            : options.beforeEventDelivery === undefined
+              ? Stream.fromQueue(events)
+              : Stream.fromQueue(events).pipe(Stream.tap(options.beforeEventDelivery)),
           ...(options.hasPendingBackgroundWork === undefined
             ? {}
             : { hasPendingBackgroundWork: options.hasPendingBackgroundWork }),
@@ -415,6 +423,9 @@ function makeTestLayer(input: {
   readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
   readonly hangSessionScopeClose?: boolean;
   readonly beforeUnload?: Effect.Effect<void>;
+  readonly eventOriginMode?: "captured";
+  readonly beforeEventDelivery?: (event: ProviderAdapterV2Event) => Effect.Effect<void>;
+  readonly onIngest?: (event: ProviderAdapterV2Event) => Effect.Effect<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
 }) {
@@ -438,9 +449,13 @@ function makeTestLayer(input: {
         ? {}
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
       ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
+      ...(input.eventOriginMode === undefined ? {} : { eventOriginMode: input.eventOriginMode }),
+      ...(input.beforeEventDelivery === undefined
+        ? {}
+        : { beforeEventDelivery: input.beforeEventDelivery }),
     }),
   );
-  const providerEventIngestorTestLayer = ProviderEventIngestor.layer.pipe(
+  const baseIngestorLayer = ProviderEventIngestor.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         configuredEventSinkLayer,
@@ -450,6 +465,22 @@ function makeTestLayer(input: {
       ),
     ),
   );
+  const providerEventIngestorTestLayer =
+    input.onIngest === undefined
+      ? baseIngestorLayer
+      : Layer.effect(
+          ProviderEventIngestor.ProviderEventIngestorV2,
+          Effect.gen(function* () {
+            const delegate = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+            return ProviderEventIngestor.ProviderEventIngestorV2.of({
+              ...delegate,
+              ingestNormalized: (request) =>
+                (input.onIngest?.(request.event) ?? Effect.void).pipe(
+                  Effect.andThen(delegate.ingestNormalized(request)),
+                ),
+            });
+          }),
+        ).pipe(Layer.provide(baseIngestorLayer));
   return Layer.mergeAll(
     TestStoresLayer,
     configuredEventSinkLayer,
@@ -3725,6 +3756,203 @@ const runtimeBoundaryScenarios = [
   { operation: "managed rotation", outcome: "failure" },
   { operation: "managed rotation", outcome: "interruption" },
 ] as const;
+
+it.effect.each(["enqueue-to-pump", "publication-to-take"] as const)(
+  "rejects captured producer replacement across %s",
+  (boundary) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const paused = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      const markerAtPump = yield* Deferred.make<void>();
+      let pausedFirst = false;
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:origin-${boundary}`);
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const subscription = yield* runtime.subscribeEvents!;
+        const adapterQueue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+        const identity = {
+          driver: CODEX_DRIVER,
+          instanceId: modelSelection.instanceId,
+          providerSessionId,
+          runtimeGeneration: "same-generation",
+        };
+        const original = ProviderEventOrigin.makeProviderEventProducer(identity);
+        const stale = ProviderEventOrigin.stampProviderEvent(
+          {
+            type: "provider_session.updated",
+            driver: CODEX_DRIVER,
+            providerSession: { ...runtime.providerSession, lastError: "stale producer" },
+          } satisfies ProviderAdapterV2Event,
+          { producer: original.origin },
+        );
+        const replacement = ProviderEventOrigin.makeProviderEventProducer(
+          identity,
+          Deferred.succeed(markerAtPump, undefined).pipe(Effect.as(true)),
+        );
+        const marker = ProviderEventOrigin.stampProviderEvent(
+          {
+            type: "turn.terminal",
+            driver: CODEX_DRIVER,
+            providerThreadId: ids.derive.providerThread({
+              driver: CODEX_DRIVER,
+              nativeThreadId: "origin-thread",
+            }),
+            providerTurnId: ids.derive.providerTurn({
+              driver: CODEX_DRIVER,
+              nativeTurnId: "origin-marker",
+            }),
+            runOrdinal: 1,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          } satisfies ProviderAdapterV2Event,
+          { producer: replacement.origin },
+        );
+        yield* Queue.offer(adapterQueue, stale);
+        if (boundary === "enqueue-to-pump") {
+          yield* Deferred.await(paused);
+          original.retire();
+          yield* Deferred.succeed(resume, undefined);
+          yield* Queue.offer(adapterQueue, marker);
+        } else {
+          yield* Queue.offer(adapterQueue, marker);
+          yield* Deferred.await(markerAtPump);
+          original.retire();
+        }
+        const received = Array.from(
+          yield* subscription.events.pipe(Stream.take(1), Stream.runCollect),
+        );
+        assert.deepEqual(received, [marker]);
+        assert.strictEqual(received[0], marker);
+        assert.strictEqual(
+          ProviderEventOrigin.readProviderEventOrigin(received[0]!)?.producer.token,
+          replacement.origin.token,
+        );
+        if (boundary === "enqueue-to-pump") {
+          assert.notEqual(
+            (yield* store.getThreadProjection(threadId)).providerSessions[0]?.lastError,
+            "stale producer",
+          );
+        }
+        yield* subscription.close;
+      }).pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: 60_000,
+            eventOriginMode: "captured",
+            beforeEventDelivery: () =>
+              Effect.gen(function* () {
+                if (boundary !== "enqueue-to-pump" || pausedFirst) return;
+                pausedFirst = true;
+                yield* Deferred.succeed(paused, undefined);
+                yield* Deferred.await(resume);
+              }),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "keeps the caller's captured descriptor on direct bind observations and rejects its retirement",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const controller = yield* Ref.make<ProviderRuntimeLifecycle | undefined>(undefined);
+      const observedOrigins = yield* Ref.make<
+        ReadonlyArray<ProviderEventOrigin.ProviderEventOrigin | undefined>
+      >([]);
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread:direct-origin");
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const lifecycle = (yield* Ref.get(controller))!;
+        const runtimeGeneration = yield* lifecycle.reserve(threadId);
+        const producer = ProviderEventOrigin.makeProviderEventProducer({
+          driver: CODEX_DRIVER,
+          instanceId: modelSelection.instanceId,
+          providerSessionId,
+          runtimeGeneration,
+        });
+        const request = {
+          providerThread: makeProviderThread({
+            idAllocator: ids,
+            threadId,
+            providerSessionId,
+            now,
+          }),
+          runtimeGeneration,
+          producerOrigin: producer.origin,
+          requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+          observed: unobservedRuntimeIdentity(),
+        };
+        const bound = yield* lifecycle.bind(request);
+        const captured = (yield* Ref.get(observedOrigins)).filter((origin) => origin !== undefined);
+        assert.lengthOf(captured, 1);
+        assert.strictEqual(captured[0]!.producer.token, producer.origin.token);
+        assert.strictEqual(
+          captured[0]!.producer.revalidateCurrent,
+          producer.origin.revalidateCurrent,
+        );
+        const before = yield* store.getThreadProjection(threadId);
+        producer.retire();
+        const failure = yield* lifecycle
+          .bind({ ...request, providerThread: bound })
+          .pipe(Effect.flip);
+        assert.equal(failure._tag, "ProviderRuntimeBindingError");
+        assert.deepEqual(yield* store.getThreadProjection(threadId), before);
+        assert.lengthOf(
+          (yield* Ref.get(observedOrigins)).filter((origin) => origin !== undefined),
+          1,
+        );
+      }).pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: 60_000,
+            beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle),
+            onIngest: (event) =>
+              event.type === "runtime_identity.observed"
+                ? Ref.update(observedOrigins, (origins) => [
+                    ...origins,
+                    ProviderEventOrigin.readProviderEventOrigin(event),
+                  ])
+                : Effect.void,
+          }),
+        ),
+      );
+    }),
+);
 
 it.effect.each(runtimeBoundaryScenarios)(
   "publishes a new generation before buffered observations for $operation $outcome",

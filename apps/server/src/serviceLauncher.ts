@@ -9,6 +9,26 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
+import {
+  verifyStagedQualifiedRuntime,
+  readQualifiedRuntimeReceipt,
+  withQualifiedRuntimeLock,
+  QUALIFIED_UPDATES_PROTOCOL,
+  type StagedQualifiedRuntime,
+} from "./jones/cloud/qualifiedRuntime.ts";
+
+import {
+  proveQualifiedStateQuiescence,
+  QUALIFIED_STARTUP_STATE_FILES,
+  type QualifiedQuiescenceAdapter,
+} from "./jones/cloud/qualifiedQuiescence.ts";
+import {
+  assertQualifiedTrialBinding,
+  type QualifiedTrialReceipt,
+} from "./jones/cloud/qualifiedStartup.ts";
+
+import { qualifiedServicePreflightFailure } from "./cloud/servicePreflight.ts";
 
 import type {
   PendingServiceUpdate,
@@ -62,6 +82,42 @@ const runtimePaths = (baseDir: string, version: string) => {
   };
 };
 
+const preflightQualifiedCandidate = async (
+  baseDir: string,
+  staged: StagedQualifiedRuntime,
+): Promise<void> => {
+  const env = { ...process.env };
+  delete env[SERVICE_LAUNCHER_CONTEXT_ENV];
+  const result = await new Promise<{ readonly code: number | null; readonly stdout: string }>(
+    (resolve, reject) => {
+      NodeChildProcess.execFile(
+        runtimePaths(baseDir, staged.receipt.version).entryPath,
+        [
+          "__service-preflight",
+          "--database-path",
+          staged.binding.dbPath,
+          "--launcher-protocol",
+          String(SERVICE_LAUNCHER_PROTOCOL),
+        ],
+        { env, timeout: 30_000, maxBuffer: 64 * 1024, encoding: "utf8" },
+        (error, stdout) => {
+          if (error !== null) {
+            reject(
+              new Error("startup-gate-unavailable: Could not preflight the qualified candidate.", {
+                cause: error,
+              }),
+            );
+            return;
+          }
+          resolve({ code: 0, stdout });
+        },
+      );
+    },
+  );
+  const reason = qualifiedServicePreflightFailure({ ...result, version: staged.receipt.version });
+  if (reason !== undefined) throw new Error(reason);
+};
+
 const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>) => ({
   command: paths.entryPath,
   args: ["serve"],
@@ -70,6 +126,7 @@ const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>) => ({
 /** SQLite persists across the main file plus its WAL and shared-memory sidecars. */
 const DB_FILE_SUFFIXES = ["", "-wal", "-shm"] as const;
 const RESTORE_MARKER = ".restore-pending";
+const PAIRED_SETTINGS = QUALIFIED_STARTUP_STATE_FILES;
 
 const databaseBackupDir = (baseDir: string, updateId: string) =>
   NodePath.join(baseDir, "runtime", "db-backup", updateId);
@@ -134,14 +191,35 @@ async function backupDatabaseOnce(baseDir: string, pending: PendingServiceUpdate
     if (!(await databaseBackupAvailable(baseDir, pending.id))) {
       throw new Error("Cannot use an incomplete database backup.");
     }
+    if (pending.qualified !== undefined) await validatePairedBackup(baseDir, pending, backupDir);
     return;
   }
 
   const stagingDir = `${backupDir}.staging`;
-  await NodeFSP.rm(stagingDir, { recursive: true, force: true });
+  if (pending.qualified !== undefined && (await pathExists(stagingDir)))
+    throw new Error("An occupied paired snapshot staging path was preserved for reconciliation.");
+  if (pending.qualified === undefined)
+    await NodeFSP.rm(stagingDir, { recursive: true, force: true });
   await NodeFSP.mkdir(stagingDir, { recursive: true, mode: 0o700 });
   try {
-    for (const suffix of DB_FILE_SUFFIXES) {
+    if (pending.qualified !== undefined) {
+      const database = new NodeSqlite.DatabaseSync(pending.dbPath, { readOnly: true });
+      try {
+        await NodeSqlite.backup(database, databaseBackupFile(stagingDir, ""));
+      } finally {
+        database.close();
+      }
+      await syncFile(databaseBackupFile(stagingDir, ""));
+      await backupPairedSettings(baseDir, stagingDir);
+      const bindingPath = NodePath.join(stagingDir, "paired-binding.json");
+      await NodeFSP.writeFile(
+        bindingPath,
+        JSON.stringify({ transactionId: pending.id, qualified: pending.qualified }),
+        { flag: "wx", mode: 0o600 },
+      );
+      await syncFile(bindingPath);
+    }
+    for (const suffix of pending.qualified === undefined ? DB_FILE_SUFFIXES : []) {
       const source = `${pending.dbPath}${suffix}`;
       if (suffix !== "" && !(await pathExists(source))) continue;
       const destination = databaseBackupFile(stagingDir, suffix);
@@ -154,6 +232,90 @@ async function backupDatabaseOnce(baseDir: string, pending: PendingServiceUpdate
     await NodeFSP.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     throw cause;
   }
+}
+
+async function backupPairedSettings(baseDir: string, destination: string): Promise<void> {
+  const present: string[] = [];
+  for (const name of PAIRED_SETTINGS) {
+    const source = NodePath.join(baseDir, "userdata", name);
+    if (!(await pathExists(source))) continue;
+    const stat = await NodeFSP.lstat(source);
+    if (!stat.isFile() || stat.isSymbolicLink())
+      throw new Error("Startup settings must be regular files.");
+    const target = NodePath.join(destination, name);
+    await NodeFSP.copyFile(source, target);
+    await syncFile(target);
+    present.push(name);
+  }
+  const manifest = NodePath.join(destination, "paired-settings.json");
+  await NodeFSP.writeFile(manifest, JSON.stringify(present), { flag: "wx", mode: 0o600 });
+  await syncFile(manifest);
+}
+
+async function restorePairedSettings(baseDir: string, backupDir: string): Promise<void> {
+  const manifest: unknown = JSON.parse(
+    await NodeFSP.readFile(NodePath.join(backupDir, "paired-settings.json"), "utf8"),
+  );
+  if (
+    !Array.isArray(manifest) ||
+    manifest.some(
+      (name) => typeof name !== "string" || !PAIRED_SETTINGS.some((allowed) => name === allowed),
+    )
+  )
+    throw new Error("Paired settings receipt is invalid.");
+  for (const name of PAIRED_SETTINGS) {
+    const target = NodePath.join(baseDir, "userdata", name);
+    if (manifest.includes(name)) {
+      await NodeFSP.copyFile(NodePath.join(backupDir, name), target);
+      await syncFile(target);
+    } else await NodeFSP.rm(target, { force: true });
+  }
+  await syncDirectory(NodePath.join(baseDir, "userdata"));
+}
+
+async function validatePairedBackup(
+  baseDir: string,
+  pending: PendingServiceUpdate,
+  directory: string,
+): Promise<void> {
+  const bindingPath = NodePath.join(directory, "paired-binding.json");
+  const stat = await NodeFSP.lstat(bindingPath);
+  if (!stat.isFile() || stat.isSymbolicLink())
+    throw new Error("Paired backup binding is not a regular file.");
+  const binding: unknown = JSON.parse(await NodeFSP.readFile(bindingPath, "utf8"));
+  if (
+    JSON.stringify(binding) !==
+      JSON.stringify({ transactionId: pending.id, qualified: pending.qualified }) ||
+    pending.qualified?.binding.baseDir !== (await NodeFSP.realpath(baseDir))
+  )
+    throw new Error("Paired backup belongs to a different transaction or native home.");
+  const settings = await NodeFSP.lstat(NodePath.join(directory, "paired-settings.json"));
+  if (!settings.isFile() || settings.isSymbolicLink())
+    throw new Error("Paired backup settings receipt is incomplete.");
+}
+
+async function retainAdvancedState(baseDir: string, pending: PendingServiceUpdate): Promise<void> {
+  const directory = NodePath.join(databaseBackupDir(baseDir, pending.id), "advanced-state");
+  if (await pathExists(directory)) {
+    if (
+      !(await pathExists(NodePath.join(directory, "database"))) ||
+      !(await pathExists(NodePath.join(directory, "paired-settings.json")))
+    )
+      throw new Error(
+        "Advanced state snapshot is incomplete; it was preserved for reconciliation.",
+      );
+    return;
+  }
+  await NodeFSP.mkdir(directory, { mode: 0o700 });
+  const database = new NodeSqlite.DatabaseSync(pending.dbPath, { readOnly: true });
+  try {
+    await NodeSqlite.backup(database, NodePath.join(directory, "database"));
+  } finally {
+    database.close();
+  }
+  await syncFile(NodePath.join(directory, "database"));
+  await backupPairedSettings(baseDir, directory);
+  await syncDirectory(directory);
 }
 
 const databaseBackupAvailable = async (baseDir: string, updateId: string): Promise<boolean> => {
@@ -199,6 +361,11 @@ async function restoreDatabaseBackup(
   }
   // Persist restore intent before fencing so recovery cannot restart or commit
   // a trial while the native authority remains fenced.
+  if (pending.qualified !== undefined) {
+    await validatePairedBackup(baseDir, pending, backupDir);
+    if (!(await databaseRestorePending(baseDir, pending)))
+      await retainAdvancedState(baseDir, pending);
+  }
   await markDatabaseRestorePending(backupDir);
   fenceNativeStoreAuthorityForBaseDir(baseDir);
   for (const suffix of DB_FILE_SUFFIXES) {
@@ -212,6 +379,7 @@ async function restoreDatabaseBackup(
     }
   }
   await syncDirectory(NodePath.dirname(pending.dbPath));
+  if (pending.qualified !== undefined) await restorePairedSettings(baseDir, backupDir);
   advanceNativeStoreAuthorityForBaseDir(baseDir, pending.dbPath);
 }
 
@@ -275,6 +443,7 @@ function terminalUpdate<S extends TerminalStatus>(input: {
     fromVersion: input.pending.fromVersion,
     targetVersion: input.pending.targetVersion,
     status: input.status,
+    ...(input.pending.qualified === undefined ? {} : { qualified: input.pending.qualified }),
     ...(input.reason === undefined ? {} : { reason: input.reason }),
   };
 }
@@ -319,6 +488,8 @@ const restartPendingPath = (baseDir: string) =>
 export class Launcher {
   readonly #baseDir: string;
   readonly #statePath: string;
+  readonly #quiescenceAdapter: QualifiedQuiescenceAdapter | undefined;
+  readonly #startupGateProtocol: 1 | undefined;
   #state: ServiceState;
   #child: ManagedChild | null = null;
   #timer: NodeJS.Timeout | undefined;
@@ -326,21 +497,54 @@ export class Launcher {
   #stopRequested = false;
   #stopping = false;
   #done = false;
+  #qualifiedPointerCommitAttempted = false;
   readonly #completion = Promise.withResolvers<void>();
 
-  constructor(baseDir: string, state: ServiceState) {
+  constructor(
+    baseDir: string,
+    state: ServiceState,
+    options: {
+      readonly quiescenceAdapter?: QualifiedQuiescenceAdapter;
+      readonly startupGateProtocol?: 1;
+    } = {},
+  ) {
     this.#baseDir = baseDir;
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
+    this.#quiescenceAdapter = options.quiescenceAdapter;
+    this.#startupGateProtocol = options.startupGateProtocol;
   }
 
   async run(): Promise<void> {
+    const ownership = Promise.withResolvers<void>();
+    // Queue recovery before stop() can enqueue shutdown, even while acquiring
+    // the cross-process lock. Signal receipt still writes its marker promptly.
+    this.#enqueue(async () => {
+      await ownership.promise;
+      await this.#recover();
+    });
+    try {
+      await withQualifiedRuntimeLock(this.#baseDir, "service-launcher-lock", async () => {
+        // Read the selected pointer after acquiring ownership, never trust the
+        // snapshot supplied before a competing launcher/CLI transition.
+        this.#state = await readServiceState(this.#statePath);
+        ownership.resolve();
+        return this.#runOwned();
+      });
+    } catch (cause) {
+      ownership.reject(cause);
+      await this.#transitions;
+      await this.#completion.promise.catch(() => undefined);
+      throw cause;
+    }
+  }
+
+  async #runOwned(): Promise<void> {
     const onSigterm = () => void this.stop("SIGTERM");
     const onSigint = () => void this.stop("SIGINT");
     process.once("SIGTERM", onSigterm);
     process.once("SIGINT", onSigint);
     try {
-      this.#enqueue(() => this.#recover());
       await this.#completion.promise;
     } finally {
       process.off("SIGTERM", onSigterm);
@@ -368,6 +572,8 @@ export class Launcher {
   }
 
   async stop(signal: NodeJS.Signals): Promise<void> {
+    const alreadyRequested = this.#stopRequested;
+    this.#stopRequested = true;
     // This must happen synchronously at signal receipt. A queued update
     // transition may already be terminating the active child, and that child
     // needs to see the marker in its shutdown finalizer. KillMode=mixed also
@@ -379,14 +585,13 @@ export class Launcher {
     } catch {
       // Err toward keeping the tunnel; the next link or unlink reconciles it.
     }
-    if (this.#stopRequested || this.#stopping) {
+    if (alreadyRequested || this.#stopping) {
       await this.#completion.promise.catch(() => undefined);
       return;
     }
-    this.#stopRequested = true;
     this.#clearTimer();
     this.#enqueue(async () => {
-      // Let an update transition already in progress start its replacement
+      // Let an ordinary update transition already in progress start its replacement
       // before this queued stop tears it down. That replacement owns the
       // pre-activation tunnel cleanup path and observes the marker above.
       this.#stopping = true;
@@ -405,6 +610,13 @@ export class Launcher {
   }
 
   async #recover(): Promise<void> {
+    // A committed pointer proves neither grant delivery nor continuation dispatch.
+    // Even an occupied resume reservation is uncertain; restart never repeats the transaction.
+    if (this.#state.update?.qualified !== undefined) {
+      throw new Error(
+        "Qualified update recovery is held for reconciliation; retained pointer, receipt and paired state were preserved.",
+      );
+    }
     // A fresh launcher means servers are running again: any stop marker from
     // a previous explicit stop is stale and must not make a future update
     // handoff release its tunnel. A restart deferred by `t3 update` is done
@@ -420,7 +632,7 @@ export class Launcher {
     }
     const update = this.#state.update;
     if (update?.status !== "pending") {
-      if (update !== undefined) {
+      if (update !== undefined && update.qualified === undefined) {
         await discardDatabaseBackup(this.#baseDir, update.id).catch(() => undefined);
       }
       await this.#startChild(this.#state.activeVersion, "active", update);
@@ -449,12 +661,33 @@ export class Launcher {
     await this.#startTrial(update);
   }
 
+  async #proveQuiescence(allowedProcessIds: readonly number[] = []): Promise<void> {
+    await proveQualifiedStateQuiescence({
+      baseDir: this.#baseDir,
+      allowedProcessIds,
+      ...(this.#quiescenceAdapter === undefined ? {} : { adapter: this.#quiescenceAdapter }),
+    });
+  }
+
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
+    if (pending.qualified !== undefined) {
+      const staged = await verifyStagedQualifiedRuntime(
+        this.#baseDir,
+        pending.fromVersion,
+        pending.qualified.stagedHandle,
+      );
+      if (JSON.stringify(staged) !== JSON.stringify(pending.qualified))
+        throw new Error("The qualified trial binding changed after handoff.");
+    }
+    // Owned child exit alone does not prove another same-home writer stopped.
+    // Keep this proof outside backup failure recovery: uncertainty must retain
+    // pending state rather than restart a potentially competing old writer.
+    if (pending.qualified !== undefined) await this.#proveQuiescence();
     if (pending.phase === "accepted") {
-      // The previous child is dead here, so all three SQLite files are quiescent.
       try {
         await backupDatabaseOnce(this.#baseDir, pending);
-      } catch {
+      } catch (cause) {
+        if (pending.qualified !== undefined) throw cause;
         await this.#finishWithoutTrial(pending, "db-backup-failed");
         return;
       }
@@ -471,7 +704,8 @@ export class Launcher {
     }
     try {
       await this.#startChild(trialReady.targetVersion, "trial", trialReady);
-    } catch {
+    } catch (cause) {
+      if (pending.qualified !== undefined) throw cause;
       await this.#returnToPrevious(trialReady, "failed", "candidate-start-failed");
     }
   }
@@ -485,7 +719,8 @@ export class Launcher {
     };
     await writeServiceState(this.#statePath, next);
     this.#state = next;
-    await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
+    if (pending.qualified === undefined)
+      await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
     await this.#startChild(next.activeVersion, "active", outcome);
   }
 
@@ -495,15 +730,34 @@ export class Launcher {
       throw new Error(`Selected t3@${version} runtime is missing or incomplete.`);
     }
     if (this.#stopping) return;
+    if (update?.qualified !== undefined) {
+      const receipt = await readQualifiedRuntimeReceipt(this.#baseDir, version);
+      const expectedSource =
+        version === update.qualified.receipt.version
+          ? update.qualified.receipt.sourceSha
+          : update.qualified.binding.activeSourceSha;
+      if (receipt.sourceSha !== expectedSource)
+        throw new Error(
+          "Selected runtime source no longer matches its native installation transaction.",
+        );
+    }
     const paths = runtimePaths(this.#baseDir, version);
     const context: ServiceLauncherContext = {
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
+      qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
+      ...(this.#startupGateProtocol === undefined
+        ? {}
+        : { startupGateProtocol: this.#startupGateProtocol }),
       ...(update === undefined ? {} : { update }),
     };
     const spawnArguments = runtimeSpawnArguments(paths);
     const child = NodeChildProcess.spawn(spawnArguments.command, spawnArguments.args, {
-      env: { ...process.env, [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context) },
+      env: {
+        ...process.env,
+        T3CODE_HOME: this.#baseDir,
+        [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context),
+      },
       stdio: ["inherit", "inherit", "inherit", "ipc"],
     });
     await new Promise<void>((resolve, reject) => {
@@ -529,6 +783,19 @@ export class Launcher {
     child.on("message", (value) => {
       const message = decodeServiceLauncherChildMessage(value);
       if (message !== undefined) this.#enqueue(() => this.#handleMessage(managed, message));
+      else if (
+        update?.qualified !== undefined &&
+        typeof value === "object" &&
+        value !== null &&
+        "type" in value &&
+        value.type === "prepared"
+      ) {
+        this.#enqueue(() =>
+          Promise.reject(
+            new Error("Qualified child supplied malformed startup proof; transaction retained."),
+          ),
+        );
+      }
     });
     child.once("exit", (code, signal) =>
       this.#enqueue(() => this.#handleExit(managed, code, signal)),
@@ -548,7 +815,7 @@ export class Launcher {
       await this.#handleUpdateRequest(child, message);
       return;
     }
-    await this.#handlePrepared(child, message.updateId);
+    await this.#handlePrepared(child, message);
   }
 
   async #handleUpdateRequest(
@@ -573,7 +840,17 @@ export class Launcher {
       await reject("The requested target is not an exact version.");
       return;
     }
-    if (compareExactServiceVersions(message.targetVersion, child.version) <= 0) {
+    if (
+      (message.targetVersion.includes("-preview.") || child.version.includes("-preview.")) &&
+      message.stagedHandle === undefined
+    ) {
+      await reject("Jones previews require a qualified staged handle and explicit Install.");
+      return;
+    }
+    if (
+      message.stagedHandle === undefined &&
+      compareExactServiceVersions(message.targetVersion, child.version) <= 0
+    ) {
       await reject("Remote updates must select a newer server version.");
       return;
     }
@@ -592,6 +869,35 @@ export class Launcher {
       return;
     }
 
+    if (message.stagedHandle !== undefined && this.#startupGateProtocol !== 1) {
+      await reject("bootstrap-required: The qualified startup gate is not bound on this launcher.");
+      return;
+    }
+    let qualified: StagedQualifiedRuntime | undefined;
+    if (message.stagedHandle !== undefined) {
+      try {
+        qualified = await verifyStagedQualifiedRuntime(
+          this.#baseDir,
+          child.version,
+          message.stagedHandle,
+        );
+        if (
+          qualified.receipt.version !== message.targetVersion ||
+          qualified.binding.dbPath !== message.dbPath
+        )
+          throw new Error("Install target differs from its staged handle.");
+        await preflightQualifiedCandidate(this.#baseDir, qualified);
+        if (this.#child !== child || this.#stopRequested || this.#stopping)
+          throw new Error("The requesting child stopped during candidate preflight.");
+      } catch (cause) {
+        await reject(
+          cause instanceof Error && cause.message.startsWith("startup-gate-unavailable:")
+            ? cause.message
+            : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
+        );
+        return;
+      }
+    }
     const pending: PendingServiceUpdate = {
       id: NodeCrypto.randomUUID(),
       fromVersion: child.version,
@@ -599,6 +905,7 @@ export class Launcher {
       dbPath: message.dbPath,
       status: "pending",
       phase: "accepted",
+      ...(qualified === undefined ? {} : { qualified }),
     };
     const next: ServiceState = { ...this.#state, update: pending };
     await writeServiceState(this.#statePath, next);
@@ -618,7 +925,11 @@ export class Launcher {
     await this.#startTrial(pending);
   }
 
-  async #handlePrepared(child: ManagedChild, updateId: string): Promise<void> {
+  async #handlePrepared(
+    child: ManagedChild,
+    message: Extract<ServiceLauncherChildMessage, { readonly type: "prepared" }>,
+  ): Promise<void> {
+    const updateId = message.updateId;
     const pending = this.#state.update;
     if (
       child.role !== "trial" ||
@@ -632,18 +943,97 @@ export class Launcher {
       }
       throw new Error("Trial child reported prepared for an unexpected update.");
     }
+    let startupReceipt: QualifiedTrialReceipt | undefined;
+    if (pending.qualified !== undefined) {
+      if (
+        message.startupGateProtocol !== 1 ||
+        message.qualified === undefined ||
+        this.#startupGateProtocol !== 1
+      )
+        throw new Error(
+          "Qualified startup proof is required before pointer commit; transaction retained.",
+        );
+      startupReceipt = message.qualified;
+      assertQualifiedTrialBinding({
+        updateId: pending.id,
+        qualified: pending.qualified,
+        receipt: startupReceipt,
+      });
+      const home = await NodeFSP.realpath(this.#baseDir);
+      const serviceUserdata = await NodeFSP.realpath(NodePath.join(home, "userdata"));
+      const database = await NodeFSP.realpath(pending.dbPath);
+      const receipt = await readQualifiedRuntimeReceipt(this.#baseDir, pending.targetVersion);
+      const environment = (
+        await NodeFSP.readFile(NodePath.join(this.#baseDir, "userdata", "environment-id"), "utf8")
+      ).trim();
+      if (
+        JSON.stringify(receipt) !== JSON.stringify(pending.qualified.receipt) ||
+        environment !== pending.qualified.binding.environmentId ||
+        startupReceipt.home !== home ||
+        startupReceipt.serviceUserdata !== serviceUserdata ||
+        startupReceipt.databasePath !== database ||
+        startupReceipt.processId !== child.process.pid ||
+        startupReceipt.version !== child.version ||
+        startupReceipt.sourceSha !== receipt.sourceSha ||
+        startupReceipt.sourceTree !== receipt.sourceTree
+      ) {
+        throw new Error(
+          "Qualified startup observed identity mismatched the captured child; transaction retained.",
+        );
+      }
+    }
+    if (pending.qualified !== undefined) {
+      if (child.process.pid === undefined) throw new Error("Trial writer identity is unavailable.");
+      // Only the captured trial may own writable state at the pointer commit.
+      await this.#proveQuiescence([child.process.pid]);
+      this.#assertQualifiedChildLive(child);
+    }
     this.#clearTimer();
-    const committed = terminalUpdate({ pending, status: "committed" });
+    const committed = {
+      ...terminalUpdate({ pending, status: "committed" }),
+      ...(startupReceipt === undefined ? {} : { startupReceipt }),
+    };
     const next: ServiceState = {
       ...this.#state,
       activeVersion: pending.targetVersion,
       update: committed,
     };
+    if (pending.qualified !== undefined) {
+      this.#assertQualifiedChildLive(child);
+      // From this point a failed fsync/response can leave a committed pointer; rollback is forbidden.
+      this.#qualifiedPointerCommitAttempted = true;
+    }
     await writeServiceState(this.#statePath, next);
     this.#state = next;
+    if (pending.qualified !== undefined) this.#assertQualifiedChildLive(child);
     child.role = "active";
-    await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
-    await sendMessage(child.process, { type: "committed", updateId: committed.id });
+    if (pending.qualified === undefined)
+      await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
+    await sendMessage(child.process, {
+      type: "committed",
+      updateId: committed.id,
+      ...(startupReceipt === undefined
+        ? {}
+        : {
+            startupGateProtocol: 1 as const,
+            qualified: { ...startupReceipt, generation: committed.id },
+          }),
+    });
+  }
+
+  #assertQualifiedChildLive(child: ManagedChild): void {
+    if (
+      this.#stopRequested ||
+      this.#stopping ||
+      this.#child !== child ||
+      child.process.pid === undefined ||
+      child.process.exitCode !== null ||
+      child.process.signalCode !== null ||
+      !child.process.connected
+    )
+      throw new Error("Qualified child liveness or stop intent changed; transaction retained.");
+    // The PID belongs to this captured spawn, never a path/name search.
+    process.kill(child.process.pid, 0);
   }
 
   async #handlePreparedTimeout(child: ManagedChild): Promise<void> {
@@ -672,6 +1062,7 @@ export class Launcher {
         pending,
         "rolled-back",
         `candidate-exited:${String(code ?? signal ?? "unknown")}`,
+        child,
       );
       return;
     }
@@ -691,9 +1082,24 @@ export class Launcher {
     reason: string,
     child?: ManagedChild,
   ): Promise<void> {
+    if (pending.qualified !== undefined && this.#qualifiedPointerCommitAttempted)
+      throw new Error(
+        "Qualified pointer commit may have occurred; paired state is retained for reconciliation.",
+      );
     if (child !== undefined) {
       this.#child = null;
       await terminateChild(child.process);
+      if (
+        pending.qualified !== undefined &&
+        child.process.exitCode === null &&
+        child.process.signalCode === null
+      )
+        throw new Error("Qualified trial stop is unproved; paired state was retained.");
+    }
+    if (pending.qualified !== undefined) {
+      if (child === undefined)
+        throw new Error("Qualified rollback requires the exact captured child stop.");
+      await this.#proveQuiescence();
     }
     await restoreDatabaseBackup(this.#baseDir, pending);
     const outcome = terminalUpdate({ pending, status, reason });
@@ -704,7 +1110,8 @@ export class Launcher {
     };
     await writeServiceState(this.#statePath, next);
     this.#state = next;
-    await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
+    if (pending.qualified === undefined)
+      await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
     await this.#startChild(next.activeVersion, "active", outcome);
   }
 }

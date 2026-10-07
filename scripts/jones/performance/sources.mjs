@@ -30,6 +30,24 @@ export const qualificationSourcePins = Object.freeze([
     tree: "e4cc6a712c634cfff25979dcbadb4b753d3f7309",
     lockSha256: "68549e7f8c7fb39bc313b1314374d3303c0461bfe9c1af0740a719b999df6cfd",
   }),
+  Object.freeze({
+    directory: "lease-current",
+    sourceRevision: "7c86493f6eff9ba9b30d3ff20ae33e10cdfb4607",
+    tree: "338eb4a11f2fea6042b829944b7408bd8952123a",
+    lockSha256: "755533d1deccfb663c092f62c26d65eac057ff1e43f09c24659e0cfc870d7c7f",
+  }),
+  Object.freeze({
+    directory: "v2-aggregate-77",
+    sourceRevision: "ae25e5d04bec70c2c0af51af70329a9e9086d15e",
+    tree: "88fef296fa78526a649ffb87d8efebbecc7d5a17",
+    lockSha256: "37a8109c36aa9e065cc9cd4dc1144a024b4d81883db11db4822decfb25c1257a",
+  }),
+  Object.freeze({
+    directory: "v2-aggregate-91",
+    sourceRevision: "09ead6ea565ffce428e9cda1bd5696c69ce9e616",
+    tree: "fa551ba6ef57f64461964dce62c255817b412dd9",
+    lockSha256: "37a8109c36aa9e065cc9cd4dc1144a024b4d81883db11db4822decfb25c1257a",
+  }),
 ]);
 const lockSha256 = "34460ca4290c8132ae0f26ba0224476b22c39983e8bcd735e357f15989592fc4";
 
@@ -123,4 +141,65 @@ export function qualificationDatabaseSource(sourceRevision, environment = proces
 
 export function assertQualificationDatabaseSource(source, environment = process.env) {
   return assertDatabaseSource(source, qualificationSourcePins, environment);
+}
+
+function currentGit(worktreePath, ...args) {
+  return NodeChildProcess.execFileSync(
+    "git",
+    ["-c", "core.fsmonitor=false", "-C", worktreePath, ...args],
+    {
+      encoding: "utf8",
+      maxBuffer: 256 * 1024,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_OPTIONAL_LOCKS: "0",
+      },
+    },
+  ).trim();
+}
+
+export function assertCurrentDatabaseSource(source) {
+  try {
+    if (
+      !source ||
+      Object.keys(source).sort().join(",") !==
+        "lockSha256,repository,sourceRevision,tree,worktreePath" ||
+      source.repository !== "Jones-Systems/Jones-Code" ||
+      !/^[a-f0-9]{40}$/.test(source.sourceRevision) ||
+      !/^[a-f0-9]{40}$/.test(source.tree) ||
+      !/^[a-f0-9]{64}$/.test(source.lockSha256) ||
+      !NodePath.isAbsolute(source.worktreePath) ||
+      NodePath.resolve(source.worktreePath) !== source.worktreePath ||
+      NodeFS.realpathSync(source.worktreePath) !== source.worktreePath
+    )
+      refuse("current database source must have exact candidate binding fields");
+    if (
+      currentGit(source.worktreePath, "rev-parse", "--show-toplevel") !== source.worktreePath ||
+      currentGit(source.worktreePath, "rev-parse", "HEAD") !== source.sourceRevision ||
+      currentGit(source.worktreePath, "rev-parse", "HEAD^{tree}") !== source.tree ||
+      currentGit(source.worktreePath, "status", "--porcelain", "--untracked-files=all") !== "" ||
+      NodeCrypto.createHash("sha256")
+        .update(NodeFS.readFileSync(NodePath.join(source.worktreePath, "pnpm-lock.yaml")))
+        .digest("hex") !== source.lockSha256
+    )
+      refuse("current database source commit, tree, lock or clean worktree differ");
+    return Object.freeze({ ...source });
+  } catch (error) {
+    if (error.code === "invalid_source") throw error;
+    refuse("current database source identity could not be established", error);
+  }
+}
+
+export function currentDatabaseSource(worktreePath) {
+  return assertCurrentDatabaseSource({
+    repository: "Jones-Systems/Jones-Code",
+    worktreePath,
+    sourceRevision: currentGit(worktreePath, "rev-parse", "HEAD"),
+    tree: currentGit(worktreePath, "rev-parse", "HEAD^{tree}"),
+    lockSha256: NodeCrypto.createHash("sha256")
+      .update(NodeFS.readFileSync(NodePath.join(worktreePath, "pnpm-lock.yaml")))
+      .digest("hex"),
+  });
 }
