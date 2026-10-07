@@ -26,7 +26,7 @@ it.effect("binds schema-encoded message command and delivery to fixed SHA256 gol
         },
       },
     };
-    const encoded = Schema.encodeSync(ImportedHistoryStart)(command);
+    const encoded = yield* Schema.encodeEffect(ImportedHistoryStart)(command);
     expect(importedHistoryCanonicalJson(encoded)).toBe(
       '{"commandId":"command:test","delivery":{"command":{"attachments":[],"commandId":"command:test","createdBy":"user","creationSource":"web","dispatchMode":{"type":"start_immediately"},"messageId":"message:test","text":"Synthetic π 😀","threadId":"thread:test","type":"message.dispatch"},"type":"message"},"reviewedBasis":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","threadId":"thread:test","type":"thread.imported-history.start"}',
     );

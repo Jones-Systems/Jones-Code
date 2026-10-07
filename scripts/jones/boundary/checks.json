@@ -566,12 +566,62 @@
         "apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts",
         "apps/server/scripts/jones/currentFixtures.test.ts",
         "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
-        "packages/contracts/src/environmentHttp.test.ts"
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts apps/server/src/jones/importedHistory/http.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts packages/contracts/src/environmentHttp.test.ts",
+        "vp test run apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts apps/server/src/jones/importedHistory/http.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts packages/contracts/src/environmentHttp.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/contracts typecheck"
+      ]
+    },
+    {
+      "id": "jones-runtime-stop",
+      "tests": [
+        "apps/server/src/jones/runtime/RuntimeStop.test.ts",
+        "apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts",
+        "packages/contracts/src/jones/runtimeStop.test.ts",
+        "packages/client-runtime/src/operations/currentRuntimeStop.test.ts",
+        "apps/web/src/hooks/useCurrentRuntimeStop.test.ts",
+        "apps/server/src/auth/RpcAuthorization.test.ts",
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "packages/client-runtime/src/state/orchestrationV2Projection.test.ts",
+        "packages/client-runtime/src/state/threadCommands.test.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionControlReads.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "packages/contracts/src/environment.test.ts",
+        "packages/contracts/src/orchestrationV2.test.ts",
+        "packages/contracts/src/rpc.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/runtime/RuntimeStop.test.ts apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts packages/contracts/src/jones/runtimeStop.test.ts packages/client-runtime/src/operations/currentRuntimeStop.test.ts apps/web/src/hooks/useCurrentRuntimeStop.test.ts apps/server/src/auth/RpcAuthorization.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts packages/client-runtime/src/state/orchestrationV2Projection.test.ts packages/client-runtime/src/state/threadCommands.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ProjectionControlReads.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts packages/contracts/src/environment.test.ts packages/contracts/src/orchestrationV2.test.ts packages/contracts/src/rpc.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
+    },
+    {
+      "id": "jones-deletion-worktree-removal",
+      "tests": [
+        "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
+        "apps/server/src/jones/cleanup/DeletionAdmission.test.ts",
+        "apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts",
+        "apps/server/src/storageCleanup.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts apps/server/src/jones/cleanup/DeletionAdmission.test.ts apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts apps/server/src/storageCleanup.test.ts apps/server/src/jones/persistence/Migrations.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict --json"
       ]
     },
     {

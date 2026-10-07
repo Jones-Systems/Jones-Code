@@ -278,6 +278,7 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
 export interface ThreadManagementServiceShape {
+  readonly stopCurrentThreadRuntime?: import("./Orchestrator.ts").OrchestratorV2Shape["stopCurrentThreadRuntime"];
   readonly reviewImportedHistory?: Orchestrator.OrchestratorV2["Service"]["reviewImportedHistory"];
   readonly startWithImportedHistory?: Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"];
   readonly observeImportedHistoryStart?: Orchestrator.OrchestratorV2["Service"]["observeImportedHistoryStart"];
@@ -807,6 +808,9 @@ const make = Effect.gen(function* () {
             Effect.andThen(reviewImported(input)),
           );
   return ThreadManagementService.of({
+    ...(orchestrator.stopCurrentThreadRuntime === undefined
+      ? {}
+      : { stopCurrentThreadRuntime: orchestrator.stopCurrentThreadRuntime }),
     reviewImportedHistory,
     startWithImportedHistory: orchestrator.startWithImportedHistory,
     observeImportedHistoryStart: orchestrator.observeImportedHistoryStart,

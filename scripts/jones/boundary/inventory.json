@@ -770,7 +770,16 @@
     "apps/server/src/jones/nativeCreation/NativeWorkspaceSetupCustody.ts": "jones-owned",
     "apps/server/src/jones/nativeCreation/NativeWorkspaceSetupExecutor.test.ts": "jones-owned",
     "apps/server/src/jones/nativeCreation/NativeWorkspaceSetupExecutor.ts": "jones-owned",
-    "apps/server/src/terminal/NativeSetupControl.ts": "jones-owned"
+    "apps/server/src/terminal/NativeSetupControl.ts": "jones-owned",
+    "apps/server/src/jones/cleanup/DeletionAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/cleanup/DeletionAdmission.ts": "jones-owned",
+    "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts": "jones-owned",
+    "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.ts": "jones-owned",
+    "apps/server/src/jones/cleanup/DeletionWorktreeRemovalTypes.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/deletion-worktree-removal.json": "jones-owned",
+    "apps/server/src/jones/persistence/JonesMigrations.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

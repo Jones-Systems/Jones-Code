@@ -530,6 +530,7 @@ export interface ProviderAdapterV2EnsureThreadInput {
 }
 
 export interface ProviderAdapterV2TurnInput {
+  readonly revalidateStartAdmission?: Effect.Effect<void, ProviderAdapterV2Error>;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -619,7 +620,16 @@ export interface ProviderAdapterV2HistoricalContext {
   readonly context: string;
 }
 
+export interface CapturedRuntimeStop {
+  readonly binding: ProviderRuntimeBinding;
+  readonly evidenceRevision: number;
+  readonly isCurrent: Effect.Effect<boolean>;
+  readonly stop: Effect.Effect<void, ProviderAdapterV2Error>;
+}
 export interface ProviderAdapterV2SessionRuntime {
+  readonly captureRuntimeStop?: (
+    providerThread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<CapturedRuntimeStop | null, ProviderAdapterV2Error>;
   readonly eventOriginMode?: "captured";
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;

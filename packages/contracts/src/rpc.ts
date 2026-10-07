@@ -1,3 +1,10 @@
+import {
+  StopCurrentThreadRuntimeInput,
+  StopCurrentThreadRuntimeResult,
+  ReadCurrentRuntimeStopTargetInput,
+  ReadCurrentRuntimeStopTargetResult,
+  CurrentRuntimeStopRequestError,
+} from "./jones/runtimeStop.ts";
 import { NativeBootstrapDispatchError } from "./nativeCreation.ts";
 import { QueueDispatchCommand } from "./queueDispatch.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
@@ -1514,6 +1521,31 @@ const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
   stream: true,
 });
 
+const WsStopCurrentThreadRuntimeRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
+  {
+    payload: StopCurrentThreadRuntimeInput,
+    success: StopCurrentThreadRuntimeResult,
+    error: Schema.Union([CurrentRuntimeStopRequestError, EnvironmentAuthorizationError]),
+  },
+);
+const WsObserveCurrentThreadRuntimeStopRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop,
+  {
+    payload: StopCurrentThreadRuntimeInput,
+    success: Schema.NullOr(StopCurrentThreadRuntimeResult),
+    error: Schema.Union([CurrentRuntimeStopRequestError, EnvironmentAuthorizationError]),
+  },
+);
+const WsReadCurrentRuntimeStopTargetRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget,
+  {
+    payload: ReadCurrentRuntimeStopTargetInput,
+    success: ReadCurrentRuntimeStopTargetResult,
+    error: Schema.Union([CurrentRuntimeStopRequestError, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
   payload: Schema.Union([OrchestrationV2RpcSchemas.dispatchCommand.input, QueueDispatchCommand]),
   success: OrchestrationV2RpcSchemas.dispatchCommand.output,
@@ -1897,6 +1929,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
   WsOrchestrationV2DispatchCommandRpc,
+  WsStopCurrentThreadRuntimeRpc,
+  WsObserveCurrentThreadRuntimeStopRpc,
+  WsReadCurrentRuntimeStopTargetRpc,
   WsOrchestrationV2NativeBootstrapRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2GetTurnItemRpc,

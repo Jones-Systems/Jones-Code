@@ -1,4 +1,5 @@
 import {
+  ORCHESTRATION_V2_WS_METHODS,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthRelayReadScope,
@@ -19,6 +20,17 @@ import {
 } from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("separates physical stop target observation from runtime mutation", () => {
+    expect(
+      requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop),
+    ).toBe(AuthOrchestrationReadScope);
+    expect(
+      requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget),
+    ).toBe(AuthOrchestrationReadScope);
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
   it("reads CI status under exactly orchestration read permission", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.pullRequestsCiStatus)).toBe(
       AuthOrchestrationReadScope,

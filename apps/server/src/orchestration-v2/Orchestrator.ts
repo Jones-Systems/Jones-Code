@@ -1,3 +1,5 @@
+import * as CapturedRuntimeStop from "../jones/runtime/RuntimeStop.ts";
+import type * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
 import * as NativeStage from "../jones/nativeCreation/NativeCreationStageDispatch.ts";
 import * as NativeRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
 import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
@@ -312,6 +314,13 @@ export interface OrchestratorV2DispatchResult {
 }
 
 export interface OrchestratorV2Shape {
+  readonly stopCurrentThreadRuntime?: (
+    input: import("@t3tools/contracts").StopCurrentThreadRuntimeInput,
+  ) => Effect.Effect<
+    import("@t3tools/contracts").StopCurrentThreadRuntimeResult,
+    RuntimeStopStore.RuntimeStopError,
+    import("@t3tools/contracts").EnvironmentAuthenticatedPrincipal
+  >;
   readonly reviewImportedHistory?: (input: {
     readonly threadId: ThreadId;
     readonly delivery: ImportedHistoryDelivery;
@@ -925,6 +934,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const continuationRequests = yield* ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
+  const capturedStop = yield* Effect.serviceOption(CapturedRuntimeStop.CurrentRuntimeStop);
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
@@ -12297,6 +12307,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }).pipe(Effect.mapError((cause) => importedError(candidate.threadId, cause)));
 
   return OrchestratorV2.of({
+    ...(Option.isSome(capturedStop) ? { stopCurrentThreadRuntime: capturedStop.value.stop } : {}),
     reviewImportedHistory,
     startWithImportedHistory,
     observeImportedHistoryStart,

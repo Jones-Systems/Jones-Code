@@ -7159,6 +7159,7 @@ export function makeClaudeAdapterV2(
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           nativeThreadId: string,
         ) {
+          yield* turnInput.revalidateStartAdmission ?? Effect.void;
           const queryPolicy = claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy);
           const mcpOverrides = claudeMcpQueryOverrides({
             threadId: turnInput.threadId,
@@ -7300,6 +7301,7 @@ export function makeClaudeAdapterV2(
             supportedDialogKinds: ["resume_return"],
           });
           launchedGenerations.add(runtimeGeneration);
+          yield* turnInput.revalidateStartAdmission ?? Effect.void;
           const querySession = yield* queryRunner
             .open({
               threadId: turnInput.threadId,
@@ -7541,6 +7543,7 @@ export function makeClaudeAdapterV2(
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
+            yield* turnInput.revalidateStartAdmission ?? Effect.void;
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
             const nativeTurnId = `turn:${turnInput.attemptId}`;
@@ -7622,6 +7625,7 @@ export function makeClaudeAdapterV2(
                   skillNames: yield* userInvocableSkillNames(turnInput.runtimePolicy.cwd),
                   uuid: claudePromptUuid(turnInput.attemptId),
                 });
+            yield* turnInput.revalidateStartAdmission ?? Effect.void;
             const querySession = yield* openQuery(turnInput, nativeThreadId);
             yield* Ref.set(activeTurn, context);
             yield* emitProviderEvent({
@@ -7639,6 +7643,7 @@ export function makeClaudeAdapterV2(
               // afterwards with correct attribution.
               // Counted only here, so a turn that failed to start does not age reports.
               yield* startUserTurnForWakeReports(nativeThreadId);
+              yield* turnInput.revalidateStartAdmission ?? Effect.void;
               yield* querySession.query.offer(userMessage);
               return;
             }
@@ -8013,6 +8018,67 @@ export function makeClaudeAdapterV2(
                   nativeThreadId,
                 ).size > 0
               );
+            }),
+          captureRuntimeStop: (providerThread) =>
+            Effect.gen(function* () {
+              const captured = yield* Ref.get(queryContext);
+              const revision = providerThread.runtimeIdentity?.evidenceRevision;
+              if (
+                captured === null ||
+                !captured.acceptingEvidence ||
+                captured.stopping ||
+                captured.providerThread.id !== providerThread.id ||
+                captured.nativeThreadId !== providerThread.nativeThreadRef?.nativeId ||
+                captured.runtimeGeneration !== providerThread.runtimeIdentity?.runtimeGeneration ||
+                revision === undefined
+              )
+                return null;
+              const binding = ProviderAdapter.runtimeBinding(
+                providerThread,
+                captured.runtimeGeneration,
+              );
+              if (binding === undefined) return null;
+              const isCurrent = Ref.get(queryContext).pipe(
+                Effect.map(
+                  (current) =>
+                    current?.query === captured.query &&
+                    captured.acceptingEvidence &&
+                    !captured.stopping,
+                ),
+              );
+              return {
+                binding,
+                evidenceRevision: revision,
+                isCurrent,
+                stop: Effect.gen(function* () {
+                  const owned = yield* Ref.modify(queryContext, (current) =>
+                    current?.query === captured.query &&
+                    captured.acceptingEvidence &&
+                    !captured.stopping
+                      ? ([true, null] as const)
+                      : ([false, current] as const),
+                  );
+                  if (!owned)
+                    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CLAUDE_PROVIDER,
+                      detail: "Captured Claude query was replaced before stop.",
+                    });
+                  captured.stopping = true;
+                  captured.acceptingEvidence = false;
+                  captured.eventProducer.drain();
+                  yield* captured.query.close;
+                  yield* retireGeneration(captured.runtimeGeneration);
+                }).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapter.ProviderAdapterProtocolError({
+                        driver: CLAUDE_PROVIDER,
+                        detail: "Captured Claude query stop completion is unknown.",
+                        cause,
+                      }),
+                  ),
+                ),
+              };
             }),
           ensureThread: Effect.fn("ClaudeAdapterV2.ensureThread")(
             function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {

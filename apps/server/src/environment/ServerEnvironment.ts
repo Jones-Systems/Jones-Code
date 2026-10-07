@@ -215,6 +215,11 @@ export const make = Effect.gen(function* () {
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     capabilities: {
       workQueueMetadata: true,
+      currentRuntimeStop: {
+        targetRequired: true,
+        supportedDrivers: ["codex", "claudeAgent"],
+        backgroundCoverage: "partial",
+      },
       repositoryIdentity: true,
       connectionProbe: true,
       worktreeDefaultBase: true,

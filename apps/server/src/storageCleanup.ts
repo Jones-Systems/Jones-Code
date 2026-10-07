@@ -1,3 +1,5 @@
+import * as DeletionWorktreeRemoval from "./jones/cleanup/DeletionWorktreeRemoval.ts";
+import * as EventSink from "./orchestration-v2/EventSink.ts";
 import {
   OrchestrationV2AppThreadJson,
   OrchestrationV2ProviderSessionJson,
@@ -18,6 +20,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -46,6 +49,8 @@ const decodeCleanupSession = Schema.decodeUnknownEffect(
 );
 
 const DAY_MS = 86_400_000;
+const overlapsCleanupPath = (left: string, right: string) =>
+  left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 
 const worktreeCleanupEnabled = (rules: WorktreeCleanupRules) =>
   rules.worktreeAfterDays !== null ||
@@ -112,6 +117,18 @@ export const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const sql = yield* SqlClient.SqlClient;
+  const sink = yield* EventSink.EventSinkV2;
+  const deletionRemoval = yield* DeletionWorktreeRemoval.QualifiedDeletionWorktreeRemoval.pipe(
+    Effect.provide(
+      DeletionWorktreeRemoval.layer.pipe(
+        Layer.provide(
+          DeletionWorktreeRemoval.producerLayer.pipe(
+            Layer.provide(DeletionWorktreeRemoval.gitLayer),
+          ),
+        ),
+      ),
+    ),
+  );
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
   const terminals = yield* TerminalManager.TerminalManager;
@@ -222,7 +239,23 @@ export const make = Effect.gen(function* () {
       )
         continue;
       yield* Effect.gen(function* () {
-        if (!inside(root, worktreePath) || !(yield* fs.exists(worktreePath))) return;
+        if (!inside(root, worktreePath)) return;
+        if (deleted && sink.readDeletionWorktreeRemovalStartForTarget !== undefined) {
+          const original = yield* sink.readDeletionWorktreeRemovalStartForTarget(thread.id, {
+            projectId: thread.projectId,
+            projectRoot: project.workspaceRoot,
+            path: worktreePath,
+            branch: thread.branch,
+            force: false,
+          });
+          if (original !== null) {
+            // An issued start survives crashes, policy changes and path absence.
+            // Recovery observes its original operation and never invokes removal.
+            yield* deletionRemoval.observe(original.start.effectId);
+            return;
+          }
+        }
+        if (!(yield* fs.exists(worktreePath))) return;
         if ((yield* fs.realPath(worktreePath)) !== worktreePath) return;
         if (yield* containsProjectRoot(worktreePath, [project, ...snapshot.projects])) return;
         // A linked worktree has a .git file. Never remove a main checkout.
@@ -369,7 +402,45 @@ export const make = Effect.gen(function* () {
           )
         )
           return;
-        yield* git.removeWorktree({ cwd: project.workspaceRoot, path: worktreePath, force: false });
+        if (deleted) {
+          if (sink.startDeletionWorktreeRemoval === undefined) return;
+          const currentRules = settingsService.getSettings.pipe(
+            Effect.map((server) => resolveWorktreeCleanup(server, thread.projectId)),
+          );
+          const currentLive = Effect.gen(function* () {
+            const current = yield* readThreads();
+            return (
+              !hasTerminal(worktreePath) &&
+              !current.threads.some(
+                (entry) =>
+                  entry.worktreePath !== null &&
+                  overlapsCleanupPath(path.resolve(entry.worktreePath), worktreePath),
+              )
+            );
+          }).pipe(Effect.orElseSucceed(() => false));
+          const admission = yield* sink.startDeletionWorktreeRemoval({
+            threadId: thread.id,
+            target: {
+              projectId: thread.projectId,
+              projectRoot: project.workspaceRoot,
+              path: worktreePath,
+              branch: thread.branch,
+              force: false,
+            },
+            rules: settings,
+            currentRules,
+            currentLive,
+          });
+          if (admission.status === "start_now")
+            yield* deletionRemoval.execute(admission.start.effectId, currentRules, currentLive);
+          else yield* deletionRemoval.observe(admission.start.effectId);
+        } else {
+          yield* git.removeWorktree({
+            cwd: project.workspaceRoot,
+            path: worktreePath,
+            force: false,
+          });
+        }
         yield* gitManager.invalidateStatus(project.workspaceRoot);
         // Preserve branch and path: ProviderTurnStartService recreates the checkout
         // from that branch when the thread is resumed.
