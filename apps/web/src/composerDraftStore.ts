@@ -1,3 +1,4 @@
+import { ImportedHistoryLockUnavailable, decodeImportedHistoryCorrelation, encodeImportedHistoryCorrelation, type ImportedHistoryCorrelation, type ImportedHistoryCorrelationStorage } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { DraftId } from "./draftId";
 import { stripInlineContextReferences } from "./lib/composerContextReferences";
 import { elementContextToPreviewAnnotation } from "./lib/elementContext";
@@ -4631,4 +4632,37 @@ export function finalizePromotedDraftThreadByRef(threadRef: ScopedThreadRef): vo
     }
   }
   clearBackgroundDraftSubmissionByRef(threadRef);
+}
+
+export function importedHistoryCorrelationStorage(ref: ScopedThreadRef): ImportedHistoryCorrelationStorage {
+  const key = `jones:imported-history-choice:v1:${scopedThreadKey(ref)}`;
+  const storage = () => {
+    if (typeof localStorage === "undefined") throw new Error("Durable imported history storage is unavailable.");
+    return localStorage;
+  };
+  const read = () => {
+    const raw = storage().getItem(key);
+    if (raw === null) return null;
+    const value = decodeImportedHistoryCorrelation(raw);
+    if (value.environmentId !== ref.environmentId || value.command.threadId !== ref.threadId) throw new Error("Imported history storage target changed.");
+    return value;
+  };
+  return {
+    withLock<A>(operation: () => Promise<A>): Promise<A> {
+      if (typeof navigator === "undefined" || navigator.locks === undefined) return Promise.reject(new ImportedHistoryLockUnavailable());
+      return navigator.locks.request(key, { mode: "exclusive" }, operation);
+    },
+    read,
+    reserve(value) {
+      composerDebouncedStorage.flush();
+      if (read() !== null) throw new Error("An imported history choice already awaits observation.");
+      const encoded = encodeImportedHistoryCorrelation(value);
+      storage().setItem(key, encoded);
+      if (storage().getItem(key) !== encoded) throw new Error("Imported history reservation was not persisted.");
+    },
+    remove(value) {
+      const current = read();
+      if (current !== null && encodeImportedHistoryCorrelation(current) === encodeImportedHistoryCorrelation(value)) storage().removeItem(key);
+    },
+  };
 }

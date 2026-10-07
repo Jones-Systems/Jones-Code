@@ -1,3 +1,6 @@
+import { ContinuationChoiceBanner, importedHistoryCommands, type PreparedImportedHistoryChoice } from "../../jones/importedHistory/ContinuationChoiceBanner";
+import { resolveImportedHistoryReview } from "@t3tools/client-runtime/jones/imported-history/continuation";
+import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
@@ -70,6 +73,10 @@ export function QueuedRunsControl({
   const reorder = useAtomCommand(threadEnvironment.reorderQueuedRun);
   const promote = useAtomCommand(threadEnvironment.promoteQueuedRun);
   const cancel = useAtomCommand(threadEnvironment.cancelQueuedRun);
+  const reviewImportedHistory = useAtomCommand(importedHistoryCommands.review, { reportFailure: false });
+  const [importedChoice, setImportedChoice] = useState<PreparedImportedHistoryChoice | null>(null);
+  const [importedReason, setImportedReason] = useState<string | null>(null);
+
   const [expanded, setExpanded] = useState(true);
   const queueListId = useId();
   const [busyRunId, setBusyRunId] = useState<RunId | null>(null);
@@ -87,6 +94,32 @@ export function QueuedRunsControl({
     [projection],
   );
   const queued = workflow?.queuedRuns ?? [];
+  const currentQueueRef = useRef({ environmentId: props.environmentId, threadId: props.threadId, queued });
+  currentQueueRef.current = { environmentId: props.environmentId, threadId: props.threadId, queued };
+  const reviewImportedQueued = async (runId: RunId, messageId: MessageId) => {
+    if (busyRunId !== null) return;
+    const entry = queued.find((item) => item.run.id === runId && item.messageId === messageId);
+    if (!entry) return;
+    const snapshot = importedHistoryCanonicalJson(entry);
+    const environmentId = props.environmentId;
+    const threadId = props.threadId;
+    const unchanged = () => {
+      const current = currentQueueRef.current;
+      const item = current.queued.find((candidate) => candidate.run.id === runId && candidate.messageId === messageId);
+      return current.environmentId === environmentId && current.threadId === threadId && item !== undefined && importedHistoryCanonicalJson(item) === snapshot;
+    };
+    setBusyRunId(runId);
+    try {
+      const delivery = { type: "queued_run" as const, runId, messageId };
+      const result = await reviewImportedHistory({ environmentId, input: { threadId, delivery } });
+      const review = resolveImportedHistoryReview(result._tag === "Success" ? result.value : null);
+      if (unchanged()) {
+        setImportedReason(review.reason);
+        setImportedChoice(review.status === "available" ? { delivery, reviewedBasis: review.reviewedBasis, draftIdentity: snapshot, unchanged } : null);
+      }
+    } finally { setBusyRunId(null); }
+  };
+
   const activeRun = workflow?.activeRun ?? null;
   const canReorder = workflow?.canReorder === true;
   const queuedImageAttachmentIds = useMemo(() => {
@@ -229,7 +262,9 @@ export function QueuedRunsControl({
     },
   }));
 
-  if (items.length === 0) return null;
+  if (items.length === 0) return projection?.thread?.historyOrigin === "v1_import"
+    ? <ContinuationChoiceBanner key={`${props.environmentId}:${props.threadId}`} environmentId={props.environmentId} threadId={props.threadId} prepared={null} />
+    : null;
 
   const remove = async (runId: RunId) => {
     setBusyRunId(runId);
@@ -244,6 +279,8 @@ export function QueuedRunsControl({
   };
 
   return (
+    <>
+      {projection?.thread?.historyOrigin === "v1_import" ? <ContinuationChoiceBanner key={`${props.environmentId}:${props.threadId}`} environmentId={props.environmentId} threadId={props.threadId} prepared={importedChoice} reason={importedReason} onDismiss={() => { setImportedChoice(null); setImportedReason(null); }} /> : null}
     <ComposerBanner.Attachment>
       <ComposerBanner.Root
         role="region"
@@ -404,6 +441,8 @@ export function QueuedRunsControl({
                     </Tooltip>
                   </ComposerBanner.Content>
                   <ComposerBanner.Actions>
+                    {projection?.thread?.historyOrigin === "v1_import" && item.runId !== null && item.messageId !== null ? <Button size="xs" variant="ghost-muted" disabled={busyRunId !== null} onClick={() => { void reviewImportedQueued(item.runId!, item.messageId!); }}>Review imported history</Button> : null}
+
                     {isEditing ? (
                       <Button
                         size="xs"
@@ -492,5 +531,6 @@ export function QueuedRunsControl({
         </ComposerBanner.Scroll>
       </ComposerBanner.Root>
     </ComposerBanner.Attachment>
+    </>
   );
 }
