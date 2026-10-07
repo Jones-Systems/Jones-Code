@@ -1,6 +1,5 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodeCrypto from "node:crypto";
-// @effect-diagnostics-next-line nodeBuiltinImport:off - Native retained-root diagnostics must not create a test Effect runtime.
 import * as NodeConsole from "node:console";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Custody checks require native device/inode observations and raw SQLite header reads.
 import * as NodeFS from "node:fs";
