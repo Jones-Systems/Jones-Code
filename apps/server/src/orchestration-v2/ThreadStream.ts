@@ -1,7 +1,5 @@
-import type {
-  OrchestrationV2ThreadProjection,
-  OrchestrationV2ThreadStreamItem,
-} from "@t3tools/contracts";
+import { type RecordedThreadProjection as OrchestrationV2ThreadProjection } from "./RecordedTypes.ts";
+import type { OrchestrationV2ThreadStreamItem } from "@t3tools/contracts";
 
 import { buildBoundedThreadProjection } from "./threadHistoryPaging.ts";
 import { projectThreadProjectionForWire } from "./WireProjection.ts";
