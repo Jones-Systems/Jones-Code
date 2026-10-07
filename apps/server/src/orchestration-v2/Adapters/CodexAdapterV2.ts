@@ -1997,25 +1997,37 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             producer.pendingReroutes.delete(nativeId);
             const binding = runtimeBinding(bound, producer.generation);
             if (binding !== undefined && input.runtimeLifecycle === undefined)
-              yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent({
-                type: "runtime_identity.observed",
-                driver: CODEX_PROVIDER,
-                binding,
-                requested,
-                observed,
-              }, { producer: producer.eventProducer.origin }));
+              yield* Queue.offer(
+                events,
+                ProviderEventOrigin.stampProviderEvent(
+                  {
+                    type: "runtime_identity.observed",
+                    driver: CODEX_PROVIDER,
+                    binding,
+                    requested,
+                    observed,
+                  },
+                  { producer: producer.eventProducer.origin },
+                ),
+              );
             if (binding !== undefined)
               for (const model of reroutes)
-                yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent({
-                  type: "runtime_identity.observed",
-                  driver: CODEX_PROVIDER,
-                  binding,
-                  requested,
-                  observed: {
-                    ...observed,
-                    model: { status: "observed", value: model, sourceEvent: "model/rerouted" },
-                  },
-                }, { producer: producer.eventProducer.origin }));
+                yield* Queue.offer(
+                  events,
+                  ProviderEventOrigin.stampProviderEvent(
+                    {
+                      type: "runtime_identity.observed",
+                      driver: CODEX_PROVIDER,
+                      binding,
+                      requested,
+                      observed: {
+                        ...observed,
+                        model: { status: "observed", value: model, sourceEvent: "model/rerouted" },
+                      },
+                    },
+                    { producer: producer.eventProducer.origin },
+                  ),
+                );
             return bound;
           }).pipe(
             Effect.tapError(() =>
@@ -2053,7 +2065,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         ) =>
           Effect.gen(function* () {
             const producer = (yield* CodexProducerContext) ?? currentProducer;
-            if (!producer.eventProducer.accepting || !producer.active || producer !== currentProducer)
+            if (
+              !producer.eventProducer.accepting ||
+              !producer.active ||
+              producer !== currentProducer
+            )
               return;
             const providerThreadId =
               event.type === "provider_thread.updated"
@@ -2081,32 +2097,44 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                       evidenceRevision: thread!.runtimeIdentity?.evidenceRevision,
                     },
                   };
-            const providerTurnId = event.type === "turn.terminal"
-              ? event.providerTurnId
-              : event.type === "provider_turn.updated"
-                ? event.providerTurn.id
-                : event.type === "turn_item.updated" ? event.turnItem.providerTurnId : undefined;
-            const eventRunId = event.type === "message.updated"
-              ? event.message.runId
-              : event.type === "node.updated" ? event.node.runId : undefined;
-            const turnContext = capturedTurn ?? [...(yield* Ref.get(activeTurns)).values()].find(
-              (candidate) => candidate.subagent === null && (
-                (providerTurnId != null && candidate.providerTurnId === providerTurnId) ||
-                (eventRunId != null && candidate.input.runId === eventRunId)
-              ),
-            );
-            const turnBinding = turnContext === undefined
-              ? undefined : runtimeBinding(turnContext.providerThread, producer.generation);
+            const providerTurnId =
+              event.type === "turn.terminal"
+                ? event.providerTurnId
+                : event.type === "provider_turn.updated"
+                  ? event.providerTurn.id
+                  : event.type === "turn_item.updated"
+                    ? event.turnItem.providerTurnId
+                    : undefined;
+            const eventRunId =
+              event.type === "message.updated"
+                ? event.message.runId
+                : event.type === "node.updated"
+                  ? event.node.runId
+                  : undefined;
+            const turnContext =
+              capturedTurn ??
+              [...(yield* Ref.get(activeTurns)).values()].find(
+                (candidate) =>
+                  candidate.subagent === null &&
+                  ((providerTurnId != null && candidate.providerTurnId === providerTurnId) ||
+                    (eventRunId != null && candidate.input.runId === eventRunId)),
+              );
+            const turnBinding =
+              turnContext === undefined
+                ? undefined
+                : runtimeBinding(turnContext.providerThread, producer.generation);
             ProviderEventOrigin.stampProviderEvent(queuedEvent, {
               producer: producer.eventProducer.origin,
-              ...(turnContext === undefined || turnBinding === undefined ? {} : {
-                turn: {
-                  binding: turnBinding,
-                  runId: turnContext.input.runId,
-                  attemptId: turnContext.input.attemptId,
-                  providerTurnId: turnContext.providerTurnId,
-                },
-              }),
+              ...(turnContext === undefined || turnBinding === undefined
+                ? {}
+                : {
+                    turn: {
+                      binding: turnBinding,
+                      runId: turnContext.input.runId,
+                      attemptId: turnContext.input.attemptId,
+                      providerTurnId: turnContext.providerTurnId,
+                    },
+                  }),
             });
             yield* Queue.offer(events, queuedEvent);
           }).pipe(Effect.asVoid);

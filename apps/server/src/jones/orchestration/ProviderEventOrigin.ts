@@ -90,7 +90,8 @@ export function revalidateProviderEventOrigin(
   return Effect.gen(function* () {
     const origin = readProviderEventOrigin(event);
     if (origin === undefined) {
-      if (runtime.eventOriginMode === "captured") return yield* new ProviderEventOriginStaleError({});
+      if (runtime.eventOriginMode === "captured")
+        return yield* new ProviderEventOriginStaleError({});
       return;
     }
     const { producer, turn } = origin;
@@ -105,7 +106,8 @@ export function revalidateProviderEventOrigin(
           event.binding.providerSessionId !== producer.providerSessionId ||
           (producer.runtimeGeneration !== undefined &&
             event.binding.runtimeGeneration !== producer.runtimeGeneration))) ||
-      (event.type !== "runtime_identity.observed" && event.runtimeEvidence !== undefined &&
+      (event.type !== "runtime_identity.observed" &&
+        event.runtimeEvidence !== undefined &&
         (event.runtimeEvidence.driver !== producer.driver ||
           event.runtimeEvidence.providerInstanceId !== producer.instanceId ||
           event.runtimeEvidence.providerSessionId !== producer.providerSessionId ||
@@ -218,7 +220,10 @@ export function readProviderEventOrigin(event: object): ProviderEventOrigin | un
 }
 
 /** Filtering may clone an event; copy its captured source instead of deriving one from the current runtime. */
-export function copyProviderEventOrigin<Event extends object>(original: object, derived: Event): Event {
+export function copyProviderEventOrigin<Event extends object>(
+  original: object,
+  derived: Event,
+): Event {
   const origin = origins.get(original);
   return origin === undefined ? derived : stampProviderEvent(derived, origin);
 }

@@ -19,6 +19,10 @@
       "to": "apps/server/src/jones/orchestration/ProviderEventOrigin.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+      "to": "apps/server/src/jones/orchestration/ProviderEventOrigin.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
       "to": "apps/server/src/jones/orchestration/ProviderEventOrigin.ts"
     },

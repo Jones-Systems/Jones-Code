@@ -1036,9 +1036,12 @@ export function makeOpenCodeAdapterV2(
         let hasConnected = false;
 
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, {
-            producer: eventProducer.origin,
-          })).pipe(Effect.asVoid);
+          Queue.offer(
+            events,
+            ProviderEventOrigin.stampProviderEvent(event, {
+              producer: eventProducer.origin,
+            }),
+          ).pipe(Effect.asVoid);
 
         const logProtocolEvent = makeOpenCodeProtocolLogger({
           nativeEventLogger: options.nativeEventLogger,

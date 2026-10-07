@@ -665,10 +665,9 @@ const CLEAR_PROMPT_REJECTIONS: ReadonlySet<string> = new Set([
   "SkillNotFoundError",
 ]);
 
-class OpenCode2EventProducerContext extends Context.Reference<ProviderEventOrigin.ProviderEventProducerOrigin | undefined>(
-  "t3/OpenCode2AdapterV2/EventProducerContext",
-  { defaultValue: () => undefined },
-) {}
+class OpenCode2EventProducerContext extends Context.Reference<
+  ProviderEventOrigin.ProviderEventProducerOrigin | undefined
+>("t3/OpenCode2AdapterV2/EventProducerContext", { defaultValue: () => undefined }) {}
 
 export const OPENCODE_2_STILL_STOPPING =
   "OpenCode is still stopping the previous turn. Send the message again in a moment.";
@@ -877,11 +876,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       lastError: null,
     };
     const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event, Cause.Done>();
-    const makeConnectionProducer = () => ProviderEventOrigin.makeProviderEventProducer({
-      driver,
-      instanceId,
-      providerSessionId: input.providerSessionId,
-    });
+    const makeConnectionProducer = () =>
+      ProviderEventOrigin.makeProviderEventProducer({
+        driver,
+        instanceId,
+        providerSessionId: input.providerSessionId,
+      });
     let eventProducer = makeConnectionProducer();
     // Thread sessions, and the sessions of their subagents.
     const threads = new Map<string, ThreadState>();
@@ -2851,10 +2851,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       yield* Scope.close(previous, Exit.void);
       // A restarted server forgot T3's MCP servers; the next turn adds them again.
       for (const state of threads.values()) state.mcp = undefined;
-      yield* lock.withPermit(reconcile).pipe(
-        Effect.provideService(OpenCode2EventProducerContext, producer.origin),
-        Effect.timeout(RECONCILE_TIMEOUT),
-      );
+      yield* lock
+        .withPermit(reconcile)
+        .pipe(
+          Effect.provideService(OpenCode2EventProducerContext, producer.origin),
+          Effect.timeout(RECONCILE_TIMEOUT),
+        );
       return { stream, producer };
     }).pipe(
       Effect.retry({ times: RECONNECT_ATTEMPTS - 1, schedule: Schedule.spaced(RECONNECT_DELAY) }),
@@ -2872,9 +2874,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       producer: ProviderEventOrigin.ProviderEventProducer,
     ): Effect.Effect<void> =>
       stream.pipe(
-        Stream.runForEach((event) => lock.withPermit(handleEvent(event)).pipe(
-          Effect.provideService(OpenCode2EventProducerContext, producer.origin),
-        )),
+        Stream.runForEach((event) =>
+          lock
+            .withPermit(handleEvent(event))
+            .pipe(Effect.provideService(OpenCode2EventProducerContext, producer.origin)),
+        ),
         Effect.exit,
         Effect.flatMap(() =>
           Effect.gen(function* () {

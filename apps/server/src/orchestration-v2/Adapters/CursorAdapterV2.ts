@@ -843,10 +843,9 @@ interface CursorLiveAgent {
   readonly session: CursorAgentSdk.CursorAgentSdkSession;
 }
 
-class CursorEventProducerContext extends Context.Reference<ProviderEventOrigin.ProviderEventProducerOrigin | undefined>(
-  "t3/CursorAdapterV2/EventProducerContext",
-  { defaultValue: () => undefined },
-) {}
+class CursorEventProducerContext extends Context.Reference<
+  ProviderEventOrigin.ProviderEventProducerOrigin | undefined
+>("t3/CursorAdapterV2/EventProducerContext", { defaultValue: () => undefined }) {}
 
 export interface CursorAdapterV2Options {
   readonly instanceId: ProviderInstanceId;
@@ -894,10 +893,12 @@ export function makeCursorAdapterV2(
         const emitProviderEvent = (
           event: ProviderAdapter.ProviderAdapterV2Event,
           captured?: ProviderEventOrigin.ProviderEventProducerOrigin,
-        ) => Effect.gen(function* () {
-          const producer = captured ?? (yield* CursorEventProducerContext) ?? sessionEventProducer.origin;
-          yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
-        }).pipe(Effect.asVoid);
+        ) =>
+          Effect.gen(function* () {
+            const producer =
+              captured ?? (yield* CursorEventProducerContext) ?? sessionEventProducer.origin;
+            yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
+          }).pipe(Effect.asVoid);
 
         const resolveItemOrdinal = (context: ActiveCursorTurn, nativeItemId: string) =>
           Effect.sync(() => {
@@ -2281,25 +2282,31 @@ export function makeCursorAdapterV2(
               finalized: false,
             };
             yield* Ref.set(activeTurn, context);
-            yield* emitProviderEvent({
-              type: "provider_turn.updated",
-              driver: CursorAgentSdk.CURSOR_PROVIDER,
-              providerTurn: providerTurnPayload({
-                context,
-                status: "running",
-                completedAt: null,
-              }),
-            }, agent.eventProducer.origin);
-            yield* emitProviderEvent({
-              type: "provider_thread.updated",
-              driver: CursorAgentSdk.CURSOR_PROVIDER,
-              providerThread: {
-                ...turnInput.providerThread,
-                providerSessionId: session.id,
-                status: "active",
-                updatedAt: startedAt,
+            yield* emitProviderEvent(
+              {
+                type: "provider_turn.updated",
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                providerTurn: providerTurnPayload({
+                  context,
+                  status: "running",
+                  completedAt: null,
+                }),
               },
-            }, agent.eventProducer.origin);
+              agent.eventProducer.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "provider_thread.updated",
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                providerThread: {
+                  ...turnInput.providerThread,
+                  providerSessionId: session.id,
+                  status: "active",
+                  updatedAt: startedAt,
+                },
+              },
+              agent.eventProducer.origin,
+            );
             for (const update of pendingUpdates) {
               yield* handleInteractionUpdate(context, update).pipe(
                 Effect.provideService(CursorEventProducerContext, agent.eventProducer.origin),

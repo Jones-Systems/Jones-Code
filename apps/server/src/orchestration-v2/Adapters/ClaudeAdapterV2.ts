@@ -2734,10 +2734,9 @@ class ClaudeProducerContext extends Context.Reference<ClaudeLiveQueryContext | u
   { defaultValue: () => undefined },
 ) {}
 
-class ClaudeEventProducerContext extends Context.Reference<ProviderEventOrigin.ProviderEventProducer | undefined>(
-  "t3/ClaudeAdapterV2/EventProducerContext",
-  { defaultValue: () => undefined },
-) {}
+class ClaudeEventProducerContext extends Context.Reference<
+  ProviderEventOrigin.ProviderEventProducer | undefined
+>("t3/ClaudeAdapterV2/EventProducerContext", { defaultValue: () => undefined }) {}
 
 function claudeObservedRuntimeIdentity(model: string | undefined) {
   return {
@@ -3065,6 +3064,10 @@ export function makeClaudeAdapterV2(
         const steeredTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
         const queryContext = yield* Ref.make<ClaudeLiveQueryContext | null>(null);
         const messageSources = new WeakMap<SDKMessage, ClaudeLiveQueryContext>();
+        const acceptedWakeProducers = new WeakMap<
+          SDKMessage,
+          ProviderEventOrigin.ProviderEventProducer
+        >();
         const launchedGenerations = new Set<string>();
         const queryEventProducers = new Map<string, ProviderEventOrigin.ProviderEventProducer>();
         const attemptedAbandonments = new Set<string>();
@@ -3379,8 +3382,10 @@ export function makeClaudeAdapterV2(
           Effect.gen(function* () {
             const producer = yield* ClaudeProducerContext;
             if (producer !== undefined && !producer.acceptingEvidence) return;
-            const eventProducer = producer?.eventProducer ??
-              (yield* ClaudeEventProducerContext) ?? sessionEventProducer;
+            const eventProducer =
+              producer?.eventProducer ??
+              (yield* ClaudeEventProducerContext) ??
+              sessionEventProducer;
             if (!eventProducer.accepting) return;
             const binding =
               producer === undefined
@@ -3400,34 +3405,45 @@ export function makeClaudeAdapterV2(
                     },
                   };
             const currentTurn = yield* Ref.get(activeTurn);
-            const providerTurnId = event.type === "turn.terminal"
-              ? event.providerTurnId
-              : event.type === "provider_turn.updated"
-                ? event.providerTurn.id
-                : event.type === "turn_item.updated" ? event.turnItem.providerTurnId : undefined;
-            const eventRunId = event.type === "message.updated"
-              ? event.message.runId
-              : event.type === "node.updated" ? event.node.runId : undefined;
-            const ownsTurn = currentTurn !== null && (
-              (providerTurnId != null && currentTurn.providerTurnId === providerTurnId) ||
-              (eventRunId != null && currentTurn.input.runId === eventRunId)
-            );
-            const turnBinding = currentTurn === null || !ownsTurn || eventProducer.origin.runtimeGeneration === undefined
-              ? undefined
-              : ProviderAdapter.runtimeBinding(
-                  currentTurn.input.providerThread,
-                  eventProducer.origin.runtimeGeneration,
-                );
+            const providerTurnId =
+              event.type === "turn.terminal"
+                ? event.providerTurnId
+                : event.type === "provider_turn.updated"
+                  ? event.providerTurn.id
+                  : event.type === "turn_item.updated"
+                    ? event.turnItem.providerTurnId
+                    : undefined;
+            const eventRunId =
+              event.type === "message.updated"
+                ? event.message.runId
+                : event.type === "node.updated"
+                  ? event.node.runId
+                  : undefined;
+            const ownsTurn =
+              currentTurn !== null &&
+              ((providerTurnId != null && currentTurn.providerTurnId === providerTurnId) ||
+                (eventRunId != null && currentTurn.input.runId === eventRunId));
+            const turnBinding =
+              currentTurn === null ||
+              !ownsTurn ||
+              eventProducer.origin.runtimeGeneration === undefined
+                ? undefined
+                : ProviderAdapter.runtimeBinding(
+                    currentTurn.input.providerThread,
+                    eventProducer.origin.runtimeGeneration,
+                  );
             ProviderEventOrigin.stampProviderEvent(queuedEvent, {
               producer: eventProducer.origin,
-              ...(currentTurn === null || turnBinding === undefined ? {} : {
-                turn: {
-                  binding: turnBinding,
-                  runId: currentTurn.input.runId,
-                  attemptId: currentTurn.input.attemptId,
-                  providerTurnId: currentTurn.providerTurnId,
-                },
-              }),
+              ...(currentTurn === null || turnBinding === undefined
+                ? {}
+                : {
+                    turn: {
+                      binding: turnBinding,
+                      runId: currentTurn.input.runId,
+                      attemptId: currentTurn.input.attemptId,
+                      providerTurnId: currentTurn.providerTurnId,
+                    },
+                  }),
             });
             yield* Queue.offer(events, queuedEvent);
           }).pipe(Effect.asVoid);
@@ -5434,6 +5450,10 @@ export function makeClaudeAdapterV2(
             });
             return updated;
           });
+          // Committed wake evidence belongs to this session buffer, which
+          // survives query replacement. Replay preserves its logical owner
+          // without claiming a replacement query's physical generation.
+          acceptedWakeProducers.set(message, sessionEventProducer);
           // First idle opaque notification: consume wake eligibility so a
           // duplicate cannot re-buffer, and leave a short-lived replay
           // tombstone for continuation-drain classification.
@@ -5617,6 +5637,7 @@ export function makeClaudeAdapterV2(
         const handleSdkMessageFrameWithSource = Effect.fnUntraced(function* (input: {
           readonly query: ClaudeAgentSdkQuerySession;
           readonly message: SDKMessage;
+          readonly acceptedWakeReplay?: boolean;
           // A held subagent frame replayed after its owner registered. Its
           // turn-level assistant bookkeeping already ran when it arrived.
           readonly replayed?: boolean;
@@ -6564,15 +6585,31 @@ export function makeClaudeAdapterV2(
 
         const handleSdkMessageFrame = (
           frame: Parameters<typeof handleSdkMessageFrameWithSource>[0],
-        ) => Effect.gen(function* () {
-          const source = messageSources.get(frame.message);
-          if (source === undefined) return;
-          const current = yield* source.eventProducer.origin.revalidateCurrent.pipe(Effect.result);
-          if (current._tag === "Failure") return;
-          yield* handleSdkMessageFrameWithSource({ ...frame, query: source.query }).pipe(
-            Effect.provideService(ClaudeProducerContext, source),
-          );
-        });
+        ) =>
+          Effect.gen(function* () {
+            const acceptedProducer =
+              frame.acceptedWakeReplay === true
+                ? acceptedWakeProducers.get(frame.message)
+                : undefined;
+            if (acceptedProducer !== undefined) {
+              const current = yield* acceptedProducer.origin.revalidateCurrent.pipe(Effect.result);
+              if (current._tag === "Failure") return;
+              yield* handleSdkMessageFrameWithSource(frame).pipe(
+                Effect.provideService(ClaudeProducerContext, undefined),
+                Effect.provideService(ClaudeEventProducerContext, acceptedProducer),
+              );
+              return;
+            }
+            const source = messageSources.get(frame.message);
+            if (source === undefined) return;
+            const current = yield* source.eventProducer.origin.revalidateCurrent.pipe(
+              Effect.result,
+            );
+            if (current._tag === "Failure") return;
+            yield* handleSdkMessageFrameWithSource({ ...frame, query: source.query }).pipe(
+              Effect.provideService(ClaudeProducerContext, source),
+            );
+          });
 
         // Held subagent frames whose owner this lifecycle frame resolves. The
         // frame's (task_id, tool_use_id) pair is authoritative, so it also
@@ -6607,18 +6644,29 @@ export function makeClaudeAdapterV2(
         const handleRoutedSdkMessage = Effect.fnUntraced(function* (input: {
           readonly query: ClaudeAgentSdkQuerySession;
           readonly message: SDKMessage;
+          readonly acceptedWakeReplay?: boolean;
         }) {
           // Progress or a notification can be the first frame naming a known
           // subagent's tool_use_id; its held frames must precede the result.
           if (input.message.type !== "system" || input.message.subtype !== "task_started") {
             for (const message of yield* takeReleasableSubagentFrames(input.message)) {
-              yield* handleSdkMessageFrame({ query: input.query, message, replayed: true });
+              yield* handleSdkMessageFrame({
+                query: input.query,
+                message,
+                replayed: true,
+                ...(input.acceptedWakeReplay === true ? { acceptedWakeReplay: true } : {}),
+              });
             }
           }
           yield* handleSdkMessageFrame(input);
           // task_started registers its subagent while being handled.
           for (const message of yield* takeReleasableSubagentFrames(input.message)) {
-            yield* handleSdkMessageFrame({ query: input.query, message, replayed: true });
+            yield* handleSdkMessageFrame({
+              query: input.query,
+              message,
+              replayed: true,
+              ...(input.acceptedWakeReplay === true ? { acceptedWakeReplay: true } : {}),
+            });
           }
         });
 
@@ -6661,6 +6709,7 @@ export function makeClaudeAdapterV2(
         const handleSdkMessage = Effect.fnUntraced(function* (input: {
           readonly query: ClaudeAgentSdkQuerySession;
           readonly message: SDKMessage;
+          readonly acceptedWakeReplay?: boolean;
         }) {
           const message = input.message;
           const context = yield* Ref.get(activeTurn);
@@ -7241,9 +7290,11 @@ export function makeClaudeAdapterV2(
                   allowDangerouslySkipPermissions: queryPolicy.allowDangerouslySkipPermissions,
                 }),
             canUseTool: (toolName, toolInput, callbackOptions) =>
-              runPromise(canUseToolEffect(toolName, toolInput, callbackOptions).pipe(
-                Effect.provideService(ClaudeEventProducerContext, eventProducer),
-              )),
+              runPromise(
+                canUseToolEffect(toolName, toolInput, callbackOptions).pipe(
+                  Effect.provideService(ClaudeEventProducerContext, eventProducer),
+                ),
+              ),
             onUserDialog: (request, callbackOptions) =>
               onUserDialog(request, callbackOptions, eventProducer),
             supportedDialogKinds: ["resume_return"],
@@ -7629,12 +7680,20 @@ export function makeClaudeAdapterV2(
             );
             for (const entry of drained) {
               if (entry.type !== "result") {
-                yield* handleSdkMessage({ query: querySession.query, message: entry });
+                yield* handleSdkMessage({
+                  query: querySession.query,
+                  message: entry,
+                  acceptedWakeReplay: true,
+                });
               }
             }
             const lastResult = resultMessages.at(-1);
             if (lastResult !== undefined) {
-              yield* handleSdkMessage({ query: querySession.query, message: lastResult });
+              yield* handleSdkMessage({
+                query: querySession.query,
+                message: lastResult,
+                acceptedWakeReplay: true,
+              });
               return;
             }
             // A drained `init` means Claude began the wake turn, so its output

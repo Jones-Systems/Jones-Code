@@ -1428,10 +1428,9 @@ function acpSubagentHasPendingBackgroundWork(subagent: ActiveAcpSubagent): boole
   );
 }
 
-class AcpEventProducerContext extends Context.Reference<ProviderEventOrigin.ProviderEventProducerOrigin | undefined>(
-  "t3/AcpAdapterV2/EventProducerContext",
-  { defaultValue: () => undefined },
-) {}
+class AcpEventProducerContext extends Context.Reference<
+  ProviderEventOrigin.ProviderEventProducerOrigin | undefined
+>("t3/AcpAdapterV2/EventProducerContext", { defaultValue: () => undefined }) {}
 
 type AcpCarryoverSubagents = {
   readonly sessionId: string;
@@ -1682,9 +1681,11 @@ export function makeAcpAdapterV2(
         const producerAtGeneration = (generation: number) => {
           let producer = callbackProducers.get(generation);
           if (producer === undefined) {
-            producer = ProviderEventOrigin.makeProviderEventProducer(
-              { driver, instanceId: options.instanceId, providerSessionId: input.providerSessionId },
-            );
+            producer = ProviderEventOrigin.makeProviderEventProducer({
+              driver,
+              instanceId: options.instanceId,
+              providerSessionId: input.providerSessionId,
+            });
             callbackProducers.set(generation, producer);
           }
           return producer;
@@ -1701,9 +1702,13 @@ export function makeAcpAdapterV2(
           (generation) => generation + 1,
         );
         const advanceRuntimeCallbackGeneration = allocateRuntimeCallbackGeneration.pipe(
-          Effect.tap((generation) => Ref.getAndSet(runtimeCallbackGeneration, generation).pipe(
-            Effect.tap((previous) => Effect.sync(() => callbackProducers.get(previous)?.retire())),
-          )),
+          Effect.tap((generation) =>
+            Ref.getAndSet(runtimeCallbackGeneration, generation).pipe(
+              Effect.tap((previous) =>
+                Effect.sync(() => callbackProducers.get(previous)?.retire()),
+              ),
+            ),
+          ),
         );
         const runtimeCallbackPermit = yield* Semaphore.make(1);
         const runtimeTransitionPermit = yield* Semaphore.make(1);
@@ -1749,9 +1754,14 @@ export function makeAcpAdapterV2(
               if ((yield* Ref.get(runtimeCallbackGeneration)) !== generation) {
                 return Option.none<A>();
               }
-              return Option.some(yield* effect.pipe(
-                Effect.provideService(AcpEventProducerContext, producerAtGeneration(generation).origin),
-              ));
+              return Option.some(
+                yield* effect.pipe(
+                  Effect.provideService(
+                    AcpEventProducerContext,
+                    producerAtGeneration(generation).origin,
+                  ),
+                ),
+              );
             }),
           );
         const registerNativeResponseAcknowledgement = (

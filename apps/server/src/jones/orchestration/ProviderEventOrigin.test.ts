@@ -68,7 +68,8 @@ describe("provider event origin", () => {
     Effect.gen(function* () {
       const raw = event();
       assert.equal(
-        (yield* ProviderEventOrigin.revalidateProviderEventOrigin(raw, runtime).pipe(Effect.flip))._tag,
+        (yield* ProviderEventOrigin.revalidateProviderEventOrigin(raw, runtime).pipe(Effect.flip))
+          ._tag,
         "ProviderEventOriginStaleError",
       );
       yield* ProviderEventOrigin.revalidateProviderEventOrigin(raw, {
@@ -79,27 +80,35 @@ describe("provider event origin", () => {
     }),
   );
 
-  it.effect("allows captured terminals to drain but rejects a replaced producer with the same generation", () =>
-    Effect.gen(function* () {
-      const identity = { ...runtime, runtimeGeneration: "native-incarnation" };
-      const original = ProviderEventOrigin.makeProviderEventProducer(identity);
-      const terminal = ProviderEventOrigin.stampProviderEvent(event(), { producer: original.origin });
-      const effect = original.origin.revalidateCurrent;
-      original.drain();
-      assert.isFalse(original.accepting);
-      yield* ProviderEventOrigin.revalidateProviderEventOrigin(terminal, runtime);
-      original.retire();
-      original.drain();
-      const replacement = ProviderEventOrigin.makeProviderEventProducer(identity);
-      assert.notStrictEqual(original.origin.token, replacement.origin.token);
-      assert.strictEqual(original.origin.revalidateCurrent, effect);
-      assert.equal(
-        (yield* ProviderEventOrigin.revalidateProviderEventOrigin(terminal, runtime).pipe(Effect.flip))._tag,
-        "ProviderEventOriginStaleError",
-      );
-      const fresh = ProviderEventOrigin.stampProviderEvent(event(), { producer: replacement.origin });
-      yield* ProviderEventOrigin.revalidateProviderEventOrigin(fresh, runtime);
-    }),
+  it.effect(
+    "allows captured terminals to drain but rejects a replaced producer with the same generation",
+    () =>
+      Effect.gen(function* () {
+        const identity = { ...runtime, runtimeGeneration: "native-incarnation" };
+        const original = ProviderEventOrigin.makeProviderEventProducer(identity);
+        const terminal = ProviderEventOrigin.stampProviderEvent(event(), {
+          producer: original.origin,
+        });
+        const effect = original.origin.revalidateCurrent;
+        original.drain();
+        assert.isFalse(original.accepting);
+        yield* ProviderEventOrigin.revalidateProviderEventOrigin(terminal, runtime);
+        original.retire();
+        original.drain();
+        const replacement = ProviderEventOrigin.makeProviderEventProducer(identity);
+        assert.notStrictEqual(original.origin.token, replacement.origin.token);
+        assert.strictEqual(original.origin.revalidateCurrent, effect);
+        assert.equal(
+          (yield* ProviderEventOrigin.revalidateProviderEventOrigin(terminal, runtime).pipe(
+            Effect.flip,
+          ))._tag,
+          "ProviderEventOriginStaleError",
+        );
+        const fresh = ProviderEventOrigin.stampProviderEvent(event(), {
+          producer: replacement.origin,
+        });
+        yield* ProviderEventOrigin.revalidateProviderEventOrigin(fresh, runtime);
+      }),
   );
 
   it.effect("rejects captured identity mismatches and mismatched wire evidence", () =>
@@ -112,16 +121,23 @@ describe("provider event origin", () => {
         { ...runtime, providerSessionId: ProviderSessionId.make("other-session") },
       ]) {
         assert.equal(
-          (yield* ProviderEventOrigin.revalidateProviderEventOrigin(terminal, changed).pipe(Effect.flip))._tag,
+          (yield* ProviderEventOrigin.revalidateProviderEventOrigin(terminal, changed).pipe(
+            Effect.flip,
+          ))._tag,
           "ProviderEventOriginStaleError",
         );
       }
-      const wrongEvidence = ProviderEventOrigin.stampProviderEvent({
-        ...event(),
-        runtimeEvidence: { ...captured.turn.binding, runtimeGeneration: "replacement" },
-      }, captured);
+      const wrongEvidence = ProviderEventOrigin.stampProviderEvent(
+        {
+          ...event(),
+          runtimeEvidence: { ...captured.turn.binding, runtimeGeneration: "replacement" },
+        },
+        captured,
+      );
       assert.equal(
-        (yield* ProviderEventOrigin.revalidateProviderEventOrigin(wrongEvidence, runtime).pipe(Effect.flip))._tag,
+        (yield* ProviderEventOrigin.revalidateProviderEventOrigin(wrongEvidence, runtime).pipe(
+          Effect.flip,
+        ))._tag,
         "ProviderEventOriginStaleError",
       );
     }),
@@ -275,7 +291,9 @@ describe("provider event origin", () => {
           ...captured,
           producer: {
             ...captured.producer,
-            revalidateCurrent: Effect.fail(new ProviderEventOrigin.ProviderEventOriginStaleError({})),
+            revalidateCurrent: Effect.fail(
+              new ProviderEventOrigin.ProviderEventOriginStaleError({}),
+            ),
           },
         }),
       ProviderEventOrigin.ProviderEventOriginConflictError,
@@ -355,72 +373,76 @@ describe("provider event origin", () => {
     }),
   );
 
-  it.effect("rejects an old event queued across two boundaries after actual source supersession", () =>
-    Effect.gen(function* () {
-      const adapterQueue = yield* Queue.unbounded<ProviderAdapterV2Event>();
-      const managerQueue = yield* Queue.unbounded<ProviderAdapterV2Event>();
-      const old = origin();
-      let currentSource: object = old.producer.token;
-      old.producer.revalidateCurrent = Effect.suspend(() =>
-        currentSource === old.producer.token
-          ? Effect.void
-          : Effect.fail(new ProviderEventOrigin.ProviderEventOriginStaleError({})),
-      );
-      const terminal = ProviderEventOrigin.stampProviderEvent(event(), old);
-      yield* Queue.offer(adapterQueue, terminal);
-      const managerReceived = yield* Queue.take(adapterQueue);
-      yield* Queue.offer(managerQueue, managerReceived);
-      currentSource = {};
-      const consumerReceived = yield* Queue.take(managerQueue);
-      const captured = ProviderEventOrigin.readProviderEventOrigin(consumerReceived)!;
-      assert.strictEqual(consumerReceived, terminal);
-      assert.strictEqual(captured.producer.token, old.producer.token);
-      assert.isTrue(Exit.isFailure(yield* captured.producer.revalidateCurrent.pipe(Effect.exit)));
-      const fresh = ProviderEventOrigin.stampProviderEvent(event(), {
-        producer: {
-          ...old.producer,
-          token: currentSource,
-          runtimeGeneration: "fresh-incarnation",
-          revalidateCurrent: Effect.void,
-        },
-      });
-      assert.isTrue(
-        Exit.isSuccess(
-          yield* ProviderEventOrigin.readProviderEventOrigin(fresh)!.producer.revalidateCurrent.pipe(
-            Effect.exit,
+  it.effect(
+    "rejects an old event queued across two boundaries after actual source supersession",
+    () =>
+      Effect.gen(function* () {
+        const adapterQueue = yield* Queue.unbounded<ProviderAdapterV2Event>();
+        const managerQueue = yield* Queue.unbounded<ProviderAdapterV2Event>();
+        const old = origin();
+        let currentSource: object = old.producer.token;
+        old.producer.revalidateCurrent = Effect.suspend(() =>
+          currentSource === old.producer.token
+            ? Effect.void
+            : Effect.fail(new ProviderEventOrigin.ProviderEventOriginStaleError({})),
+        );
+        const terminal = ProviderEventOrigin.stampProviderEvent(event(), old);
+        yield* Queue.offer(adapterQueue, terminal);
+        const managerReceived = yield* Queue.take(adapterQueue);
+        yield* Queue.offer(managerQueue, managerReceived);
+        currentSource = {};
+        const consumerReceived = yield* Queue.take(managerQueue);
+        const captured = ProviderEventOrigin.readProviderEventOrigin(consumerReceived)!;
+        assert.strictEqual(consumerReceived, terminal);
+        assert.strictEqual(captured.producer.token, old.producer.token);
+        assert.isTrue(Exit.isFailure(yield* captured.producer.revalidateCurrent.pipe(Effect.exit)));
+        const fresh = ProviderEventOrigin.stampProviderEvent(event(), {
+          producer: {
+            ...old.producer,
+            token: currentSource,
+            runtimeGeneration: "fresh-incarnation",
+            revalidateCurrent: Effect.void,
+          },
+        });
+        assert.isTrue(
+          Exit.isSuccess(
+            yield* ProviderEventOrigin.readProviderEventOrigin(
+              fresh,
+            )!.producer.revalidateCurrent.pipe(Effect.exit),
           ),
-        ),
-      );
-    }),
+        );
+      }),
   );
 
-  it.effect("allows terminal draining after normal producer exit while its captured source remains current", () =>
-    Effect.gen(function* () {
-      const captured = origin();
-      const actualSource = captured.producer.token;
-      let currentSource: object = actualSource;
-      captured.producer.revalidateCurrent = Effect.suspend(() =>
-        currentSource === actualSource
-          ? Effect.void
-          : Effect.fail(new ProviderEventOrigin.ProviderEventOriginStaleError({})),
-      );
-      const terminal = ProviderEventOrigin.stampProviderEvent(event(), captured);
-      actualSource.closed = true;
-      assert.isTrue(
-        Exit.isSuccess(
-          yield* ProviderEventOrigin.readProviderEventOrigin(terminal)!.producer.revalidateCurrent.pipe(
-            Effect.exit,
+  it.effect(
+    "allows terminal draining after normal producer exit while its captured source remains current",
+    () =>
+      Effect.gen(function* () {
+        const captured = origin();
+        const actualSource = captured.producer.token;
+        let currentSource: object = actualSource;
+        captured.producer.revalidateCurrent = Effect.suspend(() =>
+          currentSource === actualSource
+            ? Effect.void
+            : Effect.fail(new ProviderEventOrigin.ProviderEventOriginStaleError({})),
+        );
+        const terminal = ProviderEventOrigin.stampProviderEvent(event(), captured);
+        actualSource.closed = true;
+        assert.isTrue(
+          Exit.isSuccess(
+            yield* ProviderEventOrigin.readProviderEventOrigin(
+              terminal,
+            )!.producer.revalidateCurrent.pipe(Effect.exit),
           ),
-        ),
-      );
-      currentSource = {};
-      assert.isTrue(
-        Exit.isFailure(
-          yield* ProviderEventOrigin.readProviderEventOrigin(terminal)!.producer.revalidateCurrent.pipe(
-            Effect.exit,
+        );
+        currentSource = {};
+        assert.isTrue(
+          Exit.isFailure(
+            yield* ProviderEventOrigin.readProviderEventOrigin(
+              terminal,
+            )!.producer.revalidateCurrent.pipe(Effect.exit),
           ),
-        ),
-      );
-    }),
+        );
+      }),
   );
 });
