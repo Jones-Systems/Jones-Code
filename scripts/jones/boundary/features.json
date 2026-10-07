@@ -191,7 +191,7 @@
         "apps/server/src/jones/importedHistory/ImportedApplicationAttachmentInventory.test.ts",
         "apps/server/src/jones/importedHistory/ApplicationBirth.test.ts"
       ],
-      "scope": "Application birth readback and immutable attachment inventory validation only. Reviewed continuation admission, dispatch, migration producers and complete retention traversal remain unavailable."
+      "scope": "Application birth readback and immutable attachment inventory validation. Reviewed continuation acceptance and queued preparation are declared separately by imported-history-admission; complete retention traversal remains unavailable."
     },
     {
       "id": "provider-background-activity",
@@ -253,6 +253,17 @@
         "apps/server/src/terminal/Manager.test.ts"
       ],
       "scope": "Exact Git/lstat workspace proof and retained native setup terminal with existing101 start/claim ownership. Missing qualified physical/grant/account owners deny before allocation; unknown original effects never replay."
+    },
+    {
+      "id": "imported-history-admission",
+      "tests": [
+        "apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts",
+        "apps/server/src/jones/importedHistory/http.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts"
+      ],
+      "scope": "Ordinary authenticated reviewed message and queued-run choice acceptance, atomic receipt/event/outbox/outcome reservation, and exact preparation observation. Native enrolled execution remains unavailable."
     }
   ]
 }
