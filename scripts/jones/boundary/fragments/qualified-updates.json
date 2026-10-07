@@ -2,29 +2,121 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "qualified-updates",
   "jonesOwnedPaths": [
-    "packages/shared/src/jones/jonesActions.ts",
-    "packages/shared/src/jones/jonesActions.test.ts",
     "apps/server/src/jones/cloud/qualifiedArchive.test.ts",
     "apps/server/src/jones/cloud/qualifiedArchive.ts",
     "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts",
     "apps/server/src/jones/cloud/qualifiedDarwinRuntime.ts",
+    "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
     "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts",
     "apps/server/src/jones/cloud/qualifiedQuiescence.ts",
     "apps/server/src/jones/cloud/qualifiedRuntime.test.ts",
     "apps/server/src/jones/cloud/qualifiedRuntime.ts",
+    "apps/server/src/jones/cloud/qualifiedStartup.test.ts",
+    "apps/server/src/jones/cloud/qualifiedStartup.ts",
     "apps/server/src/jones/updates/JonesUpdater.test.ts",
     "apps/server/src/jones/updates/JonesUpdater.ts",
+    "apps/server/src/jones/updates/http.test.ts",
+    "apps/server/src/jones/updates/http.ts",
     "apps/server/src/jones/updates/nativePreparation.ts",
     "apps/server/src/jones/updates/qualification.test.ts",
     "apps/server/src/jones/updates/qualification.ts",
+    "apps/server/src/jones/updates/service.ts",
     "apps/server/src/jones/updates/stagedSelection.test.ts",
     "apps/server/src/jones/updates/stagedSelection.ts",
     "apps/server/src/jones/updates/trialGate.test.ts",
-    "apps/server/src/jones/updates/trialGate.ts"
+    "apps/server/src/jones/updates/trialGate.ts",
+    "apps/server/src/jones/updates/trialStartup.test.ts",
+    "apps/server/src/jones/updates/trialStartup.ts",
+    "packages/shared/src/jones/jonesActions.test.ts",
+    "packages/shared/src/jones/jonesActions.ts"
   ],
-  "hookPaths": ["packages/contracts/package.json", "packages/shared/package.json"],
+  "hookPaths": [
+    "apps/server/src/cli/service.ts",
+    "apps/server/src/cli/servicePreflight.ts",
+    "apps/server/src/cli/update.test.ts",
+    "apps/server/src/cli/update.ts",
+    "apps/server/src/cloud/bootService.test.ts",
+    "apps/server/src/cloud/bootService.ts",
+    "apps/server/src/cloud/pinnedRuntime.ts",
+    "apps/server/src/cloud/selfUpdate.test.ts",
+    "apps/server/src/cloud/selfUpdate.ts",
+    "apps/server/src/cloud/servicePreflight.test.ts",
+    "apps/server/src/cloud/servicePreflight.ts",
+    "apps/server/src/serverRuntimeStartup.test.ts",
+    "apps/server/src/serverRuntimeStartup.ts",
+    "packages/contracts/package.json",
+    "packages/shared/package.json"
+  ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/cli/servicePreflight.ts",
+      "to": "apps/server/src/jones/updates/trialStartup.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/bootService.test.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/bootService.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/selfUpdate.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedArchive.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/selfUpdate.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedDarwinRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/selfUpdate.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/selfUpdate.ts",
+      "to": "packages/shared/src/jones/jonesActions.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/serviceLauncherClient.test.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedStartup.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/serviceLauncherClient.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedStartup.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/serviceProtocol.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/serviceProtocol.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedStartup.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/updates/http.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/updates/service.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.ts",
+      "to": "apps/server/src/jones/updates/trialStartup.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedQuiescence.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedStartup.ts"
+    },
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/jonesUpdates.ts"

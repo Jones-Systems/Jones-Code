@@ -1,5 +1,7 @@
 import * as DeviceDirectGrants from "./jones/device/DeviceDirectGrants.ts";
 import * as JonesHttp from "./jones/http/registration.ts";
+import * as JonesUpdates from "./jones/updates/service.ts";
+import { jonesUpdatesHttpApiLayer } from "./jones/updates/http.ts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
 import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
@@ -231,6 +233,15 @@ const HostPowerMonitorLayerLive = HostPowerMonitor.layer.pipe(
 // Reuses DesktopTelemetryReceiverLayerLive: a fresh receiver layer here
 // would open a second reader on the desktop telemetry fd.
 const DesktopAppUpdateLayerLive = DesktopAppUpdate.layer.pipe(
+  Layer.provide(DesktopTelemetryReceiverLayerLive),
+);
+
+const ServerSelfUpdateLayerLive = ServerSelfUpdate.layer.pipe(
+  Layer.provide(DesktopAppUpdateLayerLive),
+);
+
+const JonesUpdatesLayerLive = JonesUpdates.layer.pipe(
+  Layer.provide(ServerSelfUpdateLayerLive),
   Layer.provide(DesktopTelemetryReceiverLayerLive),
 );
 
@@ -659,6 +670,7 @@ const makeRoutesLayer = Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
       Layer.provide(authHttpApiLayer),
       Layer.provide(connectHttpApiLayer),
+      Layer.provide(jonesUpdatesHttpApiLayer),
       Layer.provide(orchestrationHttpApiLayer),
       Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(queueCompatibilityHttpApiLayer.pipe(Layer.provide(QueueCompatibility.layer))),
@@ -693,7 +705,8 @@ const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(PullRequestServiceLive),
   Layer.provide(workstreamGatewayLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer))),
   Layer.provide(PreviewAutomationBroker.layer),
-  Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
+  Layer.provide(ServerSelfUpdateLayerLive),
+  Layer.provide(JonesUpdatesLayerLive),
   Layer.provide(commandReadinessLayer),
   Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),
   Layer.provide(workstreamResponseHeadersLayer),

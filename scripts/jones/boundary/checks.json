@@ -255,10 +255,24 @@
         "apps/server/src/jones/updates/JonesUpdater.test.ts",
         "apps/server/src/jones/updates/qualification.test.ts",
         "apps/server/src/jones/updates/stagedSelection.test.ts",
-        "apps/server/src/jones/updates/trialGate.test.ts"
+        "apps/server/src/jones/updates/trialGate.test.ts",
+        "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
+        "apps/server/src/jones/cloud/qualifiedStartup.test.ts",
+        "apps/server/src/jones/updates/http.test.ts",
+        "apps/server/src/jones/updates/trialStartup.test.ts",
+        "apps/server/src/cloud/bootService.test.ts",
+        "apps/server/src/cloud/pinnedRuntime.test.ts",
+        "apps/server/src/cloud/selfUpdate.test.ts",
+        "apps/server/src/cloud/serviceLauncherClient.test.ts",
+        "apps/server/src/cloud/servicePreflight.test.ts",
+        "apps/server/src/serviceLauncher.test.ts",
+        "apps/server/src/serverRuntimeStartup.test.ts",
+        "apps/server/src/cli/service.test.ts",
+        "apps/server/src/cli/update.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ],
       "commands": [
-        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts"
+        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/qualifiedStartup.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/trialStartup.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/servicePreflight.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ]
     },
     {
