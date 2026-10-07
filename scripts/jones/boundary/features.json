@@ -190,6 +190,14 @@
       "scope": "Adapted rebuild #80 direct device admission, generation-bound grants, server gateway lifecycle, desktop media tunnel IPC, shared media routing and proxy fallback. Existing device schemas, SSH host lifecycle, stream view and connection checks retain exact shared seams."
     },
     {
+      "id": "imported-history-custody",
+      "tests": [
+        "apps/server/src/jones/importedHistory/ImportedApplicationAttachmentInventory.test.ts",
+        "apps/server/src/jones/importedHistory/ApplicationBirth.test.ts"
+      ],
+      "scope": "Application birth readback and immutable attachment inventory validation only. Reviewed continuation admission, dispatch, migration producers and complete retention traversal remain unavailable."
+    },
+    {
       "id": "provider-background-activity",
       "tests": [
         "apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.test.ts",
