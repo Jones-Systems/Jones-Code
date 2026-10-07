@@ -64,3 +64,36 @@ it.effect("reports other missing capabilities with the neutral error", () => {
     expect(scope).toBe(invocation);
   });
 });
+
+it.effect("requires an explicit focused decision snapshot grant", () => {
+  const invocation: McpInvocationContext.McpInvocationScope = {
+    environmentId: EnvironmentId.make("environment-snapshot"),
+    threadId: ThreadId.make("thread-snapshot"),
+    providerSessionId: "provider-session-snapshot",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    capabilities: new Set(["preview", "orchestration", "worktree", "pull-requests"]),
+    issuedAt: 1,
+  };
+  return Effect.gen(function* () {
+    const error = yield* McpInvocationContext.requireMcpCapability("decision-snapshot").pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+      Effect.flip,
+    );
+    expect(error).toBeInstanceOf(McpCapabilityUnavailableError);
+    expect(error).toMatchObject({
+      capability: "decision-snapshot",
+      environmentId: invocation.environmentId,
+      threadId: invocation.threadId,
+      providerSessionId: invocation.providerSessionId,
+      providerInstanceId: invocation.providerInstanceId,
+    });
+    const granted: McpInvocationContext.McpInvocationScope = {
+      ...invocation,
+      capabilities: new Set(["decision-snapshot"]),
+    };
+    const scope = yield* McpInvocationContext.requireMcpCapability("decision-snapshot").pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, granted),
+    );
+    expect(scope).toBe(granted);
+  });
+});
