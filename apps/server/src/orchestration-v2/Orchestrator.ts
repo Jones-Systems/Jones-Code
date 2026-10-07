@@ -1,3 +1,7 @@
+import * as NativeStage from "../jones/nativeCreation/NativeCreationStageDispatch.ts";
+import * as NativeRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
+import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
+import { OrchestrationV2Command as NativeWireCommand } from "@t3tools/contracts";
 import {
   EnvironmentAuthenticatedPrincipal,
   ImportedHistoryStart,
@@ -359,6 +363,10 @@ export interface OrchestratorV2Shape {
   ) => Effect.Effect<boolean, OrchestratorProjectionError>;
   readonly dispatch: (
     command: RecordedServerCommand,
+  ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
+  readonly dispatchNativeCreationStage?: (
+    command: NativeWireCommand,
+    lineage: NativeStage.NativeCreationStageDispatch,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
   readonly dispatchLegacyFailureDelete?: (
     command: LegacyFailureDeleteCommand,
@@ -922,6 +930,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor;
   const terminalOwner = yield* Effect.serviceOption(TerminalManager);
+  const nativeRepository = yield* Effect.serviceOption(NativeRepository.NativeCreationRepository);
+  const nativeAuthority = yield* Effect.serviceOption(NativeAuthority.NativeCreationAuthority);
+  const validateNative = (
+    lineage: NativeStage.NativeCreationStageDispatch,
+    command: NativeWireCommand,
+  ) =>
+    Option.isSome(nativeRepository) && Option.isSome(nativeAuthority)
+      ? NativeStage.validateNativeCreationStage(lineage, command).pipe(
+          Effect.provideService(NativeRepository.NativeCreationRepository, nativeRepository.value),
+          Effect.provideService(NativeAuthority.NativeCreationAuthority, nativeAuthority.value),
+        )
+      : Effect.fail(
+          new NativeAuthority.NativeCreationAuthorityError({
+            code: "unsupported_authority",
+            message: "Native stage owners are unavailable",
+          }),
+        );
 
   const mapDispatchError =
     (command: OrchestrationV2ServerCommand) =>
@@ -11008,7 +11033,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
     command: OrchestrationV2ServerCommand,
+    nativeLineage?: NativeStage.NativeCreationStageDispatch,
   ): Effect.fn.Return<OrchestratorV2DispatchResult, OrchestratorV2Error> {
+    const nativeCommand =
+      nativeLineage === undefined
+        ? undefined
+        : yield* Schema.decodeUnknownEffect(NativeWireCommand)(command).pipe(
+            mapDispatchError(command),
+          );
+    const nativeAcceptance =
+      nativeLineage !== undefined && nativeCommand !== undefined
+        ? yield* validateNative(nativeLineage, nativeCommand).pipe(mapDispatchError(command))
+        : undefined;
+    if (nativeLineage === undefined && Option.isSome(nativeRepository))
+      yield* NativeStage.refusePublicNativeReservation(command.commandId).pipe(
+        Effect.provideService(NativeRepository.NativeCreationRepository, nativeRepository.value),
+        mapDispatchError(command),
+      );
     yield* Effect.annotateCurrentSpan({
       "orchestration_v2.command_id": command.commandId,
       "orchestration_v2.command_type": command.type,
@@ -11189,6 +11230,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             cause: "Legacy bootstrap receipt belongs to another command or immutable payload.",
           });
       }
+      if (
+        nativeAcceptance !== undefined &&
+        Option.isSome(nativeRepository) &&
+        nativeRepository.value.readExecutionReference
+      )
+        yield* nativeRepository.value
+          .readExecutionReference({
+            version: 2,
+            claimId: nativeAcceptance.claimId,
+            stageCommandId: nativeAcceptance.command.commandId,
+            effectId: `native-stage:${command.commandId}`,
+            stage: "native_command",
+          })
+          .pipe(mapDispatchError(command));
       if (command.type === "queue.resume") {
         yield* mapDispatchError(command)(startNextQueuedRun(command.threadId));
       }
@@ -11325,6 +11380,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+    if (
+      nativeAcceptance !== undefined &&
+      (plan.events.length === 0 ||
+        plan.effects.some((effect) => effect.request.type !== "provider-turn.start"))
+    )
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Native stage requires a recorded event and qualified effect envelope",
+      });
+    if (nativeLineage !== undefined && nativeCommand !== undefined)
+      yield* validateNative(nativeLineage, nativeCommand).pipe(mapDispatchError(command));
     if (plan.events.length === 0) {
       // A settle that ended nothing still records its receipt: a replayed Stop
       // effect then finds it instead of settling work that appeared since.
@@ -11360,7 +11427,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         acceptedAt,
         events: plan.events,
-        effects: plan.effects,
+        effects:
+          nativeAcceptance === undefined
+            ? plan.effects
+            : plan.effects.map((effect) => ({
+                ...effect,
+                nativeCreationExecutionReference: {
+                  version: 2 as const,
+                  claimId: nativeAcceptance.claimId,
+                  stageCommandId: nativeAcceptance.command.commandId,
+                  effectId: effect.id,
+                  stage: "native_command" as const,
+                },
+              })),
+        ...(nativeAcceptance === undefined ? {} : { nativeCreation: nativeAcceptance }),
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
@@ -12227,6 +12307,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     recoverDelegatedTask,
     delegatedTaskResultPending,
     dispatch: dispatchWithReceipt,
+    dispatchNativeCreationStage: (command, lineage) =>
+      threadDispatch.withLock(
+        commandThreadId(command),
+        dispatchWithReceiptEffect(command, lineage),
+      ),
     dispatchLegacyGuardRejectionDelete: dispatchWithReceipt,
     dispatchLegacyFailureDelete: dispatchWithReceipt,
     getTimelinePage: (threadId, options) =>
