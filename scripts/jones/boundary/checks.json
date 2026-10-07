@@ -245,6 +245,48 @@
       ]
     },
     {
+      "id": "jones-qualified-updates",
+      "tests": [
+        "packages/shared/src/jones/jonesActions.test.ts",
+        "apps/server/src/jones/cloud/qualifiedArchive.test.ts",
+        "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts",
+        "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts",
+        "apps/server/src/jones/cloud/qualifiedRuntime.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts",
+        "apps/server/src/jones/updates/qualification.test.ts",
+        "apps/server/src/jones/updates/stagedSelection.test.ts",
+        "apps/server/src/jones/updates/trialGate.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts"
+      ]
+    },
+    {
+      "id": "jones-performance-custody",
+      "tests": [
+        "scripts/jones/performance/guard.node-test.mjs",
+        "scripts/jones/performance/lifecycle.node-test.mjs",
+        "scripts/jones/performance/runtime-binding.node-test.mjs",
+        "scripts/jones/performance/sources.node-test.mjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/performance/guard.node-test.mjs scripts/jones/performance/lifecycle.node-test.mjs scripts/jones/performance/runtime-binding.node-test.mjs scripts/jones/performance/sources.node-test.mjs"
+      ]
+    },
+    {
+      "id": "jones-performance-fixtures",
+      "tests": [
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "scripts/jones/performance/fixtures.node-test.mjs",
+        "scripts/jones/performance/fixtures-historical-worker.node-test.mjs",
+        "scripts/jones/performance/sources.node-test.mjs"
+      ],
+      "commands": [
+        "vp test run apps/server/scripts/jones/currentFixtures.test.ts",
+        "node --test --test-concurrency=1 scripts/jones/performance/fixtures.node-test.mjs scripts/jones/performance/fixtures-historical-worker.node-test.mjs scripts/jones/performance/sources.node-test.mjs"
+      ]
+    },
+    {
       "id": "jones-persistent-private-services",
       "tests": [
         "apps/server/src/cloud/bootService.test.ts",

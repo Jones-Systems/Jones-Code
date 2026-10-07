@@ -26,6 +26,10 @@
     "./jones/organizationMetadata": {
       "types": "./src/jones/organizationMetadata.ts",
       "import": "./src/jones/organizationMetadata.ts"
+    },
+    "./jones/jonesUpdates": {
+      "types": "./src/jones/jonesUpdates.ts",
+      "import": "./src/jones/jonesUpdates.ts"
     }
   },
   "scripts": {
