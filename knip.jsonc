@@ -20,6 +20,8 @@
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
+        "jones/performance/*.node-test.mjs",
+        "jones/performance/*.d.mts",
       ],
     },
     "apps/server": {

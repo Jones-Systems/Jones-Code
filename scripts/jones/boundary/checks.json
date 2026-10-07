@@ -243,6 +243,18 @@
       "commands": [
         "vp test run apps/server/src/diagnostics/ProcessDiagnostics.test.ts apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts apps/server/src/provider/Drivers/CodexDriver.test.ts apps/server/src/provider/Layers/ProviderInstanceRegistryLive.test.ts apps/server/src/provider/Layers/ProviderRegistry.test.ts apps/server/src/resourceTelemetry/Model.test.ts apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts"
       ]
+    },
+    {
+      "id": "jones-performance-custody",
+      "tests": [
+        "scripts/jones/performance/guard.node-test.mjs",
+        "scripts/jones/performance/lifecycle.node-test.mjs",
+        "scripts/jones/performance/runtime-binding.node-test.mjs",
+        "scripts/jones/performance/sources.node-test.mjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/performance/guard.node-test.mjs scripts/jones/performance/lifecycle.node-test.mjs scripts/jones/performance/runtime-binding.node-test.mjs scripts/jones/performance/sources.node-test.mjs"
+      ]
     }
   ]
 }
