@@ -89,8 +89,16 @@
     "packages/contracts/test-fixtures/queue-dispatch-capability.json",
     "packages/contracts/test-fixtures/thread-corpus-capability.json",
     "apps/server/src/jones/workstreams/",
-    "packages/contracts/contracts/workstreams-t3-provider/v1/",
-    "packages/contracts/contracts/workstreams-registration-context/v1/"
+    "packages/contracts/contracts/workstreams-registration-context/v1/README.md",
+    "packages/contracts/contracts/workstreams-registration-context/v1/fixtures/conformance.json",
+    "packages/contracts/contracts/workstreams-registration-context/v1/fixtures/negative-cases.json",
+    "packages/contracts/contracts/workstreams-registration-context/v1/manifest.json",
+    "packages/contracts/contracts/workstreams-registration-context/v1/schemas/registration-context.schema.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v1/README.md",
+    "packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/conformance.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/negative-cases.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v1/manifest.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",

@@ -379,15 +379,19 @@ async function performRequest(input: {
   }
   if (
     registration &&
-    (response.headers.get("x-control-contract-version") !== WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL ||
-      response.headers.get("x-control-contract-manifest") !== WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256)
+    (response.headers.get("x-control-contract-version") !==
+      WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL ||
+      response.headers.get("x-control-contract-manifest") !==
+        WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256)
   ) {
     await response.body?.cancel();
     throw new BoundedTransportFailure("http_error");
   }
   return readBoundedResponse(
     response,
-    registration ? WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES : WORKSTREAM_MAX_RESPONSE_BYTES,
+    registration
+      ? WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES
+      : WORKSTREAM_MAX_RESPONSE_BYTES,
   );
 }
 

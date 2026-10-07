@@ -328,7 +328,11 @@ export const makeJonesHttpGroups = ({
       HttpApiEndpoint.get("registrationContext", "/api/workstreams/registration-context", {
         headers: OptionalBearerHeaders,
         success: WorkstreamsRegistrationContextResponse,
-        error: [EnvironmentScopeRequiredError, EnvironmentInternalError, EnvironmentHttpBadRequestError],
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
       }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
 
@@ -337,7 +341,11 @@ export const makeJonesHttpGroups = ({
       HttpApiEndpoint.get("context", "/api/workstreams/native/v1/context", {
         headers: OptionalBearerHeaders,
         success: WorkstreamsNativeContextResponse,
-        error: [EnvironmentScopeRequiredError, EnvironmentInternalError, EnvironmentHttpBadRequestError],
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
       }).middleware(EnvironmentAuthenticatedAuth),
     )
     .add(
@@ -345,7 +353,11 @@ export const makeJonesHttpGroups = ({
         headers: OptionalBearerHeaders,
         payload: WorkstreamsNativeAttestationRequest,
         success: WorkstreamsNativeAttestationResponse,
-        error: [EnvironmentScopeRequiredError, EnvironmentInternalError, EnvironmentHttpBadRequestError],
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
       }).middleware(EnvironmentAuthenticatedAuth),
     )
     .add(
@@ -353,7 +365,11 @@ export const makeJonesHttpGroups = ({
         headers: OptionalBearerHeaders,
         payload: WorkstreamsNativeSettlementRequest,
         success: WorkstreamsNativeSettlementResponse,
-        error: [EnvironmentScopeRequiredError, EnvironmentInternalError, EnvironmentHttpBadRequestError],
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
       }).middleware(EnvironmentAuthenticatedAuth),
     )
     .add(
@@ -361,7 +377,11 @@ export const makeJonesHttpGroups = ({
         headers: OptionalBearerHeaders,
         payload: WorkstreamsNativeSettlementRequest,
         success: WorkstreamsNativeSettlementResponse,
-        error: [EnvironmentScopeRequiredError, EnvironmentInternalError, EnvironmentHttpBadRequestError],
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
       }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
 

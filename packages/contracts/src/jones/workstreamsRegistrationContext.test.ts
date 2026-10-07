@@ -1,12 +1,23 @@
-// @effect-diagnostics nodeBuiltinImport:off - Checks immutable fixture bytes synchronously outside an Effect runtime.
+/// <reference types="vite-plus/client" />
+// @effect-diagnostics nodeBuiltinImport:off - Hashes immutable fixture bytes outside an Effect runtime.
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import * as NodeCrypto from "node:crypto";
-import * as NodeFS from "node:fs";
 import manifest from "../../contracts/workstreams-registration-context/v1/manifest.json" with { type: "json" };
 import conformanceCorpus from "../../contracts/workstreams-registration-context/v1/fixtures/conformance.json" with { type: "json" };
 import negativeCorpus from "../../contracts/workstreams-registration-context/v1/fixtures/negative-cases.json" with { type: "json" };
+import readmeRaw from "../../contracts/workstreams-registration-context/v1/README.md?raw";
+import conformanceRaw from "../../contracts/workstreams-registration-context/v1/fixtures/conformance.json?raw";
+import negativesRaw from "../../contracts/workstreams-registration-context/v1/fixtures/negative-cases.json?raw";
+import schemaRaw from "../../contracts/workstreams-registration-context/v1/schemas/registration-context.schema.json?raw";
 import * as Context from "./workstreamsRegistrationContext.ts";
+
+const rawFiles: Readonly<Record<string, string>> = {
+  "README.md": readmeRaw,
+  "fixtures/conformance.json": conformanceRaw,
+  "fixtures/negative-cases.json": negativesRaw,
+  "schemas/registration-context.schema.json": schemaRaw,
+};
 
 interface Fixture {
   readonly name: string;
@@ -33,9 +44,8 @@ function decode(fixture: Fixture): unknown {
 
 describe("workstreams-registration-context/1.0.0 native contract", () => {
   it.each(manifest.files)("preserves manifest-pinned bytes for $path", ({ path, sha256 }) => {
-    const bytes = NodeFS.readFileSync(
-      new URL(`../../contracts/workstreams-registration-context/v1/${path}`, import.meta.url),
-    );
+    const bytes = rawFiles[path];
+    if (bytes === undefined) throw new Error(`Uncovered manifest file: ${path}`);
     expect(NodeCrypto.createHash("sha256").update(bytes).digest("hex")).toBe(sha256);
   });
 

@@ -38,29 +38,30 @@ export class NativeWorkstreamsRuntime extends Context.Service<
 
 export const makeNativeWorkstreamsRuntimeLayer = (
   evidence: NativeProviderEvidence = unavailableNativeProviderEvidence,
-) => Layer.effect(
-  NativeWorkstreamsRuntime,
-  Effect.gen(function* () {
-    const authority = yield* NativeStoreAuthority;
-    const engine = yield* Orchestrator.OrchestratorV2;
-    const attempts = yield* NativeProviderAttempts;
-    const enrollments = yield* NativeProviderEnrollment;
-    return NativeWorkstreamsRuntime.of({
-      enrollments,
-      provider: makeWorkstreamsNativeProvider({
-        authority,
-        threadExists: (threadId) =>
-          engine.getThreadShell(threadId).pipe(Effect.map((shell) => shell !== null)),
-        engine,
-        evidence,
-        attempts,
-      }),
-    });
-  }),
-).pipe(
-  Layer.provide(NativeProviderAttemptsLive),
-  Layer.provide(NativeProviderEnrollmentLive.pipe(Layer.provide(NativeEnrollmentsLive))),
-);
+) =>
+  Layer.effect(
+    NativeWorkstreamsRuntime,
+    Effect.gen(function* () {
+      const authority = yield* NativeStoreAuthority;
+      const engine = yield* Orchestrator.OrchestratorV2;
+      const attempts = yield* NativeProviderAttempts;
+      const enrollments = yield* NativeProviderEnrollment;
+      return NativeWorkstreamsRuntime.of({
+        enrollments,
+        provider: makeWorkstreamsNativeProvider({
+          authority,
+          threadExists: (threadId) =>
+            engine.getThreadShell(threadId).pipe(Effect.map((shell) => shell !== null)),
+          engine,
+          evidence,
+          attempts,
+        }),
+      });
+    }),
+  ).pipe(
+    Layer.provide(NativeProviderAttemptsLive),
+    Layer.provide(NativeProviderEnrollmentLive.pipe(Layer.provide(NativeEnrollmentsLive))),
+  );
 
 export const nativeWorkstreamsRuntimeLayer = Layer.unwrap(
   Effect.gen(function* () {

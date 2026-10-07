@@ -41,11 +41,7 @@ import * as RuntimePolicy from "../../../orchestration-v2/RuntimePolicy.ts";
 import * as ThreadForkService from "../../../orchestration-v2/ThreadForkService.ts";
 import * as TurnItemPositionStore from "../../../orchestration-v2/TurnItemPositionStore.ts";
 import { NativeProviderAttempts, NativeProviderAttemptsLive } from "./attemptRepository.ts";
-import {
-  makeWorkstreamsNativeProvider,
-  sha256Bytes,
-  type NativeProviderPorts,
-} from "./service.ts";
+import { makeWorkstreamsNativeProvider, sha256Bytes, type NativeProviderPorts } from "./service.ts";
 import { makeProviderFixture, binding, request, requestBytesSha256, now } from "./testFixtures.ts";
 
 const database = SqlitePersistenceMemory;
@@ -62,6 +58,7 @@ const stores = Layer.mergeAll(
 const runtime = Orchestrator.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      database,
       stores,
       EventSink.layerFromStores.pipe(Layer.provide(Layer.mergeAll(stores, database))),
       CommandPolicy.layer,
@@ -241,9 +238,9 @@ it.effect(
         assert.notStrictEqual(attempt.dispatchStartedAt, null);
         assert.notStrictEqual(attempt.nativeCommandId, input.command_id);
         const snapshot = yield* f.evidence.readSnapshotByCommandId(
-        attempt.nativeCommandId,
-        ThreadId.make(attempt.request.identity.native_id),
-      );
+          attempt.nativeCommandId,
+          ThreadId.make(attempt.request.identity.native_id),
+        );
         const receipt = Option.getOrThrow(snapshot.receipt);
         assert.strictEqual(receipt.commandId, attempt.nativeCommandId);
         assert.strictEqual(receipt.commandType, `thread.${action}`);

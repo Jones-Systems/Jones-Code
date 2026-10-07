@@ -5,18 +5,12 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import type {
-  NativeProviderEvidence as NativeProviderEvidencePort,
+import {
+  NativeProviderEvidenceReadError,
+  type NativeProviderEvidence as NativeProviderEvidencePort,
 } from "./service.ts";
 
-export class NativeProviderEvidenceReadError extends Schema.TaggedError<NativeProviderEvidenceReadError>()(
-  "NativeProviderEvidenceReadError",
-  { reason: Schema.Literals(["reader_unavailable", "invalid_snapshot"]) },
-) {
-  override get message(): string {
-    return "Native command evidence could not be read.";
-  }
-}
+export { NativeProviderEvidenceReadError } from "./service.ts";
 
 export class NativeProviderEvidence extends Context.Service<
   NativeProviderEvidence,
@@ -49,41 +43,55 @@ const make = Effect.gen(function* () {
     commandId,
     _threadId,
   ) =>
-    sql.withTransaction(
-      Effect.gen(function* () {
-        const receiptRows = yield* sql`SELECT command_id AS "commandId",
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const receiptRows = yield* sql`SELECT command_id AS "commandId",
           aggregate_kind AS "aggregateKind", aggregate_id AS "aggregateId",
           command_type AS "commandType", accepted_at AS "acceptedAt",
           result_sequence AS "resultSequence", status
           FROM orchestration_command_receipts WHERE command_id = ${commandId}`.pipe(
-          Effect.mapError(() => new NativeProviderEvidenceReadError({ reason: "reader_unavailable" })),
-        );
-        const receipts = yield* Schema.decodeUnknownEffect(Schema.Array(ReceiptRow))(receiptRows).pipe(
-          Effect.mapError(() => new NativeProviderEvidenceReadError({ reason: "invalid_snapshot" })),
-        );
-        if (receipts.length > 1)
-          return yield* new NativeProviderEvidenceReadError({ reason: "invalid_snapshot" });
-        // Retain wrong-domain rows and the 257th overflow sentinel for consumer refusal.
-        const metadataRows = yield* sql`SELECT event_id AS "eventId", command_id AS "commandId",
+            Effect.mapError(
+              () => new NativeProviderEvidenceReadError({ reason: "reader_unavailable" }),
+            ),
+          );
+          const receipts = yield* Schema.decodeUnknownEffect(Schema.Array(ReceiptRow))(
+            receiptRows,
+          ).pipe(
+            Effect.mapError(
+              () => new NativeProviderEvidenceReadError({ reason: "invalid_snapshot" }),
+            ),
+          );
+          if (receipts.length > 1)
+            return yield* new NativeProviderEvidenceReadError({ reason: "invalid_snapshot" });
+          // Retain wrong-domain rows and the 257th overflow sentinel for consumer refusal.
+          const metadataRows = yield* sql`SELECT event_id AS "eventId", command_id AS "commandId",
           aggregate_kind AS "aggregateKind", stream_id AS "aggregateId", sequence,
           event_type AS "type", occurred_at AS "occurredAt",
           application_event_version AS "applicationEventVersion"
           FROM orchestration_events WHERE command_id = ${commandId}
           ORDER BY sequence ASC LIMIT 257`.pipe(
-          Effect.mapError(() => new NativeProviderEvidenceReadError({ reason: "reader_unavailable" })),
-        );
-        const events = yield* Schema.decodeUnknownEffect(Schema.Array(MetadataRow))(metadataRows).pipe(
-          Effect.mapError(() => new NativeProviderEvidenceReadError({ reason: "invalid_snapshot" })),
-        );
-        return { receipt: Option.fromUndefinedOr(receipts[0]), events };
-      }),
-    ).pipe(
-      Effect.mapError((error) =>
-        Schema.is(NativeProviderEvidenceReadError)(error)
-          ? error
-          : new NativeProviderEvidenceReadError({ reason: "reader_unavailable" }),
-      ),
-    );
+            Effect.mapError(
+              () => new NativeProviderEvidenceReadError({ reason: "reader_unavailable" }),
+            ),
+          );
+          const events = yield* Schema.decodeUnknownEffect(Schema.Array(MetadataRow))(
+            metadataRows,
+          ).pipe(
+            Effect.mapError(
+              () => new NativeProviderEvidenceReadError({ reason: "invalid_snapshot" }),
+            ),
+          );
+          return { receipt: Option.fromUndefinedOr(receipts[0]), events };
+        }),
+      )
+      .pipe(
+        Effect.mapError((error) =>
+          Schema.is(NativeProviderEvidenceReadError)(error)
+            ? error
+            : new NativeProviderEvidenceReadError({ reason: "reader_unavailable" }),
+        ),
+      );
   return NativeProviderEvidence.of({ readSnapshotByCommandId });
 });
 

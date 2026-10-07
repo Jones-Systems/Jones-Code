@@ -43,7 +43,10 @@ export const now = "2026-01-01T00:00:00.000Z";
 
 export const makeProviderFixture = () => {
   const attempts = new Map<string, NativeProviderAttempt>();
-  const receipts = new Map<string, NativeProviderCommandReceipt & { readonly error: string | null }>();
+  const receipts = new Map<
+    string,
+    NativeProviderCommandReceipt & { readonly error: string | null }
+  >();
   const events = new Map<string, ReadonlyArray<NativeProviderEventMetadata>>();
   const calls: {
     readonly commandId: string;

@@ -60,11 +60,23 @@ export interface NativeProviderCommandSnapshot {
   readonly events: ReadonlyArray<NativeProviderEventMetadata>;
 }
 
+export class NativeProviderEvidenceReadError extends Schema.TaggedError<NativeProviderEvidenceReadError>()(
+  "NativeProviderEvidenceReadError",
+  { reason: Schema.Literals(["reader_unavailable", "invalid_snapshot"]) },
+) {
+  override get message(): string {
+    return "Native command evidence could not be read.";
+  }
+}
+
 export interface NativeProviderEvidence {
   readonly readSnapshotByCommandId: (
     commandId: string,
     threadId: ThreadId,
-  ) => Effect.Effect<NativeProviderCommandSnapshot, unknown>;
+  ) => Effect.Effect<
+    NativeProviderCommandSnapshot,
+    NativeProviderEvidenceReadError | NativeProviderEvidenceUnavailableError
+  >;
 }
 
 export class NativeProviderEvidenceUnavailableError extends Schema.TaggedError<NativeProviderEvidenceUnavailableError>()(

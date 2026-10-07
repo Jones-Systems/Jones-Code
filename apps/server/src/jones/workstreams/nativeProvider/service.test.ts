@@ -553,35 +553,37 @@ it.effect(
   },
 );
 
-it.effect("command evidence receives the selected thread identity and an unavailable reader remains unknown", () =>
-  Effect.gen(function* () {
-    const fixture = makeProviderFixture();
-    const observations: Array<{ commandId: string; threadId: ThreadId }> = [];
-    const evidence = fixture.ports.evidence;
-    const provider = makeWorkstreamsNativeProvider({
-      ...fixture.ports,
-      evidence: {
-        readSnapshotByCommandId: (commandId, threadId) => {
-          observations.push({ commandId, threadId });
-          return evidence.readSnapshotByCommandId(commandId, threadId);
+it.effect(
+  "command evidence receives the selected thread identity and an unavailable reader remains unknown",
+  () =>
+    Effect.gen(function* () {
+      const fixture = makeProviderFixture();
+      const observations: Array<{ commandId: string; threadId: ThreadId }> = [];
+      const evidence = fixture.ports.evidence;
+      const provider = makeWorkstreamsNativeProvider({
+        ...fixture.ports,
+        evidence: {
+          readSnapshotByCommandId: (commandId, threadId) => {
+            observations.push({ commandId, threadId });
+            return evidence.readSnapshotByCommandId(commandId, threadId);
+          },
         },
-      },
-    });
-    assert.strictEqual(
-      (yield* provider.settle(binding, request, requestBytesSha256)).state,
-      "terminal",
-    );
-    const attempt = Option.getOrThrow(yield* fixture.ports.attempts.get(request));
-    assert.deepEqual(observations, [
-      { commandId: attempt.nativeCommandId, threadId: ThreadId.make(request.identity.native_id) },
-    ]);
-    const unavailable = makeWorkstreamsNativeProvider({
-      ...fixture.ports,
-      evidence: unavailableNativeProviderEvidence,
-    });
-    const lookup = yield* unavailable.lookup(binding, request, requestBytesSha256);
-    assert.strictEqual(lookup.state, "unknown");
-    if (lookup.state === "unknown") assert.strictEqual(lookup.reason, "provider_unavailable");
-    assert.strictEqual(fixture.calls.length, 1);
-  }),
+      });
+      assert.strictEqual(
+        (yield* provider.settle(binding, request, requestBytesSha256)).state,
+        "terminal",
+      );
+      const attempt = Option.getOrThrow(yield* fixture.ports.attempts.get(request));
+      assert.deepEqual(observations, [
+        { commandId: attempt.nativeCommandId, threadId: ThreadId.make(request.identity.native_id) },
+      ]);
+      const unavailable = makeWorkstreamsNativeProvider({
+        ...fixture.ports,
+        evidence: unavailableNativeProviderEvidence,
+      });
+      const lookup = yield* unavailable.lookup(binding, request, requestBytesSha256);
+      assert.strictEqual(lookup.state, "unknown");
+      if (lookup.state === "unknown") assert.strictEqual(lookup.reason, "provider_unavailable");
+      assert.strictEqual(fixture.calls.length, 1);
+    }),
 );

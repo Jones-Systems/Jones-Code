@@ -19,7 +19,10 @@ import {
   type WorkstreamFetch,
 } from "./ControlPlaneWorkstreamTransport.ts";
 
-import { response as registrationResponse, encodeFixtureJson } from "../jones/workstreams/registrationContext/testFixtures.ts";
+import {
+  response as registrationResponse,
+  encodeFixtureJson,
+} from "../jones/workstreams/registrationContext/testFixtures.ts";
 
 const registrationHeaders = {
   "x-control-contract-version": WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
