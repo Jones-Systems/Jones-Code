@@ -16,8 +16,7 @@ export const voiceReviewResponseHeadersLayer = HttpRouter.middleware(
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const path = new URL(request.originalUrl, "http://environment.invalid").pathname;
-      if (path !== "/api/voice-review/drafts" && !path?.startsWith("/api/voice-review/drafts/"))
-        return yield* httpEffect;
+      if (!path.startsWith("/api/voice-review/")) return yield* httpEffect;
       yield* HttpEffect.appendPreResponseHandler((_request, response) =>
         Effect.succeed(
           HttpServerResponse.setHeaders(response, {
@@ -45,6 +44,27 @@ export const voiceReviewHttpApiLayer = HttpApiBuilder.group(
       run: (principal: EnvironmentAuthenticatedPrincipal["Service"]) => Effect.Effect<A, E>,
     ) => Effect.flatMap(EnvironmentAuthenticatedPrincipal, run);
     return handlers
+      .handle("recent", ({ query }) =>
+        call((principal) => bridge.recent(principal, query.limit ?? 50)),
+      )
+      .handle("registrySnapshot", ({ query }) =>
+        call((principal) => bridge.registrySnapshot(principal, query.cursor, query.limit ?? 50)),
+      )
+      .handle("registryWorkstreams", () =>
+        call((principal) => bridge.registryWorkstreams(principal)),
+      )
+      .handle("registryEvents", ({ query }) =>
+        call((principal) => bridge.registryEvents(principal, query.after ?? 0, query.limit ?? 50)),
+      )
+      .handle("correctAssociation", ({ payload }) =>
+        call((principal) => bridge.correctAssociation(principal, payload)),
+      )
+      .handle("correctLabel", ({ payload }) =>
+        call((principal) => bridge.correctLabel(principal, payload)),
+      )
+      .handle("diagnostics", ({ params }) =>
+        call((principal) => bridge.diagnostics(principal, params.id)),
+      )
       .handle("list", ({ query }) =>
         call((principal) => bridge.list(principal, query.scope ?? "pending", query.limit ?? 50)),
       )

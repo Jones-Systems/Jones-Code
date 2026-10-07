@@ -18,6 +18,7 @@ export * from "./provider.ts";
 export * from "./providerInstance.ts";
 export * from "./providerSetup.ts";
 export * from "./providerRuntime.ts";
+export * from "./providerRuntimeIdentity.ts";
 export * from "./providerUsageLimits.ts";
 export * from "./usageLimitSourceId.ts";
 export * from "./providerPolicy.ts";
@@ -63,4 +64,20 @@ export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
+
+export * from "./providerQueue.ts";
+
+export * from "./queueDispatch.ts";
+export * from "./workstreams.ts";
+export * from "./workstreamPlacements.ts";
+export * from "./threadRegistry.ts";
+export * from "./queueProtocol.ts";
+export * from "./threadCorpusProtocol.ts";
+export {
+  ThreadTurnDispatchGuard,
+  OrchestrationCommandObservation,
+  OrchestrationShellSnapshot,
+  OrchestrationThreadDetailWindow,
+  OrchestrationThreadDetailSnapshot,
+} from "./legacyOrchestrationCompatibility.ts";
 export * from "./hostStatus.ts";

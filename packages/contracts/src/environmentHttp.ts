@@ -1,3 +1,11 @@
+import { ProviderInstanceId } from "./providerInstance.ts";
+import { MessageId } from "./baseSchemas.ts";
+import { CommandId } from "./baseSchemas.ts";
+import {
+  ProviderQueueInventory,
+  ProviderQueueRefreshResult,
+  OrchestrationCommandObservation,
+} from "./providerQueue.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
@@ -64,6 +72,23 @@ export {
   EnvironmentConversationLibraryErrorCode,
   type EnvironmentConversationLibraryError,
 } from "./jones/environmentHttpGroups.ts";
+import {
+  T3WorkstreamCommandPollParams,
+  T3WorkstreamCommandRequest,
+  T3WorkstreamDetailParams,
+  T3WorkstreamListResult,
+  T3WorkstreamPageQuery,
+  T3WorkstreamReferenceParams,
+  WorkstreamDeclarationPage,
+  WorkstreamDetail,
+  WorkstreamEdgePage,
+  WorkstreamHistoryPage,
+  WorkstreamMembershipPage,
+  WorkstreamReferenceDetail,
+  WorkstreamReferencePage,
+  WorkstreamReceipt,
+} from "./workstreams.ts";
+import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -85,6 +110,8 @@ export const EnvironmentRequestInvalidReason = Schema.Literals([
   "scope_not_granted",
   "invalid_command",
   "invalid_history_cursor",
+  "dispatch_guard_bootstrap_unsupported",
+  "dispatch_guard_rejected",
 ]);
 export type EnvironmentRequestInvalidReason = typeof EnvironmentRequestInvalidReason.Type;
 
@@ -116,6 +143,8 @@ export const EnvironmentInternalErrorReason = Schema.Literals([
   "orchestration_thread_snapshot_failed",
   "orchestration_thread_bounded_snapshot_failed",
   "orchestration_thread_history_failed",
+  "orchestration_dispatch_failed",
+  "orchestration_command_observation_failed",
   "internal_error",
 ]);
 export type EnvironmentInternalErrorReason = typeof EnvironmentInternalErrorReason.Type;
@@ -352,6 +381,19 @@ const EnvironmentOrchestrationSnapshotErrors = [
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
 ] as const;
+const EnvironmentWorkstreamSnapshotErrors = [
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
+const EnvironmentWorkstreamCommandErrors = [
+  EnvironmentRequestInvalidError,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
+const EnvironmentWorkstreamPagedSnapshotErrors = [
+  ...EnvironmentWorkstreamSnapshotErrors,
+  EnvironmentHttpConflictError,
+] as const;
 const EnvironmentOrchestrationThreadSnapshotErrors = [
   EnvironmentScopeRequiredError,
   EnvironmentResourceNotFoundError,
@@ -530,7 +572,58 @@ const EnvironmentOrchestrationThreadHistoryErrors = [
   EnvironmentInternalError,
 ] as const;
 
-class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
+export const ProviderGoalStateObservation = Schema.Struct({
+  schema: Schema.Literal("t3.provider-goal-state/v1"),
+  threadId: ThreadId,
+  providerInstanceId: ProviderInstanceId,
+  nativeThreadId: Schema.NullOr(TrimmedNonEmptyString),
+  observedAtMs: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  state: Schema.Literals(["active", "inactive", "unknown"]),
+  reasonCode: Schema.Literals([
+    "goal_null",
+    "goal_present",
+    "no_session",
+    "session_stopped",
+    "instance_mismatch",
+    "native_cursor_missing",
+    "unsupported",
+    "timeout",
+    "malformed",
+    "goal_field_omitted",
+    "rpc_error",
+    "context_changed",
+  ]),
+});
+export type ProviderGoalStateObservation = typeof ProviderGoalStateObservation.Type;
+
+export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
+  .add(
+    HttpApiEndpoint.get(
+      "commandObservation",
+      "/api/orchestration/threads/:threadId/commands/:commandId",
+      {
+        headers: OptionalBearerHeaders,
+        params: Schema.Struct({ threadId: ThreadId, commandId: CommandId }),
+        query: { messageId: MessageId },
+        success: OrchestrationCommandObservation,
+        error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "providerGoalState",
+      "/api/orchestration/threads/:threadId/provider-goal-state",
+      {
+        headers: OptionalBearerHeaders,
+        params: EnvironmentOrchestrationThreadSnapshotParams,
+        query: { expectedInstanceId: ProviderInstanceId },
+        success: ProviderGoalStateObservation,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+
   .add(
     HttpApiEndpoint.get("shellSnapshot", "/api/orchestration/shell", {
       headers: OrchestrationProtocolHeaders,
@@ -597,6 +690,100 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
   }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
 
+class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
+  .add(
+    HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
+      headers: OptionalBearerHeaders,
+      payload: T3PlacementLoadRequest,
+      success: T3PlacementResult,
+      error: EnvironmentWorkstreamSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("list", "/api/workstreams", {
+      headers: OptionalBearerHeaders,
+      payload: T3WorkstreamPageQuery,
+      success: T3WorkstreamListResult,
+      error: EnvironmentWorkstreamPagedSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("references", "/api/workstreams/references", {
+      headers: OptionalBearerHeaders,
+      payload: T3WorkstreamPageQuery,
+      success: WorkstreamReferencePage,
+      error: EnvironmentWorkstreamPagedSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("reference", "/api/workstreams/references/:nativeReferenceId", {
+      headers: OptionalBearerHeaders,
+      params: T3WorkstreamReferenceParams,
+      success: WorkstreamReferenceDetail,
+      error: EnvironmentWorkstreamSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("detail", "/api/workstreams/:workstreamId", {
+      headers: OptionalBearerHeaders,
+      params: T3WorkstreamDetailParams,
+      success: WorkstreamDetail,
+      error: EnvironmentWorkstreamSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("memberships", "/api/workstreams/:workstreamId/memberships", {
+      headers: OptionalBearerHeaders,
+      params: T3WorkstreamDetailParams,
+      payload: T3WorkstreamPageQuery,
+      success: WorkstreamMembershipPage,
+      error: EnvironmentWorkstreamPagedSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("declarations", "/api/workstreams/:workstreamId/declarations", {
+      headers: OptionalBearerHeaders,
+      params: T3WorkstreamDetailParams,
+      payload: T3WorkstreamPageQuery,
+      success: WorkstreamDeclarationPage,
+      error: EnvironmentWorkstreamPagedSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("edges", "/api/workstreams/:workstreamId/edges", {
+      headers: OptionalBearerHeaders,
+      params: T3WorkstreamDetailParams,
+      payload: T3WorkstreamPageQuery,
+      success: WorkstreamEdgePage,
+      error: EnvironmentWorkstreamPagedSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("history", "/api/workstreams/:workstreamId/history", {
+      headers: OptionalBearerHeaders,
+      params: T3WorkstreamDetailParams,
+      payload: T3WorkstreamPageQuery,
+      success: WorkstreamHistoryPage,
+      error: EnvironmentWorkstreamPagedSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("command", "/api/workstreams/commands/:commandId", {
+      headers: OptionalBearerHeaders,
+      params: T3WorkstreamCommandPollParams,
+      success: WorkstreamReceipt,
+      error: EnvironmentWorkstreamSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("submit", "/api/workstreams/commands", {
+      headers: OptionalBearerHeaders,
+      payload: T3WorkstreamCommandRequest,
+      success: WorkstreamReceipt,
+      error: EnvironmentWorkstreamCommandErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
   .add(
     HttpApiEndpoint.post("linkProof", "/api/connect/link-proof", {
@@ -658,6 +845,42 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
+export class EnvironmentQueueDispatchHttpApi extends HttpApiGroup.make("queueDispatch").add(
+  HttpApiEndpoint.post("dispatch", "/api/orchestration/dispatch", {
+    headers: OptionalBearerHeaders,
+    payload: Schema.Unknown,
+    success: Schema.Struct({
+      sequence: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+    }),
+    error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
+export class ProviderQueueHttpApi extends HttpApiGroup.make("providerQueue")
+  .add(
+    HttpApiEndpoint.get("inventory", "/api/provider-queue/inventory", {
+      headers: OptionalBearerHeaders,
+      success: ProviderQueueInventory,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("usage", "/api/provider-queue/instances/:instanceId/usage", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ instanceId: ProviderInstanceId }),
+      success: ProviderQueueRefreshResult,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("refresh", "/api/provider-queue/instances/:instanceId/refresh", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ instanceId: ProviderInstanceId }),
+      success: ProviderQueueRefreshResult,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 const {
   EnvironmentVoiceReviewHttpApi,
   EnvironmentHostStatusHttpApi,
@@ -672,12 +895,15 @@ const {
 export class EnvironmentConversationLibraryHttpApi extends ConversationLibraryHttpApi {}
 
 export class EnvironmentHttpApi extends HttpApi.make("environment")
+  .add(ProviderQueueHttpApi)
+  .add(EnvironmentQueueDispatchHttpApi)
   .add(EnvironmentVoiceReviewHttpApi)
   .add(EnvironmentHostStatusHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
+  .add(EnvironmentWorkstreamsHttpApi)
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentConnectHttpApi)
   .add(EnvironmentConversationLibraryHttpApi) {}
