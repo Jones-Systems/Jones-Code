@@ -126,7 +126,7 @@ describe("required process placement", () => {
 
 const helperPath = NodeURL.fileURLToPath(
   new URL(
-    `../../dist/native/process-placement-linux-${HostProcessArchitecture.defaultValue()}`,
+    `../../../dist/native/process-placement-linux-${HostProcessArchitecture.defaultValue()}`,
     import.meta.url,
   ),
 );

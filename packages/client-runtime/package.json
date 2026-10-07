@@ -386,6 +386,10 @@
     "./device/duo-control": {
       "types": "./src/device/duoControl.ts",
       "default": "./src/device/duoControl.ts"
+    },
+    "./work-queue-metadata": {
+      "types": "./src/jones/workQueueMetadata.ts",
+      "default": "./src/jones/workQueueMetadata.ts"
     }
   },
   "scripts": {
