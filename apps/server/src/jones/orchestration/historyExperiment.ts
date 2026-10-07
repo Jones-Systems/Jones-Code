@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { strict as assert } from "node:assert";
+import * as NodeCrypto from "node:crypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Synchronous source binding hashes the exact SQL owner file before the frozen query experiment runs.
+import * as NodeFS from "node:fs";
+import * as NodeAssert from "node:assert/strict";
 import {
   EventId,
   ProjectId,
@@ -36,23 +37,23 @@ export const mapHistoryRows = (rows: ReadonlyArray<{ payload_json: string }>) =>
 
 // Bind the baseline to its production owner, rejecting unknown interpolations.
 // No schema/index changes are made for the UNION variant.
-const source = readFileSync(
+const source = NodeFS.readFileSync(
   new URL("../../orchestration-v2/ProjectionStore.ts", import.meta.url),
   "utf8",
 );
 const match = source.match(
   /SELECT payload_json FROM orchestration_v2_projection_messages AS message[\s\S]*?ORDER BY created_at ASC, message_id ASC/,
 );
-assert.ok(match, "V2 bounded message SQL must still exist");
+NodeAssert.ok(match, "V2 bounded message SQL must still exist");
 export const historyBaselineSql = match[0];
-export const historySourceSha256 = createHash("sha256").update(source).digest("hex");
+export const historySourceSha256 = NodeCrypto.createHash("sha256").update(source).digest("hex");
 const activeRuns =
   "SELECT run_id FROM orchestration_v2_projection_runs WHERE thread_id = ? AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting')";
 export function historyStatements(ids: ReadonlyArray<string>) {
   const cohort = JSON.stringify(ids);
   const values: string[] = [];
   const text = historyBaselineSql.replace(/\$\{([^}]+)\}/g, (_, name: string) => {
-    assert.ok(
+    NodeAssert.ok(
       name === "threadId" || name === "cohortMessageIds",
       `Unbound production parameter: ${name}`,
     );

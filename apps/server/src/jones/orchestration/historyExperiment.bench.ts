@@ -1,7 +1,7 @@
 import { TurnItemId } from "@t3tools/contracts";
-import { strict as assert } from "node:assert";
-import { performance } from "node:perf_hooks";
-import * as Effect from "effect/Effect";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeConsole from "node:console";
+import * as NodePerfHooks from "node:perf_hooks";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { test, describe } from "vite-plus/test";
@@ -48,7 +48,7 @@ describe("V2 history query characterization", () => {
                 (positions.get(a.id) ?? Infinity) - (positions.get(b.id) ?? Infinity) ||
                 a.id.localeCompare(b.id),
             );
-            assert.deepEqual(window.projection.messages, windowExpected);
+            NodeAssert.deepEqual(window.projection.messages, windowExpected);
             const statements = historyStatements(cohort);
             const samples = [[], []] as [number[], number[]];
             const decodeSamples = [[], []] as [number[], number[]];
@@ -60,8 +60,8 @@ describe("V2 history query characterization", () => {
                 sql.unsafe<{ payload_json: string }>(statement.text, statement.values),
               );
               if (baselineRows === undefined) baselineRows = rows;
-              else assert.deepEqual(rows, baselineRows);
-              assert.deepEqual(mapHistoryRows(rows), expected);
+              else NodeAssert.deepEqual(rows, baselineRows);
+              NodeAssert.deepEqual(mapHistoryRows(rows), expected);
               plans.push(
                 await runtime.runPromise(
                   sql.unsafe(`EXPLAIN QUERY PLAN ${statement.text}`, statement.values),
@@ -71,15 +71,15 @@ describe("V2 history query characterization", () => {
             for (let round = -3; round < 15; round++) {
               for (const index of round % 2 === 0 ? ([0, 1] as const) : ([1, 0] as const)) {
                 const statement = statements[index];
-                const start = performance.now();
+                const start = NodePerfHooks.performance.now();
                 const rows = await runtime.runPromise(
                   sql.unsafe<{ payload_json: string }>(statement.text, statement.values),
                 );
-                const sqlMs = performance.now() - start;
-                const decodeStart = performance.now();
+                const sqlMs = NodePerfHooks.performance.now() - start;
+                const decodeStart = NodePerfHooks.performance.now();
                 const mapped = mapHistoryRows(rows);
-                const decodeMs = performance.now() - decodeStart;
-                assert.deepEqual(mapped, expected);
+                const decodeMs = NodePerfHooks.performance.now() - decodeStart;
+                NodeAssert.deepEqual(mapped, expected);
                 if (round >= 0) {
                   samples[index].push(sqlMs);
                   decodeSamples[index].push(decodeMs);
@@ -88,21 +88,22 @@ describe("V2 history query characterization", () => {
               for (const kind of round % 2 === 0
                 ? (["full", "window"] as const)
                 : (["window", "full"] as const)) {
-                const start = performance.now();
+                const start = NodePerfHooks.performance.now();
                 const value = await runtime.runPromise(
                   kind === "full"
                     ? store.getThreadSnapshot(historyThreadId)
                     : store.getThreadSnapshotWindow(historyThreadId, options),
                 );
-                const ms = performance.now() - start;
-                assert.deepEqual(
+                const ms = NodePerfHooks.performance.now() - start;
+                NodeAssert.deepEqual(
                   value.projection.messages,
                   kind === "full" ? full.projection.messages : windowExpected,
                 );
                 if (round >= 0) projectionSamples[kind].push(ms);
               }
             }
-            console.log(
+            // @effect-diagnostics-next-line globalConsole:off - The opt-in benchmark emits raw JSON records without logger metadata for machine-readable timing evidence.
+            NodeConsole.log(
               JSON.stringify({
                 workload: "v2-history",
                 sourceSha256: historySourceSha256,
