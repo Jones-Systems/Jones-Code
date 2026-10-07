@@ -87,7 +87,10 @@
     "packages/contracts/src/workstreams.test.ts",
     "packages/contracts/src/workstreams.ts",
     "packages/contracts/test-fixtures/queue-dispatch-capability.json",
-    "packages/contracts/test-fixtures/thread-corpus-capability.json"
+    "packages/contracts/test-fixtures/thread-corpus-capability.json",
+    "apps/server/src/jones/workstreams/",
+    "packages/contracts/contracts/workstreams-t3-provider/v1/",
+    "packages/contracts/contracts/workstreams-registration-context/v1/"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
@@ -112,7 +115,11 @@
     "apps/web/src/lib/runtime.test.ts",
     "apps/web/src/lib/runtime.ts",
     "apps/web/src/test/reactHookHarness.ts",
-    "packages/client-runtime/src/authorization/index.ts"
+    "packages/client-runtime/src/authorization/index.ts",
+    "apps/server/src/auth/SessionStore.ts",
+    "apps/server/src/auth/SessionStore.test.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts",
+    "packages/contracts/src/auth.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -215,6 +222,22 @@
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/legacyOrchestrationCompatibility.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/runtimeIntegration/native.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/workstreams/runtimeIntegration/native.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/workstreamsNativeProvider.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/workstreamsRegistrationContext.ts"
     }
   ]
 }

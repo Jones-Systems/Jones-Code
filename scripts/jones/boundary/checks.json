@@ -44,10 +44,28 @@
         "packages/contracts/src/queueProtocol.test.ts",
         "packages/contracts/src/threadCorpusProtocol.test.ts",
         "packages/contracts/src/workstreams.conformance.test.ts",
-        "packages/contracts/src/workstreams.test.ts"
+        "packages/contracts/src/workstreams.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/request.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/service.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/http.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/service.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
+        "packages/contracts/src/jones/workstreamsNativeProvider.test.ts",
+        "packages/contracts/src/jones/workstreamsRegistrationContext.test.ts",
+        "apps/server/src/auth/SessionStore.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/serverActivation.test.ts",
+        "apps/server/src/serverRuntimeStartup.test.ts"
       ],
       "commands": [
-        "vp test run apps/mobile/src/features/workstreams/actions.test.ts apps/mobile/src/features/workstreams/commands.test.ts apps/mobile/src/features/workstreams/loaders.test.ts apps/mobile/src/features/workstreams/projection.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/http.test.ts apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/workstreamPresentation.test.ts apps/web/src/state/workstreams.test.ts packages/client-runtime/src/state/workstreams/colors.test.ts packages/client-runtime/src/state/workstreams/lifecycle.test.ts packages/client-runtime/src/state/workstreams/live.test.ts packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts packages/client-runtime/src/state/workstreams/workstreams.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/workstreams.test.ts"
+        "vp test run apps/mobile/src/features/workstreams/actions.test.ts apps/mobile/src/features/workstreams/commands.test.ts apps/mobile/src/features/workstreams/loaders.test.ts apps/mobile/src/features/workstreams/projection.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/http.test.ts apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/workstreamPresentation.test.ts apps/web/src/state/workstreams.test.ts packages/client-runtime/src/state/workstreams/colors.test.ts packages/client-runtime/src/state/workstreams/lifecycle.test.ts packages/client-runtime/src/state/workstreams/live.test.ts packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts packages/client-runtime/src/state/workstreams/workstreams.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/workstreams.test.ts apps/server/src/jones/workstreams/enrollment/request.test.ts apps/server/src/jones/workstreams/enrollment/service.test.ts apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts apps/server/src/jones/workstreams/nativeProvider/http.test.ts apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts apps/server/src/jones/workstreams/nativeProvider/service.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts packages/contracts/src/jones/workstreamsNativeProvider.test.ts packages/contracts/src/jones/workstreamsRegistrationContext.test.ts apps/server/src/auth/SessionStore.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/serverActivation.test.ts apps/server/src/serverRuntimeStartup.test.ts"
       ]
     },
     {

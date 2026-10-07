@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId } from "@t3tools/contracts";
+import { AuthSessionId, EnvironmentId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -730,4 +731,47 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
       expect((yield* readRow)[0]).toEqual({ surface: "mobile", appVersion: "1.3.0" });
     }).pipe(Effect.provide(Layer.mergeAll(makeSessionStoreLayer(), SqlitePersistenceMemory))),
   );
+});
+
+it("reserved auth session matching rejects changed identity, scope, dates and client metadata", () => {
+  const expected: AuthSessions.CreateAuthSessionInput = {
+    sessionId: AuthSessionId.make("reserved-synthetic"),
+    subject: "workstreams-native:synthetic",
+    method: "bearer-access-token",
+    scopes: [
+      "workstreams:native:context",
+      "workstreams:native:settlement",
+      "workstreams:native:reconciliation",
+    ],
+    issuedAt: DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"),
+    expiresAt: DateTime.makeUnsafe("2026-01-31T00:00:00.000Z"),
+    client: {
+      label: "Native enrollment",
+      ipAddress: null,
+      userAgent: null,
+      deviceType: "unknown",
+      os: null,
+      browser: null,
+    },
+  };
+  const record: AuthSessions.AuthSessionRecord = {
+    ...expected,
+    lastConnectedAt: null,
+    revokedAt: null,
+  };
+  expect(SessionStore.matchesReservedAuthSession(record, expected)).toBe(true);
+  for (const changed of [
+    { ...record, sessionId: AuthSessionId.make("other") },
+    { ...record, subject: "other" },
+    { ...record, method: "browser-session-cookie" as const },
+    { ...record, scopes: [...record.scopes].reverse() },
+    { ...record, scopes: ["workstreams:native:context"] as const },
+    { ...record, issuedAt: DateTime.add(record.issuedAt, { milliseconds: 1 }) },
+    { ...record, expiresAt: DateTime.add(record.expiresAt, { milliseconds: 1 }) },
+    ...Object.keys(record.client).map((key) => ({
+      ...record,
+      client: { ...record.client, [key]: key === "deviceType" ? "desktop" : "changed" },
+    })),
+  ])
+    expect(SessionStore.matchesReservedAuthSession(changed, expected)).toBe(false);
 });

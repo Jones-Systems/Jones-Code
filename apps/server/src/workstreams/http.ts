@@ -25,8 +25,15 @@ import {
 } from "../auth/http.ts";
 import type { T3PlacementTrustProvider } from "../environment/NativePlacementTrust.ts";
 import * as NativeStoreAuthority from "../environment/NativeStoreAuthority.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { makeControlPlaneWorkstreamTransport } from "./ControlPlaneWorkstreamTransport.ts";
 import { WorkstreamGateway, make, type WorkstreamGatewayError } from "./WorkstreamGateway.ts";
+
+import { createRegistrationContextHandler } from "../jones/workstreams/registrationContext/http.ts";
+import {
+  WorkstreamsRegistrationContext,
+  makeWorkstreamsRegistrationContext,
+} from "../jones/workstreams/registrationContext/service.ts";
 
 export const WORKSTREAM_RESPONSE_HEADERS = {
   "cache-control": "private, no-store",
@@ -94,9 +101,22 @@ const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrus
       });
     }),
   );
-export const workstreamGatewayLayerLive = makeWorkstreamGatewayLayerLive().pipe(
-  Layer.provide(NativeStoreAuthority.layer),
+export const workstreamNativeAuthorityLayerLive = NativeStoreAuthority.layer.pipe(
+  Layer.provide(ServerEnvironment.identityLayer),
 );
+
+export const workstreamGatewayLayerLive = makeWorkstreamGatewayLayerLive().pipe(
+  Layer.provide(workstreamNativeAuthorityLayerLive),
+);
+
+export const workstreamRegistrationContextLayerLive = Layer.effect(
+  WorkstreamsRegistrationContext,
+  Effect.gen(function* () {
+    const configured = makeControlPlaneWorkstreamTransport();
+    const authority = yield* NativeStoreAuthority.NativeStoreAuthority;
+    return makeWorkstreamsRegistrationContext({ ...configured.registrationContext, authority });
+  }),
+).pipe(Layer.provide(workstreamNativeAuthorityLayerLive));
 
 const internal = <A>(
   operation: string,
@@ -139,12 +159,14 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
   "workstreams",
   Effect.fnUntraced(function* (handlers) {
     const gateway = yield* WorkstreamGateway;
+    const registrationContext = yield* WorkstreamsRegistrationContext;
     const read = (name: string) =>
       Effect.gen(function* () {
         yield* annotateEnvironmentRequest(name);
         yield* requireEnvironmentScope(AuthOrchestrationReadScope);
       });
     return handlers
+      .handle("registrationContext", createRegistrationContextHandler(registrationContext))
       .handle("appearanceRead", (args) =>
         read(args.endpoint.name).pipe(
           Effect.andThen(
