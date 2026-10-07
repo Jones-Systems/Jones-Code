@@ -717,9 +717,9 @@ const makeServerLayer = Layer.unwrap(
 
     const httpListeningLayer = Layer.effectDiscard(
       Effect.gen(function* () {
-        yield* HttpServer.HttpServer;
+        const server = yield* HttpServer.HttpServer;
         const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
-        yield* startup.markHttpListening;
+        yield* startup.markHttpListening(server.address);
       }),
     );
     const runtimeStateLayer = Layer.effectDiscard(
