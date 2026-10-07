@@ -1,4 +1,8 @@
-import { ContinuationChoiceBanner, importedHistoryCommands, type PreparedImportedHistoryChoice } from "../jones/importedHistory/ContinuationChoiceBanner";
+import {
+  ContinuationChoiceBanner,
+  importedHistoryCommands,
+  type PreparedImportedHistoryChoice,
+} from "../jones/importedHistory/ContinuationChoiceBanner";
 import { resolveImportedHistoryReview } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { ChatCanvas } from "./chat/ChatCanvas";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
@@ -1571,9 +1575,18 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
-  const prepareImportedHistory = useAtomCommand(importedHistoryCommands.prepare, { reportFailure: false });
-  const reviewImportedHistory = useAtomCommand(importedHistoryCommands.review, { reportFailure: false });
-  const [importedChoice, setImportedChoice] = useState<{ environmentId: EnvironmentId; threadId: ThreadId; prepared: PreparedImportedHistoryChoice | null; reason: string | null } | null>(null);
+  const prepareImportedHistory = useAtomCommand(importedHistoryCommands.prepare, {
+    reportFailure: false,
+  });
+  const reviewImportedHistory = useAtomCommand(importedHistoryCommands.review, {
+    reportFailure: false,
+  });
+  const [importedChoice, setImportedChoice] = useState<{
+    environmentId: EnvironmentId;
+    threadId: ThreadId;
+    prepared: PreparedImportedHistoryChoice | null;
+    reason: string | null;
+  } | null>(null);
 
   const resumeThreadQueue = useAtomCommand(threadEnvironment.resumeThreadQueue, {
     reportFailure: false,
@@ -8835,16 +8848,35 @@ export default function ChatView(props: ChatViewProps) {
     const threadIdForSend = activeThread.id;
     if (serverProjection?.thread.historyOrigin === "v1_import") {
       if (multipleModelSelections !== null) {
-        setImportedChoice({ environmentId, threadId: threadIdForSend, prepared: null, reason: "Choose one model before reviewing imported history." });
+        setImportedChoice({
+          environmentId,
+          threadId: threadIdForSend,
+          prepared: null,
+          reason: "Choose one model before reviewing imported history.",
+        });
         return;
       }
       try {
-        if (importedHistoryCorrelationStorage(scopeThreadRef(environmentId, threadIdForSend)).read() !== null) {
-          setImportedChoice({ environmentId, threadId: threadIdForSend, prepared: null, reason: "Observe the saved choice before another submission." });
+        if (
+          importedHistoryCorrelationStorage(
+            scopeThreadRef(environmentId, threadIdForSend),
+          ).read() !== null
+        ) {
+          setImportedChoice({
+            environmentId,
+            threadId: threadIdForSend,
+            prepared: null,
+            reason: "Observe the saved choice before another submission.",
+          });
           return;
         }
       } catch {
-        setImportedChoice({ environmentId, threadId: threadIdForSend, prepared: null, reason: "Imported history correlation storage is unavailable." });
+        setImportedChoice({
+          environmentId,
+          threadId: threadIdForSend,
+          prepared: null,
+          reason: "Imported history correlation storage is unavailable.",
+        });
         return;
       }
     }
@@ -9093,30 +9125,92 @@ export default function ChatView(props: ChatViewProps) {
         };
       }),
     );
-    if (serverProjection?.thread.historyOrigin === "v1_import" && multipleModelSelections === null && isServerThread && !shouldQueueBehindActiveRun) {
+    if (
+      serverProjection?.thread.historyOrigin === "v1_import" &&
+      multipleModelSelections === null &&
+      isServerThread &&
+      !shouldQueueBehindActiveRun
+    ) {
       try {
         const attachments = await turnAttachmentsPromise;
         const fileBlockReason = readLiveAttachmentCapabilities().fileBlockReason;
         if (fileBlockReason !== null) throw new Error(fileBlockReason);
-        const context = buildOutgoingMessageContext(attachments.map((attachment, index) => "id" in attachment && attachment.id !== undefined ? attachment.id : composerAttachmentsSnapshot[index]!.id));
-        const inlineContext = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities.inlineMessageContext === true;
-        const unchanged = () => currentRouteThreadKeyRef.current === routeThreadKey && useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) === submittedComposerDraft && promptRef.current === importedPromptSnapshot;
-        const prepared = await prepareImportedHistory({ environmentId, input: {
-          commandId: CommandId.make(randomUUID()), threadId: threadIdForSend,
-          message: { role: "user", messageId: messageIdForSend,
-            text: context && !inlineContext ? serializeLegacyContextMessage({ text: outgoingMessageText, records: context.records }) : outgoingMessageText,
-            attachments, ...(context && inlineContext ? { context } : {}) },
-          modelSelection: ctxSelectedModelSelection, runtimeMode, interactionMode: sendInteractionMode,
-        } });
-        if (prepared._tag !== "Success") throw new Error("Imported history preparation is unavailable.");
+        const context = buildOutgoingMessageContext(
+          attachments.map((attachment, index) =>
+            "id" in attachment && attachment.id !== undefined
+              ? attachment.id
+              : composerAttachmentsSnapshot[index]!.id,
+          ),
+        );
+        const inlineContext =
+          appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
+            .capabilities.inlineMessageContext === true;
+        const unchanged = () =>
+          currentRouteThreadKeyRef.current === routeThreadKey &&
+          useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) ===
+            submittedComposerDraft &&
+          promptRef.current === importedPromptSnapshot;
+        const prepared = await prepareImportedHistory({
+          environmentId,
+          input: {
+            commandId: CommandId.make(randomUUID()),
+            threadId: threadIdForSend,
+            message: {
+              role: "user",
+              messageId: messageIdForSend,
+              text:
+                context && !inlineContext
+                  ? serializeLegacyContextMessage({
+                      text: outgoingMessageText,
+                      records: context.records,
+                    })
+                  : outgoingMessageText,
+              attachments,
+              ...(context && inlineContext ? { context } : {}),
+            },
+            modelSelection: ctxSelectedModelSelection,
+            runtimeMode,
+            interactionMode: sendInteractionMode,
+          },
+        });
+        if (prepared._tag !== "Success")
+          throw new Error("Imported history preparation is unavailable.");
         const delivery = { type: "message" as const, command: prepared.value };
-        const reviewed = await reviewImportedHistory({ environmentId, input: { threadId: threadIdForSend, delivery } });
-        const review = resolveImportedHistoryReview(reviewed._tag === "Success" ? reviewed.value : null);
-        if (unchanged()) setImportedChoice({ environmentId, threadId: threadIdForSend, reason: review.reason,
-          prepared: review.status === "available" ? { delivery, reviewedBasis: review.reviewedBasis, draftIdentity: `${routeThreadKey}:${messageIdForSend}`, unchanged } : null });
+        const reviewed = await reviewImportedHistory({
+          environmentId,
+          input: { threadId: threadIdForSend, delivery },
+        });
+        const review = resolveImportedHistoryReview(
+          reviewed._tag === "Success" ? reviewed.value : null,
+        );
+        if (unchanged())
+          setImportedChoice({
+            environmentId,
+            threadId: threadIdForSend,
+            reason: review.reason,
+            prepared:
+              review.status === "available"
+                ? {
+                    delivery,
+                    reviewedBasis: review.reviewedBasis,
+                    draftIdentity: `${routeThreadKey}:${messageIdForSend}`,
+                    unchanged,
+                  }
+                : null,
+          });
       } catch (error) {
-        if (currentRouteThreadKeyRef.current === routeThreadKey) setImportedChoice({ environmentId, threadId: threadIdForSend, prepared: null, reason: error instanceof Error ? error.message : "Imported history review is unavailable." });
-      } finally { sendInFlightRef.current = false; resetLocalDispatch(); }
+        if (currentRouteThreadKeyRef.current === routeThreadKey)
+          setImportedChoice({
+            environmentId,
+            threadId: threadIdForSend,
+            prepared: null,
+            reason:
+              error instanceof Error ? error.message : "Imported history review is unavailable.",
+          });
+      } finally {
+        sendInFlightRef.current = false;
+        resetLocalDispatch();
+      }
       return;
     }
     if (multipleModelSelections !== null) {
@@ -11177,10 +11271,26 @@ export default function ChatView(props: ChatViewProps) {
                   data-chat-composer-stack="true"
                   className="group/composer-stack pointer-events-auto relative z-10 mx-auto w-full max-w-(--chat-content-max-width)"
                 >
-                  {serverProjection?.thread.historyOrigin === "v1_import" && activeThread ? <ContinuationChoiceBanner key={`${activeThread.environmentId}:${activeThread.id}`} environmentId={activeThread.environmentId} threadId={activeThread.id}
-                    prepared={importedChoice?.environmentId === activeThread.environmentId && importedChoice.threadId === activeThread.id ? importedChoice.prepared : null}
-                    reason={importedChoice?.environmentId === activeThread.environmentId && importedChoice.threadId === activeThread.id ? importedChoice.reason : null}
-                    onDismiss={() => setImportedChoice(null)} /> : null}
+                  {serverProjection?.thread.historyOrigin === "v1_import" && activeThread ? (
+                    <ContinuationChoiceBanner
+                      key={`${activeThread.environmentId}:${activeThread.id}`}
+                      environmentId={activeThread.environmentId}
+                      threadId={activeThread.id}
+                      prepared={
+                        importedChoice?.environmentId === activeThread.environmentId &&
+                        importedChoice.threadId === activeThread.id
+                          ? importedChoice.prepared
+                          : null
+                      }
+                      reason={
+                        importedChoice?.environmentId === activeThread.environmentId &&
+                        importedChoice.threadId === activeThread.id
+                          ? importedChoice.reason
+                          : null
+                      }
+                      onDismiss={() => setImportedChoice(null)}
+                    />
+                  ) : null}
                   {isDraftHeroState ? (
                     <div className="absolute inset-x-0 bottom-full">
                       <div

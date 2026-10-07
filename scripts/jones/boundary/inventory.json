@@ -764,7 +764,13 @@
     "apps/server/src/jones/runtime/RuntimeCensus.test.ts": "jones-owned",
     "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts": "jones-owned",
     "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.ts": "jones-owned",
-    "apps/server/src/jones/nativeCreation/NativeCreationStageDispatch.ts": "jones-owned"
+    "apps/server/src/jones/nativeCreation/NativeCreationStageDispatch.ts": "jones-owned",
+    "apps/server/src/jones/nativeCreation/NativeWorkspacePhysicalPorts.test.ts": "jones-owned",
+    "apps/server/src/jones/nativeCreation/NativeWorkspacePhysicalPorts.ts": "jones-owned",
+    "apps/server/src/jones/nativeCreation/NativeWorkspaceSetupCustody.ts": "jones-owned",
+    "apps/server/src/jones/nativeCreation/NativeWorkspaceSetupExecutor.test.ts": "jones-owned",
+    "apps/server/src/jones/nativeCreation/NativeWorkspaceSetupExecutor.ts": "jones-owned",
+    "apps/server/src/terminal/NativeSetupControl.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
