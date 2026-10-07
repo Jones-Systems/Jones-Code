@@ -201,7 +201,12 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
 export class ThreadLaunchService extends Context.Service<
   ThreadLaunchService,
   {
-    readonly prepareNativeWorkspace?: (input: NativeWorkspace.NativeWorkspaceInput) => Effect.Effect<NativeWorkspaceTypes.NativeWorkspaceVerified, NativeWorkspace.NativeWorkspaceError>;
+    readonly prepareNativeWorkspace?: (
+      input: NativeWorkspace.NativeWorkspaceInput,
+    ) => Effect.Effect<
+      NativeWorkspaceTypes.NativeWorkspaceVerified,
+      NativeWorkspace.NativeWorkspaceError
+    >;
     readonly preflightLegacyBootstrap: (
       binding: OrchestrationV2LegacyPreflightBinding,
     ) => Effect.Effect<LegacyPreflightOutcome, ThreadLaunchError>;
@@ -232,7 +237,9 @@ function failureDetail(error: unknown): string {
 }
 
 const make = Effect.gen(function* () {
-  const nativeWorkspace = yield* Effect.serviceOption(NativeWorkspace.NativeCreationWorkspacePreparation);
+  const nativeWorkspace = yield* Effect.serviceOption(
+    NativeWorkspace.NativeCreationWorkspacePreparation,
+  );
   const projects = yield* ProjectService.ProjectService;
   const setupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
   const cloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
@@ -2558,7 +2565,15 @@ const make = Effect.gen(function* () {
   };
 
   return ThreadLaunchService.of({
-    prepareNativeWorkspace: (input) => Option.isSome(nativeWorkspace) ? nativeWorkspace.value.prepare(input) : Effect.fail(new NativeWorkspace.NativeWorkspaceError({code:"unavailable",message:"Native workspace preparation is not qualified"})),
+    prepareNativeWorkspace: (input) =>
+      Option.isSome(nativeWorkspace)
+        ? nativeWorkspace.value.prepare(input)
+        : Effect.fail(
+            new NativeWorkspace.NativeWorkspaceError({
+              code: "unavailable",
+              message: "Native workspace preparation is not qualified",
+            }),
+          ),
     preflightLegacyBootstrap: (binding) =>
       preflight(binding).pipe(
         Effect.mapError(
