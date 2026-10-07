@@ -48,7 +48,7 @@ import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
-import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
+import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as AntigravityInstallation from "../AntigravityInstallation.ts";
 import * as ServerConfig from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";

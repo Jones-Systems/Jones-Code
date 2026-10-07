@@ -166,6 +166,8 @@
     "apps/server/src/hostStatus/http.ts": "jones-owned",
     "apps/server/src/jones/provider/workModePrompt.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/provider/workModePrompt.ts": "jones-owned",
+    "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts": "jones-owned",
     "apps/server/src/jones/workMode/Admission.ts": "jones-owned",
     "apps/server/src/jones/workMode/Fixtures.testkit.ts": "jones-owned",
     "apps/server/src/jones/workMode/Policy.test.ts": "jones-tests-in-upstream",
@@ -731,28 +733,8 @@
       "to": "apps/server/src/cli/workstream.ts"
     },
     {
-      "from": "apps/server/src/diagnostics/ProcessDiagnostics.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
       "to": "apps/server/src/provider/providerGoal.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
@@ -785,14 +767,6 @@
     {
       "from": "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
       "to": "apps/server/src/orchestration-v2/ServerUpdateContinuation.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
@@ -951,44 +925,12 @@
       "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
     },
     {
-      "from": "apps/server/src/provider/Drivers/CodexDriver.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
       "from": "apps/server/src/provider/Drivers/CodexDriver.ts",
       "to": "apps/server/src/provider/qualifiedQuota.ts"
     },
     {
       "from": "apps/server/src/provider/Layers/CodexProvider.ts",
       "to": "apps/server/src/provider/qualifiedQuota.ts"
-    },
-    {
-      "from": "apps/server/src/provider/Layers/ProviderInstanceRegistryHydration.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/provider/Layers/ProviderInstanceRegistryLive.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/provider/Layers/ProviderRegistry.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/resourceTelemetry/Model.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/resourceTelemetry/Model.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/resourceTelemetry/ResourceTelemetry.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
     },
     {
       "from": "apps/server/src/server.ts",
@@ -1013,10 +955,6 @@
     {
       "from": "apps/server/src/server.ts",
       "to": "apps/server/src/provider/providerQueueHttp.ts"
-    },
-    {
-      "from": "apps/server/src/server.ts",
-      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
     },
     {
       "from": "apps/server/src/server.ts",

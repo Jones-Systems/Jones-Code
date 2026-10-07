@@ -20,7 +20,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as DesktopTelemetryReceiver from "./DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "./NativeTelemetryClient.ts";
-import * as ProcessAttribution from "./ProcessAttribution.ts";
+import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceAttribution from "./ResourceAttribution.ts";
 import * as ResourceTelemetry from "./ResourceTelemetry.ts";
 

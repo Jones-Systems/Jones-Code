@@ -3,9 +3,7 @@
   "groups": [
     {
       "id": "jones-boundary",
-      "tests": [
-        "scripts/jones/check-boundary.test.ts"
-      ],
+      "tests": ["scripts/jones/check-boundary.test.ts"],
       "commands": [
         "vp test run scripts/jones/check-boundary.test.ts",
         "node scripts/jones/check-boundary.ts --strict --json",
@@ -14,9 +12,7 @@
     },
     {
       "id": "jones-provider-settlement",
-      "tests": [
-        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
       ]
@@ -80,12 +76,12 @@
       "id": "jones-provider-runtime-identity",
       "tests": [
         "apps/server/src/orchestration-v2/EventSink.runtimeIdentity.test.ts",
-        "apps/server/src/resourceTelemetry/ProcessAttribution.test.ts",
+        "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
         "packages/contracts/src/providerRuntimeIdentity.test.ts",
         "packages/contracts/src/resourceTelemetry.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/orchestration-v2/EventSink.runtimeIdentity.test.ts apps/server/src/resourceTelemetry/ProcessAttribution.test.ts packages/contracts/src/providerRuntimeIdentity.test.ts packages/contracts/src/resourceTelemetry.test.ts"
+        "vp test run apps/server/src/orchestration-v2/EventSink.runtimeIdentity.test.ts apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts packages/contracts/src/providerRuntimeIdentity.test.ts packages/contracts/src/resourceTelemetry.test.ts"
       ]
     },
     {
@@ -132,12 +128,8 @@
     },
     {
       "id": "jones-process-placement-build",
-      "tests": [
-        "native/process-placement/build.test.mjs"
-      ],
-      "commands": [
-        "node --test native/process-placement/build.test.mjs"
-      ]
+      "tests": ["native/process-placement/build.test.mjs"],
+      "commands": ["node --test native/process-placement/build.test.mjs"]
     },
     {
       "id": "jones-workstream-appearance",
@@ -183,6 +175,26 @@
         "vp test run packages/ssh/src/jones/persistentRemoteLifecycle.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/runnerProcess.test.ts",
         "vp run --filter @t3tools/ssh typecheck",
         "vp lint packages/ssh/src/tunnel.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/runnerProcess.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "jones-process-attribution-extraction",
+      "tests": [
+        "apps/server/src/diagnostics/ProcessDiagnostics.test.ts",
+        "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
+        "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
+        "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
+        "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
+        "apps/server/src/provider/Drivers/CodexDriver.test.ts",
+        "apps/server/src/provider/Layers/ProviderInstanceRegistryLive.test.ts",
+        "apps/server/src/provider/Layers/ProviderRegistry.test.ts",
+        "apps/server/src/resourceTelemetry/Model.test.ts",
+        "apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/diagnostics/ProcessDiagnostics.test.ts apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts apps/server/src/provider/Drivers/CodexDriver.test.ts apps/server/src/provider/Layers/ProviderInstanceRegistryLive.test.ts apps/server/src/provider/Layers/ProviderRegistry.test.ts apps/server/src/resourceTelemetry/Model.test.ts apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts"
       ]
     }
   ]

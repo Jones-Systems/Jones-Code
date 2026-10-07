@@ -40,7 +40,7 @@ import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
-import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
+import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as AntigravityInstallation from "../AntigravityInstallation.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import { applyProviderCompatibility } from "../providerCompatibility.ts";
