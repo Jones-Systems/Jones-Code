@@ -176,6 +176,8 @@
     "apps/server/src/hostStatus/gateway.ts": "jones-owned",
     "apps/server/src/hostStatus/http.test.ts": "jones-owned",
     "apps/server/src/hostStatus/http.ts": "jones-owned",
+    "apps/server/src/jones/cleanup/DeletionAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/cleanup/DeletionAdmission.ts": "jones-owned",
     "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts": "jones-owned",
     "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.ts": "jones-owned",
     "apps/server/src/jones/cleanup/DeletionWorktreeRemovalTypes.ts": "jones-owned",
@@ -196,6 +198,8 @@
     "apps/server/src/jones/mcp/organizationMetadata/handlers.ts": "jones-owned",
     "apps/server/src/jones/mcp/organizationMetadata/tools.ts": "jones-owned",
     "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.ts": "jones-owned",
     "apps/server/src/jones/processPlacement/processPlacement.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/processPlacement/processPlacement.ts": "jones-owned",
     "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts": "jones-tests-in-upstream",
@@ -756,7 +760,8 @@
     "scripts/lib/brand-assets.ts": "accepted-shared",
     "scripts/release-smoke.ts": "accepted-shared",
     "scripts/stamp-jones-build.test.ts": "jones-owned",
-    "scripts/stamp-jones-build.ts": "jones-owned"
+    "scripts/stamp-jones-build.ts": "jones-owned",
+    "apps/server/src/jones/persistence/JonesMigrations.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

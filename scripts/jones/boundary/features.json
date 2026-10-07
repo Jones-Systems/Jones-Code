@@ -209,8 +209,12 @@
     },
     {
       "id": "deletion-worktree-removal",
-      "tests": ["apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts"],
-      "scope": "Synthetic producer custody; receiving native deletion ledger remains unavailable."
+      "tests": [
+        "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
+        "apps/server/src/jones/cleanup/DeletionAdmission.test.ts",
+        "apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts"
+      ],
+      "scope": "Deleted-thread worktreeOnDelete policy uses same EventSink SQL admission and original-start qualification; native workspace101 paths require explicit original-owner handoff."
     }
   ]
 }

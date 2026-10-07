@@ -14,8 +14,10 @@ import {
   DeletionWorktreeRemovalStartV1,
   type DeletionWorktreeRemovalTargetV1,
 } from "./DeletionWorktreeRemovalTypes.ts";
+import type { DeletionPolicyRead, DeletionLiveRead } from "./DeletionAdmission.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import type { ExecuteGitInput, ExecuteGitResult } from "../../vcs/GitVcsDriver.ts";
+import * as GitDriver from "../../vcs/GitVcsDriver.ts";
 
 export interface DeletionWorktreeRegistrationEntryV1 {
   readonly path: string;
@@ -449,6 +451,8 @@ export class QualifiedDeletionWorktreeRemoval extends Context.Service<
   {
     readonly execute: (
       effectId: string,
+      currentRules?: DeletionPolicyRead,
+      currentLive?: DeletionLiveRead,
     ) => Effect.Effect<
       DeletionWorktreeRemovalObservationV1,
       DeletionWorktreeRemovalPreconditionError
@@ -463,13 +467,18 @@ export class QualifiedDeletionWorktreeRemoval extends Context.Service<
 >()("t3/jones/cleanup/DeletionWorktreeRemoval/QualifiedDeletionWorktreeRemoval") {}
 
 // Only the durable EventSink owner can admit a start or qualify an observation.
-// The receiving owner has no native deletion ledger yet, so absence denies before Git.
+// Missing owner composition denies before Git; recovery only observes the original start.
 export const layer = Layer.effect(
   QualifiedDeletionWorktreeRemoval,
   Effect.gen(function* () {
     const sink = yield* EventSink.EventSinkV2;
     const producer = yield* DeletionWorktreeRemoval;
-    const run = (effectId: string, execute: boolean) =>
+    const run = (
+      effectId: string,
+      execute: boolean,
+      currentRules?: DeletionPolicyRead,
+      currentLive?: DeletionLiveRead,
+    ) =>
       Effect.gen(function* () {
         const read = sink.readDeletionWorktreeRemovalStart;
         const revalidate = sink.revalidateDeletionWorktreeRemovalStart;
@@ -486,7 +495,9 @@ export const layer = Layer.effect(
           });
         }
         const observed = execute
-          ? yield* producer.executeStarted(admitted.start, admitted.ordinal, revalidate)
+          ? yield* producer.executeStarted(admitted.start, admitted.ordinal, (start, ordinal) =>
+              revalidate(start, ordinal, currentRules, currentLive),
+            )
           : yield* producer.observeStarted(admitted.start, admitted.ordinal);
         yield* qualify(observed);
         return observed;
@@ -501,8 +512,17 @@ export const layer = Layer.effect(
         ),
       );
     return QualifiedDeletionWorktreeRemoval.of({
-      execute: (id) => run(id, true),
+      execute: (id, rules, live) => run(id, true, rules, live),
       observe: (id) => run(id, false),
     });
+  }),
+);
+
+// Adapt the existing Git executor without adding a second deletion or admission owner.
+export const gitLayer = Layer.effect(
+  DeletionWorktreeGit,
+  Effect.gen(function* () {
+    const git = yield* GitDriver.GitVcsDriver;
+    return DeletionWorktreeGit.of({ execute: (input) => git.execute(input) });
   }),
 );

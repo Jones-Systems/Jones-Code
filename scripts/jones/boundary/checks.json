@@ -497,9 +497,15 @@
     },
     {
       "id": "jones-deletion-worktree-removal",
-      "tests": ["apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts"],
+      "tests": [
+        "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
+        "apps/server/src/jones/cleanup/DeletionAdmission.test.ts",
+        "apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts",
+        "apps/server/src/storageCleanup.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts"
+      ],
       "commands": [
-        "vp test run apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
+        "vp test run apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts apps/server/src/jones/cleanup/DeletionAdmission.test.ts apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts apps/server/src/storageCleanup.test.ts apps/server/src/jones/persistence/Migrations.test.ts",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
       ]
