@@ -32,7 +32,7 @@
       "tests": [
         "apps/web/src/components/workQueue/WorkQueuePage.test.tsx"
       ],
-      "scope": "Mock submitted-work preview. Rebuild #113 canonical queue metadata remains outside automatically accepted scope; queue dispatch compatibility and process placement have separate source test references."
+      "scope": "Mock submitted-work preview remains covered by WorkQueuePage.test.tsx; the adapted canonical metadata panel, service, HTTP route, contracts and shared client runtime are covered by work-queue-metadata."
     },
     {
       "id": "boundary-inventory",
@@ -156,6 +156,18 @@
         "packages/contracts/src/jones/organizationMetadata.test.ts"
       ],
       "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer."
+    },
+    {
+      "id": "work-queue-metadata",
+      "tests": [
+        "apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts",
+        "apps/server/src/jones/workQueueMetadata/http.test.ts",
+        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
+        "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "packages/contracts/src/jones/workQueueMetadata.test.ts"
+      ],
+      "scope": "Adapted rebuild #113 canonical artifact metadata: validated server configuration and artifact reads, authenticated HTTP registration, capability-gated shared client reads, and metadata panel integration in WorkQueuePage."
     }
   ]
 }

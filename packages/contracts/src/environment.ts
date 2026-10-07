@@ -112,6 +112,7 @@ export const NativeBootstrapCreationCapability = nativeBootstrapCapabilityStruct
 export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  workQueueMetadata: Schema.optionalKey(Schema.Boolean),
   queueDispatch: Schema.optionalKey(QueueDispatchCapability),
   threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   nativeBootstrapCreation: Schema.optionalKey(NativeBootstrapCreationCapability),
