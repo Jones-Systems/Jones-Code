@@ -1,3 +1,4 @@
+import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
 import type { CapturedRuntimeStop } from "./ProviderAdapter.ts";
 import type * as RuntimeAttachment from "../jones/runtime/CurrentThreadRuntimeAttachment.ts";
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
@@ -178,6 +179,7 @@ export interface ProviderSessionManagerV2Shape {
 
   readonly shutdown: Effect.Effect<void>;
   readonly open: (input: {
+    readonly nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard;
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
     readonly modelSelection: ModelSelection;
@@ -360,6 +362,7 @@ export const layerWithOptions = (
         providerSessionId: ProviderSessionId,
         instanceId: ProviderInstanceId,
         driver: ProviderAdapterV2SessionRuntime["driver"],
+        nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard,
       ): ProviderRuntimeLifecycle => {
         const reservations = new Map<
           string,
@@ -384,6 +387,9 @@ export const layerWithOptions = (
         return {
           reserve: (threadId) =>
             Effect.gen(function* () {
+              yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                threadId,
+              });
               const rows = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
               const generation = String(
                 yield* idAllocator.allocate.event({ threadId, providerSessionId }),
@@ -491,7 +497,22 @@ export const layerWithOptions = (
                 threadId: thread.appThreadId,
                 event: observedEvent,
               });
-              return (yield* readThread(thread.appThreadId, thread.id)) ?? boundaryThread;
+              const committedThread = yield* readThread(thread.appThreadId, thread.id);
+              if (nativeCreationGuard !== undefined) {
+                const captured =
+                  committedThread === undefined
+                    ? undefined
+                    : runtimeBinding(committedThread, binding.runtimeGeneration);
+                if (
+                  captured === undefined ||
+                  committedThread?.runtimeIdentity?.runtimeGeneration !== binding.runtimeGeneration
+                )
+                  return yield* protocolError(
+                    "Native execution has no committed physical runtime binding.",
+                  );
+                yield* NativeProvider.bindNativeProviderGuard(nativeCreationGuard, captured);
+              }
+              return committedThread ?? boundaryThread;
             }).pipe(Effect.mapError(protocolError)),
           abandon: (generation) =>
             Effect.gen(function* () {
@@ -2231,6 +2252,19 @@ export const layerWithOptions = (
           sessionOpen.withLock(
             input.providerSessionId,
             Effect.gen(function* () {
+              yield* NativeProvider.revalidateNativeProviderGuard(input.nativeCreationGuard, {
+                threadId: input.threadId,
+                cwd: input.runtimePolicy.cwd,
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionOpenError({
+                      instanceId: input.modelSelection.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
               const cwd = input.runtimePolicy.cwd;
               if (cwd !== null) {
                 const workspaceIsDirectory = yield* fileSystem.stat(cwd).pipe(
@@ -2247,6 +2281,13 @@ export const layerWithOptions = (
               const key = sessionKey(input.providerSessionId);
               const existing = (yield* Ref.get(sessions)).get(key);
               if (existing !== undefined) {
+                if (input.nativeCreationGuard !== undefined)
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause: "Native creation cannot borrow an existing provider runtime.",
+                  });
+
                 if (
                   !existing.attachedThreadIds.has(input.threadId) &&
                   !existing.supportsMultipleProviderThreads
@@ -2267,6 +2308,28 @@ export const layerWithOptions = (
               }
 
               const adapter = yield* registry.get(input.modelSelection.instanceId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionOpenError({
+                      instanceId: input.modelSelection.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
+              if (
+                input.nativeCreationGuard !== undefined &&
+                (adapter.driver !== "codex" || adapter.nativeCreationExecution !== true)
+              )
+                return yield* new ProviderSessionOpenError({
+                  instanceId: input.modelSelection.instanceId,
+                  providerSessionId: input.providerSessionId,
+                  cause: "Native creation requires the direct Codex executor.",
+                });
+              yield* NativeProvider.revalidateNativeProviderGuard(input.nativeCreationGuard, {
+                threadId: input.threadId,
+                cwd: input.runtimePolicy.cwd,
+              }).pipe(
                 Effect.mapError(
                   (cause) =>
                     new ProviderSessionOpenError({
@@ -2297,10 +2360,14 @@ export const layerWithOptions = (
                 .openSession({
                   threadId: input.threadId,
                   providerSessionId: input.providerSessionId,
+                  ...(input.nativeCreationGuard === undefined
+                    ? {}
+                    : { nativeCreationGuard: input.nativeCreationGuard }),
                   runtimeLifecycle: makeRuntimeLifecycle(
                     input.providerSessionId,
                     input.modelSelection.instanceId,
                     adapter.driver,
+                    input.nativeCreationGuard,
                   ),
                   modelSelection: input.modelSelection,
                   runtimePolicy: input.runtimePolicy,

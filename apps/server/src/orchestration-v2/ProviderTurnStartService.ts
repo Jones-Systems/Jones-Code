@@ -1,3 +1,5 @@
+import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
+import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { isWorkModeKeepWarm, workModeProviderPrompt } from "../jones/provider/workModePrompt.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as ServerSettings from "../serverSettings.ts";
@@ -77,6 +79,11 @@ export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStart
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
 
 export interface ProviderTurnStartServiceV2Shape {
+  readonly startNative?: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly guard: NativeProvider.NativeProviderExecutionGuard;
+  }) => Effect.Effect<NativeCreationWholeOperationEvidence, ProviderTurnStartError>;
   /**
    * Starts the run's provider turn. When `willRetry` is true, a session open
    * failure is returned so the caller can retry. Otherwise the run is settled
@@ -234,6 +241,7 @@ export const layer: Layer.Layer<
       readonly threadId: ThreadId;
       readonly runId: RunId;
       readonly willRetry?: boolean;
+      readonly nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard;
     }) {
       const { runId } = input;
       if (eventSink.assertRuntimeStopStartAllowed)
@@ -308,6 +316,30 @@ export const layer: Layer.Layer<
           runId,
           cause: `Run ${runId} is missing its execution projection state.`,
         });
+      }
+      if (input.nativeCreationGuard !== undefined) {
+        yield* NativeProvider.revalidateNativeProviderGuard(input.nativeCreationGuard, {
+          threadId: input.threadId,
+          cwd: projection.thread.worktreePath,
+        });
+        if (
+          providerThread.driver !== "codex" ||
+          providerThread.nativeThreadRef !== null ||
+          nativeForkTransfer !== undefined ||
+          isWorkModeKeepWarm(message) ||
+          message.text.trim().toLowerCase() === "/compact" ||
+          isRestartNoteContinuation(
+            run,
+            projection.runs,
+            projection.providerTurns,
+            projection.attempts,
+          )
+        ) {
+          return yield* new ProviderTurnStartError({
+            runId,
+            cause: "Native creation requires a fresh direct Codex root turn.",
+          });
+        }
       }
       // Settles a run that never reached the provider: one signal turn item plus
       // terminal run, attempt and root node, written only while the run is still
@@ -487,9 +519,15 @@ export const layer: Layer.Layer<
       }
       const { worktreePath, branch } = projection.thread;
       if (worktreePath !== null && branch !== null) {
-        const exists = yield* fileSystem
-          .exists(worktreePath)
-          .pipe(Effect.orElseSucceed(() => true));
+        const existence = fileSystem.exists(worktreePath);
+        const exists = yield* input.nativeCreationGuard === undefined
+          ? existence.pipe(Effect.orElseSucceed(() => true))
+          : existence;
+        if (!exists && input.nativeCreationGuard !== undefined)
+          return yield* new ProviderTurnStartError({
+            runId,
+            cause: "Native verified workspace disappeared; ordinary recreation is unavailable.",
+          });
         if (!exists) {
           const project = yield* projects.getById(projection.thread.projectId).pipe(
             Effect.map(Option.getOrUndefined),
@@ -570,6 +608,9 @@ export const layer: Layer.Layer<
               ),
             )
           : providerSessions.open({
+              ...(input.nativeCreationGuard === undefined
+                ? {}
+                : { nativeCreationGuard: input.nativeCreationGuard }),
               threadId: projection.thread.id,
               providerSessionId,
               modelSelection: run.modelSelection,
@@ -699,6 +740,9 @@ export const layer: Layer.Layer<
               runtimePolicy: resolvedRuntimePolicy,
               providerSessionId,
               existingProviderThread: providerThread,
+              ...(input.nativeCreationGuard === undefined
+                ? {}
+                : { nativeCreationGuard: input.nativeCreationGuard }),
             }),
           );
         }
@@ -1371,14 +1415,16 @@ export const layer: Layer.Layer<
           );
           // The provider already accepted the turn. A stale pending marker
           // can force a fresh thread later, but must not stop live ingestion.
-          yield* delivery.delivered.pipe(
-            Effect.catchCause(() =>
-              Effect.logWarning("Failed to record accepted context handoff delivery", {
-                runId: run.id,
-                deliveryStatus: "pending",
-              }),
-            ),
-          );
+          yield* input.nativeCreationGuard === undefined
+            ? delivery.delivered.pipe(
+                Effect.catchCause(() =>
+                  Effect.logWarning("Failed to record accepted context handoff delivery", {
+                    runId: run.id,
+                    deliveryStatus: "pending",
+                  }),
+                ),
+              )
+            : delivery.delivered;
         }).pipe(
           Effect.mapError((cause) =>
             cause._tag === "ProviderAdapterTurnStartError"
@@ -1400,6 +1446,9 @@ export const layer: Layer.Layer<
           ? makeDeliverySession(session, startWithConfiguredEffort)
           : makeDeliverySession(session, startWithHandoffs);
       yield* runExecution.startRootRun({
+        ...(input.nativeCreationGuard === undefined
+          ? {}
+          : { nativeCreationGuard: input.nativeCreationGuard }),
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
         providerSessionId,
@@ -1446,6 +1495,27 @@ export const layer: Layer.Layer<
     });
 
     return ProviderTurnStartServiceV2.of({
+      startNative: (input) =>
+        Effect.gen(function* () {
+          yield* start({
+            threadId: input.threadId,
+            runId: input.runId,
+            nativeCreationGuard: input.guard,
+          });
+          const evidence = NativeProvider.readNativeProviderAcknowledgement(input.guard);
+          if (evidence === undefined)
+            return yield* new ProviderTurnStartError({
+              runId: input.runId,
+              cause: "Native start did not receive its direct whole-operation acknowledgement.",
+            });
+          return evidence;
+        }).pipe(
+          Effect.mapError((cause) =>
+            isProviderTurnStartError(cause)
+              ? cause
+              : new ProviderTurnStartError({ runId: input.runId, cause }),
+          ),
+        ),
       start: (input) =>
         start(input).pipe(
           Effect.mapError((cause) =>
