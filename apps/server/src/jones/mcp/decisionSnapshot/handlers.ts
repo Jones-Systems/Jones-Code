@@ -9,6 +9,15 @@ import { requireMcpCapability } from "../../../mcp/McpInvocationContext.ts";
 import { CollectorFailure, DecisionSnapshotCollector, monotonicSeconds } from "./collector.ts";
 import { DecisionSnapshot, DecisionSnapshotToolkit } from "./tools.ts";
 
+export class NativeCountReadError extends Schema.TaggedError<NativeCountReadError>()(
+  "NativeCountReadError",
+  { source: Schema.Literals(["threads", "workstreams"]) },
+) {
+  override get message(): string {
+    return "Native decision snapshot counts are unavailable.";
+  }
+}
+
 interface OperatingCounts {
   readonly total: number;
   readonly operating: number;
@@ -49,10 +58,10 @@ export class DecisionSnapshotNativeCounts extends Context.Service<
   {
     readonly readOperatingCounts?: (
       projectId?: ProjectId,
-    ) => Effect.Effect<OperatingCounts, unknown>;
-    readonly readRegistryCounts?: () => Effect.Effect<RegistryObservation, unknown>;
+    ) => Effect.Effect<OperatingCounts, NativeCountReadError>;
+    readonly readRegistryCounts?: () => Effect.Effect<RegistryObservation, NativeCountReadError>;
   }
->()("jones/mcp/decisionSnapshot/DecisionSnapshotNativeCounts") {}
+>()("t3/jones/mcp/decisionSnapshot/handlers/DecisionSnapshotNativeCounts") {}
 export const DecisionSnapshotNativeCountsUnavailable = Layer.succeed(
   DecisionSnapshotNativeCounts,
   {},
@@ -100,7 +109,8 @@ export const DecisionSnapshotToolkitHandlersLive = DecisionSnapshotToolkit.toLay
             ? Effect.succeed(absentEntry("native_operating_counts_unavailable", threadScope))
             : countsPort.readOperatingCounts(projectId).pipe(
                 Effect.map((counts) => ({
-                  status: counts.backgroundUnknown === 0 ? ("observed" as const) : ("partial" as const),
+                  status:
+                    counts.backgroundUnknown === 0 ? ("observed" as const) : ("partial" as const),
                   observed_at: counts.backgroundSampledAt,
                   timestamp_basis: "native_observation" as const,
                   scope: threadScope,
@@ -121,7 +131,9 @@ export const DecisionSnapshotToolkitHandlersLive = DecisionSnapshotToolkit.toLay
                 Effect.timeoutOrElse({
                   duration: 5_000,
                   orElse: () =>
-                    Effect.succeed(absentEntry("native_projection_timeout", threadScope, "timeout")),
+                    Effect.succeed(
+                      absentEntry("native_projection_timeout", threadScope, "timeout"),
+                    ),
                 }),
               ),
         );

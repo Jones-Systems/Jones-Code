@@ -13,7 +13,6 @@
     "apps/server/src/jones/mcp/decisionSnapshot/fixtures/decision_snapshot.py.fixture"
   ],
   "hookPaths": [
-    "apps/server/src/mcp/McpHttpServer.ts",
     "apps/server/src/mcp/McpInvocationContext.ts",
     "apps/server/src/mcp/McpInvocationContext.test.ts",
     "apps/server/src/mcp/McpSessionRegistry.test.ts"

@@ -6,7 +6,11 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpInvocationContext, type McpCapability } from "../../../mcp/McpInvocationContext.ts";
 import { CollectorFailure, DecisionSnapshotCollector } from "./collector.ts";
-import { DecisionSnapshotNativeCounts, DecisionSnapshotToolkitHandlersLive } from "./handlers.ts";
+import {
+  DecisionSnapshotNativeCounts,
+  DecisionSnapshotToolkitHandlersLive,
+  NativeCountReadError,
+} from "./handlers.ts";
 import { DecisionSnapshotToolkit } from "./tools.ts";
 
 const harness = Effect.fnUntraced(function* (
@@ -19,25 +23,28 @@ const harness = Effect.fnUntraced(function* (
   let launches = 0;
   let envelope = "";
   const dependencies = Layer.mergeAll(
-    Layer.succeed(DecisionSnapshotNativeCounts, nativePorts ?? {
-      readOperatingCounts: () => {
-        reads++;
-        return Effect.succeed({
-          total: 9,
-          operating: 3,
-          foregroundWaitingApproval: 1,
-          foregroundWaitingInput: 2,
-          foregroundWaitingPlan: 1,
-          backgroundOperating: 2,
-          backgroundUnknown,
-          backgroundSampledAt: "2026-10-02T00:00:00Z",
-        });
+    Layer.succeed(
+      DecisionSnapshotNativeCounts,
+      nativePorts ?? {
+        readOperatingCounts: () => {
+          reads++;
+          return Effect.succeed({
+            total: 9,
+            operating: 3,
+            foregroundWaitingApproval: 1,
+            foregroundWaitingInput: 2,
+            foregroundWaitingPlan: 1,
+            backgroundOperating: 2,
+            backgroundUnknown,
+            backgroundSampledAt: "2026-10-02T00:00:00Z",
+          });
+        },
+        readRegistryCounts: () => {
+          registryReads++;
+          return Effect.fail(new NativeCountReadError({ source: "workstreams" }));
+        },
       },
-      readRegistryCounts: () => {
-        registryReads++;
-        return Effect.fail(new Error("fixture unsupported"));
-      },
-    }),
+    ),
     Layer.succeed(DecisionSnapshotCollector, {
       collect: (_purpose, input) =>
         Effect.gen(function* () {
@@ -129,10 +136,20 @@ it.effect("preserves incomplete V2 native background coverage as partial counts"
     const h = yield* harness(false, 2);
     expect(yield* h.call(["decision-snapshot"])).toMatchObject({
       coverage: "partial",
-      sources: { threads: { status: "partial", values: { operating: 3, total: 9 }, reason: "native_background_coverage_incomplete" } },
+      sources: {
+        threads: {
+          status: "partial",
+          values: { operating: 3, total: 9 },
+          reason: "native_background_coverage_incomplete",
+        },
+      },
     });
-    expect(JSON.parse(h.state().envelope).sources.threads).toMatchObject({
-      status: "partial", reason: "native_background_coverage_incomplete",
+    expect(
+      yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(h.state().envelope),
+    ).toMatchObject({
+      sources: {
+        threads: { status: "partial", reason: "native_background_coverage_incomplete" },
+      },
     });
   }),
 );
@@ -143,22 +160,68 @@ it.effect("reports typed unavailable for both native readers when no ports are b
     expect(yield* h.call(["decision-snapshot"])).toMatchObject({
       coverage: "unavailable",
       sources: {
-        threads: { status: "unavailable", values: {}, reason: "native_operating_counts_unavailable" },
+        threads: {
+          status: "unavailable",
+          values: {},
+          reason: "native_operating_counts_unavailable",
+        },
         workstreams: { status: "unavailable", values: {}, reason: "registry_counts_unavailable" },
-        host: { status: "unavailable", reason: "runtime_unavailable", values: { start_fenced: true } },
+        host: {
+          status: "unavailable",
+          reason: "runtime_unavailable",
+          values: { start_fenced: true },
+        },
       },
     });
     expect(h.state().reads).toBe(0);
   }),
 );
-for (const complete of [false, true]) {
-  it.effect(`preserves registry completeness=${complete} without promoting incomplete counts`, () =>
+it.effect.each([false, true])(
+  "preserves registry completeness=%s without promoting incomplete counts",
+  (complete) =>
     Effect.gen(function* () {
       const h = yield* harness(false, 0, {
-        readRegistryCounts: () => Effect.succeed({
-          complete,
+        readRegistryCounts: () =>
+          Effect.succeed({
+            complete,
+            counts: {
+              context: { owner_id: "fixture-owner", registry_version: 7, server_generation: 1 },
+              principal_id: "fixture-principal",
+              observed_at: "2026-10-02T00:00:00Z",
+              active: 1,
+              total: 2,
+              unknown_lifecycle: 0,
+            },
+            binding: {
+              registryId: "fixture-registry",
+              ownerId: "fixture-owner",
+              principalId: "fixture-principal",
+              registryVersion: 7,
+              serverGeneration: 1,
+              authorizationRevision: 1,
+            },
+          }),
+      });
+      expect(yield* h.call(["decision-snapshot"])).toMatchObject({
+        coverage: "partial",
+        sources: {
+          workstreams: {
+            status: complete ? "observed" : "partial",
+            values: { active: 1, total: 2 },
+            reason: complete ? null : "registry_counts_incomplete",
+          },
+        },
+      });
+    }),
+);
+it.effect("refuses registry counts from a changed native binding", () =>
+  Effect.gen(function* () {
+    const h = yield* harness(false, 0, {
+      readRegistryCounts: () =>
+        Effect.succeed({
+          complete: true,
           counts: {
-            context: { owner_id: "fixture-owner", registry_version: 7, server_generation: 1 },
+            context: { owner_id: "other-owner", registry_version: 7, server_generation: 1 },
             principal_id: "fixture-principal",
             observed_at: "2026-10-02T00:00:00Z",
             active: 1,
@@ -174,46 +237,12 @@ for (const complete of [false, true]) {
             authorizationRevision: 1,
           },
         }),
-      });
-      expect(yield* h.call(["decision-snapshot"])).toMatchObject({
-        coverage: "partial",
-        sources: {
-          workstreams: {
-            status: complete ? "observed" : "partial",
-            values: { active: 1, total: 2 },
-            reason: complete ? null : "registry_counts_incomplete",
-          },
-        },
-      });
-    }),
-  );
-}
-it.effect("refuses registry counts from a changed native binding", () =>
-  Effect.gen(function* () {
-    const h = yield* harness(false, 0, {
-      readRegistryCounts: () => Effect.succeed({
-        complete: true,
-        counts: {
-          context: { owner_id: "other-owner", registry_version: 7, server_generation: 1 },
-          principal_id: "fixture-principal",
-          observed_at: "2026-10-02T00:00:00Z",
-          active: 1,
-          total: 2,
-          unknown_lifecycle: 0,
-        },
-        binding: {
-          registryId: "fixture-registry",
-          ownerId: "fixture-owner",
-          principalId: "fixture-principal",
-          registryVersion: 7,
-          serverGeneration: 1,
-          authorizationRevision: 1,
-        },
-      }),
     });
     expect(yield* h.call(["decision-snapshot"])).toMatchObject({
       coverage: "unavailable",
-      sources: { workstreams: { status: "unavailable", values: {}, reason: "registry_binding_changed" } },
+      sources: {
+        workstreams: { status: "unavailable", values: {}, reason: "registry_binding_changed" },
+      },
     });
   }),
 );

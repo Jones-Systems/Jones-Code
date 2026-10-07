@@ -212,7 +212,7 @@ export class DecisionSnapshotCollector extends Context.Service<
       deadlineMonotonic: number,
     ) => Effect.Effect<string, CollectorFailure>;
   }
->()("t3/mcp/toolkits/decisionSnapshot/collector/DecisionSnapshotCollector") {}
+>()("t3/jones/mcp/decisionSnapshot/collector/DecisionSnapshotCollector") {}
 
 export function makeCollector(
   binding: CollectorBinding | null,
