@@ -1,3 +1,5 @@
+import * as ProjectionStoreV2 from "../../orchestration-v2/ProjectionStore.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as WorkQueueMetadataService from "../workQueueMetadata/WorkQueueMetadataService.ts";
 import { workQueueMetadataHttpApiLayer } from "../workQueueMetadata/http.ts";
 import * as Layer from "effect/Layer";
