@@ -108,10 +108,13 @@ it.effect("long-polls by the returned revision until the host reports no Jones s
       phase: "available",
       capability: { check: true, download: false, install: true },
     };
-    const states = yield* observeJonesUpdateState(Stream.succeed(Option.some("prepared")), (after) => {
-      cursors.push(after);
-      return Effect.succeed(after === undefined ? staged : after === 2 ? newer : null);
-    }).pipe(Stream.runCollect);
+    const states = yield* observeJonesUpdateState(
+      Stream.succeed(Option.some("prepared")),
+      (after) => {
+        cursors.push(after);
+        return Effect.succeed(after === undefined ? staged : after === 2 ? newer : null);
+      },
+    ).pipe(Stream.runCollect);
     expect(cursors).toEqual([undefined, 2, 3]);
     expect(states).toEqual([staged, newer, null]);
   }),

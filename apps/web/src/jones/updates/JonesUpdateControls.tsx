@@ -20,7 +20,9 @@ export function JonesUpdateControls({ environmentId }: { readonly environmentId:
   };
   const busy =
     pending ||
-    ["checking", "building", "downloading", "verifying", "preparing", "installing"].includes(state.phase);
+    ["checking", "building", "downloading", "verifying", "preparing", "installing"].includes(
+      state.phase,
+    );
   const provenance = state.provenance;
   return (
     <div className="mt-2 flex max-w-lg flex-col gap-2 text-xs">

@@ -29,7 +29,9 @@ export function JonesUpdateControls({
   };
   const busy =
     pending ||
-    ["checking", "building", "downloading", "verifying", "preparing", "installing"].includes(state.phase);
+    ["checking", "building", "downloading", "verifying", "preparing", "installing"].includes(
+      state.phase,
+    );
   const provenance = state.provenance;
   return (
     <SettingsSection title="Jones main builds">
