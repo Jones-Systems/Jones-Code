@@ -1627,11 +1627,17 @@ async function workerMain() {
   process.once("SIGINT", abort);
   try {
     const producer = input.options.producer;
-    if (producer !== "current-v2" && producer !== "historical-v1") refuse("invalid_producer", "worker requires explicit producer");
-    const produce = producer === "current-v2"
-      ? (await import("../../../apps/server/scripts/jones/currentFixtures.ts")).produceCurrentFixture
-      : produceFixture;
-    const produced = await produce({ ...input.options, signal: controller.signal }, () => undefined);
+    if (producer !== "current-v2" && producer !== "historical-v1")
+      refuse("invalid_producer", "worker requires explicit producer");
+    const produce =
+      producer === "current-v2"
+        ? (await import("../../../apps/server/scripts/jones/currentFixtures.ts"))
+            .produceCurrentFixture
+        : produceFixture;
+    const produced = await produce(
+      { ...input.options, signal: controller.signal },
+      () => undefined,
+    );
     if (produced.error) {
       process.exitCode = 1;
       const bytes = `${JSON.stringify({
