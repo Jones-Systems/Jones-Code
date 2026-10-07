@@ -1,3 +1,4 @@
+import type * as Workspace from "./NativeCreationWorkspaceTypes.ts";
 import {
   NativeCreationEffect,
   NativeCreationHistoricalBinding,
@@ -86,6 +87,25 @@ import type {
 export class NativeCreationRepository extends Context.Service<
   NativeCreationRepository,
   {
+    readonly readWorkspaceClaim?: (
+      claimId: string,
+    ) => Effect.Effect<NativeCreationHistory, NativeCreationRepositoryError>;
+    readonly admitWorkspace?: (
+      claimId: string,
+      basis: Workspace.NativeWorkspaceBasis,
+    ) => Effect.Effect<void, NativeCreationRepositoryError>;
+    readonly readWorkspaceAdmission?: (
+      claimId: string,
+    ) => Effect.Effect<Workspace.NativeWorkspaceBasis, NativeCreationRepositoryError>;
+    readonly readWorkspaceVerified?: (
+      claimId: string,
+    ) => Effect.Effect<
+      Option.Option<Workspace.NativeWorkspaceVerified>,
+      NativeCreationRepositoryError
+    >;
+    readonly recordWorkspaceVerified?: (
+      verified: Workspace.NativeWorkspaceVerified,
+    ) => Effect.Effect<void, NativeCreationRepositoryError>;
     // Optional until the same durable owner installs V2 execution storage; absence denies issuance.
     readonly readExecutionReference?: (
       reference: NativeCreationExecutionReferenceV2,

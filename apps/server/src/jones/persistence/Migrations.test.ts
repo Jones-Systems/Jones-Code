@@ -315,7 +315,7 @@ it.effect.each([
 it.effect("rejects a future ledger gap instead of skipping a pending lower registered ID", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations();
+    yield* seedLegacy();
     yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (101, 'LaterProbe')`;
     const before = yield* readLedger;
     const result = yield* Effect.exit(

@@ -9,6 +9,7 @@ import JonesMigration0005 from "./Migrations/005_JonesWorkstreamsNativeAttempts.
 import JonesMigration0006 from "./Migrations/006_JonesWorkstreamsProviderEnrollments.ts";
 
 import JonesMigration0100 from "./Migrations/100_JonesNativeCreationExecution.ts";
+import JonesMigration0101 from "./Migrations/101_JonesNativeWorkspacePreparation.ts";
 
 // Preserve the released Jones identities. New Jones migrations start at 100;
 // IDs 7–99 belong to known foreign histories, never to this rebuild's loader.
@@ -20,6 +21,7 @@ const jonesMigrationEntries = [
   [5, "WorkstreamsNativeAttempts", JonesMigration0005],
   [6, "WorkstreamsProviderEnrollments", JonesMigration0006],
   [100, "NativeCreationExecution", JonesMigration0100],
+  [101, "NativeWorkspacePreparation", JonesMigration0101],
 ] as const;
 
 export const runMigrations = () =>

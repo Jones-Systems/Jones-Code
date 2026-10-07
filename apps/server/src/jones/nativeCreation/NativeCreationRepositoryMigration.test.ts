@@ -21,6 +21,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 5, name: "WorkstreamsNativeAttempts" },
         { migration_id: 6, name: "WorkstreamsProviderEnrollments" },
         { migration_id: 100, name: "NativeCreationExecution" },
+        { migration_id: 101, name: "NativeWorkspacePreparation" },
       ],
     );
     assert.deepEqual(
