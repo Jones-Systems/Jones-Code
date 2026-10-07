@@ -276,6 +276,15 @@
         "vp test run apps/server/scripts/jones/currentFixtures.test.ts",
         "node --test --test-concurrency=1 scripts/jones/performance/fixtures.node-test.mjs scripts/jones/performance/fixtures-historical-worker.node-test.mjs scripts/jones/performance/sources.node-test.mjs"
       ]
+    },
+    {
+      "id": "jones-performance-migration-restore",
+      "tests": [
+        "scripts/jones/performance/migration-restore.node-test.mjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/performance/migration-restore.node-test.mjs"
+      ]
     }
   ]
 }

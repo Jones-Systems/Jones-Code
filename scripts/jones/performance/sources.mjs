@@ -30,6 +30,24 @@ export const qualificationSourcePins = Object.freeze([
     tree: "e4cc6a712c634cfff25979dcbadb4b753d3f7309",
     lockSha256: "68549e7f8c7fb39bc313b1314374d3303c0461bfe9c1af0740a719b999df6cfd",
   }),
+  Object.freeze({
+    "directory": "lease-current",
+    "sourceRevision": "7c86493f6eff9ba9b30d3ff20ae33e10cdfb4607",
+    "tree": "338eb4a11f2fea6042b829944b7408bd8952123a",
+    "lockSha256": "755533d1deccfb663c092f62c26d65eac057ff1e43f09c24659e0cfc870d7c7f"
+}),
+  Object.freeze({
+    "directory": "v2-aggregate-77",
+    "sourceRevision": "ae25e5d04bec70c2c0af51af70329a9e9086d15e",
+    "tree": "88fef296fa78526a649ffb87d8efebbecc7d5a17",
+    "lockSha256": "37a8109c36aa9e065cc9cd4dc1144a024b4d81883db11db4822decfb25c1257a"
+}),
+  Object.freeze({
+    "directory": "v2-aggregate-91",
+    "sourceRevision": "09ead6ea565ffce428e9cda1bd5696c69ce9e616",
+    "tree": "fa551ba6ef57f64461964dce62c255817b412dd9",
+    "lockSha256": "37a8109c36aa9e065cc9cd4dc1144a024b4d81883db11db4822decfb25c1257a"
+}),
 ]);
 const lockSha256 = "34460ca4290c8132ae0f26ba0224476b22c39983e8bcd735e357f15989592fc4";
 
