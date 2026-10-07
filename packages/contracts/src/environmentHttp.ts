@@ -1,3 +1,11 @@
+import { ProviderInstanceId } from "./providerInstance.ts";
+import { MessageId } from "./baseSchemas.ts";
+import { CommandId } from "./baseSchemas.ts";
+import {
+  ProviderQueueInventory,
+  ProviderQueueRefreshResult,
+  OrchestrationCommandObservation,
+} from "./providerQueue.ts";
 import {
   VoiceReviewRecentList,
   VoiceReviewDiagnostics,
@@ -123,6 +131,8 @@ export const EnvironmentRequestInvalidReason = Schema.Literals([
   "scope_not_granted",
   "invalid_command",
   "invalid_history_cursor",
+  "dispatch_guard_bootstrap_unsupported",
+  "dispatch_guard_rejected",
 ]);
 export type EnvironmentRequestInvalidReason = typeof EnvironmentRequestInvalidReason.Type;
 
@@ -154,6 +164,8 @@ export const EnvironmentInternalErrorReason = Schema.Literals([
   "orchestration_thread_snapshot_failed",
   "orchestration_thread_bounded_snapshot_failed",
   "orchestration_thread_history_failed",
+  "orchestration_dispatch_failed",
+  "orchestration_command_observation_failed",
   "internal_error",
 ]);
 export type EnvironmentInternalErrorReason = typeof EnvironmentInternalErrorReason.Type;
@@ -648,7 +660,58 @@ const EnvironmentOrchestrationThreadHistoryErrors = [
   EnvironmentInternalError,
 ] as const;
 
-class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
+export const ProviderGoalStateObservation = Schema.Struct({
+  schema: Schema.Literal("t3.provider-goal-state/v1"),
+  threadId: ThreadId,
+  providerInstanceId: ProviderInstanceId,
+  nativeThreadId: Schema.NullOr(TrimmedNonEmptyString),
+  observedAtMs: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  state: Schema.Literals(["active", "inactive", "unknown"]),
+  reasonCode: Schema.Literals([
+    "goal_null",
+    "goal_present",
+    "no_session",
+    "session_stopped",
+    "instance_mismatch",
+    "native_cursor_missing",
+    "unsupported",
+    "timeout",
+    "malformed",
+    "goal_field_omitted",
+    "rpc_error",
+    "context_changed",
+  ]),
+});
+export type ProviderGoalStateObservation = typeof ProviderGoalStateObservation.Type;
+
+export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
+  .add(
+    HttpApiEndpoint.get(
+      "commandObservation",
+      "/api/orchestration/threads/:threadId/commands/:commandId",
+      {
+        headers: OptionalBearerHeaders,
+        params: Schema.Struct({ threadId: ThreadId, commandId: CommandId }),
+        query: { messageId: MessageId },
+        success: OrchestrationCommandObservation,
+        error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "providerGoalState",
+      "/api/orchestration/threads/:threadId/provider-goal-state",
+      {
+        headers: OptionalBearerHeaders,
+        params: EnvironmentOrchestrationThreadSnapshotParams,
+        query: { expectedInstanceId: ProviderInstanceId },
+        success: ProviderGoalStateObservation,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+
   .add(
     HttpApiEndpoint.get("shellSnapshot", "/api/orchestration/shell", {
       headers: OrchestrationProtocolHeaders,
@@ -870,6 +933,42 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
+export class EnvironmentQueueDispatchHttpApi extends HttpApiGroup.make("queueDispatch").add(
+  HttpApiEndpoint.post("dispatch", "/api/orchestration/dispatch", {
+    headers: OptionalBearerHeaders,
+    payload: Schema.Unknown,
+    success: Schema.Struct({
+      sequence: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+    }),
+    error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
+export class ProviderQueueHttpApi extends HttpApiGroup.make("providerQueue")
+  .add(
+    HttpApiEndpoint.get("inventory", "/api/provider-queue/inventory", {
+      headers: OptionalBearerHeaders,
+      success: ProviderQueueInventory,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("usage", "/api/provider-queue/instances/:instanceId/usage", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ instanceId: ProviderInstanceId }),
+      success: ProviderQueueRefreshResult,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("refresh", "/api/provider-queue/instances/:instanceId/refresh", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ instanceId: ProviderInstanceId }),
+      success: ProviderQueueRefreshResult,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 export class EnvironmentConversationLibraryHttpApi extends HttpApiGroup.make(
   "conversationLibrary",
 ).add(
@@ -1048,6 +1147,8 @@ class EnvironmentHostStatusHttpApi extends HttpApiGroup.make("hostStatus").add(
 ) {}
 
 export class EnvironmentHttpApi extends HttpApi.make("environment")
+  .add(ProviderQueueHttpApi)
+  .add(EnvironmentQueueDispatchHttpApi)
   .add(EnvironmentVoiceReviewHttpApi)
   .add(EnvironmentHostStatusHttpApi)
   .add(EnvironmentMetadataHttpApi)

@@ -2,17 +2,93 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { ProviderInstanceId, type ModelSelection, type ServerConfig } from "@t3tools/contracts";
 
+import { getProviderOptionDescriptors } from "@t3tools/shared/model";
 import {
   buildModelOptions,
   groupByProvider,
   isModelSelectionUnavailable,
   resolveDefaultableModelSelection,
   resolveNewTaskModelSelection,
+  resolveModelDisplayCapabilities,
   resolveSelectableModelSelection,
   type ModelOption,
 } from "./modelOptions";
 
 describe("mobile model options", () => {
+  it("displays the current configured effort across accounts without changing stored options", () => {
+    const capabilities = {
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select" as const,
+          currentValue: "medium",
+          options: [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium", isDefault: true },
+            { id: "high", label: "High" },
+          ],
+        },
+      ],
+    };
+    const config = {
+      providers: [
+        {
+          instanceId: "codex_personal",
+          driver: "codex",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [{ slug: "gpt-5.6-sol", name: "Sol", capabilities }],
+        },
+        { instanceId: "codex_work", driver: "codex", models: [] },
+      ],
+    } as unknown as ServerConfig;
+    const selection: ModelSelection = {
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      model: "gpt-5.6-sol",
+    };
+    for (const effort of ["high", "low"]) {
+      const input = {
+        config,
+        capabilities,
+        modelSelection: selection,
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex_work"),
+          model: selection.model,
+          options: [{ id: "reasoningEffort", value: effort }],
+        },
+      };
+      const displayCaps = resolveModelDisplayCapabilities(input)!;
+      const descriptors = getProviderOptionDescriptors({
+        caps: displayCaps,
+        selections: selection.options,
+      });
+      expect(descriptors[0]?.currentValue).toBe(effort);
+      expect(selection.options).toBeUndefined();
+      const modelOption = buildModelOptions(
+        config,
+        selection,
+        undefined,
+        input.defaultModelSelection,
+      )[0]!;
+      expect(modelOption.capabilities?.optionDescriptors?.[0]?.currentValue).toBe(effort);
+      expect(modelOption.selection.options).toBeUndefined();
+      expect(
+        resolveModelDisplayCapabilities({
+          ...input,
+          modelSelection: { ...selection, options: [{ id: "reasoningEffort", value: "medium" }] },
+        }),
+      ).toBe(capabilities);
+      expect(
+        resolveModelDisplayCapabilities({
+          ...input,
+          defaultModelSelection: { ...input.defaultModelSelection, model: "other-model" },
+        }),
+      ).toBe(capabilities);
+    }
+  });
+
   it("groups models by provider and flags legacy entries", () => {
     const config = {
       providers: [
