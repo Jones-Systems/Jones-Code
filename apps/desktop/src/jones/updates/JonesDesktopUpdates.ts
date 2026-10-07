@@ -263,7 +263,8 @@ export class JonesDesktopUpdateController {
       this.#candidateStartupGateUnavailable ||
       (this.#staged !== undefined && this.#staged.startupGateProtocol !== 1);
     if (candidateGateUnavailable && message === undefined) {
-      message = "The staged candidate lacks qualified startupGateProtocol:1; its fixed selection was retained.";
+      message =
+        "The staged candidate lacks qualified startupGateProtocol:1; its fixed selection was retained.";
     }
     const checkedAt =
       this.#busy === "check" ? await this.#options.timestamp() : this.#state.checkedAt;
@@ -573,9 +574,7 @@ export class JonesDesktopUpdateController {
     }
   }
 
-  async install(
-    handle?: string,
-  ): Promise<{
+  async install(handle?: string): Promise<{
     accepted: boolean;
     completed: boolean;
     failed: boolean;

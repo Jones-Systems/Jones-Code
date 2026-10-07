@@ -229,7 +229,10 @@ export const listen: Effect.Effect<
           if (updates.downloadSelected === undefined) {
             yield* publishReport(
               latest,
-              { outcome: "failed", reason: "The desktop cannot reserve a qualified Jones selection." },
+              {
+                outcome: "failed",
+                reason: "The desktop cannot reserve a qualified Jones selection.",
+              },
               request.requestId,
             );
             return;
@@ -251,7 +254,7 @@ export const listen: Effect.Effect<
                 reason:
                   downloaded.refusal === "selection-mismatch"
                     ? "The selected Jones artifact changed; check again before Download."
-                    : downloaded.state.message ?? "The Jones app could not be staged.",
+                    : (downloaded.state.message ?? "The Jones app could not be staged."),
               },
               request.requestId,
             );
@@ -277,7 +280,10 @@ export const listen: Effect.Effect<
         if (request.action !== undefined) {
           yield* publishReport(
             latest,
-            { outcome: "failed", reason: "Jones update controls are unavailable for this desktop." },
+            {
+              outcome: "failed",
+              reason: "Jones update controls are unavailable for this desktop.",
+            },
             request.requestId,
           );
           return;

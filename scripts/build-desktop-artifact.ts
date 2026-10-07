@@ -3703,7 +3703,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
     ...(yield* decodeJonesDesktopBuildMetadata({
-      ...("jonesSource" in desktopPackageJson ? { jonesSource: desktopPackageJson.jonesSource } : {}),
+      ...("jonesSource" in desktopPackageJson
+        ? { jonesSource: desktopPackageJson.jonesSource }
+        : {}),
       ...("startupGateProtocol" in desktopPackageJson
         ? { startupGateProtocol: desktopPackageJson.startupGateProtocol }
         : {}),

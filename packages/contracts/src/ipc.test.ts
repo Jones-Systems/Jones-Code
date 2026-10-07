@@ -70,7 +70,12 @@ describe("DesktopUpdateStateSchema Jones reports", () => {
       source: "jones-actions",
       channel: "jones-main",
       phase: "staged",
-      capability: { check: true, download: false, install: false, reason: "native-consent-required" },
+      capability: {
+        check: true,
+        download: false,
+        install: false,
+        reason: "native-consent-required",
+      },
       stagedHandle: "e".repeat(64),
       provenance: {
         repository: "Jones-Systems/Jones-Code",

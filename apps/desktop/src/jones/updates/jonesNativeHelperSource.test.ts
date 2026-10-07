@@ -195,7 +195,8 @@ else:
 
 describe("Jones native helper", () => {
   it.each(["success", "failure", "cancel"])(
-    "removes only its captured synthetic fixture after %s", async (outcome) => {
+    "removes only its captured synthetic fixture after %s",
+    async (outcome) => {
       const sibling = await fixture();
       let owned: string | undefined;
       const failure = new Error("synthetic fixture failed");

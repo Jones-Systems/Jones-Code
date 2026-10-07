@@ -25,7 +25,8 @@ export const JonesDesktopBuildMetadata = Schema.Union([
     startupGateProtocol: Schema.optionalKey(Schema.Never),
   }),
 ]);
-export const decodeJonesDesktopBuildMetadata = Schema.decodeUnknownEffect(JonesDesktopBuildMetadata);
+export const decodeJonesDesktopBuildMetadata =
+  Schema.decodeUnknownEffect(JonesDesktopBuildMetadata);
 
 /** An unsigned preview remains a manual Darwin build, never a signed release qualification. */
 export function bundlesJonesNativeHelper(

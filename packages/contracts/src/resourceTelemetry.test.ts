@@ -72,7 +72,11 @@ describe("DesktopTelemetryControlMessage Jones selection", () => {
   const codec = Schema.toCodecJson(DesktopTelemetryControlMessage);
   const decode = Schema.decodeUnknownSync(codec);
   const encode = Schema.encodeSync(codec);
-  const legacyRequest = { version: 1, type: "requestDesktopUpdate", requestId: "request-1" } as const;
+  const legacyRequest = {
+    version: 1,
+    type: "requestDesktopUpdate",
+    requestId: "request-1",
+  } as const;
 
   it("retains legacy requests and separate qualified Check and Download controls", () => {
     expect(decode(encode(legacyRequest))).toEqual(legacyRequest);

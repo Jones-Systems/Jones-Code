@@ -3,7 +3,10 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import type { JonesActionsCandidate, JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
+import type {
+  JonesActionsCandidate,
+  JonesStagedArtifact,
+} from "@t3tools/shared/jones/jonesActions";
 import {
   JonesDesktopUpdateController,
   type JonesDesktopUpdateOptions,
@@ -292,20 +295,29 @@ describe("Jones desktop updates", () => {
       expect(f.stages()).toBe(0);
       expect(f.controller.state.jones?.stagedHandle).toBeUndefined();
       expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
-      expect(await f.controller.download({
-        artifactId: 99,
-        sourceSha: "f".repeat(40),
-      })).toEqual({ accepted: true, completed: true });
+      expect(
+        await f.controller.download({
+          artifactId: 99,
+          sourceSha: "f".repeat(40),
+        }),
+      ).toEqual({ accepted: true, completed: true });
       expect(f.stages()).toBe(1);
     } finally {
       await f.cleanup();
     }
   });
   it.each(["intent.json", "prepare-intent.json"])(
-    "holds a retained %s without a completed transaction receipt", async (marker) => {
+    "holds a retained %s without a completed transaction receipt",
+    async (marker) => {
       const f = await fixture();
       try {
-        const transaction = NodePath.join(f.home, "runtime", "jones-updates", "transactions", handle);
+        const transaction = NodePath.join(
+          f.home,
+          "runtime",
+          "jones-updates",
+          "transactions",
+          handle,
+        );
         await NodeFSP.mkdir(transaction, { recursive: true });
         const file = NodePath.join(transaction, marker);
         await NodeFSP.writeFile(file, "retained-unknown-intent");

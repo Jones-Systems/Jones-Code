@@ -50,8 +50,15 @@ async function fixture() {
   git(["init", "--initial-branch=fixture"]);
   git(["add", "apps"]);
   git([
-    "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-    "-c", "commit.gpgsign=false", "commit", "-m", "fixture",
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-m",
+    "fixture",
   ]);
   return { root, sha: git(["rev-parse", "HEAD"]), tree: git(["rev-parse", "HEAD^{tree}"]) };
 }
@@ -96,12 +103,23 @@ describe("Jones build provenance", () => {
     const f = await fixture();
     try {
       const serverFile = NodePath.join(f.root, "apps/server/package.json");
-      const server = JSON.parse(await NodeFSP.readFile(serverFile, "utf8")) as Record<string, unknown>;
+      const server = JSON.parse(await NodeFSP.readFile(serverFile, "utf8")) as Record<
+        string,
+        unknown
+      >;
       server.version = "1.2.3-preview.20261002.4.2";
       await NodeFSP.writeFile(serverFile, JSON.stringify(server));
       const envFile = NodePath.join(f.root, "build-env");
-      const identity = stampJonesBuildSource({ root: f.root, workflowSha: f.sha, githubEnvFile: envFile });
-      expect(identity).toEqual({ repository: "Jones-Systems/Jones-Code", sha: f.sha, tree: f.tree });
+      const identity = stampJonesBuildSource({
+        root: f.root,
+        workflowSha: f.sha,
+        githubEnvFile: envFile,
+      });
+      expect(identity).toEqual({
+        repository: "Jones-Systems/Jones-Code",
+        sha: f.sha,
+        tree: f.tree,
+      });
       for (const name of ["server", "desktop"]) {
         const stamped = JSON.parse(
           await NodeFSP.readFile(NodePath.join(f.root, `apps/${name}/package.json`), "utf8"),
@@ -109,8 +127,13 @@ describe("Jones build provenance", () => {
         expect(stamped).toMatchObject({ name, retained: { nested: true }, jonesSource: identity });
         expect(stamped).not.toHaveProperty("startupGateProtocol");
       }
-      expect(JSON.parse(await NodeFSP.readFile(serverFile, "utf8"))).toHaveProperty("version", server.version);
-      expect(await NodeFSP.readFile(envFile, "utf8")).toBe(`JONES_SOURCE_SHA=${f.sha}\nJONES_SOURCE_TREE=${f.tree}\n`);
+      expect(JSON.parse(await NodeFSP.readFile(serverFile, "utf8"))).toHaveProperty(
+        "version",
+        server.version,
+      );
+      expect(await NodeFSP.readFile(envFile, "utf8")).toBe(
+        `JONES_SOURCE_SHA=${f.sha}\nJONES_SOURCE_TREE=${f.tree}\n`,
+      );
     } finally {
       await cleanupFixture(f.root);
     }
@@ -119,18 +142,27 @@ describe("Jones build provenance", () => {
   it("refuses a mismatched workflow before either package changes", async () => {
     const f = await fixture();
     try {
-      const files = ["server", "desktop"].map((name) => NodePath.join(f.root, `apps/${name}/package.json`));
+      const files = ["server", "desktop"].map((name) =>
+        NodePath.join(f.root, `apps/${name}/package.json`),
+      );
       const before = await Promise.all(files.map((file) => NodeFSP.readFile(file, "utf8")));
-      expect(() => stampJonesBuildSource({ root: f.root, workflowSha: "d".repeat(40) })).toThrow("workflow source");
-      expect(await Promise.all(files.map((file) => NodeFSP.readFile(file, "utf8")))).toEqual(before);
-      expect(() => stampJonesBuildSource({ root: NodePath.join(f.root, "apps") })).toThrow("exact checkout root");
+      expect(() => stampJonesBuildSource({ root: f.root, workflowSha: "d".repeat(40) })).toThrow(
+        "workflow source",
+      );
+      expect(await Promise.all(files.map((file) => NodeFSP.readFile(file, "utf8")))).toEqual(
+        before,
+      );
+      expect(() => stampJonesBuildSource({ root: NodePath.join(f.root, "apps") })).toThrow(
+        "exact checkout root",
+      );
     } finally {
       await cleanupFixture(f.root);
     }
   });
 
   it.each(["0.0.44-preview.20261002.11", "0.0.44-preview.20261002.11.2"])(
-    "includes the native helper only in unsigned Darwin preview %s", (version) => {
+    "includes the native helper only in unsigned Darwin preview %s",
+    (version) => {
       expect(bundlesJonesNativeHelper("mac", version, false)).toBe(true);
       expect(bundlesJonesNativeHelper("mac", version, true)).toBe(false);
       expect(bundlesJonesNativeHelper("linux", version, false)).toBe(false);
@@ -138,7 +170,8 @@ describe("Jones build provenance", () => {
     },
   );
   it.each(["0.0.44", "0.0.44-pr.11.2", "0.0.44-preview.20261002.11.2.extra"])(
-    "excludes non-preview version %s", (version) => {
+    "excludes non-preview version %s",
+    (version) => {
       expect(bundlesJonesNativeHelper("mac", version, false)).toBe(false);
     },
   );

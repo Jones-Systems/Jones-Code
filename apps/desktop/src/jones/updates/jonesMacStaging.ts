@@ -266,7 +266,10 @@ export async function stageJonesMacApp(
     await hashMacApp(source); // Reject escaping links before copying.
     const appPath = NodePath.join(directory, apps[0].name);
     await runNativeCommand("/usr/bin/ditto", [source, appPath]);
-    const { executablePath, asarPath, startupGateProtocol } = await validateMacApp(appPath, artifact);
+    const { executablePath, asarPath, startupGateProtocol } = await validateMacApp(
+      appPath,
+      artifact,
+    );
     const app: StagedMacApp = {
       handle: artifact.stagedHandle,
       receiptPath,
