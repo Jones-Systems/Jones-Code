@@ -1,6 +1,8 @@
 name: Mac Desktop Artifact
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
   pull_request:
     branches: [main]
@@ -28,7 +30,7 @@ jobs:
     name: Unsigned Apple Silicon DMG
     if: >-
       github.repository == 'Jones-Systems/Jones-Code' &&
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-15
     timeout-minutes: 45
@@ -75,9 +77,12 @@ jobs:
         run: |
           set -euo pipefail
           base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
-          version="${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}"
+          version="${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           node scripts/update-release-package-versions.ts "$version"
           echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Bind Jones source identity
+        run: node scripts/stamp-jones-build.ts
 
       - name: Build unsigned preview DMG
         env:
@@ -110,6 +115,9 @@ jobs:
               sha256: fs.readFileSync(`${artifact}.sha256`, "utf8").split(/\s+/)[0],
               publicConfigSource: ".env.example", signed: false, notarized: false,
               updateFeed: null, connectLogin: "untested", peerConnection: "untested",
+              schema: 1, tree: process.env.JONES_SOURCE_TREE,
+              workflow: process.env.GITHUB_WORKFLOW_REF.split("@")[0].replace(`${process.env.GITHUB_REPOSITORY}/`, ""),
+              event: process.env.GITHUB_EVENT_NAME, ref: process.env.GITHUB_REF,
               runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT
             }, null, 2) + "\n");
           '
@@ -124,7 +132,7 @@ jobs:
       - name: Upload DMG and checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: desktop-mac-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          name: desktop-mac-arm64-${{ github.run_id }}-${{ github.run_attempt }}--${{ steps.version.outputs.value }}
           path: |
             artifacts/desktop-mac/T3-Code-${{ steps.version.outputs.value }}-arm64.dmg
             artifacts/desktop-mac/T3-Code-${{ steps.version.outputs.value }}-arm64.dmg.sha256

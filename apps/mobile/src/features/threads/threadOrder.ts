@@ -1,4 +1,3 @@
-import type { MobileThreadOrderScope } from "../../lib/threadOrderScope";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   generateSpreadPinOrderKeys,
@@ -60,8 +59,6 @@ export type OrderRow = Pick<
 
 export interface PendingThreadOrder {
   readonly section: "pinned" | "active";
-  readonly scope?: MobileThreadOrderScope;
-  readonly sourceRevision?: string;
   readonly orderedIds: readonly string[];
   readonly before: ReadonlyMap<string, { readonly key: string | null; readonly anchor: string }>;
   readonly assignments: ReadonlyMap<string, string>;
@@ -251,8 +248,6 @@ export function computeThreadMoveAvailability(input: {
 }
 
 export function createPendingThreadOrder(input: {
-  readonly scope?: MobileThreadOrderScope;
-  readonly sourceRevision?: string;
   readonly section: PendingThreadOrder["section"];
   readonly ordered: readonly OrderRow[];
   readonly movedId: string;
@@ -263,8 +258,6 @@ export function createPendingThreadOrder(input: {
   if (orderedIds === null) throw new Error("Cannot begin an invalid thread move");
   return {
     section: input.section,
-    scope: input.scope,
-    sourceRevision: input.sourceRevision,
     orderedIds,
     before: new Map(input.ordered.map((row) => [rowId(row), rowOrder(row, input.section)])),
     assignments: new Map(input.assignments.map(({ id, orderKey }) => [id, orderKey])),

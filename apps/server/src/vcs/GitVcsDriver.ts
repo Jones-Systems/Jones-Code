@@ -77,10 +77,18 @@ export interface GitStatusDetails {
   upstreamRef: string | null;
   hasWorkingTreeChanges: boolean;
   workingTree: VcsStatusResult["workingTree"];
+  branchChanges?: VcsStatusResult["branchChanges"];
   hasUpstream: boolean;
   aheadCount: number;
   behindCount: number;
   aheadOfDefaultCount: number;
+}
+
+export interface GitLocalStatusOptions {
+  /** Skip revision walks and return zero divergence counts for local-only consumers. */
+  readonly includeDivergence?: boolean;
+  /** Also read the diff panel's Changes totals. Failures leave them out. */
+  readonly includeBranchChanges?: boolean;
 }
 
 export interface GitRemoteStatusDetails {
@@ -141,7 +149,66 @@ export interface CreateWorktreeProgress {
   }) => Effect.Effect<void, never>;
 }
 
+export interface LegacyWorktreeBeforeObservation {
+  readonly parentPath: string;
+  readonly parentRealPath: string;
+  readonly parentDevice: string;
+  readonly parentInode: string;
+  readonly commonDirectoryDevice?: string | undefined;
+  readonly commonDirectoryInode?: string | undefined;
+  readonly targetRefAbsent: true;
+  readonly registrationAbsent: true;
+}
+
+export interface LegacyWorktreeMaterialClaim {
+  readonly path: string;
+  readonly realPath: string;
+  readonly device: string;
+  readonly inode: string;
+  readonly parentRealPath: string;
+  readonly gitDirectory: string;
+  readonly commonDirectory: string;
+  readonly registeredPath: string;
+  readonly headRef: string;
+  readonly headOid: string;
+  readonly parentDevice?: string | undefined;
+  readonly parentInode?: string | undefined;
+  readonly dotGitDevice?: string | undefined;
+  readonly dotGitInode?: string | undefined;
+  readonly gitDirectoryDevice?: string | undefined;
+  readonly gitDirectoryInode?: string | undefined;
+  readonly commonDirectoryDevice?: string | undefined;
+  readonly commonDirectoryInode?: string | undefined;
+}
+
+export interface LegacyWorktreePreparationStep {
+  readonly kind: "worktree.add" | "worktree.submodules" | "worktree.base-config";
+  readonly cwd: string;
+  readonly args: ReadonlyArray<string>;
+  readonly worktreePath: string;
+  readonly commonDirectory: string;
+  readonly baseCommitOid: string;
+  readonly targetRef: string;
+  readonly before?: LegacyWorktreeBeforeObservation;
+}
+
+export interface LegacyWorktreePreparationHooks {
+  /** Affirmative owner refusal after exact intent readback and before invocation. */
+  readonly neverInvoked?: (
+    step: LegacyWorktreePreparationStep,
+    reason: "input_validation_failed",
+  ) => Effect.Effect<void, Error>;
+  readonly beforeEffect: (step: LegacyWorktreePreparationStep) => Effect.Effect<void, Error>;
+  readonly afterEffect: (
+    step: LegacyWorktreePreparationStep,
+    outcome: "settled_success" | "failed_or_unknown",
+    claim?: LegacyWorktreeMaterialClaim,
+  ) => Effect.Effect<void, Error>;
+}
+
 export interface CreateWorktreeOptions {
+  /** Private legacy journaling; independent of the producer's physical mutation guard. */
+  readonly legacyPreparation?: LegacyWorktreePreparationHooks;
   readonly progress?: CreateWorktreeProgress;
   /**
    * The project-over-environment `worktreeSubmodules` setting. Null (or
@@ -169,6 +236,12 @@ export interface GitCommitOptions {
   readonly progress?: GitCommitProgress;
 }
 
+export interface GitDeleteLocalBranchInput {
+  readonly cwd: string;
+  readonly refName: string;
+  readonly force?: boolean;
+}
+
 export interface GitPushResult {
   status: "pushed" | "skipped_up_to_date";
   branch: string;
@@ -182,7 +255,31 @@ export interface GitRangeContext {
   diffPatch: string;
 }
 
+export interface LegacyBranchRenameStep {
+  readonly claim: LegacyWorktreeMaterialClaim;
+  readonly oldRef: string;
+  readonly oldOid: string;
+  readonly targetRef: string;
+  readonly exactName: boolean;
+  readonly args: ReadonlyArray<string>;
+}
+
+export interface LegacyBranchRenameHooks {
+  readonly before: LegacyWorktreeBeforeObservation;
+  readonly claim: LegacyWorktreeMaterialClaim;
+  readonly beforeEffect: (step: LegacyBranchRenameStep) => Effect.Effect<void, Error>;
+  readonly afterEffect: (
+    step: LegacyBranchRenameStep,
+    outcome: "settled_success" | "failed_or_unknown",
+    claim?: LegacyWorktreeMaterialClaim,
+  ) => Effect.Effect<void, Error>;
+}
+
 export interface GitRenameBranchInput {
+  /** Exact private preparation journal, independent of current physical admission. */
+  readonly legacyPreparation?: LegacyBranchRenameHooks;
+  /** Fail on a name collision instead of appending a numeric suffix. */
+  exactName?: boolean;
   cwd: string;
   oldBranch: string;
   newBranch: string;
@@ -273,6 +370,12 @@ export interface GitResolveRemoteTrackingCommitResult {
   remoteRefName: string;
 }
 
+export interface GitResolveRemoteTrackingCommitIfExistsInput {
+  readonly cwd: string;
+  readonly remoteName: string;
+  readonly branchName: string;
+}
+
 export interface GitSetBranchUpstreamInput {
   cwd: string;
   branch: string;
@@ -290,7 +393,10 @@ export class GitVcsDriver extends Context.Service<
     readonly execute: (input: ExecuteGitInput) => Effect.Effect<ExecuteGitResult, GitCommandError>;
     readonly status: (input: VcsStatusInput) => Effect.Effect<VcsStatusResult, GitCommandError>;
     readonly statusDetails: (cwd: string) => Effect.Effect<GitStatusDetails, GitCommandError>;
-    readonly statusDetailsLocal: (cwd: string) => Effect.Effect<GitStatusDetails, GitCommandError>;
+    readonly statusDetailsLocal: (
+      cwd: string,
+      options?: GitLocalStatusOptions,
+    ) => Effect.Effect<GitStatusDetails, GitCommandError>;
     readonly statusDetailsRemote: (
       cwd: string,
       options?: GitRemoteStatusOptions,
@@ -360,6 +466,9 @@ export class GitVcsDriver extends Context.Service<
     readonly resolveRemoteTrackingCommit: (
       input: GitResolveRemoteTrackingCommitInput,
     ) => Effect.Effect<GitResolveRemoteTrackingCommitResult, GitCommandError>;
+    readonly resolveRemoteTrackingCommitIfExists: (
+      input: GitResolveRemoteTrackingCommitIfExistsInput,
+    ) => Effect.Effect<GitResolveRemoteTrackingCommitResult | null, GitCommandError>;
     readonly fetchRemoteBranch: (
       input: GitFetchRemoteBranchInput,
     ) => Effect.Effect<void, GitCommandError>;
@@ -376,6 +485,9 @@ export class GitVcsDriver extends Context.Service<
     readonly pruneWorktrees: (input: {
       readonly cwd: string;
     }) => Effect.Effect<void, GitCommandError>;
+    readonly deleteLocalBranch: (
+      input: GitDeleteLocalBranchInput,
+    ) => Effect.Effect<void, GitCommandError>;
     readonly renameBranch: (
       input: GitRenameBranchInput,
     ) => Effect.Effect<GitRenameBranchResult, GitCommandError>;

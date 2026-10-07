@@ -26,9 +26,10 @@ import {
   GitCommandError,
   ReviewDiffPreviewInput,
   type ReviewDiffFileContentsInput,
+  type ReviewDiffPreviewResult,
   type WorktreeSubmodules,
 } from "@t3tools/contracts";
-import { ServerConfig } from "../config.ts";
+import * as ServerConfig from "../config.ts";
 import { gitCommandDuration } from "../observability/Metrics.ts";
 import {
   makeGitVcsDriverCore,
@@ -84,6 +85,66 @@ const makeTmpDir = (
     const fileSystem = yield* FileSystem.FileSystem;
     return yield* fileSystem.makeTempDirectoryScoped({ prefix });
   });
+
+describe("resolveRemoteTrackingCommitIfExists", () => {
+  it.effect.each([
+    { name: "present", exitCode: 0, stderr: "", expected: "commit" },
+    { name: "absent", exitCode: 1, stderr: "", expected: "missing" },
+    {
+      name: "repository failure",
+      exitCode: 128,
+      stderr: "fatal: invalid repository",
+      expected: "error",
+    },
+    { name: "invalid object", exitCode: 1, stderr: "error: invalid object", expected: "error" },
+  ])("resolves an exact remote ref once: $name", ({ exitCode, stderr, expected }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const commands: Array<ReadonlyArray<string>> = [];
+        const commitSha = "0123456789abcdef0123456789abcdef01234567";
+        const spawner = ChildProcessSpawner.make((command) => {
+          if (!ChildProcess.isStandardCommand(command)) {
+            return Effect.die("expected a standard Git command");
+          }
+          commands.push(command.args);
+          return Effect.succeed(
+            ChildProcessSpawner.makeHandle({
+              ...makeSuccessfulHandle(exitCode === 0 ? `${commitSha}\n` : ""),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
+              stderr: Stream.encodeText(Stream.make(stderr)),
+            }),
+          );
+        });
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+        const lookup = driver.resolveRemoteTrackingCommitIfExists({
+          cwd: "/repo",
+          remoteName: "origin",
+          branchName: "release/stable",
+        });
+        if (expected === "error") {
+          const error = yield* lookup.pipe(Effect.flip);
+          assert.instanceOf(error, GitCommandError);
+          assert.equal(error.detail, stderr);
+        } else {
+          assert.deepEqual(
+            yield* lookup,
+            expected === "missing"
+              ? null
+              : {
+                  commitSha,
+                  remoteRefName: "origin/release/stable",
+                },
+          );
+        }
+        assert.deepEqual(commands, [
+          ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/release/stable^{commit}"],
+        ]);
+      }),
+    ).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
+  );
+});
 
 const writeTextFile = (
   cwd: string,
@@ -254,50 +315,48 @@ it.effect.each([{ timeoutMs: null }, { timeoutMs: 30_001 }])(
     }).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
 );
 
-for (const location of ["root", "nested", "worktree"] as const) {
-  it.effect(
-    `skips clean filters while the ${location} index is locked and resumes after unlock`,
-    () =>
-      Effect.gen(function* () {
-        const driver = yield* GitVcsDriver.GitVcsDriver;
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const repository = yield* makeTmpDir();
-        yield* initRepoWithCommit(repository);
-        const cwd = location === "worktree" ? yield* makeTmpDir() : repository;
-        if (location === "worktree") {
-          yield* git(repository, ["worktree", "add", "--detach", cwd]);
-        }
-        yield* git(cwd, ["config", "filter.probe.clean", "echo clean >> .filter-runs; cat"]);
-        yield* writeTextFile(cwd, ".gitattributes", "asset.bin filter=probe\n");
-        yield* writeTextFile(cwd, ".gitignore", ".filter-runs\n");
-        yield* writeTextFile(cwd, "asset.bin", "original\n");
-        yield* git(cwd, ["add", "."]);
-        yield* git(cwd, ["commit", "-m", "filtered asset"]);
-        NodeFS.utimesSync(path.join(cwd, "asset.bin"), 1, 1);
-        const runsPath = path.join(cwd, ".filter-runs");
-        yield* fs.remove(runsPath, { force: true });
-        const indexPath = yield* git(cwd, ["rev-parse", "--git-path", "index"]);
-        const lockPath = `${path.resolve(cwd, indexPath)}.lock`;
-        yield* fs.writeFileString(lockPath, "");
-        const statusCwd = location === "nested" ? path.join(cwd, "nested") : cwd;
-        yield* fs.makeDirectory(statusCwd, { recursive: true });
+it.effect.each(["root", "nested", "worktree"] as const)(
+  "skips clean filters while the %s index is locked and resumes after unlock",
+  (location) =>
+    Effect.gen(function* () {
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repository = yield* makeTmpDir();
+      yield* initRepoWithCommit(repository);
+      const cwd = location === "worktree" ? yield* makeTmpDir() : repository;
+      if (location === "worktree") {
+        yield* git(repository, ["worktree", "add", "--detach", cwd]);
+      }
+      yield* git(cwd, ["config", "filter.probe.clean", "echo clean >> .filter-runs; cat"]);
+      yield* writeTextFile(cwd, ".gitattributes", "asset.bin filter=probe\n");
+      yield* writeTextFile(cwd, ".gitignore", ".filter-runs\n");
+      yield* writeTextFile(cwd, "asset.bin", "original\n");
+      yield* git(cwd, ["add", "."]);
+      yield* git(cwd, ["commit", "-m", "filtered asset"]);
+      NodeFS.utimesSync(path.join(cwd, "asset.bin"), 1, 1);
+      const runsPath = path.join(cwd, ".filter-runs");
+      yield* fs.remove(runsPath, { force: true });
+      const indexPath = yield* git(cwd, ["rev-parse", "--git-path", "index"]);
+      const lockPath = `${path.resolve(cwd, indexPath)}.lock`;
+      yield* fs.writeFileString(lockPath, "");
+      const statusCwd = location === "nested" ? path.join(cwd, "nested") : cwd;
+      yield* fs.makeDirectory(statusCwd, { recursive: true });
 
-        for (let poll = 0; poll < 3; poll++) {
-          const result = yield* driver.statusDetailsLocal(statusCwd).pipe(Effect.result);
-          assert.isTrue(Result.isFailure(result));
-          if (Result.isFailure(result)) assert.include(result.failure.detail, "index is locked");
-        }
-        assert.isFalse(yield* fs.exists(runsPath));
-        assert.isTrue(yield* fs.exists(lockPath));
+      for (let poll = 0; poll < 3; poll++) {
+        const result = yield* driver.statusDetailsLocal(statusCwd).pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        if (Result.isFailure(result)) assert.include(result.failure.detail, "index is locked");
+      }
+      assert.isFalse(yield* fs.exists(runsPath));
+      assert.isTrue(yield* fs.exists(lockPath));
 
-        yield* fs.remove(lockPath);
-        const status = yield* driver.statusDetailsLocal(statusCwd);
-        assert.isFalse(status.hasWorkingTreeChanges);
-        assert.include(yield* fs.readFileString(runsPath), "clean");
-      }).pipe(Effect.provide(TestLayer)),
-  );
-}
+      yield* fs.remove(lockPath);
+      const status = yield* driver.statusDetailsLocal(statusCwd);
+      assert.isFalse(status.hasWorkingTreeChanges);
+      assert.include(yield* fs.readFileString(runsPath), "clean");
+    }).pipe(Effect.provide(TestLayer)),
+);
 
 it.effect("uses stable diagnostics for every parsed non-repository command", () => {
   const commands: Array<{ readonly args: ReadonlyArray<string>; readonly lcAll?: string }> = [];
@@ -822,7 +881,7 @@ it.effect("backs off and logs failed fetch attempts across linked worktrees", ()
   ).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
 );
 
-for (const scenario of [
+it.effect.each([
   {
     name: "HTTPS credentials",
     stderr: "fatal: Authentication failed for",
@@ -885,53 +944,51 @@ for (const scenario of [
     stderr: "fatal: unexpected remote failure",
     expected: "git fetch origin failed",
   },
-] as const) {
-  it.effect(`reports ${scenario.name} during fetch without retaining remote output`, () =>
-    Effect.gen(function* () {
-      const secret = "secret-fetch-token";
-      const stderr = `${scenario.stderr}\nhttps://user:${secret}@example.com/private?token=${secret}`;
-      const attempts = yield* Ref.make(0);
-      const spawner = ChildProcessSpawner.make((command) =>
-        Effect.gen(function* () {
-          if (!ChildProcess.isStandardCommand(command))
-            return yield* Effect.die("expected Git command");
-          if (command.args[0] !== "fetch") return makeNonRepositoryHandle();
-          assert.deepEqual(command.args, ["fetch", "--quiet", "origin"]);
-          assert.equal(command.options.env?.LC_ALL, "C");
-          assert.equal(command.options.env?.GIT_TERMINAL_PROMPT, "0");
-          yield* Ref.update(attempts, (count) => count + 1);
-          return ChildProcessSpawner.makeHandle({
-            pid: ChildProcessSpawner.ProcessId(1),
-            exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(128)),
-            isRunning: Effect.succeed(false),
-            kill: () => Effect.void,
-            unref: Effect.succeed(Effect.void),
-            stdin: Sink.drain,
-            stdout: Stream.encodeText(Stream.make(secret)),
-            stderr: Stream.encodeText(Stream.make(stderr)),
-            all: Stream.empty,
-            getInputFd: () => Sink.drain,
-            getOutputFd: () => Stream.empty,
-          });
-        }),
-      );
-      const driver = yield* makeGitVcsDriverCore().pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      );
-      const cwd = yield* makeTmpDir();
-      const error = yield* driver.fetchRemote({ cwd, remoteName: "origin" }).pipe(Effect.flip);
-      assert.include(error.detail, scenario.expected);
-      assert.equal(error.exitCode, 128);
-      assert.equal(error.stderrLength, stderr.length);
-      assert.equal(error.stdoutLength, secret.length);
-      assert.notInclude(error.message, secret);
-      assert.notInclude(yield* encodeGitCommandError(error), secret);
-      assert.notProperty(error, "stderr");
-      assert.notProperty(error, "args");
-      assert.equal(yield* Ref.get(attempts), 1);
-    }).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
-  );
-}
+] as const)("reports $name during fetch without retaining remote output", (scenario) =>
+  Effect.gen(function* () {
+    const secret = "secret-fetch-token";
+    const stderr = `${scenario.stderr}\nhttps://user:${secret}@example.com/private?token=${secret}`;
+    const attempts = yield* Ref.make(0);
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.gen(function* () {
+        if (!ChildProcess.isStandardCommand(command))
+          return yield* Effect.die("expected Git command");
+        if (command.args[0] !== "fetch") return makeNonRepositoryHandle();
+        assert.deepEqual(command.args, ["fetch", "--quiet", "origin"]);
+        assert.equal(command.options.env?.LC_ALL, "C");
+        assert.equal(command.options.env?.GIT_TERMINAL_PROMPT, "0");
+        yield* Ref.update(attempts, (count) => count + 1);
+        return ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(128)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.encodeText(Stream.make(secret)),
+          stderr: Stream.encodeText(Stream.make(stderr)),
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        });
+      }),
+    );
+    const driver = yield* makeGitVcsDriverCore().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
+    const cwd = yield* makeTmpDir();
+    const error = yield* driver.fetchRemote({ cwd, remoteName: "origin" }).pipe(Effect.flip);
+    assert.include(error.detail, scenario.expected);
+    assert.equal(error.exitCode, 128);
+    assert.equal(error.stderrLength, stderr.length);
+    assert.equal(error.stdoutLength, secret.length);
+    assert.notInclude(error.message, secret);
+    assert.notInclude(yield* encodeGitCommandError(error), secret);
+    assert.notProperty(error, "stderr");
+    assert.notProperty(error, "args");
+    assert.equal(yield* Ref.get(attempts), 1);
+  }).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
 
 it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   describe("process environment", () => {
@@ -1132,6 +1189,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const mergeBase = yield* git(cwd, ["rev-parse", "HEAD"]);
         yield* writeTextFile(cwd, "untracked.txt", "untracked content\n");
         const paths = Array.from({ length: 5000 }, (_, index) => `${"a".repeat(220)}-${index}.txt`);
         const stats = paths.map((path) => `1\t0\t${path}\0`).join("");
@@ -1142,10 +1200,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
         const spawner = ChildProcessSpawner.make((command) => {
           if (ChildProcess.isStandardCommand(command)) {
-            if (
-              command.args.includes("--numstat") &&
-              command.args.includes(`${initialBranch}...HEAD`)
-            ) {
+            if (command.args.includes("--numstat") && command.args.includes(mergeBase)) {
               return Effect.succeed(makeSuccessfulHandle(stats));
             }
             if (command.args.includes("ls-files") && command.args.includes("--others")) {
@@ -1449,8 +1504,9 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    for (const splitIndex of [false, true]) {
-      it.effect(`keeps the preceding second cached in review previews (split: ${splitIndex})`, () =>
+    it.effect.each([false, true])(
+      "keeps the preceding second cached in review previews (split: %s)",
+      (splitIndex) =>
         Effect.gen(function* () {
           const cwd = yield* makeTmpDir();
           yield* initRepoWithCommit(cwd);
@@ -1484,53 +1540,50 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           assert.deepStrictEqual(yield* fs.readFile(indexPath), originalIndex);
           assert.deepStrictEqual((yield* fs.stat(indexPath)).mtime, originalMtime);
         }),
-      );
-    }
+    );
 
-    for (const [timestamp, splitIndex] of [
+    it.effect.each([
       [1_700_000_000, false],
       [1_700_000_000.9999, false],
       [1_700_000_000, true],
       [1_700_000_000.9999, true],
-    ] as const) {
-      it.effect(
-        `preserves same-size edits with a racy review index (${timestamp}, split: ${splitIndex})`,
-        () =>
-          Effect.gen(function* () {
-            const cwd = yield* makeTmpDir();
-            yield* initRepoWithCommit(cwd);
-            const driver = yield* GitVcsDriver.GitVcsDriver;
-            const fileSystem = yield* FileSystem.FileSystem;
-            const path = yield* Path.Path;
-            const filePath = path.join(cwd, "tracked.txt");
-            const indexPath = path.join(cwd, ".git", "index");
-            // Reproduce a same-timestamp edit without relying on filesystem clock resolution.
-            yield* git(cwd, ["config", "core.trustctime", "false"]);
-            yield* writeTextFile(cwd, "tracked.txt", "before\n");
-            yield* fileSystem.utimes(filePath, timestamp, timestamp);
-            yield* git(cwd, ["add", "tracked.txt"]);
-            yield* git(cwd, ["commit", "-m", "record racy file"]);
-            if (splitIndex) yield* git(cwd, ["update-index", "--split-index"]);
-            yield* fileSystem.utimes(indexPath, timestamp, timestamp);
-            const originalIndex = yield* fileSystem.readFile(indexPath);
-            const originalIndexMtime = (yield* fileSystem.stat(indexPath)).mtime;
-            yield* writeTextFile(cwd, "tracked.txt", "after!\n");
-            yield* fileSystem.utimes(filePath, timestamp, timestamp);
-            yield* writeTextFile(cwd, "untracked.txt", "new\n");
+    ] as const)(
+      "preserves same-size edits with a racy review index (%s, split: %s)",
+      ([timestamp, splitIndex]) =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          yield* initRepoWithCommit(cwd);
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const filePath = path.join(cwd, "tracked.txt");
+          const indexPath = path.join(cwd, ".git", "index");
+          // Reproduce a same-timestamp edit without relying on filesystem clock resolution.
+          yield* git(cwd, ["config", "core.trustctime", "false"]);
+          yield* writeTextFile(cwd, "tracked.txt", "before\n");
+          yield* fileSystem.utimes(filePath, timestamp, timestamp);
+          yield* git(cwd, ["add", "tracked.txt"]);
+          yield* git(cwd, ["commit", "-m", "record racy file"]);
+          if (splitIndex) yield* git(cwd, ["update-index", "--split-index"]);
+          yield* fileSystem.utimes(indexPath, timestamp, timestamp);
+          const originalIndex = yield* fileSystem.readFile(indexPath);
+          const originalIndexMtime = (yield* fileSystem.stat(indexPath)).mtime;
+          yield* writeTextFile(cwd, "tracked.txt", "after!\n");
+          yield* fileSystem.utimes(filePath, timestamp, timestamp);
+          yield* writeTextFile(cwd, "untracked.txt", "new\n");
 
-            const preview = yield* driver.getReviewDiffPreview({ cwd });
-            const dirty = preview.sources.find((source) => source.kind === "working-tree")!;
-            assert.deepStrictEqual(dirty.files, [
-              { path: "tracked.txt", previousPath: null, additions: 1, deletions: 1 },
-              { path: "untracked.txt", previousPath: null, additions: 1, deletions: 0 },
-            ]);
-            assert.include(dirty.diff, "-before");
-            assert.include(dirty.diff, "+after!");
-            assert.deepStrictEqual(yield* fileSystem.readFile(indexPath), originalIndex);
-            assert.deepStrictEqual((yield* fileSystem.stat(indexPath)).mtime, originalIndexMtime);
-          }),
-      );
-    }
+          const preview = yield* driver.getReviewDiffPreview({ cwd });
+          const dirty = preview.sources.find((source) => source.kind === "working-tree")!;
+          assert.deepStrictEqual(dirty.files, [
+            { path: "tracked.txt", previousPath: null, additions: 1, deletions: 1 },
+            { path: "untracked.txt", previousPath: null, additions: 1, deletions: 0 },
+          ]);
+          assert.include(dirty.diff, "-before");
+          assert.include(dirty.diff, "+after!");
+          assert.deepStrictEqual(yield* fileSystem.readFile(indexPath), originalIndex);
+          assert.deepStrictEqual((yield* fileSystem.stat(indexPath)).mtime, originalIndexMtime);
+        }),
+    );
 
     it.effect("keeps complete stats for files beyond the combined patch limit", () =>
       Effect.gen(function* () {
@@ -1572,6 +1625,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
 
         assert.deepStrictEqual(branch.files, [
           { path: "a-large.txt", previousPath: null, additions: 4000, deletions: 0 },
+          { path: "untracked.txt", previousPath: null, additions: 4000, deletions: 0 },
           { path: "z-last.txt", previousPath: null, additions: 1, deletions: 0 },
         ]);
         assert.deepStrictEqual(dirty.files, [
@@ -1600,6 +1654,11 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           yield* writeTextFile(cwd, "tab\tand\nnewline.txt", "unusual path\n");
         }
         yield* git(cwd, ["add", "."]);
+        if ((yield* HostProcessPlatform) !== "win32") {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          yield* fileSystem.chmod(path.join(cwd, "mode-only.sh"), 0o755);
+        }
         yield* git(cwd, ["update-index", "--chmod=+x", "mode-only.sh"]);
         yield* git(cwd, ["commit", "-m", "rename and add files"]);
         const preview = yield* driver.getReviewDiffPreview({
@@ -1746,7 +1805,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("loads merge-base and head contents for branch diff expansion", () =>
+    it.effect("loads merge-base and disk contents for Changes expansion", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
@@ -1755,6 +1814,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         yield* writeTextFile(cwd, "README.md", "# branch change\nunchanged context\n");
         yield* git(cwd, ["add", "README.md"]);
         yield* git(cwd, ["commit", "-m", "change readme"]);
+        yield* writeTextFile(cwd, "README.md", "# dirty change\nunchanged context\n");
 
         const contents = yield* driver.getReviewDiffFileContents(
           makeReviewDiffFileContentsInput(cwd, {
@@ -1765,12 +1825,184 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         );
 
         assert.strictEqual(contents.oldContents, "# test\n");
-        assert.strictEqual(contents.newContents, "# branch change\nunchanged context\n");
+        assert.strictEqual(contents.newContents, "# dirty change\nunchanged context\n");
+      }),
+    );
+
+    it.effect("Changes combines commits, uncommitted edits, and untracked files", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const sourceFiles = (
+          preview: ReviewDiffPreviewResult,
+          kind: "working-tree" | "branch-range",
+        ) => preview.sources.find((source) => source.kind === kind)!.files;
+        yield* git(cwd, ["checkout", "-b", "feature/combined"]);
+        yield* writeTextFile(cwd, "README.md", "# test\ncommitted\n");
+        yield* git(cwd, ["commit", "-am", "commit edit"]);
+
+        // A fully committed branch has no uncommitted work, but Changes still shows it.
+        const clean = yield* driver.getReviewDiffPreview({ cwd, baseRef: initialBranch });
+        assert.deepStrictEqual(sourceFiles(clean, "working-tree"), []);
+        assert.deepStrictEqual(sourceFiles(clean, "branch-range"), [
+          { path: "README.md", previousPath: null, additions: 1, deletions: 0 },
+        ]);
+
+        yield* writeTextFile(cwd, "README.md", "# test\ncommitted\ndirty\n");
+        yield* writeTextFile(cwd, "new.txt", "new\n");
+        const dirty = yield* driver.getReviewDiffPreview({ cwd, baseRef: initialBranch });
+        const changes = dirty.sources.find((source) => source.kind === "branch-range")!;
+        assert.deepStrictEqual(changes.files, [
+          { path: "README.md", previousPath: null, additions: 2, deletions: 0 },
+          { path: "new.txt", previousPath: null, additions: 1, deletions: 0 },
+        ]);
+        assert.strictEqual(changes.diff.match(/^diff --git a\/README\.md /gm)?.length, 1);
+        assert.include(changes.diff, "+dirty");
+        assert.deepStrictEqual(sourceFiles(dirty, "working-tree"), [
+          { path: "README.md", previousPath: null, additions: 1, deletions: 0 },
+          { path: "new.txt", previousPath: null, additions: 1, deletions: 0 },
+        ]);
+      }),
+    );
+
+    it.effect("Changes on the default branch compares with its remote copy", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["branch", "-M", "main"]);
+        yield* writeTextFile(cwd, "unpushed.txt", "unpushed\n");
+        yield* git(cwd, ["add", "unpushed.txt"]);
+        yield* git(cwd, ["commit", "-m", "unpushed"]);
+
+        // Without a remote there is no base, so Changes equals Uncommitted.
+        const local = yield* driver.getReviewDiffPreview({ cwd });
+        const localChanges = local.sources.find((source) => source.kind === "branch-range")!;
+        assert.isNull(localChanges.baseRef);
+        assert.deepStrictEqual(localChanges.files, []);
+
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "origin", "HEAD~1:refs/heads/main"]);
+        yield* git(cwd, ["fetch", "origin"]);
+        const preview = yield* driver.getReviewDiffPreview({ cwd });
+        const changes = preview.sources.find((source) => source.kind === "branch-range")!;
+        assert.strictEqual(changes.baseRef, "origin/main");
+        assert.deepStrictEqual(changes.files, [
+          { path: "unpushed.txt", previousPath: null, additions: 1, deletions: 0 },
+        ]);
+      }),
+    );
+
+    it.effect("Changes accepts an explicit base on a detached HEAD and rejects a bad one", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["checkout", "--detach"]);
+        yield* writeTextFile(cwd, "detached.txt", "detached\n");
+        yield* git(cwd, ["add", "detached.txt"]);
+        yield* git(cwd, ["commit", "-m", "detached work"]);
+
+        const explicit = yield* driver.getReviewDiffPreview({ cwd, baseRef: initialBranch });
+        assert.deepStrictEqual(
+          explicit.sources.find((source) => source.kind === "branch-range")!.files,
+          [{ path: "detached.txt", previousPath: null, additions: 1, deletions: 0 }],
+        );
+        const implicit = yield* driver.getReviewDiffPreview({ cwd });
+        assert.deepStrictEqual(
+          implicit.sources.find((source) => source.kind === "branch-range")!.files,
+          [],
+        );
+        const error = yield* driver
+          .getReviewDiffPreview({ cwd, baseRef: "missing-base" })
+          .pipe(Effect.flip);
+        assert.strictEqual(error.operation, "GitVcsDriver.resolveReviewMergeBase");
+      }),
+    );
+
+    it.effect("Changes compares with the empty tree before the first commit", () =>
+      Effect.gen(function* () {
+        const upstream = yield* makeTmpDir();
+        yield* initRepoWithCommit(upstream);
+        yield* git(upstream, ["branch", "-M", "main"]);
+        const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        // An unborn main whose remote copy exists must not fail on merge-base.
+        yield* git(cwd, ["init", "-b", "main"]);
+        yield* git(cwd, ["remote", "add", "origin", upstream]);
+        yield* git(cwd, ["fetch", "origin"]);
+        yield* writeTextFile(cwd, "new.txt", "one\ntwo\n");
+
+        const preview = yield* driver.getReviewDiffPreview({ cwd });
+        const changes = preview.sources.find((source) => source.kind === "branch-range")!;
+        assert.isNull(changes.baseRef);
+        assert.deepStrictEqual(changes.files, [
+          { path: "new.txt", previousPath: null, additions: 2, deletions: 0 },
+        ]);
+        const status = yield* driver.statusDetailsLocal(cwd, { includeBranchChanges: true });
+        assert.deepStrictEqual(status.branchChanges, {
+          baseRef: null,
+          insertions: 2,
+          deletions: 0,
+        });
+      }),
+    );
+
+    it.effect("Changes does not show newer base commits as deletions", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["checkout", "-b", "feature/rebased"]);
+        yield* writeTextFile(cwd, "feature.txt", "feature\n");
+        yield* git(cwd, ["add", "feature.txt"]);
+        yield* git(cwd, ["commit", "-m", "feature work"]);
+        yield* git(cwd, ["checkout", initialBranch]);
+        yield* writeTextFile(cwd, "upstream.txt", "upstream\n");
+        yield* git(cwd, ["add", "upstream.txt"]);
+        yield* git(cwd, ["commit", "-m", "base moves"]);
+        yield* git(cwd, ["checkout", "feature/rebased"]);
+
+        for (const rebase of [false, true]) {
+          if (rebase) yield* git(cwd, ["rebase", initialBranch]);
+          const preview = yield* driver.getReviewDiffPreview({ cwd, baseRef: initialBranch });
+          assert.deepStrictEqual(
+            preview.sources.find((source) => source.kind === "branch-range")!.files,
+            [{ path: "feature.txt", previousPath: null, additions: 1, deletions: 0 }],
+          );
+        }
       }),
     );
   });
 
   describe("repository status", () => {
+    it.effect("reads Changes totals with untracked files when requested", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const pathService = yield* Path.Path;
+        yield* git(cwd, ["branch", "-M", "main"]);
+        yield* git(cwd, ["checkout", "-b", "feature/totals"]);
+        yield* writeTextFile(cwd, "README.md", "# test\ncommitted\n");
+        yield* git(cwd, ["commit", "-am", "commit edit"]);
+        yield* writeTextFile(cwd, "nested/untracked.txt", "one\ntwo\n");
+
+        const status = yield* driver.statusDetailsLocal(pathService.join(cwd, "nested"), {
+          includeBranchChanges: true,
+        });
+        assert.deepStrictEqual(status.branchChanges, {
+          baseRef: "main",
+          insertions: 3,
+          deletions: 0,
+        });
+        assert.isUndefined((yield* driver.statusDetailsLocal(cwd)).branchChanges);
+      }),
+    );
+
     it.effect("reports non-repository directories without failing", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
@@ -1841,6 +2073,67 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(status.aheadCount, 0);
         assert.equal(status.behindCount, 0);
         assert.equal(status.aheadOfDefaultCount, 1);
+      }),
+    );
+
+    it.effect("can read local files without traversing revision history", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* git(cwd, ["checkout", "-b", "feature/local-only"]);
+        yield* writeTextFile(cwd, "feature.txt", "feature\n");
+        yield* git(cwd, ["add", "feature.txt"]);
+        yield* git(cwd, ["commit", "-m", "feature commit"]);
+        yield* writeTextFile(cwd, "feature.txt", "feature\nlocal edit\n");
+        yield* writeTextFile(cwd, "untracked.txt", "untracked\n");
+
+        const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const commands: ReadonlyArray<string>[] = [];
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            if (!ChildProcess.isStandardCommand(command)) {
+              return yield* Effect.die("expected a standard Git command");
+            }
+            commands.push(command.args);
+            return yield* delegate.spawn(command);
+          }),
+        );
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provide(ServerConfigLayer),
+        );
+
+        for (const hasUpstream of [false, true]) {
+          if (hasUpstream) {
+            yield* git(cwd, ["push", "-u", "origin", "feature/local-only"]);
+          }
+          commands.length = 0;
+          const local = yield* driver.statusDetailsLocal(cwd, { includeDivergence: false });
+          assert.isFalse(commands.some((args) => args.includes("rev-list")));
+          assert.isTrue(commands.some((args) => args.includes("--no-ahead-behind")));
+          assert.equal(local.hasUpstream, hasUpstream);
+          assert.isTrue(local.hasWorkingTreeChanges);
+          assert.deepEqual(local.workingTree.files, [
+            { path: "feature.txt", insertions: 1, deletions: 0 },
+            { path: "untracked.txt", insertions: 0, deletions: 0 },
+          ]);
+
+          commands.length = 0;
+          const full = yield* driver.statusDetailsLocal(cwd);
+          assert.isTrue(commands.some((args) => args.includes("rev-list")));
+          assert.equal(full.aheadCount, hasUpstream ? 0 : 1);
+          assert.equal(full.aheadOfDefaultCount, 1);
+          assert.deepEqual(local, {
+            ...full,
+            aheadCount: 0,
+            behindCount: 0,
+            aheadOfDefaultCount: 0,
+          });
+        }
       }),
     );
 
@@ -1988,7 +2281,9 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const fileSystem = yield* FileSystem.FileSystem;
         const pathService = yield* Path.Path;
         const sshLogPath = pathService.join(tempDir, "ssh-env.txt");
-        const sshWrapperPath = pathService.join(tempDir, "ssh-wrapper.sh");
+        const sshWrapperPath = yield* pathService.fromFileUrl(
+          new URL("./testing/GitVcsDriverCore.fixture.sh", import.meta.url),
+        );
         const envKeys = [
           "GCM_INTERACTIVE",
           "GIT_ASKPASS",
@@ -2000,20 +2295,6 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         ] as const;
         const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
 
-        yield* fileSystem.writeFileString(
-          sshWrapperPath,
-          [
-            "#!/bin/sh",
-            'printf "GCM_INTERACTIVE=%s\\n" "${GCM_INTERACTIVE:-}" > "$T3_TEST_SSH_ASKPASS_LOG"',
-            'printf "GIT_ASKPASS=%s\\n" "${GIT_ASKPASS:-}" >> "$T3_TEST_SSH_ASKPASS_LOG"',
-            'printf "GIT_TERMINAL_PROMPT=%s\\n" "${GIT_TERMINAL_PROMPT:-}" >> "$T3_TEST_SSH_ASKPASS_LOG"',
-            'printf "SSH_ASKPASS=%s\\n" "${SSH_ASKPASS:-}" >> "$T3_TEST_SSH_ASKPASS_LOG"',
-            'printf "SSH_ASKPASS_REQUIRE=%s\\n" "${SSH_ASKPASS_REQUIRE:-}" >> "$T3_TEST_SSH_ASKPASS_LOG"',
-            "exit 1",
-            "",
-          ].join("\n"),
-        );
-        yield* fileSystem.chmod(sshWrapperPath, 0o755);
         yield* git(cwd, ["remote", "add", "origin", "ssh://example.invalid/repo.git"]);
         yield* git(cwd, ["update-ref", `refs/remotes/origin/${initialBranch}`, "HEAD"]);
         yield* git(cwd, ["branch", "--set-upstream-to", `origin/${initialBranch}`]);
@@ -2207,6 +2488,32 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("preserves exact custom names and refuses collisions without a suffix", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.createRef({ cwd, refName: "Julius/ABC-123" });
+        const failed = yield* driver
+          .renameBranch({
+            cwd,
+            oldBranch: initialBranch,
+            newBranch: "Julius/ABC-123",
+            exactName: true,
+          })
+          .pipe(Effect.exit);
+        assert.equal(failed._tag, "Failure");
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), initialBranch);
+        const renamed = yield* driver.renameBranch({
+          cwd,
+          oldBranch: initialBranch,
+          newBranch: "Julius/ABC-124.v2",
+          exactName: true,
+        });
+        assert.equal(renamed.branch, "Julius/ABC-124.v2");
+      }),
+    );
+
     it.effect("returns the existing refName when rename source and target match", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
@@ -2279,6 +2586,702 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("worktree operations", () => {
+    const syntheticLegacyWorktree = (
+      oid: string,
+      branch: string,
+      submodules = false,
+      loseMaterial = false,
+    ) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* makeTmpDir("legacy-worktree-owner-");
+        const cwd = path.join(root, "repo");
+        const owned = path.join(root, "owned");
+        const common = path.join(cwd, ".git");
+        const gitDirectory = path.join(common, "worktrees", "owned");
+        yield* fs.makeDirectory(gitDirectory, { recursive: true });
+        const commands: string[][] = [];
+        let added = false;
+        let currentBranch = branch;
+        const occupiedTargets = new Set<string>();
+        let loseRenameMaterial = false;
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            if (!ChildProcess.isStandardCommand(command))
+              return yield* Effect.die("Unexpected pipeline");
+            const args = [...command.args];
+            commands.push(args);
+            if (args.includes("add")) {
+              yield* fs.makeDirectory(owned);
+              if (!loseMaterial)
+                yield* fs.writeFileString(path.join(owned, ".git"), `gitdir: ${gitDirectory}\n`);
+              if (submodules)
+                yield* fs.writeFileString(
+                  path.join(owned, ".gitmodules"),
+                  '[submodule "fixture"]\npath=fixture\nurl=fixture\n',
+                );
+              added = true;
+            }
+            if (args.includes("-m")) {
+              currentBranch = args.at(-1)!;
+              if (loseRenameMaterial) yield* fs.remove(path.join(owned, ".git"));
+            }
+            let stdout = "";
+            if (args.includes("--git-common-dir")) stdout = `${common}\n`;
+            else if (args.includes("--absolute-git-dir")) stdout = `${gitDirectory}\n`;
+            else if (args.includes("symbolic-ref")) stdout = `refs/heads/${currentBranch}\n`;
+            else if (args.includes("rev-parse")) stdout = `${oid}\n`;
+            else if (args.includes("--porcelain"))
+              stdout = added
+                ? `worktree ${owned}\0HEAD ${oid}\0branch refs/heads/${currentBranch}\0\0`
+                : "";
+            else if (args.includes("for-each-ref")) {
+              const target = args.at(-1)!;
+              stdout =
+                (added && target === `refs/heads/${currentBranch}`) || occupiedTargets.has(target)
+                  ? `${target}\n`
+                  : "";
+            }
+            const handle = makeSuccessfulHandle(stdout);
+            return args.includes("--get-regexp") ||
+              (args.includes("show-ref") &&
+                args.at(-1) !== `refs/heads/${currentBranch}` &&
+                !occupiedTargets.has(args.at(-1)!))
+              ? ChildProcessSpawner.makeHandle({
+                  ...handle,
+                  exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+                })
+              : handle;
+          }),
+        );
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provide(ServerConfigLayer),
+        );
+        return {
+          cwd,
+          owned,
+          common,
+          gitDirectory,
+          commands,
+          driver,
+          fs,
+          occupiedTargets,
+          loseRenameMaterial: () => {
+            loseRenameMaterial = true;
+          },
+        };
+      });
+
+    it.effect.each([
+      "suffix",
+      "collision",
+      "lost_outcome",
+      "replacement",
+      "unknown_material",
+    ] as const)(
+      "legacy rename binds chosen target and retains unknown material for %s",
+      (scenario) =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree("4".repeat(40), "legacy/rename-case");
+          let before: GitVcsDriver.LegacyWorktreeBeforeObservation | undefined;
+          let claim: GitVcsDriver.LegacyWorktreeMaterialClaim | undefined;
+          yield* fixture.driver.createWorktree(
+            {
+              cwd: fixture.cwd,
+              refName: "main",
+              newRefName: "legacy/rename-case",
+              path: fixture.owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: (step) =>
+                  Effect.sync(() => {
+                    before = step.before;
+                  }),
+                afterEffect: (_step, _result, material) =>
+                  Effect.sync(() => {
+                    claim = material;
+                  }),
+              },
+            },
+          );
+          if (before === undefined || claim === undefined)
+            return yield* Effect.die("No owned fixture claim");
+          if (scenario === "suffix" || scenario === "collision")
+            fixture.occupiedTargets.add("refs/heads/qualified");
+          if (scenario === "unknown_material") fixture.loseRenameMaterial();
+          const intents: GitVcsDriver.LegacyBranchRenameStep[] = [];
+          const outcomes: string[] = [];
+          const result = yield* fixture.driver
+            .renameBranch({
+              cwd: fixture.owned,
+              oldBranch: "legacy/rename-case",
+              newBranch: "qualified",
+              exactName: scenario !== "suffix",
+              legacyPreparation: {
+                before,
+                claim,
+                beforeEffect: (step) =>
+                  Effect.gen(function* () {
+                    intents.push(step);
+                    assert.isFalse(fixture.commands.some((args) => args.includes("-m")));
+                    if (scenario === "replacement") {
+                      yield* fixture.fs.rename(fixture.owned, `${fixture.owned}-original`);
+                      yield* fixture.fs.makeDirectory(fixture.owned);
+                    }
+                  }),
+                afterEffect: (step, outcome, material) =>
+                  Effect.gen(function* () {
+                    outcomes.push(outcome);
+                    if (scenario === "unknown_material") {
+                      assert.isUndefined(material);
+                      return;
+                    }
+                    assert.equal(outcome, "settled_success");
+                    assert.deepEqual(material, { ...claim, headRef: step.targetRef });
+                    if (scenario === "lost_outcome")
+                      return yield* new GitCommandError({
+                        operation: "fixture.rename.outcome",
+                        command: "git",
+                        cwd: fixture.owned,
+                        detail: "Outcome readback unavailable",
+                      });
+                  }),
+              },
+            })
+            .pipe(Effect.result);
+          assert.equal(
+            fixture.commands.filter((args) => args.includes("-m")).length,
+            scenario === "collision" || scenario === "replacement" ? 0 : 1,
+          );
+          assert.isFalse(
+            fixture.commands.some((args) => args.includes("prune") || args.includes("remove")),
+          );
+          assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+          if (scenario === "suffix") {
+            assert.isTrue(Result.isSuccess(result));
+            assert.equal(Result.isSuccess(result) ? result.success.branch : null, "qualified-1");
+            assert.equal(intents[0]?.targetRef, "refs/heads/qualified-1");
+            assert.deepEqual(intents[0]?.args, [
+              "branch",
+              "-m",
+              "--",
+              "legacy/rename-case",
+              "qualified-1",
+            ]);
+            assert.deepEqual(outcomes, ["settled_success"]);
+          } else {
+            assert.isTrue(Result.isFailure(result));
+            assert.lengthOf(intents, scenario === "collision" ? 0 : 1);
+            assert.deepEqual(
+              outcomes,
+              scenario === "collision" || scenario === "replacement"
+                ? []
+                : [scenario === "unknown_material" ? "failed_or_unknown" : "settled_success"],
+            );
+          }
+        }),
+    );
+
+    it.effect("legacy rename intent refusal prevents branch mutation", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("3".repeat(40), "legacy/rename");
+        let before: GitVcsDriver.LegacyWorktreeBeforeObservation | undefined;
+        let claim: GitVcsDriver.LegacyWorktreeMaterialClaim | undefined;
+        yield* fixture.driver.createWorktree(
+          { cwd: fixture.cwd, refName: "main", newRefName: "legacy/rename", path: fixture.owned },
+          {
+            legacyPreparation: {
+              beforeEffect: (step) =>
+                Effect.sync(() => {
+                  before = step.before;
+                }),
+              afterEffect: (_step, _result, material) =>
+                Effect.sync(() => {
+                  claim = material;
+                }),
+            },
+          },
+        );
+        if (before === undefined || claim === undefined)
+          return yield* Effect.die("No owned fixture claim");
+        let intentCalls = 0;
+        const result = yield* fixture.driver
+          .renameBranch({
+            cwd: fixture.owned,
+            oldBranch: "legacy/rename",
+            newBranch: "qualified",
+            exactName: true,
+            ...{
+              legacyPreparation: {
+                before,
+                claim,
+                beforeEffect: () =>
+                  Effect.sync(() => {
+                    intentCalls++;
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new GitCommandError({
+                          operation: "fixture.rename.intent",
+                          command: "git",
+                          cwd: fixture.owned,
+                          detail: "Intent readback unavailable",
+                        }),
+                      ),
+                    ),
+                  ),
+                afterEffect: () => Effect.die("No outcome without accepted intent"),
+              },
+            },
+          })
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.equal(intentCalls, 1);
+        assert.isFalse(fixture.commands.some((args) => args.includes("-m")));
+      }),
+    );
+
+    it.effect(
+      "legacy worktree owner proves invalid-input refusal was never invoked only after accepted intent",
+      () =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree("9".repeat(40), "legacy/invalid?");
+          const trace: string[] = [];
+          const result = yield* fixture.driver
+            .createWorktree(
+              {
+                cwd: fixture.cwd,
+                refName: "main",
+                newRefName: "legacy/invalid?",
+                path: fixture.owned,
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: (step) =>
+                    Effect.sync(() => {
+                      assert.equal(step.targetRef, "refs/heads/legacy/invalid?");
+                      assert.isDefined(step.before);
+                      trace.push("accepted-intent-readback");
+                    }),
+                  neverInvoked: (step, reason) =>
+                    Effect.sync(() => {
+                      assert.equal(step.kind, "worktree.add");
+                      assert.equal(reason, "input_validation_failed");
+                      assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+                      trace.push("never-invoked-outcome-readback");
+                    }),
+                  afterEffect: () => Effect.die("No execution outcome when invocation was refused"),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(trace, ["accepted-intent-readback", "never-invoked-outcome-readback"]);
+          assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+          assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(fixture.owned));
+        }),
+    );
+
+    it.effect.each(["intent_lost", "outcome_lost"] as const)(
+      "legacy never-invoked refusal preserves unknown journal readback for $scenario",
+      (scenario) =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree("8".repeat(40), "legacy/invalid?");
+          const trace: string[] = [];
+          const unavailable = () =>
+            new GitCommandError({
+              operation: "fixture.readback",
+              command: "git",
+              cwd: fixture.cwd,
+              detail: "Exact journal readback unavailable",
+            });
+          const result = yield* fixture.driver
+            .createWorktree(
+              {
+                cwd: fixture.cwd,
+                refName: "main",
+                newRefName: "legacy/invalid?",
+                path: fixture.owned,
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: () =>
+                    Effect.sync(() => {
+                      trace.push("intent");
+                    }).pipe(
+                      Effect.andThen(
+                        scenario === "intent_lost" ? Effect.fail(unavailable()) : Effect.void,
+                      ),
+                    ),
+                  neverInvoked: () =>
+                    Effect.sync(() => {
+                      trace.push("outcome");
+                    }).pipe(Effect.andThen(Effect.fail(unavailable()))),
+                  afterEffect: () => Effect.die("Uninvoked mutation cannot report execution"),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(trace, scenario === "intent_lost" ? ["intent"] : ["intent", "outcome"]);
+          assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+          assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(fixture.owned));
+        }),
+    );
+
+    it.effect("legacy worktree intent refusal prevents add and config writes", () =>
+      Effect.gen(function* () {
+        const { cwd, owned, commands, driver } = yield* syntheticLegacyWorktree(
+          "a".repeat(40),
+          "legacy/branch",
+        );
+        const result = yield* driver
+          .createWorktree(
+            {
+              cwd,
+              refName: "main",
+              newRefName: "legacy/branch",
+              baseRefName: "main",
+              path: owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: () =>
+                  Effect.fail(
+                    new GitCommandError({
+                      operation: "fixture.journal",
+                      command: "git",
+                      cwd,
+                      detail: "Intent readback unavailable",
+                    }),
+                  ),
+                afterEffect: () => Effect.die("No outcome without intent"),
+              },
+            },
+          )
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.isFalse(commands.some((args) => args.includes("add")));
+        assert.isFalse(
+          commands.some((args) => args.includes("branch.legacy/branch.gh-merge-base")),
+        );
+      }),
+    );
+
+    it.effect(
+      "legacy worktree outcome refusal retains the add and prevents later config writes",
+      () =>
+        Effect.gen(function* () {
+          const { cwd, owned, common, commands, driver } = yield* syntheticLegacyWorktree(
+            "b".repeat(40),
+            "legacy/branch",
+          );
+          const intents: GitVcsDriver.LegacyWorktreePreparationStep[] = [];
+          const result = yield* driver
+            .createWorktree(
+              {
+                cwd,
+                refName: "main",
+                newRefName: "legacy/branch",
+                baseRefName: "main",
+                path: owned,
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: (step) =>
+                    Effect.sync(() => {
+                      intents.push(step);
+                    }),
+                  afterEffect: () =>
+                    Effect.fail(
+                      new GitCommandError({
+                        operation: "fixture.journal",
+                        command: "git",
+                        cwd,
+                        detail: "Outcome readback unavailable",
+                      }),
+                    ),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.equal(commands.filter((args) => args.includes("add")).length, 1);
+          assert.isFalse(
+            commands.some((args) => args.includes("branch.legacy/branch.gh-merge-base")),
+          );
+          assert.deepInclude(intents[0], {
+            kind: "worktree.add",
+            worktreePath: owned,
+            commonDirectory: common,
+            baseCommitOid: "b".repeat(40),
+            targetRef: "refs/heads/legacy/branch",
+          });
+        }),
+    );
+
+    it.effect(
+      "legacy submodule journal refusal escapes best-effort handling before config writes",
+      () =>
+        Effect.gen(function* () {
+          const { cwd, owned, commands, driver } = yield* syntheticLegacyWorktree(
+            "c".repeat(40),
+            "legacy/submodules",
+            true,
+          );
+          const seen: string[] = [];
+          const result = yield* driver
+            .createWorktree(
+              {
+                cwd,
+                refName: "main",
+                newRefName: "legacy/submodules",
+                baseRefName: "main",
+                path: owned,
+              },
+              {
+                submodules: "recursive",
+                legacyPreparation: {
+                  beforeEffect: (step) =>
+                    Effect.sync(() => {
+                      seen.push(`intent:${step.kind}`);
+                    }).pipe(
+                      Effect.andThen(
+                        step.kind === "worktree.submodules"
+                          ? Effect.fail(
+                              new GitCommandError({
+                                operation: "fixture.journal",
+                                command: "git",
+                                cwd,
+                                detail: "Intent readback refused",
+                              }),
+                            )
+                          : Effect.void,
+                      ),
+                    ),
+                  afterEffect: (step, outcome) =>
+                    Effect.sync(() => {
+                      seen.push(`${outcome}:${step.kind}`);
+                    }),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(seen, [
+            "intent:worktree.add",
+            "settled_success:worktree.add",
+            "intent:worktree.submodules",
+          ]);
+          assert.equal(commands.filter((args) => args.includes("add")).length, 1);
+          assert.isFalse(commands.some((args) => args.includes("update")));
+          assert.isFalse(
+            commands.some((args) => args.includes("branch.legacy/submodules.gh-merge-base")),
+          );
+        }),
+    );
+
+    it.effect("legacy worktree owner journals exact absence and material before later config", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("d".repeat(40), "legacy/verified");
+        const steps: GitVcsDriver.LegacyWorktreePreparationStep[] = [];
+        const claims: GitVcsDriver.LegacyWorktreeMaterialClaim[] = [];
+        yield* fixture.driver.createWorktree(
+          {
+            cwd: fixture.cwd,
+            refName: "main",
+            newRefName: "legacy/verified",
+            baseRefName: "main",
+            path: fixture.owned,
+          },
+          {
+            legacyPreparation: {
+              beforeEffect: (step) =>
+                Effect.sync(() => {
+                  steps.push(step);
+                }),
+              afterEffect: (_step, result, claim) =>
+                Effect.sync(() => {
+                  assert.equal(result, "settled_success");
+                  assert.isDefined(claim);
+                  claims.push(claim!);
+                }),
+            },
+          },
+        );
+        assert.deepEqual(
+          steps.map((step) => step.kind),
+          ["worktree.add", "worktree.base-config"],
+        );
+        assert.deepEqual(steps[0]!.before, steps[1]!.before);
+        assert.equal(steps[0]!.before?.targetRefAbsent, true);
+        assert.equal(steps[0]!.before?.registrationAbsent, true);
+        assert.equal(steps[0]!.args.at(-1), "d".repeat(40));
+        assert.equal(claims[0]!.path, fixture.owned);
+        assert.equal(claims[0]!.realPath, NodeFS.realpathSync(fixture.owned));
+        assert.equal(claims[0]!.device, String(NodeFS.lstatSync(fixture.owned).dev));
+        assert.equal(claims[0]!.inode, String(NodeFS.lstatSync(fixture.owned).ino));
+        assert.equal(claims[0]!.gitDirectory, fixture.gitDirectory);
+        assert.equal(claims[0]!.commonDirectory, fixture.common);
+        assert.equal(claims[0]!.headRef, "refs/heads/legacy/verified");
+        assert.equal(claims[0]!.headOid, "d".repeat(40));
+        assert.deepEqual(claims[1], claims[0]);
+        assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+      }),
+    );
+
+    it.effect("legacy worktree preexisting material refuses without add or journal authority", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("e".repeat(40), "legacy/preexisting");
+        yield* fixture.fs.makeDirectory(fixture.owned);
+        let journalCalls = 0;
+        const result = yield* fixture.driver
+          .createWorktree(
+            {
+              cwd: fixture.cwd,
+              refName: "main",
+              newRefName: "legacy/preexisting",
+              baseRefName: "main",
+              path: fixture.owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: () =>
+                  Effect.sync(() => {
+                    journalCalls++;
+                  }),
+                afterEffect: () => Effect.die("No effect outcome"),
+              },
+            },
+          )
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.equal(journalCalls, 0);
+        assert.isFalse(fixture.commands.some((args) => args.includes("add")));
+        assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+      }),
+    );
+
+    it.effect("legacy worktree replacement after durable claim refuses all later writes", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree("f".repeat(40), "legacy/replaced");
+        const kinds: string[] = [];
+        const result = yield* fixture.driver
+          .createWorktree(
+            {
+              cwd: fixture.cwd,
+              refName: "main",
+              newRefName: "legacy/replaced",
+              baseRefName: "main",
+              path: fixture.owned,
+            },
+            {
+              legacyPreparation: {
+                beforeEffect: (step) =>
+                  Effect.sync(() => {
+                    kinds.push(step.kind);
+                  }),
+                afterEffect: (step, outcome, claim) =>
+                  Effect.gen(function* () {
+                    assert.equal(outcome, "settled_success");
+                    assert.isDefined(claim);
+                    if (step.kind === "worktree.add") {
+                      yield* fixture.fs.rename(fixture.owned, `${fixture.owned}-previous`);
+                      yield* fixture.fs.makeDirectory(fixture.owned);
+                      yield* fixture.fs.writeFileString(
+                        `${fixture.owned}/.git`,
+                        `gitdir: ${fixture.gitDirectory}\n`,
+                      );
+                    }
+                  }),
+              },
+            },
+          )
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        assert.deepEqual(kinds, ["worktree.add"]);
+        assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+        assert.isFalse(
+          fixture.commands.some((args) => args.includes("branch.legacy/replaced.gh-merge-base")),
+        );
+        assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+        assert.isTrue(yield* fixture.fs.exists(`${fixture.owned}-previous`));
+      }),
+    );
+
+    it.effect(
+      "legacy worktree unavailable post-add material reports unknown and preserves its target",
+      () =>
+        Effect.gen(function* () {
+          const fixture = yield* syntheticLegacyWorktree(
+            "1".repeat(40),
+            "legacy/lost",
+            false,
+            true,
+          );
+          const outcomes: string[] = [];
+          const result = yield* fixture.driver
+            .createWorktree(
+              {
+                cwd: fixture.cwd,
+                refName: "main",
+                newRefName: "legacy/lost",
+                baseRefName: "main",
+                path: fixture.owned,
+              },
+              {
+                legacyPreparation: {
+                  beforeEffect: () => Effect.void,
+                  afterEffect: (step, outcome, claim) =>
+                    Effect.sync(() => {
+                      outcomes.push(`${step.kind}:${outcome}`);
+                      assert.isUndefined(claim);
+                    }),
+                },
+              },
+            )
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(result));
+          assert.deepEqual(outcomes, ["worktree.add:failed_or_unknown"]);
+          assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+          assert.isFalse(
+            fixture.commands.some((args) => args.includes("branch.legacy/lost.gh-merge-base")),
+          );
+          assert.isFalse(
+            fixture.commands.some((args) => args.includes("remove") || args.includes("prune")),
+          );
+          assert.isTrue(yield* fixture.fs.exists(fixture.owned));
+        }),
+    );
+
+    it.effect("native worktree defaults do not execute private material probes", () =>
+      Effect.gen(function* () {
+        const fixture = yield* syntheticLegacyWorktree(
+          "2".repeat(40),
+          "native/default",
+          false,
+          true,
+        );
+        const result = yield* fixture.driver.createWorktree({
+          cwd: fixture.cwd,
+          refName: "main",
+          newRefName: "native/default",
+          baseRefName: "main",
+          path: fixture.owned,
+        });
+        assert.equal(result.worktree.path, fixture.owned);
+        assert.isFalse(yield* fixture.fs.exists(`${fixture.owned}/.git`));
+        assert.isFalse(fixture.commands.some((args) => args.includes("--get-regexp")));
+        assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
+        assert.isTrue(
+          fixture.commands.some((args) => args.includes("branch.native/default.gh-merge-base")),
+        );
+      }),
+    );
+
     it.effect("uses parallel checkout without skipping filters or hooks", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
@@ -2607,7 +3610,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("creates and removes a worktree for a new refName", () =>
+    it.effect("creates and removes a worktree and its new local branch", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
@@ -2630,8 +3633,14 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(yield* git(worktreePath, ["branch", "--show-current"]), "feature/worktree");
 
         yield* driver.removeWorktree({ cwd, path: worktreePath });
+        yield* driver.deleteLocalBranch({
+          cwd,
+          refName: "feature/worktree",
+          force: true,
+        });
         const fileSystem = yield* FileSystem.FileSystem;
         assert.equal(yield* fileSystem.exists(worktreePath), false);
+        assert.notInclude(yield* driver.listLocalBranchNames(cwd), "feature/worktree");
       }),
     );
 
@@ -2847,8 +3856,9 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("remote operations", () => {
-    for (const failure of ["offline", "auth", "timeout"] as const) {
-      it.effect(`does not retry a scoped fetch after ${failure}`, () =>
+    it.effect.each(["offline", "auth", "timeout"] as const)(
+      "does not retry a scoped fetch after %s",
+      (failure) =>
         Effect.gen(function* () {
           const cwd = yield* makeTmpDir();
           const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -2903,8 +3913,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
             );
           }
         }),
-      );
-    }
+    );
 
     it.effect("creates a worktree from the latest fetched remote commit", () =>
       Effect.gen(function* () {
@@ -2972,6 +3981,22 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           remoteRefName: `origin/${initialBranch}`,
         });
         assert.deepEqual(explicitlyResolvedBase, resolvedBase);
+        assert.deepEqual(
+          yield* driver.resolveRemoteTrackingCommitIfExists({
+            cwd,
+            remoteName: "origin",
+            branchName: initialBranch,
+          }),
+          resolvedBase,
+        );
+        assert.equal(
+          yield* driver.resolveRemoteTrackingCommitIfExists({
+            cwd,
+            remoteName: "origin",
+            branchName: "missing/local-only",
+          }),
+          null,
+        );
         assert.equal(yield* git(cwd, ["rev-parse", initialBranch]), beforeFetch);
 
         const pathService = yield* Path.Path;

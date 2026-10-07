@@ -26,6 +26,8 @@ import {
   resolvePullRequestAuthorFilter,
   type OrchestrationProjectShell,
   type ProjectId,
+  type PullRequestCiStatusInput,
+  type PullRequestCiStatusResult,
   type PullRequestAction,
   type PullRequestActionInput,
   type PullRequestActivity,
@@ -33,6 +35,7 @@ import {
   type PullRequestCommentUpdateInput,
   type PullRequestDetail,
   type PullRequestPreview,
+  type PullRequestChecks,
   type PullRequestDiffFileContentsInput,
   type PullRequestDiffFileContentsResult,
   type PullRequestDiffStat,
@@ -73,8 +76,11 @@ import {
 import { detectSourceControlProviderFromRemoteUrl } from "@t3tools/shared/sourceControl";
 
 import { AllowGitHubReserve } from "../sourceControl/GitHubCli.ts";
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import * as PullRequestCiStatus from "../jones/pullRequestCi/PullRequestCiStatus.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRateLimit from "../sourceControl/SourceControlRateLimit.ts";
 import {
@@ -84,7 +90,7 @@ import {
   PullRequestProviderError,
 } from "./PullRequestProvider.ts";
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
-import { PullRequestProviderRegistry } from "./PullRequestProviderRegistry.ts";
+import * as PullRequestProviderRegistry from "./PullRequestProviderRegistry.ts";
 import * as ViewedFiles from "./pullRequestViewedFiles.ts";
 
 export interface PullRequestMergeEvent extends PullRequestRef {
@@ -171,6 +177,9 @@ type CredentialRef = PullRequestRef & { readonly [credentialNamespace]?: string 
 export class PullRequestService extends Context.Service<
   PullRequestService,
   {
+    readonly ciStatus: (
+      input: PullRequestCiStatusInput,
+    ) => Effect.Effect<PullRequestCiStatusResult, PullRequestError>;
     readonly list: (
       input: PullRequestListInput,
     ) => Effect.Effect<PullRequestListResult, PullRequestError>;
@@ -210,6 +219,9 @@ export class PullRequestService extends Context.Service<
     readonly preview: (
       input: PullRequestRef,
     ) => Effect.Effect<PullRequestPreview, PullRequestError>;
+    readonly checks: (
+      input: PullRequestRef,
+    ) => Effect.Effect<PullRequestChecks | null, PullRequestError>;
     readonly activity: (
       input: PullRequestRef,
     ) => Effect.Effect<PullRequestActivity, PullRequestError>;
@@ -472,7 +484,12 @@ function toPullRequestError(
   return (error) =>
     isProviderUnusable(error)
       ? toUnavailableError(error)
-      : new PullRequestOperationError({ operation, detail: error.detail, cause: error });
+      : new PullRequestOperationError({
+          operation,
+          detail: error.detail,
+          ...(error.reason === "not-found" ? { reason: "not-found" as const } : {}),
+          cause: error,
+        });
 }
 
 function withRateLimitBackoff(
@@ -557,6 +574,9 @@ function withRateLimitBackoff(
     ...(api.getChangeRequestPreview === undefined
       ? {}
       : { getChangeRequestPreview: wrap("getChangeRequestPreview", api.getChangeRequestPreview) }),
+    ...(api.getChangeRequestChecks === undefined
+      ? {}
+      : { getChangeRequestChecks: wrap("getChangeRequestChecks", api.getChangeRequestChecks) }),
     ...(api.getChangeRequestSummary === undefined
       ? {}
       : {
@@ -620,12 +640,14 @@ const observeRead = Effect.fnUntraced(function* <A, E, R>(read: Effect.Effect<A,
 export const make = Effect.gen(function* () {
   const mergedPullRequests = yield* PubSub.sliding<PullRequestMergeEvent>(64);
   const pullRequestRefreshes = yield* SubscriptionRef.make(0);
-  const registry = yield* PullRequestProviderRegistry;
-  const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const registry = yield* PullRequestProviderRegistry.PullRequestProviderRegistry;
+  const projects = yield* ProjectService.ProjectService;
+  const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const sourceControlProviders = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
+  const githubCi = yield* Effect.serviceOption(GitHubCli.GitHubCli);
 
   const refineUnknownProjectKinds = (
     projects: ReadonlyArray<OrchestrationProjectShell>,
@@ -708,8 +730,10 @@ export const make = Effect.gen(function* () {
     filter: Pick<PullRequestListInput, "projectId" | "projectIds" | "host">,
   ): Effect.Effect<WorkspaceProjects, PullRequestError> =>
     (filter.projectId === undefined
-      ? projections.getProjectShells(filter.projectIds)
-      : projections.getProjectShellById(filter.projectId).pipe(Effect.map(Option.toArray))
+      ? projects.listShells(
+          filter.projectIds === undefined ? undefined : { projectIds: filter.projectIds },
+        )
+      : projects.getShell(filter.projectId).pipe(Effect.map(Option.toArray))
     ).pipe(
       Effect.mapError(
         (error) =>
@@ -718,6 +742,18 @@ export const make = Effect.gen(function* () {
             detail: "The project list could not be read.",
             cause: error,
           }),
+      ),
+      Effect.flatMap((projects) =>
+        Effect.forEach(
+          projects,
+          (project) =>
+            project.repositoryIdentity != null
+              ? Effect.succeed(project)
+              : repositoryIdentities
+                  .resolve(project.workspaceRoot)
+                  .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
+          { concurrency: REPOSITORY_CONCURRENCY },
+        ),
       ),
       Effect.flatMap((projects) =>
         refineUnknownProjectKinds(projects, filter).pipe(
@@ -1488,6 +1524,13 @@ export const make = Effect.gen(function* () {
     return { ...identity, host, provider: "github" as const };
   });
 
+  const ciStatus = yield* PullRequestCiStatus.createCiStatus({
+    listWorkspaceProjects,
+    registry,
+    githubCi,
+    rateLimits,
+  });
+
   const withRoutingCredential: PullRequestService["Service"]["withRoutingCredential"] = (
     input,
     operation,
@@ -1596,6 +1639,7 @@ export const make = Effect.gen(function* () {
             ...(changeRequest.mergeability === undefined
               ? {}
               : { mergeability: changeRequest.mergeability }),
+            ...(changeRequest.stack === undefined ? {} : { stack: changeRequest.stack }),
           })),
         );
       }),
@@ -1673,6 +1717,7 @@ export const make = Effect.gen(function* () {
             ...(changeRequest.headRepositoryNameWithOwner === undefined
               ? {}
               : { headRepositoryNameWithOwner: changeRequest.headRepositoryNameWithOwner }),
+            ...(changeRequest.headSha ? { headSha: changeRequest.headSha } : {}),
             baseBranch: changeRequest.baseBranch,
             createdAt: changeRequest.createdAt,
             updatedAt: changeRequest.updatedAt,
@@ -1753,6 +1798,9 @@ export const make = Effect.gen(function* () {
               comments: activity.comments,
               commentCount: activity.commentCount,
               commentsTruncated: activity.commentsTruncated,
+              ...(activity.reviewThreadsTruncated === undefined
+                ? {}
+                : { reviewThreadsTruncated: activity.reviewThreadsTruncated }),
               reviewThreads: activity.reviewThreads,
               commits: activity.commits,
               ...(activity.reactions === undefined ? {} : { reactions: activity.reactions }),
@@ -2857,6 +2905,30 @@ export const make = Effect.gen(function* () {
     return Cache.get(listCache, key);
   };
 
+  const checksCache = yield* Cache.makeWith(
+    (key: string) => {
+      const input = refOfCacheKey(key);
+      return requireProject(input).pipe(
+        Effect.flatMap((project) =>
+          project.api.getChangeRequestChecks === undefined
+            ? Effect.succeed(null)
+            : project.api
+                .getChangeRequestChecks({
+                  cwd: project.project.workspaceRoot,
+                  repository: project.repository,
+                  host: project.host,
+                  number: input.number,
+                })
+                .pipe(Effect.mapError(toPullRequestError("checks"))),
+        ),
+      );
+    },
+    {
+      capacity: DETAIL_CACHE_CAPACITY,
+      timeToLive: (exit) => (Exit.isSuccess(exit) ? DETAIL_CACHE_TTL : Duration.zero),
+    },
+  );
+
   const detailCache = yield* Cache.makeWith(
     (key: string) => {
       const statsKey = statsCacheKey(key);
@@ -3206,6 +3278,7 @@ export const make = Effect.gen(function* () {
       });
 
   return PullRequestService.of({
+    ciStatus,
     routing,
     routingIdentity,
     withRoutingCredential,
@@ -3224,6 +3297,7 @@ export const make = Effect.gen(function* () {
     ),
     refreshAfterTurn,
     detail: credentialCached(detail),
+    checks: credentialCached((input) => Cache.get(checksCache, refCacheKey(input))),
     activity: credentialCached(activity),
     preview: credentialCached(preview),
     threadComments,
@@ -3248,4 +3322,4 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(PullRequestService, make);
+export const layer = Layer.effect(PullRequestService, make).pipe(Layer.provide(GitHubCli.layer));

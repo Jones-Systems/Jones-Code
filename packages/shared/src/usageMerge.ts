@@ -14,6 +14,7 @@ import {
   type UsageSource,
   type UsageSourceFingerprint,
   type UsageSummary,
+  type UsageTokenTotals,
 } from "@t3tools/contracts";
 
 export interface EnvironmentUsage {
@@ -27,6 +28,10 @@ export interface ProviderTotals {
   readonly costUsd: number;
   readonly totalTokens: number;
   readonly records: number;
+  readonly totals: UsageTokenTotals;
+  readonly providerReportedRecords: number;
+  readonly modelPricedRecords: number;
+  readonly unpricedRecords: number;
   readonly sessions: number;
   readonly costShare: number;
   readonly tokenShare: number;
@@ -37,13 +42,23 @@ export interface ModelTotals {
   readonly provider: UsageProviderKind;
   readonly costUsd: number;
   readonly totalTokens: number;
+  readonly tokens: UsageTokenTotals;
   readonly records: number;
+  readonly totals: UsageTokenTotals;
+  readonly providerReportedRecords: number;
+  readonly modelPricedRecords: number;
   /**
    * Records whose tokens are counted here but which contributed nothing to
    * `costUsd`. When it equals `records` the cost is unknown, not zero.
    */
   readonly unpricedRecords: number;
+  /**
+   * Tokens with no known rates, which a custom price would cover. A cell that
+   * mixes these with reported costs counts its tokens by record share.
+   */
+  readonly unpricedTokens: number;
   readonly costShare: number;
+  readonly tokenShare: number;
 }
 
 /**
@@ -76,6 +91,27 @@ export interface CostQuality {
   readonly cacheSavingsUsd: number;
 }
 
+/**
+ * `costUsd` by token category. `unsplit` is cost no rates could split,
+ * including all cost from servers that predate the split.
+ */
+export interface CategoryCost {
+  readonly input: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly output: number;
+  readonly unsplit: number;
+}
+
+/** `costUsd` by request speed. Servers that predate speeds count as standard. */
+export interface SpeedCost {
+  readonly standard: number;
+  readonly fast: number;
+  readonly ultrafast: number;
+  /** What fast and ultrafast requests cost above the standard rate. */
+  readonly premium: number;
+}
+
 export interface UsageContractMismatch {
   readonly environmentId: EnvironmentId;
   readonly direction: "serverBehind" | "clientBehind";
@@ -97,6 +133,8 @@ export interface MergedUsage {
   readonly daily: readonly DailyTotals[];
   readonly hourly: readonly HourlyTotals[];
   readonly costQuality: CostQuality;
+  readonly categoryCost: CategoryCost;
+  readonly speedCost: SpeedCost;
   /** Environments whose data was dropped as a duplicate of another's. */
   readonly duplicateSources: readonly string[];
   readonly contributingEnvironments: readonly EnvironmentId[];
@@ -283,6 +321,35 @@ function bucketTokens(bucket: UsageBucket): number {
   );
 }
 
+function emptyDetailTotals() {
+  return {
+    totals: {
+      uncachedInputTokens: 0,
+      cachedInputTokens: 0,
+      cacheCreationTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+    } satisfies UsageTokenTotals,
+    providerReportedRecords: 0,
+    modelPricedRecords: 0,
+    unpricedRecords: 0,
+  };
+}
+
+function addDetailTotals(detail: ReturnType<typeof emptyDetailTotals>, bucket: UsageBucket) {
+  detail.totals.uncachedInputTokens += bucket.totals.uncachedInputTokens;
+  detail.totals.cachedInputTokens += bucket.totals.cachedInputTokens;
+  detail.totals.cacheCreationTokens += bucket.totals.cacheCreationTokens;
+  detail.totals.outputTokens += bucket.totals.outputTokens;
+  detail.totals.reasoningTokens += bucket.totals.reasoningTokens;
+  const providerReportedRecords = bucket.costSource === "providerReported" ? bucket.records : 0;
+  detail.providerReportedRecords += providerReportedRecords;
+  detail.unpricedRecords += bucket.unpricedRecords;
+  // Match the existing cost-quality classification; the wire bucket carries
+  // unpriced counts and one cost source, not per-response pricing provenance.
+  detail.modelPricedRecords += bucket.records - providerReportedRecords - bucket.unpricedRecords;
+}
+
 export function isCompatibleUsageContractVersion(version: number, expected: number): boolean {
   return version >= USAGE_MERGE_COMPATIBLE_SINCE && version <= expected;
 }
@@ -307,6 +374,8 @@ const EMPTY_MERGED: MergedUsage = {
     unpricedShare: 0,
     cacheSavingsUsd: 0,
   },
+  categoryCost: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, unsplit: 0 },
+  speedCost: { standard: 0, fast: 0, ultrafast: 0, premium: 0 },
   duplicateSources: [],
   contributingEnvironments: [],
   contractMismatches: [],
@@ -364,19 +433,27 @@ export function mergeUsage(
   let cacheSavingsUsd = 0;
   let providerReportedRecords = 0;
   let unpricedRecords = 0;
+  const categoryCost = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+  const speedCost = { fast: 0, ultrafast: 0, premium: 0 };
 
   const providerAccumulator = new Map<
     UsageProviderKind,
-    { costUsd: number; totalTokens: number; records: number; sessions: number }
-  >();
-  const modelAccumulator = new Map<
-    string,
-    {
-      provider: UsageProviderKind;
+    ReturnType<typeof emptyDetailTotals> & {
       costUsd: number;
       totalTokens: number;
       records: number;
-      unpricedRecords: number;
+      sessions: number;
+    }
+  >();
+  const modelAccumulator = new Map<
+    string,
+    ReturnType<typeof emptyDetailTotals> & {
+      provider: UsageProviderKind;
+      costUsd: number;
+      totalTokens: number;
+      tokens: UsageTokenTotals;
+      records: number;
+      unpricedTokens: number;
     }
   >();
   const dailyAccumulator = new Map<
@@ -412,6 +489,7 @@ export function mergeUsage(
       sessions += providerSessions;
       if (providerSessions === 0) continue;
       const provider = providerAccumulator.get(providerKind) ?? {
+        ...emptyDetailTotals(),
         costUsd: 0,
         totalTokens: 0,
         records: 0,
@@ -434,8 +512,18 @@ export function mergeUsage(
       records += bucket.records;
       unpricedRecords += bucket.unpricedRecords;
       if (bucket.costSource === "providerReported") providerReportedRecords += bucket.records;
+      if (bucket.categoryCostUsd !== undefined) {
+        categoryCost.input += bucket.categoryCostUsd.input;
+        categoryCost.cacheRead += bucket.categoryCostUsd.cacheRead;
+        categoryCost.cacheWrite += bucket.categoryCostUsd.cacheWrite;
+        categoryCost.output += bucket.categoryCostUsd.output;
+      }
+      speedCost.fast += bucket.fastCostUsd ?? 0;
+      speedCost.ultrafast += bucket.ultrafastCostUsd ?? 0;
+      speedCost.premium += bucket.speedPremiumUsd ?? 0;
 
       const provider = providerAccumulator.get(bucket.provider) ?? {
+        ...emptyDetailTotals(),
         costUsd: 0,
         totalTokens: 0,
         records: 0,
@@ -444,20 +532,39 @@ export function mergeUsage(
       provider.costUsd += bucket.costUsd;
       provider.totalTokens += tokens;
       provider.records += bucket.records;
+      addDetailTotals(provider, bucket);
       providerAccumulator.set(bucket.provider, provider);
 
       const modelKey = `${bucket.provider} ${bucket.model}`;
       const model = modelAccumulator.get(modelKey) ?? {
+        ...emptyDetailTotals(),
         provider: bucket.provider,
         costUsd: 0,
         totalTokens: 0,
+        tokens: {
+          uncachedInputTokens: 0,
+          cachedInputTokens: 0,
+          cacheCreationTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+        },
         records: 0,
-        unpricedRecords: 0,
+        unpricedTokens: 0,
       };
       model.costUsd += bucket.costUsd;
       model.totalTokens += tokens;
+      model.tokens = {
+        uncachedInputTokens: model.tokens.uncachedInputTokens + bucket.totals.uncachedInputTokens,
+        cachedInputTokens: model.tokens.cachedInputTokens + bucket.totals.cachedInputTokens,
+        cacheCreationTokens: model.tokens.cacheCreationTokens + bucket.totals.cacheCreationTokens,
+        outputTokens: model.tokens.outputTokens + bucket.totals.outputTokens,
+        reasoningTokens: model.tokens.reasoningTokens + bucket.totals.reasoningTokens,
+      };
       model.records += bucket.records;
-      model.unpricedRecords += bucket.unpricedRecords;
+      addDetailTotals(model, bucket);
+      if (bucket.records > 0) {
+        model.unpricedTokens += (tokens * bucket.unpricedRecords) / bucket.records;
+      }
       modelAccumulator.set(modelKey, model);
 
       const day = dailyAccumulator.get(bucket.day) ?? {
@@ -503,6 +610,10 @@ export function mergeUsage(
       costUsd: totals.costUsd,
       totalTokens: totals.totalTokens,
       records: totals.records,
+      totals: totals.totals,
+      providerReportedRecords: totals.providerReportedRecords,
+      modelPricedRecords: totals.modelPricedRecords,
+      unpricedRecords: totals.unpricedRecords,
       sessions: totals.sessions,
       costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
       tokenShare: totalTokens === 0 ? 0 : totals.totalTokens / totalTokens,
@@ -515,9 +626,15 @@ export function mergeUsage(
       provider: totals.provider,
       costUsd: totals.costUsd,
       totalTokens: totals.totalTokens,
+      tokens: totals.tokens,
       records: totals.records,
+      totals: totals.totals,
+      providerReportedRecords: totals.providerReportedRecords,
+      modelPricedRecords: totals.modelPricedRecords,
       unpricedRecords: totals.unpricedRecords,
+      unpricedTokens: totals.unpricedTokens,
       costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
+      tokenShare: totalTokens === 0 ? 0 : totals.totalTokens / totalTokens,
     }))
     .sort((a, b) => b.costUsd - a.costUsd || b.totalTokens - a.totalTokens);
 
@@ -554,6 +671,22 @@ export function mergeUsage(
       modelPricedShare:
         records === 0 ? 0 : (records - providerReportedRecords - unpricedRecords) / records,
       cacheSavingsUsd,
+    },
+    // Clamped so float error never shows as a negative remainder.
+    categoryCost: {
+      ...categoryCost,
+      unsplit: Math.max(
+        0,
+        costUsd -
+          categoryCost.input -
+          categoryCost.cacheRead -
+          categoryCost.cacheWrite -
+          categoryCost.output,
+      ),
+    },
+    speedCost: {
+      ...speedCost,
+      standard: Math.max(0, costUsd - speedCost.fast - speedCost.ultrafast),
     },
     duplicateSources: duplicates,
     contributingEnvironments,

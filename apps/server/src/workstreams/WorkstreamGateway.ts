@@ -90,7 +90,19 @@ interface ContractInput {
   readonly contractManifest: typeof WORKSTREAM_CONTRACT_MANIFEST_SHA256;
 }
 
+import type {
+  WorkstreamAppearanceResult,
+  WorkstreamAppearanceWrite,
+  WorkstreamAppearance,
+} from "@t3tools/contracts";
+
 export interface WorkstreamTransport {
+  readonly readAppearance?: (input: {
+    readonly workstream_ids: readonly string[];
+  }) => Effect.Effect<WorkstreamAppearanceResult, WorkstreamTransportError>;
+  readonly saveAppearance?: (
+    input: WorkstreamAppearanceWrite,
+  ) => Effect.Effect<WorkstreamAppearance, WorkstreamTransportError>;
   readonly listThreadPlacements?: (
     input: T3PlacementRequest,
   ) => Effect.Effect<T3PlacementPage, WorkstreamTransportError>;
@@ -147,6 +159,12 @@ export interface WorkstreamGatewayOptions {
 export class WorkstreamGateway extends Context.Service<
   WorkstreamGateway,
   {
+    readonly readAppearance: (
+      ids: readonly string[],
+    ) => Effect.Effect<WorkstreamAppearanceResult, WorkstreamGatewayError>;
+    readonly saveAppearance: (
+      input: WorkstreamAppearanceWrite,
+    ) => Effect.Effect<WorkstreamAppearance, WorkstreamGatewayError>;
     readonly readThreadPlacements: (
       input: T3PlacementLoadRequest,
     ) => Effect.Effect<T3PlacementResult, WorkstreamGatewayError>;
@@ -678,6 +696,50 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       });
 
     return WorkstreamGateway.of({
+      readAppearance: (ids) =>
+        Effect.gen(function* () {
+          const authorized = yield* authorize("workstreams:read");
+          if (!transport.readAppearance) return { supported: false as const };
+          const result = yield* transport
+            .readAppearance({ workstream_ids: ids })
+            .pipe(Effect.mapError(transportFailure));
+          if (
+            result.supported &&
+            (result.page.owner_id !== authorized.binding.ownerId ||
+              result.page.server_generation !== authorized.binding.serverGeneration ||
+              result.page.items.length !== ids.length ||
+              result.page.items.some((item, index) => item.workstream_id !== ids[index]))
+          ) {
+            return yield* new WorkstreamGatewayError({
+              reason: "invalid-response",
+              detail: "Appearance owner, generation or requested inventory mismatch.",
+            });
+          }
+          return result;
+        }),
+      saveAppearance: (input) =>
+        Effect.gen(function* () {
+          yield* authorize("workstreams:write");
+          if (!transport.saveAppearance)
+            return yield* new WorkstreamGatewayError({
+              reason: "version-conflict",
+              detail: "Appearance editing is unavailable.",
+            });
+          const result = yield* transport
+            .saveAppearance(input)
+            .pipe(Effect.mapError(transportFailure));
+          if (
+            result.workstream_id !== input.workstream_id ||
+            result.border_color !== input.border_color ||
+            (result.version !== input.expected_version &&
+              result.version !== input.expected_version + 1)
+          )
+            return yield* new WorkstreamGatewayError({
+              reason: "invalid-response",
+              detail: "Appearance receipt mismatch.",
+            });
+          return result;
+        }),
       readThreadPlacements,
       readSession,
       readMetadata,

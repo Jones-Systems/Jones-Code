@@ -6,10 +6,9 @@ for seven days. They are not GitHub Releases, package publications, or a deploye
 Jones-Code installation. Native GitHub-hosted Ubuntu 24.04 runners build each
 architecture; the minimum compatible Linux environment is not yet established.
 
-Run the workflow manually from Actions once it is on the default branch, selecting
-the intended source ref. Pull requests touching the workflow or its selected build
-inputs run it automatically. This narrow trigger is packaging validation, not a
-build of every application change. Check both architecture jobs and the source
+Main pushes build trial artifacts for each source change. For a manual trial, run the
+workflow from Actions on the default branch, selecting the intended source ref. Pull requests touching the workflow or its selected build
+inputs run it automatically. The narrow PR trigger validates packaging; main pushes build every source change. Check both architecture jobs and the source
 commit in the run summary. PR runs build GitHub's merge ref; `SOURCE_COMMIT` records
 the exact built commit, which may differ from the PR head.
 
@@ -29,13 +28,13 @@ for your architecture, and unzip it into a new empty directory. Alternatively:
 
 ```bash
 gh run download RUN_ID --repo Jones-Systems/Jones-Code \
-  --name jones-code-cli-linux-x64-RUN_ID-RUN_ATTEMPT --dir ./jones-code-trial
+  --name jones-code-cli-linux-x64-RUN_ID-RUN_ATTEMPT--VERSION --dir ./jones-code-trial
 cd ./jones-code-trial
 sha256sum --check SHA256SUMS
 cat SOURCE_COMMIT
 ```
 
-Replace the placeholders with the run's identifiers; use `arm64` on an ARM host.
+Replace the placeholders with the run's identifiers and preview version; use `arm64` on an ARM host.
 Confirm the recorded source matches the intended workflow checkout. Checksums
 detect download corruption; these unsigned archives have no independent signature.
 
@@ -61,17 +60,12 @@ owned by the person running the trial; retain them only as long as needed and
 remove only that exact directory after stopping the trial. Do not copy credentials
 or real user state into this first smoke trial.
 
-Versions use `0.0.0-preview.YYYYMMDD.RUN_ID`, which the existing CLI recognizes as
-the preview channel. The archive retains T3 branding. CLI discovery, archive downloads and the tracked
-installers default to `Jones-Systems/Jones-Code`; desktop release feeds use the
-same repository unless `T3CODE_DESKTOP_UPDATE_REPOSITORY` explicitly overrides it.
-`T3CODE_RELEASE_BASE_URL` remains an explicit archive-mirror override. A missing
-Jones release fails explicitly and never falls back to upstream. Actions trial
-outputs do not populate that release channel: download another successful
-workflow artifact for subsequent trials. Use a distinct Jones preview version;
-server runtime caches still require separate provenance qualification before
-an installed transition. Shell and SSH installers reject existing caches with
-missing or different `.install-source` origin instead of replacing them.
+Versions use `BASE-preview.YYYYMMDD.RUN_ID.RUN_ATTEMPT`, where `BASE` is the
+checked-in server package version. Both the CLI channel parser and desktop build
+recognize that preview form. The archive retains T3 branding. These Actions
+outputs do not create GitHub Releases or populate a release channel: download
+another successful workflow artifact for subsequent trials. Upstream installers
+and release discovery remain separate from these Jones trial workflows.
 
 Publishing this workflow does not authorize a VPS service restart, installation,
 replacement of an active binary, or use of the real T3 home. Those steps need a
@@ -80,9 +74,12 @@ separate decision covering the target, state backup, rollback, and verification.
 ## Mac desktop artifact
 
 The companion **Mac Desktop Artifact** workflow builds an Apple Silicon
-DMG on `macos-15`. It follows the same seven-day
+DMG on `macos-15`. It runs on main pushes and manual dispatch, and on matching pull requests whose
+base is `main` and whose head belongs to the same repository. Dependency-base
+pull requests do not trigger this workflow;
+use a separate manual run for DMG evidence when needed. It follows the same seven-day
 Actions download process, with artifact name
-`desktop-mac-arm64-RUN_ID-RUN_ATTEMPT`. Confirm the source revision in its run
+`desktop-mac-arm64-RUN_ID-RUN_ATTEMPT--VERSION`. Confirm the source revision in its run
 summary and downloaded `SOURCE_COMMIT`/`ARTIFACT.json`. After downloading into an empty directory on a Mac, verify:
 
 ```bash
@@ -101,7 +98,7 @@ verification alone do not perform those steps.
 
 Both trial workflows copy the tracked `.env.example` before compiling. It contains
 public production Clerk and relay identifiers documented in
-[Connect setup](connect-setup.md#public-application-configuration); no credential
+[T3 Connect](../internals/t3-connect.md); no credential
 or signing material is supplied. Process variables still override those public
 inputs. The web client and bundled server embed them; the desktop main process
 also embeds the publishable key. An existing bundle reused with `--skip-build`
@@ -111,16 +108,17 @@ Each workflow uploads `ARTIFACT.json` with repository, built source commit,
 version, platform, architecture, artifact filename, SHA-256, run/attempt and
 public configuration source. CLI jobs upload `SHA256SUMS` and `SOURCE_COMMIT`;
 Mac jobs upload the DMG checksum and `SOURCE_COMMIT`. Compare all three identities
-before using an artifact. Public build configuration, unsigned container
+before using an artifact. The source stamp records the committed Git tree even
+when build-only package versions have changed the workspace; it refuses a checkout
+whose HEAD differs from `GITHUB_SHA`. Public build configuration, unsigned container
 verification, authentic binary login and peer connection are separate checks;
-these workflows leave login and peer connection explicitly untested. An M2 Pro
-requires arm64. Determine the Mini's architecture before selecting its package.
+these workflows leave login and peer connection explicitly untested. Select the artifact for the target host's architecture.
 
 A future Jones release needs an approved exact source/tag, distinct version,
 per-platform archives, `SHA256SUMS`, source descriptors and desktop update assets
 (including ZIP/update metadata where required). Trial artifacts expire and do not
 constitute a release feed. Installing or updating each host separately requires
 an approved binary/state/service envelope, a consistent state snapshot and a
-retained compatible prior binary plus prior state. Preserve desktop profile and
-encrypted connection catalog separately from server state. Repointing a launcher
+retained compatible prior binary plus prior state. Preserve the desktop profile
+and saved connection data separately from server state. Repointing a launcher
 alone does not prove a compatible state rollback.

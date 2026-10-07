@@ -18,7 +18,8 @@ import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from ".
  * client renders partial coverage when an environment reports an older version
  * rather than failing the whole page.
  * Adding providers or other array-element variants is additive: unknown
- * entries are skipped on decode and do not require a version bump.
+ * entries are skipped on decode and do not require a version bump. So are
+ * optional bucket fields, which older clients ignore.
  */
 export const USAGE_CONTRACT_VERSION = 6 as const;
 
@@ -53,7 +54,7 @@ export const UsageDay = TrimmedNonEmptyString.check(Schema.isPattern(USAGE_DAY_P
 );
 export type UsageDay = typeof UsageDay.Type;
 
-export const UsageResolution = Schema.Literals(["day", "hour"]);
+export const UsageResolution = Schema.Literals(["day", "hour", "exactDay"]);
 export type UsageResolution = typeof UsageResolution.Type;
 
 /**
@@ -85,6 +86,18 @@ export const UsageTokenTotals = Schema.Struct({
 export type UsageTokenTotals = typeof UsageTokenTotals.Type;
 
 /**
+ * A bucket's cost split by token category, in USD. A provider-reported cost is
+ * split in proportion to the model's list rates.
+ */
+export const UsageCategoryCost = Schema.Struct({
+  input: Schema.Number,
+  cacheRead: Schema.Number,
+  cacheWrite: Schema.Number,
+  output: Schema.Number,
+});
+export type UsageCategoryCost = typeof UsageCategoryCost.Type;
+
+/**
  * One `(day, hourStart?, provider, model)` cell. `hourStart` is the UTC start
  * instant of a rolling bucket and is present only for hourly requests.
  *
@@ -108,6 +121,16 @@ export const UsageBucket = Schema.Struct({
    * rather than derived on the client.
    */
   cacheSavingsUsd: Schema.Number,
+  /**
+   * `costUsd` by token category. Cost with no known rates stays out of it, and
+   * it is absent when nothing could be split or the server predates it.
+   */
+  categoryCostUsd: Schema.optional(UsageCategoryCost),
+  /** Cost of fast and ultrafast requests. Absent when zero; the rest is standard. */
+  fastCostUsd: Schema.optional(Schema.Number),
+  ultrafastCostUsd: Schema.optional(Schema.Number),
+  /** What fast and ultrafast requests cost above the standard rate. Absent when zero. */
+  speedPremiumUsd: Schema.optional(Schema.Number),
   costSource: UsageCostSource,
   /** Distinct assistant responses, after de-duplication. */
   records: NonNegativeInt,
@@ -188,11 +211,11 @@ export const UsageSummaryInput = Schema.Struct({
    * any window that crosses a DST boundary.
    */
   timeZone: TrimmedNonEmptyString,
-  /** Defaults to daily for older clients. */
+  /** Defaults to day; `exactDay` filters by paired instants and keeps day buckets. */
   resolution: Schema.optional(UsageResolution),
-  /** Inclusive UTC instant for an hourly rolling window. */
+  /** Inclusive UTC instant for hourly or exact-day windows. */
   sinceTime: Schema.optional(TrimmedNonEmptyString),
-  /** Exclusive UTC instant for an hourly rolling window. */
+  /** Exclusive UTC instant for hourly or exact-day windows. */
   untilTime: Schema.optional(TrimmedNonEmptyString),
 });
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;

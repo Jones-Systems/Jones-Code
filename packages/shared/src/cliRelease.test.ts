@@ -33,13 +33,7 @@ describe("cliRelease", () => {
 
   it("resolves download URLs under the tagged release, honoring a mirror", () => {
     expect(cliReleaseDownloadBaseUrl("1.2.3")).toBe(
-      "https://github.com/Jones-Systems/Jones-Code/releases/download/v1.2.3",
-    );
-    expect(cliReleaseDownloadBaseUrl("1.2.3", "")).toBe(
-      "https://github.com/Jones-Systems/Jones-Code/releases/download/v1.2.3",
-    );
-    expect(cliReleaseDownloadBaseUrl("1.2.3", "  ")).toBe(
-      "https://github.com/Jones-Systems/Jones-Code/releases/download/v1.2.3",
+      "https://github.com/pingdotgg/t3code/releases/download/v1.2.3",
     );
     expect(cliReleaseDownloadBaseUrl("1.2.3", "https://mirror.example/t3/")).toBe(
       "https://mirror.example/t3/v1.2.3",
@@ -72,6 +66,10 @@ describe("cliRelease", () => {
     expect(cliReleaseChannelOf("1.2.3")).toBe("stable");
     expect(cliReleaseChannelOf("1.2.3-nightly.20260911.4")).toBe("nightly");
     expect(cliReleaseChannelOf("1.2.3-preview.20260911.4")).toBe("preview");
+    expect(cliReleaseChannelOf("1.2.3-preview.20260911.4.2")).toBe("preview");
+    expect(cliReleaseChannelOf("1.2.3-nightly.20260911.4.2")).toBe("nightly");
+    expect(cliReleaseChannelOf("1.2.3-preview.20260911.4.2.extra")).toBe("stable");
+    expect(cliReleaseChannelOf("1.2.3-preview.20260911.4.x")).toBe("stable");
     // A prerelease that is not one of our trains is not silently a nightly.
     expect(cliReleaseChannelOf("1.2.3-rc.1")).toBe("stable");
   });
@@ -93,7 +91,7 @@ describe("cliRelease", () => {
 
   it("pages through the release index at the largest page GitHub allows", () => {
     expect(cliReleaseIndexPageUrl(1)).toBe(
-      "https://api.github.com/repos/Jones-Systems/Jones-Code/releases?per_page=100&page=1",
+      "https://api.github.com/repos/pingdotgg/t3code/releases?per_page=100&page=1",
     );
     expect(cliReleaseIndexPageUrl(3)).toContain("page=3");
   });

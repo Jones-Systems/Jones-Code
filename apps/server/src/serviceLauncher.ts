@@ -78,12 +78,12 @@ const databaseBackupFile = (backupDir: string, suffix: (typeof DB_FILE_SUFFIXES)
   NodePath.join(backupDir, suffix === "" ? "database" : `database${suffix}`);
 
 export const configuredDatabasePathForBaseDir = (baseDir: string): string =>
-  NodePath.resolve(baseDir, "userdata", "state.sqlite");
+  NodePath.resolve(baseDir, "userdata", "statev2.sqlite");
 
 export const validateDatabasePathForBaseDir = (baseDir: string, databasePath: string): string => {
   const configuredPath = configuredDatabasePathForBaseDir(baseDir);
   if (NodePath.resolve(databasePath) !== configuredPath) {
-    throw new Error("Service update database path must be the configured userdata/state.sqlite.");
+    throw new Error("Service update database path must be the configured userdata/statev2.sqlite.");
   }
   return configuredPath;
 };
@@ -584,7 +584,7 @@ export class Launcher {
     try {
       validateDatabasePathForBaseDir(this.#baseDir, message.dbPath);
     } catch {
-      await reject("The requested database path is not the configured userdata/state.sqlite.");
+      await reject("The requested database path is not the configured userdata/statev2.sqlite.");
       return;
     }
     if (!(await runtimeExists(this.#baseDir, message.targetVersion))) {

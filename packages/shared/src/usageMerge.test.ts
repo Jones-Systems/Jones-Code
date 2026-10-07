@@ -514,6 +514,44 @@ describe("mergeUsage", () => {
     expect(merged.costQuality.cacheSavingsUsd).toBe(4);
   });
 
+  it("derives model token shares independently of their cost shares", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({ costUsd: 90 }),
+              bucket({
+                provider: "codex",
+                model: "gpt-5.6-sol",
+                costUsd: 10,
+                totals: {
+                  uncachedInputTokens: 3 * 1160,
+                  cachedInputTokens: 0,
+                  cacheCreationTokens: 0,
+                  outputTokens: 0,
+                  reasoningTokens: 0,
+                },
+              }),
+            ],
+            [
+              { provider: "claude", hostId: "mac", homePath: "/a/.claude" },
+              { provider: "codex", hostId: "mac", homePath: "/a/.codex" },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    const byModel = Object.fromEntries(merged.models.map((model) => [model.model, model]));
+    expect(byModel["claude-fable-5"]?.costShare).toBeCloseTo(0.9, 5);
+    expect(byModel["claude-fable-5"]?.tokenShare).toBeCloseTo(0.25, 5);
+    expect(byModel["gpt-5.6-sol"]?.costShare).toBeCloseTo(0.1, 5);
+    expect(byModel["gpt-5.6-sol"]?.tokenShare).toBeCloseTo(0.75, 5);
+  });
+
   it("marks a model with no known rates as unpriced rather than free", () => {
     const merged = mergeUsage(
       [
@@ -543,6 +581,67 @@ describe("mergeUsage", () => {
     expect(merged.models.find((model) => model.model === "unknown-model")?.unpricedRecords).toBe(5);
     expect(merged.models.filter(isModelCostUnknown).map((model) => model.model)).toEqual([
       "unknown-model",
+    ]);
+  });
+
+  it("splits cost by category and speed, counting older servers as unsplit standard cost", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({
+                costUsd: 10,
+                categoryCostUsd: { input: 1, cacheRead: 2, cacheWrite: 3, output: 4 },
+                fastCostUsd: 6,
+                speedPremiumUsd: 3,
+              }),
+              bucket({
+                provider: "codex",
+                model: "unknown-model",
+                costUsd: 0,
+                costSource: "unpriced",
+                unpricedRecords: 5,
+              }),
+              // Reported cost on one record, no rates for the other four.
+              bucket({
+                provider: "codex",
+                model: "partly-reported",
+                costUsd: 0,
+                unpricedRecords: 4,
+              }),
+            ],
+            [
+              { provider: "claude", hostId: "mac", homePath: "/a/.claude" },
+              { provider: "codex", hostId: "mac", homePath: "/a/.codex" },
+            ],
+          ),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ costUsd: 5 })],
+            [{ provider: "claude", hostId: "linux", homePath: "/b/.claude" }],
+            USAGE_MERGE_COMPATIBLE_SINCE,
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.categoryCost).toEqual({
+      input: 1,
+      cacheRead: 2,
+      cacheWrite: 3,
+      output: 4,
+      unsplit: 5,
+    });
+    expect(merged.speedCost).toEqual({ standard: 9, fast: 6, ultrafast: 0, premium: 3 });
+    expect(merged.models.map(({ model, unpricedTokens }) => [model, unpricedTokens])).toEqual([
+      ["claude-fable-5", 0],
+      ["unknown-model", 1160],
+      ["partly-reported", 928],
     ]);
   });
 
@@ -685,5 +784,208 @@ describe("mergeUsage", () => {
     ]);
     expect(merged.daily).toHaveLength(1);
     expect(merged.daily[0]?.costUsd).toBe(10);
+  });
+
+  it("reconciles provider and model detail vectors after copied and overlapping sources", () => {
+    const claudeSource = {
+      provider: "claude" as const,
+      hostId: "mac",
+      homePath: "/claude",
+      distinctSessions: 2,
+    };
+    const accepted = [
+      bucket({
+        sourcePath: "/claude",
+        model: "primary",
+        costUsd: 6,
+        costSource: "providerReported",
+        records: 2,
+        totals: {
+          uncachedInputTokens: 100,
+          cachedInputTokens: 50,
+          cacheCreationTokens: 10,
+          outputTokens: 30,
+          reasoningTokens: 5,
+        },
+      }),
+      bucket({
+        sourcePath: "/claude",
+        model: "primary",
+        day: "2026-08-06" as UsageDay,
+        costUsd: 2,
+        records: 5,
+        unpricedRecords: 2,
+        totals: {
+          uncachedInputTokens: 200,
+          cachedInputTokens: 100,
+          cacheCreationTokens: 20,
+          outputTokens: 40,
+          reasoningTokens: 10,
+        },
+      }),
+    ];
+    const complete = summary(accepted, [claudeSource]);
+    const partial = summary(
+      [
+        ...accepted.map((entry) => ({
+          ...entry,
+          costUsd: 900,
+          totals: { ...entry.totals, outputTokens: 9000 },
+        })),
+        bucket({
+          sourcePath: "/claude",
+          day: "2026-08-08" as UsageDay,
+          model: "secondary",
+          costUsd: 0,
+          costSource: "unpriced",
+          records: 3,
+          unpricedRecords: 3,
+          totals: {
+            uncachedInputTokens: 30,
+            cachedInputTokens: 0,
+            cacheCreationTokens: 0,
+            outputTokens: 10,
+            reasoningTokens: 4,
+          },
+        }),
+      ],
+      [claudeSource],
+    );
+    const merged = mergeUsage(
+      [
+        environment("env-a", complete),
+        environment("env-copy", complete),
+        environment("env-partial", {
+          ...partial,
+          readAt: "2026-08-09T00:00:00.000Z",
+          sources: partial.sources.map((source) => ({
+            ...source,
+            status: "partial",
+            distinctSessions: 3,
+          })),
+        }),
+        environment(
+          "env-codex",
+          summary(
+            [
+              bucket({
+                provider: "codex",
+                model: "codex-model",
+                costUsd: 4,
+                costSource: "providerReported",
+                records: 1,
+                totals: {
+                  uncachedInputTokens: 10,
+                  cachedInputTokens: 20,
+                  cacheCreationTokens: 0,
+                  outputTokens: 5,
+                  reasoningTokens: 2,
+                },
+              }),
+            ],
+            [{ provider: "codex", hostId: "linux", homePath: "/codex" }],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.providers.find((entry) => entry.provider === "claude")).toMatchObject({
+      costUsd: 8,
+      totalTokens: 590,
+      records: 10,
+      sessions: 3,
+      totals: {
+        uncachedInputTokens: 330,
+        cachedInputTokens: 150,
+        cacheCreationTokens: 30,
+        outputTokens: 80,
+        reasoningTokens: 19,
+      },
+      providerReportedRecords: 2,
+      modelPricedRecords: 3,
+      unpricedRecords: 5,
+    });
+    expect(merged.models.find((entry) => entry.model === "primary")).toMatchObject({
+      totalTokens: 550,
+      totals: {
+        uncachedInputTokens: 300,
+        cachedInputTokens: 150,
+        cacheCreationTokens: 30,
+        outputTokens: 70,
+        reasoningTokens: 15,
+      },
+      providerReportedRecords: 2,
+      modelPricedRecords: 3,
+      unpricedRecords: 2,
+    });
+    expect(merged.models.find((entry) => entry.model === "secondary")).toMatchObject({
+      totalTokens: 40,
+      providerReportedRecords: 0,
+      modelPricedRecords: 0,
+      unpricedRecords: 3,
+    });
+    expect(merged.totalTokens).toBe(625);
+    expect(merged.records).toBe(11);
+    expect(merged.sessions).toBe(4);
+    expect(merged.duplicateSources).toHaveLength(2);
+    for (const field of [
+      "uncachedInputTokens",
+      "cachedInputTokens",
+      "cacheCreationTokens",
+      "outputTokens",
+      "reasoningTokens",
+    ] as const) {
+      expect(merged.providers.reduce((sum, entry) => sum + entry.totals[field], 0)).toBe(
+        merged[field],
+      );
+      expect(merged.models.reduce((sum, entry) => sum + entry.totals[field], 0)).toBe(
+        merged[field],
+      );
+    }
+    expect(merged.costQuality.providerReportedShare).toBe(3 / 11);
+    expect(merged.costQuality.modelPricedShare).toBe(3 / 11);
+    expect(merged.costQuality.unpricedShare).toBe(5 / 11);
+  });
+
+  it("retains zero-priced coverage and does not count reasoning twice", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({
+                records: 1,
+                costUsd: 0,
+                totals: {
+                  uncachedInputTokens: 0,
+                  cachedInputTokens: 0,
+                  cacheCreationTokens: 0,
+                  outputTokens: 20,
+                  reasoningTokens: 20,
+                },
+              }),
+            ],
+            [{ provider: "claude", hostId: "mac", homePath: "/claude" }],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.providers[0]).toMatchObject({
+      totalTokens: 20,
+      records: 1,
+      providerReportedRecords: 0,
+      modelPricedRecords: 1,
+      unpricedRecords: 0,
+    });
+    expect(merged.models[0]).toMatchObject({
+      totalTokens: 20,
+      modelPricedRecords: 1,
+      unpricedRecords: 0,
+    });
+    expect(isModelCostUnknown(merged.models[0]!)).toBe(false);
   });
 });

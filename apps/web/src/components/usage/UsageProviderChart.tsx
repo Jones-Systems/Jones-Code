@@ -1,3 +1,4 @@
+import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import type { UsageProviderKind } from "@t3tools/contracts";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -221,14 +222,16 @@ export function UsageProviderChart({
 
     const built = providers.map((provider) => {
       const providerIndex = PROVIDER_ORDER.indexOf(provider);
-      const line = curvePath(
-        smoothCurve(
-          columns.map((column, periodIndex) => ({
-            x: periodIndex * step,
-            y: toY(column.bands[providerIndex]?.value ?? 0),
-          })),
-        ),
-      );
+      const points = columns.map((column, periodIndex) => ({
+        x: periodIndex * step,
+        y: toY(column.bands[providerIndex]?.value ?? 0),
+      }));
+      const first = points[0];
+      const curvePoints =
+        points.length === 1 && first !== undefined
+          ? [first, { x: VIEW_WIDTH, y: first.y }]
+          : points;
+      const line = curvePath(smoothCurve(curvePoints));
       return {
         provider,
         total: columns.reduce((sum, column) => sum + (column.bands[providerIndex]?.value ?? 0), 0),
@@ -385,8 +388,8 @@ export function UsageProviderChart({
 
             {hoverIndex === null ? null : (
               <line
-                x1={hoverIndex * stepX}
-                x2={hoverIndex * stepX}
+                x1={periods.length === 1 ? VIEW_WIDTH / 2 : hoverIndex * stepX}
+                x2={periods.length === 1 ? VIEW_WIDTH / 2 : hoverIndex * stepX}
                 y1={PLOT_TOP}
                 y2={VIEW_HEIGHT}
                 stroke="currentColor"
@@ -408,11 +411,15 @@ export function UsageProviderChart({
             >
               <div className="mb-1 text-muted-foreground">{formatTooltipPeriod(hoveredPeriod)}</div>
               {providers.map((provider) => {
-                const { label, mark: Mark } = PROVIDER_PRESENTATION[provider];
+                const { label, driverKind } = PROVIDER_PRESENTATION[provider];
                 return (
                   <div key={provider} className="flex items-center justify-between gap-3">
                     <span className="flex items-center gap-1.5 text-muted-foreground">
-                      <Mark className="size-3 shrink-0" aria-hidden />
+                      <ProviderInstanceIcon
+                        driverKind={driverKind}
+                        displayName={label}
+                        iconClassName="size-3"
+                      />
                       {label}
                     </span>
                     <span className="text-foreground tabular-nums">

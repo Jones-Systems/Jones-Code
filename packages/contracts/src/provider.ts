@@ -9,10 +9,12 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import {
-  ChatAttachment,
-  ModelSelection,
   getProviderAttachmentLimitError,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  ChatAttachment,
+} from "./chatAttachment.ts";
+import { ModelSelection } from "./modelSelection.ts";
+import {
   ProviderApprovalDecision,
   ProviderApprovalPolicy,
   ProviderInteractionMode,
@@ -21,7 +23,7 @@ import {
   ProviderUserInputAnswers,
   UserInputAttachments,
   RuntimeMode,
-} from "./orchestration.ts";
+} from "./providerPolicy.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 
 const ProviderSessionStatus = Schema.Literals([
@@ -53,7 +55,6 @@ export type ProviderSession = typeof ProviderSession.Type;
 
 export const ProviderSessionStartInput = Schema.Struct({
   threadId: ThreadId,
-  runtimeGeneration: Schema.optional(TrimmedNonEmptyString),
   provider: Schema.optional(ProviderDriverKind),
   // See ProviderSession for the migration story.
   providerInstanceId: Schema.optional(ProviderInstanceId),
@@ -61,7 +62,6 @@ export const ProviderSessionStartInput = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
-  requireResume: Schema.optional(Schema.Boolean),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
@@ -150,7 +150,6 @@ export const ProviderEvent = Schema.Struct({
   provider: ProviderDriverKind,
   // See ProviderSession for the migration story.
   providerInstanceId: Schema.optional(ProviderInstanceId),
-  runtimeGeneration: Schema.optional(TrimmedNonEmptyString),
   threadId: ThreadId,
   createdAt: IsoDateTime,
   method: TrimmedNonEmptyString,

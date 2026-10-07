@@ -33,8 +33,17 @@ export const WORKSTREAM_RESPONSE_HEADERS = {
   "x-content-type-options": "nosniff",
 } as const;
 
+const workstreamHttpPath = (originalUrl: string): string | undefined => {
+  if (originalUrl.startsWith("/")) return originalUrl.split(/[?#]/, 1)[0];
+  try {
+    return new URL(originalUrl).pathname;
+  } catch {
+    return undefined;
+  }
+};
+
 export const isWorkstreamHttpTarget = (originalUrl: string): boolean => {
-  const path = originalUrl.split(/[?#]/, 1)[0];
+  const path = workstreamHttpPath(originalUrl);
   return path === "/api/workstreams" || path?.startsWith("/api/workstreams/") === true;
 };
 
@@ -47,7 +56,7 @@ export const withWorkstreamBodyLimit = <A, E, R>(
   request: { readonly originalUrl: string; readonly method: string },
 ): Effect.Effect<A, E, R> =>
   request.method === "POST" &&
-  request.originalUrl.split(/[?#]/, 1)[0] === "/api/workstreams/thread-placements"
+  workstreamHttpPath(request.originalUrl) === "/api/workstreams/thread-placements"
     ? effect.pipe(
         Effect.provideService(
           HttpIncomingMessage.MaxBodySize,
@@ -66,11 +75,11 @@ export const workstreamResponseHeadersLayer = HttpRouter.middleware(
   { global: true },
 );
 
-const configured = makeControlPlaneWorkstreamTransport();
 const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrustProvider) =>
   Layer.effect(
     WorkstreamGateway,
     Effect.gen(function* () {
+      const configured = makeControlPlaneWorkstreamTransport();
       const nativeAuthority =
         placementTrustProvider === undefined
           ? yield* NativeStoreAuthority.NativeStoreAuthority
@@ -136,6 +145,20 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
         yield* requireEnvironmentScope(AuthOrchestrationReadScope);
       });
     return handlers
+      .handle("appearanceRead", (args) =>
+        read(args.endpoint.name).pipe(
+          Effect.andThen(
+            internal("appearanceRead", gateway.readAppearance(args.payload.workstream_ids)),
+          ),
+        ),
+      )
+      .handle("appearanceSave", (args) =>
+        Effect.gen(function* () {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          return yield* internal("appearanceSave", gateway.saveAppearance(args.payload));
+        }),
+      )
       .handle("threadPlacements", (args) =>
         read(args.endpoint.name).pipe(
           Effect.andThen(internal("threadPlacements", gateway.readThreadPlacements(args.payload))),

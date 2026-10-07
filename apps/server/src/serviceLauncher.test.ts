@@ -99,7 +99,7 @@ it("requires durable phases and never upgrades legacy pending state", () => {
     id: "phase-test",
     fromVersion: "1.0.0",
     targetVersion: "1.1.0",
-    dbPath: "/fixture/userdata/state.sqlite",
+    dbPath: "/fixture/userdata/statev2.sqlite",
     status: "pending",
   };
   for (const phase of [undefined, "unknown"]) {
@@ -147,9 +147,18 @@ it("binds service updates to the configured database path", () => {
   const baseDir = "/fixture/t3-service-path-test";
   const configuredPath = configuredDatabasePathForBaseDir(baseDir);
   assert.equal(validateDatabasePathForBaseDir(baseDir, configuredPath), configuredPath);
+  assert.equal(configuredPath, "/fixture/t3-service-path-test/userdata/statev2.sqlite");
+  assert.throws(
+    () =>
+      validateDatabasePathForBaseDir(
+        baseDir,
+        "/fixture/t3-service-path-test/userdata/state.sqlite",
+      ),
+    /configured userdata\/statev2.sqlite/,
+  );
   assert.throws(
     () => validateDatabasePathForBaseDir(baseDir, "/fixture/alternate.sqlite"),
-    /configured userdata\/state.sqlite/,
+    /configured userdata\/statev2.sqlite/,
   );
 });
 
@@ -272,7 +281,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-flow-" });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, "before trial");
       // @effect-diagnostics-next-line preferSchemaOverJson:off - embeds a path in fake child source.
@@ -326,7 +335,7 @@ if (context.update?.status === "pending") {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-rollback-" });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, "before trial");
       // @effect-diagnostics-next-line preferSchemaOverJson:off - embeds a path in fake child source.
@@ -381,7 +390,7 @@ if (context.update?.status === "pending") {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-db-" });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       const authorityStateDir = path.join(root, "native-store-authority");
       const original = "SQLite format 3\0database before migration";
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
@@ -459,7 +468,7 @@ if (context.update?.status === "pending") {
           "process.exit(0);\n",
         );
       }
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       const statePath = path.join(root, "runtime", "service-state.json");
       yield* Effect.promise(() =>
         writeServiceState(statePath, {
@@ -501,7 +510,7 @@ if (context.update?.status === "pending") {
         prefix: "t3-service-launcher-missing-backup-",
       });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       yield* fs.makeDirectory(path.join(root, "userdata"), { recursive: true });
       yield* fs.writeFileString(databasePath, "SQLite format 3\0trial-modified database");
       yield* fs.writeFileString(
@@ -566,7 +575,7 @@ if (context.update?.status === "pending") {
       });
       const updateId = "restore-resume-update";
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       const backupDir = path.join(root, "runtime", "db-backup", updateId);
       yield* fs.makeDirectory(path.join(root, "userdata"), { recursive: true });
       yield* fs.makeDirectory(backupDir, { recursive: true });

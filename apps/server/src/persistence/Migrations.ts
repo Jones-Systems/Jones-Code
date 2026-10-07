@@ -1,5 +1,5 @@
 /**
- * Migration runner with inline upstream and fork loaders.
+ * Migration runner with independent upstream and Jones loaders.
  *
  * Uses Migrator.make with fromRecord to define migrations inline.
  * All migrations are statically imported - no dynamic file system loading.
@@ -10,6 +10,9 @@
 
 import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
+import * as JonesMigrations from "../jones/persistence/JonesMigrations.ts";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -66,10 +69,8 @@ import Migration0051 from "./Migrations/051_ProjectionThreadMessageContext.ts";
 import Migration0052 from "./Migrations/052_ProjectionThreadTitleState.ts";
 import Migration0053 from "./Migrations/053_PullRequestFilesViewed.ts";
 import Migration0054 from "./Migrations/054_ProjectionThreadsAutoSettleDisabledAt.ts";
-import JonesMigration0002 from "./Migrations/002_JonesProjectionThreadRuntimeIdentity.ts";
-import JonesMigration0001 from "./Migrations/001_JonesWorktreeOwnershipLeases.ts";
-import JonesMigration0003 from "./Migrations/003_JonesNativeCreationIntents.ts";
-import JonesMigration0004 from "./Migrations/004_JonesNativeCreationCommandIdentities.ts";
+import Migration0055 from "./Migrations/055_OrchestrationV2.ts";
+import Migration0056 from "./Migrations/056_RemoveRedundantProjectionIndexes.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -81,7 +82,7 @@ import JonesMigration0004 from "./Migrations/004_JonesNativeCreationCommandIdent
  * Uses Migrator.fromRecord which parses the key format and
  * returns migrations sorted by ID.
  */
-const migrationEntries = [
+export const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
   [3, "CheckpointDiffBlobs", Migration0003],
@@ -136,6 +137,10 @@ const migrationEntries = [
   [52, "ProjectionThreadTitleState", Migration0052],
   [53, "PullRequestFilesViewed", Migration0053],
   [54, "ProjectionThreadsAutoSettleDisabledAt", Migration0054],
+  // Released as 53 and 54 in V2 previews; reconcileV2PreviewMigration preserves their ledger.
+  // Preserve this migration's schema. Future V2 schema changes need new migrations.
+  [55, "OrchestrationV2", Migration0055],
+  [56, "RemoveRedundantProjectionIndexes", Migration0056],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -149,15 +154,6 @@ const makeMigrationLoader = (throughId?: number) =>
     ),
   );
 
-// Fork IDs start at 1 and must stay out of the upstream migration record.
-const makeForkMigrationLoader = () =>
-  Migrator.fromRecord({
-    "1_WorktreeOwnershipLeases": JonesMigration0001,
-    "2_ProjectionThreadRuntimeIdentity": JonesMigration0002,
-    "3_NativeCreationIntents": JonesMigration0003,
-    "4_NativeCreationCommandIdentities": JonesMigration0004,
-  });
-
 /**
  * Migrator run function - no schema dumping needed
  * Uses the base Migrator.make without platform dependencies
@@ -165,42 +161,62 @@ const makeForkMigrationLoader = () =>
 const run = Migrator.make({});
 
 export interface RunMigrationsOptions {
-  /** Replay only upstream migrations through this ID, without running fork migrations. */
+  /** Replay upstream history only; leave the Jones ledger and schema untouched. */
   readonly toMigrationInclusive?: number | undefined;
 }
 
 /**
  * Run all pending migrations.
  *
- * Runs upstream migrations in effect_sql_migrations, then fork migrations in
- * jones_sql_migrations. Each track has its own latest recorded migration ID.
- * An explicit upstream limit leaves the fork track untouched for historical replay.
+ * Runs upstream history in effect_sql_migrations, then validates and runs Jones
+ * history in jones_sql_migrations. An upstream limit skips the Jones track.
  *
- * Returns [id, name] tuples for upstream migrations that were run.
+ * Returns array of [id, name] tuples for upstream migrations that were run.
  *
  * @returns Effect containing array of executed upstream migrations
  */
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
-  const executedMigrations = yield* run({ loader: makeMigrationLoader(toMigrationInclusive) });
+  const previewMigrations =
+    toMigrationInclusive === undefined || toMigrationInclusive >= 55
+      ? yield* reconcileV2PreviewMigration()
+      : [];
+  const executedMigrations = [
+    ...previewMigrations,
+    ...(yield* run({ loader: makeMigrationLoader(toMigrationInclusive) })),
+  ];
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   yield* migrations.length === 0
-    ? Effect.logDebug("Upstream database schema is current")
+    ? Effect.logDebug("Database schema is current")
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
 
-  if (toMigrationInclusive === undefined) {
-    const forkMigrations = yield* run({
-      loader: makeForkMigrationLoader(),
-      table: "jones_sql_migrations",
-    });
-    if (forkMigrations.length > 0) {
-      yield* Effect.log("Fork migrations ran successfully").pipe(
-        Effect.annotateLogs({
-          migrations: forkMigrations.map(([id, name]) => `${id}_${name}`),
-        }),
-      );
+  // The migrator keys on migration_id: a database that recorded a different
+  // migration under a shared id (local or fork builds) keeps that id and
+  // silently skips this build's migration at it. Surface the divergence so the
+  // skipped schema change is diagnosable.
+  const sql = yield* SqlClient.SqlClient;
+  const recorded = yield* sql<{
+    readonly migration_id: number;
+    readonly name: string;
+  }>`SELECT migration_id, name FROM effect_sql_migrations`;
+  const manifestNames = new Map<number, string>(migrationEntries.map(([id, name]) => [id, name]));
+  const divergent = recorded.flatMap((row) => {
+    const expected = manifestNames.get(row.migration_id);
+    if (expected === undefined) {
+      return [`${row.migration_id}:${row.name} (unknown to this build)`];
     }
+    return expected === row.name
+      ? []
+      : [`${row.migration_id}:${row.name} (this build: ${expected})`];
+  });
+  if (divergent.length > 0) {
+    yield* Effect.logWarning(
+      "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
+    ).pipe(Effect.annotateLogs({ divergent }));
+  }
+  if (toMigrationInclusive === undefined) {
+    yield* JonesMigrations.runMigrations();
   }
   return executedMigrations;
 });

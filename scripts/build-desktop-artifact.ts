@@ -34,7 +34,6 @@ import {
   selectCliRuntimeExternalDependencies,
 } from "./lib/cli-external-packages.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
-import { CLI_RELEASE_REPOSITORY } from "@t3tools/shared/cliRelease";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
@@ -824,7 +823,7 @@ const spawnAndCollectOutput = Effect.fn("spawnAndCollectOutput")(function* (
   return { stdout, stderr, exitCode } as const;
 });
 
-const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRoot: string) {
+export const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRoot: string) {
   const result = yield* spawnAndCollectOutput(
     ChildProcess.make("git", ["rev-parse", "HEAD"], {
       cwd: repoRoot,
@@ -943,6 +942,11 @@ interface StagePackageJson {
 export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
 export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
+  // Cursor finds platform assets by walking up from argv[1]. Keep them outside
+  // asar so spawning helpers and loading native addons both use real paths.
+  "!**/node_modules/@cursor/sdk-*/**/*",
+  "!apps/desktop/prod-resources/cursor-sdk",
+  "!apps/desktop/prod-resources/cursor-sdk/**/*",
   // T3 Code always passes the user's installed Claude executable to the SDK,
   // so the SDK's optional platform packages (each a ~200MB bundled executable)
   // are dead weight. The trailing dash keeps the SDK's own JS package.
@@ -1007,6 +1011,8 @@ export const WINDOWS_NATIVE_ASAR_UNPACK_GLOB =
 // are never spawned at runtime (and are symlinks on POSIX build hosts, which
 // the asar extraction path deliberately does not support).
 export const WINDOWS_SERVER_ASAR_IGNORE_GLOBS = [
+  "**/node_modules/@cursor/sdk-*",
+  "**/node_modules/@cursor/sdk-*/**",
   "**/node_modules/@anthropic-ai/claude-agent-sdk-*",
   "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
   "**/node_modules/.bin",
@@ -1067,6 +1073,10 @@ export const WSL_RUNTIME_EXTRA_RESOURCES = [
   WSL_RUNTIME_ARCHIVE_HASH_EXTRA_RESOURCE,
 ] as const;
 export const DESKTOP_EXTRA_RESOURCES = [
+  {
+    from: "apps/desktop/prod-resources/cursor-sdk",
+    to: "node_modules/@cursor",
+  },
   {
     from: "apps/desktop/prod-resources/resource-monitor",
     to: "resource-monitor",
@@ -1349,6 +1359,24 @@ export function resolveMergedStageDependencies(input: {
     ...resolveFffNativeDependencies(input.platform, input.arch, input.fffNodeVersion),
   };
 }
+
+/** Cursor's helper lookup falls through the archive to this real resources tree. */
+export const stageCursorSdkPlatformPackages = Effect.fn("stageCursorSdkPlatformPackages")(
+  function* (nodeModulesDir: string, destination: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* fs.makeDirectory(destination, { recursive: true });
+    const sdkDirectory = path.join(nodeModulesDir, "@cursor/sdk");
+    if (!(yield* fs.exists(sdkDirectory))) return;
+    // pnpm's isolated layout puts optional packages beside the real SDK directory.
+    const cursorDirectory = path.dirname(yield* fs.realPath(sdkDirectory));
+    for (const name of yield* fs.readDirectory(cursorDirectory)) {
+      if (!name.startsWith("sdk-")) continue;
+      const source = yield* fs.realPath(path.join(cursorDirectory, name));
+      yield* fs.copy(source, path.join(destination, name));
+    }
+  },
+);
 
 export interface ClerkPasskeyNativeArtifact {
   readonly packageName: string;
@@ -2541,9 +2569,12 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
 ) {
   const env = yield* Config.all({
     updateRepository: Config.String("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
+    githubRepository: Config.String("GITHUB_REPOSITORY").pipe(Config.option),
   });
   const rawRepo = (
-    Option.getOrUndefined(env.updateRepository)?.trim() || CLI_RELEASE_REPOSITORY
+    Option.getOrUndefined(env.updateRepository)?.trim() ||
+    Option.getOrUndefined(env.githubRepository)?.trim() ||
+    ""
   ).trim();
   if (!rawRepo) return undefined;
 
@@ -2564,14 +2595,14 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
 }
 
 // Pull request builds (`-pr.<n>.`) and the maintainers' preview train
-// (`-preview.<date>.<run>`) are downloaded by hand and never through an
+// (`-preview.<date>.<run>[.<attempt>]`) are downloaded by hand and never through an
 // updater. Building them without a publish config means electron-builder
 // emits no `latest*.yml`/`nightly*.yml` manifests or blockmaps for them and
 // the app ships without `app-update.yml`, so neither a stable nor a nightly
 // install can be pointed at one of these releases, and the build itself
 // reports that no update feed is configured instead of polling.
 export function isDesktopPreviewVersion(version: string): boolean {
-  return /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version);
+  return /-pr\./.test(version) || /-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(version);
 }
 
 export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
@@ -2581,14 +2612,14 @@ export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
 export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
   if (resolveDesktopUpdateChannel(version) === "nightly") {
     return {
-      macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
+      macIconPng: BRAND_ASSET_PATHS.jonesMacIconPng,
       linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
       windowsIconIco: BRAND_ASSET_PATHS.nightlyWindowsIconIco,
     };
   }
 
   return {
-    macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
+    macIconPng: BRAND_ASSET_PATHS.jonesMacIconPng,
     linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
     windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
   };
@@ -2611,10 +2642,8 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
-export function resolveDesktopProductName(version: string): string {
-  return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+export function resolveDesktopProductName(_version: string): string {
+  return desktopPackageJson.productName ?? "Jones Code";
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -2878,7 +2907,9 @@ export const packWindowsServerAsar = Effect.fn("packWindowsServerAsar")(function
     try: () =>
       createPackageWithOptions(input.sourceDir, input.asarPath, {
         dot: true,
-        unpack: WINDOWS_NATIVE_ASAR_UNPACK_GLOB,
+        // ASAR matches absolute filenames with matchBase; slash-free patterns
+        // match native basenames even beneath hidden ancestor directories.
+        unpack: "{*.node,*.dll,*.exe,*.so,*.so.*,*.dylib}",
         // glob 13 (via @electron/asar 4) matches `ignore` relative to `cwd`,
         // not against the absolute paths it crawls, so anchor it at the source.
         globOptions: {
@@ -3743,6 +3774,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       verbose: options.verbose,
     });
   }
+  yield* stageCursorSdkPlatformPackages(
+    path.join(
+      options.platform === "win" ? path.join(stageRoot, "server") : stageAppDir,
+      "node_modules",
+    ),
+    path.join(stageProdResourcesDir, "cursor-sdk"),
+  );
   if (
     options.wslRuntime !== undefined &&
     bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime })

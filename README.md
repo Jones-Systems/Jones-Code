@@ -1,133 +1,120 @@
-# T3 Code
+# Jones Code
 
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
+Jones Code is a standalone public repository derived from
+[T3 Code](https://github.com/pingdotgg/t3code). It provides a workspace for
+controlling coding agents through web, Electron desktop, and mobile clients.
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, and Google Antigravity. If they're set up on your computer, T3 Code can control them.
+A Node server owns project files, provider processes, credentials, and durable
+thread history. Clients connect to that environment to send work, follow
+conversations, inspect changes, and manage projects. Remote clients use the
+server's workspace rather than their own machine's filesystem.
 
-## "Wait, what are you selling me?"
+## What is in this repository
 
-Nothing. We built T3 Code because we wanted the best possible development experience with agents. We were inspired by existing solutions like the Codex desktop app, Conductor, Claude Desktop and Cursor Glass, but none met our bar.
+The source includes:
 
-We wanted something performant, remote-ready, and truly open. If we ever go the wrong direction, we want you to have everything you need to fork and build the editor that you want.
+- Web, desktop, and React Native mobile clients, with shared connection and
+  client state in `packages/client-runtime`.
+- Provider adapters for Codex, Claude Code, Cursor, Grok, OpenCode, and
+  Antigravity.
+- Project and thread management, terminals, source-control integration, and
+  checkpoint-based workspace diffs and restore.
 
-## Installation
+These describe integrated source, not a guarantee that every feature is
+configured or usable in a particular installation. Provider access depends
+on the owning server's configuration, authentication, and available services.
 
-> [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, Grok Build, OpenCode, and Antigravity. Install and authenticate at least one provider before use:
->
-> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
-> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
-> - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `agent login`
-> - Grok Build: install [Grok Build CLI](https://x.ai/cli) and run `grok login`
-> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
-> - Antigravity: enable it in Settings, then use **Install Antigravity** and **Sign in with Google**. No CLI is required.
+The development route below starts from this repository's source. Upstream
+T3 installers, npm packages, app-store listings, and hosted services are
+separate distributions; they do not install Jones Code. Jones trial artifact
+workflows produce unsigned, expiring build artifacts rather than published
+releases. See [trial build artifacts](docs/operations/build-artifacts.md) for
+qualification and isolated trial boundaries.
 
-### Command line
+## Run from source
 
-```bash
-curl -fsSL https://t3.codes/install.sh | sh
-```
-
-On Windows, in PowerShell:
-
-```powershell
-irm https://t3.codes/install.ps1 | iex
-```
-
-Then run `t3` to start the server and open the local web app. `t3 service install` keeps it running in the background, `t3 update` moves to a newer release, and `t3 --help` has the full reference.
-
-To try it once without installing, run `npx t3@latest` instead.
-
-### Desktop app
-
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
-
-#### Windows (`winget`)
-
-```bash
-winget install T3Tools.T3Code
-```
-
-#### macOS (Homebrew)
-
-```bash
-brew install --cask t3-code
-```
-
-#### Debian, Ubuntu (`.deb`)
-
-Download the `.deb` from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), then:
-
-```bash
-sudo apt install ./T3-Code-*.deb
-```
-
-#### Arch Linux (AUR)
-
-Stable:
-
-```bash
-yay -S t3code-bin
-```
-
-Nightly:
-
-```bash
-yay -S t3code-nightly-bin
-```
-
-The AUR packaging is maintained in this repository under [`packaging/aur`](./packaging/aur).
-
-## Some notes
-
-We are very very early in this project. Expect bugs.
-
-We are (mostly) not accepting contributions yet. Small fixes may be considered. Big features will not be.
-
-## Documentation
-
-Full docs live in [docs/](./docs). There's no docs site yet.
-
-- [Install and first run](./docs/user/install.md)
-- [Permission modes](./docs/user/permission-modes.md)
-- [Keyboard shortcuts](./docs/user/keybindings.md)
-- [Project settings](./docs/user/project-settings.md)
-- [Remote access from a phone or another machine](./docs/user/remote-access.md)
-- [Keeping app and server in sync](./docs/user/updating.md)
-- [Source control integrations](./docs/user/source-control.md)
-- Multiple accounts: [Codex](./docs/user/providers-codex.md) · [Claude](./docs/user/providers-claude.md)
-- [Run T3 Code as a background service](./docs/user/background-service.md)
-
-Building from source? Start at [docs/internals/overview.md](./docs/internals/overview.md).
-
-## If you REALLY want to contribute still.... read this first
+Use a fresh task branch and linked worktree so development state stays separate
+from other checkouts. You need Git, Node `^24.13.1`, and the Vite+ `vp` command.
+The repository pins `pnpm@11.10.0`.
 
 ### Install `vp`
 
-T3 Code uses Vite+ so you'll need to install the global `vp` command-line tool.
+Follow the official [Vite+ setup guide](https://viteplus.dev/guide/) to install
+`vp`. Then prepare a development worktree:
 
-#### macOS / Linux
-
-```bash
-curl -fsSL https://vite.plus | bash
+```sh
+git clone https://github.com/Jones-Systems/Jones-Code.git
+git -C Jones-Code worktree add ../Jones-Code-dev -b dev/local
+cd Jones-Code-dev
 ```
 
-#### Windows
+From that worktree's repository root, install dependencies and start the server
+and web client:
 
-```bash
-irm https://vite.plus/ps1 | iex
-```
-
-Checkout their getting started guide for more information: https://viteplus.dev/guide/
-
-### Install dependencies
-
-```bash
+```sh
 vp i
+vp run dev
 ```
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before reporting a bug or opening a PR.
+Installation writes dependencies and runs repository lifecycle scripts.
+The development process creates state in the linked worktree's gitignored
+`.t3` directory. Read the selected ports and base directory from the
+`[dev-runner]` output, then open the printed pairing URL in your browser.
+The bare origin does not authenticate a new browser.
 
-Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
+A successful first run displays the paired web client connected to its local
+environment. To send an agent turn, configure and authenticate a supported
+provider on the machine running the server. Browser access alone does not
+supply provider credentials.
 
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+These commands were checked against repository source; dependency installation
+and first-run behavior were not smoke-tested for this guide.
+
+See the [development runbook](docs/operations/development.md) for state
+selection, focused checks, desktop development, test data, and sharing.
+See the [mobile README](apps/mobile/README.md) for native client development.
+Desktop and mobile builds have additional platform prerequisites.
+
+## Find your way around
+
+| Area                                      | Purpose                                                               |
+| ----------------------------------------- | --------------------------------------------------------------------- |
+| [Server](apps/server)                     | Provider execution, RPC, orchestration, persistence, and checkpoints. |
+| [Web](apps/web)                           | Browser UI and the renderer shared with desktop.                      |
+| [Desktop](apps/desktop)                   | Electron shell and bundled-server integration.                        |
+| [Mobile](apps/mobile)                     | React Native client and native build instructions.                    |
+| [Contracts](packages/contracts)           | Schemas shared across clients and servers.                            |
+| [Client runtime](packages/client-runtime) | Shared connections and client state.                                  |
+
+Start with the [architecture overview](docs/internals/overview.md) for ownership
+and lifecycle boundaries, or the [glossary](docs/internals/glossary.md) for
+shared terms. The [documentation index](docs/README.md) links user guides and
+maintainer procedures. Some inherited installation, hosting, and release
+guides describe upstream T3 services; consult the development runbook for this
+repository's source setup.
+
+Coding agents should start at [AGENTS.md](AGENTS.md). Contribution details live
+in [contributor guidance](docs/operations/contributor-guidance.md).
+
+## Help and contributions
+
+Report non-sensitive Jones Code bugs through
+[repository issues](https://github.com/Jones-Systems/Jones-Code/issues).
+Include reproduction steps, the source or build revision, and what you
+observed. Keep credentials, pairing URLs, private conversations, and private
+host data out of public reports.
+
+Read the [contribution policy](CONTRIBUTING.md) before proposing work.
+Agree on direction and scope with the Jones Code maintainer where approval
+is required. That inherited policy contains upstream discussion and review
+references; it does not establish a Jones-specific discussion service or
+override this repository's local agent guidance.
+
+The existing [security policy](.github/SECURITY.md) covers upstream T3 Code
+and T3 Tools-operated infrastructure. It does not identify a private reporting
+channel for Jones-specific vulnerabilities. Do not put sensitive vulnerability
+details in public issues.
+
+## License
+
+[MIT](LICENSE). The license retains the upstream T3 Tools copyright notice.

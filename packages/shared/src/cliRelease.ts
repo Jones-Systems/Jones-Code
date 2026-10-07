@@ -5,7 +5,7 @@
  * platform key, so a rename here is a release-breaking change.
  */
 
-export const CLI_RELEASE_REPOSITORY = "Jones-Systems/Jones-Code";
+const CLI_RELEASE_REPOSITORY = "pingdotgg/t3code";
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 /** Overrides the download origin for mirrors and air-gapped installs. */
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
@@ -88,7 +88,7 @@ export const CLI_RELEASE_CHANNELS: ReadonlyArray<CliReleaseChannel> = [
 
 /** The release train a version was published on, derived from its prerelease tag. */
 export function cliReleaseChannelOf(version: string): CliReleaseChannel {
-  const channel = /^[^-+]+-(nightly|preview)\.\d{8}\.\d+$/.exec(version)?.[1];
+  const channel = /^[^-+]+-(nightly|preview)\.\d{8}\.\d+(?:\.\d+)?$/.exec(version)?.[1];
   return channel === "nightly" || channel === "preview" ? channel : "stable";
 }
 

@@ -1,3 +1,7 @@
+import { WorkstreamColorPicker } from "../../jones/workstreamAppearance/WorkstreamColorPicker";
+import * as Crypto from "effect/Crypto";
+import * as Effect from "effect/Effect";
+import { runtime } from "../../lib/runtime";
 import { useEffect, useRef, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import type { WorkstreamThreadLike } from "@t3tools/client-runtime/state/workstreams";
@@ -24,6 +28,7 @@ export function MobileWorkstreamControls({
 }) {
   const binding = useRef(api.bindingRevision);
   binding.current = api.bindingRevision;
+  const [colorOpen, setColorOpen] = useState(false);
   const [name, setName] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -33,6 +38,7 @@ export function MobileWorkstreamControls({
     setBusy(false);
     setHistory([]);
     setName("");
+    setColorOpen(false);
   }, [api.bindingRevision, selection]);
   const group = api.groups.find((item) => item.key === selection?.groupKey);
   const snapshot = selection?.thread
@@ -233,6 +239,36 @@ export function MobileWorkstreamControls({
                       }),
                 !editable || !name.trim(),
               )}
+            </>
+          ) : null}
+          {snapshot &&
+          group &&
+          snapshot.appearance?.permissions.includes("workstreams:write") &&
+          canEditWorkstreams(snapshot.data) ? (
+            <>
+              <Pressable accessibilityRole="button" onPress={() => setColorOpen(true)}>
+                <Text>Color…</Text>
+              </Pressable>
+              {colorOpen ? (
+                <WorkstreamColorPicker
+                  key={`${api.bindingRevision}:${group.key}`}
+                  name={group.name}
+                  saved={snapshot.appearance.items.find(
+                    (item) => item.workstream_id === group.workstream.workstreamId,
+                  )!}
+                  generation={snapshot.data.binding.serverGeneration}
+                  createCommandId={() =>
+                    runtime.runPromise(
+                      Crypto.Crypto.pipe(
+                        Effect.flatMap((crypto) => crypto.randomUUIDv4),
+                        Effect.map((id) => `t3-color-${id}`),
+                      ),
+                    )
+                  }
+                  save={(input) => api.saveAppearance(snapshot, input)}
+                  onClose={() => setColorOpen(false)}
+                />
+              ) : null}
             </>
           ) : null}
           {snapshot && group ? (

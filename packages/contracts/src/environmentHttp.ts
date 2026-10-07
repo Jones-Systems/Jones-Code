@@ -1,4 +1,11 @@
-import { HostStatusSnapshot } from "./hostStatus.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
+import { MessageId } from "./baseSchemas.ts";
+import { CommandId } from "./baseSchemas.ts";
+import {
+  ProviderQueueInventory,
+  ProviderQueueRefreshResult,
+  OrchestrationCommandObservation,
+} from "./providerQueue.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
@@ -6,7 +13,6 @@ import * as HttpApi from "effect/unstable/httpapi/HttpApi";
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/unstable/httpapi/HttpApiMiddleware";
-import * as HttpApiSchema from "effect/unstable/httpapi/HttpApiSchema";
 import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondable";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
@@ -27,34 +33,29 @@ import {
   ServerAuthSessionMethod,
 } from "./auth.ts";
 import {
+  ExecutionEnvironmentDescriptor,
+  ORCHESTRATION_PROTOCOL_HEADER,
+  ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+} from "./environment.ts";
+import {
   DpopFailureReason,
   AuthSessionId,
   ThreadId,
-  CommandId,
-  MessageId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
-  ClientOrchestrationCommand,
-  OrchestrationCommandObservation,
-  DispatchResult,
-  OrchestrationReadModel,
-  OrchestrationShellSnapshot,
-  OrchestrationThreadDetailSnapshot,
-} from "./orchestration.ts";
+  OrchestrationV2ShellSnapshot,
+  OrchestrationV2ThreadBoundedSnapshot,
+  OrchestrationV2ThreadDetailSnapshot,
+  OrchestrationV2ThreadHistoryPage,
+} from "./orchestrationV2.ts";
+import { Project, ProjectMutation, ProjectSnapshot } from "./project.ts";
 import {
   PullRequestDiffInput,
   PullRequestDiffResult,
   PullRequestOperationError,
   PullRequestUnavailableError,
 } from "./pullRequest.ts";
-import {
-  CONVERSATION_LIBRARY_PATH,
-  LibraryErrorCodeSchema,
-  LibraryReplySchema,
-  LibraryRequestSchema,
-} from "./conversationLibrary.ts";
 import {
   RelayCloudEnvironmentHealthRequest,
   RelayCloudMintCredentialRequest,
@@ -65,6 +66,12 @@ import {
   RelayLinkProofRequest,
 } from "./relay.ts";
 
+import { makeJonesHttpGroups } from "./jones/environmentHttpGroups.ts";
+export {
+  EnvironmentConversationLibraryErrorSchema,
+  EnvironmentConversationLibraryErrorCode,
+  type EnvironmentConversationLibraryError,
+} from "./jones/environmentHttpGroups.ts";
 import {
   T3WorkstreamCommandPollParams,
   T3WorkstreamCommandRequest,
@@ -82,12 +89,16 @@ import {
   WorkstreamReceipt,
 } from "./workstreams.ts";
 import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
-import { ProviderQueueInventory, ProviderQueueRefreshResult } from "./providerQueue.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
   dpop: Schema.optionalKey(Schema.String),
+});
+
+const OrchestrationProtocolHeaders = Schema.Struct({
+  authorization: Schema.optionalKey(Schema.String),
+  dpop: Schema.optionalKey(Schema.String),
+  [ORCHESTRATION_PROTOCOL_HEADER]: Schema.Literal(ORCHESTRATION_PROTOCOL_VERSION_TEXT),
 });
 
 const OptionalDpopProofHeaders = Schema.Struct({
@@ -98,9 +109,9 @@ export const EnvironmentRequestInvalidReason = Schema.Literals([
   "invalid_scope",
   "scope_not_granted",
   "invalid_command",
-  "dispatch_guard_rejected",
+  "invalid_history_cursor",
   "dispatch_guard_bootstrap_unsupported",
-  "observation_unsupported",
+  "dispatch_guard_rejected",
 ]);
 export type EnvironmentRequestInvalidReason = typeof EnvironmentRequestInvalidReason.Type;
 
@@ -126,9 +137,14 @@ export const EnvironmentInternalErrorReason = Schema.Literals([
   "pairing_link_revoke_failed",
   "client_sessions_load_failed",
   "client_session_revoke_failed",
+  "project_snapshot_failed",
+  "project_mutation_failed",
   "orchestration_snapshot_failed",
   "orchestration_thread_snapshot_failed",
+  "orchestration_thread_bounded_snapshot_failed",
+  "orchestration_thread_history_failed",
   "orchestration_dispatch_failed",
+  "orchestration_command_observation_failed",
   "internal_error",
 ]);
 export type EnvironmentInternalErrorReason = typeof EnvironmentInternalErrorReason.Type;
@@ -357,11 +373,20 @@ const EnvironmentSessionRevokeErrors = [
   EnvironmentOperationForbiddenError,
   EnvironmentInternalError,
 ] as const;
+const EnvironmentProjectSnapshotErrors = [
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
 const EnvironmentOrchestrationSnapshotErrors = [
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
 ] as const;
 const EnvironmentWorkstreamSnapshotErrors = [
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
+const EnvironmentWorkstreamCommandErrors = [
+  EnvironmentRequestInvalidError,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
 ] as const;
@@ -374,78 +399,11 @@ const EnvironmentOrchestrationThreadSnapshotErrors = [
   EnvironmentResourceNotFoundError,
   EnvironmentInternalError,
 ] as const;
-const EnvironmentOrchestrationDispatchErrors = [
+const EnvironmentProjectMutationErrors = [
   EnvironmentRequestInvalidError,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
 ] as const;
-
-const EnvironmentConversationLibraryInvalidError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("invalid"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(400));
-
-const EnvironmentConversationLibraryForbiddenError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("forbidden"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(403));
-
-const EnvironmentConversationLibraryNotFoundError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("not-found"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(404));
-
-const EnvironmentConversationLibraryConflictError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("conflict"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(409));
-
-const EnvironmentConversationLibraryTooLargeError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("too-large"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(413));
-
-const EnvironmentConversationLibraryStorageError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("storage"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(500));
-
-const EnvironmentConversationLibraryUnsupportedError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("unsupported"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(501));
-
-const EnvironmentConversationLibraryErrorSchemas = [
-  EnvironmentConversationLibraryInvalidError,
-  EnvironmentConversationLibraryForbiddenError,
-  EnvironmentConversationLibraryNotFoundError,
-  EnvironmentConversationLibraryConflictError,
-  EnvironmentConversationLibraryTooLargeError,
-  EnvironmentConversationLibraryStorageError,
-  EnvironmentConversationLibraryUnsupportedError,
-] as const;
-
-export const EnvironmentConversationLibraryErrorSchema = Schema.Union(
-  EnvironmentConversationLibraryErrorSchemas,
-);
-export type EnvironmentConversationLibraryError =
-  typeof EnvironmentConversationLibraryErrorSchema.Type;
-
-export const EnvironmentConversationLibraryErrorCode = LibraryErrorCodeSchema;
 
 export interface EnvironmentSessionPrincipalShape {
   readonly sessionId: AuthSessionId;
@@ -603,16 +561,16 @@ const EnvironmentOrchestrationThreadSnapshotParams = Schema.Struct({
   threadId: ThreadId,
 });
 
-// Query-string window for windowed thread snapshots (GET payloads must encode
-// to strings). Both fields optional: omitting them keeps the full-snapshot
-// behavior, so pagination stays opt-in per request.
-const EnvironmentOrchestrationThreadSnapshotQuery = {
-  reasoningMessages: Schema.optional(Schema.Literal("true")),
-  turnLimit: Schema.optional(
-    Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
-  ),
-  beforeCursor: Schema.optional(TrimmedNonEmptyString),
-};
+const EnvironmentOrchestrationThreadHistoryQuery = Schema.Struct({
+  cursor: TrimmedNonEmptyString,
+});
+
+const EnvironmentOrchestrationThreadHistoryErrors = [
+  EnvironmentRequestInvalidError,
+  EnvironmentScopeRequiredError,
+  EnvironmentResourceNotFoundError,
+  EnvironmentInternalError,
+] as const;
 
 export const ProviderGoalStateObservation = Schema.Struct({
   schema: Schema.Literal("t3.provider-goal-state/v1"),
@@ -640,36 +598,13 @@ export type ProviderGoalStateObservation = typeof ProviderGoalStateObservation.T
 
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
   .add(
-    HttpApiEndpoint.get("snapshot", "/api/orchestration/snapshot", {
-      headers: OptionalBearerHeaders,
-      success: OrchestrationReadModel,
-      error: EnvironmentOrchestrationSnapshotErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("shellSnapshot", "/api/orchestration/shell", {
-      headers: OptionalBearerHeaders,
-      success: OrchestrationShellSnapshot,
-      error: EnvironmentOrchestrationSnapshotErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("threadSnapshot", "/api/orchestration/threads/:threadId", {
-      headers: OptionalBearerHeaders,
-      params: EnvironmentOrchestrationThreadSnapshotParams,
-      payload: EnvironmentOrchestrationThreadSnapshotQuery,
-      success: OrchestrationThreadDetailSnapshot,
-      error: EnvironmentOrchestrationThreadSnapshotErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
     HttpApiEndpoint.get(
       "commandObservation",
       "/api/orchestration/threads/:threadId/commands/:commandId",
       {
         headers: OptionalBearerHeaders,
         params: Schema.Struct({ threadId: ThreadId, commandId: CommandId }),
-        payload: { messageId: MessageId },
+        query: { messageId: MessageId },
         success: OrchestrationCommandObservation,
         error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
       },
@@ -682,18 +617,60 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
       {
         headers: OptionalBearerHeaders,
         params: EnvironmentOrchestrationThreadSnapshotParams,
-        payload: { expectedInstanceId: ProviderInstanceId },
+        query: { expectedInstanceId: ProviderInstanceId },
         success: ProviderGoalStateObservation,
         error: EnvironmentOrchestrationThreadSnapshotErrors,
       },
     ).middleware(EnvironmentAuthenticatedAuth),
   )
+
   .add(
-    HttpApiEndpoint.post("dispatch", "/api/orchestration/dispatch", {
+    HttpApiEndpoint.get("shellSnapshot", "/api/orchestration/shell", {
+      headers: OrchestrationProtocolHeaders,
+      success: OrchestrationV2ShellSnapshot,
+      error: EnvironmentOrchestrationSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("threadSnapshot", "/api/orchestration/threads/:threadId", {
+      headers: OrchestrationProtocolHeaders,
+      params: EnvironmentOrchestrationThreadSnapshotParams,
+      success: OrchestrationV2ThreadDetailSnapshot,
+      error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("threadBoundedSnapshot", "/api/orchestration/threads/:threadId/bounded", {
+      headers: OrchestrationProtocolHeaders,
+      params: EnvironmentOrchestrationThreadSnapshotParams,
+      success: OrchestrationV2ThreadBoundedSnapshot,
+      error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("threadHistoryPage", "/api/orchestration/threads/:threadId/history", {
+      headers: OrchestrationProtocolHeaders,
+      params: EnvironmentOrchestrationThreadSnapshotParams,
+      query: EnvironmentOrchestrationThreadHistoryQuery,
+      success: OrchestrationV2ThreadHistoryPage,
+      error: EnvironmentOrchestrationThreadHistoryErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
+class EnvironmentProjectsHttpApi extends HttpApiGroup.make("projects")
+  .add(
+    HttpApiEndpoint.get("snapshot", "/api/projects", {
       headers: OptionalBearerHeaders,
-      payload: ClientOrchestrationCommand,
-      success: DispatchResult,
-      error: EnvironmentOrchestrationDispatchErrors,
+      success: ProjectSnapshot,
+      error: EnvironmentProjectSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("mutate", "/api/projects/mutate", {
+      headers: OptionalBearerHeaders,
+      payload: ProjectMutation,
+      success: Project,
+      error: EnvironmentProjectMutationErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
@@ -713,7 +690,19 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
   }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
 
-class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
+const {
+  EnvironmentVoiceReviewHttpApi,
+  EnvironmentHostStatusHttpApi,
+  EnvironmentConversationLibraryHttpApi: ConversationLibraryHttpApi,
+  EnvironmentWorkstreamAppearanceHttpApi,
+} = makeJonesHttpGroups({
+  OptionalBearerHeaders,
+  EnvironmentAuthenticatedAuth,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+});
+
+class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpApi
   .add(
     HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
       headers: OptionalBearerHeaders,
@@ -803,7 +792,7 @@ class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
       headers: OptionalBearerHeaders,
       payload: T3WorkstreamCommandRequest,
       success: WorkstreamReceipt,
-      error: EnvironmentOrchestrationDispatchErrors,
+      error: EnvironmentWorkstreamCommandErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
@@ -868,22 +857,14 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
-class EnvironmentHostStatusHttpApi extends HttpApiGroup.make("hostStatus").add(
-  HttpApiEndpoint.get("snapshot", "/api/host-status", {
+export class EnvironmentQueueDispatchHttpApi extends HttpApiGroup.make("queueDispatch").add(
+  HttpApiEndpoint.post("dispatch", "/api/orchestration/dispatch", {
     headers: OptionalBearerHeaders,
-    success: HostStatusSnapshot,
-    error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
-  }).middleware(EnvironmentAuthenticatedAuth),
-) {}
-
-export class EnvironmentConversationLibraryHttpApi extends HttpApiGroup.make(
-  "conversationLibrary",
-).add(
-  HttpApiEndpoint.post("conversationLibrary", CONVERSATION_LIBRARY_PATH, {
-    headers: OptionalBearerHeaders,
-    payload: LibraryRequestSchema,
-    success: LibraryReplySchema,
-    error: [...EnvironmentConversationLibraryErrorSchemas, EnvironmentScopeRequiredError],
+    payload: Schema.Unknown,
+    success: Schema.Struct({
+      sequence: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+    }),
+    error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
   }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
 
@@ -912,13 +893,18 @@ export class ProviderQueueHttpApi extends HttpApiGroup.make("providerQueue")
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+export class EnvironmentConversationLibraryHttpApi extends ConversationLibraryHttpApi {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
-  .add(EnvironmentHostStatusHttpApi)
   .add(ProviderQueueHttpApi)
+  .add(EnvironmentQueueDispatchHttpApi)
+  .add(EnvironmentVoiceReviewHttpApi)
+  .add(EnvironmentHostStatusHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentWorkstreamsHttpApi)
+  .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentConnectHttpApi)
   .add(EnvironmentConversationLibraryHttpApi) {}

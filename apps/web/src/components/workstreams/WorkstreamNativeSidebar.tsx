@@ -6,7 +6,7 @@ import type { WorkstreamListView } from "../../state/workstreams";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { WorkstreamSidebarSection, workstreamCommandId } from "./WorkstreamSidebarSection";
-import { canEditWorkstreams, moveNativeMembershipThreads } from "./nativeWorkstreamActions";
+import { canEditWorkstreams, planNativeMembership } from "./nativeWorkstreamActions";
 import {
   nativeWorkstreamThreadKey,
   secondaryNativeWorkstreamLabels,
@@ -21,19 +21,6 @@ export function WorkstreamNativeSidebar(props: {
   readonly summaryGrouping?: NativeWorkstreamThreadGrouping<EnvironmentThreadShell>;
   readonly renderThread: (thread: EnvironmentThreadShell) => ReactNode;
   readonly canReorder: (thread: EnvironmentThreadShell) => boolean;
-  readonly onMovementError?: (cause: unknown) => void;
-  readonly onThreadDragEnd?: () => void;
-  readonly captureDrag?: (thread: EnvironmentThreadShell) => readonly EnvironmentThreadShell[];
-  readonly moveThreads?: (
-    threads: readonly EnvironmentThreadShell[],
-    destination: string | null,
-  ) => Promise<void>;
-  readonly reorderSelection?: (
-    threads: readonly EnvironmentThreadShell[],
-    neighbor: EnvironmentThreadShell,
-    after: boolean,
-  ) => Promise<void>;
-  readonly onVisibleGroupsChange?: (ids: readonly (string | null)[]) => void;
   readonly reorder: (
     thread: EnvironmentThreadShell,
     neighbor: EnvironmentThreadShell,
@@ -46,7 +33,7 @@ export function WorkstreamNativeSidebar(props: {
     () => summarizeWorkstreamThreadStatuses(statusGrouping),
     [statusGrouping],
   );
-  const [dragged, setDragged] = useState<readonly EnvironmentThreadShell[] | null>(null);
+  const [dragged, setDragged] = useState<EnvironmentThreadShell | null>(null);
   const [dropTarget, setDropTarget] = useState<{
     workstreamId: string | null;
     threadKey?: string;
@@ -67,9 +54,8 @@ export function WorkstreamNativeSidebar(props: {
     setError(null);
     setBusy(false);
     busyRef.current = false;
-    props.onThreadDragEnd?.();
     return () => request.current?.abort();
-  }, [binding, props.onThreadDragEnd]);
+  }, [binding]);
   const canWrite = canEditWorkstreams(controller.data) && !controller.loading && !busy;
   const inventory = new Set(
     controller.placementInventory.identities.map((item) =>
@@ -88,7 +74,6 @@ export function WorkstreamNativeSidebar(props: {
     const startedBinding = binding;
     void operation()
       .catch((cause: unknown) => {
-        props.onMovementError?.(cause);
         if (bindingRef.current === startedBinding)
           setError(cause instanceof Error ? cause.message : "Workstream action failed.");
       })
@@ -99,35 +84,65 @@ export function WorkstreamNativeSidebar(props: {
         }
       });
   };
-  const moveThreads = async (
-    threads: readonly EnvironmentThreadShell[],
-    destination: string | null,
-  ) => {
-    if (props.moveThreads) return props.moveThreads(threads, destination);
+  const move = async (thread: EnvironmentThreadShell, destination: string | null) => {
+    const data = controller.data;
+    const placements = controller.placements;
+    if (!data || !placements || !canMove(thread))
+      throw new Error("Refresh thread placements before changing membership.");
+    const current =
+      grouping.groups.find((group) => group.threads.includes(thread))?.workstream.workstreamId ??
+      null;
+    if (current === destination) return;
+    const detailId = destination ?? current;
+    if (!detailId) return;
     request.current?.abort();
     const abort = new AbortController();
     request.current = abort;
-    await moveNativeMembershipThreads({
-      controller,
-      threads,
+    const startedBinding = binding;
+    const detail = await controller.loadDetail(detailId, { signal: abort.signal });
+    abort.signal.throwIfAborted();
+    if (bindingRef.current !== startedBinding)
+      throw new Error("Workstream access changed. Refresh before retrying.");
+    const context = detail.detail.context;
+    if (
+      context.owner_id !== data.binding.ownerId ||
+      context.server_generation !== data.binding.serverGeneration ||
+      context.registry_version !== data.binding.registryVersion
+    )
+      throw new Error("Workstreams changed. Refresh before retrying.");
+    const action = planNativeMembership({
+      data,
+      placements,
+      references: detail.references.items,
+      destinationMemberships: detail.memberships.items,
+      thread,
       destination,
-      commandId: workstreamCommandId,
       now: Date.now(),
-      signal: abort.signal,
     });
+    if (!action) return;
+    const commandId = await workstreamCommandId();
+    abort.signal.throwIfAborted();
+    if (bindingRef.current !== startedBinding)
+      throw new Error("Workstream access changed. Refresh before retrying.");
+    const receipt = await controller.submit({
+      command_id: commandId,
+      expected_server_generation: data.binding.serverGeneration,
+      expected_registry_version: data.binding.registryVersion,
+      action,
+    });
+    if (receipt.state !== "committed")
+      throw new Error(`Membership change ${receipt.state}. Refresh before retrying.`);
   };
-  const move = (thread: EnvironmentThreadShell, destination: string | null) =>
-    moveThreads([thread], destination);
   const currentWorkstream = (thread: EnvironmentThreadShell) =>
     grouping.groups.find((group) => group.threads.includes(thread))?.workstream.workstreamId ??
     null;
   const acceptsDrop = (destination: string | null, neighbor?: EnvironmentThreadShell) =>
     dragged !== null &&
-    canWrite &&
-    (dragged.some((thread) => currentWorkstream(thread) !== destination) ||
+    canMove(dragged) &&
+    (currentWorkstream(dragged) !== destination ||
       (!!neighbor &&
-        !dragged.includes(neighbor) &&
-        dragged.every(props.canReorder) &&
+        neighbor !== dragged &&
+        props.canReorder(dragged) &&
         props.canReorder(neighbor)));
   const dragOver = (
     event: DragEvent,
@@ -146,7 +161,7 @@ export function WorkstreamNativeSidebar(props: {
     const bounds = event.currentTarget.getBoundingClientRect();
     setDropTarget({
       workstreamId: destination,
-      ...(neighbor && dragged.every((thread) => currentWorkstream(thread) === destination)
+      ...(neighbor && currentWorkstream(dragged) === destination
         ? {
             threadKey: nativeWorkstreamThreadKey(neighbor.environmentId, neighbor.id),
             after: event.clientY > bounds.top + bounds.height / 2,
@@ -163,22 +178,25 @@ export function WorkstreamNativeSidebar(props: {
     if (!dragged) return false;
     event.preventDefault();
     event.stopPropagation();
-    const threads = dragged;
+    const thread = dragged;
     const bounds = event.currentTarget.getBoundingClientRect();
     const after = event.clientY > bounds.top + bounds.height / 2;
     const accepted = acceptsDrop(destination, neighbor);
     setDragged(null);
     setDropTarget(null);
-    props.onThreadDragEnd?.();
     if (!accepted) return true;
+    const current =
+      grouping.groups.find((group) => group.threads.includes(thread))?.workstream.workstreamId ??
+      null;
     run(async () => {
-      if (threads.some((thread) => currentWorkstream(thread) !== destination))
-        await moveThreads(threads, destination);
-      else if (neighbor && !threads.includes(neighbor)) {
-        if (props.reorderSelection) await props.reorderSelection(threads, neighbor, after);
-        else if (threads.length === 1) await props.reorder(threads[0]!, neighbor, after);
-        else throw new Error("Selected thread ordering is unavailable.");
-      }
+      if (current !== destination) await move(thread, destination);
+      else if (
+        neighbor &&
+        neighbor !== thread &&
+        props.canReorder(thread) &&
+        props.canReorder(neighbor)
+      )
+        await props.reorder(thread, neighbor, after);
     });
     return true;
   };
@@ -199,7 +217,7 @@ export function WorkstreamNativeSidebar(props: {
           return (
             <li
               key={key}
-              className={`relative rounded ${canMove(thread) ? "cursor-grab active:cursor-grabbing" : ""} ${dragged?.includes(thread) ? "opacity-50" : ""}`}
+              className={`relative rounded ${canMove(thread) ? "cursor-grab active:cursor-grabbing" : ""} ${dragged === thread ? "opacity-50" : ""}`}
               draggable={canMove(thread)}
               data-drop-position={
                 dropTarget?.threadKey === key ? (dropTarget.after ? "after" : "before") : undefined
@@ -221,14 +239,13 @@ export function WorkstreamNativeSidebar(props: {
                 }
                 event.dataTransfer.effectAllowed = "move";
                 event.dataTransfer.setData("application/x-t3-workstream-thread", key);
-                setDragged(props.captureDrag?.(thread) ?? [thread]);
+                setDragged(thread);
                 setDropTarget(null);
               }}
               onDragEndCapture={(event) => {
                 event.stopPropagation();
                 setDragged(null);
                 setDropTarget(null);
-                props.onThreadDragEnd?.();
               }}
               onDragOverCapture={(event) => dragOver(event, workstreamId, thread)}
               onDropCapture={(event) => drop(event, workstreamId, thread)}
@@ -336,7 +353,6 @@ export function WorkstreamNativeSidebar(props: {
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
-        onVisibleGroupsChange={props.onVisibleGroupsChange}
         renderMembers={renderMembers}
         threadStatusSummaries={threadStatusSummaries}
         onThreadDrop={drop}

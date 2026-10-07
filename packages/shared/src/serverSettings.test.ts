@@ -24,6 +24,15 @@ import {
 const FOLDED_SERVER_SETTINGS = { ...DEFAULT_SERVER_SETTINGS, projectSettingsFolded: true };
 
 describe("serverSettings helpers", () => {
+  it("preserves Work mode through unrelated updates and supports disabling", () => {
+    const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { workModeEnabled: true });
+    expect(
+      applyServerSettingsPatch(enabled, { enableProviderUpdateChecks: false }).workModeEnabled,
+    ).toBe(true);
+    expect(applyServerSettingsPatch(enabled, { workModeEnabled: false }).workModeEnabled).toBe(
+      false,
+    );
+  });
   it("changes a cleanup rule without replacing the machine's other rules", () => {
     const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       storageCleanup: { worktreeAfterDays: 8, worktreeOnMerge: true, logsAfterDays: 30 },
@@ -461,6 +470,41 @@ describe("serverSettings helpers", () => {
     } satisfies ServerProvider;
 
     expect(resolveSourceControlWriterModelSelection(settings, [unavailableProvider])).toBe(
+      settings.textGenerationModelSelection,
+    );
+    expect(settings.sourceControlWriterModelSelection).toBe(sourceControlWriterModelSelection);
+  });
+
+  it("falls back from a writer provider that cannot generate application text", () => {
+    const instanceId = ProviderInstanceId.make("acp_writer");
+    const sourceControlWriterModelSelection = createModelSelection(instanceId, "default");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [instanceId]: {
+          driver: ProviderDriverKind.make("acpRegistry"),
+          enabled: true,
+          config: {},
+        },
+      },
+      sourceControlWriterModelSelection,
+    };
+    const incapableProvider = {
+      instanceId,
+      driver: ProviderDriverKind.make("acpRegistry"),
+      supportsTextGeneration: false,
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-07-27T00:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    } satisfies ServerProvider;
+
+    expect(resolveSourceControlWriterModelSelection(settings, [incapableProvider])).toBe(
       settings.textGenerationModelSelection,
     );
     expect(settings.sourceControlWriterModelSelection).toBe(sourceControlWriterModelSelection);

@@ -1,20 +1,22 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { QueueDispatchCapability } from "./queueProtocol.ts";
+import { ThreadCorpusCapability } from "./threadCorpusProtocol.ts";
+
 import {
   EnvironmentId,
   ForwardCompatibleOptional,
-  IsoDateTime,
-  NonNegativeInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
-  TurnId,
 } from "./baseSchemas.ts";
 
 /** Wire version for orchestration snapshots, streams, commands, and RPC payloads. */
-export const ORCHESTRATION_PROTOCOL_VERSION = 1;
+export const ORCHESTRATION_PROTOCOL_VERSION = 2;
+export const ORCHESTRATION_PROTOCOL_VERSION_TEXT = "2";
 export const ORCHESTRATION_PROTOCOL_QUERY_PARAM = "orchestrationProtocol";
+export const ORCHESTRATION_PROTOCOL_HEADER = "x-t3-orchestration-protocol";
 
 export const ExecutionEnvironmentPlatformOs = Schema.Literals([
   "darwin",
@@ -110,9 +112,12 @@ export const NativeBootstrapCreationCapability = nativeBootstrapCapabilityStruct
 export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  queueDispatch: Schema.optionalKey(QueueDispatchCapability),
+  threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   nativeBootstrapCreation: Schema.optionalKey(NativeBootstrapCreationCapability),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
+  worktreeDefaultBase: Schema.optionalKey(Schema.Boolean),
   /** Missing on older servers, which still accept inline image attachments. */
   attachmentUploads: Schema.optionalKey(Schema.Boolean),
   /** Uploaded files may accompany question answers. */
@@ -126,6 +131,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server exposes the pull-request list, detail, activity, diff, and mutation APIs. Absent on
       servers from before the pull-request workspace shipped, so clients must not probe them. */
   pullRequests: Schema.optionalKey(Schema.Boolean),
+  pullRequestChecks: Schema.optionalKey(Schema.Boolean),
   /** Server understands canonical inline context links plus their message context records.
       Absent on servers from before inline context shipped, which drop the records and forward
       the links as literal text -- so a client must serialize context the legacy way for them. */
@@ -157,6 +163,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   usageLimitSources: Schema.optionalKey(Schema.Boolean),
   /** Server persists custom model rates and applies them to usage summaries. */
   usagePriceOverrides: Schema.optionalKey(Schema.Boolean),
+  /** An enrolled adapter can explicitly read one configured, canonically validated saved report. */
+  savedTokenAccounting: Schema.optionalKey(Schema.Boolean),
+  /** Server persists model mappings and folds mapped usage into the target model. */
+  usageModelAliases: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.pin / thread.unpin commands. Same
       version-skew contract as threadSettlement. */
   threadPinning: Schema.optionalKey(Schema.Boolean),
@@ -165,19 +175,29 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadPinReorder: Schema.optionalKey(Schema.Boolean),
   /** Server persists manual Active order through thread.active.reorder. */
   threadActiveReorder: Schema.optionalKey(Schema.Boolean),
+  workMode: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.auto-settle.set (per-thread auto-settle off).
       Same version-skew contract as threadSettlement. */
   threadAutoSettleOptOut: Schema.optionalKey(Schema.Boolean),
   /** Server understands regenerateTitle on thread.meta.update. Absent on
       older servers, so clients hide the action instead of sending it. */
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
-  /** Server supports legacy linkedPullRequest updates through thread.meta.update.
-      Independent of threadPullRequests; servers supporting both advertise both. */
+  /** Server understands thread.visit / thread.mark-unread commands and
+      projects lastVisitedAt on thread shells. Same version-skew contract as
+      threadSettlement: clients keep their local visited state against
+      servers that lack this. */
+  threadVisitedTracking: Schema.optionalKey(Schema.Boolean),
+  /** Server persists a pull request reference on thread.meta.update. */
   threadPullRequestLinking: Schema.optionalKey(Schema.Boolean),
-  /** Server understands thread.pull-request.link / .unlink, exposes `pullRequests` on
-      threads, and routes PullRequestRef.host across projects on the same host. Same
-      version-skew contract as threadSettlement. */
+  /** Server resolves message delivery and model-selection context and validates
+      identified rollback readiness. Clients retain projection-based command
+      shaping and validation when this is absent. */
+  serverResolvedCommandContext: Schema.optionalKey(Schema.Boolean),
+  /** Opted-in owner queues can deliver at successful foreground tool boundaries. */
+  queuedToolBoundaryDelivery: Schema.optionalKey(Schema.Boolean),
   threadPullRequests: Schema.optionalKey(Schema.Boolean),
+  /** Server understands thread.pull-request.watch and wakes agents on pull request changes. */
+  threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),
   /** The update path clients should offer for this server. Absent on
       servers that must be relaunched manually (dev checkouts, Windows
@@ -217,75 +237,11 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   label: TrimmedNonEmptyString,
   platform: ExecutionEnvironmentPlatform,
   serverVersion: TrimmedNonEmptyString,
-  /** Missing metadata denotes protocol 1. Bump this for breaking wire changes. */
+  /** Absent on hosts from before explicit orchestration protocol negotiation. */
   orchestrationProtocolVersion: Schema.optionalKey(Schema.Int),
   capabilities: ExecutionEnvironmentCapabilities,
 });
 export type ExecutionEnvironmentDescriptor = typeof ExecutionEnvironmentDescriptor.Type;
-
-export const NativeInvocationContext = Schema.Struct({
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-  effectiveBaseDir: TrimmedNonEmptyString,
-  loopbackOrigin: Schema.NullOr(TrimmedNonEmptyString),
-  serverVersion: TrimmedNonEmptyString,
-  serverGeneration: Schema.Null,
-});
-export type NativeInvocationContext = typeof NativeInvocationContext.Type;
-
-export const OrganizationThreadMetadata = Schema.Struct({
-  threadId: ThreadId,
-  title: Schema.String,
-  projectId: ProjectId,
-  pinnedAt: Schema.NullOr(IsoDateTime),
-  pinOrderKey: Schema.NullOr(Schema.String),
-  activeOrderKey: Schema.NullOr(Schema.String),
-  snoozedUntil: Schema.NullOr(IsoDateTime),
-  settledOverride: Schema.NullOr(Schema.Literals(["active", "settled"])),
-  settledAt: Schema.NullOr(IsoDateTime),
-  archivedAt: Schema.NullOr(IsoDateTime),
-  createdAt: IsoDateTime,
-  projectionUpdatedAt: IsoDateTime,
-  latestUserMessageAt: Schema.NullOr(IsoDateTime),
-  latestTurn: Schema.NullOr(
-    Schema.Struct({
-      turnId: TurnId,
-      state: Schema.Literals(["running", "interrupted", "completed", "error"]),
-      requestedAt: IsoDateTime,
-      startedAt: Schema.NullOr(IsoDateTime),
-      completedAt: Schema.NullOr(IsoDateTime),
-    }),
-  ),
-  session: Schema.NullOr(
-    Schema.Struct({
-      status: Schema.Literals([
-        "idle",
-        "starting",
-        "running",
-        "ready",
-        "interrupted",
-        "stopped",
-        "error",
-      ]),
-      activeTurnId: Schema.NullOr(TurnId),
-      updatedAt: IsoDateTime,
-    }),
-  ),
-  hasPendingApprovals: Schema.Boolean,
-  hasPendingUserInput: Schema.Boolean,
-  hasActionableProposedPlan: Schema.Boolean,
-  backgroundLiveness: Schema.NullOr(Schema.Literals(["working", "monitoring", "unknown"])),
-});
-export type OrganizationThreadMetadata = typeof OrganizationThreadMetadata.Type;
-
-export const OrganizationThreadMetadataPage = Schema.Struct({
-  environmentId: EnvironmentId,
-  snapshotSequence: NonNegativeInt,
-  observedAt: IsoDateTime,
-  threads: Schema.Array(OrganizationThreadMetadata),
-  nextOffset: Schema.NullOr(NonNegativeInt),
-});
-export type OrganizationThreadMetadataPage = typeof OrganizationThreadMetadataPage.Type;
 
 export const RepositoryIdentityLocator = Schema.Struct({
   source: Schema.Literal("git-remote"),

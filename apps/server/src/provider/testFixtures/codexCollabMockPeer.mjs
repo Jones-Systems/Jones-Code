@@ -1,6 +1,6 @@
-// Minimal codex app-server stand-in for runtime-level collab tests.
-// Speaks just enough of the protocol for CodexSessionRuntime to start a
-// session, using REAL captured responses (codexMultiAgentWire.json), then
+// Minimal codex app-server stand-in, spawned as the Codex binary by the
+// provider and adapter tests. Answers the handshake and, for session
+// requests, returns REAL captured responses (codexMultiAgentWire.json), then
 // replays a scripted multi-agent notification sequence read from the
 // T3_CODEX_COLLAB_SCRIPT env var (a JSON file path) when the first turn
 // starts. Runs as a plain Node process — stdlib only.
@@ -32,6 +32,7 @@ const recordControlRequest = (method, params) => {
   );
 };
 const writeGoalStatus = (status) => {
+  script.goalStatus = status;
   if (script.goalStatePath) {
     NodeFS.writeFileSync(script.goalStatePath, JSON.stringify({ status }), "utf8");
   }
@@ -177,7 +178,20 @@ rl.on("line", (line) => {
       }
       return;
     }
-    write({ id, result: fixture.responses.threadStart });
+    write({
+      id,
+      result:
+        message.params?.excludeTurns === true
+          ? {
+              ...fixture.responses.threadStart,
+              thread: {
+                ...fixture.responses.threadStart.thread,
+                id: threadId,
+                sessionId: threadId,
+              },
+            }
+          : fixture.responses.threadStart,
+    });
     return;
   }
   if (method === "turn/start") {
@@ -287,12 +301,12 @@ rl.on("line", (line) => {
     // Record which thread/turn was interrupted (append-only sidecar file the
     // test reads) so Stop coverage can assert every live child was reached.
     // failInterruptFor simulates a dead child whose interrupt errors.
+    recordControlRequest(method, message.params);
     const target = message.params?.threadId;
     NodeFS.appendFileSync(
       `${process.env.T3_CODEX_COLLAB_SCRIPT}.interrupts`,
       `${JSON.stringify({ threadId: target, turnId: message.params?.turnId })}\n`,
     );
-    recordControlRequest(method, message.params);
     if (script.turnStartedOnInterrupt?.threadId === target) {
       const turn = {
         ...(activeTurn ?? fixture.responses.turnStart.turn),
@@ -301,10 +315,7 @@ rl.on("line", (line) => {
       write({
         jsonrpc: "2.0",
         method: "turn/started",
-        params: {
-          threadId: script.rootThreadId,
-          turn,
-        },
+        params: { threadId: script.rootThreadId, turn },
       });
     }
     if (
@@ -325,11 +336,23 @@ rl.on("line", (line) => {
       write({ id, error: { code: -32000, message: "thread already closed" } });
       return;
     }
-    if (script.hangInterruptFor === target || script.hangInterruptsFor?.includes(target)) {
-      // Never respond: simulate child or root RPCs that exhaust their deadlines.
+    if (
+      script.hangInterruptsFor?.includes(target) ||
+      (script.hangInterruptFor && script.hangInterruptFor === target)
+    ) {
+      // Never respond: simulates a wedged native RPC that neither resolves
+      // nor rejects. The runtime's bounded deadline must move on.
       return;
     }
     write({ id, result: {} });
+    if (script.completeTurnOnInterrupt === true) {
+      const turn = {
+        ...fixture.responses.turnStart.turn,
+        id: message.params?.turnId,
+        status: "interrupted",
+      };
+      write({ method: "turn/completed", params: { threadId: target, turn } });
+    }
     return;
   }
   if (id !== undefined) {

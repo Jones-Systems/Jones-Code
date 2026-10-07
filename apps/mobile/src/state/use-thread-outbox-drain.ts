@@ -1,9 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
-import type {
-  EnvironmentProject,
-  EnvironmentThreadShell,
+import {
+  threadRuntimeIsActive,
+  type EnvironmentProject,
+  type EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
+import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -46,7 +48,6 @@ import {
 import { removeThreadOutboxMessage } from "./thread-outbox-removal";
 import {
   isQueuedThreadCreationSendable,
-  modelSelectionsEqual,
   resolveThreadOutboxDeliveryAction,
   resolveThreadOutboxDispatchStep,
   resolveThreadOutboxFailureAction,
@@ -55,6 +56,7 @@ import {
   threadOutboxRetryDelayMs,
   type QueuedThreadCreation,
   type QueuedThreadMessage,
+  type ThreadSettingsSnapshot,
   type ThreadOutboxCommandStage,
   type ThreadOutboxFailureAction,
 } from "./thread-outbox-model";
@@ -202,6 +204,41 @@ function findCreationProject(
 
 function settingsCommandId(message: QueuedThreadMessage, setting: string): CommandId {
   return CommandId.make(`${message.commandId}:${setting}`);
+}
+
+export function buildQueuedThreadCreationStartTurnInput(input: {
+  readonly message: QueuedThreadMessage;
+  readonly creation: QueuedThreadCreation;
+  readonly projectCwd: string;
+  readonly attachments: PreparedTurnAttachments["attachments"];
+  readonly settings: ThreadSettingsSnapshot;
+  readonly serverResolvesWorktreeBase: boolean;
+  readonly inlineMessageContext?: boolean;
+}) {
+  const { message, creation, settings } = input;
+  return buildProjectThreadStartTurnInput({
+    projectId: creation.projectId,
+    projectCwd: input.projectCwd,
+    threadId: message.threadId,
+    commandId: message.commandId,
+    messageId: message.messageId,
+    createdAt: message.createdAt,
+    ...serializeComposerMessageForServer(
+      message.text.trim(),
+      uploadedComposerContext(message.context, message.attachments, input.attachments),
+      input.inlineMessageContext === true,
+    ),
+    uploadedAttachments: input.attachments,
+    modelSelection: settings.modelSelection,
+    runtimeMode: settings.runtimeMode,
+    interactionMode: settings.interactionMode,
+    workspaceMode: creation.workspaceMode,
+    branch: creation.branch,
+    worktreePath: creation.worktreePath,
+    startFromOrigin: creation.startFromOrigin ?? false,
+    serverResolvesWorktreeBase: input.serverResolvesWorktreeBase,
+    worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
+  });
 }
 
 /**
@@ -631,9 +668,6 @@ async function preserveUploadedAttachmentsForEditor(
 
 export function useThreadOutboxDrain(): void {
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
-  const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
-    reportFailure: false,
-  });
   const setThreadRuntimeMode = useAtomCommand(threadEnvironment.setRuntimeMode, {
     reportFailure: false,
   });
@@ -788,21 +822,6 @@ export function useThreadOutboxDrain(): void {
       }
       const { reportFailure } = makeDeliveryHelpers(queuedMessage);
 
-      if (!modelSelectionsEqual(settings.modelSelection, thread.modelSelection)) {
-        const updateResult = await updateThreadMetadata({
-          environmentId: queuedMessage.environmentId,
-          input: {
-            commandId: settingsCommandId(queuedMessage, "model-selection"),
-            threadId: queuedMessage.threadId,
-            modelSelection: settings.modelSelection,
-          },
-        });
-        if (AsyncResult.isFailure(updateResult)) {
-          reportFailure(updateResult, "settings-sync");
-          return false;
-        }
-      }
-
       if (settings.runtimeMode !== thread.runtimeMode) {
         const runtimeResult = await setThreadRuntimeMode({
           environmentId: queuedMessage.environmentId,
@@ -888,6 +907,7 @@ export function useThreadOutboxDrain(): void {
         environmentId: queuedMessage.environmentId,
         input: {
           commandId: queuedMessage.commandId,
+          creationSource: "mobile",
           threadId: queuedMessage.threadId,
           message: {
             messageId: queuedMessage.messageId,
@@ -904,9 +924,17 @@ export function useThreadOutboxDrain(): void {
             attachments: prepared.attachments,
           },
           modelSelection: sendSettings.modelSelection,
+          titleSeed: deriveThreadTitleSeed({
+            text: queuedMessage.text,
+            attachments: queuedMessage.attachments,
+          }),
           runtimeMode: sendSettings.runtimeMode,
           interactionMode: sendSettings.interactionMode,
           createdAt: queuedMessage.createdAt,
+          // Rows written before follow-up behavior existed keep the previous
+          // delivery, which the server turns into a queued run when a turn is
+          // already active.
+          dispatchMode: queuedMessage.dispatchMode ?? "start",
         },
       });
       const failure = reportFailure(deliveryResult, "start-turn");
@@ -929,7 +957,6 @@ export function useThreadOutboxDrain(): void {
       setThreadInteractionMode,
       setThreadRuntimeMode,
       startTurn,
-      updateThreadMetadata,
       restoreQueuedMessage,
     ],
   );
@@ -1014,31 +1041,16 @@ export function useThreadOutboxDrain(): void {
       );
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
-        input: buildProjectThreadStartTurnInput({
-          projectId: creation.projectId,
+        input: buildQueuedThreadCreationStartTurnInput({
+          message: queuedMessage,
+          creation,
           projectCwd,
-          threadId: queuedMessage.threadId,
-          commandId: queuedMessage.commandId,
-          messageId: queuedMessage.messageId,
-          createdAt: queuedMessage.createdAt,
-          ...serializeComposerMessageForServer(
-            queuedMessage.text.trim(),
-            uploadedComposerContext(
-              queuedMessage.context,
-              queuedMessage.attachments,
-              prepared.attachments,
-            ),
+          attachments: prepared.attachments,
+          settings: sendSettings,
+          serverResolvesWorktreeBase:
+            currentConfig.environment.capabilities.worktreeDefaultBase === true,
+          inlineMessageContext:
             currentConfig.environment.capabilities.inlineMessageContext === true,
-          ),
-          uploadedAttachments: prepared.attachments,
-          modelSelection: sendSettings.modelSelection,
-          runtimeMode: sendSettings.runtimeMode,
-          interactionMode: sendSettings.interactionMode,
-          workspaceMode: creation.workspaceMode,
-          branch: creation.branch,
-          worktreePath: creation.worktreePath,
-          startFromOrigin: creation.startFromOrigin ?? false,
-          worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
         }),
       });
       const { reportFailure } = makeDeliveryHelpers(queuedMessage);
@@ -1082,10 +1094,10 @@ export function useThreadOutboxDrain(): void {
         threads.some(
           (thread) =>
             scopedThreadKey(thread.environmentId, thread.id) === threadKey &&
-            (thread.latestTurn !== null ||
-              thread.session?.status === "error" ||
-              thread.session?.status === "stopped" ||
-              thread.session?.status === "interrupted"),
+            (thread.latestRun !== null ||
+              thread.runtime?.status === "failed" ||
+              thread.runtime?.status === "cancelled" ||
+              thread.runtime?.status === "interrupted"),
         )
       ) {
         clearPendingThreadCreationOutcome(threadKey);
@@ -1174,7 +1186,7 @@ export function useThreadOutboxDrain(): void {
         threadExists: thread !== undefined,
         shellStatus,
         environmentConnected: environment?.connectionState === "connected",
-        threadBusy: thread?.session?.status === "running" || thread?.session?.status === "starting",
+        threadBusy: threadRuntimeIsActive(thread?.runtime),
       });
       // The delivery action resolves first; capability checks apply only to
       // a message that will send. Checking earlier would restore a
@@ -1232,7 +1244,7 @@ export function useThreadOutboxDrain(): void {
             creation.projectCwd ??
             null)
           : null;
-      // An incomplete pending task (e.g. worktree mode without a branch) stays
+      // An incomplete pending task (e.g. an empty prompt) stays
       // queued until the user finishes it in the editor.
       if (deliveryAction === "send" && creation !== undefined) {
         if (!isQueuedThreadCreationSendable(nextQueuedMessage)) {
@@ -1280,8 +1292,7 @@ export function useThreadOutboxDrain(): void {
             appAtomRegistry.get(environmentThreadShells.threadShellsAtom),
             nextQueuedMessage,
           );
-          const liveThreadBusy =
-            liveThread?.session?.status === "running" || liveThread?.session?.status === "starting";
+          const liveThreadBusy = threadRuntimeIsActive(liveThread?.runtime);
           const liveDeliveryAction = resolveThreadOutboxDeliveryAction({
             isCreation: creation !== undefined,
             threadExists: liveThread !== undefined,

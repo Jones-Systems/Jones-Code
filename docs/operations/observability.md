@@ -318,11 +318,11 @@ jq -r 'select(.traceId == "TRACE_ID_HERE") | [
 Filter orchestration commands:
 
 ```bash
-jq -c 'select(.attributes["orchestration.command_type"] != null) | {
+jq -c 'select(.attributes["orchestration_v2.command_type"] != null) | {
   name,
   durationMs,
-  commandType: .attributes["orchestration.command_type"],
-  aggregateKind: .attributes["orchestration.aggregate_kind"]
+  commandType: .attributes["orchestration_v2.command_type"],
+  threadId: .attributes["orchestration_v2.thread_id"]
 }' "$TRACE_FILE"
 ```
 
@@ -365,7 +365,7 @@ Good first searches:
   `deployment.environment.name`
 - span names like `sendTurn` or a Git operation such as `GitVcsDriver.statusDetails.status`
 - Git spans whose `git.operation` attribute identifies the operation
-- orchestration spans with attributes like `orchestration.command_type`
+- orchestration spans with attributes like `orchestration_v2.command_type`
 
 Once you know traces are arriving, narrower TraceQL queries for names such as `sendTurn` or Git
 operation names become useful.
@@ -377,15 +377,12 @@ Traces are best for one request. Metrics are best for trends.
 Good metric families to watch:
 
 - `t3_rpc_request_duration`
-- `t3_orchestration_command_duration`
-- `t3_orchestration_command_ack_duration`
 - `t3_provider_turn_duration`
 - `t3_git_command_duration`
 
 Counters tell you volume and failure rate:
 
 - `t3_rpc_requests_total`
-- `t3_orchestration_commands_total`
 - `t3_provider_turns_total`
 - `t3_git_commands_total`
 
@@ -400,21 +397,6 @@ Use traces when the question is:
 - "what happened in this specific request?"
 - "which child span caused this one slow interaction?"
 - "what logs were emitted inside the failing flow?"
-
-### What The New Ack Metric Means
-
-`t3_orchestration_command_ack_duration` measures:
-
-- start: command dispatch enters the orchestration engine
-- end: the first committed domain event for that command is published by the server
-
-That is a server-side acknowledgment metric. It does not measure:
-
-- websocket transit to the browser
-- client receipt
-- React render time
-
-If you need those later, add client-side instrumentation or a dedicated server fanout metric.
 
 ## Common Workflows
 
@@ -431,12 +413,6 @@ If you need those later, add client-side instrumentation or a dedicated server f
 1. Search for slow top-level spans in the trace file or Tempo.
 2. Check child spans for sqlite, git, provider, or terminal work.
 3. Look at the matching duration metrics to see whether the slowness is systemic.
-
-### "Did this command take too long to acknowledge?"
-
-1. Check `t3_orchestration_command_ack_duration` by `commandType`.
-2. If it is high, inspect the corresponding orchestration trace.
-3. Look at child spans for projection, sqlite, provider, or git work.
 
 ### "Are git hooks causing latency?"
 
@@ -644,7 +620,6 @@ Current high-value span and metric boundaries include:
 - RPC request metrics in `apps/server/src/observability/RpcInstrumentation.ts`
 - startup phases
 - orchestration command processing
-- orchestration command acknowledgment latency
 - provider session and turn operations
 - git command execution and git hook events
 - terminal session lifecycle
@@ -696,15 +671,16 @@ Before you take one:
 
 ## Netdata host status
 
-To expose CPU utilization and occupied RAM through the authenticated `/api/host-status` endpoint,
-configure Netdata API v3 connections in the T3 Code **server process environment**.
-The fixed host IDs are `vps`, `test`, `mini`, and `home`; use their uppercase names
-in the variables below. Configure only the hosts you want to monitor.
+Configure Netdata API v3 connections in the **Jones Code server process environment**
+to expose host CPU and RAM through authenticated `GET /api/host-status`. The fixed
+slots are `vps`, `test`, `mini`, and `home`. The browser requests the primary
+serving environment's gateway; it does not inspect the client machine or receive
+collector URLs or tokens. Desktop uses its primary environment's bearer route;
+when its local environment is disabled, no local-machine fallback is used.
 
-The primary setup uses one Netdata parent collector on the VPS. Remote hosts
-stream their metrics into that parent; T3 Code reads each mapped node from the
-parent's API. The browser calls only the authenticated T3 Code API, and neither
-the browser nor the T3 Code gateway contacts each remote host in this setup.
+A shared parent collector can serve all mapped nodes. Each shared slot requires
+an explicit machine GUID from `/api/v3/nodes`; unmapped slots stay unavailable.
+For example, these placeholders configure mappings without adopting a live collector:
 
 ```sh
 T3CODE_NETDATA_URL=http://127.0.0.1:19999
@@ -714,51 +690,50 @@ T3CODE_NETDATA_MINI_NODE='<mini-machine-guid>'
 T3CODE_NETDATA_HOME_NODE='<home-machine-guid>'
 ```
 
-Replace each placeholder with that host's exact `mg` from the parent's
-`/api/v3/nodes` response. Set only mappings for nodes collected by that parent.
-Each slot using the shared URL requires its own `_NODE`; an unmapped slot stays
-`not_configured`, even when the collector has only one node.
+| Variable                    | Meaning                                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------- |
+| `T3CODE_NETDATA_URL`        | Shared parent base URL reachable from the serving environment.                                |
+| `T3CODE_NETDATA_TOKEN`      | Optional bearer token for the shared parent, supplied through protected server configuration. |
+| `T3CODE_NETDATA_<ID>_NODE`  | Exact machine GUID for a fixed slot.                                                          |
+| `T3CODE_NETDATA_<ID>_URL`   | Per-slot endpoint override; without `_NODE`, it must report exactly one node.                 |
+| `T3CODE_NETDATA_<ID>_TOKEN` | Per-slot bearer token. A URL override never inherits the shared token.                        |
 
-| Variable                    | Value                                                                                                                                                                  |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `T3CODE_NETDATA_URL`        | Shared parent base URL reachable from the T3 Code server.                                                                                                              |
-| `T3CODE_NETDATA_TOKEN`      | Optional bearer token for the shared parent only. Supply it through the server's protected environment configuration.                                                  |
-| `T3CODE_NETDATA_<ID>_NODE`  | Exact Netdata machine GUID selecting that host from the shared parent.                                                                                                 |
-| `T3CODE_NETDATA_<ID>_URL`   | Optional per-host base URL override for a separate Netdata agent or parent. Without `_NODE`, this endpoint must return exactly one node.                               |
-| `T3CODE_NETDATA_<ID>_TOKEN` | Optional bearer token for that host's configured endpoint. Overrides the shared token for a slot using the shared URL. A per-host URL never inherits the shared token. |
+Tokens authenticate API reads; they are not Netdata streaming keys. Keep collector
+configuration out of browser build variables. Changing process launch settings
+requires a separately authorized server restart; source changes do not activate
+or reconfigure a collector.
 
-The optional `_TOKEN` values authenticate API requests; they are not Netdata
-streaming keys. These are server settings; do not put upstream URLs or tokens
-into browser build variables. Supply them through your process launcher or service manager before
-starting the server. A running service must be restarted to receive changed
-launch settings; coordinate that restart with active agent work.
+The endpoint requires an authenticated session with `orchestration:read` and
+returns `cache-control: no-store`. Unconfigured slots return `not_configured`;
+invalid data, stale source samples, and upstream failures produce explicit
+unavailable states per host. One failed host does not hide the others. The gateway
+rejects redirects, URL credentials, unsupported response shapes, and oversized
+bodies, with a three-second deadline per host.
 
-A missing URL or shared node mapping returns `not_configured` for that host. An
-unknown or ambiguous node, invalid or unsupported metrics, an unreachable
-upstream, or samples older than 30 seconds return an unavailable state without
-hiding the other hosts. Redirects are not followed; configure the final base
-URL. Access requires an authenticated T3 Code session with `orchestration:read`
-scope.
+Queries select the configured node's GUID and a five-second window aggregated to
+one point. Logical CPU count and total RAM come from that node's metadata. CPU
+uses `system.cpu` percentage units and the complete macOS or Linux dimension set.
+The executing dimensions are summed; idle, iowait, and steal are excluded, and
+Linux guest dimensions are counted once. The result is 0–100% of total host CPU
+capacity, without dividing by logical core count.
 
-Available hosts report `cpuUsagePercent`, `occupiedMemoryBytes`,
-`totalMemoryBytes`, `logicalCpuCount`, and `sampledAt`. The gateway scopes both
-metric queries to the selected node's machine GUID on the configured parent,
-using a short five-second window aggregated to one point. Logical CPU count and
-total RAM come from that same node's metadata. The sample time is the oldest
-CPU or RAM query timestamp or database last-entry timestamp; all must be within
-30 seconds.
+Occupied RAM remains on the wire for compatibility: total bytes minus native
+`system.ram/free` MiB, including reclaimable memory. The optional
+`availableMemoryBytes` is collected separately: Linux `mem.available/avail`, or
+the macOS collector estimate of free + speculative + inactive + purgeable pages.
+Missing or invalid available-memory data leaves CPU usable and available RAM
+unavailable; free RAM is never relabeled as available RAM. Every reported byte
+value is integral and bounded by total RAM.
 
-CPU utilization comes from `system.cpu` with `percentage` units. The gateway
-requires the complete macOS set (`user`, `nice`, `system`) or Linux set
-(`user`, `nice`, `system`, `irq`, `softirq`, `guest`, `guest_nice`,
-`iowait`, `steal`), allowing an optional `idle` dimension. It sums executing
-CPU percentages and excludes `idle`, `iowait`, and `steal`. Netdata's Linux
-collector already subtracts guest time from user and nice, so guest dimensions
-are added exactly once. The result is a finite percentage from 0 to 100 and is
-not divided by the logical CPU count.
+The header shows compact whole numbers such as `VPS · 24% · 41`: total-host CPU
+percentage and available RAM in GiB. Tooltips retain units and collector-estimate
+meaning. CPU and RAM colors use their unrounded utilization, and either can raise
+the badge background; the RAM color is not a direct measurement of memory
+pressure. The breadcrumb receives its natural width first; complete badges fit
+into the remaining space in VPS, Test, Mini, Home order, with hidden badges
+removed from keyboard focus.
 
-Occupied RAM is total RAM minus `system.ram/free`, converting free MiB to bytes
-and rounding to the nearest byte before subtraction. It includes reclaimable
-cache and is not a memory-pressure or available-memory estimate; the gateway
-does not invent a macOS available-memory value or sum overlapping RAM categories.
-Missing total RAM, invalid free RAM, or free RAM above total is invalid data.
+Source timestamps older than 30 seconds become unavailable. The client expires
+presented values at 30 seconds even while another request is pending, polls every
+ten seconds while visible, clears samples when hidden or after failures, and
+releases timers and aborts its request on unmount.

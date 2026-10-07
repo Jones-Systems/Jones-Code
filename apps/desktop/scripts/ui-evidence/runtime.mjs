@@ -7,6 +7,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
+import * as NodeURL from "node:url";
 import { allocateRun, removeRun } from "./lifecycle.mjs";
 
 export const exec = NodeUtil.promisify(NodeChildProcess.execFile);
@@ -197,6 +198,23 @@ export async function packageAt(name, from) {
     current = parent;
   }
 }
+export async function runtimeExternalDependencies(source, app, dependencies) {
+  if (!["desktop", "server"].includes(app)) throw new Error("Unknown runtime app");
+  const desktop = app === "desktop";
+  const file = NodePath.join(
+    source,
+    "scripts/lib",
+    desktop ? "desktop-external-packages.ts" : "cli-external-packages.ts",
+  );
+  // Node >=24 loads these pure source policies, including exact package-boundary rules.
+  const policy = await import(NodeURL.pathToFileURL(file).href);
+  const select = desktop
+    ? policy.selectDesktopRuntimeExternalDependencies
+    : policy.selectCliRuntimeExternalDependencies;
+  if (typeof select !== "function")
+    throw new Error("Cannot resolve canonical runtime external policy");
+  return Object.keys(select(dependencies));
+}
 export async function dependencyClosure(source) {
   const roots = [];
   const links = new Map();
@@ -204,20 +222,8 @@ export async function dependencyClosure(source) {
   for (const app of ["desktop", "server"]) {
     const dir = NodePath.join(source, "apps", app);
     const pkg = JSON.parse(await NodeFSP.readFile(NodePath.join(dir, "package.json"), "utf8"));
-    const policy = await NodeFSP.readFile(
-      NodePath.join(
-        source,
-        "scripts/lib",
-        app === "desktop" ? "desktop-external-packages.ts" : "cli-external-packages.ts",
-      ),
-      "utf8",
-    );
-    const match = policy.match(/(?:DESKTOP|CLI)_RUNTIME_EXTERNAL_PREFIXES\s*=\s*\[([\s\S]*?)\]/);
-    if (!match) throw new Error("Cannot resolve canonical runtime external policy");
-    const prefixes = [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-    for (const name of Object.keys(pkg.dependencies || {}).filter((name) =>
-      prefixes.some((prefix) => name.startsWith(prefix)),
-    )) {
+    const names = await runtimeExternalDependencies(source, app, pkg.dependencies || {});
+    for (const name of names) {
       const root = await packageAt(name, dir);
       roots.push({ name, root, destination: `/app/apps/${app}/node_modules/${name}` });
     }

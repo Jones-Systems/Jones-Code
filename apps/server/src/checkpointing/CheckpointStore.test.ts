@@ -126,9 +126,21 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
     );
   });
 
+  it.effect("detects a nested workspace without its own .git entry", () =>
+    Effect.gen(function* () {
+      const tmp = yield* makeTmpDir();
+      yield* initRepoWithCommit(tmp);
+      const fileSystem = yield* FileSystem.FileSystem;
+      const nested = NodePath.join(tmp, "packages", "nested");
+      yield* fileSystem.makeDirectory(nested, { recursive: true });
+      const checkpointStore = yield* CheckpointStore.CheckpointStore;
+      expect(yield* checkpointStore.isGitRepository(nested)).toBe(true);
+    }),
+  );
   describe("captureCheckpoint", () => {
-    for (const state of ["clean", "dirty"] as const) {
-      it.effect(`refuses ${state} primary checkouts without writing checkpoint refs`, () =>
+    it.effect.each(["clean", "dirty"] as const)(
+      "refuses %s primary checkouts without writing checkpoint refs",
+      (state) =>
         Effect.gen(function* () {
           const checkpointStore = yield* CheckpointStore.CheckpointStore;
           const cwd = yield* makeTmpDir(`checkpoint-store-primary-${state}-`);
@@ -140,6 +152,11 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
             ThreadId.make(`thread-primary-checkout-${state}`),
             0,
           );
+          const fileSystem = yield* FileSystem.FileSystem;
+          yield* git(cwd, ["checkout", "-b", "primary-safety-test"]);
+          const originalIndex = yield* fileSystem.readFile(NodePath.join(cwd, ".git", "index"));
+          const originalObjects = yield* git(cwd, ["count-objects", "-v"]);
+          const originalMetadata = yield* fileSystem.readDirectory(NodePath.join(cwd, ".git"));
           const result = yield* checkpointStore
             .captureCheckpoint({ cwd, checkpointRef })
             .pipe(Effect.result);
@@ -149,9 +166,15 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
             failure: { _tag: "VcsPrimaryCheckoutCheckpointError" },
           });
           expect(yield* checkpointStore.hasCheckpointRef({ cwd, checkpointRef })).toBe(false);
+          expect(yield* fileSystem.readFile(NodePath.join(cwd, ".git", "index"))).toEqual(
+            originalIndex,
+          );
+          expect(yield* git(cwd, ["count-objects", "-v"])).toBe(originalObjects);
+          expect(yield* fileSystem.readDirectory(NodePath.join(cwd, ".git"))).toEqual(
+            originalMetadata,
+          );
         }),
-      );
-    }
+    );
   });
 
   describe("diffCheckpoints", () => {

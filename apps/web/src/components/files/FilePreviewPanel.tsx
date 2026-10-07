@@ -21,15 +21,18 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { mediaFileReference } from "@t3tools/client-runtime/media-reference";
-import { Code2, Eye, FolderTree, Globe2, Table2, WrapTextIcon } from "lucide-react";
+import { FolderTree, Globe2, WrapTextIcon } from "lucide-react";
+import { Code2, Eye, Table2 } from "lucide";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useAssetUrlRefresh, useAssetUrlState } from "~/assets/assetUrls";
 import { OpenInPicker } from "~/components/chat/OpenInPicker";
+import { ZoomableImage } from "~/components/chat/ZoomableImage";
 import { MediaVideoPlayer } from "~/components/media/MediaVideoPlayer";
 import { MediaActions, type MediaActionSource } from "~/components/media/MediaActions";
+import { MorphIcon } from "~/components/MorphIcon";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 import { useTheme } from "~/hooks/useTheme";
@@ -158,14 +161,17 @@ function WorkspaceImagePreview(props: {
   }
 
   return assetUrl._tag === "Success" && imageUrl !== null ? (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden p-4">
       <MediaActions source={actionsSource}>
-        <img
-          className="max-h-full max-w-full object-contain"
-          src={imageUrl}
-          alt={props.alt}
-          onError={() => setFailedUrl(imageUrl)}
-        />
+        <div className="flex min-h-0 min-w-0 flex-1">
+          <ZoomableImage
+            key={`${props.alt}:${imageUrl}`}
+            layout="panel"
+            src={imageUrl}
+            name={props.alt}
+            onError={() => setFailedUrl(imageUrl)}
+          />
+        </div>
       </MediaActions>
     </div>
   ) : (
@@ -200,6 +206,8 @@ function WorkspaceBrowserPreview(props: {
     [insideWorkspace, props.threadRef.threadId, props.absolutePath],
   );
   const assetUrl = useAssetUrlState(props.environmentId, resource);
+  const refresh = useAssetUrlRefresh(props.environmentId, resource);
+  const [retryRevision, setRetryRevision] = useState(0);
   const revisionSuffix =
     props.workspaceMutationId === null
       ? ""
@@ -221,6 +229,12 @@ function WorkspaceBrowserPreview(props: {
   }
   return (
     <BrowserDocumentFrame
+      key={retryRevision}
+      onRetry={async () => {
+        const url = await refresh();
+        if (!url) throw new Error("Reconnect to the environment and try again.");
+        setRetryRevision((value) => value + 1);
+      }}
       src={`${assetUrl.url}${revisionSuffix}`}
       title={props.title}
       pdf={isPdfPreviewFile(props.absolutePath)}
@@ -1124,7 +1138,6 @@ export default function FilePreviewPanel({
               availableEditors={availableEditors}
               openInCwd={absolutePath}
               compact
-              enableShortcut={false}
             />
           ) : null}
           {canToggleRendered && renderedMode ? (
@@ -1141,13 +1154,10 @@ export default function FilePreviewPanel({
                 );
               }}
             >
-              {rendered ? (
-                <Code2 className="size-3.5" />
-              ) : renderedMode === "table" ? (
-                <Table2 className="size-3.5" />
-              ) : (
-                <Eye className="size-3.5" />
-              )}
+              <MorphIcon
+                className="size-3.5"
+                icon={rendered ? Code2 : renderedMode === "table" ? Table2 : Eye}
+              />
             </FileSurfaceAction>
           ) : null}
           {showsRawText ? (

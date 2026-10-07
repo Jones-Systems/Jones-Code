@@ -141,7 +141,7 @@ export const deriveServerPaths = Effect.fn(function* (
     baseDir,
     devUrl !== undefined && !options.baseDirIsExplicit ? "dev" : "userdata",
   );
-  const dbPath = join(stateDir, "state.sqlite");
+  const dbPath = join(stateDir, "statev2.sqlite");
   const attachmentsDir = join(stateDir, "attachments");
   const logsDir = join(stateDir, "logs");
   const providerLogsDir = join(logsDir, "provider");
@@ -288,8 +288,8 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
       ? baseDirOrPrefix
       : yield* fs.makeTempDirectoryScoped({ prefix: baseDirOrPrefix.prefix });
   const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
-  // Test paths are derived internally and cannot overlap; keep this test-only
-  // invariant out of the service layer's ordinary error channel.
+  // Invalid fixture directory layouts are test setup defects rather than
+  // the service layer's ordinary error channel.
   yield* ensureServerDirectories(derivedPaths).pipe(Effect.orDie);
 
   return ServerConfig.of({
